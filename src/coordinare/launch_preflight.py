@@ -146,7 +146,8 @@ def check_port(config: ProjectConfiguration) -> CheckResult:
     return CheckResult("dashboard port", Status.OK, f"Port {config.dashboard_port} is available.")
 
 
-def _token_and_repo(config: ProjectConfiguration, token: str, *, probe_repo: bool) -> list[CheckResult]:
+def check_token_and_repo(config: ProjectConfiguration, token: str, *, probe_repo: bool) -> list[CheckResult]:
+    """Check a GitHub credential, its scopes and optionally repository access."""
     results = []
     try:
         with httpx.Client(
@@ -254,7 +255,7 @@ async def check_github(
         ]
     strict = explicit or config.preset is not None
     results = _compatible_results(
-        await asyncio.to_thread(_token_and_repo, config, token, probe_repo=strict),
+        await asyncio.to_thread(check_token_and_repo, config, token, probe_repo=strict),
         strict=strict,
     )
     if any(result.status is Status.FAIL for result in results) or not any(

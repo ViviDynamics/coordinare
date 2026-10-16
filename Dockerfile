@@ -14,7 +14,7 @@ COPY src ./src
 COPY packages ./packages
 # 193: the wheel force-includes the example configs (pyproject.toml), so they
 # must be in place before the install below.
-COPY config.example*.yaml ./
+COPY config.example*.yaml config.minimal.yaml ./
 
 RUN pip install --no-cache-dir ./packages/ci_detection ./packages/service_inference ./packages/routing_models .
 

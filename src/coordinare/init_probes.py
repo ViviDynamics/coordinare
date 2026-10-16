@@ -15,9 +15,9 @@ from coordinare.doctor import Status
 from coordinare.init_files import fail
 from coordinare.launch_preflight import (
     PROBE_TIMEOUT_SECONDS,
-    _token_and_repo,
     check_github,
     check_harnesses,
+    check_token_and_repo,
 )
 from coordinare.presets import HARNESS_COMMANDS, HARNESS_DEFAULTS
 
@@ -91,7 +91,7 @@ def probe_config(answers: dict[str, Any]) -> ProjectConfiguration:
 
 def verify_token(answers: dict[str, Any]) -> str:
     config = probe_config(answers)
-    require_checks(_token_and_repo(config, answers["github_token"], probe_repo=False))
+    require_checks(check_token_and_repo(config, answers["github_token"], probe_repo=False))
     response = httpx.get(API_URL + "/user", headers={"Authorization": "Bearer " + answers["github_token"]}, timeout=PROBE_TIMEOUT_SECONDS)
     if response.status_code != httpx.codes.OK or not response.json().get("login"):
         fail("Cannot read GitHub login. Set a valid GitHub token with repo, project and read:org scopes.")
@@ -99,7 +99,7 @@ def verify_token(answers: dict[str, Any]) -> str:
 
 
 def verify_repository(answers: dict[str, Any]) -> None:
-    require_checks(_token_and_repo(probe_config(answers), answers["github_token"], probe_repo=True))
+    require_checks(check_token_and_repo(probe_config(answers), answers["github_token"], probe_repo=True))
 
 
 def list_projects(owner: str, token: str) -> list[dict[str, Any]]:

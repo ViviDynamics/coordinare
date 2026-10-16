@@ -64,17 +64,21 @@ def _setup(args: argparse.Namespace) -> int:
     directory = (args.config_dir or user_config_directory()).expanduser().resolve()
     config_path = directory / "config.yaml"
     env_path = directory / ENV_FILENAME
-    if not args.force and any(path.exists() or path.is_symlink() for path in (config_path, env_path)):
+    interactive = not args.non_interactive and sys.stdin.isatty()
+    existing = any(path.exists() or path.is_symlink() for path in (config_path, env_path))
+    if not interactive and not args.force and existing:
         fail("Setup files already exist. Use --force to keep backups and replace them.")
     raw = read_mapping(config_path) if config_path.exists() else {}
     if "symphonies" in raw or raw.get("preset") not in {None, "solo", "containers"}:
         fail("This configuration uses advanced orchestration. Edit it with coordinare config; init supports starter presets.")
     previous = read_environment(env_path)
     answers = collect_answers(args, raw, previous)
+    if interactive and existing and input("Replace existing setup files and keep backups [no]: ").strip().lower() not in {"y", "yes"}:
+        fail("Setup cancelled; existing files were kept.")
     secrets = secret_values(answers, previous)
     generated = build_config(answers, raw)
     config = _validate_generated(generated, secrets)
-    args.config = write_setup(directory, generated, secrets, force=args.force)
+    args.config = write_setup(directory, generated, secrets, force=args.force or (interactive and existing))
     sys.stdout.write(f"Saved configuration: {args.config}\nSecrets: {env_path} (0600)\n")
     report = asyncio.run(run_preflight(config, raw=generated, explicit=True))
     sys.stdout.write(report.render())
@@ -90,6 +94,11 @@ def _setup(args: argparse.Namespace) -> int:
 
 def run_init(args: argparse.Namespace) -> int:
     environment = os.environ.copy()
+    for name in ("github_token", "api_key"):
+        if getattr(args, name) is not None:
+            flag = "--" + name.replace("_", "-")
+            variable = "COORDINARE_INIT_" + name.upper()
+            sys.stderr.write(f"Warning: {flag} can expose credentials in shell history and process listings. Use {variable} or a private --answers file instead.\n")
     try:
         return _setup(args)
     except SetupError as exc:

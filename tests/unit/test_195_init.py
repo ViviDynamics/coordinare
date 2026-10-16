@@ -15,7 +15,7 @@ import yaml
 
 from coordinare import __main__ as cli
 from coordinare import init_files
-from coordinare.config import ProjectConfiguration
+from coordinare.config import ProjectConfiguration, expand_config_text
 from coordinare.config_discovery import discover_config_path
 from coordinare.config_validation import validate_config
 from coordinare.dashboard.routers.config_write import _validate_global_config
@@ -45,7 +45,7 @@ def setup_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def probes(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     monkeypatch.setattr("coordinare.init_probes.read_command", AsyncMock(return_value=""))
     monkeypatch.setattr("coordinare.init_probes.shutil.which", lambda name: "/bin/" + name)
-    monkeypatch.setattr("coordinare.init_probes._token_and_repo", lambda *a, **k: [])
+    monkeypatch.setattr("coordinare.init_probes.check_token_and_repo", lambda *a, **k: [])
     monkeypatch.setattr("coordinare.init_probes.check_github", AsyncMock(return_value=[]))
     monkeypatch.setattr("coordinare.init_probes.check_harnesses", AsyncMock(return_value=[]))
     monkeypatch.setattr("coordinare.init_probes.httpx.get", MagicMock(return_value=httpx.Response(200, json={"login": "operator"})))
@@ -185,7 +185,7 @@ def test_failed_question_names_fix_before_writing(
 ) -> None:
     result = CheckResult(kind, Status.FAIL, "Setup question failed", fix)
     if kind in {"token", "scopes", "repository"}:
-        monkeypatch.setattr("coordinare.init_probes._token_and_repo", lambda *a, **k: [result])
+        monkeypatch.setattr("coordinare.init_probes.check_token_and_repo", lambda *a, **k: [result])
     else:
         name = "check_github" if kind == "columns" else "check_harnesses"
         monkeypatch.setattr("coordinare.init_probes." + name, AsyncMock(return_value=[result]))
@@ -492,3 +492,125 @@ def test_unresponsive_harness_stops_before_later_questions(
     assert invoke(monkeypatch, "--answers", str(answers_file(tmp_path))) == 1
     assert not any("Concurrent cards" in prompt for prompt in prompts)
     assert not any("Human reviewer" in prompt for prompt in prompts)
+
+
+@pytest.mark.parametrize("confirmation", ["", "no", "yes"])
+@pytest.mark.parametrize("force", [False, True])
+def test_interactive_rerun_offers_saved_defaults_and_requires_confirmation(
+    setup_home: Path, probes: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], confirmation: str, force: bool,
+) -> None:
+    answers = answers_file(
+        tmp_path, repository="saved/repository", project_number=23, harness="claude_code",
+        model="saved-model", endpoint="http://saved.example/v1", max_concurrent_cards=3,
+        human_reviewers=["alice", "bob"], run_mode="docker",
+    )
+    assert invoke(monkeypatch, "--answers", str(answers)) == 0
+    config_path = setup_home / "config.yaml"
+    env_path = setup_home / "coordinare.env"
+    config_path.write_text(config_path.read_text() + "poll_interval_seconds: 45\n")
+    original_config, original_env = config_path.read_bytes(), env_path.read_bytes()
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    prompts: list[str] = []
+
+    def accept_default(prompt: str) -> str:
+        prompts.append(prompt)
+        return confirmation if "replace" in prompt.lower() else ""
+
+    monkeypatch.setattr("builtins.input", accept_default)
+    monkeypatch.setattr("coordinare.init_answers.getpass.getpass", MagicMock(side_effect=AssertionError("saved secret prompted")))
+    probes.reset_mock()
+    result = invoke(monkeypatch, *(["--force"] if force else []))
+    assert result == (0 if confirmation == "yes" else 1)
+    for default in ("saved/repository", "23", "claude_code", "saved-model",
+                    "http://saved.example/v1", "3", "alice,bob", "docker"):
+        assert any(f"[{default}]" in prompt for prompt in prompts), default
+    assert any("replace" in prompt.lower() and "[no]" in prompt for prompt in prompts)
+    if confirmation == "yes":
+        saved = yaml.safe_load(config_path.read_text())
+        assert saved["poll_interval_seconds"] == 45
+        assert saved["max_concurrent_cards"] == 3
+        assert env_path.read_bytes() == original_env
+        assert (setup_home / "config.yaml.bak").read_bytes() == original_config
+        assert (setup_home / "coordinare.env.bak").read_bytes() == original_env
+        assert stat.S_IMODE((setup_home / "coordinare.env.bak").stat().st_mode) == SECRET_MODE
+        probes.assert_awaited_once()
+    else:
+        assert config_path.read_bytes() == original_config
+        assert env_path.read_bytes() == original_env
+        assert not (setup_home / "config.yaml.bak").exists()
+        assert not (setup_home / "coordinare.env.bak").exists()
+        probes.assert_not_awaited()
+    output = capsys.readouterr()
+    assert "private-token" not in output.out + output.err + "".join(prompts)
+    assert "private-api-key" not in output.out + output.err + "".join(prompts)
+
+
+@pytest.mark.parametrize("flag,variable", [
+    ("--github-token", "COORDINARE_INIT_GITHUB_TOKEN"),
+    ("--api-key", "COORDINARE_INIT_API_KEY"),
+])
+def test_secret_cli_flag_warns_without_echoing_value(
+    setup_home: Path, probes: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], flag: str, variable: str,
+) -> None:
+    assert invoke(monkeypatch, "--answers", str(answers_file(tmp_path)), flag, "secret-cli-value") == 0
+    output = capsys.readouterr()
+    assert "warning" in output.err.lower()
+    assert flag in output.err and variable in output.err and "--answers" in output.err
+    assert "shell history" in output.err and "process" in output.err
+    assert "secret-cli-value" not in output.out + output.err
+
+
+def test_secrets_from_answers_do_not_warn_about_command_line(
+    setup_home: Path, probes: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert invoke(monkeypatch, "--answers", str(answers_file(tmp_path))) == 0
+    assert "shell history" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("contents", ["not-an-assignment", "COORDINARE_GITHUB_TOKEN='private-token"])
+def test_from_yaml_wraps_malformed_secret_env_as_config_read_error(
+    setup_home: Path, contents: str,
+) -> None:
+    setup_home.mkdir(parents=True)
+    path = setup_home / "config.yaml"
+    path.write_text("preset: solo\nharness: codex\n")
+    (setup_home / "coordinare.env").write_text(contents)
+    with pytest.raises(OSError, match=r"Failed to read config file.*coordinare\.env") as exc:
+        ProjectConfiguration.from_yaml(path)
+    assert "private-token" not in str(exc.value)
+
+
+def test_init_uses_public_github_token_and_repo_probe() -> None:
+    from coordinare import init_probes, launch_preflight
+
+    assert init_probes.check_token_and_repo is launch_preflight.check_token_and_repo
+
+
+def test_generated_secrets_filename_is_gitignored() -> None:
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", "--stdin"], input="coordinare.env\n",
+        cwd=root, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "coordinare.env"
+
+
+@pytest.mark.parametrize("value", ["literal: colon", "[one, two]", "first\nsecond", "${UNSET_195_VALUE}"])
+def test_preset_env_expansion_matches_validation_and_daemon_loading(
+    setup_home: Path, probes: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    assert invoke(monkeypatch, "--answers", str(answers_file(tmp_path))) == 0
+    path = setup_home / "config.yaml"
+    path.write_text(path.read_text() + 'project_name: "${PRESET_195_VALUE}"\n')
+    monkeypatch.setenv("PRESET_195_VALUE", value)
+    monkeypatch.delenv("UNSET_195_VALUE", raising=False)
+    expanded = yaml.safe_load(expand_config_text(path.read_text()))
+    assert expanded["project_name"] == value
+    assert isinstance(expanded["project_name"], str)
+    assert validate_config(path).passed
+    assert ProjectConfiguration.from_yaml(path).project_name == value

@@ -1222,10 +1222,12 @@ class RunLogsConfig(BaseModel):
 
 
 def expand_config_text(text: str) -> str:
-    """The text the daemon parses for a config file: ``${VAR}`` expanded (219 final check).
+    """Return environment-expanded YAML shared by loading and validation.
 
-    Every reader of config.yaml goes through this (the loader, the preflight, the dashboard
-    saves), so a save is validated on exactly the bytes the daemon will load.
+    Recognized presets expand ``${VAR}`` in parsed scalar values, then serialize
+    the result so credentials cannot become YAML syntax. Other configs expand
+    the source text before parsing for compatibility. The loader, preflight and
+    dashboard saves validate the same expanded values, not the original bytes.
     """
     try:
         raw = yaml.safe_load(text)
@@ -1873,7 +1875,11 @@ class ProjectConfiguration(BaseSettings):
         config_path = Path(path)
         raw: dict[str, Any] = {}
         if config_path.exists():
-            load_config_environment(config_path)
+            try:
+                load_config_environment(config_path)
+            except ValueError as exc:
+                message = f"Failed to read config file {config_path}: {exc}"
+                raise OSError(message) from exc
             loaded = yaml.safe_load(expand_config_text(config_path.read_text()))
             if isinstance(loaded, dict):
                 raw = loaded

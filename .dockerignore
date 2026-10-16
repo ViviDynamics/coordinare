@@ -42,6 +42,7 @@ htmlcov/
 config.yaml
 config.*.yaml
 !config.example.yaml
+!config.minimal.yaml
 # 193: the wheel force-includes every backend example, so the build needs them all.
 !config.example.*.yaml
 .codex

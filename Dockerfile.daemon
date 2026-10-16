@@ -52,7 +52,7 @@ COPY src ./src
 COPY packages ./packages
 # 193: the wheel force-includes the example configs (pyproject.toml), so the
 # install fails with "Forced include not found" unless they are here first.
-COPY config.example*.yaml ./
+COPY config.example*.yaml config.minimal.yaml ./
 
 # Resolve deps into a project-local .venv so runtime uses the lock.
 RUN uv sync --frozen --no-dev \
