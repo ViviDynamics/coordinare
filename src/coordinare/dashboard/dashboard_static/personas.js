@@ -162,7 +162,17 @@ function personaSelector(personas, context) {
 function personaPanel(role, context, html) {
   var id = context + '-persona-' + role;
   return '<div role="tabpanel" data-persona-panel="' + esc(role) + '" id="' + esc(id) + '"'
-    + ' aria-labelledby="' + esc(id + '-tab') + '" hidden>' + html + '</div>';
+    + ' aria-labelledby="' + esc(id + '-tab') + '" aria-hidden="true" hidden>' + html + '</div>';
+}
+
+function personaSyncPanels(root) {
+  var selected = root.querySelector('[data-persona-tab][aria-selected="true"]');
+  var role = selected && selected.getAttribute('data-persona-tab');
+  var ancestorHidden = !!root.closest('[hidden]');
+  root.querySelectorAll('[data-persona-panel]').forEach(function(panel) {
+    panel.hidden = ancestorHidden || panel.getAttribute('data-persona-panel') !== role;
+    panel.setAttribute('aria-hidden', panel.hidden ? 'true' : 'false');
+  });
 }
 
 function personaSelect(root, role, updateUrl) {
@@ -174,9 +184,7 @@ function personaSelect(root, role, updateUrl) {
     tab.setAttribute('aria-selected', selected ? 'true' : 'false');
     tab.setAttribute('tabindex', selected ? '0' : '-1');
   });
-  root.querySelectorAll('[data-persona-panel]').forEach(function(panel) {
-    panel.hidden = panel.getAttribute('data-persona-panel') !== role;
-  });
+  personaSyncPanels(root);
   if (role && updateUrl && personaHashRole(root.getAttribute('data-persona-context')) !== role) {
     var context = root.getAttribute('data-persona-context');
     var hash = context === 'config' ? '#personas/' : '#';

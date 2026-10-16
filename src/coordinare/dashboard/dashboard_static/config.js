@@ -1437,6 +1437,8 @@ function cfgSelectTab(secId) {
   document.querySelectorAll('#config-page-section > [role="tabpanel"]').forEach(function(p) {
     p.hidden = (p.id !== cfgPanelId(secId));
   });
+  var personas = document.querySelector('#config-page-section [data-persona-context]');
+  if (personas) personaSyncPanels(personas);
   // The hash may carry an item after the tab ("#personas/implementer"), so compare the tab only.
   var current = (location.hash || '').replace(/^#/, '').split('/')[0];
   if (current !== secId) {

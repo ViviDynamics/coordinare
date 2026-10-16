@@ -80,6 +80,7 @@ def test_shipped_editor_node_checks() -> None:
     helpers = shipped_function("helpers", "esc")
     shared = "\n".join(shipped_function("config", name) for name in (
         "cfgCoerce", "cfgParseSaved", "cfgUnset", "cfgSameValue", "cfgEntries", "cfgChanged", "cfgPendingFor",
+        "cfgTabId", "cfgPanelId", "cfgSelectTab",
     ))
     checks = (_ROOT / "tests/js/persona_180_checks.js").read_text()
     result = subprocess.run(["node", "-"], input=helpers + source + shared + checks, text=True,

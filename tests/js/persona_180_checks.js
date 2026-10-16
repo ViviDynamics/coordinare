@@ -36,8 +36,11 @@ function control(value) {
 }
 var fields = [control('first\r\n'), control('second')];
 var dirtyNodes = [{hidden: true}, {hidden: true}];
+var panelAttributes = [{}, {}];
 var panels = fields.map(function(field, i) {
-  return {hidden: true, getAttribute: function() { return ['implementer', 'reviewer'][i]; },
+  return {hidden: true,
+    getAttribute: function(k) { return k === 'data-persona-panel' ? ['implementer', 'reviewer'][i] : panelAttributes[i][k]; },
+    setAttribute: function(k, v) { panelAttributes[i][k] = v; },
     querySelector: function() { return field; }};
 });
 var attributes = [{}, {}];
@@ -60,8 +63,11 @@ var editors = fields.map(function(field) {
     return selector === '[data-md-highlight]' ? highlight : preview;
   }};
 });
+var parentPanel = {id: 'cfg-panel-personas', hidden: false};
 var root = {
   getAttribute: function() { return 'config'; },
+  closest: function() { return parentPanel.hidden ? parentPanel : null; },
+  querySelector: function() { return tabs.find(function(tab) { return tab.getAttribute('aria-selected') === 'true'; }); },
   querySelectorAll: function(selector) {
     if (selector === '[data-persona-tab]') return tabs;
     if (selector === '[data-persona-panel]') return panels;
@@ -69,7 +75,15 @@ var root = {
     return [];
   },
 };
-var document = {getElementById: function(id) { return panels[Number(id.slice(-1))]; }};
+var document = {
+  getElementById: function(id) { return panels[Number(id.slice(-1))]; },
+  querySelectorAll: function(selector) {
+    return selector === '#config-page-section > [role="tabpanel"]' ? [parentPanel] : [];
+  },
+  querySelector: function(selector) {
+    return selector === '#config-page-section [data-persona-context]' ? root : root.querySelector(selector);
+  },
+};
 var location = {hash: '#personas/implementer'};
 var routes = [];
 function pushRoute(path) { routes.push(path); location.hash = path.slice(path.indexOf('#')); }
@@ -77,11 +91,23 @@ function pathWithSymphony(path) { return path + '?fixture'; }
 personaSelect(root, 'implementer', false);
 assert.deepStrictEqual(panels.map(function(p) { return p.hidden; }), [false, true]);
 assert.strictEqual(tabs[0].getAttribute('aria-selected'), 'true');
+assert.deepStrictEqual(tabs.map(function(t) { return t.getAttribute('tabindex'); }), ['0', '-1']);
+assert.deepStrictEqual(panels.map(function(p) { return p.getAttribute('aria-hidden'); }), ['false', 'true']);
 fields[0].value = 'first edited  \n';
 personaRefresh(root);
 assert.deepStrictEqual(dirtyNodes.map(function(n) { return n.hidden; }), [false, true]);
 personaSelect(root, 'reviewer', true);
 assert.deepStrictEqual(panels.map(function(p) { return p.hidden; }), [true, false]);
+assert.deepStrictEqual(tabs.map(function(t) { return t.getAttribute('aria-selected'); }), ['false', 'true']);
+assert.deepStrictEqual(panels.map(function(p) { return p.getAttribute('aria-hidden'); }), ['true', 'false']);
+cfgSelectTab('global');
+assert.strictEqual(parentPanel.hidden, true);
+assert.deepStrictEqual(panels.map(function(p) { return p.hidden; }), [true, true], 'closing Agents hides all nested panels');
+assert.deepStrictEqual(panels.map(function(p) { return p.getAttribute('aria-hidden'); }), ['true', 'true']);
+cfgSelectTab('personas');
+assert.strictEqual(parentPanel.hidden, false);
+assert.deepStrictEqual(panels.map(function(p) { return p.hidden; }), [true, false], 'reopening Agents restores its selected persona');
+assert.deepStrictEqual(panels.map(function(p) { return p.getAttribute('aria-hidden'); }), ['true', 'false']);
 assert.strictEqual(fields[0].value, 'first edited  \n', 'selecting another persona retains the draft');
 assert.strictEqual(routes[0], '/config#personas/reviewer?fixture');
 fields[1].value = 'second edited';
