@@ -1,4 +1,4 @@
-# Containerized Performers — Operator How-To
+# Containerized Performers: Operator How-To
 
 Containerized performers isolate work execution from the coordinare host, making them suitable for multi-machine deployments, audit isolation, and tool customization. This guide covers configuration, runtime, and troubleshooting.
 
@@ -14,142 +14,25 @@ A performer is a unit of work execution registered with the coordinare. Traditio
 
 - Docker Engine ≥ 24.x reachable on the coordinare host (or via network socket).
 - A performer image matching the documented contract (entrypoint, `/status` route, HTTP job protocol, authentication).
-- Coordinare running on a branch with containerization support (v056 or later).
+- An installed Coordinare release.
 
 ## Quick Start
 
-### 1. Build or obtain a performer image
+Install a release using the [Quick Start](../quickstart.md), start Docker, then run:
 
-**Use a published variant** (recommended for most setups):
-
-```bash
-# Single backend (smallest image, fastest startup)
-docker build -f agent/performer/Dockerfile.slim \
-  --build-arg BACKEND=claude_code \
-  -t performer:slim-claude .
-
-# All backends + QA tooling (comprehensive, larger)
-docker build -f agent/performer/Dockerfile.full \
-  -t performer:full .
-
-# Toolchain only (BYO CLI)
-docker build -f agent/performer/Dockerfile.base \
-  -t performer:base .
+```sh
+coordinare init --run-mode docker
 ```
 
-**Use a custom image** (advanced):
-- Your image must expose `/status` (GET) and `/jobs` (POST/GET/stream/cancel) endpoints over HTTP.
-- See [BYO Contract](#byo-contract) below for the full requirements.
+Init pulls and pins a published performer image, writes mounts and private secret
+references, verifies harness readiness, then offers to start the daemon. Native
+providers need a model API key; host harness login files are not mounted.
+See [Docker mode setup](../docker-mode-setup.md) for full and base variants,
+networking, smoke checks and upgrades. No source checkout or local image build
+is needed. Open the dashboard at <http://127.0.0.1:8090>.
 
-### 2. Verify the image
-
-Test the image locally before registering:
-
-```bash
-# Start the container
-docker run --rm -p 8088:8088 \
-  -e PERFORMER_AUTH_TOKEN=dev-token \
-  performer:slim-claude
-
-# In another terminal, check status
-curl -s -H "Authorization: Bearer dev-token" \
-  http://localhost:8088/status | jq .
-
-# Expect output like:
-# {
-#   "availability": "idle",
-#   "capabilities": {
-#     "backends": ["claude_code"],
-#     "tool_flags": ["git", "node", "python", "lint", "format", "test_runner", "ripgrep", "jq", "shell"]
-#   },
-#   "auth_enabled": true
-# }
-```
-
-Stop the container: `docker stop <container_id>` (in the first terminal) or press Ctrl+C.
-
-### 3. Register with the coordinare
-
-Add an entry to `config.yaml`:
-
-#### Persistent container (recommended)
-
-Run the container separately; coordinare will dispatch to it:
-
-```yaml
-performer_endpoints:
-  - id: claude-writer
-    mode: persistent
-    image: performer:slim-claude
-    endpoint: http://localhost:8088
-    roles: [writer, documenter]
-    auth_token: ${PERFORMER_AUTH_TOKEN}
-    failure_threshold: 5
-    readiness_timeout_s: 120
-    secret_sources:
-      init_payload: true
-      env: true
-      creds_file: false
-    volumes:
-      - host_path: /path/to/project/.tools
-        container_path: /opt/tools
-        mode: ro
-```
-
-Start the container in the background:
-
-```bash
-docker run -d --name coordinare-performer-1 \
-  -p 8088:8088 \
-  -e PERFORMER_AUTH_TOKEN=<your-secret-token> \
-  -v /path/to/project/.tools:/opt/tools:ro \
-  performer:slim-claude
-```
-
-#### Ephemeral container (one-shot)
-
-Coordinare starts the container per job and tears it down:
-
-```yaml
-performer_endpoints:
-  - id: codex-ephemeral
-    mode: ephemeral
-    image: performer:slim-codex
-    port: 8089
-    roles: [writer]
-    auth_token: ${PERFORMER_AUTH_TOKEN}
-    failure_threshold: 5
-    readiness_timeout_s: 60
-```
-
-Coordinare automatically manages the container lifecycle.
-
-### 4. Start the coordinare
-
-```bash
-set -a && source .env && set +a
-.venv/bin/python -m coordinare
-```
-
-Watch the dashboard (typically `http://localhost:8000`). The performer pool widget shows:
-
-- Registration id
-- Mode (subprocess/ephemeral/persistent)
-- Availability (idle/busy/starting/unreachable/draining)
-- Current job id (if busy)
-- Last successful status check
-- Consecutive failures (if excluded)
-- Auth enabled status
-
-### 5. Dispatch a card
-
-Drop a card matching one of the performer's roles. The coordinare will:
-
-1. Poll the performer's `/status` endpoint.
-2. Check capabilities against the card's requirements.
-3. Dispatch the job via POST `/jobs`.
-4. Poll or stream job progress.
-5. (For ephemeral only) Tear down the container on completion.
+The reference below is for custom or existing registrations. For Kubernetes and
+Helm, follow the [chart README](../../deploy/helm/coordinare/README.md).
 
 ## Configuration Reference
 
@@ -279,12 +162,13 @@ If you need to change `mode`, `image`, or `endpoint` while a job is in flight:
    - Watch the dashboard pool widget for `current_job_id` to clear.
    - Monitor logs for the job reaching a terminal state.
 
-3. **Edit config** and reload:
-   ```bash
-   # Edit config.yaml, change the performer entry, then reload:
-   # curl -X POST http://localhost:8000/admin/reload-config
-   # (or use your config-reload endpoint)
+3. **Edit config** after work finishes, then restart the registered service:
+
+   ```sh
+   coordinare service restart
    ```
+
+   For a foreground daemon, stop it with Ctrl+C and start it again with `coordinare`.
 
 4. **Perform readiness check**:
    - The coordinare polls `/status` against the new endpoint/mode.
@@ -352,7 +236,7 @@ Submit a new job.
 }
 ```
 
-**Response** (409 Conflict — performer busy):
+**Response** (409 Conflict: performer busy):
 
 ```json
 {
@@ -361,7 +245,7 @@ Submit a new job.
 }
 ```
 
-**Response** (422 Unprocessable Entity — missing secret):
+**Response** (422 Unprocessable Entity: missing secret):
 
 ```json
 {

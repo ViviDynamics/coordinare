@@ -12,8 +12,8 @@ a `services-start.sh` by hand.
 
 ## Prerequisites
 
-- Coordinare running (`set -a && source .env && set +a && coordinare daemon`).
-- A performer image with the bootstrap tooling — `coordinare-performer:full`
+- Coordinare running after [guided setup](../quickstart.md) with `coordinare`.
+- A performer image with the bootstrap tooling: `coordinare-performer:full`
   works out of the box.
 - `ANTHROPIC_API_KEY` exported in coordinare's environment (the inference
   agent uses it). If unset, the agent skips with reason `no_api_key` and you'll
@@ -41,7 +41,7 @@ cat config/database.yml | head -5
 #   ...
 ```
 
-No `.coordinare/` directory is needed — inference handles a vanilla Rails
+No `.coordinare/` directory is needed: inference handles a vanilla Rails
 layout.
 
 ## 2. Register the symphony with coordinare
@@ -82,16 +82,17 @@ Two things worth calling out:
 - **`env_spec_files`** drives bootstrap invalidation: when coordinare sees the
   SHA of any listed file change in the symphony's repo, it dispatches a fresh
   `env_bootstrap` job.
-- Service inference adds its own `cache_inputs` on top of this — once the LLM
+- Service inference adds its own `cache_inputs` on top of this: once the LLM
   runs, files like `Gemfile.lock` may also force regeneration. The two layers
   compose; you don't have to predict every input.
 
-Reload the daemon:
+Let active work finish, then restart the registered user service:
 
-```bash
-set -a && source .env && set +a
-coordinare reload  # or restart the daemon
+```sh
+coordinare service restart
 ```
+
+For a foreground daemon, stop it with Ctrl+C and run `coordinare` again.
 
 ## 3. Trigger the first env-cache build
 
@@ -147,7 +148,7 @@ If you see `failed` or `skipped: <reason>` instead, jump to
 ## 5. Dispatch the first card
 
 Create a card in the symphony's GitHub Project board (status: "Ready") that
-maps to a QA performer role — e.g. a card titled "Run rspec smoke suite".
+maps to a QA performer role: e.g. a card titled "Run rspec smoke suite".
 
 Coordinare's poller will:
 
@@ -155,7 +156,7 @@ Coordinare's poller will:
 2. Dispatch to `qa-perf`.
 3. The performer container starts with `/devenv/rails-app` mounted read-only.
 4. `devenv-profile.sh` sources the cache and runs
-   `/devenv/rails-app/services/services-start.sh` — postgres + redis come up
+   `/devenv/rails-app/services/services-start.sh`: postgres + redis come up
    as child processes inside the container.
 5. The QA agent runs `bundle exec rspec`. It connects to
    `postgres://localhost:5432` and the suite executes against the live DB.
@@ -174,26 +175,26 @@ The card moves to the next column on completion.
 
 **Dashboard shows `Service inference: skipped: no_api_key`**
 The coordinare process can't see `ANTHROPIC_API_KEY`. Confirm
-`set -a && source .env && set +a` ran before launching the daemon — config
+`set -a && source .env && set +a` ran before launching the daemon: config
 placeholders silently empty otherwise. Restart coordinare and rebuild the cache.
 
 **Dashboard shows `Service inference: failed · 3 attempts`**
 The LLM produced a manifest but validation rejected it three times. Check the
-performer logs for `service_inference.validation_failed` lines — they include
+performer logs for `service_inference.validation_failed` lines: they include
 the failing script and exit code. Common causes: a `binary` not present in
 the image, or `start_args` that exit before opening their port. The
 fastest unblock is to commit a [Manual Override](service-inference-manual-override.md)
 with a known-good service entry.
 
 **Dashboard shows `Service inference: skipped: manual_override`**
-Working as intended — a `.coordinare/score.json` was found in the project repo
+Working as intended: a `.coordinare/score.json` was found in the project repo
 and used verbatim. Delete it to re-enable LLM inference.
 
 **Health check times out after the cache is ready**
 The cache was built but at performer runtime `services-health.sh` exits
 non-zero. Coordinare marks the cache `runtime_health_failed`; the next
 bootstrap cycle forces a regeneration that bypasses the cache key. If the
-problem persists, the issue is reproducible — exec into the performer and
+problem persists, the issue is reproducible: exec into the performer and
 run `services-health.sh` manually to see what's failing.
 
 **Build picks the wrong services**

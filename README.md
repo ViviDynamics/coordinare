@@ -1,6 +1,9 @@
 # Coordinare
 
-An autonomous software development orchestrator that manages a full-cycle development workflow on GitHub Project boards. Coordinare polls a GitHub Project for cards, dispatches them through a configurable sequence of AI-powered performer roles, and advances each card from TODO through implementation, review, security scanning, QA validation, and documentation — all before a human sees the PR.
+An autonomous software development orchestrator for GitHub Project boards.
+Coordinare polls a Project for cards and dispatches them through configurable AI
+performer roles. It can advance each card from TODO through implementation,
+review, security scanning, QA validation and documentation before human PR review.
 
 > **Security**: coordinare executes AI-generated code, holds a GitHub token with
 > write access, and feeds public issue and comment text into model prompts. Read
@@ -9,23 +12,23 @@ An autonomous software development orchestrator that manages a full-cycle develo
 
 ## How It Works
 
-1. **Poll** — Coordinare watches a GitHub Project board for cards in the TODO column
-2. **Assess** — Each card is evaluated for sufficient context (acceptance criteria, scope)
-3. **Dispatch** — The card is dispatched through a sequential lifecycle of performer roles
-4. **Monitor** — Each performer is polled until it completes or blocks
-5. **Advance** — On success, the card advances to the next role automatically
-6. **Review** — After all automated roles complete, the card enters human PR review
-7. **Merge** — On human approval, the PR is squash-merged and the card moves to Done
+1. **Poll**: Coordinare watches a GitHub Project board for cards in the TODO column
+2. **Assess**: Each card is evaluated for sufficient context (acceptance criteria, scope)
+3. **Dispatch**: The card is dispatched through a sequential lifecycle of performer roles
+4. **Monitor**: Each performer is polled until it completes or blocks
+5. **Advance**: On success, the card advances to the next role automatically
+6. **Review**: After all automated roles complete, the card enters human PR review
+7. **Merge**: On human approval, the PR is squash-merged and the card moves to Done
 
 ## Performer Lifecycle
 
-Cards progress through up to 9 configurable roles (unconfigured roles are skipped):
+Cards progress through configurable roles (unconfigured roles are skipped):
 
 | Role | Stage | What it does | Terminal state |
 |------|-------|-------------|---------------|
-| Advocate | `advocate` | Answers inbound issues from the documentation, escalates the rest | — |
-| Curator | `curator` | Proposes ready issues to the board backlog for a human to promote | — |
-| Assessor | `assessing` | Evaluates card sufficiency, asks clarifying questions | — |
+| Advocate | `advocate` | Answers inbound issues from the documentation, escalates the rest |: |
+| Curator | `curator` | Proposes ready issues to the board backlog for a human to promote |: |
+| Assessor | `assessing` | Evaluates card sufficiency, asks clarifying questions |: |
 | Architect | `architecting` | Analyses codebase, commits a technical plan to the branch | `plan_committed` |
 | Implementer | `implementing` | Writes code, opens a PR | `pr_opened` |
 | Reviewer | `reviewing` | Reviews the PR, approves or requests changes | `approved` |
@@ -38,137 +41,114 @@ When a role finds issues (reviewer requests changes, security finds vulnerabilit
 
 ## Quick Start
 
-For guided per-user setup after installing Coordinare, run
-`coordinare init`. It writes a minimal config and private env file, checks the
-setup and prints the start command. See [guided setup](docs/init.md) for flags,
-answers files and unattended setup. The checkout-based steps below remain valid.
+### 1. Prepare
 
-### Prerequisites
+Use Linux or macOS on x86_64 or arm64. On Windows, use WSL. You need `curl`
+and either `sha256sum` or `shasum`. The installer supplies Python 3.12 through
+[uv](https://docs.astral.sh/uv/) and asks before installing uv if it is missing.
 
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/) (package manager)
-- A GitHub repository with a [Project board](https://docs.github.com/en/issues/planning-and-tracking-with-projects) (V2)
-- A GitHub token with `project`, `repo`, and `read:org` scopes
+Have these ready:
 
-### 1. Clone and install
+- A GitHub repository and a [Project board](https://docs.github.com/en/issues/planning-and-tracking-with-projects)
+  (V2) owned by the same user or organization. Its Status field needs To Do
+  (or Ready), In Progress, In Review, Blocked and Done.
+- A GitHub token with access to the repository and Project. Classic PATs need
+  `repo`, `project` and `read:org`; authorize organization SSO if required.
+  See [token permissions](docs/security/threat-model.md#github-token-permissions)
+  for fine-grained permissions and branch protection requirements.
+- One harness: Codex (`codex`), Claude Code (`claude`) or OpenCode (`opencode`).
+  For local mode, install git and the CLI on PATH and authenticate the CLI. Codex and Claude
+  Code can reuse a harness login; OpenCode's native provider requires
+  `OPENAI_API_KEY`. You can supply a model API key during setup instead.
+  [Docker mode](docs/docker-mode-setup.md) installs the harness in containers
+  and requires an API key for native providers.
 
-```bash
-git clone https://github.com/ViviDynamics/coordinare.git
-cd coordinare
-uv sync
-```
+### 2. Install
 
-For an isolated release installation without cloning, run:
+The installer downloads release wheels, verifies their checksums and installs
+Coordinare and its performer in an isolated user tool environment. It does not
+need sudo or a source checkout.
 
 ```sh
 curl -fsSL https://github.com/ViviDynamics/coordinare/releases/latest/download/install.sh | sh
 ```
 
-Then run `coordinare init` (the setup command tracked in #195). The installer
-prints the PATH instruction if needed and leaves configuration to that command.
-See [release installation](docs/releases.md) for pinned versions, unattended use,
-uninstalling, and the download, inspect, run alternative.
+To inspect the script before running it:
 
-### 2. Configure
-
-Copy the starter config and fill in your values:
-
-```bash
-cp config.minimal.yaml config.yaml
+```sh
+curl -fsSL https://github.com/ViviDynamics/coordinare/releases/latest/download/install.sh -o install.sh
+less install.sh
+sh install.sh
 ```
 
-Required choices are `github_org`, `github_repo`, `github_project_number`,
-`harness` and `human_reviewers`. The starter uses `preset: solo` and enables
-only the implementer. Models, catalogs, concurrency and the local performer
-transport have defaults. Set `harness` to `codex`, `claude_code` or `opencode`.
-Install and authenticate that CLI on your PATH. Install the performer package:
+Checksums detect corruption. Trust still depends on HTTPS and the release
+publisher. Read the [threat model](docs/security/threat-model.md) before granting
+repository write access. Agents execute generated code, and public issue text
+reaches their prompts. Keep the unauthenticated dashboard on loopback.
 
-```bash
-uv sync --project agent/performer
+Commands are installed in `~/.local/bin`. Add it to this shell's PATH and your
+shell profile if needed:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-`config.example.yaml` is the full reference. To use Docker performers instead,
-run `coordinare init --run-mode docker` to pull and pin the matching release image.
-See [Docker mode setup](docs/docker-mode-setup.md) for runtime requirements and upgrades.
-See [first launch and the sample card](docs/first-launch.md).
+### 3. Set up and start
 
-### 3. Set up environment
+Run from a directory without an old `config.yaml`, which would take precedence
+when starting without an explicit config path:
 
-```bash
-cp .env.example .env
-# Edit .env with your secrets:
-#   COORDINARE_GITHUB_TOKEN=ghp_...
-#   OPENAI_API_KEY=...  (codex or opencode starter)
-#   ANTHROPIC_API_KEY=...  (claude_code starter)
+```sh
+coordinare init
 ```
 
-### 4. Authorize the GitHub App (or PAT) on branch protection
+Setup asks for your GitHub token, repository, Project number, local or Docker
+mode, harness, model, optional endpoint and API key, concurrent cards and human
+reviewers. It detects existing credentials and installed harnesses. Secret input
+is hidden. Defaults enable only the implementer, one card at a time, with your
+GitHub login as the human reviewer. Other roles are optional.
 
-For coordinare to squash-merge PRs on your behalf, the identity it uses
-(GitHub App recommended; PAT supported) must be allowed to push to the
-protected branch.  Live testing has repeatedly surfaced this gotcha:
-**rulesets and classic branch protection rules are TWO separate
-systems** on the same branch, and the App has to be authorised in
-whichever one is active (or both, if both exist).
+Init writes `~/.config/coordinare/config.yaml` and private
+`~/.config/coordinare/coordinare.env` by default. It checks GitHub access, board
+columns, harness readiness, model access, writable paths and the dashboard port.
+These checks do not generate model output. Fix any reported failures before
+starting. See [setup troubleshooting](docs/setup-troubleshooting.md).
 
-**If you use a Ruleset** (`Settings → Rules → Rulesets`):
-- Edit the ruleset covering `main`
-- **Bypass list** → add the coordinare GitHub App (search by app name)
+After successful preflight, accept `Start at login` to install and start a user
+service on macOS or Linux. If you decline, accept `Start Coordinare now` for a
+foreground process. Keep that terminal open. If you decline both, start later:
 
-**If you use classic Branch Protection** (`Settings → Branches`):
-- Edit the rule for `main`
-- **"Restrict who can push to matching branches"** → add the coordinare
-  app (required — the App literally cannot push otherwise)
-- The "Allow specified actors to bypass required pull requests" list
-  is NOT needed if a human is approving before coordinare merges
-
-If both systems are configured on the same branch, both must allow
-the App — GitHub enforces them independently.  When coordinare hits
-this, it logs a permanent error `"You're not authorized to push to
-this branch"` and surfaces the card as needing a human, with the GitHub error
-message in `open_questions` so you can act on it directly.
-
-### 5. Validate config
-
-```bash
-set -a && source .env && set +a
-.venv/bin/python -m coordinare config validate
-# Inspect expanded defaults, with secrets redacted:
-.venv/bin/python -m coordinare config
-# Check GitHub, board columns, harness, model API, paths and port:
-.venv/bin/python -m coordinare doctor
+```sh
+coordinare
 ```
 
-### 6. Run
+The daemon loads `coordinare.env` automatically. Open **<http://127.0.0.1:8090>**,
+or the dashboard URL printed by setup. Put an issue on the board in To Do or
+Ready to dispatch it. Try the [small first card](docs/first-launch.md#try-one-card)
+and review its PR as the configured human reviewer.
 
-```bash
-# Local (no Docker)
-bin/run-coordinare
+To recheck setup, stop the foreground process with Ctrl+C, or stop the user
+service first. Doctor checks port availability and can report the running
+daemon's port as occupied:
 
-# Or with Docker Compose
-docker-compose up
+```sh
+coordinare doctor
 ```
 
-### 7. Monitor
-
-Startup prints a preflight summary before polling. Deterministic setup failures
-block preset launches; new checks warn for existing full configs. Transient
-network failures warn after a bounded retry and the daemon starts, with live
-System health reporting the outage. Doctor shows all checks explicitly.
-A successful launch prints the watched board, enabled and skipped
-roles, concurrency and dashboard URL. The console and dashboard explain when work
-is waiting. Try the small [first card](docs/first-launch.md#try-one-card).
-
-- **Dashboard**: http://localhost:8090 — live SSE dashboard with phase, card, health, and performer status
-- **Health**: http://localhost:8080/health — JSON health check for load balancers
-- **Logs**: Structured JSON logs (set `log_level: debug` for verbose output)
+See the [full quickstart](docs/quickstart.md), [self-hosted models](docs/quickstart-selfhosted.md),
+[guided setup](docs/init.md), [unattended installation](docs/unattended-install.md),
+[user services](docs/service.md), [upgrading](docs/upgrading.md),
+[uninstalling](docs/uninstalling.md) and [file locations](docs/files-and-paths.md).
+For Kubernetes and Helm, use the [chart README](deploy/helm/coordinare/README.md).
+For source changes and checkout setup, see
+[Developing Coordinare](CONTRIBUTING.md#developing-coordinare).
 
 ## Configuration
 
 ### MCP Management Layer
 
 An external AI agent can drive the full operator surface (config, symphonies,
-personas, lifecycle controls, live state) over MCP — no browser, no shell on the
+personas, lifecycle controls, live state) over MCP: no browser, no shell on the
 daemon host. Run `python -m coordinare.mcp` next to the daemon, or set
 `mcp.enabled: true` in the Helm chart for a sidecar. See `docs/mcp.md` for the
 architecture, security notes, and the env vars, and
@@ -186,9 +166,37 @@ Coordinare searches for config in this order (first match wins):
 
 Any scalar field can be overridden via environment variable: `COORDINARE_<FIELD_NAME>` (uppercase).
 
+### Branch protection
+
+For coordinare to squash-merge PRs on your behalf, the identity it uses
+(GitHub App recommended; PAT supported) must be allowed to push to the
+protected branch.  Live testing has repeatedly surfaced this gotcha:
+**rulesets and classic branch protection rules are TWO separate
+systems** on the same branch, and the App has to be authorised in
+whichever one is active (or both, if both exist).
+
+**If you use a Ruleset** (`Settings → Rules → Rulesets`):
+
+- Edit the ruleset covering `main`
+- **Bypass list** → add the coordinare GitHub App (search by app name)
+
+**If you use classic Branch Protection** (`Settings → Branches`):
+
+- Edit the rule for `main`
+- **"Restrict who can push to matching branches"** → add the coordinare
+  app (required: the App literally cannot push otherwise)
+- The "Allow specified actors to bypass required pull requests" list
+  is NOT needed if a human is approving before coordinare merges
+
+If both systems are configured on the same branch, both must allow
+the App: GitHub enforces them independently.  When coordinare hits
+this, it logs a permanent error `"You're not authorized to push to
+this branch"` and surfaces the card as needing a human, with the GitHub error
+message in `open_questions` so you can act on it directly.
+
 ### Performer Roles
 
-To enable the multi-role lifecycle, add a `performers:` section to config.yaml (roles run in the canonical order shown — unlisted roles are silently skipped):
+To enable the multi-role lifecycle, add a `performers:` section to config.yaml (roles run in the canonical order shown: unlisted roles are silently skipped):
 
 ```yaml
 performers:
@@ -218,7 +226,8 @@ performers:
     transport: subprocess
 ```
 
-With no `performers:` section, coordinare falls back to implementer-only mode (backward compatible). See `config.example.yaml` for per-role `backend` / `model` / `transport` overrides.
+With no `performers:` section, coordinare falls back to implementer-only mode (backward compatible). See `config.example.yaml` for per-role `backend`, `mode` and `transport` overrides. Models are selected through
+`modes`, `model_endpoints` and `endpoints`; inline performer `model` is rejected.
 
 ### Persona Instructions
 
@@ -248,51 +257,21 @@ notifications:
 
 See `config.example.yaml` for the full, commented notification routing reference.
 
-## Development
+## Developing Coordinare
 
-### Run tests
-
-```bash
-bin/build              # Install dev dependencies; lint, coordinare + performer tests, coverage
-bin/build --e2e        # Include Playwright browser tests
-bin/build --all        # Everything including Docker image builds
-```
-
-### Project structure
-
-```
-src/coordinare/           # Coordinare daemon
-  graph/                 # LangGraph state machine
-    nodes/               # Graph nodes (dispatch, monitor, classify, etc.)
-  services/              # GitHub, Claude, notification, persona services
-  dashboard.py           # Live web dashboard (SSE)
-
-agent/performer/         # Performer container
-  src/performer/         # Wire protocol, backend adapters, git workspace
-  tests/                 # Performer unit tests
-
-specs/                   # Feature specifications (spec, plan, tasks for each feature)
-tests/                   # Coordinare tests (unit, integration, contract, e2e)
-```
-
-### Key commands
-
-| Command | Description |
-|---------|-------------|
-| `bin/run-coordinare` | Start the coordinare daemon |
-| `bin/run-performer` | Run the performer locally (no Docker) |
-| `bin/build` | Run full test suite and linter |
-| `bin/check-agent` | Check performer health |
-| `bin/performer-logs` | Stream performer stderr logs |
-| `.venv/bin/python -m coordinare config validate` | Validate config |
+Maintainer checkout setup, test commands and project layout are in
+[CONTRIBUTING.md](CONTRIBUTING.md#developing-coordinare).
 
 ## Architecture
 
 Coordinare uses [LangGraph](https://github.com/langchain-ai/langgraph) to orchestrate a state machine that drives each card through the development lifecycle. The performer is a separate process (or container) that speaks a JSON stdin/stdout wire protocol and delegates actual coding work to an AI backend (OpenCode, Claude Code, etc.).
 
-The coordinare and performer communicate via a transport layer (subprocess, SSH, or Kubernetes) and share no in-memory state. Each performer session is ephemeral — the performer clones the repo, does its work, and exits.
+The coordinare and performer communicate via a transport layer (subprocess, SSH, or Kubernetes) and share no in-memory state. Each performer session is ephemeral: the performer clones the repo, does its work, and exits.
 
-The `subprocess` transport is the default because it needs no container runtime, which makes it the shortest path through the Quick Start. It is for development and single-host use only: the performer runs as a child of the daemon, on the daemon's host, in the daemon's own clone of the repository. For a deployment, run performers in containers (`performer_endpoints`) or on Kubernetes (`agent_transport: kubernetes`), so the orchestrator and the code work are separate processes with separate filesystems and credentials.
+The `solo` preset runs the performer as a local subprocess on the daemon's host.
+It needs no container runtime and provides no container isolation. For Docker
+performers, use [Docker mode](docs/docker-mode-setup.md). For Kubernetes, follow
+the [chart README](deploy/helm/coordinare/README.md).
 
 ## License
 
