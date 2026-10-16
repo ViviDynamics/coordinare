@@ -230,8 +230,12 @@ def build_pod_manifest(
         "imagePullPolicy": "IfNotPresent",
         "ports": [{"containerPort": PERFORMER_PORT}],
     }
-    if env:
-        container["env"] = [{"name": k, "value": v} for k, v in sorted(env.items())]
+    pod_env = dict(env or {})
+    routing = getattr(config, "kubernetes_routing_configmap", None)
+    if routing is not None:
+        pod_env["SELFHOSTED_ROUTING_CONFIG"] = "/etc/coordinare/routing/routing.yaml"
+    if pod_env:
+        container["env"] = [{"name": k, "value": v} for k, v in sorted(pod_env.items())]
 
     spec: dict[str, Any] = {
         # Never: a restart would resurrect a performer coordinare has finished
@@ -304,6 +308,22 @@ def build_pod_manifest(
         spec["volumes"] = [
             {"name": "devenv-cache", "persistentVolumeClaim": {"claimName": cache_claim}},
         ]
+
+    if routing is not None:
+        # Project just the routing key in its own directory. The kubelet fetches
+        # it; the daemon needs no ConfigMap API access or local copy of the file.
+        container.setdefault("volumeMounts", []).append({
+            "name": "selfhosted-routing",
+            "mountPath": "/etc/coordinare/routing",
+            "readOnly": True,
+        })
+        spec.setdefault("volumes", []).append({
+            "name": "selfhosted-routing",
+            "configMap": {
+                "name": routing.name,
+                "items": [{"key": routing.key, "path": "routing.yaml"}],
+            },
+        })
 
     if image_pull_secrets:
         spec["imagePullSecrets"] = [{"name": s} for s in image_pull_secrets]

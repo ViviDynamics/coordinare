@@ -49,6 +49,9 @@ performer_endpoints:
     auth_token: string                  # Bearer token (optional; disable auth if omitted)
     failure_threshold: int              # Consecutive failures before exclusion (default: 5)
     readiness_timeout_s: int            # Max wait for startup (default: 120)
+    kubernetes_routing_configmap:        # Kubernetes only; default: null (no mount/env change)
+      name: coordinare-performer-routing # Existing ConfigMap in performer namespace
+      key: routing.yaml                 # Optional; default: routing.yaml
     capability_overrides:               # (Advanced) explicit capabilities if image reports incorrect ones
       backends: [string, ...]
       tool_flags: [string, ...]
@@ -87,6 +90,37 @@ volumes:
 ```
 
 For persistent containers, you manage mounts yourself via `docker run -v`.
+
+### Kubernetes routing ConfigMap (557)
+
+Set `performer_endpoints[].kubernetes_routing_configmap` on the ephemeral
+endpoint serving the relevant roles. `name` must be a DNS-1123 subdomain
+(lowercase letters, digits, hyphens and dots, starting/ending each dot-separated
+part with a letter or digit, at most 253 characters total). `key` accepts
+letters, digits, dots, underscores and hyphens, with length 1-253; it cannot be
+`.` or start with `..`.
+Unknown fields are rejected. Subprocess endpoints reject this container setting.
+
+The Kubernetes runtime projects only that key as `routing.yaml`, mounts the
+directory `/etc/coordinare/routing` read-only in each new performer pod, and
+sets `SELFHOSTED_ROUTING_CONFIG=/etc/coordinare/routing/routing.yaml`.
+This takes precedence over an explicit endpoint env value. Other env entries,
+cache mounts and image pull settings retain their behavior. Omitted or null
+means no routing mount or env change; Docker ignores the setting and continues
+using its existing host-path mounts and env.
+
+Create the ConfigMap in `kubernetes_namespace`, which may differ from the
+daemon namespace (`performers.namespace` in Helm). The kubelet fetches the
+projected data; neither the daemon nor the performer needs ConfigMap API RBAC.
+The chart's existing pod permissions are sufficient. A missing ConfigMap/key
+prevents the pod from starting; inspect pod events. The daemon does not validate
+the routing YAML contents, and existing jobs do not reload routing. Dispatch a
+fresh job after changes. Keep credentials in the existing secret/catalog path,
+not in routing YAML. The chart passes this endpoint setting through under
+`config.performer_endpoints`; operators create the routing ConfigMap separately.
+
+See [the LiteLLM guide](litellm-proxy.md#assessor-on-a-reasoning-model-behind-litellm-223)
+for routing contents, validation and garden deployment commands.
 
 ### Where logs and telemetry go
 

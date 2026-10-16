@@ -249,37 +249,99 @@ the current path. Text blocks open only on non-empty content; reasoning-only
 deltas do not create an empty leading block. Use a single-model mode without a
 reasoning policy for this route. Keep `disable_thinking` off for this model.
 
-For the garden `coordinare` ConfigMap's `config.yaml`:
+For garden Kubernetes performers (557), deploy a daemon image containing this
+endpoint setting, then follow these steps. No derived performer image is needed.
 
 1. Keep the assessor on `backend: claude_code` with its existing GLM mode.
    The mode's catalog endpoint must supply the LiteLLM base URL and
    `auth_env` naming the daemon's gateway credential. Coordinare injects this
    into the job as `ANTHROPIC_AUTH_TOKEN`; the route above reuses it for both
    the startup probe and actual traffic. Do not put a credential in routing YAML.
-2. Add `SELFHOSTED_ROUTING_CONFIG: /etc/coordinare/routing.yaml` under the
-   selected `performer_endpoints` entry's `env`. Ensure its `roles` includes
-   `assessor`. This setting on the daemon alone does not reach the performer.
-3. Supply that routing file inside every new performer pod. The current
-   Kubernetes runtime mounts only the devenv cache from endpoint `volumes`;
-   the Docker `host_path` example above does not mount a routing ConfigMap in
-   Kubernetes. A supported option is a derived performer image containing
-   `COPY routing.yaml /etc/coordinare/routing.yaml`; set the endpoint's `image`
-   to its immutable tag. An existing cluster mechanism that injects a ConfigMap
-   volume into performer pods can supply the same path instead. Mounting it
-   only in the daemon pod is insufficient.
-4. Set the routing key and, if needed, `upstream_model` to the actual dispatched
-   and gateway model names, replacing the illustrative namespace in the example.
-   Validate the daemon config and the routing file before
-   restarting the daemon and dispatching a fresh assessor. Existing performer
-   jobs do not reload routing. Confirm `selfhosted_layer.translate_launched`
-   and that upstream requests use `/v1/chat/completions`.
+2. Save the routing YAML above as `routing.yaml`, replacing the routing key and,
+   if needed, `upstream_model` with the actual dispatched and gateway names.
+   Create a ConfigMap in the **performer namespace**, the daemon config's
+   `kubernetes_namespace` (Helm `performers.namespace`, default release namespace).
+   These commands assume namespace and release `coordinare`; change `PNS` if
+   performers run elsewhere:
+
+   ```sh
+   NS=coordinare
+   PNS=coordinare
+   kubectl -n "$PNS" create configmap coordinare-performer-routing \
+     --from-file=routing.yaml=./routing.yaml --dry-run=client -o yaml | kubectl apply -f -
+   ```
+
+3. In the garden `coordinare` ConfigMap's `config.yaml`, add this block to the
+   **existing** endpoint whose `roles` includes `assessor`. Preserve its image,
+   other roles, env and cache settings. Remove any stale routing host-path mount
+   and `env.SELFHOSTED_ROUTING_CONFIG` from that Kubernetes endpoint:
+
+   ```yaml
+   performer_endpoints:
+     - id: claude-ephemeral  # use the existing endpoint ID
+       mode: ephemeral
+       image: coordinare-performer:full  # retain the existing image pin
+       roles: [assessor]  # retain all existing roles
+       kubernetes_routing_configmap:
+         name: coordinare-performer-routing
+         key: routing.yaml  # optional; defaults to routing.yaml
+   ```
+
+   ```sh
+   kubectl -n "$NS" edit configmap coordinare
+   ```
+
+   With Helm, keep the same setting under `config.performer_endpoints` in your
+   values source. If `configPersistence.enabled` is true (the default), also
+   update the existing endpoint in the **live**
+   `/var/lib/coordinare/config/config.yaml` via your normal config-editing
+   workflow. Editing only the seed ConfigMap or Helm values does not replace
+   previously seeded user endpoint settings. See
+   [persistent configuration](../../deploy/helm/coordinare/README.md#persistent-configuration-and-upgrades).
+   Do not reseed the whole file just to change this endpoint.
+
+4. Validate the active daemon config with its existing secret environment, then
+   restart the daemon after current work drains and dispatch a fresh assessor.
+   For Helm's default persistent path and StatefulSet name:
+
+   ```sh
+   kubectl -n "$NS" exec coordinare-0 -c coordinare -- \
+     python -m coordinare config validate --config /var/lib/coordinare/config/config.yaml
+   kubectl -n "$NS" rollout restart statefulset/coordinare
+   kubectl -n "$NS" rollout status statefulset/coordinare
+   ```
+
+   For ConfigMap-only deployments, validate `/etc/coordinare/config.yaml`
+   instead, after the edited ConfigMap has propagated. The runtime mounts only
+   the selected key read-only at `/etc/coordinare/routing/routing.yaml` and sets
+   `SELFHOSTED_ROUTING_CONFIG` to that path, overriding any explicit endpoint env
+   value. Omitted/null means no mount or env change. Docker retains its existing
+   host-path + env configuration.
+
+The ConfigMap must exist in the performer namespace, with the chosen key;
+otherwise Kubernetes keeps the pod waiting and reports a mount error in pod
+events. The daemon needs no additional RBAC: the kubelet resolves the pod's
+ConfigMap reference, and performers still have no service-account token. The
+daemon never reads the routing file. Existing jobs do not reload routing; use
+fresh jobs after changing it. Confirm `selfhosted_layer.translate_launched`
+and upstream `/v1/chat/completions` requests.
+
+A derived performer image remains an alternative: include
+`COPY routing.yaml /etc/coordinare/routing.yaml`, set the endpoint image to its
+immutable tag, omit `kubernetes_routing_configmap`, and explicitly set
+`env.SELFHOSTED_ROUTING_CONFIG: /etc/coordinare/routing.yaml`. Mounting the file
+only in the daemon pod is insufficient.
 
 The daemon's `config validate` does not validate a separately mounted routing
 file. Inside the performer image, validate that file with:
 
 ```sh
-python -c 'from performer.proxy.routing import RoutingTable; RoutingTable.from_yaml_file("/etc/coordinare/routing.yaml")'
+python -c 'from performer.proxy.routing import RoutingTable; RoutingTable.from_yaml_file("/etc/coordinare/routing/routing.yaml")'
 ```
+
+For example, run that command with `kubectl -n "$PNS" exec <new-performer-pod>
+-- python -c ...` while the fresh pod is alive. Use `/etc/coordinare/routing.yaml`
+for the Docker or derived-image examples.
 
 Re-check the upstream LiteLLM release notes before removing this route: the adapter bug was
 still open upstream as of 2026-10-15 (see issues 32357 and 27492 and PR 32364

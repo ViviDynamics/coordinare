@@ -78,6 +78,27 @@ class PerformerCapabilities(BaseModel):
     tool_flags: list[str] = Field(default_factory=list)
 
 
+class KubernetesRoutingConfigMap(BaseModel):
+    """557: one routing-table key in a ConfigMap in the performer namespace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        min_length=1,
+        max_length=253,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+        description="ConfigMap name (DNS-1123 subdomain)",
+    )
+    key: str = Field(default="routing.yaml", min_length=1, max_length=253, pattern=r"^[-._a-zA-Z0-9]+$")
+
+    @field_validator("key")
+    @classmethod
+    def _check_key_prefix(cls, value: str) -> str:
+        if value == "." or value.startswith(".."):
+            raise ValueError("ConfigMap key must not be '.' or start with '..'")
+        return value
+
+
 class PerformerEndpointConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -100,6 +121,7 @@ class PerformerEndpointConfig(BaseModel):
     secret_sources: SecretSourceConfig = Field(default_factory=SecretSourceConfig)
     volumes: list[VolumeMount] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
+    kubernetes_routing_configmap: KubernetesRoutingConfigMap | None = None
     egress_allowlist: list[str] | None = None
     capability_overrides: CapabilityOverride | None = None
     container_devenv_root: str = "/devenv"
@@ -162,6 +184,8 @@ class PerformerEndpointConfig(BaseModel):
                 set_fields.append("volumes")
             if self.env:
                 set_fields.append("env")
+            if self.kubernetes_routing_configmap is not None:
+                set_fields.append("kubernetes_routing_configmap")
             if self.egress_allowlist is not None:
                 set_fields.append("egress_allowlist")
             if self.secret_sources != SecretSourceConfig():
@@ -416,6 +440,7 @@ __all__ = [
     "JobResult",
     "JobState",
     "JobStatus",
+    "KubernetesRoutingConfigMap",
     "PerformerCapabilities",
     "PerformerEndpointConfig",
     "PerformerEndpointState",
