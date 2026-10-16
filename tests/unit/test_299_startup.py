@@ -439,6 +439,7 @@ async def test_sigterm_long_cycle_saves_final_snapshot_outside_runtime(monkeypat
         await asyncio.gather(runtime, return_exceptions=True)
 
 
+
 def _bound_dashboard_port() -> tuple[Any, int]:
     import socket
 
@@ -452,8 +453,8 @@ def _bound_dashboard_port() -> tuple[Any, int]:
 async def test_the_daemon_preflight_accepts_its_own_bound_dashboard_port(monkeypatch) -> None:
     """299 regression: the dashboard binds before the runtime preflight, which must not see it as taken.
 
-    Every launch crash-looped (exit 1, "dashboard port" FAIL) until the daemon's own preflight
-    stopped probing the port it had already bound.
+    Every launch crash-looped (exit 1, "dashboard port" FAIL) until the preflight recognised the
+    listener this process had already started. Another process on the port is still a conflict.
     """
     from coordinare import launch_preflight
 
@@ -469,20 +470,39 @@ async def test_the_daemon_preflight_accepts_its_own_bound_dashboard_port(monkeyp
             dashboard_host="127.0.0.1", dashboard_port=port,
         )
         doctor = await launch_preflight.run_preflight(config)
-        assert "dashboard port" in [result.name for result in doctor.failed], "precondition: the port is taken"
-        daemon = await launch_preflight.run_preflight(config, probe_ports=False)
-        assert "dashboard port" not in [result.name for result in daemon.results]
+        assert "dashboard port" in [result.name for result in doctor.failed], "someone else's listener is a conflict"
+        launch_preflight.mark_serving("127.0.0.1", port)
+        try:
+            daemon = await launch_preflight.run_preflight(config)
+            assert "dashboard port" not in [result.name for result in daemon.failed]
+        finally:
+            launch_preflight.stop_serving("127.0.0.1", port)
+        again = await launch_preflight.run_preflight(config)
+        assert "dashboard port" in [result.name for result in again.failed], "stop_serving clears the mark"
     finally:
         listener.close()
 
 
 @pytest.mark.asyncio
-async def test_initialize_daemon_skips_the_port_probe(monkeypatch) -> None:
-    preflight = AsyncMock(return_value=MagicMock(ok=False, results=[], failed=[], render=lambda: ""))
+async def test_the_daemon_marks_its_dashboard_before_the_runtime_preflight(monkeypatch) -> None:
+    from coordinare import launch_preflight
+
+    seen: list[bool] = []
+
+    async def preflight(config, *args, **kwargs):
+        seen.append((config.dashboard_host, config.dashboard_port) in launch_preflight._SERVING)
+        return MagicMock(ok=False, results=[], failed=[], render=lambda: "")
+
     monkeypatch.setattr(app_main, "run_preflight", preflight)
+    monkeypatch.setattr(app_main, "CoordinareDaemon", MagicMock(return_value=_daemon()))
+    monkeypatch.setattr(app_main, "StateStore", MagicMock())
+    monkeypatch.setattr(app_main, "check_port_available", MagicMock())
     monkeypatch.setattr(app_main, "load_unexpanded_config", MagicMock(return_value={}))
-    config = ProjectConfiguration(github_org="example", human_reviewers=["operator"], github_token=TOKEN)
-    daemon = _daemon()
-    with pytest.raises(app_main.RuntimeExecutionError):
-        await app_main._initialize_daemon(config, None, None, daemon, {})
-    assert preflight.await_args.kwargs.get("probe_ports") is False
+    monkeypatch.setattr(app_main, "_bootstrap_services", AsyncMock())
+    config = ProjectConfiguration(
+        github_org="example", human_reviewers=["operator"], github_token=TOKEN, dashboard_port=0,
+    )
+    with pytest.raises((app_main.RuntimeExecutionError, SystemExit)):
+        await asyncio.wait_for(app_main._run(config), timeout=20)
+    assert seen == [True]
+    assert (config.dashboard_host, config.dashboard_port) not in launch_preflight._SERVING

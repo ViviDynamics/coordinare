@@ -64,7 +64,12 @@ from coordinare.graph.state import SymphonyRuntimeState
 from coordinare.health import create_health_app
 from coordinare.http_server import HTTP_DRAIN_SECONDS, ManagedServer, wait_for_listener
 from coordinare.init_cli import add_init_parser, run_init
-from coordinare.launch_preflight import initialize_github_at_start, run_preflight
+from coordinare.launch_preflight import (
+    initialize_github_at_start,
+    mark_serving,
+    run_preflight,
+    stop_serving,
+)
 from coordinare.lifecycle import CANONICAL_ORDER as _CANONICAL_ORDER
 from coordinare.lifecycle import ROLE_TO_STAGE as _ROLE_TO_STAGE
 from coordinare.localhost_guard import build_permitted, warn_if_dashboard_exposed
@@ -1490,10 +1495,7 @@ async def _initialize_daemon(
     circuit_breakers: dict[str, CircuitBreaker],
 ) -> None:
     unexpanded = load_unexpanded_config(config_path)
-    # 299: the dashboard is already bound to its port here; the ports were checked before binding.
-    report = await run_preflight(
-        config, coordinare_config, unexpanded if config_path is not None else None, probe_ports=False,
-    )
+    report = await run_preflight(config, coordinare_config, unexpanded if config_path is not None else None)
     print(report.render())
     for result in report.results:
         if result.status is Status.WARN:
@@ -1714,6 +1716,8 @@ async def _run_with_events(
 
     server_task = asyncio.create_task(server.serve(), name="health_http")
     dashboard_task = asyncio.create_task(dashboard_server.serve(), name="dashboard_http")
+    # 299: the runtime preflight runs after this listener binds; it must not report it as a conflict.
+    mark_serving(config.dashboard_host, config.dashboard_port)
     runtime_task: asyncio.Task[None] | None = None
     startup_task = asyncio.create_task(
         _watch_startup(daemon, daemon.state["startup_deadline_at"]), name="startup_deadline",
@@ -1804,6 +1808,7 @@ async def _run_with_events(
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.remove_signal_handler(sig)
         await _finish_tasks({server_task, dashboard_task}, within=HTTP_SHUTDOWN_SECONDS)
+        stop_serving(config.dashboard_host, config.dashboard_port)
         if runtime_task is not None:
             if not runtime_task.done() and not daemon.state.get("startup_complete", False):
                 runtime_task.cancel()

@@ -133,7 +133,23 @@ def check_directories(config: ProjectConfiguration) -> list[CheckResult]:
     return results
 
 
+# 299: addresses this process already serves. The daemon checks its ports before binding them, then
+# starts the dashboard before its runtime preflight; that preflight must not report its own
+# listener as a conflict. doctor and init never register an address, so they always probe.
+_SERVING: set[tuple[str, int]] = set()
+
+
+def mark_serving(host: str, port: int) -> None:
+    _SERVING.add((host, port))
+
+
+def stop_serving(host: str, port: int) -> None:
+    _SERVING.discard((host, port))
+
+
 def check_port(config: ProjectConfiguration) -> CheckResult:
+    if (config.dashboard_host, config.dashboard_port) in _SERVING:
+        return CheckResult("dashboard port", Status.OK, f"The dashboard is serving on port {config.dashboard_port}.")
     try:
         check_port_available(config.dashboard_host, config.dashboard_port, label="dashboard")
     except (SystemExit, OSError):
@@ -583,13 +599,8 @@ async def run_preflight(
     *,
     explicit: bool = False,
     probe_containers: bool = True,
-    probe_ports: bool = True,
 ) -> DoctorReport:
-    """Shared startup and doctor gate, also callable by init before writing a config.
-
-    The running daemon passes ``probe_ports=False``: it checks its ports before binding them, and
-    by the time its preflight runs (299) the dashboard is already serving on its own port.
-    """
+    """Shared startup and doctor gate, also callable by init before writing a config."""
     report = DoctorReport()
     try:
         validate_start_time(config, coordinare_config, raw)
@@ -618,8 +629,7 @@ async def run_preflight(
         await asyncio.to_thread(check_directories, config),
         strict=explicit or config.preset is not None,
     ))
-    if probe_ports:
-        report.results.append(check_port(config))
+    report.results.append(check_port(config))
     for effective in configs:
         probes = effective if explicit else _active_model_config(effective)
         strict = explicit or effective.preset is not None
