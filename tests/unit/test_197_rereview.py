@@ -20,6 +20,7 @@ from coordinare.models.performer_endpoint import PerformerEndpointConfig
 from coordinare.services import performer_lifecycle
 from coordinare.start_checks import validate_expanded_secrets
 from tests.unit.test_252_secret_placeholders import _WALKED, _doc_for
+from tests.utils.smoke_release import release_script_env
 
 ROOT = Path(__file__).resolve().parents[2]
 UNSET = "COORDINARE_197_MISSING_SECRET"
@@ -29,19 +30,11 @@ UNSET = "COORDINARE_197_MISSING_SECRET"
     ("2026.10.145", 0, 0), ("", 0, 1), ("null", 0, 1), ("2026.10.145", 7, 1),
 ])
 def test_197_release_script_with_strict_gh_stub(tmp_path, answer, gh_code, expected):
-    gh = tmp_path / "gh"
-    gh.write_text('''#!/bin/sh
-test "$*" = 'release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName -q .[0].tagName' || exit 64
-printf '%s\\n' "$TEST_RELEASE"
-exit "$TEST_GH_CODE"
-''')
-    gh.chmod(0o700)
     output = tmp_path / "output"
     result = subprocess.run(
         ["bash", str(ROOT / "scripts/resolve_smoke_release.sh")],
         capture_output=True, text=True, check=False,
-        env={**os.environ, "PATH": str(tmp_path) + ":" + os.environ["PATH"],
-             "TEST_RELEASE": answer, "TEST_GH_CODE": str(gh_code), "GITHUB_OUTPUT": str(output)},
+        env=release_script_env(tmp_path, answer, gh_code=gh_code),
     )
     assert result.returncode == expected, result.stderr
     if expected == 0:
@@ -49,6 +42,81 @@ exit "$TEST_GH_CODE"
     else:
         assert "published release" in result.stderr.lower()
         assert not output.exists()
+
+
+@pytest.mark.parametrize("statuses,chosen,skipped", [
+    ({"base:2026.10.163": "404"}, "2026.10.160", "base"),
+    ({"full:2026.10.163": "404"}, "2026.10.160", "full"),
+    ({}, "2026.10.163", None),
+    ({"base:2026.10.163": "404", "full:2026.10.160": "404"}, None, "full"),
+    ({"full:2026.10.163": "401"}, "2026.10.160", "full"),
+    ({"full:2026.10.163": "500"}, "2026.10.160", "full"),
+    ({"full:2026.10.163": "transport-error"}, "2026.10.160", "full"),
+])
+def test_197_release_requires_both_performer_manifests(tmp_path, statuses, chosen, skipped):
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/resolve_smoke_release.sh")],
+        capture_output=True, text=True, check=False,
+        env=release_script_env(tmp_path, "2026.10.163\n2026.10.160", manifest_statuses=statuses),
+    )
+    output = tmp_path / "output"
+    if chosen:
+        assert result.returncode == 0, result.stderr
+        assert output.read_text() == f"tag={chosen}\n"
+        assert f"Selected {chosen}" in result.stdout
+        assert "base and full" in result.stdout
+    else:
+        assert result.returncode != 0
+        assert not output.exists()
+        assert "::error::" in result.stderr
+        assert "published release" in result.stderr
+        assert "base and full" in result.stderr
+    if skipped:
+        assert "Skipping 2026.10.163" in result.stdout
+        assert skipped in result.stdout
+        for status in statuses.values():
+            reason = "request failed" if status == "transport-error" else f"HTTP {status}"
+            assert reason in result.stdout
+        if chosen is None:
+            assert "Skipping 2026.10.160" in result.stdout
+    else:
+        assert "Skipping" not in result.stdout
+
+
+@pytest.mark.parametrize("token_response", ["{}", "not-json", '{"token": ""}', "transport-error"])
+def test_197_release_requires_anonymous_registry_token(tmp_path, token_response):
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/resolve_smoke_release.sh")],
+        capture_output=True, text=True, check=False,
+        env=release_script_env(tmp_path, "2026.10.163", token_response=token_response),
+    )
+    assert result.returncode != 0
+    assert not (tmp_path / "output").exists()
+    assert "anonymous GHCR token" in result.stdout
+    assert "::error::" in result.stderr
+
+
+@pytest.mark.parametrize("releases,statuses,chosen", [
+    ("invalid\n2026.10.160.1", {}, "2026.10.160.1"),
+    (
+        "2026.10.163\n2026.10.162\n2026.10.161\n2026.10.160\n2026.10.159",
+        {"base:2026.10.163": "404", "base:2026.10.162": "404",
+         "base:2026.10.161": "404", "base:2026.10.160": "404"},
+        "2026.10.159",
+    ),
+])
+def test_197_release_walks_all_candidates(tmp_path, releases, statuses, chosen):
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/resolve_smoke_release.sh")],
+        capture_output=True, text=True, check=False,
+        env=release_script_env(tmp_path, releases, manifest_statuses=statuses),
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "output").read_text() == f"tag={chosen}\n"
+    for tag in releases.splitlines()[:-1]:
+        assert tag in result.stdout
+    if releases.startswith("invalid"):
+        assert "invalid published release tag" in result.stdout
 
 
 _PERFORMER_AUTH_PATH = ("performer_endpoints", "[]", "auth_token")
