@@ -111,5 +111,48 @@ check('a deleted symphony leaves for the list', deleted === true && calls.naviga
 cfgHandleSymphonySave(422, {error: 'Validation failed: bad'}, {}, {}, null);
 check('a 422 is shown as Not saved', calls.flash[calls.flash.length - 1][0] === 'Not saved: bad. Nothing was changed.');
 
+// #341: the first save's refresh must not erase a newer save's feedback. Run the
+// exact ordering with a virtual clock instead of hoping two saves land near 1 s.
+var now = 0;
+var timers = new Map();
+var timerId = 0;
+globalThis.setTimeout = function(callback, delay) {
+  var id = ++timerId;
+  timers.set(id, {at: now + delay, callback: callback});
+  return id;
+};
+globalThis.clearTimeout = function(id) { timers.delete(id); };
+function advanceTo(time) {
+  now = time;
+  timers.forEach(function(timer, id) {
+    if (timer.at <= now) { timers.delete(id); timer.callback(); }
+  });
+}
+var form = {isConnected: true};
+var status = {textContent: ''};
+var reloads = 0;
+var unsaved = false;
+cfgFlash = function(el, text) { el.textContent = text; };
+cfgHasUnsaved = function() { return unsaved; };
+_cfgSymReload = function() { reloads += 1; status.textContent = ''; };
+cfgHandleSymphonySave(200, {}, form, status, '"first"');
+advanceTo(900);
+cfgHandleSymphonySave(200, {}, form, status, '"second"');
+advanceTo(1000);
+check('an older refresh cannot erase the newer Saved message', reloads === 0 && status.textContent === 'Saved');
+advanceTo(1900);
+check('the latest save still refreshes after its own feedback window', reloads === 1);
+
+cfgHandleSymphonySave(200, {}, form, status, '"third"');
+unsaved = true;
+advanceTo(2900);
+check('a new edit still prevents the refresh', reloads === 1);
+unsaved = false;
+cfgHandleSymphonySave(200, {}, form, status, '"fourth"');
+form.isConnected = false;
+advanceTo(3900);
+check('a replaced form cannot refresh the current editor', reloads === 1);
+_cfgSymReload = null;
+
 if (failures.length) throw new Error(failures.join(' | '));
 console.log('SUMMARY ' + 'ok');
