@@ -128,11 +128,22 @@ schema, stable ids, status semantics, limits and fixes are documented in
 [the machine interface](agent-setup-reference.md#json-reports).
 
 Read `checks`, apply each `fix` within the human's authorization, and rerun both
-commands. Do not retry deterministic failures without changing their cause. For
-`warn`, bounded network retries have already happened: restore connectivity and
-retry later, or ask the human about unverified permissions. `ok: true` means no
-blocking failures; it does not mean warnings are verified. Native model listings
-can be `skip`. Require no unresolved connectivity or credential warnings before
+commands. Do not retry deterministic failures without changing their cause.
+Transient network warnings follow bounded retries: restore connectivity and
+retry later. For route or model warnings, correct the named setting; ask the
+human about unverified permissions. `ok: true` means no
+blocking failures; it does not mean warnings are verified. `doctor.endpoint`
+probes `GET {base_url}/models` for OpenAI-compatible APIs. Ollama uses
+`GET {base_url}/api/tags`, or `/models` when its base URL ends in `/v1`.
+2xx is `ok`; a reachable non-2xx response is `warn`
+and names the expected route. The base URL usually ends in `/v1`. Connection
+failures retain their existing status. `doctor.model` attempts model enumeration
+for OpenAI-compatible endpoints, including LiteLLM, vLLM and Ollama: a listed id
+is `ok`, a missing id is `warn` with a short list of served ids (and an
+`ollama pull <model>` fix for Ollama), and unavailable
+enumeration is `skip` (for example, a non-2xx response, an unreadable listing or
+required authentication without an API key). Listing models generates no model
+output. Require no unresolved connectivity or credential warnings before
 calling the install verified. Doctor does not spend model tokens or prove output
 quality. Docker doctor starts and removes temporary harness containers.
 

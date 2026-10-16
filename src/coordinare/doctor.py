@@ -16,14 +16,18 @@ perfect and point at a host that is not listening.
 
 from __future__ import annotations
 
+import os
+import re
+from base64 import b64encode
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import httpx
 
 from coordinare.doctor_status import Status
+from coordinare.lib.transcript_redaction import redact_text
 from coordinare.metrics import _coordinare_version
-from coordinare.network_probe import error_status, probe_http, response_status
+from coordinare.network_probe import error_status, probe_http
 
 __all__ = [
     "PROBE_TIMEOUT_SECONDS", "CheckResult", "DoctorReport", "Status", "check_dashboard_binding",
@@ -31,7 +35,7 @@ __all__ = [
 ]
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from coordinare.config import ProjectConfiguration
+    from coordinare.config import Endpoint, ProjectConfiguration
 
 #: How long to wait for an endpoint before calling it unreachable. Short on
 #: purpose: this is a setup gate, and an operator waiting 30 seconds per endpoint
@@ -94,24 +98,76 @@ class DoctorReport:
         return "\n".join(lines)
 
 
-def _probe_endpoint(base_url: str, timeout: float = PROBE_TIMEOUT_SECONDS) -> tuple[Status, str]:
+def _uses_ollama_tags(base_url: str, kind: str | None) -> bool:
+    return kind == "ollama" and not httpx.URL(base_url).path.rstrip("/").endswith("/v1")
+
+
+def _models_url(base_url: str, kind: str | None = None) -> str:
+    url = httpx.URL(base_url)
+    route = "/api/tags" if _uses_ollama_tags(base_url, kind) else "/models"
+    return str(url.copy_with(path=url.path.rstrip("/") + route, username="", password="", fragment=None))
+
+
+def _endpoint_headers(endpoint: Endpoint) -> dict[str, str]:
+    credential = os.environ.get(getattr(endpoint, "auth_env", None) or "", "")
+    if credential:
+        return {"Authorization": "Bearer " + credential}
+    url = httpx.URL(endpoint.base_url or "")
+    if url.username or url.password:
+        encoded = b64encode(f"{url.username}:{url.password}".encode()).decode("ascii")
+        return {"Authorization": "Basic " + encoded}
+    return {}
+
+
+def _safe_endpoint_text(text: str, endpoint: Endpoint) -> str:
+    """Redact known credentials and token patterns before rendering diagnostics."""
+    url = httpx.URL(endpoint.base_url or "")
+    secrets = [url.username, url.password, *url.params.values()]
+    secrets.append(_endpoint_headers(endpoint).get("Authorization", "").partition(" ")[2])
+    # Known credentials must be hidden even when shorter than the general
+    # transcript redactor's minimum exact-secret length.
+    for secret in sorted({secret for secret in secrets if secret}, key=len, reverse=True):
+        text = text.replace(secret, "[REDACTED]")
+    text = re.sub(r"(://)[^/\s@]+@", r"\1", text)
+    return redact_text(text)
+
+
+def _probe_endpoint(
+    base_url: str, timeout: float = PROBE_TIMEOUT_SECONDS, *, headers: dict[str, str] | None = None,
+    kind: str | None = None,
+) -> tuple[Status, str]:
     try:
-        response = probe_http(lambda: httpx.get(base_url, timeout=timeout, follow_redirects=True))
+        # Credentials belong to this endpoint. Never follow a redirect to a
+        # different host (including when a client's default enables redirects).
+        response = probe_http(lambda: httpx.get(
+            _models_url(base_url, kind), headers=headers, timeout=timeout, follow_redirects=False,
+        ))
     except httpx.HTTPError as exc:
         return error_status(exc), "could not reach the endpoint after bounded retries"
-    # A base URL need not have a route; a 404 still proves it is listening.
-    status = Status.OK if response.status_code == httpx.codes.NOT_FOUND else response_status(response)
+    status = Status.OK if response.is_success else Status.WARN
     return status, f"responded with HTTP {response.status_code}"
 
 
-def _list_ollama_models(base_url: str, timeout: float = PROBE_TIMEOUT_SECONDS) -> list[str]:
-    """Model names an Ollama endpoint serves, or an empty list if unavailable."""
+def _list_models(
+    base_url: str, headers: dict[str, str], timeout: float = PROBE_TIMEOUT_SECONDS, *, kind: str | None = None,
+) -> list[str] | None:
+    """Return served ids, including an empty catalog, or None if unavailable."""
     try:
-        response = probe_http(lambda: httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=timeout))
-        response.raise_for_status()
-        return [m["name"] for m in response.json().get("models", []) if "name" in m]
-    except (httpx.HTTPError, ValueError, KeyError, TypeError):
-        return []
+        response = probe_http(lambda: httpx.get(
+            _models_url(base_url, kind), headers=headers, timeout=timeout, follow_redirects=False,
+        ))
+        if not response.is_success:
+            return None
+        payload = response.json()
+        catalog_key, id_key = ("models", "name") if _uses_ollama_tags(base_url, kind) else ("data", "id")
+        if not isinstance(payload, dict) or not isinstance(payload.get(catalog_key), list):
+            return None
+        models = payload[catalog_key]
+        if any(not isinstance(model, dict) or not isinstance(model.get(id_key), str) for model in models):
+            return None
+        return [model[id_key] for model in models]
+    except (httpx.HTTPError, ValueError):
+        return None
 
 
 def check_endpoints(config: ProjectConfiguration) -> list[CheckResult]:
@@ -132,17 +188,21 @@ def check_endpoints(config: ProjectConfiguration) -> list[CheckResult]:
             )
             continue
 
-        status, detail = _probe_endpoint(base_url)
+        status, detail = _probe_endpoint(base_url, headers=_endpoint_headers(endpoint), kind=endpoint.kind)
+        safe_url = str(httpx.URL(base_url).copy_with(username="", password="", query=None, fragment=None))
+        route = _safe_endpoint_text(_models_url(safe_url, endpoint.kind), endpoint)
+        route_hint = "" if _uses_ollama_tags(base_url, endpoint.kind) else "base_url usually ends in /v1. "
         results.append(
             CheckResult(
                 name=f"endpoint '{endpoint.name}'",
                 status=status,
-                detail=f"{base_url}: {detail}",
+                detail=f"{route}: {detail}",
                 fix=(
                     None
                     if status is Status.OK
                     else (
-                        f"start the service at {base_url}, or correct base_url for endpoint "
+                        f"Verify GET {route}; {route_hint}"
+                        "Check credentials, start the service, or correct base_url for endpoint "
                         f"'{endpoint.name}'. If coordinare runs in Docker and the endpoint is on "
                         "the host, use host.docker.internal rather than localhost."
                     )
@@ -164,26 +224,16 @@ def check_models(config: ProjectConfiguration) -> list[CheckResult]:
     for model_endpoint in config.model_endpoints:
         endpoint = by_name.get(model_endpoint.endpoint)
         base_url = getattr(endpoint, "base_url", None) if endpoint else None
-        if not endpoint or not base_url or endpoint.kind != "ollama":
+        headers = _endpoint_headers(endpoint) if endpoint else {}
+        if not base_url and endpoint and endpoint.kind == "openai" and headers:
+            base_url = "https://api.openai.com/v1"
+        available = _list_models(base_url, headers, kind=endpoint.kind) if base_url and endpoint else None
+        if available is None or endpoint is None:
             results.append(
                 CheckResult(
                     name=f"model '{model_endpoint.name}'",
                     status=Status.SKIP,
-                    detail=(
-                        f"'{model_endpoint.model}' cannot be enumerated for endpoint kind "
-                        f"'{getattr(endpoint, 'kind', 'unknown')}'; it is checked on first use"
-                    ),
-                ),
-            )
-            continue
-
-        available = _list_ollama_models(base_url)
-        if not available:
-            results.append(
-                CheckResult(
-                    name=f"model '{model_endpoint.name}'",
-                    status=Status.WARN,
-                    detail=f"could not list models at {base_url}; skipping the name check",
+                    detail="Model enumeration is unavailable; the configured model is checked on first use.",
                 ),
             )
             continue
@@ -193,20 +243,28 @@ def check_models(config: ProjectConfiguration) -> list[CheckResult]:
                 CheckResult(
                     name=f"model '{model_endpoint.name}'",
                     status=Status.OK,
-                    detail=f"'{model_endpoint.model}' is served by '{endpoint.name}'",
+                    detail=_safe_endpoint_text(
+                        f"'{model_endpoint.model}' is served by '{model_endpoint.endpoint}'", endpoint,
+                    ),
                 ),
             )
         else:
-            shown = ", ".join(sorted(available)[:8]) or "(none)"
+            shown = ", ".join(_safe_endpoint_text(model, endpoint)[:80] for model in sorted(available)[:8]) or "(none)"
             more = "" if len(available) <= 8 else f" (+{len(available) - 8} more)"
+            load_hint = (
+                _safe_endpoint_text(f"pull it with `ollama pull {model_endpoint.model}`", endpoint)
+                if endpoint.kind == "ollama" else "load the configured model"
+            )
             results.append(
                 CheckResult(
                     name=f"model '{model_endpoint.name}'",
-                    status=Status.FAIL,
-                    detail=f"'{model_endpoint.model}' is not served by '{endpoint.name}'",
+                    status=Status.WARN,
+                    detail=_safe_endpoint_text(
+                        f"'{model_endpoint.model}' is not served by '{model_endpoint.endpoint}'", endpoint,
+                    ),
                     fix=(
-                        f"pull it with `ollama pull {model_endpoint.model}`, or set the model to "
-                        f"one this endpoint already serves: {shown}{more}"
+                        f"Set model_endpoints[].model to a served id, or {load_hint}. "
+                        f"Served ids: {shown}{more}"
                     ),
                 ),
             )
