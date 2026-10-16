@@ -187,10 +187,11 @@ function symphonyStatsHtml(name, response, models) {
       'Usage split by dispatch model; actual usage models are priced individually.') : '<p class="muted">Model statistics unavailable. Reload to retry.</p>') + '</section>';
   var errors = (check.recent_errors || []).map(function(row) { return [timeHtml(row.at), esc(row.reason)]; });
   var reliabilityHtml = '<section class="card sym-stats-section"><h3>Reliability</h3><div class="sym-stats-grid">' +
-    metric('Board check success rate', symphonyStatsPercent(check.success_rate), definitions.reliability || 'Successful observed upstream board polls / observed polls in completed UTC hours. Cache hits, deferred polls and restart-reconcile polls are not counted. Legacy checks were not recorded.') +
-    metric('Board checks observed', symphonyStatsNumber(check.checks), 'Actual board poll observations retained in this window; recording begins with this release.') +
+    metric('Board check success rate', symphonyStatsPercent(check.success_rate) + (check.partial ? ' (partial)' : ''), definitions.reliability || 'Successful observed upstream board polls / observed polls in completed UTC hours. Cache hits, deferred polls and restart-reconcile polls are not counted. Legacy checks were not recorded.') +
+    metric('Board checks observed', symphonyStatsNumber(check.checks) + (check.partial ? ' (partial)' : ''), 'Actual board poll observations retained in this window; recording begins with this release.') +
     metric('Performer system errors', symphonyStatsNumber((totals.outcomes || {}).system_error), 'Runs starting in the window whose latest attributed outcome is system_error.') + '</div>' +
     (check.reason ? '<p role="status">Not recorded: ' + esc(check.reason) + '</p>' : '') +
+    (check.partial ? '<p class="sym-stats-coverage" role="status">Board check history is partial: ' + esc((check.partial_reasons || []).join('; ')) + '</p>' : '') +
     '<h4>Recent board errors</h4>' + symphonyStatsTable(response, ['When', 'Reason'], errors, 'Most recent failed board polls in this window.') +
     ((health.state || {}).last_error ? '<p>Last cycle error: ' + esc(health.state.last_error) + ' (time not recorded)</p>' : '') +
     '<h4>Env cache and bootstrap</h4><p>' + esc(env.label + ': ' + env.reason) + '</p>' +

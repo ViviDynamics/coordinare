@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from coordinare.services.event_store_query import (
@@ -25,6 +25,27 @@ MAX_BOARD_CHECK_ROWS = 1_000_000
 
 def unavailable_board_checks(reason: str) -> dict[str, Any]:
     return {"checks": None, "success_rate": None, "recent_errors": [], "reason": reason}
+
+
+def _history_reasons(
+    db: sqlite3.Connection, name: str, start_hour: str, end_hour: str,
+) -> list[str]:
+    reasons = []
+    retention_days = db.execute("SELECT retention_days FROM stats_board_check_policy WHERE id=1").fetchone()[0]
+    if start_hour and (
+        datetime.fromisoformat(end_hour) - datetime.fromisoformat(start_hour)
+        > timedelta(days=retention_days)
+    ):
+        reasons.append(f"event_store.retention_days ({retention_days} days) is shorter than the requested window")
+    pruned = db.execute(
+        """SELECT 1 FROM stats_board_check_pruning
+        WHERE symphony=? AND ((last_hour>=? AND last_hour<?)
+            OR (previous_hour>=? AND previous_hour<? AND previous_hour!=''))""",
+        (name, start_hour, end_hour, start_hour, end_hour),
+    ).fetchone()
+    if pruned:
+        reasons.append("event_store.max_bytes size cap removed hourly board check totals inside the requested window")
+    return reasons
 
 
 def read_board_checks(
@@ -68,6 +89,7 @@ def read_board_checks(
                 ).fetchall()
                 if len(rows) > MAX_BOARD_CHECK_ROWS:
                     raise EventQueryTooBroad
+                reasons = _history_reasons(db, name, start_hour, end_hour)
             except sqlite3.Error as exc:
                 limited.add(name)
                 result[name] = unavailable_board_checks("board_check_read_unavailable: " + type(exc).__name__)
@@ -81,4 +103,6 @@ def read_board_checks(
                     {"at": at, "reason": reason} for _, _, at, reason in rows if at is not None
                 ][:RECENT_LIMIT],
             }
+            if reasons:
+                result[name].update(partial=True, partial_reasons=reasons)
     return result, limited

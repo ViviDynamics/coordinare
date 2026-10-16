@@ -252,6 +252,11 @@ class EventStore:
         db = sqlite3.connect(self.path)
         try:
             create_schema(db, enable_fts=self._enable_fts)
+            with db:
+                db.execute(
+                    "UPDATE stats_board_check_policy SET retention_days=? WHERE id=1",
+                    (self.config.retention_days,),
+                )
             # Build empty indexes before readers can arrive. Deferring these
             # builds races the first reads with exclusive schema locks.
             if db.execute("SELECT 1 FROM events LIMIT 1").fetchone() is None:
