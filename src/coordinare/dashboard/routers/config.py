@@ -21,6 +21,7 @@ from coordinare.dashboard.routers.config_write import (
     _guard_global_hash,
     _validate_global_config,
 )
+from coordinare.services.config_seed import configured_seed_status
 from coordinare.services.config_write_service import candidate_warnings
 from coordinare.services.mounted_file import performer_mount_hosts
 
@@ -156,7 +157,6 @@ def _routing_location(daemon: Any) -> Any:
 def _register_get_config_all(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
         config_path = ctx.config_path
-        daemon = ctx.daemon
 
         @app.get("/api/config/all")
         async def get_config_all() -> JSONResponse:
@@ -182,7 +182,9 @@ def _register_get_config_all(app: FastAPI, ctx: DashboardContext) -> None:
                 content_hashes=content_hashes,
                 raw_values=raw_values,
             )
-            return JSONResponse(snapshot.model_dump(mode="json"))
+            payload = snapshot.model_dump(mode="json")
+            payload["config_seed"] = await asyncio.to_thread(configured_seed_status, config_path)
+            return JSONResponse(payload)
 
 
 def _register_get_config_section(app: FastAPI, ctx: DashboardContext) -> None:
@@ -523,7 +525,6 @@ def _register_get_config_catalog(app: FastAPI, ctx: DashboardContext) -> None:
 def _register_post_config_catalog(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
         config_path = ctx.config_path
-        config_path = ctx.config_path
 
         @app.post("/api/config/catalog/{catalog}")
         async def post_config_catalog(catalog: str, request: Request) -> JSONResponse:
@@ -561,7 +562,6 @@ def _register_post_config_catalog(app: FastAPI, ctx: DashboardContext) -> None:
 def _register_put_config_catalog_item(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
         config_path = ctx.config_path
-        config_path = ctx.config_path
 
         @app.put("/api/config/catalog/{catalog}/{item_id}")
         async def put_config_catalog_item(catalog: str, item_id: str, request: Request) -> JSONResponse:
@@ -598,7 +598,6 @@ def _register_put_config_catalog_item(app: FastAPI, ctx: DashboardContext) -> No
 
 def _register_delete_config_catalog_item(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
-        config_path = ctx.config_path
         config_path = ctx.config_path
 
         @app.delete("/api/config/catalog/{catalog}/{item_id}")

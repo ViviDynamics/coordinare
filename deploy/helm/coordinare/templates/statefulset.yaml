@@ -39,6 +39,28 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if (dig "enabled" true (.Values.configPersistence | default dict)) }}
+      initContainers:
+        - name: seed-config
+          {{- if .Values.image.digest }}
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
+          {{- else }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          {{- end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["/app/.venv/bin/python", "-m", "coordinare.services.config_seed"]
+          args: ["/etc/coordinare/config.yaml", "{{ .Values.state.mountPath | trimSuffix "/" }}/config/config.yaml"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/coordinare
+              readOnly: true
+            - name: state
+              mountPath: {{ .Values.state.mountPath }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- end }}
       containers:
         - name: coordinare
           {{- if .Values.image.digest }}
@@ -49,7 +71,11 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- if (dig "enabled" true (.Values.configPersistence | default dict)) }}
+          args: ["--config", "{{ .Values.state.mountPath | trimSuffix "/" }}/config/config.yaml"]
+          {{- else }}
           args: ["--config", "/etc/coordinare/config.yaml"]
+          {{- end }}
           ports:
             - name: dashboard
               containerPort: {{ .Values.dashboard.port }}
@@ -60,6 +86,10 @@ spec:
                 name: {{ .Values.existingSecret | default (include "coordinare.fullname" .) }}
                 optional: true
           env:
+            {{- if (dig "enabled" true (.Values.configPersistence | default dict)) }}
+            - name: COORDINARE_CONFIG_SEED
+              value: /etc/coordinare/config.yaml
+            {{- end }}
             {{- if .Values.observability.otlp.headersSecret.name }}
             - name: OTEL_EXPORTER_OTLP_HEADERS
               valueFrom:

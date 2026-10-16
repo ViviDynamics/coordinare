@@ -85,6 +85,11 @@ securityContext:
   capabilities:
     drop: ["ALL"]
 
+# ConfigMap config seeds a writable file on the existing state claim once.
+# Set false to restore the original read only ConfigMap behavior.
+configPersistence:
+  enabled: true
+
 # --- State ------------------------------------------------------------------
 
 # The controller's durable state. Created from the StatefulSet's
@@ -92,6 +97,8 @@ securityContext:
 # ReadWriteOnce and only the controller writes it. It holds:
 #   - coordinare.state.json: the snapshot. Sessions, board cards, PR metadata,
 #     retry counters and decision history. This is the one you cannot lose.
+#   - config/ holds live config.yaml and seed provenance when configPersistence
+#     is enabled. Chart upgrades only change the seed, never this live file.
 #   - env-cache bookkeeping under <mountPath>/env-caches (env_cache_root). The
 #     daemon's side of the performer environment cache: the rendered scripts
 #     and manifests. The toolchains themselves live on devenvCache, not here.

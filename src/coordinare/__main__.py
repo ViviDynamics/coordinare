@@ -67,6 +67,7 @@ from coordinare.services.board_provider import GitHubProjectsBoardProvider
 from coordinare.services.bootstrap_runs import load_bootstrap_history
 from coordinare.services.card_lifecycle import CardLifecycleLog, live_card_ids
 from coordinare.services.conductor_calls import ConductorCallLog
+from coordinare.services.config_seed import log_seed_status
 from coordinare.services.event_capture import install_event_store, symphony_for_card
 from coordinare.services.event_store import EventStore
 from coordinare.services.github import GitHubService
@@ -1853,6 +1854,7 @@ def main() -> None:
     _config_t0 = perf_counter()
     result = validate_config(getattr(args, "config", None))
 
+    log_seed_status(result.config_file_path)
     _unexpanded = _check_placeholders_as_written(result.config_file_path)
 
     # Spec 139: notifications are non-essential, so a channel that cannot be used

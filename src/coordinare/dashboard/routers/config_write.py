@@ -1,7 +1,6 @@
 """Global config write helpers (436): guard, validate and persist a YAML write."""
 from __future__ import annotations
 
-import contextlib
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -11,7 +10,7 @@ from fastapi.responses import JSONResponse
 from coordinare.config import expand_config_text
 from coordinare.config_descriptors import GLOBAL_EDITABLE_FIELDS
 from coordinare.config_validation import validate_raw_config
-from coordinare.services.config_write_service import _validate_candidate
+from coordinare.services.config_write_service import _validate_candidate, atomic_write_yaml
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -93,22 +92,7 @@ def candidate_text(loaded: dict[str, Any]) -> str:
 
 def _atomic_write_yaml(config_path: Path, loaded: dict[str, Any]) -> None:
     """Replace config_path with loaded content atomically, preserving mode."""
-    import os
-    import stat
-    import tempfile
-
-    dir_ = config_path.parent
-    fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".yaml.tmp")
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(candidate_text(loaded))
-        original_mode = stat.S_IMODE(os.stat(config_path).st_mode)
-        os.chmod(tmp, original_mode)
-        os.replace(tmp, config_path)
-    except Exception:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp)
-        raise
+    atomic_write_yaml(config_path, loaded)
 
 
 def _validate_global_config(loaded: dict[str, Any]) -> JSONResponse | None:

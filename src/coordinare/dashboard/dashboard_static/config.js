@@ -1526,6 +1526,19 @@ function cfgTabKey(event, secId) {
   target.focus();
 }
 
+function cfgSeedBanner(seed) {
+  if (!seed) return '';
+  var changed = seed.changed_sections || [];
+  var live = seed.live_diff_sections || [];
+  var detail = changed.length ? changed.join(', ') : 'formatting or comments only';
+  var html = '<div id="cfg-seed-status" role="status" class="card" style="margin-bottom:12px">'
+    + '<strong>' + esc(seed.message || 'Config seed provenance is unknown') + '</strong>';
+  if (seed.chart_changed) html += '<p>Chart changes: ' + esc(detail) + '</p>';
+  if (live.length) html += '<p>Live config differs from the chart in: ' + esc(live.join(', ')) + '</p>';
+  html += '<p>' + esc(seed.reset_instruction || '') + '</p></div>';
+  return html;
+}
+
 async function loadConfigPage() {
   var el = document.getElementById('config-page-section');
   el.innerHTML = '<span class="empty-state">Loading...</span>';
@@ -1572,7 +1585,7 @@ async function loadConfigPage() {
       + (sec.id === active ? '' : ' hidden') + '>'
       + cfgSectionBlock(sec) + '</div>';
   }).join('');
-  el.innerHTML = header + cfgTabBar(sections, active) + panels;
+  el.innerHTML = header + cfgSeedBanner(data.config_seed) + cfgTabBar(sections, active) + panels;
   _cfgShown = true;
   cfgWireControls(el, cfgRunAction);
   // The New forms are baselined before any refused edit is put back into them.

@@ -36,6 +36,7 @@ from coordinare.config_validation import (
     is_multi_symphony_config,
     wrap_legacy_config,
 )
+from coordinare.services.config_secret_policy import persistent_secret_problem
 from coordinare.start_checks import (
     StartCheckError,
     raw_placeholder_problems,
@@ -301,6 +302,10 @@ def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
     # 252: the placeholder rules read the candidate as written, before expansion, so a value a set
     # variable supplies is never mistaken for a placeholder, and an empty variable is named as such.
     # The refusal is keyed by its field path, so the page can show it beside the right input.
+    if os.environ.get("COORDINARE_CONFIG_SEED"):
+        problem = persistent_secret_problem(candidate)
+        if problem:
+            return [FieldError(key=None, code="validation", message=problem)]
     problems = raw_placeholder_problems(candidate)
     if problems:
         field, message = problems[0]

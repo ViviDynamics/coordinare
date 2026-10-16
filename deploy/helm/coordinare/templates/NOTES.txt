@@ -99,3 +99,22 @@ bootstrap per symphony. Remove each deliberately:
 {{- if eq (include "coordinare.devenvMode" .) "create" }}
   kubectl -n {{ include "coordinare.performerNamespace" . }} delete pvc -l app.kubernetes.io/instance={{ .Release.Name }}
 {{- end }}
+
+{{- if (dig "enabled" true (.Values.configPersistence | default dict)) }}
+
+Persistent config is ENABLED on the existing state PVC:
+  {{ .Values.state.mountPath | trimSuffix "/" }}/config/config.yaml
+The chart seeds only a missing file. Dashboard edits survive restarts and upgrades.
+Chart values changes never overwrite it. Check the Config page for seed drift
+and changed sections. Back up config/config.yaml and config/seed.yaml with state.
+To adopt the chart seed and DISCARD dashboard edits after backing up:
+  kubectl -n {{ .Release.Namespace }} exec {{ include "coordinare.fullname" . }}-0 -c coordinare -- touch {{ .Values.state.mountPath | trimSuffix "/" }}/config/reseed
+  kubectl -n {{ .Release.Namespace }} rollout restart statefulset/{{ include "coordinare.fullname" . }}
+Use placeholders or null for secrets; literal credentials cannot be seeded or saved.
+Existing installations import the current rendered ConfigMap on their first boot.
+{{- else }}
+
+Persistent config is DISABLED. The daemon reads the read only ConfigMap.
+Dashboard edits cannot persist there. Any earlier PVC config is retained and
+will resume if configPersistence.enabled is turned on again.
+{{- end }}
