@@ -1,5 +1,9 @@
 # Guided setup
 
+For an ordered unattended procedure, use [setup for coding agents](setup-for-agents.md).
+The [answers schema and machine interface](agent-setup-reference.md) document
+every answer and the JSON validation/preflight reports.
+
 Install Coordinare, then run:
 
 ```sh

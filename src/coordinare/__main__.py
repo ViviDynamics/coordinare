@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import contextlib
 import io
+import json
 import os
 import platform
 import signal
@@ -13,7 +14,7 @@ import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic, perf_counter
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 # langchain-core imports pydantic.v1 internals that are not supported on
 # Python 3.14+; pydantic emits a UserWarning at import time. Suppress it
@@ -28,6 +29,7 @@ import stamina
 import structlog
 import uvicorn
 import yaml
+from structlog.testing import capture_logs
 
 from coordinare import configure_logging
 from coordinare.attempt_log import AttemptLog, resolve_writable_log_dir
@@ -113,6 +115,7 @@ from coordinare.services.run_transcript import (
     make_collector,
     resolve_transcripts_root,
 )
+from coordinare.setup_reports import check, doctor_checks, report, validation_checks
 from coordinare.start_checks import (
     load_unexpanded_config,
     raw_placeholder_problems,
@@ -190,6 +193,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--config", type=Path, default=argparse.SUPPRESS,
         help="Explicit path to config file",
     )
+    _add_machine_setup_parsers(subparsers, validate_parser, doctor_parser)
     config_parser.add_argument(
         "--config", type=Path, default=argparse.SUPPRESS,
         help="Explicit path to config file",
@@ -225,6 +229,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     # Ensure attributes always exist on the namespace regardless of which path is taken
     parser.set_defaults(command=None, config_action=None, strict=False, card=None)
     return parser
+
+
+def _add_machine_setup_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+    validate_parser: argparse.ArgumentParser,
+    doctor_parser: argparse.ArgumentParser,
+) -> None:
+    alias = subparsers.add_parser("validate", help="Alias for config validate")
+    alias.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Explicit path to config file")
+    alias.add_argument("--strict", action="store_true", help="Treat deprecated fields and placeholder warnings as errors")
+    for parser in (alias, validate_parser, doctor_parser):
+        parser.add_argument("--json", action="store_true", help="Emit a schema version 1 setup report")
 
 
 def _cmd_dry_run(args: argparse.Namespace) -> None:
@@ -294,6 +310,13 @@ def _searched_paths_lines(explicit_path: Path | None) -> list[str]:
 
 def _cmd_config_validate(args: argparse.Namespace) -> None:
     """Handle `coordinare config validate` subcommand. Always calls sys.exit."""
+    if getattr(args, "json", False):
+        _cmd_setup_json(args, doctor=False)
+    _cmd_config_validate_text(args)
+
+
+def _cmd_config_validate_text(args: argparse.Namespace) -> None:
+    """Render the existing human-readable validation output."""
     explicit_path: Path | None = getattr(args, "config", None)
     strict: bool = getattr(args, "strict", False)
 
@@ -1849,6 +1872,8 @@ def _load_project_config_for_doctor(result: ConfigValidationResult) -> ProjectCo
 
 def _cmd_doctor(args: argparse.Namespace) -> None:
     """Run preflight checks and exit non-zero if any failed (spec 145, FR-012)."""
+    if getattr(args, "json", False):
+        _cmd_setup_json(args, doctor=True)
     result = validate_config(getattr(args, "config", None))
     if not result.passed:
         print("Config did not validate, so preflight cannot run.")
@@ -1881,6 +1906,57 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     sys.exit(0 if report.ok else 1)
 
 
+def _cmd_setup_json(args: argparse.Namespace, *, doctor: bool) -> NoReturn:
+    """Use the existing checks with a credential-free machine output boundary."""
+    command = "doctor" if doctor else "validate"
+    try:
+        # Legacy validators and probes may log arbitrary input. This boundary
+        # runs before daemon startup; only the curated report leaves it.
+        with (
+            Path(os.devnull).open("w") as sink,
+            contextlib.redirect_stdout(sink),
+            contextlib.redirect_stderr(sink),
+            capture_logs(),
+        ):
+            checks = _setup_json_checks(args, doctor=doctor)
+    except Exception:
+        # A machine caller must never receive an input-bearing traceback.
+        checks = [check(
+            "config.load", Status.FAIL, "Configuration could not be loaded for checks.",
+            "Check file permissions, YAML syntax, environment references and configuration types; rerun validate.",
+        )]
+    payload = report(command, checks)
+    print(json.dumps(payload))
+    sys.exit(0 if payload["ok"] else 1)
+
+
+def _setup_json_checks(args: argparse.Namespace, *, doctor: bool) -> list[dict[str, Any]]:
+    strict = getattr(args, "strict", False)
+    result = _with_placeholder_report(validate_config(args.config), strict, quiet=True)
+    checks = validation_checks(result, strict=strict)
+    if not doctor or not result.passed:
+        return checks
+    config = _load_project_config_for_doctor(result)
+    if config is None:
+        raise ValueError
+    root = None
+    if result.config_file_path is not None:
+        raw = _load_raw_yaml(result.config_file_path)
+        if is_multi_symphony_config(raw):
+            root = CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
+    unexpanded = load_unexpanded_config(result.config_file_path)
+    try:
+        preflight = asyncio.run(run_preflight(config, root, unexpanded, explicit=True))
+        if "egress" in (getattr(args, "check", None) or []):
+            preflight.results.extend(check_kubernetes_egress_enforcement(config))
+    except Exception:
+        return [check(
+            "doctor.execution", Status.FAIL, "Preflight could not complete.",
+            "Check runtime dependencies and connectivity; retry doctor and report the failure if it persists.",
+        ), *checks]
+    return doctor_checks(preflight) + checks
+
+
 def _cmd_config_show(args: argparse.Namespace) -> None:
     result = validate_config(getattr(args, "config", None))
     if not result.passed:
@@ -1911,7 +1987,7 @@ def _warn_unset_placeholders(unexpanded: dict[str, Any]) -> list[tuple[str, str]
     return warnings
 
 
-def _with_placeholder_report(result: ConfigValidationResult, strict: bool) -> ConfigValidationResult:
+def _with_placeholder_report(result: ConfigValidationResult, strict: bool, *, quiet: bool = False) -> ConfigValidationResult:
     """252: ``config validate`` reports the placeholder refusals and warnings that boot would (the same checks).
 
     A refusal becomes an error, so the config fails as boot would refuse it. A warning is printed, and
@@ -1924,7 +2000,7 @@ def _with_placeholder_report(result: ConfigValidationResult, strict: bool) -> Co
         )
         result.passed = False
     result.placeholder_warnings = raw_placeholder_warnings(unexpanded)
-    if result.placeholder_warnings:
+    if result.placeholder_warnings and not quiet:
         header = "PLACEHOLDER WARNINGS (use --strict to treat as errors)" if not strict else "PLACEHOLDER ERRORS"
         print(f"\n{header}:")
         for field_path, message in result.placeholder_warnings:
@@ -1949,6 +2025,10 @@ def _check_placeholders_as_written(path: Path | None) -> dict[str, Any]:
 
 def main() -> None:
     args = _build_arg_parser().parse_args()
+
+    if args.command == "validate":
+        _cmd_config_validate(args)
+        return
 
     if args.command == "service":
         sys.exit(run_service(args))

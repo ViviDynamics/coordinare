@@ -1,5 +1,8 @@
 # coordinare Development Guidelines
 
+For installing and running Coordinare, follow [setup for coding agents](docs/setup-for-agents.md).
+This file covers repository development. The setup guide is the installation procedure.
+
 ## Stack
 
 Python 3.12+, FastAPI, LangGraph, pydantic v2, pydantic-settings, structlog, httpx, gql[aiohttp], prometheus-client, asyncio (stdlib throughout).

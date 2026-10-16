@@ -1,0 +1,10 @@
+# Credentials are supplied through the process environment, never this example.
+repository: example/demo
+project_number: 7
+harness: codex
+human_reviewers: [operator]
+run_mode: docker
+max_concurrent_cards: 1
+model: gpt-5.4
+endpoint: ""
+image_variant: full
