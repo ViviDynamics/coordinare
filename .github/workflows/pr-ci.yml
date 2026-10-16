@@ -83,6 +83,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/resolve_smoke_release.sh
 
+      - name: Install coordinare and performer packages
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+          uv pip install -e "agent/performer[dev]"
+
       - name: Check environment manifest and release selection fallbacks
         run: |
           uv run --extra dev pytest -q tests/unit/test_env_manifest.py \

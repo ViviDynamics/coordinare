@@ -43,6 +43,7 @@ def test_release_lane_builds_arm64_and_exercises_release_selection() -> None:
     assert "tests/unit/test_env_manifest.py" in commands
     assert "tests/unit/test_197_review_fixes.py" in commands
     assert "tests/unit/test_197_rereview.py" in commands
+    assert 'uv pip install -e "agent/performer[dev]"' in commands
     assert "docker push" not in commands
     assert job["permissions"] == {"contents": "read"}
     assert "release-smoke" in _jobs()["build-success"]["needs"]
