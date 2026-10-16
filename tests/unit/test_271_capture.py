@@ -17,6 +17,7 @@ from coordinare.__main__ import _run
 from coordinare.config import EventStoreConfig
 from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 from coordinare.dashboard.store import DashboardStore, _Running
+from coordinare.doctor import DoctorReport
 from coordinare.graph.nodes.monitor.activity import _record_activity_batch
 from coordinare.services.activity_log import ActivityLog
 from coordinare.services.event_capture import (
@@ -165,6 +166,7 @@ async def test_daemon_wrapper_always_flushes_on_startup_failure(tmp_path: Path) 
     with (
         patch("coordinare.__main__._run_with_events", side_effect=fail),
         patch("coordinare.__main__.validate_start_time"),
+        patch("coordinare.__main__.run_preflight", return_value=DoctorReport()),
         pytest.raises(RuntimeError, match="start failed"),
     ):
         await _run(config)

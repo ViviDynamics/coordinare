@@ -1367,17 +1367,9 @@ async def _run(
     coordinare_config: CoordinareConfiguration | None = None,
     config_mode: Literal["legacy", "multi_symphony"] = "legacy",
 ) -> None:
-    # The start-time checks run again on the config as written (252), so a caller other than main
-    # cannot start the daemon past a refusal main would have made.
+    # Refuse unsafe configuration before opening stores or starting services.
     unexpanded = load_unexpanded_config(config_path)
     validate_start_time(config, coordinare_config, unexpanded if config_path is not None else None)
-    report = await run_preflight(config, coordinare_config, unexpanded if config_path is not None else None)
-    print(report.render())
-    for result in report.results:
-        if result.status is Status.WARN:
-            logger.warning("startup.preflight_warning", check=result.name, detail=result.detail, fix=result.fix)
-    if not report.ok:
-        raise SystemExit(1)
     exporter = None
     export_error = ""
     try:
@@ -1394,6 +1386,16 @@ async def _run(
     install_event_store(event_store)
     try:
         await event_store.start()
+        # Capture startup checks as well as runtime events, and flush even when
+        # preflight refuses the launch or raises before runtime bootstrap.
+        report = await run_preflight(config, coordinare_config, unexpanded if config_path is not None else None)
+        print(report.render())
+        for result in report.results:
+            if result.status is Status.WARN:
+                logger.warning("startup.preflight_warning", check=result.name, detail=result.detail, fix=result.fix)
+        if not report.ok:
+            logger.error("startup.preflight_failed", failed_checks=[result.name for result in report.failed])
+            raise SystemExit(1)
         await _run_with_events(config, config_path, coordinare_config, config_mode, event_store)
     finally:
         install_event_store(None)

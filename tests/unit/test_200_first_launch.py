@@ -326,9 +326,9 @@ async def test_preflight_failure_prevents_runtime_bootstrap(
 ) -> None:
     report = DoctorReport([CheckResult("port", Status.FAIL, "busy port", "change dashboard_port")])
     preflight = AsyncMock(return_value=report)
-    bootstrap = MagicMock()
+    bootstrap = AsyncMock()
     monkeypatch.setattr(cli, "run_preflight", preflight)
-    monkeypatch.setattr(cli, "EventStore", bootstrap)
+    monkeypatch.setattr(cli, "_run_with_events", bootstrap)
     with pytest.raises(SystemExit) as exc:
         await cli._run(ProjectConfiguration(**minimal))
     assert exc.value.code == 1

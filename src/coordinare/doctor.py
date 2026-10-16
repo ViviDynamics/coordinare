@@ -85,8 +85,8 @@ class DoctorReport:
             )
             lines.append("")
             lines.append("These checks cover reachability, configuration and permissions.")
-            lines.append("Warnings identify what could not be verified. Model output quality")
-            lines.append("is only known after the model runs.")
+            lines.append("Warnings identify what could not be verified. These checks cannot prove")
+            lines.append("model output quality; that is only known after the model runs.")
         else:
             lines.append(f"{len(self.failed)} check(s) failed. Each names its fix above.")
         lines.append("")
