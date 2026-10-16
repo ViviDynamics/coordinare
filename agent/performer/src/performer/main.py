@@ -1338,6 +1338,10 @@ def _json_recovery_prompt(
     223: a head_cut output is not quoted. Its head was lost in transport, so the
     fragment is not what the model wrote, and quoting it invites the model to
     continue or mirror it instead of emitting the whole object.
+
+    Other shapes retain redacted excerpts to show the content to repair or
+    reformat: incomplete endings, invalid syntax, arrays, wrappers and prose.
+    These do not exhibit the missing-prefix pattern that invites continuation.
     """
     canonical = _ROLE_ALIASES.get(role, role)
     required = _JSON_ROLE_REQUIRED_KEYS.get(canonical, ())
@@ -1474,6 +1478,7 @@ async def _parse_failure_retry_response(
         failure_reason=failure_reason,
         output_preview=redacted_short,
         output_shape=output_shape,
+        fresh_session=True,
     )
     repair_prompt = _json_recovery_prompt(
         role=perf.role,
@@ -1521,7 +1526,7 @@ async def _parse_failure_retry_response(
         session_id=perf.session_id,
         progress=(
             f"Backend {stage_label} output {failure_reason}; "
-            "restarting backend in a fresh session — "
+            "restarting backend in a fresh session; "
             f"retrying ({perf.parse_retry_count}/{max_retries})"
         ),
     )
