@@ -88,7 +88,7 @@ def _setup(args: argparse.Namespace) -> int:
     if answers["run_mode"] == "docker":
         image = docker_setup.prepare_image(answers["image_variant"], answers.get("image_tag"), directory)
         init_stage.set("container_setup")
-        configure_containers(generated, image, secrets)
+        configure_containers(generated, image, secrets, config_directory=directory)
     init_stage.set("model_endpoint")
     config = _validate_generated(generated, secrets)
     if answers["run_mode"] == "docker":

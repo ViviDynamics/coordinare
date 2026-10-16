@@ -103,7 +103,12 @@ arguments. It writes `config.yaml` and `coordinare.env` at the selected location
 The env file and backups are private mode 0600. Do not display them. Values are
 loaded automatically; there is no need to source a checkout `.env`. Exported
 values take precedence over saved env values. Default state and logs live under
-`${XDG_DATA_HOME:-$HOME/.local/share}/coordinare`.
+`${XDG_DATA_HOME:-$HOME/.local/share}/coordinare`. Docker workspace clones and
+TMPDIR live in a named volume, outside that host directory. The generated starter
+endpoint records its `volume_name`; inspect with
+`docker run --rm -v <vol>:/w alpine ls /w`. Artifacts and environment caches retain
+host binds. Optional bootstrap and diagnostic writers can still create root-owned
+files there. See [Docker storage and migration](docker-mode-setup.md).
 
 On a rerun, existing files require `--force`; it keeps `.bak` backups and preserves
 unrelated settings. Init failures name the stage and a safe cause, followed by a

@@ -17,7 +17,8 @@ paths. `--config-dir` changes the setup directory.
 | Daemon state | `~/.local/share/coordinare/state.json` | Generated `state_file_path` |
 | Run logs | `~/.local/share/coordinare/run-logs` | Generated `run_logs.dir` |
 | Transcripts | `~/.local/share/coordinare/transcripts` | Generated `transcripts.dir` |
-| Docker workspaces and artifacts | `~/.local/share/coordinare/workspaces`, `~/.local/share/coordinare/artifacts` | Mounted by Docker mode |
+| Docker workspaces | Docker volume `coordinare-workspaces-<config directory hash>` | Mounted at `/workspace`; see `volume_name` in config; removal requires consent |
+| Docker artifacts | `~/.local/share/coordinare/artifacts` | Host bind at `/artifacts` |
 | Docker environment caches | `~/.local/share/coordinare/env-caches` | Generated `env_cache_root` in Docker mode |
 | Service metadata | `~/.local/share/coordinare/service/registration.json` | Records the registered configuration |
 | macOS service wrapper and log | `~/.local/share/coordinare/service/run.sh`, `~/.local/share/coordinare/service/coordinare.log` | Wrapper references the env file |

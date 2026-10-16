@@ -425,3 +425,93 @@ def test_real_installer_smoke_gates_release_publication() -> None:
     assert "install.sh" in commands
     assert "--version" in commands
     assert "performer" in commands
+
+
+@pytest.mark.parametrize("consent,remove_status,removed", [(True, 0, True), (False, 0, False), (True, 1, True)])
+def test_uninstall_workspace_volume_consent_and_nonfatal_failure(release: Release, consent: bool, remove_status: int, removed: bool) -> None:
+    from coordinare.user_config import workspace_volume_name
+
+    config = release.home / "custom config"
+    config.mkdir()
+    volume = workspace_volume_name(config)
+    docker = release.home / ".local/bin/docker"
+    docker.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/docker.calls"\n'
+        'case "$1 $2" in\n'
+        f'  "volume inspect") [ "$3" = "{volume}" ] ;;\n'
+        f'  "volume rm") printf "volume in use\\n" >&2; exit {remove_status} ;;\n'
+        '  *) exit 1 ;;\nesac\n',
+    )
+    docker.chmod(EXECUTABLE_MODE)
+    release.env["COORDINARE_YES"] = "0"
+    result = release.run("--uninstall", "--config-dir", str(config), *(["--yes"] if consent else []))
+    assert result.returncode == 0, result.stderr
+    calls = (release.home / "docker.calls").read_text()
+    assert f"volume inspect {volume}" in calls
+    assert (f"volume rm {volume}" in calls) is removed
+    if remove_status:
+        assert "volume in use" in result.stderr
+    if not consent:
+        assert "--yes" in result.stderr
+    assert config.is_dir()
+
+
+@pytest.mark.parametrize("location", ["default", "xdg", "relative-xdg", "symlink"])
+def test_uninstall_volume_name_matches_init_directory(release: Release, location: str) -> None:
+    from coordinare.user_config import workspace_volume_name
+
+    config = release.home / ".config/coordinare"
+    arguments = []
+    if location == "xdg":
+        release.env["XDG_CONFIG_HOME"] = str(release.home / "xdg")
+        config = release.home / "xdg/coordinare"
+    elif location == "relative-xdg":
+        release.env["XDG_CONFIG_HOME"] = "ignored-relative-root"
+    config.mkdir(parents=True)
+    if location == "symlink":
+        alias = release.home / "config alias"
+        alias.symlink_to(config, target_is_directory=True)
+        arguments = ["--config-dir", str(alias)]
+    volume = workspace_volume_name(config)
+    docker = release.home / ".local/bin/docker"
+    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/docker.calls"\n')
+    docker.chmod(EXECUTABLE_MODE)
+    result = release.run("--uninstall", *arguments)
+    assert result.returncode == 0, result.stderr
+    assert (release.home / "docker.calls").read_text().splitlines() == [f"volume inspect {volume}", f"volume rm {volume}"]
+
+
+def test_uninstall_reports_missing_docker_without_losing_config(release: Release) -> None:
+    config = release.home / ".config/coordinare"
+    config.mkdir(parents=True)
+    result = release.run("--uninstall", "--yes")
+    assert result.returncode == 0, result.stderr
+    assert "Docker is unavailable" in result.stderr
+    assert config.is_dir()
+
+
+@pytest.mark.parametrize("answer,removed", [("yes", True), ("no", False)])
+def test_uninstall_volume_interactive_confirmation(release: Release, answer: str, removed: bool) -> None:
+    import pty
+
+    config = release.home / ".config/coordinare"
+    config.mkdir(parents=True)
+    docker = release.home / ".local/bin/docker"
+    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/docker.calls"\n')
+    docker.chmod(EXECUTABLE_MODE)
+    release.env["COORDINARE_YES"] = "0"
+    master, slave = pty.openpty()
+    try:
+        with subprocess.Popen(
+            ["sh", str(SCRIPT), "--uninstall"], stdin=slave,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            cwd=release.root, env=release.env,
+        ) as process:
+            os.write(master, (answer + "\n").encode())
+            stdout, stderr = process.communicate(timeout=TIMEOUT_SECONDS)
+            assert process.returncode == 0, stdout + stderr
+    finally:
+        os.close(master)
+        os.close(slave)
+    assert "all its workspaces [no]" in stderr
+    assert ("volume rm" in (release.home / "docker.calls").read_text()) is removed

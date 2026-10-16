@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import AsyncMock, patch
 
 import yaml
@@ -22,7 +22,23 @@ from coordinare import __main__ as cli
 from coordinare import docker_setup
 from coordinare.doctor import CheckResult, DoctorReport, Status
 from coordinare.init_cli import run_init
-from coordinare.models.performer_endpoint import PerformerEndpointConfig
+from coordinare.models.performer_endpoint import PerformerEndpointConfig, VolumeMount
+from coordinare.user_config import workspace_volume_name
+
+
+def assert_no_root_owned_files(data_directory: Path) -> None:
+    """Check ownership before fallback cleanup can hide a regression; never follow links."""
+    if not data_directory.exists():
+        return  # The local-image probe need not create any host data.
+    owned = []
+
+    def walk_error(error: OSError) -> None:
+        raise error
+
+    for directory, children, files in os.walk(data_directory, followlinks=False, onerror=walk_error):
+        paths = [Path(directory), *(Path(directory) / name for name in [*children, *files])]
+        owned.extend(str(path) for path in paths if path.lstat().st_uid == 0)
+    assert not owned, "root-owned files under the data directory: " + ", ".join(owned)
 
 
 def provision(
@@ -58,6 +74,7 @@ def provision(
         if run_init(args) != 0:
             raise RuntimeError("Non-interactive Docker init failed")
     raw = yaml.safe_load((directory / "config/config.yaml").read_text())
+    assert_no_root_owned_files(directory / "data")
     return str(raw["performer_endpoints"][0]["image"])
 
 
@@ -72,8 +89,13 @@ async def smoke_with_fakes(arguments: list[str], directory: Path) -> str:
             # Published base images predate this PR; exercise the checkout's entrypoint.
             endpoint = PerformerEndpointConfig(
                 id="smoke", mode="ephemeral", roles=["implementer"], image=arguments[1],
-                env={"BACKEND": "codex"}, auth_token=secrets.token_urlsafe(32),
+                env={"BACKEND": "codex", "TMPDIR": "/workspace", "NODE_COMPILE_CACHE": "/var/cache/node-compile-cache"},
+                auth_token=secrets.token_urlsafe(32),
                 extra_hosts=["host.docker.internal:host-gateway"],
+                volumes=[VolumeMount(
+                    volume_name=workspace_volume_name(directory / "config"),
+                    container_path=PurePosixPath("/workspace"), mode="rw",
+                )],
             )
             await asyncio.to_thread(docker_setup.smoke_container, endpoint, connectivity=fakes.probe_environment)
             image = arguments[1]
@@ -141,7 +163,15 @@ def main(arguments: list[str]) -> None:
     directory = Path(tempfile.mkdtemp(prefix="coordinare-docker-smoke-"))
     try:
         image = asyncio.run(smoke_with_fakes(arguments, directory))
+        assert_no_root_owned_files(directory / "data")
     finally:
+        volume = workspace_volume_name(directory / "config")
+        try:
+            result = docker_setup.run_docker(["docker", "volume", "rm", volume], 30.0)
+            if result.returncode:
+                sys.stderr.write(f"WARNING: smoke volume cleanup failed for {volume}: {result.stderr.strip()}\n")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            sys.stderr.write(f"WARNING: smoke volume cleanup failed for {volume}: {exc}\n")
         cleanup_directory(directory, image)
 
 

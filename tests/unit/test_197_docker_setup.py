@@ -268,7 +268,9 @@ def test_noninteractive_init_writes_container_wiring_and_no_secrets(setup: Path,
     config = ProjectConfiguration.from_yaml(setup)
     assert config.performer_endpoints[0].image == PINNED
     assert config.agent_executable == ""
-    assert all(Path(mount["host_path"]).is_dir() for mount in endpoint["volumes"])
+    assert all(Path(mount["host_path"]).is_dir() for mount in endpoint["volumes"] if "host_path" in mount)
+    assert "volume_name" in endpoint["volumes"][0]
+    assert not (tmp_path / "data/coordinare/workspaces").exists()
     assert Path(raw["env_cache_root"]).is_dir()
     output = capsys.readouterr()
     assert "inspect" in output.out.lower()
@@ -596,6 +598,37 @@ def test_main_cleanup_preserves_smoke_outcome(tmp_path: Path, monkeypatch: pytes
             smoke_docker_setup.main(arguments)
     else:
         smoke_docker_setup.main(arguments)
+    from coordinare.user_config import workspace_volume_name
+
+    assert commands.pop(0) == ["docker", "volume", "rm", workspace_volume_name(directory / "config")]
     assert len(commands) == 1
     assert commands[0][commands[0].index("-c") - 1] == (image if fails else CLEANUP_PINNED)
     assert str(directory) in capsys.readouterr().err
+
+
+def test_force_migrates_workspace_bind_and_preserves_other_settings(setup: Path, docker: FakeDocker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    answers = answers_file(tmp_path, run_mode="docker")
+    assert invoke(monkeypatch, "--answers", str(answers)) == 0
+    raw = yaml.safe_load(setup.read_text())
+    endpoint = raw["performer_endpoints"][0]
+    old_mount = {"host_path": str(tmp_path / "old-workspaces"), "container_path": "/workspace", "mode": "rw"}
+    endpoint["volumes"][0] = old_mount
+    endpoint["volumes"].append({"host_path": str(tmp_path / "custom"), "container_path": "/custom", "mode": "ro"})
+    endpoint["env"]["CUSTOM"] = "keep"
+    expected_other = endpoint["volumes"][1:]
+    setup.write_text(yaml.safe_dump(raw))
+    # Merely loading an old configuration never migrates it.
+    assert ProjectConfiguration.from_yaml(setup).performer_endpoints[0].volumes[0].host_path == Path(old_mount["host_path"])
+    assert invoke(monkeypatch, "--answers", str(answers), "--force") == 0
+    migrated = yaml.safe_load(setup.read_text())["performer_endpoints"][0]
+    assert "volume_name" in migrated["volumes"][0]
+    assert "host_path" not in migrated["volumes"][0]
+    assert migrated["volumes"][1:] == expected_other
+    assert migrated["env"]["CUSTOM"] == "keep"
+    backup = yaml.safe_load(setup.with_suffix(".yaml.bak").read_text())
+    assert backup["performer_endpoints"][0]["volumes"][0] == old_mount
+    volume = migrated["volumes"][0]
+    assert invoke(monkeypatch, "--answers", str(answers), "--force") == 0
+    assert yaml.safe_load(setup.read_text())["performer_endpoints"][0]["volumes"][0] == volume
+    runs = [call for call in docker.calls if call[1] == "run"]
+    assert f'{volume["volume_name"]}:/workspace:rw' in runs[-1]

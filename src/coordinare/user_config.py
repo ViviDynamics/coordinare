@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shlex
 from pathlib import Path
@@ -32,6 +33,13 @@ def user_config_directory() -> Path:
 
 def user_data_directory() -> Path:
     return _xdg_directory("XDG_DATA_HOME", Path.home() / ".local" / "share")
+
+
+def workspace_volume_name(config_directory: Path | None = None) -> str:
+    """Stable Docker storage per install; keep installer removal's hash in sync."""
+    directory = (config_directory or user_config_directory()).expanduser().resolve()
+    digest = hashlib.sha256(str(directory).encode()).hexdigest()[:12]
+    return f"coordinare-workspaces-{digest}"
 
 
 def read_environment(path: Path) -> dict[str, str]:
