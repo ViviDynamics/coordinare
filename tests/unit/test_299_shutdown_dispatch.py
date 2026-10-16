@@ -15,6 +15,7 @@ from coordinare.daemon import CoordinareDaemon
 from coordinare.graph.nodes.dispatch_performer import _execute_dispatch, dispatch_performer
 from coordinare.models.env_cache import BootstrapJobPayload
 from coordinare.models.performer_endpoint import PerformerEndpointConfig
+from coordinare.protocol import ProtocolResponse
 from coordinare.services import http_performer_service
 from coordinare.services.bootstrap_history import BootstrapHistory
 from coordinare.services.documenting_side import run_cycle, should_dispatch
@@ -183,6 +184,47 @@ async def test_daemon_initializer_passes_shared_stop_event_to_service_bootstrap(
     config = ProjectConfiguration(github_org="o", github_token="test-token", human_reviewers=["operator"])
     await app_main._initialize_daemon(config, None, None, daemon, {})
     assert bootstrap.call_args.kwargs["stop_event"] is daemon.state["stop_event"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_kubernetes_dispatch_stops_without_transport_or_failure(monkeypatch, tmp_path):
+    from coordinare.metrics import METRICS
+    from coordinare.observability import get_current_symphony
+
+    config = ProjectConfiguration(
+        github_org="o", github_token="test-token", human_reviewers=["operator"],
+        agent_transport="kubernetes", state_file_path=tmp_path / "state.json",
+        conducting={"backend": "none"}, transcripts={"enabled": False},
+    )
+    stop_event = asyncio.Event()
+    breakers = app_main._build_circuit_breakers(config)
+    send = AsyncMock(return_value=ProtocolResponse(status="accepted", session_id="unexpected"))
+    monkeypatch.setattr(app_main._UnavailableTransport, "send", send)
+    services = await app_main._bootstrap_services(config, breakers, stop_event=stop_event)
+    service = services["performer_services"]["implementing"]
+    assert service is services["agent_service"]
+    failure_metric = METRICS.service_calls_total.labels(
+        symphony=get_current_symphony(), service="agent", action="dispatch_card", outcome="failure",
+    )
+    before_failures = failure_metric._value.get()
+    stop_event.set()
+
+    with pytest.raises(http_performer_service.DispatchStoppingError):
+        await service.dispatch_card({"id": "c1"})
+
+    board = MagicMock(move_card=AsyncMock())
+    release = MagicMock()
+    state = _base_state(phase="dispatching", relay_feedback=[{"text": "retry"}])
+    context = {"service": service, "board_provider": board, "card_id": "ITEM_1", "card_context": {}}
+    result = await _execute_dispatch(state, context, None, release)
+    assert result is state
+    assert result["phase"] == "dispatching" and not result.get("agent_dispatch")
+    assert result["relay_feedback"] == [{"text": "retry"}]
+    release.assert_called_once_with()
+    board.move_card.assert_awaited_once_with("ITEM_1", "IN_PROGRESS")
+    send.assert_not_awaited()
+    assert failure_metric._value.get() == before_failures
+    assert not breakers["agent"]._failure_times
 
 
 @pytest.mark.asyncio

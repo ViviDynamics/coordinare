@@ -1206,6 +1206,7 @@ async def _bootstrap_services(
             sys.exit(1)
 
     agent_service = AgentService(transport)
+    agent_service.bind_stop_event(stop_event)
     resilient_agent = ResilientAgentService(
         inner=agent_service,
         retry_config=_retry_config_from(r.agent_retry),
