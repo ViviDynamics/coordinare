@@ -2,17 +2,16 @@
 // Covers the query string, the collapsing of identical checks, the escaping of hostile server
 // text, the links, the not-recorded readouts and the pager.
 //
-// Usage: node history_checks.js <path-to-sliced-js>
+// Usage: node tests/js/history_checks.js [path-to-sliced-js]
 
 const fs = require("fs");
 const path = require("path");
 
 const jsPath = process.argv[2];
-if (!jsPath) {
-  console.error("usage: node history_checks.js <sliced-js>");
-  process.exit(1);
-}
-const src = fs.readFileSync(path.resolve(jsPath), "utf8");
+const staticDir = path.resolve(__dirname, "../../src/coordinare/dashboard/dashboard_static");
+const src = jsPath ? fs.readFileSync(path.resolve(jsPath), "utf8")
+  : ["helpers", "usage", "runs", "cardpage", "symphonies", "history"]
+    .map(name => fs.readFileSync(path.join(staticDir, name + ".js"), "utf8")).join("\n\n");
 
 let passed = 0;
 let failed = 0;
@@ -34,17 +33,29 @@ function lacks(name, haystack, needle) {
 
 // A stand-in page for the handlers that touch the document, the address and the network. The
 // fetch stub never answers, so a request stays in flight until a check says otherwise.
-const stubSection = { innerHTML: "", getAttribute: () => "1", setAttribute() {}, addEventListener() {} };
+const handlers = {};
+const attributes = {};
+const stubSection = { innerHTML: "", getAttribute: key => attributes[key],
+  setAttribute(key, value) { attributes[key] = value; },
+  addEventListener(kind, handler) { handlers[kind] = handler; } };
+const stubHeader = { innerHTML: "", style: {} };
 const fetchedUrls = [];
-globalThis.document = { getElementById: (id) => (id === "history-page-section" ? stubSection : null) };
-globalThis.history = { state: null, replaceState(state, title, url) { this.state = state; globalThis.location.search = url.replace(/^[^?]*/, ""); } };
+const replacements = [];
+globalThis.document = { getElementById: id => id === "history-page-section" ? stubSection
+  : id === "project-link" ? stubHeader : null };
+globalThis.history = { state: null, replaceState(state, title, url) {
+  this.state = state;
+  replacements.push(url);
+  const address = new URL(url, "http://dashboard.test");
+  Object.assign(globalThis.location, { pathname: address.pathname, search: address.search, hash: address.hash });
+} };
 globalThis.location = { pathname: "/history", search: "", hash: "" };
+const stored = {};
+globalThis.window = { localStorage: { getItem: key => stored[key] || "",
+  setItem(key, value) { stored[key] = value; } } };
 globalThis.fetch = (url) => { fetchedUrls.push(url); return new Promise(() => {}); };
 globalThis.navigate = () => {};
-globalThis.currentSymphonyChoice = () => "";
-globalThis.symphonyNames = () => [];
-globalThis.currentScopedState = () => null;
-globalThis.SYMPHONY_ALL = "";
+var _lastState = { symphonies: [{ name: "alpha" }, { name: "beta-sym" }] };
 
 // The helpers touch no document until a page function runs, so the file evaluates as is.
 eval(src);
@@ -157,17 +168,23 @@ has("a table has a header for each column", historyTableHtml([row()]), "<th scop
 
 // --- the form and the pager --------------------------------------------------- //
 
-const form = historyFormHtml({ symphony: "beta-sym", card: '"x', stage: "", outcome: "failed", since: "", until: "" }, ["alpha", "beta-sym"]);
-has("the form selects the current symphony", form, '<option value="beta-sym" selected>');
+const form = historyFormHtml({ symphony: "beta-sym", card: '"x', stage: "", outcome: "failed", since: "", until: "" });
+lacks("the form has no symphony select", form, 'name="symphony"');
+has("Apply uses the dashboard button style", form, 'class="action-btn">Apply</button>');
+has("Clear uses the dashboard button style", form, 'class="action-btn" data-history-action="reset"');
 has("the form selects the current outcome", form, '<option value="failed" selected>');
 has("the form escapes a card filter", form, 'value="&quot;x"');
 has("the form offers a clear action", form, 'data-history-action="reset"');
 
 has("an older page is offered when there is one", historyPagerHtml(false, true), 'data-history-action="older"');
+["newer", "older", "refresh"].forEach(action => {
+  has(action + " uses the dashboard button style", historyPagerHtml(false, true),
+    'class="action-btn" data-history-action="' + action + '"');
+});
 check("an older page is not offered at the end", historyPagerHtml(false, false).indexOf('data-history-action="older" disabled') !== -1, true);
 check("a newer page is not offered on the first page", historyPagerHtml(false, true).indexOf('data-history-action="newer" disabled') !== -1, true);
 
-const page = historyPageHtml({ rows: [row(), row({ kind: "check", stage: "conductor:triage", decision: "proceed" })], next_cursor: "9|a|b|c", partial: true }, historyDefaultFilters(""), [], false);
+const page = historyPageHtml({ rows: [row(), row({ kind: "check", stage: "conductor:triage", decision: "proceed" })], next_cursor: "9|a|b|c", partial: true }, historyDefaultFilters(""), false);
 has("the page holds the run table", page, "<table class=\"history-table\">");
 has("the page holds the checks", page, "Checks (1)");
 has("the page offers the next page", page, 'data-history-action="older"');
@@ -178,22 +195,83 @@ has("an incomplete listing is said", page, "This listing is incomplete.");
 const fromUrl = historyFiltersFromSearch("?symphony=alpha&h.card=PVTI_1&h.outcome=failed", "alpha");
 check("the filters are read from the URL", [fromUrl.card, fromUrl.outcome], ["PVTI_1", "failed"]);
 check("a missing symphony filter takes the header's choice", fromUrl.symphony, "alpha");
-const allChosen = historyFiltersFromSearch("?symphony=alpha&h.symphony=", "alpha");
-check("an explicit All is kept in the URL", allChosen.symphony, "");
+check("History filters cannot override the header scope",
+  historyFiltersFromSearch("?h.symphony=beta-sym", "alpha").symphony, "alpha");
 const rewritten = historySearchFor("?symphony=alpha&h.card=old&h.stage=qa", historyDefaultFilters("alpha"));
 has("the header's symphony survives a filter change", rewritten, "symphony=alpha");
 lacks("an old filter value is replaced, not kept", rewritten, "h.card=old");
 lacks("an empty filter is left out of the URL", rewritten, "h.stage=qa");
-has("the URL says the symphony filter explicitly", rewritten, "h.symphony=alpha");
-check("a plain visit writes no History parameter", historySearchFor("", historyDefaultFilters("alpha"), "alpha"), "");
-check("an explicit All under a scoped header is kept", historySearchFor("", historyDefaultFilters(""), "alpha"),
-  "?h.symphony=");
-check("All with no scope writes nothing", historySearchFor("", historyDefaultFilters(""), ""), "");
+lacks("the URL never writes a separate History symphony", rewritten, "h.symphony");
+check("a plain visit writes no History parameter", historySearchFor("", historyDefaultFilters("alpha")), "");
+check("All with no scope writes nothing", historySearchFor("", historyDefaultFilters("")), "");
 check("a saved stack for the same filters is kept", historyStackFor({ sig: "a", cursors: ["", "x"], index: 1 }, "a"),
   { cursors: ["", "x"], index: 1 });
 check("a saved stack for other filters starts over", historyStackFor({ sig: "a", cursors: ["", "x"], index: 1 }, "b"),
   { cursors: [""], index: 0 });
 check("no saved stack starts over", historyStackFor(null, "b"), { cursors: [""], index: 0 });
+
+// The header resolves old bookmarks before either its select or History renders.
+stored[SYMPHONY_STORAGE_KEY] = "alpha";
+location.search = "?symphony=alpha&h.symphony=beta-sym&h.card=PVTI_1";
+location.hash = "#saved";
+history.state = { seq: 7, other: "kept" };
+replacements.length = 0;
+renderSymphonySwitcher();
+check("a legacy symphony is translated into the header parameter", location.search,
+  "?symphony=beta-sym&h.card=PVTI_1");
+check("translation preserves the hash", location.hash, "#saved");
+check("translation preserves router state", history.state, { seq: 7, other: "kept" });
+has("the header shows the translated symphony", stubHeader.innerHTML, '<option value="beta-sym" selected>');
+currentSymphonyChoice(_lastState);
+check("a legacy address is translated only once", replacements.length, 1);
+
+// Arriving from another scope keeps the link's card filter, and starts paging over.
+_historyPage.scope = "alpha";
+_historyPage.cursors = ["", "OLD"];
+_historyPage.index = 1;
+fetchedUrls.length = 0;
+renderHistoryPage(_lastState);
+has("the translated link queries the header symphony", fetchedUrls[0], "symphony=beta-sym");
+has("the translated link keeps its card filter on a scope change", fetchedUrls[0], "card=PVTI_1");
+lacks("a scope change starts at the first page", fetchedUrls[0], "cursor=");
+
+// Submit has no symphony control to read. Even an injected field cannot override the header.
+globalThis.FormData = class { get(key) { return { card: " PVTI_NEW ", outcome: "failed", symphony: "alpha" }[key]; } };
+handlers.submit({ target: { hasAttribute: name => name === "data-history-form" }, preventDefault() {} });
+check("submit uses the header scope", _historyPage.filters.symphony, "beta-sym");
+check("submit still reads and trims filters", _historyPage.filters.card, "PVTI_NEW");
+has("submit queries the header symphony", fetchedUrls[fetchedUrls.length - 1], "symphony=beta-sym");
+lacks("submit writes no legacy scope", location.search, "h.symphony");
+historyAction("reset");
+check("Clear restores the header scope and empty filters", _historyPage.filters, historyDefaultFilters("beta-sym"));
+check("Clear keeps the header parameter", location.search, "?symphony=beta-sym");
+
+location.search = "?h.symphony=&h.outcome=failed";
+renderSymphonySwitcher();
+check("an empty legacy scope translates to explicit All", location.search, "?h.outcome=failed&symphony=");
+check("explicit All overrides a stored symphony", currentSymphonyChoice(_lastState), "");
+has("the header shows All after empty legacy scope translation", stubHeader.innerHTML, '<option value="" selected>');
+check("the header remembers the translated All choice", readStoredSymphony(), "");
+renderHistoryPage(_lastState);
+handlers.submit({ target: { hasAttribute: name => name === "data-history-form" }, preventDefault() {} });
+check("submit under All keeps the header scope", _historyPage.filters.symphony, "");
+lacks("submit under All queries every symphony", fetchedUrls[fetchedUrls.length - 1], "symphony=");
+historyAction("reset");
+check("Clear under All restores empty filters", _historyPage.filters, historyDefaultFilters(""));
+
+const encodedName = "alpha + beta=1";
+_lastState.symphonies.push({ name: encodedName });
+location.search = "?h.symphony=" + encodeURIComponent(encodedName);
+check("legacy scope translation preserves encoded symphony names", currentSymphonyChoice(_lastState), encodedName);
+_lastState.symphonies.pop();
+
+location.pathname = "/logs";
+location.search = "?h.symphony=alpha";
+migrateHistorySymphony();
+check("other pages do not translate History bookmarks", location.search, "?h.symphony=alpha");
+location.pathname = "/history";
+location.search = "";
+location.hash = "";
 
 has("a newer run gives the refresh notice", historyNewerHtml({ newer_since_anchor: 2 }),
   "New runs since this list loaded: refresh");
@@ -247,6 +325,11 @@ has("a card link goes to the card page", historyRunRowHtml(row()), 'data-history
 has("the card page link is marked for the in-app router", historyRunRowHtml(row()), 'href="/cards/coordinare/PVTI_1"');
 lacks("the card link no longer filters History", historyRunRowHtml(row()), "h.card=PVTI_1");
 has("an implausible card id keeps the History filter", historyRunRowHtml(row({ card: "a b" })), "h.card=a");
+const historyLink = historyRunRowHtml(row({ card: "a b", symphony: "beta-sym", attributed_symphony: "beta-sym" }));
+has("in-app History links select the header symphony", historyLink, '/history?symphony=beta-sym&amp;h.card=a%20b');
+lacks("in-app History links never use the legacy scope", historyLink, "h.symphony");
+has("a conductor History link uses its attributed symphony",
+  historyRunRowHtml(row({ symphony: "_conductor", attributed_symphony: "alpha" })), '/history?symphony=alpha&amp;h.card=PVTI_1');
 lacks("an implausible card id gets no card page link", historyRunRowHtml(row({ card: "a b" })), "/cards/");
 // 233: the unattributed folder is not a symphony's card page, so its card keeps the History filter.
 has("an unattributed row keeps the History filter", historyRunRowHtml(row({ symphony: "unattributed" })), "h.card=PVTI_1");
