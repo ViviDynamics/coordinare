@@ -270,9 +270,10 @@ def test_section_save_is_durable_concurrent_and_triggers_existing_reload(tmp_pat
 
 def test_restart_required_save_keeps_existing_classification(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, live, client, _ = _dashboard(tmp_path, monkeypatch)
+    monkeypatch.setenv('DASHBOARD_TOKEN', 'a-dashboard-token-with-more-than-thirty-two-characters')
     response = client.put('/api/config/section/global', json={
         'store': 'config_yaml', 'section': 'global', 'base_hash': compute_content_hash(live),
-        'changes': {'dashboard_port': 8099},
+        'changes': {'dashboard_auth_token': '${DASHBOARD_TOKEN}'},
     })
     assert response.status_code == 200, response.text
     assert response.json()['applied'] == 'staged_restart'

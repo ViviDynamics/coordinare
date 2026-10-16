@@ -706,6 +706,7 @@ function cfgUsedByHtml(list) {
 
 // 143: why a setting cannot be edited here, in plain words.
 function cfgReadOnlyNote(s, catalog) {
+  if (s.help === 'managed by the Helm chart') return s.help;
   if (catalog === 'symphonies') return "Edit this on the symphony's own page.";
   if (s.invalid) return 'The config file holds a value that fails validation, so it is read-only here. Fix it in the file.';
   if (s.is_env_placeholder) return 'This value comes from an environment variable, so it is read-only here.';
@@ -1477,6 +1478,8 @@ function cfgRunAction(el, event) {
   else if (action === 'save-routing') cfgSaveRoutingEntry(el, index);
   else if (action === 'delete-routing') cfgDeleteRoutingEntry(el, index);
   else if (action === 'create-routing') cfgCreateRoutingEntry(el);
+  else if (action === 'chart-review') cfgReviewChart();
+  else if (action === 'chart-confirm') cfgConfirmChart();
   else if (action === 'reload') loadConfigPage();
   else if (action === 'navigate') {
     if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return;
@@ -1535,8 +1538,69 @@ function cfgSeedBanner(seed) {
     + '<strong>' + esc(seed.message || 'Config seed provenance is unknown') + '</strong>';
   if (seed.chart_changed) html += '<p>Chart changes: ' + esc(detail) + '</p>';
   if (live.length) html += '<p>Live config differs from the chart in: ' + esc(live.join(', ')) + '</p>';
+  if (seed.chart_changed) html += '<button type="button" class="cfg-btn" data-cfg-action="chart-review">Adopt chart values</button>'
+    + '<div id="cfg-chart-review"></div>';
+  if (seed.recovery) html += '<p>Recovered invalid config. Backup: ' + esc(seed.recovery.backup) + '</p>';
   html += '<p>' + esc(seed.reset_instruction || '') + '</p></div>';
   return html;
+}
+
+var _cfgChartPreview = null;
+var CFG_CHART_JSON_INDENT = 2;
+
+function cfgChartDiffHtml(preview) {
+  var html = '<p>Select sections to replace with chart values. Other edits will be kept. Secrets are masked.</p>';
+  (preview.sections || []).forEach(function(section) {
+    html += '<label><input type="checkbox" data-chart-section="' + esc(section.name) + '" checked> '
+      + esc(section.name) + '</label><div>Live:</div><pre>'
+      + esc(JSON.stringify(section.live, null, CFG_CHART_JSON_INDENT)) + '</pre><div>Chart:</div><pre>'
+      + esc(section.removed ? '(remove section)' : JSON.stringify(section.chart, null, CFG_CHART_JSON_INDENT)) + '</pre>';
+  });
+  return html + '<p>Confirming replaces the selected sections in the live config.</p>'
+    + '<button type="button" class="cfg-btn" data-cfg-action="chart-confirm">Confirm adoption</button>'
+    + '<div data-chart-status role="status"></div>';
+}
+
+function cfgReviewChart() {
+  var box = document.getElementById('cfg-chart-review');
+  _cfgChartPreview = null;
+  box.textContent = 'Loading chart diff...';
+  return fetch('/api/config/chart').then(function(response) {
+    return response.json().then(function(data) {
+      if (!response.ok) throw new Error(data.error || 'Could not load chart diff.');
+      _cfgChartPreview = {seed_hash: data.seed_hash, hash: response.headers.get('ETag')};
+      box.innerHTML = cfgChartDiffHtml(data);
+    });
+  }).catch(function(error) { box.textContent = error.message; });
+}
+
+function cfgConfirmChart() {
+  var box = document.getElementById('cfg-chart-review');
+  var status = box.querySelector('[data-chart-status]');
+  var sections = [];
+  box.querySelectorAll('[data-chart-section]:checked').forEach(function(input) {
+    sections.push(input.getAttribute('data-chart-section'));
+  });
+  if (!_cfgChartPreview || !sections.length) {
+    status.textContent = 'Select at least one section and review the diff first.';
+    return;
+  }
+  var reviewed = _cfgChartPreview;
+  var body = {sections: sections, seed_hash: reviewed.seed_hash, confirmed: true};
+  box.querySelectorAll('button, input').forEach(function(input) { input.disabled = true; });
+  return fetch('/api/config/chart/adopt', {method: 'POST',
+    headers: {'Content-Type': 'application/json', 'If-Match': reviewed.hash}, body: JSON.stringify(body)
+  }).then(function(response) {
+    return response.json().then(function(data) {
+      if (!response.ok) throw new Error(data.error || 'Adoption failed; review the diff again.');
+      _cfgChartPreview = null;
+      status.textContent = data.applied === 'staged_restart' ? 'Saved. Restart the Pod to apply.' : 'Chart sections saved.';
+      if (data.message) status.textContent += ' ' + data.message;
+    });
+  }).catch(function(error) {
+    status.textContent = error.message;
+    box.querySelectorAll('button, input').forEach(function(input) { input.disabled = false; });
+  });
 }
 
 async function loadConfigPage() {

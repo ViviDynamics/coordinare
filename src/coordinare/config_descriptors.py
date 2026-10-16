@@ -32,21 +32,26 @@ import typing
 from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, Literal, Union
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 from pydantic_core import PydanticUndefined
 
+from coordinare.config import CoordinareConfiguration, ProjectConfiguration
 from coordinare.config_usage import UsedBy, usage_index
+from coordinare.config_validation import coerce_multi_symphony_raw
 from coordinare.localhost_guard import dashboard_token_required
+from coordinare.services.config_ownership import (
+    CHART_MANAGED_LABEL,
+    ENDPOINT_IMAGE_KEY,
+    configured_chart_keys,
+)
 
 if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
 
     from coordinare.config import (
-        CoordinareConfiguration,
         Endpoint,
         Mode,
         ModelEndpoint,
-        ProjectConfiguration,
     )
 
 # --- transfer objects (data-model E1/E2/E3/E5) ---------------------------------
@@ -506,7 +511,6 @@ def scalar_field_names(section: str) -> frozenset[str]:
     be silently persisted into ``config.yaml``. Returns an empty set for any
     non-scalar / unknown section.
     """
-    from coordinare.config import ProjectConfiguration
 
     if section != "global":
         return frozenset()
@@ -539,9 +543,10 @@ def _build_global_section(
     raw_values: dict[str, Any] | None,
 ) -> ConfigSection:
     pc: ProjectConfiguration = config.global_config
+    managed = configured_chart_keys()
     settings: list[ConfigSetting] = []
     for fname, finfo in type(pc).model_fields.items():
-        if not _is_scalar_field(finfo):
+        if not _is_scalar_field(finfo) and fname not in managed:
             continue
         dotted = f"global.{fname}"
         is_invalid = dotted in (invalid or {})
@@ -551,9 +556,16 @@ def _build_global_section(
             value = getattr(pc, fname, None)
         settings.append(
             setting_from_field("global", fname, finfo, value, invalid=is_invalid).model_copy(
-                update={"required": _global_field_required(pc, fname, finfo)},
+                update={"required": _global_field_required(pc, fname, finfo),
+                        **({"editable": False, "help": CHART_MANAGED_LABEL} if fname in managed else {})},
             ),
         )
+    if ENDPOINT_IMAGE_KEY in managed:
+        settings.extend(ConfigSetting(
+            key=f"global.performer_endpoints.{endpoint.id}.image",
+            label=f"performer_endpoints.{endpoint.id}.image", help=CHART_MANAGED_LABEL,
+            type="string", current_value=endpoint.image, editable=False, section="global",
+        ) for endpoint in pc.performer_endpoints if endpoint.image is not None)
     return ConfigSection(
         id="global",
         title="General",
@@ -867,11 +879,6 @@ def load_config_best_effort(
     validation pass only — display values still come from ``raw_values`` (the UI
     never sees the substitute). The substitution is never written back.
     """
-    from pydantic import ValidationError
-
-    from coordinare.config import CoordinareConfiguration, ProjectConfiguration
-    from coordinare.config_validation import coerce_multi_symphony_raw
-
     global_field_names = set(ProjectConfiguration.model_fields)
     raw_values: dict[str, Any] = {
         f"global.{k}": v for k, v in raw.items() if k in global_field_names

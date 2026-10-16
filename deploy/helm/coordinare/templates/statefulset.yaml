@@ -28,9 +28,9 @@ spec:
       labels:
         {{- include "coordinare.labels" . | nindent 8 }}
       annotations:
-        # Roll the Pod when the rendered config changes; without this a
-        # `helm upgrade` that only alters config leaves the old one running.
-        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        # Hash only config data: the seed includes the chart-owned boot overlay.
+        # Resource labels and names must not trigger a config restart.
+        checksum/config: {{ (include (print $.Template.BasePath "/configmap.yaml") . | fromYaml).data | toYaml | sha256sum }}
     spec:
       serviceAccountName: {{ include "coordinare.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
