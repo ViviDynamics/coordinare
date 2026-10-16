@@ -102,11 +102,16 @@ def test_noncritical_role_retains_partial_concurrency(monkeypatch: pytest.Monkey
 
 @pytest.mark.parametrize("mode", ["ephemeral", "persistent"])
 @pytest.mark.parametrize("endpoint_role", ["closer", "closing_review"])
-def test_kubernetes_http_only_closer_reaches_composed_service(mode: str, endpoint_role: str) -> None:
+def test_kubernetes_http_only_closer_reaches_composed_service(
+    mode: str, endpoint_role: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from coordinare.__main__ import _build_http_performer_services, _compose_performer_pools
     from coordinare.models.performer_endpoint import PerformerEndpointConfig
     from coordinare.services.http_performer_service import HTTPPerformerService
 
+    # Credential loading is an external boundary; keep the real runtime and
+    # HTTP composition without depending on the host's Kubernetes credentials.
+    monkeypatch.setattr("coordinare.services.kubernetes_runtime._load_kube_config", lambda: None)
     config = _config(closer=PerformerRoleConfig())
     config.agent_transport = "kubernetes"
     config.performer_endpoints = [PerformerEndpointConfig(
