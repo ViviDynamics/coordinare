@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from pathlib import Path
 
 PROJECTS = {
@@ -42,10 +43,12 @@ def prepare_projects(root: Path, stage: Path, version: str, repository: str) -> 
             shutil.copy2(root / filename, destination / filename)
         if (source / "README.md").is_file():
             shutil.copy2(source / "README.md", destination / "README.md")
-        if name == "coordinare":
-            for example in root.glob("config.example*.yaml"):
-                shutil.copy2(example, destination / example.name)
         metadata = (source / "pyproject.toml").read_text(encoding="utf-8")
+        if name == "coordinare":
+            force_include = tomllib.loads(metadata)["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+            for filename in force_include:
+                if Path(filename).parent == Path("."):
+                    shutil.copy2(source / filename, destination / filename)
         # These editable paths are checkout-only. Released sdists must resolve
         # their tagged dependencies even when no workspace directories exist.
         metadata = re.sub(r"^\[tool\.uv\.sources\]\n.*?(?=^\[|\Z)", "", metadata, flags=re.MULTILINE | re.DOTALL)
