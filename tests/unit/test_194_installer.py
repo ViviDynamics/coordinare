@@ -4,6 +4,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -427,6 +428,29 @@ def test_real_installer_smoke_gates_release_publication() -> None:
     assert "performer" in commands
 
 
+@pytest.fixture(params=["sha256sum", "shasum"])
+def workspace_uninstall_tools(release: Release, request: pytest.FixtureRequest) -> None:
+    """Expose only required tools; Docker must be explicitly stubbed by each test."""
+    tools = release.root / "uninstall-tools"
+    tools.mkdir()
+    for name in ("sh", "uname", "awk"):
+        executable = shutil.which(name)
+        assert executable is not None
+        (tools / name).symlink_to(executable)
+    # Exercise both checksum interfaces even on hosts that only ship one of them.
+    checksum = tools / request.param
+    arguments = ["-a", "256"] if request.param == "shasum" else []
+    checksum.write_text(
+        f"#!{sys.executable}\n"
+        "import hashlib, sys\n"
+        f"assert sys.argv[1:] == {arguments!r}\n"
+        "print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest() + '  -')\n",
+    )
+    checksum.chmod(EXECUTABLE_MODE)
+    release.env["PATH"] = f"{release.home / '.local/bin'}:{tools}"
+
+
+@pytest.mark.usefixtures("workspace_uninstall_tools")
 @pytest.mark.parametrize("consent,remove_status,removed", [(True, 0, True), (False, 0, False), (True, 1, True)])
 def test_uninstall_workspace_volume_consent_and_nonfatal_failure(release: Release, consent: bool, remove_status: int, removed: bool) -> None:
     from coordinare.user_config import workspace_volume_name
@@ -456,6 +480,7 @@ def test_uninstall_workspace_volume_consent_and_nonfatal_failure(release: Releas
     assert config.is_dir()
 
 
+@pytest.mark.usefixtures("workspace_uninstall_tools")
 @pytest.mark.parametrize("location", ["default", "xdg", "relative-xdg", "symlink"])
 def test_uninstall_volume_name_matches_init_directory(release: Release, location: str) -> None:
     from coordinare.user_config import workspace_volume_name
@@ -481,6 +506,7 @@ def test_uninstall_volume_name_matches_init_directory(release: Release, location
     assert (release.home / "docker.calls").read_text().splitlines() == [f"volume inspect {volume}", f"volume rm {volume}"]
 
 
+@pytest.mark.usefixtures("workspace_uninstall_tools")
 def test_uninstall_reports_missing_docker_without_losing_config(release: Release) -> None:
     config = release.home / ".config/coordinare"
     config.mkdir(parents=True)
@@ -490,6 +516,7 @@ def test_uninstall_reports_missing_docker_without_losing_config(release: Release
     assert config.is_dir()
 
 
+@pytest.mark.usefixtures("workspace_uninstall_tools")
 @pytest.mark.parametrize("answer,removed", [("yes", True), ("no", False)])
 def test_uninstall_volume_interactive_confirmation(release: Release, answer: str, removed: bool) -> None:
     import pty
