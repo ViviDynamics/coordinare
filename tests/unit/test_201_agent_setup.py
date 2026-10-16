@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import sys
 from pathlib import Path
@@ -20,6 +21,19 @@ from coordinare.init_answers import ANSWER_NAMES
 ROOT = Path(__file__).resolve().parents[2]
 SECRET = "private-credential-201"
 SECRET_MODE = 0o600
+
+
+@pytest.fixture(autouse=True)
+def _restore_environment():
+    """The CLI loads coordinare.env into the process environment, as a real launch does.
+
+    Restore it after each test so a credential from one test cannot satisfy another test's
+    "no token" check later in the same worker.
+    """
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
 
 
 def invoke(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int, dict]:
