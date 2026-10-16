@@ -5,6 +5,18 @@ Coordinare polls a Project for cards and dispatches them through configurable AI
 performer roles. It can advance each card from TODO through implementation,
 review, security scanning, QA validation and documentation before human PR review.
 
+Installing with a coding agent? Start with the authoritative
+[agent setup guide](docs/setup-for-agents.md).
+
+Copy this prompt:
+
+> Install Coordinare by following
+> https://github.com/ViviDynamics/coordinare/blob/main/docs/setup-for-agents.md.
+> Ask me for the repository, Projects board, harness, human reviewers and private
+> credential delivery. Use the installer and noninteractive init answers, keep
+> secrets out of output and git, keep the dashboard on loopback, and verify with
+> validate and doctor JSON before starting. Report check ids and unresolved warnings.
+
 > **Security**: coordinare executes AI-generated code, holds a GitHub token with
 > write access, and feeds public issue and comment text into model prompts. Read
 > the **[threat model](docs/security/threat-model.md)** before exposing it to any

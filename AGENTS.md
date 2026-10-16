@@ -1,5 +1,8 @@
 # coordinare Development Guidelines
 
+To install Coordinare as a user, follow [setup for coding agents](docs/setup-for-agents.md).
+This file covers developing the repository and running it from a checkout.
+
 ## Stack
 
 Python 3.12+, FastAPI, LangGraph, pydantic v2, pydantic-settings, structlog, httpx, gql[aiohttp], prometheus-client, asyncio (stdlib throughout).
@@ -85,6 +88,10 @@ Each contributor sets `COORDINARE_ASSIGNEE` to their own GitHub login in their l
 <!-- MANUAL ADDITIONS START -->
 
 ## Running a deployment
+
+To install Coordinare as a user, without a checkout, follow
+[setup for coding agents](docs/setup-for-agents.md). The rest of this section is for running
+from a repository checkout.
 
 Read before starting the daemon, editing `config.yaml`, or diagnosing a failure. Most
 problems found while skipping this step are setup, not code.
