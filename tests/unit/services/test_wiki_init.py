@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -87,18 +88,19 @@ class _Github:
     async def get_pr_reviews(self, pr_id):
         return self._reviews
 
-    async def squash_merge(self, pr_id):
+    async def squash_merge(self, pr_id, *, expected_head_oid):
         self.squash_called = True
         return self._squash
 
 
 _BOT = "copilot-pull-request-reviewer[bot]"
+_HEAD = "a" * 40
 
 
 @pytest.mark.asyncio
 async def test_auto_merge_success_on_ci_green_and_bot_approval() -> None:
     gh = _Github(
-        merge={"mergeable_raw": "MERGEABLE", "merge_state_status": "CLEAN"},
+        merge={"mergeable_raw": "MERGEABLE", "merge_state_status": "CLEAN", "head_ref_oid": _HEAD},
         reviews=[{"author_login": _BOT, "state": "APPROVED"}],
         squash={"merged": True},
     )
@@ -108,9 +110,36 @@ async def test_auto_merge_success_on_ci_green_and_bot_approval() -> None:
 
 
 @pytest.mark.asyncio
+async def test_wiki_merge_pins_head_from_ci_decision_read() -> None:
+    gh = AsyncMock()
+    gh.check_mergeability.return_value = {"merge_state_status": "CLEAN", "head_ref_oid": _HEAD}
+    gh.get_pr_reviews.return_value = [{"author_login": _BOT, "state": "APPROVED"}]
+    gh.squash_merge.return_value = {"merged": True}
+    merged, _ = await WikiInitService(enabled=True).try_auto_merge(
+        gh, "PR1", [_BOT], ec_state=_ec(wiki_in_flight=True),
+    )
+    assert merged
+    gh.squash_merge.assert_awaited_once_with("PR1", expected_head_oid=_HEAD)
+    gh.check_mergeability.assert_awaited_once_with("PR1")
+
+
+@pytest.mark.asyncio
+async def test_wiki_merge_waits_without_decision_head() -> None:
+    gh = AsyncMock()
+    gh.check_mergeability.return_value = {"merge_state_status": "CLEAN"}
+    gh.get_pr_reviews.return_value = [{"author_login": _BOT, "state": "APPROVED"}]
+    gh.squash_merge.return_value = {"merged": True}
+    merged, _ = await WikiInitService(enabled=True).try_auto_merge(
+        gh, "PR1", [_BOT], ec_state=_ec(wiki_in_flight=True),
+    )
+    assert not merged
+    gh.squash_merge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_auto_merge_blocked_without_bot_approval() -> None:
     gh = _Github(
-        merge={"mergeable_raw": "MERGEABLE", "merge_state_status": "CLEAN"},
+        merge={"mergeable_raw": "MERGEABLE", "merge_state_status": "CLEAN", "head_ref_oid": _HEAD},
         reviews=[],
         squash={"merged": True},
     )
@@ -154,7 +183,7 @@ async def test_auto_merge_refused_when_no_wiki_init_in_flight() -> None:
     # review #3: never auto-merge when no wiki-init cycle is active (guards a
     # misrouted pr_node_id from bypassing the human-only merge gate).
     gh = _Github(
-        merge={"mergeable_raw": "MERGEABLE", "merge_state_status": "CLEAN"},
+        merge={"mergeable_raw": "MERGEABLE", "merge_state_status": "CLEAN", "head_ref_oid": _HEAD},
         reviews=[{"author_login": _BOT, "state": "APPROVED"}],
         squash={"merged": True},
     )
@@ -169,7 +198,7 @@ async def test_auto_merge_refused_when_no_wiki_init_in_flight() -> None:
 @pytest.mark.asyncio
 async def test_auto_merge_degrades_when_branch_protected() -> None:
     gh = _Github(
-        merge={"mergeable_raw": "MERGEABLE", "merge_state_status": "CLEAN"},
+        merge={"mergeable_raw": "MERGEABLE", "merge_state_status": "CLEAN", "head_ref_oid": _HEAD},
         reviews=[{"author_login": _BOT, "state": "APPROVED"}],
         squash={"merged": False},  # branch protection requires a human
     )
@@ -315,7 +344,7 @@ async def test_check_and_trigger_records_failure_on_dispatch_error() -> None:
 async def test_handle_init_result_success_merges_and_marks() -> None:
     ec = _ec(wiki_in_flight=True)
     gh = _Github(
-        merge={"mergeable_raw": "MERGEABLE", "merge_state_status": "CLEAN"},
+        merge={"mergeable_raw": "MERGEABLE", "merge_state_status": "CLEAN", "head_ref_oid": _HEAD},
         reviews=[{"author_login": _BOT, "state": "APPROVED"}],
         squash={"merged": True},
     )
@@ -341,7 +370,7 @@ async def test_handle_init_result_automerge_blocked_notifies_before_exhaustion()
     ec = _ec(wiki_in_flight=True)
     notify = _Collector()
     gh = _Github(
-        merge={"mergeable_raw": "MERGEABLE", "merge_state_status": "CLEAN"},
+        merge={"mergeable_raw": "MERGEABLE", "merge_state_status": "CLEAN", "head_ref_oid": _HEAD},
         reviews=[{"author_login": _BOT, "state": "APPROVED"}],
         squash={"merged": False},  # branch protection blocks the merge
     )

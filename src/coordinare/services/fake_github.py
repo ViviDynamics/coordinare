@@ -437,10 +437,12 @@ class FakeGitHubService(CardIdentityMap):
             "head_repo_name_with_owner": f"{self._org}/{self._project_name}",
         }
 
-    async def squash_merge(self, pr_id: str) -> dict[str, Any]:
+    async def squash_merge(self, pr_id: str, *, expected_head_oid: str | None = None) -> dict[str, Any]:
         pr = self._prs.get(pr_id)
         if pr is None:
             return {"merged": False}
+        if expected_head_oid is not None and await self._rev(pr["head_ref"]) != expected_head_oid:
+            return {"merged": False, "reason": "head_mismatch"}
         oid = await self._do_local_merge(pr)
         if not oid:
             return {"merged": False, "reason": "merge_failed"}

@@ -143,6 +143,10 @@ function waitingReason(card, snapshot) {
     return {kind: 'queued', text: 'Documentation update waiting for a free slot', title: String(skip.detail || '')};
   }
 
+  if (c.column === 'IN_REVIEW' && c.review_wait_reason === 'approval_dismissed_by_daemon_docs_push') {
+    return needsHumanReason(c.review_wait_detail, c.review_wait_detail);
+  }
+
   if (c.column !== 'TODO') return none;
 
   // A card with a session takes its reason from the session's skip record.

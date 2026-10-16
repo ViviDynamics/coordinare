@@ -30,6 +30,12 @@ from coordinare.models.review import (
     classify_reviewer,
 )
 from coordinare.services import pipeline_budget
+from coordinare.services.approval_carryover import (
+    DISMISSED_DOCS_REASON,
+    carried_approval_ids,
+    review_rules_known,
+    surface_docs_approval_wait,
+)
 from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.card_lifecycle import (
     CardLifecycleLog,
@@ -294,6 +300,8 @@ def _record_review_wait(
     else:
         state["review_wait_since"] = None
         state["review_wait_expired"] = expired and wait == REVIEW_WAIT_HUMAN
+    if reason != DISMISSED_DOCS_REASON:
+        state["review_wait_detail"] = None
     state["review_wait"] = wait
     state["review_wait_reason"] = reason
     state["review_wait_head"] = head
@@ -313,6 +321,7 @@ def _record_approved_merge(state: CoordinareState, card_id: str, *, head: str) -
     start from a clean slate. Dispatch, relay, a human wait that ends, and leaving review
     clear the episode elsewhere.
     """
+    state["review_wait_detail"] = None
     if isinstance(state.get("review_wait_since"), float):
         state["review_wait_reason"] = "approved"
         state["review_wait_head"] = head
@@ -825,13 +834,32 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
     # Only HUMAN approval triggers merge — trusted bots can provide
     # feedback but cannot approve on behalf of a human. When several human
     # approvals are effective, the latest one names the deferral event.
-    approvals = [
+    standing_approvals = [
         r
         for r in effective
         if r.get("author_type") == ReviewerType.HUMAN.value
         and r.get("state") == "APPROVED"
         and id(r) not in withdrawn
-        and _approval_is_current(r, cutoff, _pr_head_oid)
+    ]
+    rules = state.get("merge_review_rules") or {}
+    dismissed = [
+        r for r in effective
+        if r.get("author_type") == ReviewerType.HUMAN.value and r.get("state") == "DISMISSED"
+    ] if rules.get("dismiss_stale_reviews_on_push") else []
+    proven_docs = await carried_approval_ids(
+        state, github,
+        [r for r in standing_approvals if not _approval_is_current(r, cutoff, _pr_head_oid)] + dismissed,
+        pr_url=pr_url, head_sha=_pr_head_oid,
+    )
+    dismissal_on = rules.get("dismiss_stale_reviews_on_push", False)
+    extra_approval = rules.get("require_extra_approval_for_unattributed_changes", False)
+    docs_rule_wait = bool(proven_docs) and (
+        (dismissal_on and any(id(r) in proven_docs for r in dismissed)) or extra_approval
+    )
+    carried = proven_docs if review_rules_known(rules) and not dismissal_on and not extra_approval else set()
+    approvals = [
+        r for r in standing_approvals
+        if _approval_is_current(r, cutoff, _pr_head_oid) or id(r) in carried
     ]
     # #100: approvals that exist but no longer stand, for the decision log.
     stale_approvals = [
@@ -839,7 +867,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         for r in effective
         if r.get("author_type") == ReviewerType.HUMAN.value
         and r.get("state") == "APPROVED"
-        and (id(r) in withdrawn or not _approval_is_current(r, cutoff, _pr_head_oid))
+        and (id(r) in withdrawn or (not _approval_is_current(r, cutoff, _pr_head_oid) and id(r) not in carried))
     ]
     _decision_card = str(card.get("id", ""))
     _observed: dict[str, object] = {
@@ -884,6 +912,10 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         state["phase"] = "relay_feedback"
         _record_review_wait(state, _decision_card, None, reason="actionable_feedback", head=_pr_head_oid)
     elif approval_review is not None and not state.get('_pr_comment_poll_incomplete'):
+        merge_ready, _ = github_operation_ready(state, f"merge_pr:{pr_node_id}:{_pr_head_oid}")
+        if not merge_ready:
+            state["phase"] = "monitoring_pr"
+            return state
         # 090 L1 (US1) — refuse to advance to merge while a REQUIRED check on
         # the PR's *base* branch is red.  Default-off and fail-open, so when the
         # gate is disabled / indeterminate this is byte-identical to going
@@ -945,7 +977,8 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             except Exception as exc:
                 logger.warning("stale_review.handler_failed", error=str(exc))
             return state
-        _log_merge_decision(_decision_card, "merge", "approved", **_observed)
+        approval_reason = "approval_carried_over_daemon_commits" if id(approval_review) in carried else "approved"
+        _log_merge_decision(_decision_card, "merge", approval_reason, **_observed)
         state["phase"] = "merging"
         _record_approved_merge(state, _decision_card, head=_pr_head_oid)
     else:
@@ -967,7 +1000,10 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             )
         except Exception as exc:
             logger.warning("stale_review.handler_failed", error=str(exc))
-        if approval_review is not None:
+        if docs_rule_wait and approval_review is None:
+            _wait_reason = DISMISSED_DOCS_REASON
+            await surface_docs_approval_wait(state, card_id=_decision_card, head_sha=_pr_head_oid)
+        elif approval_review is not None:
             _wait_reason = "pr_comments_not_fully_read"
         elif any(id(r) in withdrawn for r in stale_approvals):
             # The reviewer who approved has since requested changes.

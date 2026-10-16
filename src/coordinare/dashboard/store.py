@@ -330,6 +330,8 @@ class DashboardStore:
                 sess.get("system_error_reason"),
                 bool(sess.get("env_blocked")),
                 block_cause(sess),
+                sess.get("review_wait_reason"),
+                sess.get("review_wait_detail"),
             ))
         return active_id, tuple(parts)
 
@@ -731,6 +733,8 @@ class DashboardStore:
             "phase": str(sess.get("phase", "idle")),
             # 142: why a stopped card needs a person, as one code from a fixed set (no performer text).
             "block_cause": block_cause(sess),
+            "review_wait_reason": sess.get("review_wait_reason"),
+            "review_wait_detail": sess.get("review_wait_detail"),
             "performer_stage": _sess_stage,
             "card_tokens_total": sess.get("card_tokens_total", 0),
             "card_cost_estimate": sess.get("card_cost_estimate", 0.0),

@@ -36,9 +36,16 @@ logger = structlog.get_logger(__name__)
 
 # 101: the protection read is one small REST call per source, every 15 minutes at most.
 _REST_TIMEOUT_SECONDS = 10.0
+_COMPARE_TIMEOUT_SECONDS = 30.0
+_COMPARE_PAGE_SIZE = 100
+_COMPARE_MAX_PAGES = 3
+_COMPARE_FILE_LIMIT = 300
 _HTTP_OK = 200
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_SERVER_ERROR = 500
+_MERGE_HEAD_MISMATCH_MESSAGES = ("head branch was modified",)
+_MERGE_HEAD_BEHIND_BASE_MESSAGE = "head branch is out of date"
+_MERGE_WAIT_MESSAGES = (*_MERGE_HEAD_MISMATCH_MESSAGES, _MERGE_HEAD_BEHIND_BASE_MESSAGE)
 _PROTECTION_UNREACHABLE = 0  # status recorded when a source never answered
 _PR_CONVERSATION_REPOSITORY_MISSING = 'PR conversation repository is unavailable'
 _PR_CONVERSATION_PAGINATION_INVALID = 'Invalid PR conversation pagination'
@@ -318,9 +325,9 @@ query CheckMergeability($prId: ID!) {
 """
 
 SQUASH_MERGE_MUTATION = """
-mutation SquashMerge($pullRequestId: ID!) {
+mutation SquashMerge($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
   mergePullRequest(
-    input: { pullRequestId: $pullRequestId, mergeMethod: SQUASH }
+    input: { pullRequestId: $pullRequestId, mergeMethod: SQUASH, expectedHeadOid: $expectedHeadOid }
   ) {
     pullRequest {
       id
@@ -917,6 +924,11 @@ class GitHubService(CardIdentityMap):
             # missing nodes) don't get retried forever and don't trip the
             # service-health circuit breaker.  Only true transport problems
             # (5xx, timeouts) should count as service failures.
+            if query == SQUASH_MERGE_MUTATION and any(
+                message in str(exc).lower() for message in _MERGE_WAIT_MESSAGES
+            ):
+                # A merge wait needs a new decision, never an internal outage retry.
+                raise PermanentGitHubError(str(exc)) from exc
             errors = exc.errors or []
             err_types: set[str] = set()
             for e in errors:
@@ -1673,76 +1685,31 @@ class GitHubService(CardIdentityMap):
     async def compare_changed_files(
         self, pr_url: str, base_sha: str, head_sha: str,
     ) -> list[str]:
-        """125 — file paths touched between two commits (REST compare API).
+        """Return the complete file range, including rename sources, or raise.
 
-        Powers the documenting gate's "what changed since the last
-        documentation pass" decision (``base_sha`` = last documented head,
-        ``head_sha`` = current live head).  Paginates ``files`` at 100/page up
-        to 3 pages; beyond that raises so the caller falls back to the
-        whole-PR gate (a delta that large should be documented anyway, and the
-        gate fails open to dispatch).  Raises on malformed input, missing
-        token, or any non-2xx so the dispatch layer applies its fail-open
-        chain.  Never logs the token; logs only counts and short SHAs.
+        GitHub returns files only on the first compare page, capped at 300.
+        Reaching that cap cannot establish completeness.
         """
-        m = re.match(r"https?://[^/]+/([^/]+)/([^/]+)/pull/(\d+)", pr_url)
-        if not m:
-            raise ValueError("compare_changed_files: unrecognized PR URL")
-        owner, repo = m.group(1), m.group(2)
-        if not base_sha.strip() or not head_sha.strip():
-            raise ValueError("compare_changed_files: empty SHA")
-
-        token = await self._current_token()
-        if not token.strip():
-            raise RuntimeError("compare_changed_files: no GH token available")
-
-        base = self._rest_api_base()
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-        }
-        per_page = 100
-        max_pages = 3
+        payload = await self._compare_page(pr_url, base_sha, head_sha, 1)
+        entries = payload.get("files")
+        if not isinstance(entries, list) or len(entries) >= _COMPARE_FILE_LIMIT:
+            message = "compare_changed_files: missing or truncated files list"
+            raise RuntimeError(message)
         files: list[str] = []
-        async with httpx.AsyncClient(timeout=30) as client:
-            for page in range(1, max_pages + 1):
-                resp = await client.get(
-                    f"{base}/repos/{owner}/{repo}/compare/{base_sha}...{head_sha}",
-                    params={"per_page": per_page, "page": page},
-                    headers=headers,
-                )
-                if not resp.is_success:
-                    logger.warning(
-                        "compare_changed_files.fetch_failed",
-                        status=resp.status_code,
-                        page=page,
-                    )
-                    raise RuntimeError(
-                        f"compare_changed_files: fetch failed (status {resp.status_code})",
-                    )
-                payload = resp.json() or {}
-                # The compare API returns a ``files`` list for an enumerable
-                # comparison (empty is legitimate — identical commits). A
-                # MISSING or non-list ``files`` means the API could not
-                # enumerate (e.g. a >300-file comparison omits it) — treat that
-                # as "cannot answer" and raise so the caller falls back to the
-                # whole-PR gate, rather than silently reporting zero changed
-                # files (which would wrongly skip the documenting stage).
-                page_files = payload.get("files")
-                if not isinstance(page_files, list):
-                    raise RuntimeError(
-                        "compare_changed_files: response has no enumerable 'files' list",
-                    )
-                files.extend(
-                    str(f["filename"])
-                    for f in page_files
-                    if isinstance(f, dict) and f.get("filename")
-                )
-                if len(page_files) < per_page:
-                    break
-            else:
-                # Three full pages — the delta may extend further; refuse to
-                # answer partially (the caller's fallback chain handles it).
-                raise RuntimeError("compare_changed_files: truncated beyond page cap")
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str) or not entry["filename"]:
+                message = "compare_changed_files: missing filename"
+                raise RuntimeError(message)
+            files.append(entry["filename"])
+            if entry.get("status") in {"renamed", "copied"} and "previous_filename" not in entry:
+                message = "compare_changed_files: missing rename source"
+                raise RuntimeError(message)
+            if "previous_filename" in entry:
+                previous = entry["previous_filename"]
+                if not isinstance(previous, str) or not previous:
+                    message = "compare_changed_files: missing rename source"
+                    raise RuntimeError(message)
+                files.append(previous)
         logger.info(
             "compare_changed_files.complete",
             file_count=len(files),
@@ -1750,6 +1717,68 @@ class GitHubService(CardIdentityMap):
             head=head_sha[:7],
         )
         return files
+
+    async def _compare_page(
+        self, pr_url: str, base_sha: str, head_sha: str, page: int,
+    ) -> dict[str, Any]:
+        """Shared SHA compare transport for documentation deltas and approvals."""
+        match = re.match(r"https?://[^/]+/([^/]+)/([^/]+)/pull/(\d+)", pr_url)
+        if not match:
+            raise ValueError("compare: unrecognized PR URL")
+        if not base_sha.strip() or not head_sha.strip():
+            raise ValueError("compare: empty SHA")
+        owner, repo = match.group(1), match.group(2)
+        token = await self._current_token()
+        if not token.strip():
+            raise RuntimeError("compare: no GH token available")
+        async with httpx.AsyncClient(timeout=_COMPARE_TIMEOUT_SECONDS) as client:
+            response = await client.get(
+                f"{self._rest_api_base()}/repos/{owner}/{repo}/compare/{base_sha}...{head_sha}",
+                params={"per_page": _COMPARE_PAGE_SIZE, "page": page},
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            )
+        if not response.is_success:
+            raise RuntimeError(f"compare: fetch failed (status {response.status_code})")
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise TypeError("compare: response is not an object")
+        return payload
+
+    async def compare_commits(
+        self, pr_url: str, base_sha: str, head_sha: str,
+    ) -> list[dict[str, Any]]:
+        """#99: enumerate a complete forward range or raise, using #125's transport.
+
+        The approved commit must be the merge base. Diverged, behind, missing,
+        malformed or truncated history cannot establish approval carry-over.
+        Commit pagination is independent of the compare response's files list.
+        """
+        commits: list[dict[str, Any]] = []
+        expected_total: int | None = None
+        for page in range(1, _COMPARE_MAX_PAGES + 1):
+            payload = await self._compare_page(pr_url, base_sha, head_sha, page)
+            merge_base = payload.get("merge_base_commit")
+            if (payload.get("status") != "ahead" or not isinstance(merge_base, dict)
+                    or merge_base.get("sha") != base_sha):
+                raise RuntimeError("compare_commits: approved commit is not an ancestor")
+            total = payload.get("total_commits")
+            if type(total) is not int or total <= 0 or (expected_total is not None and total != expected_total):
+                raise RuntimeError("compare_commits: invalid commit count")
+            expected_total = total
+            batch = payload.get("commits")
+            if not isinstance(batch, list) or any(not isinstance(c, dict) for c in batch):
+                raise RuntimeError("compare_commits: missing commit list")
+            commits.extend(batch)
+            if len(commits) == total:
+                shas = [c.get("sha") for c in commits]
+                if any(not isinstance(sha, str) or not sha for sha in shas):
+                    raise RuntimeError("compare_commits: missing commit SHA")
+                if len(set(shas)) != total or head_sha not in shas or base_sha in shas:
+                    raise RuntimeError("compare_commits: inconsistent commit range")
+                return commits
+            if len(commits) > total or len(batch) < _COMPARE_PAGE_SIZE:
+                raise RuntimeError("compare_commits: incomplete commit range")
+        raise RuntimeError("compare_commits: truncated beyond page cap")
 
     @staticmethod
     def _parse_diff_paths(raw_diff: str) -> list[str]:
@@ -2279,8 +2308,24 @@ class GitHubService(CardIdentityMap):
             logger.warning("github.protection_read_failed", url=url, error=str(exc))
             return _PROTECTION_UNREACHABLE, None
 
-    async def squash_merge(self, pr_id: str) -> dict[str, Any]:
-        result = await self._guarded_execute(SQUASH_MERGE_MUTATION, {"pullRequestId": pr_id})
+    async def squash_merge(self, pr_id: str, *, expected_head_oid: str | None = None) -> dict[str, Any]:
+        """Merge only the decision head; an intervening push needs a new decision."""
+        if expected_head_oid is None:
+            mergeability = await self.check_mergeability(pr_id)
+            expected_head_oid = str(mergeability.get("head_ref_oid") or "")
+        if not expected_head_oid:
+            return {"merged": False, "reason": "missing_head"}
+        try:
+            result = await self._guarded_execute(SQUASH_MERGE_MUTATION, {
+                "pullRequestId": pr_id, "expectedHeadOid": expected_head_oid,
+            })
+        except PermanentGitHubError as exc:
+            message = str(exc).lower()
+            if _MERGE_HEAD_BEHIND_BASE_MESSAGE in message:
+                return {"merged": False, "reason": "head_behind_base"}
+            if any(fragment in message for fragment in _MERGE_HEAD_MISMATCH_MESSAGES):
+                return {"merged": False, "reason": "head_mismatch"}
+            raise
         node = result.get("mergePullRequest", {}).get("pullRequest", {})
         if not isinstance(node, dict):
             return {"merged": False}

@@ -615,6 +615,7 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         lifecycle_completed_at=f["completed"],
         processed_review_ids=f["processed_ids"],
         surfaced_stale_reviews=f["surfaced_stale"],
+        approval_carryover_cache=dict(sess.get("approval_carryover_cache") or {}),
         open_questions=[str(q) for q in f["questions_raw"] if q is not None]
         if isinstance(f["questions_raw"], (list, tuple, set))
         else [],
@@ -807,6 +808,7 @@ def _restored_session_dict(
         "lifecycle_completed_at": persisted.lifecycle_completed_at,
         "processed_review_ids": set(persisted.processed_review_ids),
         "surfaced_stale_reviews": dict(persisted.surfaced_stale_reviews),
+        "approval_carryover_cache": dict(persisted.approval_carryover_cache),
         "open_questions": redact_state_value(list(persisted.open_questions)),
         "consumed_loop_questions": list(persisted.consumed_loop_questions),
         "card_clarifications": redact_state_value(list(persisted.card_clarifications)),
@@ -3629,6 +3631,7 @@ class CoordinareDaemon:
         # The closer reads the running symphony's condition from the graph state for this cycle.
         review = getattr(sym_state, "merge_review", None)
         self._state["merge_review_condition"] = review.get("state") if isinstance(review, dict) else None
+        self._state["merge_review_rules"] = dict(getattr(sym_state, "merge_review_rules", {}) or {})
 
     def _update_symphony_state(self, symphony_name: str, sym_state: Any) -> None:
         """Mirror the finished cycle's results back onto the symphony state."""

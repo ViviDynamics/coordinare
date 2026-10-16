@@ -192,7 +192,7 @@ var SESSION_ROW_FIELDS = [
   'card_tokens_total', 'container_id', 'feedback_cycle_count', 'full_log_available', 'issue_number',
   'issue_url', 'observer_verdicts', 'pending_control', 'performer_backend', 'performer_events',
   'performer_logs', 'performer_metrics', 'performer_stage', 'phase', 'pr_url', 'session_id',
-  'session_stats', 'slot_queued_since', 'total_feedback_cycles', 'triage_blocks', 'usage',
+  'review_wait_reason', 'review_wait_detail', 'session_stats', 'slot_queued_since', 'total_feedback_cycles', 'triage_blocks', 'usage',
   'workflow_step', 'workflow_step_entered_at', 'workflow_step_trail'
 ];
 

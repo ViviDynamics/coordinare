@@ -68,6 +68,8 @@ class ReviewRequirement:
     approving_reviews: int = 0
     code_owner_review: bool = False
     last_push_approval: bool = False
+    dismiss_stale_reviews_on_push: bool = False
+    require_extra_approval_for_unattributed_changes: bool = False
 
     @property
     def requires_review(self) -> bool:
@@ -77,7 +79,10 @@ class ReviewRequirement:
         an approval from someone else. Elm's ruleset sets only the last one (count 0), and GitHub
         still blocks the author's PR on it.
         """
-        return self.approving_reviews > 0 or self.code_owner_review or self.last_push_approval
+        return (
+            self.approving_reviews > 0 or self.code_owner_review or self.last_push_approval
+            or self.require_extra_approval_for_unattributed_changes
+        )
 
     def combined(self, other: ReviewRequirement) -> ReviewRequirement:
         """The stricter of two requirements: the larger count, and each flag if either sets it."""
@@ -85,6 +90,10 @@ class ReviewRequirement:
             approving_reviews=max(self.approving_reviews, other.approving_reviews),
             code_owner_review=self.code_owner_review or other.code_owner_review,
             last_push_approval=self.last_push_approval or other.last_push_approval,
+            dismiss_stale_reviews_on_push=self.dismiss_stale_reviews_on_push or other.dismiss_stale_reviews_on_push,
+            require_extra_approval_for_unattributed_changes=(
+                self.require_extra_approval_for_unattributed_changes or other.require_extra_approval_for_unattributed_changes
+            ),
         )
 
 
@@ -114,6 +123,8 @@ class ProtectionReading:
     inactive: tuple[str, ...] = ()
     bypassed: tuple[str, ...] = ()
     bypass_cleared: bool = False
+    # A merge allowance does not undo review dismissal caused by a push.
+    push_requirement: ReviewRequirement = field(default_factory=ReviewRequirement)
 
 
 @dataclass(frozen=True)
@@ -145,6 +156,8 @@ def parse_classic_protection(payload: object) -> ReviewRequirement:
         approving_reviews=_count(reviews.get("required_approving_review_count")),
         code_owner_review=reviews.get("require_code_owner_reviews") is True,
         last_push_approval=reviews.get("require_last_push_approval") is True,
+        dismiss_stale_reviews_on_push=reviews.get("dismiss_stale_reviews") is True,
+        require_extra_approval_for_unattributed_changes=reviews.get("require_extra_approval_for_unattributed_changes") is True,
     )
 
 
@@ -161,6 +174,8 @@ def parse_rules(rules: list[Any]) -> ReviewRequirement:
             approving_reviews=_count(parameters.get("required_approving_review_count")),
             code_owner_review=parameters.get("require_code_owner_review") is True,
             last_push_approval=parameters.get("require_last_push_approval") is True,
+            dismiss_stale_reviews_on_push=parameters.get("dismiss_stale_reviews_on_push") is True,
+            require_extra_approval_for_unattributed_changes=parameters.get("require_extra_approval_for_unattributed_changes") is True,
         ))
     return requirement
 
@@ -271,6 +286,7 @@ def read_protection(
     unreadable, and an unreadable source is never read as "no requirement".
     """
     requirement = ReviewRequirement()
+    push_requirement = ReviewRequirement()
     unreadable: list[str] = []
     bypass_cleared = False
     scope = RuleScope(kept=[], unverified=(), inactive=(), bypassed=())
@@ -284,12 +300,14 @@ def read_protection(
         try:
             if name == PROTECTION_CLASSIC:
                 parsed = parse_classic_protection(payload)
+                push_requirement = push_requirement.combined(parsed)
                 if parsed.requires_review and classic_bypass_lists_app(payload, daemon_app_id):
                     bypass_cleared = True
                     parsed = ReviewRequirement()
             else:
                 scope = scope_rules(payload, sources, daemon_app_id)
                 parsed = parse_rules(scope.kept)
+                push_requirement = push_requirement.combined(parse_rules(scope.kept + scope.bypassed_rules))
                 bypass_cleared = bypass_cleared or parse_rules(scope.bypassed_rules).requires_review
         except ValueError:
             unreadable.append(name)
@@ -302,6 +320,7 @@ def read_protection(
         inactive=scope.inactive,
         bypassed=scope.bypassed,
         bypass_cleared=bypass_cleared,
+        push_requirement=push_requirement,
     )
 
 
@@ -394,6 +413,7 @@ async def refresh_merge_review(sym_state: Any, probe: ReviewProbe, *, now: float
         return
     sym_state.merge_review_checked_at = now
     unverified: tuple[str, ...] = ()
+    sym_state.merge_review_rules = {}
     try:
         app_id = await probe.github.daemon_app_id()
         reading = read_protection(
@@ -401,6 +421,11 @@ async def refresh_merge_review(sym_state: Any, probe: ReviewProbe, *, now: float
         )
         unverified = reading.unverified
         state, message = judge(reading, await probe.github.self_logins(), probe.branch)
+        if not reading.unreadable and not unverified:
+            sym_state.merge_review_rules = {
+                "dismiss_stale_reviews_on_push": reading.push_requirement.dismiss_stale_reviews_on_push,
+                "require_extra_approval_for_unattributed_changes": reading.push_requirement.require_extra_approval_for_unattributed_changes,
+            }
     except Exception as exc:
         logger.warning("merge_review_gate.read_failed", symphony=probe.symphony, branch=probe.branch, error=str(exc))
         state, message = GATE_UNREADABLE, _unreadable_message(probe.branch)

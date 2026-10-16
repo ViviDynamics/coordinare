@@ -430,7 +430,7 @@ class _MergeGitHub:
         self._project_name = "repo"
 
     async def check_mergeability(self, pr_id: str) -> dict[str, Any]:
-        return {"mergeable": True}
+        return {"mergeable": True, "head_ref_oid": "approved-head"}
 
     async def squash_merge(self, pr_id: str) -> dict[str, Any]:
         return {"merged": True, "merge_commit": {"oid": "abc1234def5678", "messageHeadline": "t"}}

@@ -230,6 +230,9 @@ class WikiInitService:
         mss = str(merge.get("merge_state_status", "")).upper()
         if mss != "CLEAN":
             return False, f"not CI-green (merge_state_status={mss or 'UNKNOWN'})"
+        head = str(merge.get("head_ref_oid") or "")
+        if not head:
+            return False, "wiki-init decision head is unreadable"
 
         reviews = await github.get_pr_reviews(pr_node_id)
         trusted = set(trusted_bot_reviewers or [])
@@ -241,7 +244,7 @@ class WikiInitService:
         if not approved_by_bot:
             return False, "awaiting trusted-bot approval"
 
-        result = await github.squash_merge(pr_node_id)
+        result = await github.squash_merge(pr_node_id, expected_head_oid=head)
         if result.get("merged"):
             return True, "merged"
         return False, "squash_merge did not merge (branch protection?)"

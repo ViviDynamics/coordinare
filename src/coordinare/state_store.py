@@ -200,6 +200,8 @@ class StageVerdict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     head_sha: str = Field(min_length=1)
+    # #99: the performer's own starting head, when reported, bounds its commits.
+    head_before: str | None = None
     verdict: str = Field(min_length=1)
     recorded_at: str  # ISO-8601 stamp (set by the node, not a pure path)
 
@@ -288,6 +290,8 @@ class PersistedSession(BaseModel):
     # at the moment we re-requested/notified. Re-fire only when absent or the
     # head has advanced past the recorded oid. Backward-compatible default.
     surfaced_stale_reviews: dict[str, str] = Field(default_factory=dict)
+    # 099: JSON-stable approval/head keys preserve proof and failure caches on restart.
+    approval_carryover_cache: dict[str, tuple[float, bool]] = Field(default_factory=dict)
     open_questions: list[str] = Field(default_factory=list)
     # 494: fingerprints of questions consumed by the loop-broken detector.
     # Additive / default ``[]`` keeps older snapshots loading unchanged; see

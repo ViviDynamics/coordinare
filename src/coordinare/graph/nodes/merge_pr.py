@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import inspect
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.graph.nodes.github_retry import (
+    clear_deferred_github_operation,
+    defer_github_operation,
+    github_operation_ready,
+)
+from coordinare.graph.nodes.monitor_pr import _record_review_wait
 from coordinare.graph.state import _set_current_card
 from coordinare.lib.redaction import redact_state_value
 from coordinare.metrics import METRICS
+from coordinare.services.attempt_telemetry import close_attempt
 from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.card_lifecycle import card_id_of, record_lifecycle, stage_of
 from coordinare.services.defunct_branch import (
@@ -16,11 +24,45 @@ from coordinare.services.defunct_branch import (
 )
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.orphan_pr import close_guard, reconcile_completed_card
+from coordinare.services.pipeline_budget import REVIEW_WAIT_AUTOMATION
+from coordinare.services.rebase import (
+    _live_pr_allows_rebase,
+    fetch_main_sha,
+    implementer_rebase_enabled,
+    request_implementer_rebase,
+    should_attempt_rebase,
+    side_writer_active,
+)
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 
 logger = structlog.get_logger(__name__)
+
+
+async def _wait_for_base_update(
+    state: CoordinareState, github: Any, head: str, branch: str,
+) -> None:
+    """Back off rejected merges and hand eligible branches to the 555 implementer."""
+    card = state.get("current_card") or {}
+    card_id = str(card.get("id") or "")
+    detail = "PR head is behind the base branch; waiting for an implementer rebase or a branch update."
+    defer_github_operation(
+        state, operation=f"merge_pr:{card.get('pr_node_id', '')}:{head}", error=RuntimeError(detail),
+    )
+    state["phase"] = "monitoring_pr"
+    _record_review_wait(state, card_id, REVIEW_WAIT_AUTOMATION, reason="head_behind_base", head=head)
+    state["review_wait_detail"] = detail
+    if not branch or not implementer_rebase_enabled(state.get("config")) or side_writer_active(state):
+        return
+    main_sha = await fetch_main_sha(github)
+    if not main_sha or not should_attempt_rebase(state, main_sha, head):
+        return
+    if await _live_pr_allows_rebase(state, github, card_id):
+        request_implementer_rebase(
+            state, card_id=card_id, branch=branch, main_sha=main_sha, head_sha=head,
+            conflicting=False, reason="head_behind_base",
+        )
 
 
 async def merge_pr(state: CoordinareState) -> CoordinareState:
@@ -48,6 +90,12 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
         logger.warning("merge_pr.check_mergeability_failed", error=str(exc))
         state["phase"] = "merging"  # retry next cycle
         return state
+    head = str(mergeability.get("head_ref_oid") or "")
+    decision_head = str(state.get("review_wait_head") or head)
+    if head and decision_head and head != decision_head:
+        logger.info("merge_pr.head_changed", expected_head=decision_head, head=head)
+        state["phase"] = "monitoring_pr"
+        return state
     if not mergeability.get("mergeable", False):
         state["phase"] = "blocked"
         # 495: check_mergeability collapses conflicts and the review gate into
@@ -70,8 +118,23 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
             ])
         return state
 
+    if not decision_head:
+        logger.info("merge_pr.head_unreadable")
+        state["phase"] = "monitoring_pr"
+        return state
+    operation = f"merge_pr:{pr_node_id}:{decision_head}"
+    ready, _ = github_operation_ready(state, operation)
+    if not ready:
+        state["phase"] = "monitoring_pr"
+        return state
     try:
-        merge_result = await github.squash_merge(pr_node_id)
+        parameters = inspect.signature(github.squash_merge).parameters
+        if "expected_head_oid" in parameters or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+        ):
+            merge_result = await github.squash_merge(pr_node_id, expected_head_oid=decision_head)
+        else:
+            merge_result = await github.squash_merge(pr_node_id)
     except PermanentGitHubError as exc:
         # 042: Most common case is the GitHub App lacking ruleset bypass
         # permission — "You're not authorized to push to this branch".
@@ -88,6 +151,16 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
         logger.warning("merge_pr.squash_merge_failed", error=str(exc))
         state["phase"] = "merging"  # retry next cycle
         return state
+    if merge_result.get("merged") is not True:
+        logger.info("merge_pr.merge_unconfirmed", reason=merge_result.get("reason", "not_merged"))
+        state["phase"] = "monitoring_pr"
+        if merge_result.get("reason") == "head_behind_base":
+            await _wait_for_base_update(
+                state, github, decision_head,
+                resolve_branch(mergeability.get("head_ref_name"), state.get("workspace_branch"), card.get("pushed_branch")),
+            )
+        return state
+    clear_deferred_github_operation(state, operation)
     merge_commit = merge_result.get("merge_commit")
     if isinstance(merge_commit, dict):
         oid = str(merge_commit.get("oid", ""))
@@ -113,7 +186,7 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
     # and its PRs stay protected (FR-006). The disabled path performs no
     # GitHub reads. The close guard serializes against the concurrent
     # per-session sweeps.
-    if merge_result.get("merged", True) and move_ok:
+    if move_ok:
         # 89 — the merged PR's head branch is defunct now. Delete it when the
         # operator opted in; resolution prefers the live head_ref_name from
         # check_mergeability and falls back to the session's pushed_branch
@@ -145,7 +218,6 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
     symphony = state.get("symphony_name", "__default__")
     METRICS.cards_outcome_total.labels(symphony=symphony, outcome="merged").inc()
 
-    from coordinare.services.attempt_telemetry import close_attempt
     close_attempt(state, "pass", "human", "merged")
     # 147: the merge ends the card's timeline. Recorded once, from the card the merge closed.
     record_lifecycle(state, "merged", card_id=card_id_of(state), stage=stage_of(state), key="merged")
