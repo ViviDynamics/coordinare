@@ -104,9 +104,14 @@ jobs:
         run: uv run --extra dev mypy -p coordinare
 
   test:
-    timeout-minutes: 26
-    name: Test
+    timeout-minutes: 20
+    name: Test (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    # 289: four parallel shards; scripts/ci_shard.py puts every test file in exactly one.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -126,18 +131,33 @@ jobs:
           uv pip install -e "agent/performer[dev]"
 
       - name: Run pytest
-        run: uv run --extra dev pytest
+        run: uv run --extra dev pytest --junitxml=junit-test-${{ matrix.shard }}.xml $(python scripts/ci_shard.py --shard ${{ matrix.shard }} --of 4 tests)
 
       - name: Verify OTLP wire protocols and licences
+        if: ${{ matrix.shard == 1 }}
         run: |
           uv sync --extra otlp --extra dev --inexact
           uv run --no-sync python -c "import grpc; import google.protobuf; import opentelemetry.proto.collector.logs.v1.logs_service_pb2"
           uv run --no-sync pytest tests/unit/test_271_otlp_wire.py tests/unit/test_142_license_and_legal_posture.py -v
 
-  coverage:
-    timeout-minutes: 36
-    name: Coverage
+      - name: Upload test timings
+        # 289: scripts/ci_durations.py turns these into tests/ci-durations.json to rebalance shards.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-test-${{ matrix.shard }}
+          path: junit-test-${{ matrix.shard }}.xml
+          retention-days: 14
+
+  coverage-shard:
+    timeout-minutes: 25
+    name: Coverage (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    # 289: each shard records partial data; the Coverage job combines it and applies the floor.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -156,8 +176,66 @@ jobs:
           uv pip install -e ".[dev]"
           uv pip install -e "agent/performer[dev]"
 
-      - name: Run coverage
-        run: uv run --extra dev pytest --cov=coordinare --cov-report=term-missing --cov-fail-under=90
+      - name: Run coverage shard
+        env:
+          COVERAGE_FILE: .coverage.shard${{ matrix.shard }}
+        # The 90% floor applies to the combined data only, so a shard reports without failing on it.
+        run: uv run --extra dev pytest --cov=coordinare --cov-report= --cov-fail-under=0 $(python scripts/ci_shard.py --shard ${{ matrix.shard }} --of 4 tests)
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-data-${{ matrix.shard }}
+          path: .coverage.shard${{ matrix.shard }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  coverage:
+    timeout-minutes: 10
+    name: Coverage
+    needs: coverage-shard
+    # always(): a failed shard must fail this job. A skipped job here would read as
+    # "not failed" to the jobs that gate on it.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every shard succeeded
+        if: ${{ needs.coverage-shard.result != 'success' }}
+        run: |
+          echo "::error::coverage shards ended with '${{ needs.coverage-shard.result }}'"
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install the locked coverage version
+        run: |
+          uv venv
+          version=$(uv export --frozen --no-hashes --extra dev | sed -n 's/^coverage==\([^ ;]*\).*/\1/p' | head -1)
+          test -n "$version" || { echo "::error::coverage is not pinned in uv.lock"; exit 1; }
+          uv pip install "coverage==$version"
+
+      - name: Download coverage data
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-data-*
+          path: coverage-data
+          merge-multiple: true
+
+      - name: Combine and apply the 90% floor
+        # fail_under = 90 and the omit list come from [tool.coverage] in pyproject.toml.
+        run: |
+          .venv/bin/coverage combine coverage-data/
+          .venv/bin/coverage report --fail-under=90
 
   create-tag:
     timeout-minutes: 10
