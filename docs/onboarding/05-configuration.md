@@ -117,6 +117,23 @@ selfhosted_routing:
 
 See **[04 — Harnesses & Shims](04-harnesses-and-shims.md)** for strategy/normalizer semantics.
 
+For Claude Code on a reasoning model behind LiteLLM, opt into
+`target.strategy: translate` with `wire_format: openai` and the gateway's
+`base_url`. This sends `/v1/chat/completions` upstream through the performer's
+own translator and preserves content that shares a delta with reasoning.
+Use `upstream_auth_env: ANTHROPIC_AUTH_TOKEN` to reuse the gateway bearer
+injected from the selected catalog endpoint. Keep the routing `model` identical
+to the dispatched name, including prefixes such as `gateway/`.
+
+The activation key is the existing performer env setting
+`SELFHOSTED_ROUTING_CONFIG` (default empty). An unset path or unmatched pair
+keeps current behavior. An explicit translate route takes precedence over the
+ordinary spec-080 orchestration path; a reasoning policy instead selects the
+canonical proxy. Use a single-model mode without a reasoning policy for this
+route. The file must exist inside every selected performer, not just the daemon.
+See [the LiteLLM operator guide](../operators/litellm-proxy.md#assessor-on-a-reasoning-model-behind-litellm-223)
+for the complete opt-in and garden deployment notes.
+
 ## Gates configuration
 
 Per-symphony gates live under the symphony's persona-scope / overrides:

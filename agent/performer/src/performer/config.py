@@ -107,6 +107,9 @@ class Settings(BaseSettings):
     # backend (native vendor cloud path, FR-078-1/4). A non-empty path that is
     # missing or malformed fails fast at job start rather than black-holing a
     # card mid-lifecycle.
+    # 223: a matching claude_code entry with strategy=translate and OpenAI wire
+    # uses our Anthropic-to-OpenAI translator against /v1/chat/completions,
+    # including on LiteLLM. No entry keeps the current /v1/messages path.
     SELFHOSTED_ROUTING_CONFIG: str = ""
 
     # 078 — Startup health-probe budget (seconds) for a routed self-hosted

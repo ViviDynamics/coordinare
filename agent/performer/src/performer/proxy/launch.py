@@ -200,7 +200,8 @@ async def _launch_for_target(
         # Launch the loopback shim in translate mode (the shim reads
         # target.strategy) and point the Anthropic provider env at it, so the
         # claude_code CLI's /v1/messages traffic is translated to the OpenAI-wire
-        # upstream with no LiteLLM in the path (spec 084, FR-006). Normalizers are
+        # upstream, including LiteLLM's /v1/chat/completions, bypassing its
+        # /v1/messages adapter (223; spec 084, FR-006). Normalizers are
         # OPTIONAL for translate and compose beneath the wire translation
         # (Decision 4); an empty list is a pure-translation shim.
         normalizers = [NORMALIZER_REGISTRY[k] for k in target.normalizers]
