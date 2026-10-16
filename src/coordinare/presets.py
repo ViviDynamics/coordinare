@@ -49,17 +49,16 @@ def expand_preset(raw: dict[str, Any]) -> dict[str, Any]:
     if name is None:
         return deepcopy(raw)
     if name not in PRESET_NAMES:
-        raise ValueError(f"Unknown preset {name!r}. Set preset to solo or containers.")
+        msg = f"Unknown preset {name!r}. Set preset to solo or containers."
+        raise ValueError(msg)
     harness = raw.get("harness")
     if not isinstance(harness, str) or harness not in HARNESS_DEFAULTS:
-        raise ValueError(
-            "Set harness to codex, claude_code or opencode, or use the full config reference.",
-        )
+        msg = "Set harness to codex, claude_code or opencode, or use the full config reference."
+        raise ValueError(msg)
     repo = raw.get("github_repo")
     if not isinstance(repo, str) or not repo.strip() or "/" in repo:
-        raise ValueError(
-            "Set github_repo to the repository name without its owner; set the owner in github_org.",
-        )
+        msg = "Set github_repo to the repository name without its owner; set the owner in github_org."
+        raise ValueError(msg)
     kind, credential, model = HARNESS_DEFAULTS[harness]
     defaults: dict[str, Any] = {
         "project_name": repo,

@@ -220,15 +220,6 @@ def build_agent_turn_runner(
         )
         start_sha = git_result.stdout.strip()
 
-        # Record untracked/dirty snapshot for initial state
-        subprocess.run(
-            [_GIT, "status", "--porcelain"],
-            cwd=str(stand.path),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-
         # Build per-turn Score with modified persona_instructions
         turn_score = score.model_copy(
             update={
