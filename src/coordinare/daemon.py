@@ -1433,8 +1433,27 @@ def _runtime_tail_logs(svc: Any) -> Any:
     return tail_logs if callable(tail_logs) else None
 
 
+def _redact_tail_logs(svc: Any, lines: list[str], job_id: str) -> list[str]:
+    """344 review: raw tails carry bootstrap stdout, which may print secrets.
+
+    ``HTTPPerformerService`` redacts everything it surfaces through
+    ``get_agent_logs`` with ``_redact_tail`` (per-job transcript secrets plus
+    ambient ones). Runtime and docker-direct tails bypass that path, so they
+    go through it here too. If redaction itself fails the lines are dropped:
+    a lost traceback is recoverable, a leaked credential is not.
+    """
+    redact = getattr(svc, "_redact_tail", None)
+    if not callable(redact):
+        return lines
+    try:
+        redacted = redact(lines, job_id)
+        return list(redacted) if isinstance(redacted, list) else []
+    except Exception:
+        return []
+
+
 async def _snapshot_container_logs(
-    svc: Any, container_id: str | None, last_snapshot: list[str],
+    svc: Any, container_id: str | None, last_snapshot: list[str], job_id: str,
 ) -> list[str]:
     """Snapshot performer logs for idle detection.  Snapshot *before*
     check_status, because a terminal status causes HTTPPerformerService to
@@ -1449,13 +1468,14 @@ async def _snapshot_container_logs(
     if tail is not None:
         try:
             snap: list[str] = await tail(container_id, lines=500)
+            snap = _redact_tail_logs(svc, snap, job_id)
             return snap[-500:] if snap else last_snapshot
         except Exception:
             return last_snapshot
     try:
         snap = await _docker_logs_lines(container_id, 500)
         if snap:
-            return snap[-500:]
+            return _redact_tail_logs(svc, snap, job_id)[-500:]
     except Exception:
         pass
     return last_snapshot
@@ -1494,13 +1514,13 @@ async def _bootstrap_failure_logs(
         if tail is not None:
             try:
                 lines = await tail(bootstrap_cid, lines=100)
-                logs_tail = list(lines)[-60:]
+                logs_tail = _redact_tail_logs(svc, list(lines), job_id)[-60:]
             except Exception as exc:
                 logs_tail = [f"<tail_logs failed: {exc}>"]
         else:
             try:
                 lines = await _docker_logs_lines(bootstrap_cid, 100)
-                logs_tail = list(lines)[-60:]
+                logs_tail = _redact_tail_logs(svc, list(lines), job_id)[-60:]
             except Exception as exc:
                 logs_tail = [f"<docker logs failed: {exc}>"]
     if not logs_tail and hasattr(svc, "get_agent_logs"):
@@ -4115,7 +4135,7 @@ class CoordinareDaemon:
                 # hangs cannot hold the job past the wall clock.
                 async with asyncio.timeout(max(0, deadline - monotonic())):
                     poll.last_logs_snapshot = await _snapshot_container_logs(
-                        svc, container_id, poll.last_logs_snapshot,
+                        svc, container_id, poll.last_logs_snapshot, job_id,
                     )
                     status_result = await svc.check_status(job_id)
             except TimeoutError:

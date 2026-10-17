@@ -47,6 +47,19 @@ class _Service:
         return list(self.agent_logs)
 
 
+class _RedactingService(_Service):
+    """HTTPPerformerService-shaped: raw tails pass through ``_redact_tail``."""
+
+    def __init__(self, runtime: Any, secret: str) -> None:
+        super().__init__(runtime)
+        self._secret = secret
+        self.redacted_for: list[str] = []
+
+    def _redact_tail(self, lines: list[str], session_id: str) -> list[str]:
+        self.redacted_for.append(session_id)
+        return [line.replace(self._secret, "<redacted>") for line in lines]
+
+
 @pytest.fixture(autouse=True)
 def docker_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """344: the kubernetes path must not reach for the docker binary at all."""
@@ -97,7 +110,7 @@ async def test_snapshot_container_logs_fetches_via_runtime_tail_logs(
     runtime = _Runtime(_K8S_LINES)
     svc = _Service(runtime)
 
-    snap = await _snapshot_container_logs(svc, _POD, [])
+    snap = await _snapshot_container_logs(svc, _POD, [], "job-1")
 
     assert runtime.calls == [(_POD, 500)]
     assert snap == _K8S_LINES[-500:]
@@ -120,3 +133,66 @@ async def test_bootstrap_failure_logs_docker_path_without_runtime() -> None:
         logs = await _bootstrap_failure_logs(_NoRuntimeService(), "job-1", "cid-1", [])
 
     assert logs == ["legacy docker line"]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_failure_logs_redacts_runtime_tail(
+    docker_calls: list[str],
+) -> None:
+    """344 review: a raw runtime tail must not leak secrets into structured logs."""
+    runtime = _Runtime(_SECRET_LINES)
+    svc = _RedactingService(runtime, "ghp_aaa111bbb222ccc333")
+
+    logs = await _bootstrap_failure_logs(svc, "job-1", _POD, [])
+
+    assert svc.redacted_for == ["job-1"]
+    assert logs == [
+        "Traceback (most recent call last):",
+        "bootstrapping with token <redacted>",
+        "TypeError: 'NoneType' object is not iterable",
+    ]
+    assert docker_calls == []
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_failure_logs_redaction_failure_drops_lines(
+    docker_calls: list[str],
+) -> None:
+    """If redaction itself fails, the raw lines are dropped, not logged."""
+    runtime = _Runtime(_SECRET_LINES)
+
+    class _BrokenRedactor(_Service):
+        def _redact_tail(self, lines: list[str], session_id: str) -> list[str]:
+            raise RuntimeError("redactor down")
+
+    svc = _BrokenRedactor(runtime)
+
+    logs = await _bootstrap_failure_logs(svc, "job-1", _POD, [])
+
+    assert logs == []
+    assert docker_calls == []
+
+
+@pytest.mark.asyncio
+async def test_snapshot_container_logs_redacts_runtime_tail(
+    docker_calls: list[str],
+) -> None:
+    runtime = _Runtime(_SECRET_LINES)
+    svc = _RedactingService(runtime, "ghp_aaa111bbb222ccc333")
+
+    snap = await _snapshot_container_logs(svc, _POD, [], "job-1")
+
+    assert svc.redacted_for == ["job-1"]
+    assert snap == [
+        "Traceback (most recent call last):",
+        "bootstrapping with token <redacted>",
+        "TypeError: 'NoneType' object is not iterable",
+    ]
+    assert docker_calls == []
+
+
+_SECRET_LINES = [
+    "Traceback (most recent call last):",
+    "bootstrapping with token ghp_aaa111bbb222ccc333",
+    "TypeError: 'NoneType' object is not iterable",
+]
