@@ -262,3 +262,46 @@ async def test_unavailable_snapshot_file_cannot_be_repaired():
         await discover_and_review(symphony_name="suite", commit=COMMIT, paths=[PATH],
             fetch=unavailable, chat=replies, capabilities=CAPABILITIES, diagnostics=events.append)
     assert events[-1]["repairs"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["discovery", "review"])
+async def test_missing_new_identity_fields_are_required_in_proposal_schema_and_repairable(phase):
+    valid = candidate()
+    invalid = copy.deepcopy(valid if phase == "discovery" else assessment(valid)["assessment"])
+    invalid.pop("capabilities_digest")
+    invalid.pop("inventory_digest")
+    if phase == "discovery":
+        values = [{"tool": "read_file", "path": PATH}, {"manifest": invalid}, {"manifest": valid},
+            {"tool": "read_file", "path": PATH}, assessment(valid)]
+        feedback_index = 2
+        schema_index = 0
+    else:
+        values = [{"tool": "read_file", "path": PATH}, {"manifest": valid},
+            {"tool": "read_file", "path": PATH}, {"assessment": invalid}, assessment(valid)]
+        feedback_index = 4
+        schema_index = 2
+    replies = Replies(values)
+    events = []
+    manifest, review = await run(replies, diagnostics=events.append)
+    assert manifest.capabilities_digest == review.capabilities_digest == CAPABILITIES.digest()
+    errors = json.loads(replies.messages[feedback_index][-1]["content"])["validation_errors"]
+    assert {tuple(error["location"]) for error in errors} == {("inventory_digest",), ("capabilities_digest",)}
+    assert {error["code"] for error in errors} == {"missing"}
+    prompt = replies.messages[schema_index][0]["content"]
+    schema = json.loads(prompt.rsplit("matching this schema: ", 1)[1])
+    assert {"inventory_digest", "capabilities_digest"} <= set(schema["required"])
+    assert events[-1]["repairs"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["inventory_digest", "capabilities_digest"])
+async def test_present_but_wrong_proposal_identity_never_gets_a_repair(field):
+    invalid = candidate()
+    invalid[field] = "b" * 64
+    replies = Replies([{"tool": "read_file", "path": PATH}, {"manifest": invalid}])
+    events = []
+    with pytest.raises(EnvironmentDiscoveryError, match="identity"):
+        await run(replies, diagnostics=events.append)
+    assert len(replies.messages) == 2
+    assert events[-1]["repairs"] == 0
