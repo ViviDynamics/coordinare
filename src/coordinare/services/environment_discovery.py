@@ -10,8 +10,8 @@ import hashlib
 import json
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
-from typing import Any, NotRequired, TypedDict, Unpack
+from dataclasses import dataclass, replace
+from typing import Any, NotRequired, TypedDict, Unpack, cast
 
 from coordinare_service_inference.environment.models import (
     CoverageAssessment,
@@ -20,15 +20,20 @@ from coordinare_service_inference.environment.models import (
 )
 from pydantic import ValidationError
 
-from coordinare.services.environment_attempt import AttemptBudget, DiscoveryChatReply
 from coordinare.services.environment_attempt import (
-    EnvironmentDiscoveryError as EnvironmentDiscoveryError,
+    MAX_ATTEMPT_SECONDS,
+    MAX_REPAIRS,
+    AttemptBudget,
+    DiscoveryChatReply,
+    EnvironmentDiscoveryError,
 )
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.kubernetes_verifier import check_project_files
 
 Fetch = Callable[[str], Awaitable[str | None]]
 ChatJson = Callable[[list[dict[str, str]]], Awaitable[str | DiscoveryChatReply]]
+__all__ = ["DiscoveryLimits", "EnvironmentDiscoveryError", "discover_and_review"]
+
 _ASCII_CONTROL_BOUND = 32
 
 
@@ -49,7 +54,7 @@ class DiscoveryLimits:
     phase_timeout_seconds: float = 120
 
     def __post_init__(self) -> None:
-        if any(value <= 0 for name, value in self.__dict__.items() if name != "max_repairs") or not 0 <= self.max_repairs <= 2 or self.attempt_timeout_seconds > 3600:
+        if any(value <= 0 for name, value in self.__dict__.items() if name != "max_repairs") or not 0 <= self.max_repairs <= MAX_REPAIRS or self.attempt_timeout_seconds > MAX_ATTEMPT_SECONDS:
             message = "discovery limits must be positive"
             raise ValueError(message)
 
@@ -165,8 +170,10 @@ async def _phase(
                 messages.append({"role": "user", "content": _json({"tool_result": result})})
     except TimeoutError:
         budget.check()
-        raise EnvironmentDiscoveryError(f"{inspection.name} deadline exceeded", code="phase_deadline") from None
-    raise EnvironmentDiscoveryError(f"{inspection.name} model call limit exceeded", code="phase_call_limit")
+        message = f"{inspection.name} deadline exceeded"
+        raise EnvironmentDiscoveryError(message, code="phase_deadline") from None
+    message = f"{inspection.name} model call limit exceeded"
+    raise EnvironmentDiscoveryError(message, code="phase_call_limit")
 
 
 class _DiscoveryOptionKeywords(TypedDict):
@@ -221,9 +228,11 @@ def _validated_assessment(
 ) -> CoverageAssessment:
     assessment = CoverageAssessment.model_validate(data)
     if not manifest.inventory_digest or assessment.inventory_digest != manifest.inventory_digest:
-        raise EnvironmentDiscoveryError("review inventory identity differs")
+        message = "review inventory identity differs"
+        raise EnvironmentDiscoveryError(message)
     if not manifest.capabilities_digest or assessment.capabilities_digest != manifest.capabilities_digest:
-        raise EnvironmentDiscoveryError("review execution capability identity differs")
+        message = "review execution capability identity differs"
+        raise EnvironmentDiscoveryError(message)
     if assessment.source_commit != manifest.source_commit or assessment.manifest_digest != manifest.digest():
         message = "review identity does not match candidate manifest"
         raise EnvironmentDiscoveryError(message)
@@ -267,27 +276,28 @@ async def discover_and_review(
     configured = _DiscoveryOptions(**options)
     capabilities = configured.capabilities
     if capabilities is None:
-        raise EnvironmentDiscoveryError("environment execution capabilities are required")
-    declared_services = configured.declared_services
+        message = "environment execution capabilities are required"
+        raise EnvironmentDiscoveryError(message)
     bounds = configured.limits or DiscoveryLimits()
     budget = configured.budget or AttemptBudget(timeout_seconds=bounds.attempt_timeout_seconds,
         max_calls=bounds.max_model_calls, max_reads=bounds.max_total_reads, max_repairs=bounds.max_repairs)
     try:
         async with asyncio.timeout_at(budget.deadline):
-            result = await _discover_attempt(symphony_name=symphony_name, commit=commit, paths=paths,
-                fetch=fetch, chat=chat, capabilities=capabilities, declared_services=declared_services,
-                bounds=bounds, budget=budget)
+            result = await _discover_attempt(source_identity=(symphony_name, commit), paths=paths,
+                fetch=fetch, chat=chat, options=replace(configured, budget=budget))
             budget.outcome = "accepted"
             return result
     except TimeoutError:
         budget.error_code = "attempt_deadline"
-        raise EnvironmentDiscoveryError("environment attempt deadline exceeded", code="attempt_deadline") from None
+        message = "environment attempt deadline exceeded"
+        raise EnvironmentDiscoveryError(message, code="attempt_deadline") from None
     except EnvironmentDiscoveryError as exc:
         budget.error_code = exc.code
         raise
     except (ValueError, TypeError):
         budget.error_code = "invalid_contract"
-        raise EnvironmentDiscoveryError("environment discovery/review contract is malformed or unsupported", code="invalid_contract") from None
+        message = "environment discovery/review contract is malformed or unsupported"
+        raise EnvironmentDiscoveryError(message, code="invalid_contract") from None
     except asyncio.CancelledError:
         budget.error_code = "attempt_cancelled"
         raise
@@ -297,9 +307,14 @@ async def discover_and_review(
 
 
 async def _discover_attempt(
-    *, symphony_name: str, commit: str, paths: Sequence[str], fetch: Fetch, chat: ChatJson,
-    capabilities: ExecutionCapabilities, declared_services: Any, bounds: DiscoveryLimits, budget: AttemptBudget,
+    *, source_identity: tuple[str, str], paths: Sequence[str], fetch: Fetch, chat: ChatJson,
+    options: _DiscoveryOptions,
 ) -> tuple[EnvironmentManifest, CoverageAssessment]:
+    symphony_name, commit = source_identity
+    capabilities = cast("ExecutionCapabilities", options.capabilities)
+    budget = cast("AttemptBudget", options.budget)
+    bounds = options.limits or DiscoveryLimits()
+    declared_services = options.declared_services
     inventory = _checked_inventory(paths, bounds)
     tools = (
         'Reply with one JSON object only: {"tool":"read_file","path":"relative/path"}, '
@@ -348,13 +363,16 @@ async def _discover_attempt(
             current = {item["id"] for item in entries if isinstance(item, dict) and isinstance(item.get("id"), str)
                        and item.get("required", True) is True} if isinstance(entries, list) else set()
             if not previous <= current:
-                raise EnvironmentDiscoveryError("required obligation removed during repair", code="obligation_removed")
+                message = "required obligation removed during repair"
+                raise EnvironmentDiscoveryError(message, code="obligation_removed")
             previous.update(current)
         manifest = _validated_manifest(data, discovery.inputs, symphony_name, commit)
         if manifest.inventory_digest != discovery.inventory_digest:
-            raise EnvironmentDiscoveryError("discovery inventory identity differs", code="inventory_identity")
+            message = "discovery inventory identity differs"
+            raise EnvironmentDiscoveryError(message, code="inventory_identity")
         if manifest.capabilities_digest != capabilities.digest():
-            raise EnvironmentDiscoveryError("discovery execution capability identity differs", code="capability_identity")
+            message = "discovery execution capability identity differs"
+            raise EnvironmentDiscoveryError(message, code="capability_identity")
         check_project_files(discovery.source_files)
         return manifest
 
@@ -385,8 +403,7 @@ async def _discover_attempt(
             assessment = _validated_assessment(assessment_data, reviewer_reads, manifest, require_accept=False)
             if assessment.verdict == "accept":
                 return manifest, assessment
-            if assessment.verdict != "revise":
-                raise EnvironmentDiscoveryError("coverage review held: indeterminate", code="review_indeterminate")
+            _require_revision(assessment)
             budget.reserve_repair()
             from coordinare.lib.redaction import redact_command_text
 
@@ -399,6 +416,14 @@ async def _discover_attempt(
     except EnvironmentDiscoveryError:
         raise
     except (ValidationError, ValueError, TypeError):
-        raise EnvironmentDiscoveryError("environment discovery/review contract is malformed or unsupported", code="invalid_contract") from None
+        message = "environment discovery/review contract is malformed or unsupported"
+        raise EnvironmentDiscoveryError(message, code="invalid_contract") from None
     except Exception:
-        raise EnvironmentDiscoveryError("environment discovery/review model or source request failed", code="request_failed") from None
+        message = "environment discovery/review model or source request failed"
+        raise EnvironmentDiscoveryError(message, code="request_failed") from None
+
+
+def _require_revision(assessment: CoverageAssessment) -> None:
+    if assessment.verdict != "revise":
+        message = "coverage review held: indeterminate"
+        raise EnvironmentDiscoveryError(message, code="review_indeterminate")

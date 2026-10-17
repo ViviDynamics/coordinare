@@ -9,6 +9,10 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 
+MAX_ATTEMPT_SECONDS = 3600
+MAX_REPAIRS = 2
+
+
 class EnvironmentDiscoveryError(RuntimeError):
     """Discovery cannot establish an accepted, evidence-bound environment."""
 
@@ -48,9 +52,10 @@ class AttemptBudget:
     validation_codes: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        if (not 0 < self.timeout_seconds <= 3600 or self.max_calls < 1 or self.max_reads < 1
-                or not 0 <= self.max_repairs <= 2):
-            raise ValueError("environment attempt limits are invalid")
+        if (not 0 < self.timeout_seconds <= MAX_ATTEMPT_SECONDS or self.max_calls < 1 or self.max_reads < 1
+                or not 0 <= self.max_repairs <= MAX_REPAIRS):
+            message = "environment attempt limits are invalid"
+            raise ValueError(message)
 
     @property
     def deadline(self) -> float:
@@ -58,24 +63,28 @@ class AttemptBudget:
 
     def check(self) -> None:
         if time.monotonic() >= self.deadline:
-            raise EnvironmentDiscoveryError("environment attempt deadline exceeded", code="attempt_deadline")
+            message = "environment attempt deadline exceeded"
+            raise EnvironmentDiscoveryError(message, code="attempt_deadline")
 
     def reserve_call(self) -> None:
         self.check()
         if self.calls >= self.max_calls:
-            raise EnvironmentDiscoveryError("environment attempt model call limit exceeded", code="attempt_call_limit")
+            message = "environment attempt model call limit exceeded"
+            raise EnvironmentDiscoveryError(message, code="attempt_call_limit")
         self.calls += 1
 
     def reserve_reads(self, count: int) -> None:
         self.check()
         if type(count) is not int or count < 1 or self.reads + count > self.max_reads:
-            raise EnvironmentDiscoveryError("environment attempt file read limit exceeded", code="attempt_read_limit")
+            message = "environment attempt file read limit exceeded"
+            raise EnvironmentDiscoveryError(message, code="attempt_read_limit")
         self.reads += count
 
     def reserve_repair(self) -> None:
         self.check()
         if self.repairs >= self.max_repairs:
-            raise EnvironmentDiscoveryError("environment attempt repair limit exceeded", code="attempt_repair_limit")
+            message = "environment attempt repair limit exceeded"
+            raise EnvironmentDiscoveryError(message, code="attempt_repair_limit")
         self.repairs += 1
 
     def record_reply(self, reply: str | DiscoveryChatReply) -> str:
@@ -83,7 +92,8 @@ class AttemptBudget:
         if isinstance(reply, str):
             return reply
         if not isinstance(reply, DiscoveryChatReply):
-            raise EnvironmentDiscoveryError("model reply has unsupported metadata", code="model_reply_invalid")
+            message = "model reply has unsupported metadata"
+            raise EnvironmentDiscoveryError(message, code="model_reply_invalid")
         self.metadata_available |= reply.usage is not None or reply.finish_reason is not None
         for key, value in (reply.usage or {}).items():
             if (key in {"input", "output", "input_tokens", "output_tokens", "cache_read", "cache_write"}

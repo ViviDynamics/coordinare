@@ -78,8 +78,8 @@ def candidate_image(base_image: str, output: Path) -> Iterator[str]:
     source = Path(environment_package.__file__).parent
     shutil.copytree(source, output / "environment", ignore=shutil.ignore_patterns("__pycache__"))
     program = (
-        "import pathlib,shutil;import coordinare_service_inference.environment as package;"
-        "destination=pathlib.Path(package.__file__).parent;shutil.rmtree(destination);"
+        "import pathlib,shutil;import coordinare_service_inference as package;"
+        "destination=pathlib.Path(package.__file__).parent/'environment';shutil.rmtree(destination,ignore_errors=True);"
         "shutil.copytree('/tmp/coordinare-validation-environment',destination)"
     )
     (output / "Dockerfile").write_text(
