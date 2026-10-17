@@ -152,7 +152,7 @@ class Command(StrictModel):
 class Requirement(StrictModel):
     id: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    source: str
+    source: str = Field(description="One exact repository file path already read and present in inputs; never comma-joined paths.")
     checks: list[str] = Field(min_length=1, description="IDs from checks[].id of required executable checks, never command strings or install-only IDs.")
     required: bool = True
     _source = field_validator("source")(source_path)
@@ -328,3 +328,17 @@ class VerificationReport(StrictModel):
     def passed(self) -> bool:
         required = [result for result in self.results if result.required]
         return bool(required) and all(result.status == "pass" for result in required)
+
+
+class EnvironmentManifestProposal(EnvironmentManifest):
+    """New proposals require bindings that remain nullable only for legacy storage."""
+
+    inventory_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    capabilities_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CoverageAssessmentProposal(CoverageAssessment):
+    """Fresh coverage review always supplies the current immutable bindings."""
+
+    inventory_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    capabilities_digest: str = Field(pattern=r"^[0-9a-f]{64}$")

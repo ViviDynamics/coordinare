@@ -18,6 +18,12 @@ from coordinare_service_inference.environment.models import (
     EnvironmentManifest,
     ExecutionCapabilities,
 )
+from coordinare_service_inference.environment.models import (
+    CoverageAssessmentProposal as _CoverageProposal,
+)
+from coordinare_service_inference.environment.models import (
+    EnvironmentManifestProposal as _ManifestProposal,
+)
 from pydantic import ValidationError
 
 from coordinare.services.environment_attempt import (
@@ -128,7 +134,9 @@ def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any
     budget.validation_codes.extend(error["code"] for error in errors)
     messages.extend([{"role": "assistant", "content": raw},
                      {"role": "user", "content": _json({"validation_errors": errors,
-                        "instruction": "Correct the complete proposal. Preserve every required obligation and inspected input. "
+                        "instruction": "Correct the complete proposal. Return exactly {\"manifest\":...} for discovery "
+                        "or {\"assessment\":...} for review, never a bare proposal. "
+                        "Preserve every required obligation and inspected input. "
                         "Use list_files for directories and read_files only for exact file paths from listings. "
                         "Use required executable check IDs, not commands or install-only prerequisites. "
                         "Independent review and successful clean execution remain mandatory."})}])
@@ -211,7 +219,7 @@ def _checked_inventory(paths: Sequence[str], bounds: DiscoveryLimits) -> list[st
 def _validated_manifest(
     candidate: dict[str, Any], inspected: dict[str, str], symphony_name: str, commit: str,
 ) -> EnvironmentManifest:
-    manifest = EnvironmentManifest.model_validate(candidate)
+    manifest = _ManifestProposal.model_validate(candidate)
     if manifest.source_commit != commit or manifest.symphony_name != symphony_name:
         message = "discovery source identity does not match requested snapshot"
         raise EnvironmentDiscoveryError(message)
@@ -227,7 +235,7 @@ def _validated_manifest(
 def _validated_assessment(
     data: dict[str, Any], reviewer_reads: dict[str, str], manifest: EnvironmentManifest, *, require_accept: bool = True,
 ) -> CoverageAssessment:
-    assessment = CoverageAssessment.model_validate(data)
+    assessment = _CoverageProposal.model_validate(data)
     if not manifest.inventory_digest or assessment.inventory_digest != manifest.inventory_digest:
         message = "review inventory identity differs"
         raise EnvironmentDiscoveryError(message)
@@ -352,8 +360,8 @@ async def _discover_attempt(
                     'requirements only from evidence; if unresolved, do not claim readiness. An empty '
                     'environment requires a justification and a required documented baseline usage '
                     'check. inputs must exactly map every file read to its returned SHA256; requirement '
-                    'source paths must have been read. Return {"manifest":...} matching this schema: '
-                ) + _json(EnvironmentManifest.model_json_schema())},
+                    'source must be one exact path that has been read, never comma-joined paths. Return {"manifest":...} matching this schema: '
+                ) + _json(_ManifestProposal.model_json_schema())},
                 {"role": "user", "content": _json({**identity, "declared_services": declared_services})},
             ]
     required_ids: dict[str, set[str]] = {"requirements": set(), "checks": set(), "services": set()}
@@ -384,7 +392,7 @@ async def _discover_attempt(
             manifest = validate_candidate(candidate)
             reviewer = _Inspection("review", inventory, fetch, bounds, budget)
             assessment_data, reviewer_reads = await _phase(
-                inspection=reviewer, chat=chat, budget=budget, validate=CoverageAssessment.model_validate,
+                inspection=reviewer, chat=chat, budget=budget, validate=_CoverageProposal.model_validate,
                 messages=[
                 {"role": "system", "content": tools + (
                     'Independently review coverage of the candidate against the repository snapshot. '
@@ -396,7 +404,7 @@ async def _discover_attempt(
                     'rationale; sources must be paths you personally read. Bind your assessment to '
                     'the provided manifest digest and source commit. Return {"assessment":...} '
                     'matching this schema: '
-                ) + _json(CoverageAssessment.model_json_schema())},
+                ) + _json(_CoverageProposal.model_json_schema())},
                 {"role": "user", "content": _json({**identity,
                     "manifest": manifest.model_dump(mode="json"), "manifest_digest": manifest.digest(),
                     "declared_services": declared_services})},
