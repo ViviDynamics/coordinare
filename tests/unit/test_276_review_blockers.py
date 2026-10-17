@@ -37,6 +37,7 @@ from coordinare.services.kubernetes_verifier import (
     VerifierConfigurationError,
 )
 from coordinare.services.reconciliation import run_kubernetes_orphan_sweep
+from tests.unit.env_manifest_fixture import verification_output
 from tests.unit.test_265_k8s_verifier import (
     CLAIM,
     NAMESPACE,
@@ -151,9 +152,11 @@ async def test_configuration_refusal_notifies_and_records_exhaustion_once(tmp_pa
     if refusal_stage == "verify":
         state["coordinare_config"].global_config.kubernetes_verifier_image = "bad image"
     else:
-        runtime.results = [(True, "verify passed")]
+        runtime.results = [(True, verification_output(ec.environment_manifest).decode())]
         ec.rendered_activate_sh = "x" * VERIFIER_POD_MAX_BYTES
-        performer._runtime = KubernetesRuntime(namespace=NAMESPACE, cache_claim=CLAIM, core_v1=_FakeCoreV1(["Succeeded"]))
+        core = _FakeCoreV1(["Succeeded"])
+        core.read_namespaced_pod_log = lambda **kwargs: verification_output(ec.environment_manifest).decode()
+        performer._runtime = KubernetesRuntime(namespace=NAMESPACE, cache_claim=CLAIM, core_v1=core)
     ok, reason, infra = await daemon._verify_bootstrap_in_clean_context("sym", performer, "job")
     assert not ok and not infra
     assert reason is not None and "configuration" in reason

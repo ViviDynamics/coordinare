@@ -16,9 +16,7 @@ infrastructure (None), so none of these can pass on a missing image.
 from __future__ import annotations
 
 import asyncio
-import os
 import subprocess
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,49 +24,41 @@ from typing import Any
 
 import pytest
 
-from coordinare.models.env_cache import EnvCacheState
-from coordinare.models.env_manifest import EnvManifest, ManifestItem
 from coordinare.services.env_cache import verify_env_cache_clean
-from coordinare.services.env_manifest import render_activate_sh, render_verify_sh
+from tests.integration.reviewed_environment import (
+    accepted_state,
+    manifest_for,
+)
+from tests.integration.reviewed_environment import (
+    immutable_performer_image as _image_fixture,
+)
 
+real_image = _image_fixture
 pytestmark = pytest.mark.docker_image
 
-IMAGE = os.environ.get("COORDINARE_E2E_PERFORMER_IMAGE", "coordinare-performer:full")
 CACHE_PATH = "/devenv/probe218"
-MANIFEST = EnvManifest(
-    symphony_name="probe218",
-    items=[ManifestItem(name="ruby", kind="runtime", version="3.4.2", source=".ruby-version")],
+FILES = {".ruby-version": "3.4.2\n"}
+RUBY_CHECK = (
+    "from pathlib import Path; import os,shutil,subprocess,sys; "
+    "assert 'COORDINARE_SWAPPED_ACTIVATION' not in os.environ, 'FAIL: swapped activation executed'; "
+    "want=Path('.ruby-version').read_text().strip(); binary=shutil.which('ruby'); "
+    "got=subprocess.run([binary,'-e','print RUBY_VERSION'],capture_output=True,text=True).stdout.strip() if binary else 'none'; "
+    "passed=got==want; print(('PASS' if passed else 'FAIL')+': ruby version (want '+want+', got '+got+')'); "
+    "sys.exit(0 if passed else 1)"
 )
-BAD_ACTIVATE = "ruby() { printf 3.4.2; }\n"
+MANIFEST = manifest_for("probe218", files=FILES, checks=[{
+    "id": "ruby-version", "argv": ["/usr/local/bin/python", "-I", "-c", RUBY_CHECK]}])
+BAD_ACTIVATE = "export COORDINARE_SWAPPED_ACTIVATION=1\nruby() { printf 3.4.2; }\n"
 # What the real verify prints when the toolchain is absent. A passing verify is never this.
 NO_TOOLCHAIN = "FAIL: ruby version (want 3.4.2, got none)"
-# The daemon refused before docker ran, because the cache copy no longer matches.
-MISMATCH = "activate.sh in the cache does not match the coordinare-rendered content"
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _image_is_present() -> None:
-    """Fail, do not pass, when the image is missing: the opt-in lane must actually run."""
-    probe = subprocess.run(
-        ["docker", "image", "inspect", IMAGE], capture_output=True, text=True, check=False, timeout=60,
-    )
-    if probe.returncode != 0:
-        pytest.fail(f"performer image {IMAGE!r} is not built; build it, or set COORDINARE_E2E_PERFORMER_IMAGE")
 
 
 def _state(cache: Path) -> dict[str, Any]:
-    activate = render_activate_sh(MANIFEST, cache_mount_path=CACHE_PATH)
-    verify = render_verify_sh(MANIFEST, cache_mount_path=CACHE_PATH, activate_text=activate)
-    (cache / "activate.sh").write_text(activate)
-    state = EnvCacheState(
-        symphony_name="probe218", sanitised_name="probe218", cache_dir=cache,
-        rendered_verify_sh=verify, rendered_activate_sh=activate,
-    )
-    return {"env_cache": {"probe218": state}}
+    return accepted_state(cache, MANIFEST, FILES)
 
 
-def _svc() -> Any:
-    return SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image=IMAGE))
+def _svc(image: str) -> Any:
+    return SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image=image))
 
 
 def _run(coro: Any) -> Any:
@@ -77,7 +67,7 @@ def _run(coro: Any) -> Any:
         return pool.submit(asyncio.run, coro).result()
 
 
-def _plant_fake_ruby_deb(debs: Path) -> None:
+def _plant_fake_ruby_deb(debs: Path, image: str) -> None:
     """A performer-written .deb whose data is a fake /usr/bin/ruby that reports 3.4.2."""
     debs.mkdir(parents=True, exist_ok=True)
     script = (
@@ -89,55 +79,77 @@ def _plant_fake_ruby_deb(debs: Path) -> None:
         "dpkg-deb --build /tmp/p /out/fake.deb >/dev/null"
     )
     subprocess.run(
-        ["docker", "run", "--rm", "-v", f"{debs}:/out", "--entrypoint", "bash", IMAGE, "-c", script],
+        ["docker", "run", "--rm", "-v", f"{debs}:/out", "--entrypoint", "bash", image, "-c", script],
         check=True,
         timeout=300,
     )
 
 
-def test_planted_deb_with_fake_ruby_does_not_pass_the_verify(tmp_path: Path) -> None:
+def test_planted_deb_with_fake_ruby_does_not_pass_the_verify(tmp_path: Path, real_image: str) -> None:
     """Block 1: the image profile (BASH_ENV) would extract debs/*.deb to /usr/bin before the daemon's
     script runs. The verify must run and find no toolchain, not the fake one the performer planted."""
     cache = tmp_path / "probe218"
     cache.mkdir()
     state = _state(cache)
-    _plant_fake_ruby_deb(cache / "debs")
+    _plant_fake_ruby_deb(cache / "debs", real_image)
+    # Positive control: the actual image startup profile can turn this planted
+    # archive into a fake passing Ruby when it is allowed to read a writer cache.
+    attack = subprocess.run(
+        ["docker", "run", "--rm", "-v", f"{cache}:{CACHE_PATH}:ro", "-e", "_DEVENV_BOOTSTRAP=1",
+         "--entrypoint", "bash", real_image, "-c", "ruby -e 'print RUBY_VERSION'"],
+        capture_output=True, text=True, check=False, timeout=300,
+    )
+    assert attack.returncode == 0, attack.stderr
+    assert attack.stdout == "3.4.2", attack.stderr
 
-    passed, detail = _run(verify_env_cache_clean(state, "probe218", _svc(), performer_mounts=[tmp_path]))
+    passed, detail = _run(verify_env_cache_clean(state, "probe218", _svc(real_image), performer_mounts=[tmp_path]))
 
     assert passed is False
     assert NO_TOOLCHAIN in detail, detail
+    evidence = state["env_cache"]["probe218"].environment_verification
+    assert evidence["manifest_digest"] == MANIFEST.digest()
+    assert evidence["results"][0]["id"] == "ruby-version"
+    assert evidence["results"][0]["status"] == "fail"
+    assert evidence["results"][0]["exit_code"] == 1
 
 
-def test_activate_swap_during_the_verify_never_changes_the_verdict(tmp_path: Path) -> None:
-    """Block 2: a writer that flips activate.sh while docker runs must not change the verdict. With no
-    toolchain installed, every run is the verify's own FAIL. The swapped-in activate.sh is never read."""
+def test_activate_swap_during_the_verify_never_changes_the_verdict(
+    tmp_path: Path, real_image: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Swap the real cache after its match gate and before the real container starts.
+
+    Scheduling this boundary deliberately makes every attempt reach the checker;
+    it cannot pass by merely refusing the cache before Docker runs.
+    """
     cache = tmp_path / "probe218"
     cache.mkdir()
     state = _state(cache)
     good = (cache / "activate.sh").read_text()
-    stop = threading.Event()
+    actual_exec = asyncio.create_subprocess_exec
+    swaps = []
 
-    def toggle() -> None:
-        while not stop.is_set():
+    async def swap_before_start(*argv, **kwargs):
+        if argv[:2] == ("docker", "run") and "--name" in argv:
             (cache / "activate.sh").write_text(BAD_ACTIVATE)
-            (cache / "activate.sh").write_text(good)
+            swaps.append(True)
+        return await actual_exec(*argv, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", swap_before_start)
 
     async def five() -> list[tuple[bool | None, str]]:
-        results: list[tuple[bool | None, str]] = []
+        results = []
         for _ in range(5):
-            results.append(await verify_env_cache_clean(state, "probe218", _svc(), performer_mounts=[tmp_path]))
+            (cache / "activate.sh").write_text(good)
+            results.append(await verify_env_cache_clean(
+                state, "probe218", _svc(real_image), performer_mounts=[tmp_path],
+            ))
         return results
 
-    writer = threading.Thread(target=toggle, daemon=True)
-    writer.start()
-    try:
-        results = _run(five())
-    finally:
-        stop.set()
-        writer.join(timeout=10)
-
-    # A toggle that lands inside the match check is a legitimate refusal, and the verify never
-    # runs in that case. Any other outcome is a failure.
+    results = _run(five())
+    assert len(swaps) == 5
+    assert (cache / "activate.sh").read_text() == BAD_ACTIVATE
     assert [passed for passed, _ in results] == [False] * 5
-    assert all(detail == MISMATCH or NO_TOOLCHAIN in detail for _, detail in results), results
+    assert all(NO_TOOLCHAIN in detail for _, detail in results), results
+    evidence = state["env_cache"]["probe218"].environment_verification
+    assert evidence["results"][0]["status"] == "fail"
+    assert evidence["results"][0]["exit_code"] == 1

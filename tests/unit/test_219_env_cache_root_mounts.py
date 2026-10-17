@@ -9,13 +9,11 @@ diagnostic and the test-env host read.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import stat
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
 
 import pydantic
 import pytest
@@ -28,6 +26,8 @@ from coordinare.services import env_cache
 from coordinare.services.env_cache import EnvCacheService, get_env_volume_for_symphony
 from coordinare.services.mounted_file import replace_mounted_file
 from coordinare.services.test_env_loader import TestEnvFileError, load_test_env
+from tests.unit.test_060_env_cache import _accept
+from tests.unit.test_219_env_cache_safe_writes import _manifest
 
 VICTIM_TEXT = "HOST SECRET\n"
 
@@ -55,29 +55,6 @@ def _performer_root(tmp: Path) -> tuple[Path, Path, Path]:
     return victim, ws, root
 
 
-def _manifest(cache: Path, performer_mounts: tuple[Path, ...]) -> tuple[str | None, bool, bool]:
-    svc = EnvCacheService(MagicMock())
-    files = {".ruby-version": "3.4.2\n", "Gemfile": 'gem "rails"\n'}
-
-    async def fake_get(org: str, repo: str, path: str) -> str | None:
-        return files.get(path)
-
-    github = MagicMock()
-    github.get_file_content = fake_get
-    return asyncio.run(
-        svc._build_manifest_artifacts(
-            performer_mounts=performer_mounts,
-            symphony_name="sym",
-            repo="sym",
-            github_org="org",
-            github_service=github,
-            readme_contents={"README.md": "Rails app."},
-            current_sha="abc123",
-            cache_dir=cache,
-            cache_mount_path="/devenv/sym",
-            llm_chat=None,
-        ),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -89,14 +66,11 @@ def test_root_link_under_performer_volume_writes_are_refused(tmp_path: Path) -> 
     victim, ws, root = _performer_root(tmp_path)
     secret = victim / "secret.env"
 
-    checklist, verify_provided, activate_provided = _manifest(root / "sym", (ws,))
-
-    assert verify_provided is False
-    assert activate_provided is False
+    with pytest.raises(OSError):
+        _manifest(root / "sym", (ws,))
     assert sorted(p.name for p in (victim / "sym").iterdir()) == []
     assert secret.read_text() == VICTIM_TEXT
     assert stat.S_IMODE(secret.stat().st_mode) == 0o640
-    assert checklist is not None
 
 
 def test_root_link_under_performer_volume_is_not_offered_as_a_bootstrap_mount(
@@ -265,6 +239,7 @@ def test_refused_cache_dir_is_reported_as_refused_not_wrong_location(tmp_path: P
         },
     }
 
+    _accept(state["env_cache"]["sym"])
     with capture_logs():
         svc.on_bootstrap_complete("sym", True, state, None)
 

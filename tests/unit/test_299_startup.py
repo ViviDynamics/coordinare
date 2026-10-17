@@ -227,21 +227,31 @@ async def test_startup_watchdog_retires_after_startup() -> None:
 
 
 @pytest.mark.asyncio
-async def test_snapshot_shutdown_has_its_own_deadline(monkeypatch) -> None:
+async def test_snapshot_shutdown_has_its_own_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
     from coordinare import daemon as daemon_module
 
     daemon = daemon_module.CoordinareDaemon(None, state_store=MagicMock())
     cancelled = asyncio.Event()
+    deadline = asyncio.timeout(None)
+
+    def snapshot_timeout(seconds: float) -> asyncio.Timeout:
+        assert seconds == daemon_module.SHUTDOWN_SNAPSHOT_SECONDS
+        return deadline
 
     async def hung_save(*args):
+        # Expire the real timeout only once save has started. Competing short
+        # wall-clock deadlines can both cancel the task after a busy CI loop
+        # resumes, making the outer test timeout mask the snapshot timeout.
+        deadline.reschedule(asyncio.get_running_loop().time())
         try:
             await asyncio.Event().wait()
         finally:
             cancelled.set()
 
     daemon.state_store.save = AsyncMock(side_effect=hung_save)
-    monkeypatch.setattr(daemon_module, "SHUTDOWN_SNAPSHOT_SECONDS", 0.01, raising=False)
-    await asyncio.wait_for(daemon._shutdown_flush(object()), 0.1)
+    monkeypatch.setattr(daemon_module.asyncio, "timeout", snapshot_timeout)
+    await daemon._shutdown_flush(object())
+    assert deadline.expired()
     assert cancelled.is_set()
 
 

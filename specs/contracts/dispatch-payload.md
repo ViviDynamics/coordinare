@@ -168,3 +168,14 @@ When adding a new field to the dispatch payload:
 4. Add the field to the relevant backend `_build_task_prompt()` if the AI needs it
 5. Add a contract test assertion in `tests/contract/test_dispatch_payload.py`
 6. Run contract tests to verify end-to-end delivery
+
+## Reviewed environment identity (351)
+
+| Field | Type | Producer and purpose |
+| --- | --- | --- |
+| `environment_manifest` | object or null | Daemon-owned accepted requirements and executable actions. |
+| `environment_assessment` | object or null | Independent coverage acceptance bound to the manifest. |
+| `environment_manifest_digest` | string | Canonical identity shared by installer and consumer. |
+| `environment_verification_image` | string or null | Required immutable image identity for cache consumers. |
+| `environment_verification_platform` | string or null | Required verified OS/architecture, matched to the performer status. |
+| `environment_secret_names` | string array | Names for output redaction; values use the secret channel. |

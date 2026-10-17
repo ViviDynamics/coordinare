@@ -465,6 +465,9 @@ class TestPortability:
             ("pods", "patch"): "patch_namespaced_pod",
             ("pods", "update"): "replace_namespaced_pod",
             ("pods/log", "get"): "read_namespaced_pod_log",
+            ("secrets", "create"): "create_namespaced_secret",
+            ("secrets", "get"): "read_namespaced_secret",
+            ("secrets", "delete"): "delete_namespaced_secret",
         }
 
         role = next(d for d in _rbac_docs() if d["kind"] == "Role")
@@ -502,11 +505,14 @@ class TestPortability:
         assert ("", "pods/log", "get") in granted, "logs must be readable before delete"
 
         resources = {res for _, res, _ in granted}
-        assert resources == {"pods", "pods/log"}, (
-            f"Role grants {resources - {'pods', 'pods/log'}} beyond what the transport "
+        assert resources == {"pods", "pods/log", "secrets"}, (
+            f"Role grants {resources - {'pods', 'pods/log', 'secrets'}} beyond what the transport "
             "uses; the manifest is the security boundary, so extra grants are the defect"
         )
-        assert "secrets" not in resources
+        for verb in ("create", "get", "delete"):
+            assert ("", "secrets", verb) in granted
+        assert ("", "secrets", "list") not in granted
+        assert ("", "secrets", "update") not in granted
 
 
 class TestNoEgressClaim:

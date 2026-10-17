@@ -11,6 +11,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from coordinare.lib.redaction import clip_session_error
+from coordinare.models.env_cache import EnvCacheState
+from coordinare.services.environment_acceptance import saved_execution_accepted
 
 ENV_NOT_CONFIGURED = "not_configured"
 ENV_BOOTSTRAPPING = "bootstrapping"
@@ -53,6 +55,8 @@ def env_status(*, configured: bool, cache: object | None) -> dict[str, str]:
         else:
             reason = _HEALTH_FAILED_TEXT
         return {"state": ENV_FAILED, "reason": reason}
+    if isinstance(cache, EnvCacheState) and not saved_execution_accepted(cache):
+        return {"state": ENV_NOT_BOOTSTRAPPED, "reason": "Required reviewed execution evidence is missing or incomplete."}
     if bool(getattr(cache, "cache_dir_ready", False)) and succeeded is True:
         return {"state": ENV_READY, "reason": "The env cache is ready for this symphony's performers."}
     return {"state": ENV_NOT_BOOTSTRAPPED, "reason": "No env bootstrap has finished yet."}

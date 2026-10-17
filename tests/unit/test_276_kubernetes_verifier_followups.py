@@ -25,6 +25,7 @@ from coordinare.services.kubernetes_verifier import (
     VERIFY_TEXT_MAX_BYTES,
     VerifierSpec,
 )
+from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
 from tests.unit.test_265_k8s_verifier import (
     CLAIM,
     MOUNT,
@@ -50,8 +51,8 @@ class InvalidImageCore(_FakeCoreV1):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("phase", "expected"), [("Succeeded", True), ("Failed", False)])
-async def test_verify_verdict_survives_unavailable_logs(phase: str, expected: bool) -> None:
+@pytest.mark.parametrize(("phase", "expected"), [("Succeeded", None), ("Failed", False)])
+async def test_unavailable_reports_hold_success_and_preserve_failed_verdict(phase: str, expected: bool | None) -> None:
     class UnreadableLogs(_FakeCoreV1):
         def read_namespaced_pod_log(self, **kwargs: Any) -> str:
             raise OSError("log service unavailable")
@@ -63,14 +64,19 @@ async def test_verify_verdict_survives_unavailable_logs(phase: str, expected: bo
 
 
 @pytest.mark.asyncio
-async def test_successful_verify_does_not_read_logs() -> None:
-    class UnexpectedLogs(_FakeCoreV1):
-        def read_namespaced_pod_log(self, **kwargs: Any) -> str:
-            pytest.fail("a successful verify must not depend on the log service")
+async def test_successful_verify_reads_trusted_execution_report() -> None:
+    class RecordedLogs(_FakeCoreV1):
+        reads = 0
 
-    core = UnexpectedLogs(["Succeeded"])
-    ok, _detail = await _run(KubernetesRuntime(namespace=NAMESPACE, cache_claim=CLAIM, core_v1=core))
+        def read_namespaced_pod_log(self, **kwargs: Any) -> str:
+            self.reads += 1
+            return verification_output().decode()
+
+    core = RecordedLogs(["Succeeded"])
+    ok, detail = await _run(KubernetesRuntime(namespace=NAMESPACE, cache_claim=CLAIM, core_v1=core))
     assert ok is True
+    assert detail == verification_output().decode()
+    assert core.reads == 1
     assert len(core.deleted) == 1
 
 
@@ -107,7 +113,9 @@ async def test_configuration_refusals_stop_bootstrap_retries(tmp_path: Path, ref
     elif refusal == "verify_size":
         ec.rendered_verify_sh = "x" * (VERIFY_TEXT_MAX_BYTES + 1)
     elif refusal == "project_size":
-        state["github_service"].get_file_content.return_value = "x" * PROJECT_FILES_MAX_BYTES
+        text = "x" * PROJECT_FILES_MAX_BYTES
+        reviewed_cache(ec, files={"tools.plan": text}, source_commit=ec.bootstrap_commit_sha)
+        state["github_service"].get_file_content.return_value = text
     else:
         ec.rendered_verify_sh = "\ud800"
         expected = "encode"
@@ -139,7 +147,12 @@ async def test_transient_verify_failure_keeps_the_retry_path(tmp_path: Path) -> 
 @pytest.mark.asyncio
 async def test_successful_walk_still_requires_readable_result_logs(tmp_path: Path) -> None:
     class UnreadableWalk(_FakeCoreV1):
+        reads = 0
+
         def read_namespaced_pod_log(self, **kwargs: Any) -> str:
+            self.reads += 1
+            if self.reads == 1:
+                return verification_output(ec.environment_manifest).decode()
             raise OSError("walk result unavailable")
 
     _service, ec, _state, daemon, performer, _runtime = setup(tmp_path, [])
@@ -261,7 +274,10 @@ async def test_restart_between_verify_and_walk_requires_fresh_verification_witho
             super().create_namespaced_pod(namespace, body)
 
         def read_namespaced_pod_log(self, **kwargs: Any) -> str:
-            return logs(summary())
+            pod = next(item["body"] for item in self.created
+                       if item["body"]["metadata"]["name"] == kwargs["name"])
+            env = {item["name"]: item["value"] for item in pod["spec"]["containers"][0]["env"]}
+            return logs(summary()) if env["WALK_ONLY"] == "1" else verification_output(ec.environment_manifest).decode()
 
     _service, ec, state, daemon, performer, _runtime = setup(tmp_path, [])
     ec.bootstrap_in_flight = True

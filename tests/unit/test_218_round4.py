@@ -15,6 +15,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -22,9 +23,18 @@ from coordinare.models.env_cache import EnvCacheState
 from coordinare.services import env_cache
 from coordinare.services.docker_runtime import DockerRuntime
 from coordinare.services.env_cache import rearm_budgets_on_spec_change, verify_env_cache_clean
+from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
 
-SVC = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"))
+SVC = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img@sha256:" + "a" * 64))
 REAL_EXEC = asyncio.create_subprocess_exec
+
+
+@pytest.fixture(autouse=True)
+def _accepted_verification_sources(monkeypatch):
+    """Probe/cancellation tests supply accepted source independently of GitHub I/O."""
+    monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",
+        AsyncMock(return_value={"tools.plan": "baseline"}))
+    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files: "")
 
 
 class _Hung:
@@ -64,19 +74,20 @@ class _Fake:
             proc = _Hung()
             self.hung.append(proc)
             return proc
-        return _Done(self.run_rc)
+        return _Done(self.run_rc, output=verification_output())
 
 
 class _Done:
-    def __init__(self, rc: int, err: bytes = b"") -> None:
+    def __init__(self, rc: int, err: bytes = b"", *, output: bytes = b"") -> None:
         self.returncode = rc
         self._err = err
+        self._output = output
 
     async def wait(self) -> int:
         return self.returncode
 
     async def communicate(self, **_kwargs: Any) -> tuple[bytes, bytes]:
-        return b"", self._err
+        return self._output, self._err
 
 
 def _state(tmp_path: Path, verify: str = "#!/bin/sh\nexit 0\n") -> dict[str, Any]:
@@ -87,6 +98,7 @@ def _state(tmp_path: Path, verify: str = "#!/bin/sh\nexit 0\n") -> dict[str, Any
         symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache,
         rendered_verify_sh=verify, rendered_activate_sh="ACT=1\n",
     )
+    reviewed_cache(state)
     return {"env_cache": {"sym": state}}
 
 

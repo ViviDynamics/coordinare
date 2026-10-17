@@ -13,6 +13,7 @@ from coordinare.services.env_provenance import DEFAULT_LIMITS
 from coordinare.services.kubernetes_provenance import parse_summary
 from coordinare.services.kubernetes_runtime import KubernetesRuntime
 from coordinare.services.kubernetes_verifier import PROJECT_FILES_MAX_BYTES, VERIFIER_POD_MAX_BYTES
+from tests.unit.env_manifest_fixture import verification_output
 from tests.unit.test_265_k8s_verifier import (
     CLAIM,
     NAMESPACE,
@@ -22,6 +23,12 @@ from tests.unit.test_265_k8s_verifier import (
     _run_in_pod,
 )
 from tests.unit.test_265_provenance_k8s import ACTIVATE, freeze, logs, setup, summary
+
+
+def check_log(ec, output=""):
+    report = json.loads(verification_output(ec.environment_manifest))
+    report["results"][0]["output"] = output
+    return json.dumps(report)
 
 POD_MARGIN_BYTES = 32 * 1024
 LOG_BOUND_BYTES = 1024 * 1024 + 2000
@@ -36,7 +43,7 @@ LOG_BOUND_BYTES = 1024 * 1024 + 2000
 ])
 async def test_only_the_second_pod_can_supply_provenance(tmp_path: Path, verify_output: str) -> None:
     _service, ec, _state, daemon, performer, runtime = setup(tmp_path, [])
-    runtime.results = [(True, verify_output), (True, logs(summary()))]
+    runtime.results = [(True, check_log(ec, verify_output)), (True, logs(summary()))]
     verdict = await daemon._verify_bootstrap_in_clean_context("sym", performer, "job")
     assert verdict == (True, None, False)
     assert len(runtime.specs) == 2
@@ -106,7 +113,7 @@ def test_maximum_legal_project_and_verify_inputs_fit_with_margin() -> None:
 @pytest.mark.asyncio
 async def test_walk_failure_does_not_freeze_verify_output(tmp_path: Path) -> None:
     _service, ec, _state, daemon, performer, runtime = setup(tmp_path, [])
-    runtime.results = [(True, logs(summary())), (None, "walk unavailable")]
+    runtime.results = [(True, check_log(ec, logs(summary()))), (None, "walk unavailable")]
     ok, _reason, infra = await daemon._verify_bootstrap_in_clean_context("sym", performer, "job")
     assert not ok
     assert infra
@@ -144,7 +151,7 @@ async def test_runtime_runs_two_identically_hardened_pods_in_order(tmp_path: Pat
             env = {item["name"]: item["value"] for item in container["env"]}
             if env["WALK_ONLY"] == "0":
                 assert env["PROVENANCE_CONFIG"] == ""
-                return "junk" + logs(summary(content_digest="f" * 64))
+                return check_log(ec, "junk" + logs(summary(content_digest="f" * 64)))
             assert len(self.deleted) == 1
             return logs(summary())
 
@@ -174,7 +181,7 @@ def test_maximum_inputs_with_escaping_fit_both_pods(walk_only: bool) -> None:
 async def test_permission_error_from_walk_is_a_bootstrap_verdict(tmp_path: Path) -> None:
     _service, ec, _state, daemon, performer, runtime = setup(tmp_path, [])
     reason = "claim PermissionError: make files world-readable and directories world-traversable (mode o+rX); uid 10001, no fsGroup"
-    runtime.results = [(True, "verify passed"), (True, logs({"error": reason, "transient": False}))]
+    runtime.results = [(True, check_log(ec)), (True, logs({"error": reason, "transient": False}))]
     ok, error, infra = await daemon._verify_bootstrap_in_clean_context("sym", performer, "job")
     assert not ok
     assert not infra
@@ -199,7 +206,7 @@ async def test_permission_error_during_recheck_is_not_infrastructure(tmp_path: P
 @pytest.mark.asyncio
 async def test_changed_activation_during_verify_cannot_be_frozen(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _service, ec, _state, daemon, performer, runtime = setup(tmp_path, [])
-    runtime.results = [(True, "verify passed"), (True, logs(summary()))]
+    runtime.results = [(True, check_log(ec)), (True, logs(summary()))]
     run = runtime.run_verifier
 
     async def changing_verify(**kwargs: Any) -> tuple[bool | None, str]:

@@ -12,6 +12,8 @@ from performer.workflows.adapter import build_production_toolkit
 from performer.workflows.base import WorkflowMetrics
 from performer.workflows.env_bootstrap import EnvBootstrapWorkflow
 
+from tests.unit.env_manifest_fixture import reviewed_metadata
+
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
@@ -29,6 +31,12 @@ def setup(tmp_path, monkeypatch):
                   role="env_bootstrap", workflow="env_bootstrap", backend="codex",
                   env_cache_path=str(cache), verify_provided=True, activate_provided=True,
                   coordinare_manages_services=False, persona_instructions="Install the required tool")
+    metadata = reviewed_metadata(checks=[{"id": "tool", "argv": ["python3", "-c",
+        "from pathlib import Path; import os, sys; ready=Path(os.environ[\"DEVENV\"] + \"/installed\").exists(); print(\"PASS tool\" if ready else \"FAIL missing tool\"); sys.exit(0 if ready else 1)"]}],
+        activation={"env": {"DEVENV": "{cache}"}})
+    for key, value in metadata.items():
+        setattr(score, key, value)
+    score.workflow_env = {"ENV_BOOTSTRAP_MAX_REPAIRS": "2"}
     inference = AsyncMock(return_value={"inference_succeeded": True})
     monkeypatch.setattr("performer.main._run_service_inference", inference)
     return Stand(path=repo, branch="fixture"), score, cache, inference
@@ -79,8 +87,9 @@ async def test_install_repair_and_integrity(setup, action, status, turns):
     assert tk.metrics.model_calls == 0
     assert "install" in tk.metrics.step_durations_ms
     if action == "repair":
-        assert "FAIL missing tool" in harness.personas[-1]
-        assert result.report["env_bootstrap_run"]["inference"]["inference_succeeded"] is True
+        assert "tool: fail" in harness.personas[-1]
+        assert result.report["env_bootstrap_run"]["inference"] == {}
+        inference.assert_not_awaited()
     if action in {"overwrite", "delete"}:
         inference.assert_not_awaited()
         assert "artifact" in result.report["env_bootstrap_run"]["reason"]
@@ -97,21 +106,21 @@ async def test_missing_promised_verifier_fails_before_install(setup):
 
 @pytest.mark.parametrize("managed", [True, False])
 async def test_readiness_precedes_verification_and_respects_mode(setup, monkeypatch, managed):
-    stand, score, cache, _ = setup
+    stand, score, cache, inference = setup
     score.coordinare_manages_services = managed
-    order = []
-    async def ready(*args):
-        order.append("readiness")
-        return True, []
-    async def verify(*args, **kwargs):
-        order.append("verify")
-        return True, ""
-    monkeypatch.setattr("performer.workspace.run_service_readiness", ready)
-    monkeypatch.setattr("performer.workspace.run_env_cache_verify", verify)
+    order = cache / "order"
+    metadata = reviewed_metadata(
+        services=[{"id": "custom", "start": {"id": "start", "argv": ["true"]},
+                   "health": {"id": "health", "argv": ["bash", "-c", f"echo readiness >> '{order}'"]},
+                   "stop": {"id": "stop", "argv": ["true"]}}],
+        checks=[{"id": "verify", "argv": ["bash", "-c", f"echo verify >> '{order}'"]}])
+    for key, value in metadata.items():
+        setattr(score, key, value)
     harness = Harness(cache, "install")
     result = await EnvBootstrapWorkflow().run(stand, score, toolkit(stand, score, harness))
     assert result.report["env_bootstrap_run"]["status"] == "complete"
-    assert order == (["readiness", "verify"] if managed else ["verify"])
+    assert order.read_text().splitlines() == ["readiness", "verify", "readiness", "verify"]
+    inference.assert_not_awaited()
 
 
 async def test_zero_repair_budget(setup):
@@ -120,7 +129,7 @@ async def test_zero_repair_budget(setup):
     harness = Harness(cache, "missing")
     result = await EnvBootstrapWorkflow().run(stand, score, toolkit(stand, score, harness))
     assert result.report["env_bootstrap_run"]["status"] == "error"
-    assert len(harness.personas) == 1
+    assert len(harness.personas) == 0
 
 
 async def test_timeout_stops_harness_without_repair(setup):
@@ -141,7 +150,7 @@ async def test_cancellation_stops_harness_and_propagates(setup):
     stand, score, cache, _ = setup
     harness = Harness(cache, "hang")
     task = asyncio.create_task(EnvBootstrapWorkflow().run(stand, score, toolkit(stand, score, harness)))
-    for _ in range(100):
+    for _ in range(2000):
         if harness.personas:
             break
         await asyncio.sleep(0.001)
@@ -168,6 +177,7 @@ async def test_invalid_budget_fails_before_install(setup, env):
 async def test_missing_unpromised_verifier_is_still_not_success(setup):
     stand, score, cache, _ = setup
     score.verify_provided = False
+    score.environment_assessment = None
     (cache / "verify.sh").unlink()
     harness = Harness(cache, "install")
     result = await EnvBootstrapWorkflow().run(stand, score, toolkit(stand, score, harness))
@@ -186,26 +196,29 @@ async def test_symlinked_promised_artifact_fails_before_install(setup):
     assert not harness.personas
 
 
-async def test_inference_timeout_remains_best_effort(setup):
+async def test_accepted_contract_never_invokes_legacy_inference(setup):
     stand, score, cache, inference = setup
     inference.side_effect = TimeoutError
     harness = Harness(cache, "install")
     result = await EnvBootstrapWorkflow().run(stand, score, toolkit(stand, score, harness))
     run = result.report["env_bootstrap_run"]
     assert run["status"] == "complete"
-    assert run["inference"]["inference_skipped_reason"] == "timeout"
+    assert run["inference"] == {}
+    inference.assert_not_awaited()
 
 
 async def test_readiness_failure_is_repaired_before_verify(setup, monkeypatch):
     stand, score, cache, _ = setup
-    score.coordinare_manages_services = True
-    readiness = AsyncMock(side_effect=[(False, [{"reason": "database not ready"}]), (True, [])])
-    monkeypatch.setattr("performer.workspace.run_service_readiness", readiness)
+    metadata = reviewed_metadata(services=[{"id": "database", "start": {"id": "start", "argv": ["true"]},
+        "health": {"id": "health", "argv": ["bash", "-c", f"test -f '{cache / 'installed'}'"]},
+        "stop": {"id": "stop", "argv": ["true"]}}])
+    for key, value in metadata.items():
+        setattr(score, key, value)
     harness = Harness(cache, "install")
     result = await EnvBootstrapWorkflow().run(stand, score, toolkit(stand, score, harness))
     assert result.report["env_bootstrap_run"]["status"] == "complete"
-    assert len(harness.personas) == 2
-    assert "database not ready" in harness.personas[-1]
+    assert len(harness.personas) == 1
+    assert "health: fail" in harness.personas[-1]
 
 
 async def test_adapter_reports_named_steps_and_real_metrics(setup):
@@ -324,9 +337,11 @@ async def test_cancelled_service_gate_cannot_write_after_timeout(setup, phase):
 
 async def test_verifier_cannot_rewrite_activation_and_report_success(setup):
     stand, score, cache, _ = setup
-    (cache / "verify.sh").write_text(f'echo changed > "{cache / "activate.sh"}"\nexit 0\n')
+    metadata = reviewed_metadata(checks=[{"id": "mutating", "argv": ["bash", "-c", f"echo changed > '{cache / 'activate.sh'}'"]}])
+    for key, value in metadata.items():
+        setattr(score, key, value)
     harness = Harness(cache, "install")
     result = await EnvBootstrapWorkflow().run(stand, score, toolkit(stand, score, harness))
     assert result.report["env_bootstrap_run"]["status"] == "error"
     assert "artifact changed" in result.report["env_bootstrap_run"]["reason"]
-    assert len(harness.personas) == 1
+    assert len(harness.personas) == 0

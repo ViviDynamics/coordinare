@@ -563,7 +563,7 @@ class DashboardStore:
             env_symphonies=len(env_states),
             env_failed=tuple(sorted(name for name, state in env_states.items() if _env_bootstrap_failed(state))),
             env_failures=_env_failures(daemon.state, env_states, datetime.now(UTC)),
-            env_ready=sum(1 for state in env_states.values() if getattr(state, "last_bootstrap_succeeded", None) is True),
+            env_ready=sum(1 for state in env_states.values() if env_status(configured=True, cache=state)["state"] == "ready"),
         )
         result = build_system_health(SYSTEM_HEALTH, inputs)
         recovery = recovery_health_row(daemon.state.get("config_path"))
@@ -1311,6 +1311,8 @@ class DashboardStore:
                 "bootstrap_in_flight": bool(getattr(cache, "bootstrap_in_flight", False)),
                 "cache_dir_ready": bool(getattr(cache, "cache_dir_ready", False)),
                 "last_bootstrap_succeeded": getattr(cache, "last_bootstrap_succeeded", None),
+                "environment_assessment": getattr(cache, "environment_assessment", None),
+                "environment_verification": getattr(cache, "environment_verification", None),
                 # 156: clipped where the snapshot is built, so no bootstrap error reaches the page unbounded.
                 "last_bootstrap_error": (
                     clip_session_error(_bootstrap_error)

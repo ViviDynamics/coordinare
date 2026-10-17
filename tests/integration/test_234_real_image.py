@@ -18,14 +18,16 @@ opt-in, a missing docker or image FAILS the module fixture, so the lane cannot p
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from coordinare_service_inference.environment.render import render_activate
 from performer.env_provenance import materialise
 from performer.server.models import EnvProvenance
 
+from coordinare.services.env_cache import verify_env_cache_clean
 from coordinare.services.env_provenance import (
     ProvenanceScope,
     build_payload,
@@ -33,34 +35,43 @@ from coordinare.services.env_provenance import (
     open_manifest,
     verify_content,
 )
+from tests.integration.reviewed_environment import (
+    accepted_state,
+    manifest_for,
+)
+from tests.integration.reviewed_environment import (
+    immutable_performer_image as _image_fixture,
+)
 
+real_image = _image_fixture
 pytestmark = pytest.mark.docker_image
 
-IMAGE = os.environ.get("COORDINARE_E2E_PERFORMER_IMAGE", "coordinare-performer:full")
 SLUG = "sym-234"
 CACHE_PATH = f"/devenv/{SLUG}"
-FROZEN_ACTIVATE = "touch /tmp/frozen-234\n"
+FILES = {"environment.plan": "Activation must set COORDINARE_FROZEN_234=yes\n"}
+MANIFEST = manifest_for(SLUG, files=FILES, activation={"env": {"COORDINARE_FROZEN_234": "yes"}}, checks=[{
+    "id": "activation", "argv": ["/usr/local/bin/python", "-I", "-c",
+        "import os; assert os.environ.get('COORDINARE_FROZEN_234') == 'yes'"]}])
+FROZEN_ACTIVATE = render_activate(MANIFEST, cache_mount_path=CACHE_PATH)
 SWAPPED_ACTIVATE = "touch /tmp/swapped-234\n"
 PLANTED_SERVICES = "touch /tmp/planted-services-234\n"
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _image_is_present() -> None:
-    """Fail, do not pass, when the image is missing: the opt-in lane must actually run."""
-    probe = subprocess.run(
-        ["docker", "image", "inspect", IMAGE], capture_output=True, text=True, check=False, timeout=60,
-    )
-    if probe.returncode != 0:
-        pytest.fail(f"performer image {IMAGE!r} is not built; build it, or set COORDINARE_E2E_PERFORMER_IMAGE")
-
-
-def _frozen_cache(tmp_path: Path) -> tuple[Path, Path, object]:
+async def _frozen_cache(tmp_path: Path, image: str) -> tuple[Path, Path, object]:
     root = tmp_path / "caches"
     cache = root / SLUG
     (cache / "bin").mkdir(parents=True)
     (cache / "bin" / "ruby").write_text("#!/bin/sh\necho ruby 3.4.2\n")
     (cache / "bin" / "ruby").chmod(0o755)
-    (cache / "activate.sh").write_text(FROZEN_ACTIVATE)
+    state = accepted_state(cache, MANIFEST, FILES)
+    svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image=image))
+    passed, detail = await verify_env_cache_clean(state, SLUG, svc, performer_mounts=(root,))
+    assert passed is True, detail
+    evidence = state["env_cache"][SLUG].environment_verification
+    assert evidence["manifest_digest"] == MANIFEST.digest()
+    assert evidence["results"][0]["id"] == "activation"
+    assert evidence["results"][0]["status"] == "pass"
+    assert evidence["results"][0]["exit_code"] == 0
     out = tmp_path / "state" / "sym-234.json"
     result = freeze_cache(
         cache, identity=("sym-234", "k"), activate_sh=FROZEN_ACTIVATE,
@@ -71,8 +82,8 @@ def _frozen_cache(tmp_path: Path) -> tuple[Path, Path, object]:
     return cache, root, manifest
 
 
-def test_a_post_verification_swap_is_not_run_by_a_consumer_shell(tmp_path: Path) -> None:
-    cache, root, manifest = _frozen_cache(tmp_path)
+async def test_a_post_verification_swap_is_not_run_by_a_consumer_shell(tmp_path: Path, real_image: str) -> None:
+    cache, root, manifest = await _frozen_cache(tmp_path, real_image)
 
     # The bootstrap writer changes the cache after the verification.
     (cache / "activate.sh").write_text(SWAPPED_ACTIVATE)
@@ -94,10 +105,10 @@ def test_a_post_verification_swap_is_not_run_by_a_consumer_shell(tmp_path: Path)
         "-v", f"{cache}:{CACHE_PATH}:ro",
         "-v", f"{provenance}:/var/lib/devenv-provenance:ro",
         "-e", "_DEVENV_PROVENANCE_DIR=/var/lib/devenv-provenance",
-        "--entrypoint", "bash", IMAGE, "-c",
+        "--entrypoint", "bash", real_image, "-c",
         "test -e /tmp/swapped-234 && echo SWAPPED; "
         "test -e /tmp/planted-services-234 && echo PLANTED; "
-        "test -e /tmp/frozen-234 && echo FROZEN; true",
+        'test "${COORDINARE_FROZEN_234-}" = yes && echo FROZEN; true',
     ]
     result = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=600)
     assert result.returncode == 0, result.stderr

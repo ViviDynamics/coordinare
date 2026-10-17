@@ -2538,6 +2538,63 @@ class GitHubService(CardIdentityMap):
             return []
         return [n for n in nodes if isinstance(n, dict)]
 
+    async def get_repository_paths(
+        self, owner: str, repo: str, *, ref: str, max_entries: int = 100_000,
+    ) -> list[str]:
+        """Return a complete pinned blob inventory, refusing partial source trees."""
+        if not ref or not owner or not repo:
+            message = "repository inventory requires owner, repository and ref"
+            raise GitHubError(message)
+        if max_entries < 1:
+            message = "repository inventory entry limit must be positive"
+            raise GitHubError(message)
+        token = await self._current_token()
+        if not token.strip():
+            message = "repository inventory requires GitHub authentication"
+            raise GitHubError(message)
+        url = (
+            f"{self._rest_api_base()}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
+            f"/git/trees/{quote(ref, safe='')}"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(
+                    url, params={"recursive": "1"},
+                    headers={"Authorization": f"Bearer {token}",
+                             "Accept": "application/vnd.github+json"},
+                )
+                response.raise_for_status()
+                data = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            message = "repository inventory request failed"
+            raise GitHubError(message) from exc
+        if not isinstance(data, dict) or data.get("truncated") is not False:
+            message = "repository inventory is incomplete"
+            raise GitHubError(message)
+        entries = data.get("tree")
+        if not isinstance(entries, list) or len(entries) > max_entries:
+            message = "repository inventory is invalid or exceeds limit"
+            raise GitHubError(message)
+        paths: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("type") not in {"blob", "tree"}:
+                message = "repository inventory contains unsupported entry"
+                raise GitHubError(message)
+            path = entry.get("path")
+            if (
+                not isinstance(path, str) or not path or path.startswith("/")
+                or "\\" in path or any(part in {"", ".", ".."} for part in path.split("/"))
+                or any(ord(char) < 32 for char in path)
+            ):
+                message = "repository inventory contains invalid path"
+                raise GitHubError(message)
+            if entry["type"] == "blob":
+                if path in paths:
+                    message = "repository inventory contains duplicate path"
+                    raise GitHubError(message)
+                paths.add(path)
+        return sorted(paths)
+
     async def get_file_content(
         self, owner: str, repo: str, path: str, ref: str = "HEAD",
     ) -> str | None:

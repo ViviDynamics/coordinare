@@ -10,9 +10,9 @@ from coordinare.state_store import CURRENT_SCHEMA_VERSION, PersistedSession, Wor
 class TestReviewFindingsSchemaV19:
     """Tests for spec 169 review_findings field on PersistedSession."""
 
-    def test_schema_version_is_24(self):
+    def test_schema_version_is_40(self):
         """545 advances the snapshot schema to 26; review findings remain supported."""
-        assert CURRENT_SCHEMA_VERSION == 39  # 276: persisted env-cache bootstrap exhaustion reason
+        assert CURRENT_SCHEMA_VERSION == 40  # 351: persisted reviewed environment contract
 
     def test_review_findings_default_none(self):
         """review_findings defaults to None."""

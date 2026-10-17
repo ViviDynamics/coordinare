@@ -22,9 +22,21 @@ import pytest
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.services import env_cache
 from coordinare.services.env_cache import EnvCacheService, verify_env_cache_clean
+from tests.unit.env_manifest_fixture import reviewed_cache, reviewed_metadata
 from tests.unit.env_mount_stub import mount_config
 
-SVC = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"))
+
+@pytest.fixture(autouse=True)
+def _accepted_source_fixture(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",
+                        AsyncMock(return_value={"tools.plan": "baseline"}))
+    # These tests exercise trusted verifier execution, not source archive materialisation.
+    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files: "")
+
+
+SVC = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img@sha256:" + "1" * 64))
 
 
 class _SlowProc:
@@ -76,6 +88,7 @@ def _state(tmp_path: Path) -> dict[str, Any]:
     state = EnvCacheState(
         symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache,
         rendered_verify_sh="#!/bin/sh\nexit 0\n", rendered_activate_sh="ACT=1\n",
+        bootstrap_commit_sha="a" * 40, **{key: value for key, value in reviewed_metadata().items() if key != "environment_manifest_digest"},
     )
     return {"env_cache": {"sym": state}}
 
@@ -156,6 +169,7 @@ def test_infrastructure_failures_are_capped_and_then_operator_visible(tmp_path: 
 def test_a_success_resets_the_infrastructure_budget(tmp_path: Path) -> None:
     svc, ctx = _svc_with_cache(tmp_path)
     state = ctx["env_cache"]["sym"]
+    reviewed_cache(state)
     for _ in range(3):
         svc.on_bootstrap_complete("sym", False, ctx, error="docker down", infra_failure=True)
     (state.cache_dir / "toolchain").mkdir()

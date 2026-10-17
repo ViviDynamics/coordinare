@@ -8,8 +8,8 @@ Contract (specs/093-env-cache-readiness-gate/contracts/readiness-gate.md):
   * ``True``  (exit 0)  ⇒ proceed with dispatch.
   * ``False`` (nonzero) ⇒ trigger re-bootstrap, withhold dispatch, release slot,
     log ``dispatch_performer.env_cache_not_current``.
-  * ``None``  (verify.sh absent / docker error) ⇒ MUST NOT block — degraded
-    passthrough on legacy ``last_bootstrap_succeeded``.
+  * ``None``  (verification unavailable) ⇒ hold; saved success flags cannot
+    replace required execution evidence.
 
 The gate is re-evaluated on EVERY code-running dispatch (no caching, FR-006) and
 ``env_bootstrap`` is exempt (it is what builds the cache).
@@ -104,11 +104,10 @@ async def test_readiness_pass_proceeds_with_dispatch(
 
 
 @pytest.mark.asyncio
-async def test_readiness_none_is_degraded_passthrough(
+async def test_readiness_none_holds_until_execution_confirmed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """T007: readiness ``None`` (verify.sh absent / docker error) MUST NOT block —
-    proceed on the legacy last_bootstrap_succeeded path."""
+    """An unavailable clean verification holds even a previously verified cache."""
     svc = _make_http_service(mode="ephemeral")
     state = _readiness_state(tmp_path, stage="qa", svc=svc)
 
@@ -121,8 +120,8 @@ async def test_readiness_none_is_degraded_passthrough(
     await dispatch_performer(state)
 
     assert fake_verify.await_count == 1
-    # Degraded ⇒ dispatch proceeds.
-    assert svc.dispatch_card.called
+    assert not svc.dispatch_card.called
+    assert "verification held" in state["env_cache"]["my-project"].last_bootstrap_error
 
 
 @pytest.mark.asyncio

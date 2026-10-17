@@ -296,236 +296,107 @@ class TestHandleStatus:
         assert "timed out" in (resp.reason or "")
 
 
+def _reviewed_bootstrap_perf(tmp_path, metadata):
+    perf = _make_perf(session_id="sid")
+    perf.role = "env_bootstrap"
+    perf.score.role = "env_bootstrap"
+    perf.score.env_cache_path = str(tmp_path)
+    perf.stand.path = tmp_path
+    for key, value in metadata.items():
+        setattr(perf.score, key, value)
+    perf.backend.get_status.return_value = BackendStatus(state="done")
+    return perf
+
+
+def _bind_bootstrap_contract(metadata, **changes):
+    from coordinare_service_inference.environment.models import EnvironmentManifest
+
+    manifest = EnvironmentManifest.model_validate({**metadata["environment_manifest"], **changes})
+    metadata["environment_manifest"] = manifest.model_dump()
+    metadata["environment_manifest_digest"] = manifest.digest()
+    metadata["environment_assessment"]["manifest_digest"] = manifest.digest()
+    return metadata
+
+
 class TestEnvBootstrapInferenceTimeout:
-    """Fix 2: _run_service_inference must be wrapped in asyncio.wait_for so a
-    wedged LiteLLM proxy can't hang the env_bootstrap job indefinitely.
+    """351: legacy inference can neither accept nor hold a reviewed environment."""
 
-    076 (live QA #150): a timeout is NON-FATAL — the dev-env install already
-    ran into the mounted cache, and service_inference is best-effort.  A
-    timeout must report terminal success (cache ready) with the inference
-    flagged as skipped, NOT status=error (which caused infinite re-dispatch).
-    """
-
-    async def test_inference_timeout_is_non_fatal_and_marks_complete(self) -> None:
-        perf = _make_perf(session_id="sid")
-        perf.role = "env_bootstrap"
-        perf.score.env_cache_path = "/tmp/env-cache"
-        perf.backend.get_status.return_value = BackendStatus(state="done")
-
-        async def _hang(*_args: object, **_kwargs: object) -> dict:
-            await asyncio.sleep(10)
-            return {}
-
-        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=0)
-        with (
-            patch("performer.main._run_service_inference", new=AsyncMock(side_effect=_hang)),
-            patch("performer.main.get_settings", return_value=settings),
-        ):
-            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
-
-        # Bootstrap completes (cache becomes ready) despite the inference timeout.
+    async def test_inference_timeout_is_non_fatal_and_marks_complete(self, tmp_path, reviewed_environment_metadata):
+        perf = _reviewed_bootstrap_perf(tmp_path, reviewed_environment_metadata)
+        with patch("performer.main._run_service_inference", new=AsyncMock(side_effect=TimeoutError)) as inference:
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings())
         assert resp.status == "env_bootstrap_complete"
-        assert perf.state == "env_bootstrap_complete"
-        # Telemetry preserved so the dashboard shows inference as degraded.
-        assert resp.inference_succeeded is False
-        assert resp.inference_skipped_reason == "timeout"
+        inference.assert_not_awaited()
 
-    async def test_inference_success_when_under_timeout(self) -> None:
-        perf = _make_perf(session_id="sid")
-        perf.role = "env_bootstrap"
-        perf.score.env_cache_path = "/tmp/env-cache"
-        perf.backend.get_status.return_value = BackendStatus(state="done")
-
-        inference_state = {"inference_succeeded": True}
-        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
-        with (
-            patch(
-                "performer.main._run_service_inference",
-                new=AsyncMock(return_value=inference_state),
-            ),
-            patch("performer.main.get_settings", return_value=settings),
-        ):
-            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
-
-        assert resp.status == "env_bootstrap_complete"
-        assert perf.state == "env_bootstrap_complete"
+    async def test_inference_success_when_under_timeout(self, tmp_path):
+        # An old daemon's best-effort inference is no substitute for independent review.
+        perf = _reviewed_bootstrap_perf(tmp_path, {})
+        with patch("performer.main._run_service_inference", new=AsyncMock(return_value={"inference_succeeded": True})) as inference:
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings())
+        assert resp.status == "error"
+        assert "reviewed" in resp.reason
+        inference.assert_not_awaited()
 
 
 class TestEnvBootstrapVerifyGate:
-    """077 Tier 2: the bootstrap must confirm the install before reporting
-    success. The agent writes verify.sh; the performer runs it and FAILS the
-    bootstrap on a non-zero exit, so a silent install failure (the bug that left
-    Chromium uninstalled while the bootstrap reported success) now triggers a
-    retry instead of marking a broken cache ready.
-    """
+    """Required manifest checks decide readiness; no installer-authored fallback."""
 
-    async def test_verify_failure_fails_the_bootstrap(self, tmp_path) -> None:
-        perf = _make_perf(session_id="sid")
-        perf.role = "env_bootstrap"
-        perf.score.env_cache_path = str(tmp_path)
-        perf.backend.get_status.return_value = BackendStatus(state="done")
-        (tmp_path / "verify.sh").write_text(
-            "#!/bin/sh\necho 'chromium not found' >&2\nexit 1\n"
-        )
-        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
-        with (
-            patch("performer.main._run_service_inference", new=AsyncMock(return_value={})),
-            patch("performer.main.get_settings", return_value=settings),
-        ):
-            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
-
+    async def test_verify_failure_fails_the_bootstrap(self, tmp_path, reviewed_environment_metadata):
+        metadata = _bind_bootstrap_contract(reviewed_environment_metadata, checks=[{"id": "verify", "argv": ["false"]}])
+        perf = _reviewed_bootstrap_perf(tmp_path, metadata)
+        (tmp_path / "verify.sh").write_text("exit 0")
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings())
         assert resp.status == "error"
-        assert "verif" in (resp.reason or "").lower()
-        assert perf.state == "error"
+        assert "verify: fail" in resp.reason
 
-    async def test_verify_pass_completes_the_bootstrap(self, tmp_path) -> None:
-        perf = _make_perf(session_id="sid")
-        perf.role = "env_bootstrap"
-        perf.stand.path = tmp_path  # 265: verify runs from the checkout, which must be a real directory
-        perf.score.env_cache_path = str(tmp_path)
-        perf.backend.get_status.return_value = BackendStatus(state="done")
-        (tmp_path / "verify.sh").write_text("#!/bin/sh\nexit 0\n")
-        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
-        with (
-            patch(
-                "performer.main._run_service_inference",
-                new=AsyncMock(return_value={"inference_succeeded": True}),
-            ),
-            patch("performer.main.get_settings", return_value=settings),
-        ):
-            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
-
+    async def test_verify_pass_completes_the_bootstrap(self, tmp_path, reviewed_environment_metadata):
+        perf = _reviewed_bootstrap_perf(tmp_path, reviewed_environment_metadata)
+        (tmp_path / "verify.sh").write_text("exit 1")
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings())
         assert resp.status == "env_bootstrap_complete"
-        assert perf.state == "env_bootstrap_complete"
 
-    async def test_service_readiness_failure_fails_the_bootstrap(self, tmp_path) -> None:
-        # 101: a required service that isn't connectable → bootstrap error, not complete.
-        perf = _make_perf(session_id="sid")
-        perf.role = "env_bootstrap"
-        perf.score.env_cache_path = str(tmp_path)
-        perf.backend.get_status.return_value = BackendStatus(state="done")
-        (tmp_path / "verify.sh").write_text("#!/bin/sh\nexit 0\n")
-        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
-        with (
-            patch(
-                "performer.main._run_service_inference",
-                new=AsyncMock(return_value={"inference_succeeded": True}),
-            ),
-            patch(
-                "performer.workspace.run_service_readiness",
-                new=AsyncMock(return_value=(False, [{"service": "postgres", "reason": "not connectable"}])),
-            ),
-            patch("performer.main.get_settings", return_value=settings),
-        ):
-            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
-
+    async def test_service_readiness_failure_fails_the_bootstrap(self, tmp_path, reviewed_environment_metadata):
+        metadata = _bind_bootstrap_contract(reviewed_environment_metadata, services=[{
+            "id": "custom", "start": {"id": "start", "argv": ["true"]},
+            "health": {"id": "health", "argv": ["false"]}, "stop": {"id": "stop", "argv": ["true"]}}])
+        perf = _reviewed_bootstrap_perf(tmp_path, metadata)
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings())
         assert resp.status == "error"
-        assert "postgres" in (resp.reason or "") or "not ready" in (resp.reason or "").lower()
-        assert perf.state == "error"
+        assert "health: fail" in resp.reason
 
-    async def test_service_readiness_ok_completes_the_bootstrap(self, tmp_path) -> None:
-        # 101: required services connectable (or none declared) → completes as before.
-        perf = _make_perf(session_id="sid")
-        perf.role = "env_bootstrap"
-        perf.stand.path = tmp_path  # 265: verify runs from the checkout, which must be a real directory
-        perf.score.env_cache_path = str(tmp_path)
-        perf.backend.get_status.return_value = BackendStatus(state="done")
-        (tmp_path / "verify.sh").write_text("#!/bin/sh\nexit 0\n")
-        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
-        with (
-            patch(
-                "performer.main._run_service_inference",
-                new=AsyncMock(return_value={"inference_succeeded": True}),
-            ),
-            patch(
-                "performer.workspace.run_service_readiness",
-                new=AsyncMock(return_value=(True, [])),
-            ),
-            patch("performer.main.get_settings", return_value=settings),
-        ):
-            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
-
+    async def test_service_readiness_ok_completes_the_bootstrap(self, tmp_path, reviewed_environment_metadata):
+        metadata = _bind_bootstrap_contract(reviewed_environment_metadata, services=[{
+            "id": "custom", "start": {"id": "start", "argv": ["true"]},
+            "health": {"id": "health", "argv": ["true"]}, "stop": {"id": "stop", "argv": ["true"]}}])
+        perf = _reviewed_bootstrap_perf(tmp_path, metadata)
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings())
         assert resp.status == "env_bootstrap_complete"
-        assert perf.state == "env_bootstrap_complete"
 
-    async def test_coordinare_manages_services_false_skips_readiness_gate(self, tmp_path) -> None:
-        # 116: when coordinare does NOT manage services, the performer owns env setup and
-        # the 101 readiness gate is skipped entirely — run_service_readiness must NOT be
-        # called, and bootstrap success is decided by the toolchain verify.sh.
-        perf = _make_perf(session_id="sid")
-        perf.role = "env_bootstrap"
-        perf.stand.path = tmp_path  # 265: verify runs from the checkout, which must be a real directory
-        perf.score.env_cache_path = str(tmp_path)
+    async def test_coordinare_manages_services_false_skips_readiness_gate(self, tmp_path, reviewed_environment_metadata):
+        perf = _reviewed_bootstrap_perf(tmp_path, reviewed_environment_metadata)
         perf.score.coordinare_manages_services = False
-        perf.backend.get_status.return_value = BackendStatus(state="done")
-        (tmp_path / "verify.sh").write_text("#!/bin/sh\nexit 0\n")
-        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
-        readiness = AsyncMock(return_value=(False, [{"service": "postgres", "reason": "x"}]))
-        with (
-            patch(
-                "performer.main._run_service_inference",
-                new=AsyncMock(return_value={"inference_succeeded": True}),
-            ),
-            patch("performer.workspace.run_service_readiness", new=readiness),
-            patch("performer.main.get_settings", return_value=settings),
-        ):
-            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
-
-        # Gate skipped: the (failing) readiness mock was never invoked, yet bootstrap completes.
+        with patch("performer.workspace.run_service_readiness", new=AsyncMock()) as readiness:
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings())
         readiness.assert_not_awaited()
         assert resp.status == "env_bootstrap_complete"
-        assert perf.state == "env_bootstrap_complete"
 
-    async def test_verify_missing_is_degraded_not_fatal(self, tmp_path) -> None:
-        # No verify.sh written → legacy/degraded bootstrap: log + proceed, not fail.
-        perf = _make_perf(session_id="sid")
-        perf.role = "env_bootstrap"
-        perf.score.env_cache_path = str(tmp_path)
-        perf.backend.get_status.return_value = BackendStatus(state="done")
-        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
-        with (
-            patch("performer.main._run_service_inference", new=AsyncMock(return_value={})),
-            patch("performer.main.get_settings", return_value=settings),
-        ):
-            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+    async def test_verify_missing_is_degraded_not_fatal(self, tmp_path):
+        # 351 hard cut: missing review is now fatal even if no verify script is promised.
+        perf = _reviewed_bootstrap_perf(tmp_path, {})
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings())
+        assert resp.status == "error"
+        assert "reviewed" in resp.reason
 
+    async def test_readiness_runs_before_verify(self, tmp_path, reviewed_environment_metadata):
+        marker = tmp_path / "ready"
+        metadata = _bind_bootstrap_contract(reviewed_environment_metadata, services=[{
+            "id": "custom", "start": {"id": "start", "argv": ["true"]},
+            "health": {"id": "health", "argv": ["touch", str(marker)]},
+            "stop": {"id": "stop", "argv": ["true"]}}],
+            checks=[{"id": "verify", "argv": ["test", "-f", str(marker)]}])
+        perf = _reviewed_bootstrap_perf(tmp_path, metadata)
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings())
         assert resp.status == "env_bootstrap_complete"
-
-    async def test_readiness_runs_before_verify(self, tmp_path) -> None:
-        """107/SC-001: declared services must be STARTED (run_service_readiness)
-        BEFORE verify.sh runs, so verify's live pg_isready/PING probe (spec-093)
-        observes a running service instead of failing on a not-yet-started one."""
-        perf = _make_perf(session_id="sid")
-        perf.role = "env_bootstrap"
-        perf.score.env_cache_path = str(tmp_path)
-        perf.backend.get_status.return_value = BackendStatus(state="done")
-        (tmp_path / "verify.sh").write_text("#!/bin/sh\nexit 0\n")
-        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
-        order: list[str] = []
-
-        async def _readiness(*_a, **_k):
-            order.append("readiness")
-            return (True, [])
-
-        async def _verify(*_a, **_k):
-            order.append("verify")
-            return (True, "")
-
-        with (
-            patch(
-                "performer.main._run_service_inference",
-                new=AsyncMock(return_value={"inference_succeeded": True}),
-            ),
-            patch("performer.workspace.run_service_readiness", new=_readiness),
-            patch("performer.workspace.run_env_cache_verify", new=_verify),
-            patch("performer.main.get_settings", return_value=settings),
-        ):
-            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
-
-        assert resp.status == "env_bootstrap_complete"
-        assert order == ["readiness", "verify"], (
-            "readiness (which starts services) must run before verify (which probes them)"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -709,7 +580,7 @@ class TestBackendFactory:
 class TestHandleDispatchCleanup:
     async def test_stand_cleaned_up_when_backend_start_fails(self, tmp_path: Path) -> None:
         """If backend.start raises, the cloned stand is cleaned up before re-raising."""
-        stand = MagicMock()
+        stand = MagicMock(environment_lifecycle=None)
         stand.path = tmp_path / "stand"
         stand.path.mkdir()
 
@@ -811,7 +682,7 @@ class TestRunLoop:
         mock_backend = MagicMock()
         mock_backend.stop = AsyncMock()
 
-        stand = MagicMock()
+        stand = MagicMock(environment_lifecycle=None)
         stand.path = Path("/tmp/test-stand")
 
         perf = MagicMock()
@@ -858,7 +729,7 @@ class TestRunLoop:
         mock_backend = MagicMock()
         mock_backend.stop = AsyncMock()
 
-        stand = MagicMock()
+        stand = MagicMock(environment_lifecycle=None)
         stand.path = Path("/tmp/test-stand")
 
         perf = MagicMock()
@@ -932,7 +803,7 @@ class TestRunLoop:
         """BranchConflictError raised from handle_status is caught and returned as error."""
         from performer.workspace import BranchConflictError
 
-        fresh_perf = MagicMock(session_id="sid", stand=MagicMock(), backend=MagicMock())
+        fresh_perf = MagicMock(session_id="sid", stand=MagicMock(environment_lifecycle=None), backend=MagicMock())
         fresh_perf.started_at = datetime.now(UTC)
         with patch(
             "performer.main.handle_dispatch",
@@ -961,7 +832,7 @@ class TestRunLoop:
         perf = MagicMock()
         perf.session_id = "sid"
         perf.backend = mock_backend
-        perf.stand = MagicMock()
+        perf.stand = MagicMock(environment_lifecycle=None)
         perf.started_at = datetime.now(UTC)  # fresh session — watchdog won't fire
 
         with (
@@ -1044,7 +915,7 @@ class TestRunLoop:
         perf = MagicMock()
         perf.session_id = "sid"
         perf.backend = mock_backend
-        perf.stand = MagicMock()
+        perf.stand = MagicMock(environment_lifecycle=None)
         perf.state = "working"
         # Make started_at appear to be in the past so remaining budget is 0
         perf.started_at = datetime.now(UTC) - timedelta(hours=1)
@@ -4971,10 +4842,12 @@ def test_backfill_terminal_failure_reason_ignores_success() -> None:
     ({"status": "complete", "reason": "", "repairs": 0, "inference": {"inference_succeeded": "yes"}}, "error"),
     (None, "error"),
 ])
-async def test_bootstrap_workflow_terminal_skips_legacy_tail(report, expected):
+async def test_bootstrap_workflow_terminal_skips_legacy_tail(report, expected, reviewed_environment_metadata):
     perf = _make_perf()
     perf.role = "env_bootstrap"
     perf.score.workflow = "env_bootstrap"
+    for key, value in reviewed_environment_metadata.items():
+        setattr(perf.score, key, value)
     perf.backend.get_status.return_value = BackendStatus(
         state="done", output=json.dumps({"env_bootstrap_run": report}))
     with patch("performer.main._run_service_inference", new=AsyncMock()) as inference:

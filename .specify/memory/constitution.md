@@ -1,20 +1,29 @@
 <!--
   Sync Impact Report
   ==================
-  Version change: 1.0.0 → 1.1.0
-  Modified principles: None renamed
+  Version change: 1.1.0 → 1.2.0 (additive MINOR amendment, issue #351)
+  Modified principles: None renamed or weakened
   Added sections:
-    - Principle V: Clarity Before Action
+    - Principle VI: Project Ecosystem Neutrality
   Removed sections: None
-  Templates requiring updates:
-    - .specify/templates/plan-template.md — ✅ compatible (Technical
-      Context fields already use NEEDS CLARIFICATION pattern)
-    - .specify/templates/spec-template.md — ✅ compatible (FR examples
-      already demonstrate NEEDS CLARIFICATION markers)
-    - .specify/templates/tasks-template.md — ✅ compatible (Prerequisites
-      section already gates on required input documents)
-    - .specify/templates/commands/*.md — no command files exist yet
-  Follow-up TODOs: None
+  Templates reviewed:
+    - .specify/templates/plan-template.md: updated Constitution Check with
+      evidence, generic contract and unfamiliar-project validation gates
+    - .specify/templates/spec-template.md: updated requirements guidance with
+      project-neutral behavior and evidence-backed setup/verification outcomes
+    - .specify/templates/tasks-template.md: no neutrality-specific change needed;
+      generated tasks derive from spec/plan; Principle II remains authoritative
+      over the template's optional-test examples
+    - .specify/templates/agent-file-template.md: compatible; active technologies
+      describe this implementation, not hard-coded user-project selection
+    - .specify/templates/checklist-template.md: compatible; generated from context
+    - .specify/templates/constitution-template.md: generic amendment scaffold;
+      no project-specific principle belongs in the reusable scaffold
+    - .specify/templates/commands/*.md: no command files exist
+  Dependent docs: docs/onboarding/06-env-cache.md and
+    docs/operators/reviewed-environment-manifest.md describe the #351 contract
+  Follow-up TODOs: None for template synchronization. Amendment follows the
+    existing maintainer approval and merge-date requirements below.
 -->
 
 # Coordinare Constitution
@@ -164,6 +173,38 @@ of building the wrong thing is days or weeks. Ambiguity is a risk
 that compounds — catching it early is the cheapest form of quality
 assurance.
 
+### VI. Project Ecosystem Neutrality
+
+Coordinare's orchestration of user repositories MUST remain independent of
+those projects' programming languages, frameworks, libraries, package managers,
+and directory conventions:
+
+- **Evidence drives project behavior**: Project setup, activation, service
+  lifecycles and verification MUST come from repository evidence and explicit,
+  validated declarations. Core logic MUST NOT select these actions by ecosystem
+  names, conventional dependency filenames, or runtime-manager layouts.
+- **Generic execution contract**: Environment behavior MUST use a versioned
+  contract of explicit commands, prerequisites, working directories, environment
+  references, service actions and executable checks. Required constraints MUST
+  retain required verification; an agent's judgment cannot waive failed or
+  missing execution evidence.
+- **Reviewable authority**: Discovery and independent coverage review MUST bind
+  their evidence to an immutable source identity and the same accepted contract.
+  Unsupported capabilities or insufficient evidence MUST hold readiness with an
+  actionable reason rather than silently fall back to stack-specific recipes.
+- **Validate unfamiliar projects**: Changes to project-environment orchestration
+  MUST demonstrate arbitrary tool names and nested layouts in fixtures without
+  adding ecosystem-specific production branches.
+- **Explicit boundary**: Coordinare's own implementation stack, harness/provider
+  adapters, security scanners and operator-selected generic platform facilities
+  may have their own dependencies. These facilities MUST NOT silently choose a
+  user project's language, framework, package, database or verification policy.
+
+**Rationale**: A repository's documented requirements, rather than Coordinare's
+catalog of familiar stacks, determine the environment it needs. This principle
+adds a design constraint; all existing safety, testing, provenance, performance,
+review and governance requirements remain in force.
+
 ## Quality Gates
 
 All code changes MUST pass the following gates before merge:
@@ -255,4 +296,4 @@ practices, verbal agreements, and outdated documentation.
   justified in writing (see plan template's Complexity Tracking
   table) and approved by a maintainer.
 
-**Version**: 1.1.0 | **Ratified**: 2026-02-16 | **Last Amended**: 2026-02-16
+**Version**: 1.2.0 | **Ratified**: 2026-02-16 | **Last Amended**: 2026-10-17
