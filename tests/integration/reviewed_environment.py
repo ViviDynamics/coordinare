@@ -1,11 +1,13 @@
 """Real-image fixtures with accepted contracts and actual immutable OCI identities."""
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -25,11 +27,14 @@ def _docker(*args: str, timeout: int = 300) -> str:
     return result.stdout.strip()
 
 
-@pytest.fixture(scope="session")
-def immutable_performer_image():
+@contextlib.contextmanager
+def prepared_performer_image():
     """Keep real pin validation enabled, including for CI's locally built tag."""
     image = os.environ.get("COORDINARE_E2E_PERFORMER_IMAGE", "coordinare-performer:full")
     info = json.loads(_docker("image", "inspect", image))[0]
+    if re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", image):
+        yield image
+        return
     digests = info.get("RepoDigests") or []
     if digests:
         yield digests[0]
@@ -71,6 +76,22 @@ def immutable_performer_image():
         subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False, timeout=60)
 
 
+@pytest.fixture(scope="session")
+def immutable_performer_image():
+    with prepared_performer_image() as image:
+        yield image
+
+
+def run_image_tests(arguments: list[str]) -> int:
+    """Prepare the immutable image before pytest starts its test timeout clocks."""
+    with prepared_performer_image() as image:
+        env = dict(os.environ, COORDINARE_E2E_PERFORMER_IMAGE=image)
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", *arguments], env=env, check=False, timeout=300,
+        )
+        return result.returncode
+
+
 def manifest_for(name: str, *, files: dict[str, str], checks: list[dict], activation: dict | None = None) -> EnvironmentManifest:
     return EnvironmentManifest.model_validate({
         "schema_version": 1, "symphony_name": name, "source_commit": "a" * 40,
@@ -107,3 +128,7 @@ def accepted_state(cache: Path, manifest: EnvironmentManifest, files: dict[str, 
     return {"env_cache": {manifest.symphony_name: state},
             "config": SimpleNamespace(github_org="fixture", project_name="repository"),
             "github_service": SimpleNamespace(get_file_content=fetch)}
+
+
+if __name__ == "__main__":
+    raise SystemExit(run_image_tests(sys.argv[1:]))
