@@ -870,6 +870,27 @@ async def _kill_cache_process_group(proc: asyncio.subprocess.Process) -> None:
     await proc.wait()
 
 
+def _stringify_env(env: dict[str, str]) -> dict[str, str]:
+    """343: coerce every spawn-env entry to a plain string.
+
+    The performer server runs under uvicorn's uvloop, which, unlike the stdlib
+    event loop, rejects non-str env values (os.PathLike included) at spawn with
+    "TypeError: all environment values must be bytes or str", killing the whole
+    job. Coerce defensively so a stray Path or scalar can never sink a spawn.
+    """
+
+    def _coerce(value: str | bytes | os.PathLike) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        if isinstance(value, os.PathLike):
+            return os.fsdecode(value)
+        return str(value)
+
+    return {_coerce(k): _coerce(v) for k, v in env.items()}
+
+
 async def _start_env_cache_services(
     env_cache_path: str, cache_env: dict[str, str],
 ) -> None:
@@ -893,7 +914,7 @@ async def _start_env_cache_services(
     start = frozen_scripts_dir(env_cache_path) / "services" / "services-start.sh"
     if not start.is_file() or not os.access(start, os.X_OK):
         return
-    env = {**os.environ, **cache_env}
+    env = _stringify_env({**os.environ, **cache_env})
     # 109: services-start.sh (and services-health.sh, run with this same env) invoke
     # bare `initdb`/`postgres`/`redis-server`/`pg_isready`, which are only on PATH —
     # and whose native libs (e.g. libicu) are only on LD_LIBRARY_PATH — AFTER the
@@ -1097,7 +1118,7 @@ async def run_service_readiness(
 
     # Brief bounded retry on a health-only failure (slow-to-accept service).
     if health_failed and not start_failed:
-        env = {**os.environ, **(cache_env or {})}
+        env = _stringify_env({**os.environ, **(cache_env or {})})
         for _ in range(max(0, health_retries)):
             await asyncio.sleep(retry_delay)
             await _run_env_cache_health_check(env_cache_path, env)
@@ -1192,9 +1213,9 @@ async def run_env_cache_verify(
             private_dir, script = _stage_verify_text(verify_text)
         except (ProvenanceMaterialiseError, OSError) as exc:
             return False, f"verify text refused: {exc}"
-    env = {**os.environ, **(cache_env or {}), "DEVENV": env_cache_path, **_VERIFY_SHELL_GUARDS}
+    env = _stringify_env({**os.environ, **(cache_env or {}), "DEVENV": env_cache_path, **_VERIFY_SHELL_GUARDS})
     if cwd:
-        env["COORDINARE_REPO_DIR"] = cwd
+        env["COORDINARE_REPO_DIR"] = str(cwd)
     proc = None
     try:
         # 265 (review B2): the script is a file, never stdin, and the child's stdin is closed. A child that reads
