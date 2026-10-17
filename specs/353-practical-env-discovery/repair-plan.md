@@ -49,10 +49,12 @@ Interfaces: next discovery resumes the journal budget and previous required cont
 ## Task 4: Documentation, review, CI and live retest
 
 Files: operator documentation and private validation reports; amend current PR #354.
-- [ ] Update proposal ownership, overall deadline, repair evidence and cache generation documentation; self-review full diff and run spec/plan/task consistency analysis before code implementation.
-- [ ] Run focused preflight and unchanged quality guard before every push. Full suite via CI; classify actual failures before acting.
-- [ ] Obtain the required fresh independent full-diff review for the amendment, preserving earlier review history and explicitly recording this user-authorized new implementation stage.
-- [ ] Run pinned small sample and Elm, then all 29 baseline targets with unchanged baseline and separately labeled alternative settings; inspect every new digest's executable scope. No handcrafted success manifests.
-- [ ] Confirm snapshot/resource cleanup, record exact revision/stages/checks, update PR. Merge only after actual sample/Elm clean success, final CI and review gates; otherwise report precise holds.
+- [x] Update proposal ownership, overall deadline, repair evidence and cache generation documentation; self-review full diff and run spec/plan/task consistency analysis before code implementation.
+- [x] Run focused preflight and unchanged quality guard before every push. Full suite via CI; classify actual failures before acting.
+- [x] Obtain the required fresh independent full-diff review for the amendment, preserving earlier review history and explicitly recording this user-authorized new implementation stage.
+- [x] Run pinned small sample and Elm, then all 29 baseline targets with unchanged baseline and separately labeled alternative settings; inspect every new digest's executable scope. No handcrafted success manifests.
+- [x] Confirm snapshot/resource cleanup, record exact revision/stages/checks, update PR. Merge only after actual sample/Elm clean success, final CI and review gates; otherwise report precise holds.
 
 Self-review: all amendment requirements map to Tasks 1-4. Source identity and same-image/platform guards are preserved; cache mount changes are daemon-owned generation changes. Journal keeps failure evidence separate from readiness. No unrelated refactor or new dependency is planned.
+
+Execution outcome: all implementation and validation-attempt work above is complete; [validation.md](validation.md) records the failed live acceptance. PR #354 remains unmerged and SC-004 remains unmet. The conditional instruction to report holds applies; no bootstrap success or issue closure is claimed.
