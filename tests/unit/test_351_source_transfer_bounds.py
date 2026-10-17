@@ -27,8 +27,9 @@ from tests.unit.test_351_environment_discovery import CAPABILITIES
 
 async def _discover(files: dict[str, str], reviewer_extra: str = ""):
     paths = list(files)
+    inventory_digest = hashlib.sha256(json.dumps(sorted([*paths, "additional-context"]), separators=(",", ":")).encode()).hexdigest()
     manifest = {
-        "capabilities_digest": CAPABILITIES.digest(),
+        "inventory_digest": inventory_digest, "capabilities_digest": CAPABILITIES.digest(),
         "schema_version": 1, "policy_version": "351-v1", "symphony_name": "suite",
         "source_commit": "a" * 40,
         "inputs": {path: hashlib.sha256(text.encode()).hexdigest() for path, text in files.items()},
@@ -43,7 +44,7 @@ async def _discover(files: dict[str, str], reviewer_extra: str = ""):
     if reviewer_extra:
         replies.append({"tool": "read_file", "path": "additional-context"})
     replies.append({"assessment": {
-        "capabilities_digest": CAPABILITIES.digest(),
+        "inventory_digest": inventory_digest, "capabilities_digest": CAPABILITIES.digest(),
         "schema_version": 1, "policy_version": "351-v1", "source_commit": "a" * 40,
         "manifest_digest": EnvironmentManifest.model_validate(manifest).digest(),
         "verdict": "accept", "rationale": "Every documented requirement has a check", "sources": paths,

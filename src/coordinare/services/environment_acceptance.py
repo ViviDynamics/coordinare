@@ -35,7 +35,9 @@ def accepted_environment(cache: EnvCacheState) -> EnvironmentManifest | None:
     except (ValidationError, TypeError):
         return None
     if (
-        not manifest.capabilities_digest
+        not manifest.inventory_digest
+        or assessment.inventory_digest != manifest.inventory_digest
+        or not manifest.capabilities_digest
         or assessment.capabilities_digest != manifest.capabilities_digest
         or assessment.verdict != "accept"
         or assessment.manifest_digest != manifest.digest()

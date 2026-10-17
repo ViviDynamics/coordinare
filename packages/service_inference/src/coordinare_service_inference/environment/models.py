@@ -192,6 +192,7 @@ class EnvironmentManifest(StrictModel):
     symphony_name: str = Field(min_length=1)
     source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     inputs: dict[str, str]
+    inventory_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     capabilities_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     requirements: list[Requirement]
     install: list[Command]
@@ -281,6 +282,7 @@ class EnvironmentManifest(StrictModel):
 
 
 class CoverageAssessment(StrictModel):
+    inventory_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     capabilities_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     schema_version: Literal[1]
     manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")

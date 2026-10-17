@@ -9,7 +9,7 @@ from coordinare_service_inference.environment.models import EnvironmentManifest
 def reviewed_metadata(*, checks=None, install=None, services=None, activation=None, source_commit="a" * 40,
                       symphony_name="sym", inputs=None, empty_reason="Image baseline is sufficient"):
     manifest = EnvironmentManifest.model_validate({
-        "capabilities_digest": "c" * 64,
+        "inventory_digest": "d" * 64, "capabilities_digest": "c" * 64,
         "schema_version": 1, "symphony_name": symphony_name, "source_commit": source_commit,
         "inputs": inputs if inputs is not None else {"tools.plan": hashlib.sha256(b"baseline").hexdigest()},
         "requirements": [], "install": install or [],
@@ -18,7 +18,7 @@ def reviewed_metadata(*, checks=None, install=None, services=None, activation=No
         "empty_reason": empty_reason, "policy_version": "351-v1",
     })
     return {"environment_manifest": manifest.model_dump(), "environment_manifest_digest": manifest.digest(),
-            "environment_assessment": {"capabilities_digest": "c" * 64, "schema_version": 1, "manifest_digest": manifest.digest(),
+            "environment_assessment": {"inventory_digest": "d" * 64, "capabilities_digest": "c" * 64, "schema_version": 1, "manifest_digest": manifest.digest(),
                 "source_commit": source_commit, "verdict": "accept", "rationale": "Read source requirements",
                 "sources": list(manifest.inputs), "inputs": dict(manifest.inputs), "policy_version": "351-v1"}}
 
