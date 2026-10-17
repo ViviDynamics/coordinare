@@ -34,9 +34,11 @@ def _calls_of(chat_json: ChatJson | None) -> ConductorCallLog | None:
     return calls if isinstance(calls, ConductorCallLog) else None
 
 _SYSTEM_PROMPT = (
-    "You extract OS-level system package requirements from a project's README. "
-    "Return ONLY a JSON object of the form "
-    '{"system": [{"name": "<package>", "binary": "<cmd-on-PATH>"}]}. '
+    "You derive project dependency manifest items from the provided project documentation. "
+    "Return ONLY JSON with system items and activation data when toolchain setup is explicit. "
+    'Shape: {"system": [{"name":"<dependency>","binary":"<cmd-on-PATH>","check":"<POSIX check>"}], '
+    '"activation": [{"name":"<runtime>","version":"<version>","activation_paths":["<cache-relative glob>"],'
+    '"activation_env":{"NAME":"<cache-relative value>"},"check":"<POSIX check>","version_check":"<POSIX check>"}]}. '
     "Include ONLY packages/binaries the README EXPLICITLY says must be installed "
     "to build, test, or run the project at the OS level (e.g. a headless browser "
     "like chromium + its driver, a database client, image libraries). "
@@ -93,7 +95,8 @@ def parse_system_items(reply_text: str, *, known: set[str]) -> list[ManifestItem
         if not binary or binary in known or binary in seen:
             continue
         seen.add(binary)
-        items.append(ManifestItem(name=binary, kind="system", source="README.md"))
+        check = str(entry.get("check") or f"command -v {binary} >/dev/null 2>&1")
+        items.append(ManifestItem(name=binary, kind="system", source="README.md", check=check))
     return items
 
 
