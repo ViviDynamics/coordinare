@@ -238,13 +238,19 @@ async def test_capability_change_restarts_bootstrap_at_dispatch(tmp_path, monkey
     reviewed_cache(cache, capabilities=capability)
     cache.cache_dir_ready = True
 
-    async def changed(image):
-        return "trusted/changed@sha256:" + "b" * 64, capability.platform
+    from unittest.mock import AsyncMock
 
+    cache.cache_dir.mkdir()
+    cache.rendered_activate_sh = "# trusted activation"
+    cache.rendered_verify_sh = "# trusted verification"
+    (cache.cache_dir / "activate.sh").write_text(cache.rendered_activate_sh)
+    changed = AsyncMock(return_value=("trusted/changed@sha256:" + "b" * 64, capability.platform))
     monkeypatch.setattr("coordinare.services.environment_capabilities._docker_identity", changed)
+    monkeypatch.setattr("coordinare.services.env_cache._docker_daemon_reachable", AsyncMock(return_value=True))
     released = []
     terminal = await node._env_readiness_gate(state, SimpleNamespace(), "card", "implementer", "suite", cache,
         False, lambda: released.append(True))
+    changed.assert_awaited_once_with(IMAGE)
     assert terminal is state
     assert released == [True]
     assert cache.runtime_health_failed
