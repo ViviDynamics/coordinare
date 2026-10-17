@@ -547,3 +547,28 @@ async def test_activation_never_adds_current_directory_to_path(tmp_path, path):
                                       activation + '\n' + activation + '\nprintf "%s" "$PATH"'],
                                      env={**os.environ, 'BASH_ENV': '', 'ENV': ''}, text=True)
     assert actual.split(':') == expected
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux command-local subreaper adapter')
+@pytest.mark.asyncio
+async def test_supervisor_completion_cannot_be_changed_by_python_finalization(tmp_path, monkeypatch):
+    from coordinare_service_inference.environment import runner
+
+    # Deterministically expose the shutdown window where CPython restores default
+    # signal handlers before exit and a concurrent teardown SIGTERM can arrive.
+    finalization = '''
+import atexit
+import os
+import signal
+def finalization_signal():
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    os.kill(os.getpid(), signal.SIGTERM)
+atexit.register(finalization_signal)
+'''
+    monkeypatch.setattr(runner, '_LINUX_SUPERVISOR', runner._LINUX_SUPERVISOR.replace(
+        'from __future__ import annotations', 'from __future__ import annotations\n' + finalization, 1,
+    ))
+    manifest = contract([{'id': 'baseline', 'argv': ['true']}])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    assert report.passed
+    assert report.results[0].exit_code == 0

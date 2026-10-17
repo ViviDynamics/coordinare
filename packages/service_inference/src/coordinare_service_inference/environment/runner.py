@@ -142,7 +142,9 @@ while True:
         exit_code = 125  # Never report success without confirmed descendant cleanup.
         break
     time.sleep(0.01)
-raise SystemExit(exit_code)
+# All results and descendant cleanup are final. Avoid CPython finalization resetting
+# signal handlers while the parent can still deliver its teardown signal.
+os._exit(exit_code)
 """
 
 
