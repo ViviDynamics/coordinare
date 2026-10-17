@@ -23,28 +23,28 @@ Existing full manifest/digest and readiness rules remain authoritative. Maximum 
 
 Files: shared environment/models.py; services/environment_discovery.py; existing discovery fixtures; new tests/unit/test_353_authoritative_provenance.py.
 Interfaces: declaration-only EnvironmentManifestProposal and CoverageAssessmentProposal; discovery builds EnvironmentManifest and CoverageAssessment from proposal plus actual ledger/identity. Optional previous_manifest and execution_feedback options seed required obligations and untrusted feedback for a new discovery conversation.
-- [ ] Write regressions: provenance-free proposal accepted with exact daemon hashes; supplied provenance rejected; independent missing/changed reads rejected; previous required IDs/scopes/lifecycle preserved; portable-root guidance present.
-- [ ] Run targeted tests red before implementation.
-- [ ] Implement proposal binding and fresh-review validation, keeping full persisted models unchanged. Add explicit generic source-root portability rules.
-- [ ] Adapt old model-reply fixtures explicitly; retain independent source-drift and extra-field negative controls. Run focused discovery/contract/pipeline tests green.
-- [ ] Commit task files.
+- [x] Write regressions: provenance-free proposal accepted with exact daemon hashes; supplied provenance rejected; independent missing/changed reads rejected; previous required IDs/scopes/lifecycle preserved; portable-root guidance present.
+- [x] Run targeted tests red before implementation.
+- [x] Implement proposal binding and fresh-review validation, keeping full persisted models unchanged. Add explicit generic source-root portability rules.
+- [x] Adapt old model-reply fixtures explicitly; retain independent source-drift and extra-field negative controls. Run focused discovery/contract/pipeline tests green.
+- [x] Commit task files.
 
 ## Task 2: Durable repair journal and cache generations
 
 Files: new services/environment_repair.py; models/env_cache.py; state_store.py; daemon snapshot/rehydration; tests/unit/test_353_execution_repair.py.
 Interfaces: begin_attempt(cache, limits, outer_seconds) -> AttemptBudget; save_attempt(cache,budget); record_execution_failure(cache, report, cleanup_confirmed) -> bool; prepare_repair(cache) -> prior manifest/feedback and fresh generation. Helpers preserve counters/UTC expiry and validate stored identity, full-scope report, actual platform and digest. Model feedback capped to 16 KiB, output 512 chars/check; full sanitized rejected reports capped to 256 KiB each, journal capped to 4 MiB and at most three rejected entries. Generation names contain only validated opaque suffixes.
-- [ ] Write red tests for shared third-repair refusal, finite expiry, snapshot roundtrip, failed report forgery, secret redaction, cleanup uncertainty, required lifecycle preservation and different cache generation.
-- [ ] Implement and wire optional persisted environment_attempt state, restoring generation only through validated journal data. Keep legacy snapshots safe.
-- [ ] Run focused repair and snapshot tests green; commit.
+- [x] Write red tests for shared third-repair refusal, finite expiry, snapshot roundtrip, failed report forgery, secret redaction, cleanup uncertainty, required lifecycle preservation and different cache generation.
+- [x] Implement and wire optional persisted environment_attempt state, restoring generation only through validated journal data. Keep legacy snapshots safe.
+- [x] Run focused repair and snapshot tests green; commit.
 
 ## Task 3: Production and live repair orchestration
 
 Files: services/env_cache.py, daemon.py, scripts/validate_environment_repositories.py; pipeline and harness tests.
 Interfaces: next discovery resumes the journal budget and previous required contract; completion records only validated failed execution after confirmed quiescence; repaired dispatch uses a new generation. Daemon poll and harness installer/clean verifier are bounded by the journal's remaining deadline. Harness repeats scope inspection per new digest, archives each result and cleans each runtime before repair.
-- [ ] Reproduce nonportable synthetic installation, failing required check and missing cleanup paths red.
-- [ ] Wire production failure recording and rediscovery without resetting counters; preserve ordinary bootstrap circuit breaker. Bound poll/verification and cancellation cleanup.
-- [ ] Drive real runner through a failing then portable repaired contract, fresh review and final freeze; assert failed evidence stays rejected and all required checks rerun. Test both transport dispatch generations and restart.
-- [ ] Run focused integration/harness/daemon tests green; commit.
+- [x] Reproduce nonportable synthetic installation, failing required check and missing cleanup paths red.
+- [x] Wire production failure recording and rediscovery without resetting counters; preserve ordinary bootstrap circuit breaker. Bound poll/verification and cancellation cleanup.
+- [x] Drive real runner through a failing then portable repaired contract, fresh review and final freeze; assert failed evidence stays rejected and all required checks rerun. Test both transport dispatch generations and restart.
+- [x] Run focused integration/harness/daemon tests green; commit.
 
 ## Task 4: Documentation, review, CI and live retest
 

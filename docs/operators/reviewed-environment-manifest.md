@@ -51,7 +51,11 @@ requests hold environment discovery. They do not enable a legacy parser fallback
 ## Understand the contract
 
 The daemon inventories the repository at an immutable source commit. Discovery
-reads arbitrary paths and records exact content SHA256 values. Its output includes:
+reads arbitrary paths and records exact content SHA256 values. The agent proposes
+only requirements, commands, activation, services and an optional empty-environment
+justification. The daemon constructs provenance fields from its actual read ledger,
+pinned source, inventory and runtime capabilities; model-supplied provenance fields
+are rejected. The unchanged full persisted contract includes:
 
 - Requirements with repository source citations and required executable checks.
 - Explicit installation commands, arguments, working directories, environment
@@ -71,8 +75,9 @@ justification and a required baseline usage check.
 Review starts without the discovery transcript. The reviewer independently reads
 all manifest inputs and can read additional files from the same inventory. It
 returns `accept`, `revise` or `indeterminate`, with a rationale and citations.
-The daemon validates source identity, manifest digest, input hashes and actual
-reviewer reads. Only acceptance of the exact candidate permits installation.
+The reviewer proposes only its verdict, rationale and personally inspected source
+paths. The daemon binds that assessment to the exact displayed manifest and checks
+actual independent reads and hashes. Only acceptance of the exact candidate permits installation.
 Any edit to commands, requirements, requiredness, activation, services or source
 identity changes the digest and requires new acceptance.
 
@@ -92,8 +97,8 @@ an earlier service failure; missing or failed cleanup evidence holds readiness.
 ## Limits and cache invalidation
 
 Each discovery and review phase defaults to 256 reads, 256 KiB per file, 4 MiB of
-source text and 120 seconds. One attempt, including runtime identity resolution and
-inventory fetching, defaults to 600 seconds, 128 model calls, 512 total reads and at
+source text and 120 seconds. One attempt, including runtime identity resolution,
+inventory fetching, installation, clean verification and executable repairs, defaults to 600 seconds, 128 model calls, 512 total reads and at
 most two repair rounds. The configured outer `bootstrap_max_seconds` also applies;
 zero there never removes discovery's own bound. `manifest_attempt_timeout_seconds`
 can be raised to at most 3600 seconds. Phase changes and fresh reviews cannot reset
@@ -111,6 +116,29 @@ repair within the same two-round budget. Every changed manifest receives a new
 independent review conversation. Indeterminate review, source/identity drift,
 unavailable evidence, exhausted budgets and dropped required obligations hold.
 Repair never waives execution or invents source evidence.
+
+A complete rejected execution report with an actual failed required action can
+request a repair only after the installer and verifier are confirmed stopped.
+Missing, wholly unrun, malformed or indeterminate evidence, and uncertain cleanup,
+hold the attempt. A failed prerequisite may leave dependent checks unrun in the
+rejected report; all required checks must run successfully in the repaired attempt.
+Required requirement, check, service and lifecycle IDs, scopes and requiredness
+cannot be removed or narrowed.
+
+Executable repair shares the same two-repair, call, read and deadline budgets as
+schema and coverage repair. It creates a new empty cache generation, starts fresh
+discovery with bounded redacted failure feedback, obtains another independent
+review and reruns installation and every required check. Repository and scratch
+roots are disposable and may have different absolute paths in each execution;
+only cache artifacts persist. Installer-only source references must not survive.
+
+The optional persisted attempt journal retains original UTC expiry, consumed
+reservations, generation and rejected evidence. Reservations are saved before
+model calls and source reads; inability to save holds external work. Restart cannot
+renew the deadline or reuse rejected contents. Interrupted execution holds until
+cleanup is established. Feedback is bounded at 16 KiB and 512 characters per check;
+sanitized rejected reports retain a 256 KiB bound, with at most three rejected
+entries and a 4 MiB journal. Raw command output is never a readiness authority.
 
 Manifest and assessment each retain their 256 KiB serialization cap. Accepted source
 contents use one canonical UTF-8 JSON document bounded at 16 MiB, with 64 KiB decoded
@@ -243,8 +271,10 @@ For example:
 
 Discovery uses the production service, including fresh independent coverage review.
 With `--execute`, an accepted proposal waits for command-scope inspection. Inspect
-`accepted-manifest.json` and its pinned source scripts, then write
-`execution-approved.json` into that repository's private output directory:
+`attempt-000/accepted-manifest.json` and its pinned source scripts, then write
+`execution-approved.json` into that attempt's private directory. Each repaired
+candidate uses a separate `attempt-NNN` directory and requires its own exact-digest
+scope marker. Attempts and rejected evidence remain separately archived:
 
 ```json
 {"scope":"environment_validation","approved":true,"manifest_digest":"<digest>","source_commit":"<commit>","image_ref":"<immutable-image>"}
