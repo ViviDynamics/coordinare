@@ -82,3 +82,11 @@ See each plan task for exact files, signatures, test names and requirement mappi
 Implementation and the repeated validation attempt are recorded in [validation.md](validation.md).
 T039 remains open: SC-004 is unmet, so PR #354 is unmerged and issue #353 stays open.
 Copilot did not deliver a review; the shipping workflow fallback used independent adversarial review and author verification of its fixes. No Copilot approval or real bootstrap success is claimed.
+
+## Approved complete-review-evidence amendment
+
+- [ ] T044 Independent schema/coverage/execution budgets and compatible configuration (review-evidence-plan Task 1).
+- [ ] T045 Version-two durable journal, no budget renewal, explicit legacy migration holds (Task 2).
+- [ ] T046 Deterministic fresh mandatory-input delivery and bounded review context (Task 3).
+- [ ] T047 Pipeline integration, safe diagnostics and complete Elm-sequence replay (Task 4).
+- [ ] T048 Independent full-diff review, CI and the same 29 pinned repositories, with separate Elm1800 profile (Task 5). T039 still requires actual clean-success gates.

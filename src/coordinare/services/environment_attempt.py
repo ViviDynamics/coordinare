@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 
 MAX_ATTEMPT_SECONDS = 3600
 MAX_REPAIRS = 2
+RepairKind = Literal["schema", "coverage", "execution"]
+REPAIR_COUNTERS = {"schema": "schema_repairs", "coverage": "coverage_revisions", "execution": "execution_repairs"}
 
 
 class EnvironmentDiscoveryError(RuntimeError):
@@ -35,12 +37,16 @@ class AttemptBudget:
     timeout_seconds: float = 600
     max_calls: int = 128
     max_reads: int = 512
-    max_repairs: int = 2
+    max_schema_repairs: int = 2
+    max_coverage_revisions: int = 2
+    max_execution_repairs: int = 2
     started: float = field(default_factory=time.monotonic)
     calls: int = 0
     calls_completed: int = 0
     reads: int = 0
-    repairs: int = 0
+    schema_repairs: int = 0
+    coverage_revisions: int = 0
+    execution_repairs: int = 0
     inspected_bytes: int = 0
     context_bytes: int = 0
     stage: str = "inventory"
@@ -54,7 +60,7 @@ class AttemptBudget:
 
     def __post_init__(self) -> None:
         if (not 0 < self.timeout_seconds <= MAX_ATTEMPT_SECONDS or self.max_calls < 1 or self.max_reads < 1
-                or not 0 <= self.max_repairs <= MAX_REPAIRS):
+                or any(not 0 <= getattr(self, "max_" + counter) <= MAX_REPAIRS for counter in REPAIR_COUNTERS.values())):
             message = "environment discovery budget limits are invalid"
             raise ValueError(message)
 
@@ -81,12 +87,18 @@ class AttemptBudget:
             raise EnvironmentDiscoveryError(message, code="attempt_read_limit")
         self.reads += count
 
-    def reserve_repair(self) -> None:
+    @property
+    def repairs(self) -> int:
+        """Aggregate diagnostics only; authorization uses category-specific counters."""
+        return self.schema_repairs + self.coverage_revisions + self.execution_repairs
+
+    def reserve_repair(self, kind: RepairKind) -> None:
         self.check()
-        if self.repairs >= self.max_repairs:
-            message = "environment discovery budget repair limit exceeded"
-            raise EnvironmentDiscoveryError(message, code="attempt_repair_limit")
-        self.repairs += 1
+        counter = REPAIR_COUNTERS[kind]
+        if getattr(self, counter) >= getattr(self, "max_" + counter):
+            message = f"environment discovery {kind} repair limit exceeded"
+            raise EnvironmentDiscoveryError(message, code=f"attempt_{kind}_limit")
+        setattr(self, counter, getattr(self, counter) + 1)
 
     async def flush(self) -> None:
         """Persist reservations before calling a model, source reader or executor."""
@@ -116,7 +128,8 @@ class AttemptBudget:
         return {"stage": self.stage, "outcome": self.outcome, "error_code": self.error_code,
                 "elapsed_seconds": round(time.monotonic() - self.started, 3),
                 "calls": self.calls, "calls_completed": self.calls_completed, "reads": self.reads,
-                "repairs": self.repairs, "inspected_bytes": self.inspected_bytes,
+                "repairs": self.repairs, **{name: getattr(self, name) for counter in REPAIR_COUNTERS.values()
+                    for name in (counter, "max_" + counter)}, "inspected_bytes": self.inspected_bytes,
                 "context_bytes": self.context_bytes, "usage": dict(self.usage),
                 "finish_reasons": dict(self.finish_reasons), "metadata_available": self.metadata_available,
                 "validation_codes": list(self.validation_codes)}

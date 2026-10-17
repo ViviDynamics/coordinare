@@ -54,13 +54,19 @@ class DiscoveryLimits:
     max_inventory_entries: int = 100_000
     max_model_calls: int = 128
     max_total_reads: int = 512
-    max_repairs: int = 2
+    max_schema_repairs: int = 2
+    max_coverage_revisions: int = 2
+    max_execution_repairs: int = 2
     attempt_timeout_seconds: float = 600
     max_output_bytes: int = 256 * 1024
     phase_timeout_seconds: float = 120
 
     def __post_init__(self) -> None:
-        if any(value <= 0 for name, value in self.__dict__.items() if name != "max_repairs") or not 0 <= self.max_repairs <= MAX_REPAIRS or self.attempt_timeout_seconds > MAX_ATTEMPT_SECONDS:
+        repair_limits = (self.max_schema_repairs, self.max_coverage_revisions, self.max_execution_repairs)
+        if (any(value <= 0 for name, value in self.__dict__.items()
+                if name not in {"max_schema_repairs", "max_coverage_revisions", "max_execution_repairs"})
+                or any(not 0 <= value <= MAX_REPAIRS for value in repair_limits)
+                or self.attempt_timeout_seconds > MAX_ATTEMPT_SECONDS):
             message = "discovery limits must be positive"
             raise ValueError(message)
 
@@ -130,7 +136,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
 
 
 def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget) -> None:
-    budget.reserve_repair()
+    budget.reserve_repair("schema")
     budget.validation_codes.extend(error["code"] for error in errors)
     messages.extend([{"role": "assistant", "content": raw},
                      {"role": "user", "content": _json({"validation_errors": errors,
@@ -308,7 +314,8 @@ async def discover_and_review(
         raise EnvironmentDiscoveryError(message)
     bounds = configured.limits or DiscoveryLimits()
     budget = configured.budget or AttemptBudget(timeout_seconds=bounds.attempt_timeout_seconds,
-        max_calls=bounds.max_model_calls, max_reads=bounds.max_total_reads, max_repairs=bounds.max_repairs)
+        max_calls=bounds.max_model_calls, max_reads=bounds.max_total_reads, max_schema_repairs=bounds.max_schema_repairs,
+        max_coverage_revisions=bounds.max_coverage_revisions, max_execution_repairs=bounds.max_execution_repairs)
     try:
         async with asyncio.timeout_at(budget.deadline):
             result = await _discover_attempt(source_identity=(symphony_name, commit), paths=paths,
@@ -461,7 +468,7 @@ async def _discover_attempt(
             if assessment.verdict == "accept":
                 return manifest, assessment
             _require_revision(assessment)
-            budget.reserve_repair()
+            budget.reserve_repair("coverage")
             from coordinare.lib.redaction import redact_command_text
 
             feedback = redact_command_text(assessment.rationale)[:4096]
