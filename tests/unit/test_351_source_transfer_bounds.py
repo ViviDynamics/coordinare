@@ -20,6 +20,7 @@ from coordinare.services.kubernetes_verifier import (
     VerifierSpec,
     build_verifier_pod_manifest,
 )
+from tests.unit.env_manifest_fixture import manifest_proposal, review_proposal
 from tests.unit.test_351_environment_discovery import CAPABILITIES
 
 
@@ -37,7 +38,7 @@ async def _discover(files: dict[str, str], reviewer_extra: str = ""):
         "activation": {"path": [], "env": {}}, "services": [], "empty_reason": None,
     }
     replies = [{"tool": "read_file", "path": path} for path in paths]
-    replies.append({"manifest": manifest})
+    replies.append({"manifest": manifest_proposal(manifest)})
     replies.extend({"tool": "read_file", "path": path} for path in paths)
     if reviewer_extra:
         replies.append({"tool": "read_file", "path": "additional-context"})
@@ -47,6 +48,7 @@ async def _discover(files: dict[str, str], reviewer_extra: str = ""):
         "manifest_digest": EnvironmentManifest.model_validate(manifest).digest(),
         "verdict": "accept", "rationale": "Every documented requirement has a check", "sources": paths,
     }})
+    replies[-1]["assessment"] = review_proposal(replies[-1]["assessment"])
     responses = iter(replies)
 
     async def chat(messages):

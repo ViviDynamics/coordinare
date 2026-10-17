@@ -112,8 +112,6 @@ async def test_large_inventory_is_not_repeated_in_model_prompt():
 
     async def chat(messages):
         reply = json.loads(await scripted(messages))
-        if "assessment" in reply:
-            reply["assessment"]["inventory_digest"] = inventory_digest
         return json.dumps(reply)
 
     async def source(path):

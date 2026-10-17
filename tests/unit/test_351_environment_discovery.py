@@ -17,6 +17,7 @@ from coordinare.services.environment_discovery import (
     EnvironmentDiscoveryError,
     discover_and_review,
 )
+from tests.unit.env_manifest_fixture import manifest_proposal
 
 SOURCE = "Use the unfamiliar zog tool: zog --version must report 7."
 PATH = "nested/how-to.zog"
@@ -46,6 +47,7 @@ class ScriptedChat:
         self.digest = digest
         self.sources = sources if sources is not None else [PATH]
         self.calls = []
+        self.extra_manifest = {}
 
     async def __call__(self, messages):
         self.calls.append(copy.deepcopy(messages))
@@ -53,11 +55,9 @@ class ScriptedChat:
         if index in (1, 3):
             return json.dumps({"tool": "read_file", "path": PATH})
         if index == 2:
-            return json.dumps({"manifest": self.manifest})
+            return json.dumps({"manifest": {**manifest_proposal(self.manifest), **self.extra_manifest}})
         return json.dumps({"assessment": {
-            "inventory_digest": INVENTORY_DIGEST, "capabilities_digest": CAPABILITIES.digest(),
-            "schema_version": 1, "policy_version": "351-v1", "source_commit": COMMIT,
-            "manifest_digest": self.digest or EnvironmentManifest.model_validate(self.manifest).digest(),
+            **({"manifest_digest": self.digest} if self.digest else {}),
             "verdict": self.verdict, "rationale": "Evidence covers documented constraints", "sources": self.sources,
         }})
 
@@ -92,9 +92,9 @@ async def test_refuses_unaccepted_or_unproven_output(change):
     elif change == "fake_source":
         chat.sources = ["other/evidence"]
     elif change == "wrong_input":
-        chat.manifest["inputs"][PATH] = "0" * 64
+        chat.extra_manifest["inputs"] = {PATH: "0" * 64}
     elif change == "wrong_commit":
-        chat.manifest["source_commit"] = "b" * 40
+        chat.extra_manifest["source_commit"] = "b" * 40
     else:
         chat.manifest["unsupported"] = True
     with pytest.raises(EnvironmentDiscoveryError):
@@ -217,8 +217,7 @@ def test_persisted_review_rationale_contains_only_daemon_generated_text():
     manifest = EnvironmentManifest.model_validate(ScriptedChat().manifest)
     sensitive = 'repository credential must never be persisted: private-value'
     assessment = _validated_assessment({
-        'schema_version': 1, 'policy_version': '351-v1', 'source_commit': COMMIT,
-        'manifest_digest': manifest.digest(), 'verdict': 'accept', 'inventory_digest': INVENTORY_DIGEST, 'capabilities_digest': CAPABILITIES.digest(),
+        'verdict': 'accept',
         'rationale': sensitive, 'sources': [PATH],
     }, {PATH: manifest.inputs[PATH]}, manifest)
     assert assessment.rationale == 'Independent coverage review accepted; source identities validated by daemon.'

@@ -19,7 +19,7 @@ from coordinare.config import EnvCacheConfig
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.services.env_cache import EnvCacheService, verify_env_cache_clean
 from coordinare.services.environment_acceptance import accepted_environment
-from tests.unit.env_manifest_fixture import reviewed_cache
+from tests.unit.env_manifest_fixture import manifest_proposal, review_proposal, reviewed_cache
 
 IMAGE = "trusted/pipeline@sha256:" + "a" * 64
 SOURCE = "Install a persistent payload containing ready; verify its contents in a fresh consumer."
@@ -77,10 +77,10 @@ class Proposal:
             self.review_starts += int(reviewing)
             return json.dumps({"tool": "read_files", "paths": ["guide"]})
         if reviewing:
-            return json.dumps({"assessment": {"schema_version": 1, "policy_version": "351-v1",
+            return json.dumps({"assessment": review_proposal({"schema_version": 1, "policy_version": "351-v1",
                 "source_commit": context["source_commit"], "manifest_digest": context["manifest_digest"], "sources": ["guide"],
                 "capabilities_digest": context["capabilities_digest"], "inventory_digest": context["inventory_digest"],
-                "verdict": self.verdict, "rationale": "The required persistent payload has an independent executable check."}})
+                "verdict": self.verdict, "rationale": "The required persistent payload has an independent executable check."})})
         data = {"schema_version": 1, "policy_version": "351-v1", "symphony_name": context["symphony_name"], "source_commit": context["source_commit"],
             "inputs": {"guide": hashlib.sha256(SOURCE.encode()).hexdigest()}, "inventory_digest": context["inventory_digest"],
             "capabilities_digest": context["capabilities_digest"], "requirements": [
@@ -93,7 +93,7 @@ class Proposal:
         if self.repair and not self.invalid_sent:
             self.invalid_sent = True
             data["requirements"][0]["checks"] = ["not-an-executable-check-id"]
-        return json.dumps({"manifest": data})
+        return json.dumps({"manifest": manifest_proposal(data)})
 
 
 async def publish(service, cache, state, capability, proposal):
