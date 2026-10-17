@@ -9,6 +9,7 @@ the workspace spawn sites hand to asyncio must be all strings.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,20 @@ def _capture_spawns(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, str]]:
     return envs
 
 
+class _BytesPathLike:
+    def __init__(self, raw: bytes) -> None:
+        self._raw = raw
+
+    def __fspath__(self) -> bytes:
+        return self._raw
+
+
+def test_stringify_env_resolves_a_bytes_pathlike_to_str() -> None:
+    coerced = workspace._stringify_env({"REPO": _BytesPathLike(b"\xff\xfe")})
+    assert isinstance(coerced["REPO"], str)
+    assert os.fsencode(coerced["REPO"]) == b"\xff\xfe"
+
+
 def test_verify_with_path_cwd_passes_on_a_uvloop(tmp_path: Path) -> None:
     import uvloop
 
@@ -76,7 +91,7 @@ async def test_verify_spawn_env_is_all_str(
     checkout.mkdir()
 
     passed, detail = await run_env_cache_verify(
-        str(cache), {"RUBY": "1"}, cwd=checkout, verify_text="exit 0\n",
+        str(cache), {"RUBY": "1", "EXTRA": None}, cwd=checkout, verify_text="exit 0\n",
     )
 
     assert passed is True, detail

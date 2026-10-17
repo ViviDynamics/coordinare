@@ -885,7 +885,7 @@ def _stringify_env(env: dict[str, str]) -> dict[str, str]:
         if isinstance(value, bytes):
             return value.decode("utf-8", errors="replace")
         if isinstance(value, os.PathLike):
-            return os.fspath(value)
+            return os.fsdecode(value)
         return str(value)
 
     return {_coerce(k): _coerce(v) for k, v in env.items()}
