@@ -729,6 +729,7 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             last_bootstrap_succeeded=get("last_bootstrap_succeeded"),
             cache_dir_ready=bool(get("cache_dir_ready") or False),
             # 218: the daemon-rendered scripts the verification and activate gate use.
+            environment_attempt=get("environment_attempt"),
             environment_capabilities=get("environment_capabilities"),
             environment_manifest=get("environment_manifest"),
             environment_assessment=get("environment_assessment"),
@@ -1026,6 +1027,28 @@ def _synthesize_v1_session(
     }
 
 
+def _rehydrate_reviewed_environment(live: EnvCacheState, persisted: EnvCacheStateSnapshot) -> bool:
+    """Restore reviewed metadata only after validating its cache generation."""
+    live.environment_attempt = persisted.environment_attempt
+    if live.environment_attempt is not None:
+        from coordinare.services.environment_repair import restore_attempt_generation
+
+        try:
+            restore_attempt_generation(live, interrupted=True)
+        except (ValueError, RuntimeError):
+            live.cache_dir_ready = False
+            live.last_bootstrap_succeeded = False
+            live.last_bootstrap_error = "environment repair generation could not be restored; rebuild required"
+            return False
+    live.environment_capabilities = persisted.environment_capabilities
+    live.environment_manifest = persisted.environment_manifest
+    live.environment_assessment = persisted.environment_assessment
+    live.environment_verification = persisted.environment_verification
+    live.rendered_verify_sh = persisted.rendered_verify_sh
+    live.rendered_activate_sh = persisted.rendered_activate_sh
+    return True
+
+
 def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> None:
     """073 Fix 3: rehydrate env_cache readme_sha + bookkeeping onto the
     live EnvCacheState entries that EnvCacheService.initialise() already
@@ -1054,12 +1077,8 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             live.last_bootstrap_error = redact_state_value(persisted.last_bootstrap_error)
             live.cache_dir_ready = persisted.cache_dir_ready
             # 218: restore the daemon-rendered scripts; the cache copies are never read back.
-            live.environment_capabilities = persisted.environment_capabilities
-            live.environment_manifest = persisted.environment_manifest
-            live.environment_assessment = persisted.environment_assessment
-            live.environment_verification = persisted.environment_verification
-            live.rendered_verify_sh = persisted.rendered_verify_sh
-            live.rendered_activate_sh = persisted.rendered_activate_sh
+            if not _rehydrate_reviewed_environment(live, persisted):
+                continue
             live.infra_failures = persisted.infra_failures
             live.last_infra_failure_at = persisted.last_infra_failure_at
             # 234: the frozen-provenance digest, re-checked against the manifest file before any use.
