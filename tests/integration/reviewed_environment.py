@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 import uuid
@@ -34,30 +35,39 @@ def immutable_performer_image():
         yield digests[0]
         return
     name = "coordinare-image-tests-" + uuid.uuid4().hex[:12]
-    tag = digest = None
-    _docker("run", "--detach", "--rm", "--name", name, "-p", "127.0.0.1::5000", "registry:2")
+    tag = None
+    owned_refs: set[str] = set()
+    _docker("run", "--detach", "--rm", "--name", name, "--network", "host",
+            "-e", "REGISTRY_HTTP_ADDR=127.0.0.1:0", "registry:2")
     try:
-        port = json.loads(_docker("inspect", name))[0]["NetworkSettings"]["Ports"]["5000/tcp"][0]["HostPort"]
-        repository = f"localhost:{port}/coordinare-image-tests"
-        tag = repository + ":" + uuid.uuid4().hex
-        # A just-started registry may not be accepting connections yet.
+        # Share the daemon's loopback namespace: published host ports can belong
+        # to the desktop host rather than to the Linux VM running Docker.
         for _attempt in range(30):
-            ready = subprocess.run(["docker", "exec", name, "wget", "-q", "-O", "-", "http://127.0.0.1:5000/v2/"],
-                                   capture_output=True, check=False, timeout=10)
-            if ready.returncode == 0:
+            logs = subprocess.run(["docker", "logs", name], capture_output=True, text=True, check=False, timeout=10)
+            listener = re.search(r"listening on 127\.0\.0\.1:(\d+)", logs.stdout + logs.stderr)
+            if listener:
                 break
             time.sleep(0.1)
         else:
             pytest.fail("temporary image registry never became ready")
+        repository = f"127.0.0.1:{listener[1]}/coordinare-image-tests"
+        tag = repository + ":" + uuid.uuid4().hex
         _docker("tag", image, tag)
-        _docker("push", tag, timeout=600)
+        pushed = _docker("push", tag, timeout=600)
         published = json.loads(_docker("image", "inspect", tag))[0]["RepoDigests"]
-        digest = next(ref for ref in published if ref.startswith(repository + "@sha256:"))
+        owned_refs.update(ref for ref in published if ref.startswith(repository + "@sha256:"))
+        # Containerd may retain the source index identity after pushing only its
+        # available platform. Pull the exact manifest the registry accepted.
+        identity = re.search(r"digest: (sha256:[0-9a-f]{64})", pushed)
+        if identity is None:
+            pytest.fail("temporary registry push did not report a manifest digest")
+        digest = repository + "@" + identity[1]
+        owned_refs.add(digest)
+        _docker("pull", digest, timeout=600)
         yield digest
     finally:
-        for reference in (tag, digest):
-            if reference:
-                subprocess.run(["docker", "image", "rm", reference], capture_output=True, check=False, timeout=60)
+        for reference in ([tag] if tag else []) + sorted(owned_refs):
+            subprocess.run(["docker", "image", "rm", reference], capture_output=True, check=False, timeout=60)
         subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False, timeout=60)
 
 
