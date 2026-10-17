@@ -83,7 +83,7 @@ async def test_actual_source_drift_between_independent_reads_still_holds():
         nonlocal reads
         reads += 1
         return SOURCE if reads == 1 else SOURCE + 'changed'
-    with pytest.raises(EnvironmentDiscoveryError, match='independently read'):
+    with pytest.raises(EnvironmentDiscoveryError, match='review evidence hash changed'):
         await discover_and_review(symphony_name='suite', commit=COMMIT, paths=[PATH, 'other/evidence'],
             capabilities=CAPABILITIES, fetch=changing, chat=agent)
 

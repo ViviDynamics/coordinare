@@ -58,6 +58,7 @@ class DiscoveryLimits:
     max_coverage_revisions: int = 2
     max_execution_repairs: int = 2
     attempt_timeout_seconds: float = 600
+    max_review_context_bytes: int = 1024 * 1024
     max_output_bytes: int = 256 * 1024
     phase_timeout_seconds: float = 120
 
@@ -66,7 +67,7 @@ class DiscoveryLimits:
         if (any(value <= 0 for name, value in self.__dict__.items()
                 if name not in {"max_schema_repairs", "max_coverage_revisions", "max_execution_repairs"})
                 or any(not 0 <= value <= MAX_REPAIRS for value in repair_limits)
-                or self.attempt_timeout_seconds > MAX_ATTEMPT_SECONDS):
+                or self.attempt_timeout_seconds > MAX_ATTEMPT_SECONDS or self.max_review_context_bytes > 16 * 1024 * 1024):
             message = "discovery limits must be positive"
             raise ValueError(message)
 
@@ -161,6 +162,8 @@ async def _phase(
                 budget.reserve_call()
                 await budget.flush()
                 budget.context_bytes += sum(len(message["content"].encode()) for message in messages)
+                if inspection.name == "review":
+                    budget.review_context_bytes = _check_review_context(messages, inspection.limits)
                 raw = budget.record_reply(await chat(messages))
                 try:
                     reply = _decode_reply(raw, inspection.name, inspection.limits)
@@ -192,6 +195,39 @@ async def _phase(
         raise EnvironmentDiscoveryError(message, code="phase_deadline") from None
     message = f"{inspection.name} model call limit exceeded"
     raise EnvironmentDiscoveryError(message, code="phase_call_limit")
+
+
+async def _prepare_review_evidence(reviewer: _Inspection, manifest: EnvironmentManifest) -> list[dict[str, str]]:
+    """Independently fetch the entire mandatory input set before judgment."""
+    budget = reviewer.budget
+    if budget is not None:
+        budget.stage = "review_preparation"
+        budget.mandatory_inputs_required = len(manifest.inputs)
+        budget.mandatory_inputs_delivered = 0
+    evidence = []
+    paths = sorted(manifest.inputs)
+    for offset in range(0, len(paths), 8):
+        try:
+            result = await reviewer.read_files(paths[offset:offset + 8])
+        except EnvironmentDiscoveryError as exc:
+            if exc.code != "environment_discovery_held":
+                raise
+            raise EnvironmentDiscoveryError("mandatory review evidence unavailable or exceeds source bounds",
+                code="review_evidence_unavailable") from None
+        for item in result["files"]:
+            if item["sha256"] != manifest.inputs[item["path"]]:
+                raise EnvironmentDiscoveryError("mandatory review evidence hash changed", code="review_evidence_drift")
+            evidence.append(item)
+            if budget is not None:
+                budget.mandatory_inputs_delivered += 1
+    return evidence
+
+
+def _check_review_context(messages: list[dict[str, str]], limits: DiscoveryLimits) -> int:
+    measured = len(_json(messages).encode("utf-8"))
+    if measured > limits.max_review_context_bytes:
+        raise EnvironmentDiscoveryError("complete review context exceeds configured byte limit", code="review_context_limit")
+    return measured
 
 
 class _DiscoveryOptionKeywords(TypedDict):
@@ -445,13 +481,17 @@ async def _discover_attempt(
             manifest = validate_candidate(candidate)
             prior_manifests.append(manifest)
             reviewer = _Inspection("review", inventory, fetch, bounds, budget)
+            async with asyncio.timeout(min(bounds.phase_timeout_seconds, max(0, budget.deadline - time.monotonic()))):
+                mandatory_evidence = await _prepare_review_evidence(reviewer, manifest)
             assessment_data, reviewer_reads = await _phase(
                 inspection=reviewer, chat=chat, budget=budget, validate=_CoverageProposal.model_validate,
                 messages=[
                 {"role": "system", "content": tools + (
                     'Independently review coverage of the candidate against the repository snapshot. '
-                    'You have no discoverer conversation. Independently read every manifest input and '
-                    'all cited requirements, and inspect any additional relevant files for omissions. '
+                    'You have no discoverer conversation. The daemon independently fetched every manifest input '
+                    'and supplied its exact content in mandatory_evidence. Examine all supplied inputs and cited requirements, '
+                    'inspect additional relevant files for omissions, and identify conflicting source constraints. '
+                    'A version or presence check alone cannot establish a declared usability constraint. '
                     'Evaluate whether every required constraint has required executable checks and '
                     'service lifecycle/activation needs are explicit. Reject required artifacts that exist only in '
                     'the disposable installer image or checkout. Return revise for omissions or conflicts, '
@@ -462,6 +502,7 @@ async def _discover_attempt(
                 ) + _json(_CoverageProposal.model_json_schema())},
                 {"role": "user", "content": _json({**identity,
                     "manifest": manifest.model_dump(mode="json"), "manifest_digest": manifest.digest(),
+                    "mandatory_evidence": mandatory_evidence,
                     "declared_services": declared_services})},
             ])
             assessment = _validated_assessment(assessment_data, reviewer_reads, manifest, require_accept=False)
