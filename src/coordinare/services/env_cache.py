@@ -69,6 +69,7 @@ from coordinare.services.environment_repair import (
     begin_attempt,
     dispatch_refusal,
     finish_attempt,
+    hold_uncertain_execution,
     journal_for,
     prepare_repair,
     repair_context,
@@ -1676,11 +1677,17 @@ class EnvCacheService:
         try:
             async with asyncio.timeout(deadline):
                 yield
+        except asyncio.CancelledError:
+            hold_uncertain_execution(cache)
+            raise
         except TimeoutError:
             state = dict(self._kubernetes_state) or {"env_cache": {cache.symphony_name: cache}}
             self.record_bootstrap_execution(cache.symphony_name, state, None, cleanup_confirmed=False)
             self.on_bootstrap_complete(cache.symphony_name, False, state,
                 error="environment bootstrap preparation or dispatch deadline exceeded")
+        except Exception:
+            hold_uncertain_execution(cache)
+            raise
 
     async def _current_manifest_sha(
         self, symphony_name: str, symphony_config: Any, github_service: Any,

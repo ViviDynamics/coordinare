@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from coordinare.services.environment_discovery import DiscoveryLimits
 
 JOURNAL_MAX_BYTES = 4 * 1024 * 1024
+MAX_ARCHIVED_ATTEMPTS = 3
 REPORT_MAX_BYTES = 256 * 1024
 FEEDBACK_MAX_BYTES = 16 * 1024
 OUTPUT_MAX_CHARS = 512
@@ -95,6 +96,56 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
     return journal
 
 
+def hold_uncertain_execution(cache: EnvCacheState) -> None:
+    """Never admit another attempt while interrupted external work may survive."""
+    journal = journal_for(cache)
+    journal.status, journal.last_error = "held", "cleanup_unconfirmed"
+    cache.cache_dir_ready = False
+    _publish(cache, journal)
+
+
+def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool = False) -> None:
+    """Explicit operator action, preserving bounded old proof in a new empty sibling."""
+    data = cache.environment_attempt
+    if data is None:
+        return
+    if not isinstance(data, dict) or data.get("version") not in (1, 2):
+        _refuse("unknown environment journal cannot be reset without reconciliation")
+    normalized = dict(data)
+    if normalized["version"] == 1:
+        used, maximum = normalized.pop("repairs", None), normalized.pop("max_repairs", None)
+        normalized["version"] = 2
+        for counter in ("schema_repairs", "coverage_revisions", "execution_repairs"):
+            normalized[counter], normalized["max_" + counter] = used, maximum
+    try:
+        parsed = RepairJournal.model_validate(normalized)
+    except ValidationError:
+        _refuse("malformed environment journal requires reconciliation before reset")
+    if not 0 < parsed.expires_at - parsed.started_at <= MAX_ATTEMPT_SECONDS:
+        _refuse("invalid environment deadline requires reconciliation before reset")
+    uncertain = (data.get("status") == "executing" or data.get("last_error") == "cleanup_unconfirmed"
+        or (data.get("target") is not None and data.get("status") not in {"ready", "repair_pending"}))
+    if cache.bootstrap_in_flight or (uncertain and cleanup_confirmed is not True):
+        _refuse("operator restart requires confirmed executor cleanup", code="cleanup_unconfirmed")
+    archive = [*cache.environment_attempt_archive, data]
+    if len(archive) > MAX_ARCHIVED_ATTEMPTS or len(json.dumps(archive).encode()) > JOURNAL_MAX_BYTES:
+        _refuse("operator restart requires archiving prior environment evidence", code="attempt_archive_limit")
+    # Copy through JSON so future mutations cannot rewrite the rejected audit record.
+    name = cache.sanitised_name[:140] + "-reset-" + uuid.uuid4().hex[:12]
+    new_path = cache.cache_dir.parent / name
+    if new_path.exists() or new_path.is_symlink():
+        _refuse("operator restart cache generation is not fresh")
+    cache.environment_attempt_archive = json.loads(json.dumps(archive))
+    cache.cache_dir, cache.sanitised_name = new_path, name
+    cache.environment_attempt = None
+    cache.environment_manifest = cache.environment_assessment = cache.environment_verification = None
+    cache.environment_capabilities = None
+    cache.rendered_activate_sh = cache.rendered_verify_sh = None
+    cache.cache_dir_ready = False
+    cache.provenance_digest = None
+    cache.readme_sha = None
+
+
 def _publish(cache: EnvCacheState, journal: RepairJournal) -> None:
     data = journal.model_dump(mode='json')
     if len(json.dumps(data).encode()) > JOURNAL_MAX_BYTES:
@@ -128,7 +179,7 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
     """Resume an existing finite budget; a new source gets a separate logical attempt."""
     now = time.time() if now is None else now
     previous = journal_for(cache) if cache.environment_attempt is not None else None
-    if previous is not None and previous.last_error == "cleanup_unconfirmed":
+    if previous is not None and (previous.last_error == "cleanup_unconfirmed" or previous.status == "executing"):
         _refuse("environment repair requires confirmed cleanup of interrupted execution")
     seconds = min(limits.attempt_timeout_seconds, outer_seconds if outer_seconds > 0 else MAX_ATTEMPT_SECONDS,
                   MAX_ATTEMPT_SECONDS)
@@ -350,6 +401,6 @@ def dispatch_refusal(cache: EnvCacheState, commit: str) -> str | None:
         journal = journal_for(cache)
     except (ValueError, RuntimeError):
         return "environment attempt journal is invalid; dispatch held"
-    if journal.last_error == "cleanup_unconfirmed" or (journal.status == "held" and journal.source_commit == commit):
+    if journal.status == "executing" or journal.last_error == "cleanup_unconfirmed" or (journal.status == "held" and journal.source_commit == commit):
         return "environment attempt is held; confirmed cleanup and a valid repair budget are required"
     return None

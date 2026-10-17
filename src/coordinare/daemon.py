@@ -731,6 +731,7 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             cache_dir_ready=bool(get("cache_dir_ready") or False),
             # 218: the daemon-rendered scripts the verification and activate gate use.
             environment_attempt=get("environment_attempt"),
+            environment_attempt_archive=get("environment_attempt_archive") or [],
             environment_capabilities=get("environment_capabilities"),
             environment_manifest=get("environment_manifest"),
             environment_assessment=get("environment_assessment"),
@@ -1051,6 +1052,7 @@ def _bootstrap_attempt_seconds(cache: EnvCacheState | None, maximum: float) -> f
 
 def _rehydrate_reviewed_environment(live: EnvCacheState, persisted: EnvCacheStateSnapshot) -> bool:
     """Restore reviewed metadata only after validating its cache generation."""
+    live.environment_attempt_archive = persisted.environment_attempt_archive
     live.environment_attempt = persisted.environment_attempt
     if live.environment_attempt is not None:
         from coordinare.services.environment_repair import restore_attempt_generation
@@ -5441,12 +5443,17 @@ class CoordinareDaemon:
         try:
             async with asyncio.timeout(remaining_seconds(cache)):
                 return cast("dict[str, Any]", await svc.dispatch_card(payload, **options))
-        except (TimeoutError, RuntimeError, ValueError):
+        except asyncio.CancelledError:
+            from coordinare.services.environment_repair import hold_uncertain_execution
+
+            hold_uncertain_execution(cache)
+            raise
+        except Exception:
             # The dispatch adapter owns cancellation cleanup, including a late create.
             # No terminal evidence/confirmed cleanup means no repair or readiness.
-            self._state["env_cache_service"].record_bootstrap_execution(
-                name, self._state, None, cleanup_confirmed=False,
-            )
+            from coordinare.services.environment_repair import hold_uncertain_execution
+
+            hold_uncertain_execution(cache)
             return {"status": "error", "reason": "environment dispatch deadline or context refused"}
 
     async def _finish_bootstrap_dispatch(

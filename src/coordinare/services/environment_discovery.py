@@ -10,13 +10,15 @@ import hashlib
 import json
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, NotRequired, TypedDict, Unpack, cast
 
 from coordinare_service_inference.environment.models import (
+    Command,
     CoverageAssessment,
     EnvironmentManifest,
     ExecutionCapabilities,
+    Requirement,
 )
 from coordinare_service_inference.environment.models import (
     CoverageAssessmentProposal as _CoverageProposal,
@@ -315,6 +317,62 @@ def _validated_assessment(
         if proposal.verdict == "accept" else proposal.rationale})
 
 
+@dataclass
+class _ObligationLedger:
+    """Retain valid obligations even when an unrelated proposal field is invalid."""
+
+    checks: dict[str, Command] = field(default_factory=dict)
+    lifecycle: dict[str, dict[str, Command]] = field(default_factory=dict)
+    coverage: dict[str, set[str]] = field(default_factory=dict)
+
+    @staticmethod
+    def _commands(entries: Any) -> dict[str, Command]:
+        result = {}
+        for entry in entries if isinstance(entries, list) else []:
+            try:
+                command = Command.model_validate(entry)
+            except ValidationError:
+                continue
+            result[command.id] = command
+        return result
+
+    @staticmethod
+    def _check(old: Command, new: Command | None) -> None:
+        if new is not None and (new.id != old.id or new.scope != old.scope or (old.required and not new.required)):
+            message = "required obligation scope or status changed during schema correction"
+            raise EnvironmentDiscoveryError(message, code="obligation_removed")
+
+    def record(self, data: dict[str, Any]) -> None:
+        checks = self._commands(data.get("checks"))
+        for key, previous in self.checks.items():
+            self._check(previous, checks.get(key))
+        self.checks.update({key: item for key, item in checks.items() if item.required})
+        for entry in data.get("requirements", []) if isinstance(data.get("requirements"), list) else []:
+            try:
+                requirement = Requirement.model_validate(entry)
+            except ValidationError:
+                continue
+            if requirement.required and set(requirement.checks) <= checks.keys():
+                previous = self.coverage.get(requirement.id, set())
+                if not previous <= set(requirement.checks):
+                    message = "required obligation coverage changed during schema correction"
+                    raise EnvironmentDiscoveryError(message, code="obligation_removed")
+                self.coverage[requirement.id] = set(requirement.checks)
+        for service in data.get("services", []) if isinstance(data.get("services"), list) else []:
+            if not isinstance(service, dict) or not isinstance(service.get("id"), str):
+                continue
+            service_id = service["id"]
+            phases = {phase: self._commands([service.get(phase)]) for phase in ("init", "start", "health", "stop")}
+            current = {phase: next(iter(commands.values())) for phase, commands in phases.items() if commands}
+            for phase, previous in self.lifecycle.get(service_id, {}).items():
+                self._check(previous, current.get(phase))
+                if phase not in current and service.get(phase) is None:
+                    message = "required lifecycle obligation removed during schema correction"
+                    raise EnvironmentDiscoveryError(message, code="obligation_removed")
+            if service.get("required", True) is True:
+                self.lifecycle.setdefault(service_id, {}).update(current)
+
+
 def _preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentManifest) -> None:
     """A fresh judgment can add coverage, never waive a previously required obligation."""
     for group in ("requirements", "checks", "services"):
@@ -467,8 +525,10 @@ async def _discover_attempt(
                 {"role": "user", "content": _json({**identity, "declared_services": declared_services})},
             ]
     prior_manifests, required_ids = _initial_repair(messages, options, discovery, commit)
+    obligation_ledger = _ObligationLedger()
 
     def validate_candidate(data: dict[str, Any]) -> EnvironmentManifest:
+        obligation_ledger.record(data)
         for group, previous in required_ids.items():
             entries = data.get(group, [])
             current = {item["id"] for item in entries if isinstance(item, dict) and isinstance(item.get("id"), str)

@@ -692,6 +692,7 @@ class EnvCacheStateSnapshot(BaseModel):
     # strips whitespace by default, which would drop the trailing newline and break the exact
     # activate.sh comparison, so these two fields keep their text byte for byte.
     environment_attempt: dict[str, Any] | None = None
+    environment_attempt_archive: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
     environment_capabilities: dict[str, Any] | None = None
     environment_manifest: dict[str, Any] | None = None
     environment_assessment: dict[str, Any] | None = None
