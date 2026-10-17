@@ -43,6 +43,7 @@ from coordinare.services.environment_repair import journal_for, remaining_second
 
 if TYPE_CHECKING:
     from coordinare.services.environment_discovery import ChatJson
+    from coordinare.services.environment_probes import ProbePlan
 
 
 @dataclass(frozen=True)
@@ -189,6 +190,26 @@ def execution_authorized(
         and approval.get("source_commit") == source_commit
         and approval.get("image_ref") == image
     )
+
+
+def probe_authorized(path: Path, plan: ProbePlan) -> bool:
+    try:
+        if path.is_symlink() or path.stat().st_size > 4096:
+            return False
+        approval = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    return (isinstance(approval, dict) and approval.get("approved") is True
+        and approval.get("scope") == "environment_probe" and approval.get("plan_digest") == plan.digest()
+        and approval.get("source_commit") == plan.source_commit and approval.get("image_ref") == plan.capabilities.image_ref
+        and approval.get("platform") == plan.capabilities.platform)
+
+
+async def await_probe_approval(target: Path, plan: ProbePlan, *, seconds: float) -> None:
+    _write(target / "probe-proposal.json", plan.model_dump(mode="json"))
+    async with asyncio.timeout(seconds):
+        while not probe_authorized(target / "probe-approved.json", plan):
+            await asyncio.sleep(0.25)
 
 
 def final_readiness(*, installer_passed: bool, clean_passed: bool | None, frozen: bool) -> bool:
@@ -544,8 +565,20 @@ async def validate_repository(
 
     async def persist_attempt():
         _write(output / "environment-attempt.json", cache.environment_attempt)
+        for index, report in enumerate((cache.environment_attempt or {}).get("probe_reports", [])):
+            _write(output / f"probe-{index:03}" / "probe-report.json", report)
+
+    async def approve_probe(plan: ProbePlan) -> None:
+        if not profile.execute:
+            raise EnvironmentDiscoveryError("probe execution is disabled for this profile", code="probe_execution_disabled")
+        index = (cache.environment_attempt or {}).get("probe_batches", 1) - 1
+        target = output / f"probe-{index:03}"
+        new_profile_directory(target)
+        _event(repository=snapshot.name, stage="probe_scope", plan_digest=plan.digest())
+        await await_probe_approval(target, plan, seconds=min(profile.approval_timeout, remaining_seconds(cache)))
 
     state["snapshot_save_fn"] = persist_attempt
+    state["environment_probe_authorize"] = approve_probe
     service.bind_kubernetes_state(state)
     attempts = []
     attempt_target = output
@@ -555,6 +588,7 @@ async def validate_repository(
             service.prepare_bootstrap_generation(cache)
             attempt_target = output / f"attempt-{generation:03}"
             new_profile_directory(attempt_target)
+            result["stage"] = "repair_discovery" if generation else "discovery"
             await service._build_manifest_artifacts(
                 performer_mounts=(output,), symphony_name=snapshot.name, repo=snapshot.name,
                 github_org=snapshot.org, github_service=snapshot, readme_contents={},
@@ -597,7 +631,7 @@ async def validate_repository(
         if isinstance(cache.environment_attempt, dict):
             diagnostics = cache.environment_attempt.get("diagnostics", {})
             result["diagnostics"] = diagnostics
-            if result["stage"] == "discovery" and diagnostics.get("stage"):
+            if result["stage"] in {"discovery", "repair_discovery"} and diagnostics.get("stage"):
                 result["stage"] = diagnostics["stage"]
         result.update(
             seconds=round(time.monotonic() - started, 2),
