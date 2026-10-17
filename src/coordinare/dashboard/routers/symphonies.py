@@ -610,6 +610,23 @@ def _register_delete_symphony(app: FastAPI, ctx: DashboardContext) -> None:
             return JSONResponse({"deleted": name}, headers=_version_headers(config_path))
 
 
+async def _reset_bootstrap_budget_response(
+    state: Any, name: str, cache_state: Any, actor: str, activity_log: Any,
+) -> JSONResponse | None:
+    """Translate reset refusal and cooldown into the existing endpoint responses."""
+    try:
+        next_reset = await request_env_bootstrap_reset(state, name, cache_state, actor, activity_log)
+    except EnvironmentDiscoveryError as exc:
+        return JSONResponse({"error": str(exc), "status": exc.code}, status_code=409)
+    if next_reset is not None:
+        allowed_at = next_reset.isoformat()
+        return JSONResponse({
+            "error": f"Manual bootstrap reset cooldown; next reset is allowed at {allowed_at}",
+            "status": "bootstrap_reset_cooldown", "next_reset_at": allowed_at,
+        }, status_code=429)
+    return None
+
+
 def _register_trigger_env_bootstrap(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
 
@@ -687,18 +704,11 @@ def _register_trigger_env_bootstrap(app: FastAPI, ctx: DashboardContext) -> None
                     status_code=409,
                 )
 
-            try:
-                next_reset = await request_env_bootstrap_reset(
-                    daemon.state, name, cache_state, _session_actor(request), ctx.store.activity_log,
-                )
-            except EnvironmentDiscoveryError as exc:
-                return JSONResponse({"error": str(exc), "status": exc.code}, status_code=409)
-            if next_reset is not None:
-                allowed_at = next_reset.isoformat()
-                return JSONResponse({
-                    "error": f"Manual bootstrap reset cooldown; next reset is allowed at {allowed_at}",
-                    "status": "bootstrap_reset_cooldown", "next_reset_at": allowed_at,
-                }, status_code=429)
+            refusal = await _reset_bootstrap_budget_response(
+                daemon.state, name, cache_state, _session_actor(request), ctx.store.activity_log,
+            )
+            if refusal is not None:
+                return refusal
             # Force the next cycle to detect a SHA mismatch and re-dispatch.
             cache_state.readme_sha = None
             if hasattr(daemon, "_webhook_trigger"):
