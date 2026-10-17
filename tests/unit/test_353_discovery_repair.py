@@ -229,3 +229,36 @@ async def test_protocol_and_review_revision_share_repair_budget():
         await run(replies, diagnostics=events.append)
     assert len(replies.messages) == 6
     assert events[-1]["repairs"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", [
+    {"tool": "read_files", "paths": ["other"]},
+    {"tool": "list_files", "path": "absent", "cursor": 0},
+    {"tool": "list_files", "path": "", "cursor": "next"},
+])
+async def test_invalid_navigation_can_repair_without_fabricated_source(tool):
+    valid = candidate()
+    replies = Replies([tool, {"tool": "read_file", "path": PATH}, {"manifest": valid},
+        {"tool": "read_file", "path": PATH}, assessment(valid)])
+    events = []
+    manifest, review = await run(replies, diagnostics=events.append)
+    assert manifest.inputs == candidate()["inputs"]
+    assert review.verdict == "accept"
+    assert events[-1]["repairs"] == 1
+    assert events[-1]["reads"] == 2
+    feedback = json.loads(replies.messages[1][-1]["content"])
+    assert feedback["validation_errors"][0]["code"] == "invalid_tool_arguments"
+
+
+@pytest.mark.asyncio
+async def test_unavailable_snapshot_file_cannot_be_repaired():
+    async def unavailable(path):
+        return None
+
+    replies = Replies([{"tool": "read_file", "path": PATH}])
+    events = []
+    with pytest.raises(EnvironmentDiscoveryError, match="unavailable"):
+        await discover_and_review(symphony_name="suite", commit=COMMIT, paths=[PATH],
+            fetch=unavailable, chat=replies, capabilities=CAPABILITIES, diagnostics=events.append)
+    assert events[-1]["repairs"] == 0

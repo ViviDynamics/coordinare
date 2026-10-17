@@ -66,6 +66,14 @@ async def resolve_execution_capabilities(state: Mapping[str, Any], symphony_name
         raise EnvironmentCapabilityError(message)
     transport = getattr(config, "agent_transport", None) or getattr(global_config, "agent_transport", None)
     root = "/devenv"
+    consumers = [endpoint for endpoint in getattr(global_config, "performer_endpoints", [])
+                 if any(role != "env_bootstrap" for role in getattr(endpoint, "roles", []))]
+    roots = {getattr(endpoint, "container_devenv_root", "/devenv") for endpoint in consumers}
+    if len(roots) > 1:
+        message = "environment consumers require one cache mount root"
+        raise EnvironmentCapabilityError(message)
+    if roots:
+        root = roots.pop()
     if transport == "kubernetes":
         image = getattr(global_config, "kubernetes_verifier_image", None) or getattr(global_config, "performer_image", None)
         platform = getattr(global_config, "kubernetes_verifier_platform", None)
@@ -78,15 +86,7 @@ async def resolve_execution_capabilities(state: Mapping[str, Any], symphony_name
     else:
         image = getattr(global_config, "performer_image", None)
         # Consumer endpoints, not a separate bootstrap-only image, define the cache target.
-        consumers = [endpoint for endpoint in getattr(global_config, "performer_endpoints", [])
-                     if any(role != "env_bootstrap" for role in getattr(endpoint, "roles", []))]
         images = {endpoint.image for endpoint in consumers if getattr(endpoint, "image", None)}
-        roots = {getattr(endpoint, "container_devenv_root", "/devenv") for endpoint in consumers}
-        if len(roots) > 1:
-            message = "environment consumers require one cache mount root"
-            raise EnvironmentCapabilityError(message)
-        if roots:
-            root = roots.pop()
         if len(images) > 1:
             message = "environment consumers require one immutable target image"
             raise EnvironmentCapabilityError(message)

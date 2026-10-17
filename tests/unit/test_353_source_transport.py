@@ -9,6 +9,8 @@ import shlex
 import subprocess
 import sys
 
+import pytest
+
 from coordinare.services.environment_verification import source_setup
 from coordinare.services.kubernetes_verifier import (
     VerifierSpec,
@@ -91,3 +93,32 @@ def test_corrupt_mounted_payload_stops_before_source_materialization(tmp_path):
         str(payload_dir), str(tmp_path / "repo")], text=True, capture_output=True, check=False, timeout=10)
     assert result.returncode != 0
     assert not (tmp_path / "repo").exists()
+
+
+@pytest.mark.parametrize(("count", "text_size"), [(110, 1), (160, 4096), (256, 4096)])
+def test_unicode_paths_fit_shared_admission_and_kubernetes_roundtrip(tmp_path, count, text_size):
+    from dataclasses import replace
+
+    from coordinare_service_inference.environment.source_payload import (
+        encode_sources,
+        restore_source_directory,
+    )
+
+    prefix = "/".join(["é" * 60] * 6)
+    files = {prefix + f"/evidence-{index:04}": "x" * text_size for index in range(count)}
+    inputs = {path: hashlib.sha256(text.encode()).hexdigest() for path, text in files.items()}
+    assert len(json.dumps(inputs, ensure_ascii=False).encode()) < 256 * 1024
+    encode_sources(files)
+    spec = replace(source_spec(), project_files=files, source_inputs=inputs)
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    secrets = build_verifier_source_secrets(spec, name="test", namespace="ns", owner="owner", pod_uid="uid")
+    pod = build_verifier_pod_manifest(spec, name="test", namespace="ns", owner="owner")
+    assert len(pod["spec"]["volumes"][-1]["projected"]["sources"]) == len(secrets)
+    for secret in secrets:
+        assert len(json.dumps(secret).encode()) < 900 * 1024
+        for key, value in secret["data"].items():
+            (payload / key).write_bytes(base64.b64decode(value))
+    restore_source_directory(payload, tmp_path / "restored")
+    for path, content in files.items():
+        assert (tmp_path / "restored" / path).read_text() == content
