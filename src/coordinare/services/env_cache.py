@@ -340,7 +340,7 @@ async def _resolve_bootstrap_commit(github: _GitHubService, config: Any, cache: 
     cache.bootstrap_commit_sha = commit
     refusal = dispatch_refusal(cache, commit)
     if refusal is not None:
-        cache.last_bootstrap_error = refusal
+        cache.last_bootstrap_error = redact_state_value(refusal)
         cache.cache_dir_ready = False
         return False
     return True
@@ -2322,7 +2322,7 @@ class EnvCacheService:
             try:
                 await save()
             except Exception:
-                message = "environment attempt checkpoint could not be persisted"
+                message = "environment run checkpoint could not be persisted"
                 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 
                 raise EnvironmentDiscoveryError(message, code="attempt_persistence") from None
@@ -2779,7 +2779,7 @@ class EnvCacheService:
         try:
             finish_attempt(cache_state, success, None, cleanup_confirmed=False)
         except (ValueError, RuntimeError):
-            success, error = False, "environment attempt deadline or evidence refused completion"
+            success, error = False, "environment run deadline or evidence refused completion"
 
         cache_state.last_bootstrap_succeeded = success
         if not success:

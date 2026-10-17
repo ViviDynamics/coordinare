@@ -15,7 +15,7 @@ from coordinare_service_inference.environment.models import (
 )
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from coordinare.lib.redaction import redact_command_text
+from coordinare.lib.redaction import redact_command_text, redact_state_value
 from coordinare.services.environment_acceptance import (
     accepted_environment,
     execution_report,
@@ -192,7 +192,8 @@ def record_execution_failure(cache: EnvCacheState, report: dict[str, Any], *, cl
         journal.status = 'repair_pending'
     except (KeyError, TypeError, ValueError, EnvironmentDiscoveryError) as exc:
         journal.status = 'held'
-        journal.last_error = exc.code if isinstance(exc, EnvironmentDiscoveryError) else 'invalid_execution_evidence'
+        journal.last_error = redact_state_value(
+            exc.code if isinstance(exc, EnvironmentDiscoveryError) else 'invalid_execution_evidence')
         _publish(cache, journal)
         return False
     else:
