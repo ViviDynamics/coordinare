@@ -708,10 +708,21 @@ async def _verify_cache_clean(
             detail="the docker daemon did not answer; the clean verify was not run",
         )
         return None, "the docker daemon is not reachable; the clean verify was not run"
+    from coordinare.services.environment_capabilities import (
+        capabilities_match,
+        resolve_execution_capabilities,
+    )
+
+    try:
+        capabilities = await resolve_execution_capabilities(state, symphony_name)
+    except (ValueError, OSError, RuntimeError):
+        return False, "clean verification runtime capabilities are unavailable"
+    if not capabilities_match(ec, capabilities):
+        return False, "clean verification runtime capabilities changed; rebuild the cache"
     devenv_root = (
         svc.devenv_root if isinstance(svc, HTTPPerformerService) else DEFAULT_DEVENV_ROOT
     )
-    image = getattr(getattr(svc, "_config", None), "image", None) or "coordinare-performer:full"
+    image = capabilities.image_ref
     # Mount at the SAME container path the bootstrap used, since activate.sh /
     # verify.sh hardcode that absolute DEVEENV path.
     container_path = f"{devenv_root}/{ec.sanitised_name}"
@@ -764,6 +775,9 @@ async def _verify_cache_clean(
         if not await _remove_verify_container(name):
             outcome = None, "clean verifier container removal was not confirmed"
         elif ec.environment_verification is not None:
+            if ec.environment_verification.get("platform") != capabilities.platform:
+                ec.environment_verification = None
+                return False, "clean verification platform differs from accepted capabilities"
             ec.environment_verification["image_ref"] = image
     return outcome
 
@@ -2240,6 +2254,7 @@ class EnvCacheService:
         llm_chat: ChatJson | None,
         declared_services: list[dict[str, Any]] | None = None,
         cache_state: EnvCacheState | None = None,
+        capabilities: Any = None,
     ) -> tuple[str | None, bool, bool]:
         """Derive the manifest, write an authoritative verify.sh AND activate.sh
         into the cache, and return ``(dependency_checklist, verify_provided,
@@ -2267,6 +2282,15 @@ class EnvCacheService:
         cache_state.cache_dir_ready = False
         cache_state.last_bootstrap_succeeded = None
         commit = cache_state.bootstrap_commit_sha
+        if capabilities is None:
+            from coordinare.services.environment_capabilities import resolve_execution_capabilities
+
+            capability_state = dict(self._kubernetes_state)
+            capability_state.setdefault("coordinare_config", self._coordinare_config)
+            capability_state.setdefault("env_cache", {symphony_name: cache_state})
+            capabilities = await resolve_execution_capabilities(capability_state, symphony_name)
+        if capabilities.cache_mount_path != cache_mount_path:
+            raise EnvironmentDiscoveryError("environment cache mount differs from runtime capabilities")
 
         async def fetch(path: str) -> str | None:
             return await _bootstrap_file_content(github_service, github_org, repo, path, commit)
@@ -2287,7 +2311,7 @@ class EnvCacheService:
             )
             manifest, assessment = await discover_and_review(
                 symphony_name=symphony_name, commit=commit, paths=paths,
-                fetch=fetch, chat=llm_chat, declared_services=declared_services, limits=limits,
+                fetch=fetch, chat=llm_chat, capabilities=capabilities, declared_services=declared_services, limits=limits,
             )
         activation = render_activate(manifest, cache_mount_path=cache_mount_path)
         verification = render_verify(manifest, cache_mount_path=cache_mount_path)

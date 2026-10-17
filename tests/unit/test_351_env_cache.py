@@ -11,6 +11,7 @@ from coordinare.daemon import _persist_env_cache
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.services.env_cache import EnvCacheService
 from coordinare.state_store import EnvCacheStateSnapshot
+from tests.unit.test_351_environment_discovery import CAPABILITIES
 
 
 def test_accepted_contract_survives_snapshot(tmp_path: Path) -> None:
@@ -132,7 +133,8 @@ async def test_discovery_inventory_respects_outer_bootstrap_budget(tmp_path: Pat
         await service._build_manifest_artifacts(
             performer_mounts=(tmp_path,), symphony_name="sym", repo="sym", github_org="org",
             github_service=github, readme_contents={}, current_sha="a" * 40, cache_dir=tmp_path,
-            cache_mount_path="/devenv/sym", llm_chat=None, cache_state=cache)
+            cache_mount_path="/devenv/sym", llm_chat=None, cache_state=cache,
+            capabilities=CAPABILITIES.model_copy(update={"cache_mount_path": "/devenv/sym"}))
 
 
 def test_clean_report_requires_service_lifecycle_evidence(tmp_path: Path) -> None:

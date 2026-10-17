@@ -22,11 +22,13 @@ from coordinare.services.kubernetes_verifier import (
     VerifierSpec,
     build_verifier_pod_manifest,
 )
+from tests.unit.test_351_environment_discovery import CAPABILITIES
 
 
 async def _discover(files: dict[str, str], reviewer_extra: str = ""):
     paths = list(files)
     manifest = {
+        "capabilities_digest": CAPABILITIES.digest(),
         "schema_version": 1, "policy_version": "351-v1", "symphony_name": "suite",
         "source_commit": "a" * 40,
         "inputs": {path: hashlib.sha256(text.encode()).hexdigest() for path, text in files.items()},
@@ -41,6 +43,7 @@ async def _discover(files: dict[str, str], reviewer_extra: str = ""):
     if reviewer_extra:
         replies.append({"tool": "read_file", "path": "additional-context"})
     replies.append({"assessment": {
+        "capabilities_digest": CAPABILITIES.digest(),
         "schema_version": 1, "policy_version": "351-v1", "source_commit": "a" * 40,
         "manifest_digest": EnvironmentManifest.model_validate(manifest).digest(),
         "verdict": "accept", "rationale": "Every documented requirement has a check", "sources": paths,
@@ -54,7 +57,7 @@ async def _discover(files: dict[str, str], reviewer_extra: str = ""):
         return reviewer_extra if path == "additional-context" else files[path]
 
     return await discover_and_review(symphony_name="suite", commit="a" * 40,
-        paths=[*paths, "additional-context"], fetch=fetch, chat=chat)
+        paths=[*paths, "additional-context"], fetch=fetch, chat=chat, capabilities=CAPABILITIES)
 
 
 @pytest.mark.asyncio
