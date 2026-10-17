@@ -7,6 +7,8 @@ import json
 import shlex
 from typing import TYPE_CHECKING, Any
 
+from coordinare_service_inference.environment.source_payload import decode_sources, encode_sources
+
 from coordinare.services.environment_acceptance import accepted_environment
 from coordinare.services.kubernetes_verifier import check_project_files, credential_environment
 
@@ -50,20 +52,19 @@ async def verification_sources(state: Mapping[str, Any], name: str, cache: EnvCa
     return files
 
 
-def source_setup(files: dict[str, str]) -> str:
-    """Create private source files in the verifier, with no shell interpolation of their contents."""
-    check_project_files(files)
-    encoded = base64.b64encode(json.dumps(files, ensure_ascii=False).encode("utf-8")).decode("ascii")
+def source_setup(files: dict[str, str], *, expected_inputs: Mapping[str, str]) -> str:
+    """Feed a hash-checked payload through stdin, never exec arguments or env."""
+    payload = encode_sources(files)
+    decode_sources(payload, expected_inputs=expected_inputs)
+    chunks = [base64.b64encode(chunk).decode("ascii") for chunk in payload.chunks]
     program = (
-        "import base64,json,os,tempfile\n"
+        "import base64,json,tempfile\n"
         "from pathlib import Path\n"
-        "root=Path(tempfile.mkdtemp(prefix='coordinare-source-'))\n"
-        f"files=json.loads(base64.b64decode({encoded!r}))\n"
-        "for name,text in files.items():\n"
-        " p=root/name\n"
-        " p.parent.mkdir(parents=True,exist_ok=True)\n"
-        " p.write_text(text,encoding='utf-8')\n"
-        "print(root)\n"
+        "from coordinare_service_inference.environment.source_payload import SourcePayload,decode_sources,materialize_sources\n"
+        f"payload=SourcePayload({payload.sha256!r},{payload.size_bytes!r},tuple(base64.b64decode(value) for value in {chunks!r}))\n"
+        f"files=decode_sources(payload,expected_inputs=json.loads({json.dumps(dict(expected_inputs))!r}))\n"
+        "parent=Path(tempfile.mkdtemp(prefix='coordinare-source-'))\n"
+        "root=parent/'repo'\nmaterialize_sources(files,root)\nprint(root)\n"
     )
     return (
         "set -e\nCOORDINARE_REPO_DIR=$(/usr/local/bin/python -I <<'COORDINARE_SOURCE_PY'\n"

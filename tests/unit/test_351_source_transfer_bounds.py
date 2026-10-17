@@ -1,7 +1,6 @@
 """Discovery must admit only inputs both clean verifier transports can carry."""
 from __future__ import annotations
 
-import ast
 import base64
 import hashlib
 import json
@@ -18,7 +17,6 @@ from coordinare_service_inference.environment.models import EnvironmentManifest
 from coordinare.services.environment_discovery import discover_and_review
 from coordinare.services.environment_verification import source_setup
 from coordinare.services.kubernetes_verifier import (
-    PROJECT_FILES_MAX_BYTES,
     VerifierSpec,
     build_verifier_pod_manifest,
 )
@@ -81,27 +79,33 @@ async def test_reviewer_can_read_more_context_than_the_verifier_transfer_budget(
     assert "additional-context" in assessment.inputs
 
 
-def test_docker_and_kubernetes_use_the_same_bounded_unicode_serialization():
+def test_docker_and_kubernetes_use_the_same_bounded_unicode_serialization(tmp_path):
+    from coordinare_service_inference.environment.source_payload import restore_source_directory
+
+    from coordinare.services.kubernetes_verifier import build_verifier_source_secrets
+
     files = {"evidence": "é" * (100 * 1024)}
-    setup_command = source_setup(files).split("$(", 1)[1].split(")\nexport", 1)[0]
-    program = setup_command.split("\n", 1)[1].rsplit("COORDINARE_SOURCE_PY", 1)[0]
-    decode_call = next(node for node in ast.walk(ast.parse(program))
-                       if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                       and node.func.attr == "b64decode")
-    docker_payload = base64.b64decode(ast.literal_eval(decode_call.args[0]))
-    pod = build_verifier_pod_manifest(VerifierSpec(image="trusted:latest", cache_claim="cache",
-        cache_subpath="suite", mount_path="/devenv", verify_text="true", project_files=files),
-        name="verify", namespace="default")
-    env = {entry["name"]: entry["value"] for entry in pod["spec"]["containers"][0]["env"]}
-    kubernetes_payload = base64.b64decode("".join(env[f"PROJECT_FILES_B64_{index}"]
-        for index in range(int(env["PROJECT_FILES_B64_COUNT"]))))
-    assert len(docker_payload) <= PROJECT_FILES_MAX_BYTES
-    assert docker_payload == kubernetes_payload
-    assert json.loads(docker_payload) == files
+    inputs = {path: hashlib.sha256(text.encode()).hexdigest() for path, text in files.items()}
+    spec = VerifierSpec(image="trusted", cache_claim="cache", cache_subpath="suite", mount_path="/devenv",
+        verify_text="true", project_files=files, source_inputs=inputs)
+    payload_dir = tmp_path / "payload"
+    payload_dir.mkdir()
+    for secret in build_verifier_source_secrets(spec, name="test", namespace="ns", owner="owner", pod_uid="uid"):
+        for name, encoded in secret["data"].items():
+            (payload_dir / name).write_bytes(base64.b64decode(encoded))
+    restore_source_directory(payload_dir, tmp_path / "kubernetes")
+    script = source_setup(files, expected_inputs=inputs).replace("/usr/local/bin/python", shlex.quote(sys.executable))
+    result = subprocess.run(["bash", "-s"], input=script + 'printf "%s" "$COORDINARE_REPO_DIR"\n',
+        text=True, capture_output=True, check=True, timeout=10)
+    root = Path(result.stdout)
+    try:
+        assert (root / "evidence").read_bytes() == (tmp_path / "kubernetes/evidence").read_bytes() == files["evidence"].encode()
+    finally:
+        shutil.rmtree(root.parent)
 
 
 def test_docker_source_setup_fits_linux_individual_argument_limit():
-    setup_command = source_setup({"evidence": "x" * (200 * 1024)}).split("$(", 1)[1].split(")\nexport", 1)[0]
+    setup_command = source_setup({"evidence": "x" * (200 * 1024)}, expected_inputs={"evidence": hashlib.sha256(b"x" * (200 * 1024)).hexdigest()}).split("$(", 1)[1].split(")\nexport", 1)[0]
     # Linux limits each argv/env string to 128 KiB, even when ARG_MAX is larger.
     invocation = setup_command.split("\n", 1)[0] if "<<" in setup_command else setup_command
     arguments = shlex.split(invocation)
@@ -118,8 +122,8 @@ def test_kubernetes_source_and_verify_payloads_fit_linux_individual_environment_
 
 
 def test_docker_heredoc_materializes_maximum_source_without_content_interpolation():
-    text = "x" * (PROJECT_FILES_MAX_BYTES - len('{"evidence": ""}'))
-    script = source_setup({"evidence": text}).replace("/usr/local/bin/python", shlex.quote(sys.executable))
+    text = "x" * (256 * 1024)
+    script = source_setup({"evidence": text}, expected_inputs={"evidence": hashlib.sha256(text.encode()).hexdigest()}).replace("/usr/local/bin/python", shlex.quote(sys.executable))
     result = subprocess.run(["bash"], input=script + 'printf "%s" "$COORDINARE_REPO_DIR"\n',
         text=True, capture_output=True, check=False, timeout=10)
     assert result.returncode == 0, result.stderr
@@ -131,12 +135,17 @@ def test_docker_heredoc_materializes_maximum_source_without_content_interpolatio
 
 
 def test_kubernetes_setup_reassembles_maximum_source_and_verify_text(tmp_path):
-    source = "é" * ((PROJECT_FILES_MAX_BYTES - len('{"evidence": ""}')) // 2)
-    verify = "#" * PROJECT_FILES_MAX_BYTES
+    source = "é" * (128 * 1024)
+    verify = "#" * (256 * 1024)
     pod = build_verifier_pod_manifest(VerifierSpec(image="trusted:latest", cache_claim="cache",
-        cache_subpath="suite", mount_path="/devenv", verify_text=verify, project_files={"evidence": source}),
+        cache_subpath="suite", mount_path="/devenv", verify_text=verify, project_files={"evidence": source},
+        source_inputs={"evidence": hashlib.sha256(source.encode()).hexdigest()}),
         name="verify", namespace="default")
     env = {entry["name"]: entry["value"] for entry in pod["spec"]["containers"][0]["env"]}
+    from coordinare_service_inference.environment.source_payload import materialize_sources
+
+    materialize_sources({"evidence": source}, tmp_path / "repo")
+    env["SOURCE_REPO"] = str(tmp_path / "repo")
     result = subprocess.run([sys.executable, "-I", "-c", env["SETUP_PY"], str(tmp_path)],
         env=env, text=True, capture_output=True, check=False, timeout=10)
     assert result.returncode == 0, result.stderr

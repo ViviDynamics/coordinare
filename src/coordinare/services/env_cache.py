@@ -641,7 +641,20 @@ async def verify_env_cache_clean(
     if not daemon_sees_performer_cache(state):
         ec = (state.get("env_cache") or {}).get(symphony_name)
         ready = isinstance(ec, EnvCacheState) and kubernetes_cache_verified(ec)
-        return ready, "kubernetes readiness requires verifier success and frozen provenance"
+        if ready:
+            from coordinare.services.environment_capabilities import (
+                capabilities_match,
+                resolve_execution_capabilities,
+            )
+
+            try:
+                capabilities = await resolve_execution_capabilities(state, symphony_name)
+                ready = (capabilities_match(ec, capabilities)
+                         and (ec.environment_verification or {}).get("image_ref") == capabilities.image_ref
+                         and (ec.environment_verification or {}).get("platform") == capabilities.platform)
+            except (ValueError, OSError, RuntimeError):
+                ready = False
+        return ready, "kubernetes readiness requires current capabilities, verifier success and frozen provenance"
     return await _verify_cache_clean(state, symphony_name, svc, performer_mounts=performer_mounts)
 
 
@@ -753,7 +766,7 @@ async def _verify_cache_clean(
         immutable_verifier_image(image)
         files = await verification_sources(state, symphony_name, ec)
         credentials = await verification_environment(state, symphony_name, ec, performer_mounts)
-        script = source_setup(files) + credentials + script
+        script = source_setup(files, expected_inputs=accepted_environment(ec).inputs) + credentials + script
     except (ValueError, OSError, RuntimeError) as exc:
         return False, f"clean verification inputs refused: {exc}"
     try:

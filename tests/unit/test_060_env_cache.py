@@ -46,7 +46,7 @@ def _head(label: str) -> str:
 def _source_fingerprint(per_file: dict[str, str]) -> str:
     """Known source/policy identity used to set up cache lifecycle transitions."""
     head = _head(next(iter(per_file.values())))
-    policy = {"schema": "351-v1", "head": head, "image": None,
+    policy = {"schema": "351-v1", "head": head, "image": "trusted/global@sha256:" + "a" * 64,
               "consumer_images": [], "conducting": "None",
               "verifier_image": None, "limits": EnvCacheConfig().model_dump()}
     digest = hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()[:12]
@@ -54,8 +54,9 @@ def _source_fingerprint(per_file: dict[str, str]) -> str:
 
 
 def _configured(coordinare_config):
-    coordinare_config.performer_image = None
-    coordinare_config.global_config.performer_image = None
+    coordinare_config.agent_transport = "docker"
+    coordinare_config.performer_image = "trusted/global@sha256:" + "a" * 64
+    coordinare_config.global_config.performer_image = "trusted/global@sha256:" + "a" * 64
     coordinare_config.global_config.performer_endpoints = []
     coordinare_config.global_config.conducting = None
     coordinare_config.global_config.kubernetes_verifier_image = None
@@ -97,7 +98,7 @@ def _accepted_discovery(monkeypatch):
     )
 
     async def discover(**kwargs):
-        metadata = reviewed_metadata(source_commit=kwargs["commit"])
+        metadata = reviewed_metadata(source_commit=kwargs["commit"], capabilities=kwargs["capabilities"])
         metadata["environment_manifest"]["symphony_name"] = kwargs["symphony_name"]
         manifest = EnvironmentManifest.model_validate(metadata["environment_manifest"])
         assessment = CoverageAssessment.model_validate({**metadata["environment_assessment"],
@@ -106,6 +107,10 @@ def _accepted_discovery(monkeypatch):
 
     from coordinare.services.environment_discovery import discover_and_review as real_discovery
 
+    async def inspect_image(image):
+        return image, "linux/x86_64"
+
+    monkeypatch.setattr("coordinare.services.environment_capabilities._docker_identity", inspect_image)
     monkeypatch.setattr("coordinare.services.environment_discovery.discover_and_review", discover)
     return real_discovery
 
