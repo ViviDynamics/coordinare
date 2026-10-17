@@ -87,6 +87,12 @@ async def test_revision_requires_new_independent_conversation_and_digest():
         {"tool": "read_file", "path": PATH}, assessment(revised)])
     manifest, review = await run(replies)
     assert manifest.digest() == review.manifest_digest != EnvironmentManifest.model_validate(original).digest()
+    revision_feedback = json.loads(replies.messages[4][-1]["content"])
+    assert revision_feedback["coverage_revision"]["required_ids"] == {
+        group: sorted(item["id"] for item in original[group] if item.get("required", True))
+        for group in ("requirements", "checks", "services")
+    }
+    assert "never rename" in revision_feedback["instruction"].lower()
     assert len(replies.messages[5]) == 2
     assert not any(message["role"] == "assistant" for message in replies.messages[5])
 
