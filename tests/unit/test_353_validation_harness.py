@@ -173,3 +173,44 @@ async def test_scope_approval_cannot_waive_missing_clean_evidence(tmp_path, monk
     assert result["clean_consumer_ran"] is True
     assert result["ready_at_validation"] is False
     assert result["reason_code"] == "clean_consumer_held"
+
+
+@pytest.mark.asyncio
+async def test_private_installer_clone_ignores_host_git_filters(tmp_path, monkeypatch):
+    import asyncio
+    import shlex
+
+    from scripts.validate_environment_repositories import _install
+
+    from tests.unit.env_manifest_fixture import reviewed_cache
+    from tests.unit.test_353_bootstrap_pipeline import setup
+
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    (source / ".gitattributes").write_text("payload filter=host-filter\n")
+    (source / "payload").write_text("source bytes\n")
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(source), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "-c", "core.hooksPath=/dev/null", "commit", "-qm", "snapshot"], check=True)
+    commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    marker = tmp_path / "host-filter-ran"
+    configuration = tmp_path / "host.gitconfig"
+    configuration.write_text('[filter "host-filter"]\n\tsmudge = touch ' + shlex.quote(str(marker)) + '; cat\n')
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(configuration))
+    real_exec = asyncio.create_subprocess_exec
+
+    async def boundary(*args, **kwargs):
+        if args[0] == "docker":
+            raise RuntimeError("isolated execution boundary reached")
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", boundary)
+    _service, cache, _state, capabilities = setup(tmp_path)
+    reviewed_cache(cache, capabilities=capabilities)
+    target = tmp_path / "case"
+    target.mkdir()
+    with pytest.raises(RuntimeError, match="execution boundary"):
+        await _install(Snapshot(source, commit, "fixture", "suite"), cache, capabilities.image_ref, target, 5)
+    assert not marker.exists(), "repository attributes invoked a host Git filter outside the container"
+    assert (target / "installer-source/payload").read_text() == "source bytes\n"

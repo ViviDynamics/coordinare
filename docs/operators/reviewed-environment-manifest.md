@@ -119,7 +119,9 @@ acceptance. Docker transports source via trusted stdin. Kubernetes creates immut
 Pod-owned Secret payloads outside Pod environment/command text. Trusted init code
 checks chunk count, document digest, exact paths and per-file hashes before writing
 private scratch source; the verification container does not mount source Secrets.
-Each API object remains below 900 KiB. Failed creation, cancellation and uncertain
+Each source Secret carries at most four chunks (at most 64 Secrets), reserving
+space for UTF-8 input metadata and API/base64 overhead. Each API object remains
+below 900 KiB. Failed creation, cancellation and uncertain
 cleanup hold verification. Restart reconciliation checks ownership and removes
 interrupted verifier Pods and their source payloads; Pod ownership also enables
 Kubernetes garbage collection. Verification/provenance scripts still use bounded
@@ -251,7 +253,8 @@ With `--execute`, an accepted proposal waits for command-scope inspection. Inspe
 This local marker authorizes isolated validation commands only. It cannot waive
 missing or failed execution evidence. Deployment, release, hardware operations and
 ambiguous destructive commands require a separate scope decision. Model credentials
-are kept outside project containers. Private transcripts are optional and must not
+are kept outside project containers. Private installer checkouts disable host Git
+configuration and hooks, including host filter drivers. Private transcripts are optional and must not
 be published. Reports distinguish discovery, review, installer, clean consumer and
 frozen provenance; discovery alone exits unsuccessfully. These are direct service
 entrypoint tests, not a live daemon or outer retry-loop test. Runtime cache contents
