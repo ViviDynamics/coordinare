@@ -40,7 +40,9 @@ def _accepted_source_fixture(monkeypatch):
     monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",
                         AsyncMock(return_value={"tools.plan": "baseline"}))
     # These tests exercise trusted verifier execution, not source archive materialisation.
-    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files: "")
+    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files, **kwargs: "")
+    monkeypatch.setattr("coordinare.services.environment_capabilities._docker_identity",
+        AsyncMock(return_value=("trusted/global@sha256:" + "a" * 64, "linux/x86_64")))
 
 
 _REAL_EXEC = asyncio.create_subprocess_exec
@@ -62,7 +64,7 @@ class _FakeDocker:
     def __init__(self, *, run_locally: bool, rc: int = 0, manifest=None) -> None:
         self.run_locally = run_locally
         self.rc = rc
-        self.manifest = manifest
+        self.manifest = manifest or _state(Path("/fixture-unused")).environment_manifest
         self.calls: list[tuple[str, ...]] = []
         self.stdin_seen: list[bytes | None] = []
 
@@ -127,7 +129,7 @@ def _state(
 
 
 def _ctx(state: EnvCacheState) -> dict[str, Any]:
-    return {"env_cache": {"sym": state}}
+    return {"env_cache": {"sym": state}, "coordinare_config": mount_config(performer_image="trusted/global@sha256:" + "a" * 64)}
 
 
 def _seed_activate(cache: Path, text: str = RENDERED_ACTIVATE) -> None:
@@ -411,7 +413,7 @@ async def test_honest_bootstrap_passes_end_to_end(
 
     github = MagicMock()
     github.get_file_content = fake_get
-    svc = EnvCacheService(mount_config())
+    svc = EnvCacheService(mount_config(performer_image="trusted/global@sha256:" + "a" * 64))
     from coordinare_service_inference.environment.models import (
         CoverageAssessment,
         EnvironmentManifest,
@@ -448,12 +450,14 @@ async def test_honest_bootstrap_passes_end_to_end(
     fake = _FakeDocker(run_locally=False, rc=0, manifest=state.environment_manifest)
     _install_fake(monkeypatch, fake)
     daemon = CoordinareDaemon(AsyncMock(), max_cycles=1, sleep_func=AsyncMock())
-    daemon._state["coordinare_config"] = mount_config()
+    daemon._state["coordinare_config"] = mount_config(performer_image="trusted/global@sha256:" + "a" * 64)
     daemon._state["env_cache"] = _ctx(state)["env_cache"]
     ok, err, _infra = await daemon._verify_bootstrap_in_clean_context("sym", SVC, "job-1")
     assert (ok, err, _infra) == (True, None, False)
     assert [data for data in fake.stdin_seen if data is not None] == [state.rendered_verify_sh.encode()]
 
+    # This fixture replaces the external provenance/freeze callback after clean verification.
+    state.provenance_digest = "f" * 64
     svc.on_bootstrap_complete("sym", success=True, state=daemon._state)
     assert state.last_bootstrap_succeeded is True
     assert state.cache_dir_ready is True
