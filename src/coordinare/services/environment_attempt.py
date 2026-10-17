@@ -54,7 +54,7 @@ class AttemptBudget:
     def __post_init__(self) -> None:
         if (not 0 < self.timeout_seconds <= MAX_ATTEMPT_SECONDS or self.max_calls < 1 or self.max_reads < 1
                 or not 0 <= self.max_repairs <= MAX_REPAIRS):
-            message = "environment attempt limits are invalid"
+            message = "environment discovery budget limits are invalid"
             raise ValueError(message)
 
     @property
@@ -63,27 +63,27 @@ class AttemptBudget:
 
     def check(self) -> None:
         if time.monotonic() >= self.deadline:
-            message = "environment attempt deadline exceeded"
+            message = "environment discovery budget deadline exceeded"
             raise EnvironmentDiscoveryError(message, code="attempt_deadline")
 
     def reserve_call(self) -> None:
         self.check()
         if self.calls >= self.max_calls:
-            message = "environment attempt model call limit exceeded"
+            message = "environment discovery budget model call limit exceeded"
             raise EnvironmentDiscoveryError(message, code="attempt_call_limit")
         self.calls += 1
 
     def reserve_reads(self, count: int) -> None:
         self.check()
         if type(count) is not int or count < 1 or self.reads + count > self.max_reads:
-            message = "environment attempt file read limit exceeded"
+            message = "environment discovery budget file read limit exceeded"
             raise EnvironmentDiscoveryError(message, code="attempt_read_limit")
         self.reads += count
 
     def reserve_repair(self) -> None:
         self.check()
         if self.repairs >= self.max_repairs:
-            message = "environment attempt repair limit exceeded"
+            message = "environment discovery budget repair limit exceeded"
             raise EnvironmentDiscoveryError(message, code="attempt_repair_limit")
         self.repairs += 1
 
