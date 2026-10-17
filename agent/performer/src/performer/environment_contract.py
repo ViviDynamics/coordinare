@@ -50,6 +50,8 @@ def accepted_manifest(metadata: Any) -> EnvironmentManifest:
         review = CoverageAssessment.model_validate(assessment)
     except ValueError:
         _refuse_contract("environment manifest or review schema is malformed or unsupported")
+    if not manifest.inventory_digest or review.inventory_digest != manifest.inventory_digest:
+        _refuse_contract("environment inventory identity does not match accepted manifest")
     if not manifest.capabilities_digest or review.capabilities_digest != manifest.capabilities_digest:
         _refuse_contract("environment capability identity does not match accepted manifest")
     digest = manifest.digest()

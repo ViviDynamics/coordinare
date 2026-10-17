@@ -26,9 +26,11 @@ COMMIT = "a" * 40
 CAPABILITIES = ExecutionCapabilities(schema_version=1, image_ref="trusted/global@sha256:" + "a" * 64,
     platform="linux/x86_64", cache_mount_path="/devenv/suite", install_network="enabled", verify_network="disabled")
 
+INVENTORY_DIGEST = hashlib.sha256(json.dumps(sorted([PATH, "other/evidence"]), separators=(",", ":")).encode()).hexdigest()
+
 def candidate():
     return {
-        "capabilities_digest": CAPABILITIES.digest(),
+        "inventory_digest": INVENTORY_DIGEST, "capabilities_digest": CAPABILITIES.digest(),
         "schema_version": 1, "policy_version": "351-v1", "symphony_name": "suite",
         "source_commit": COMMIT, "inputs": {PATH: hashlib.sha256(SOURCE.encode()).hexdigest()},
         "requirements": [{"id": "tool", "description": "zog version 7", "source": PATH, "checks": ["version"], "required": True}],
@@ -53,7 +55,7 @@ class ScriptedChat:
         if index == 2:
             return json.dumps({"manifest": self.manifest})
         return json.dumps({"assessment": {
-            "capabilities_digest": CAPABILITIES.digest(),
+            "inventory_digest": INVENTORY_DIGEST, "capabilities_digest": CAPABILITIES.digest(),
             "schema_version": 1, "policy_version": "351-v1", "source_commit": COMMIT,
             "manifest_digest": self.digest or EnvironmentManifest.model_validate(self.manifest).digest(),
             "verdict": self.verdict, "rationale": "Evidence covers documented constraints", "sources": self.sources,
@@ -216,7 +218,7 @@ def test_persisted_review_rationale_contains_only_daemon_generated_text():
     sensitive = 'repository credential must never be persisted: private-value'
     assessment = _validated_assessment({
         'schema_version': 1, 'policy_version': '351-v1', 'source_commit': COMMIT,
-        'manifest_digest': manifest.digest(), 'verdict': 'accept', 'capabilities_digest': CAPABILITIES.digest(),
+        'manifest_digest': manifest.digest(), 'verdict': 'accept', 'inventory_digest': INVENTORY_DIGEST, 'capabilities_digest': CAPABILITIES.digest(),
         'rationale': sensitive, 'sources': [PATH],
     }, {PATH: manifest.inputs[PATH]}, manifest)
     assert assessment.rationale == 'Independent coverage review accepted; source identities validated by daemon.'
