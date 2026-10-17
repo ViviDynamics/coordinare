@@ -219,3 +219,41 @@ See [environment-cache onboarding](../onboarding/06-env-cache.md) for the verifi
 identity, Kubernetes image settings and pod bounds. Validate deployment-specific
 permissions, registry access and network policy operationally. This guide does
 not report live deployment validation.
+
+
+### Opt-in repository validation
+
+Run `python -m scripts.validate_environment_repositories --help` from a development
+checkout. Supply existing clean, pinned snapshots (`<repo>/source` and an
+`inventory.json` containing `commit`), an unused private output directory, model
+configuration and either an immutable candidate `--image` or immutable
+`--base-image`. The latter overlays the checkout's shared runner into a temporary
+image. Both paths verify the image's actual Python file hashes before validation.
+For example:
+
+```sh
+.venv/bin/python -m scripts.validate_environment_repositories sample elm \
+  --snapshots /private/snapshots --output /private/validation/new-profile \
+  --base-image registry.example/performer@sha256:<digest> \
+  --model <model-id> --base-url <provider-url> --api-key-env <key-env-name> \
+  --execute
+```
+
+Discovery uses the production service, including fresh independent coverage review.
+With `--execute`, an accepted proposal waits for command-scope inspection. Inspect
+`accepted-manifest.json` and its pinned source scripts, then write
+`execution-approved.json` into that repository's private output directory:
+
+```json
+{"scope":"environment_validation","approved":true,"manifest_digest":"<digest>","source_commit":"<commit>","image_ref":"<immutable-image>"}
+```
+
+This local marker authorizes isolated validation commands only. It cannot waive
+missing or failed execution evidence. Deployment, release, hardware operations and
+ambiguous destructive commands require a separate scope decision. Model credentials
+are kept outside project containers. Private transcripts are optional and must not
+be published. Reports distinguish discovery, review, installer, clean consumer and
+frozen provenance; discovery alone exits unsuccessfully. These are direct service
+entrypoint tests, not a live daemon or outer retry-loop test. Runtime cache contents
+and temporary images are removed by default; readiness in a report is historical
+for that validation attempt, not an installed deployment.
