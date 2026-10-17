@@ -56,9 +56,33 @@ if os.getppid() != parent:
 with os.fdopen(int(sys.argv[1]), 'r') as stream:
     environment = json.load(stream)
 service = sys.argv[2] == 'service'
-argv = sys.argv[3:]
+ack_fd = int(sys.argv[3])
+control_fd = int(sys.argv[4])
+if control_fd >= 0:
+    os.set_blocking(control_fd, False)
+stop_requested = False
+def poll_control():
+    global stop_requested, status
+    if control_fd < 0 or stop_requested:
+        return
+    try:
+        requested = os.read(control_fd, 1)
+    except BlockingIOError:
+        return
+    if requested == b'1':
+        # Capture a pre-existing failure before authorizing signal termination.
+        if status is None:
+            found, value = os.waitpid(child, os.WNOHANG)
+            if found:
+                status = value
+        stop_requested = status is None or os.waitstatus_to_exitcode(status) == 0
+        os.write(ack_fd, b'1')
+argv = sys.argv[5:]
 child = os.fork()
 if child == 0:
+    if ack_fd >= 0:
+        os.close(ack_fd)
+        os.close(control_fd)
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(signum, signal.SIG_DFL)
     try:
@@ -67,12 +91,24 @@ if child == 0:
         os._exit(127)
 status = None
 while status is None and not stopping:
+    poll_control()
+    if status is not None:
+        break
     found, value = os.waitpid(child, os.WNOHANG)
     if found:
         status = value
     else:
         time.sleep(0.01)
-exit_code = os.waitstatus_to_exitcode(status) if status is not None else 143
+if status is None:
+    # Preserve a service failure that occurred before teardown was requested.
+    found, value = os.waitpid(child, os.WNOHANG)
+    if found:
+        status = value
+exit_code = os.waitstatus_to_exitcode(status) if status is not None else (
+    0 if service and stopping and stop_requested else 143
+)
+if service and stop_requested and exit_code == -signal.SIGTERM:
+    exit_code = 0
 if exit_code < 0:
     exit_code = 128 - exit_code
 children_path = '/proc/self/task/' + str(os.getpid()) + '/children'
@@ -89,6 +125,7 @@ def reap():
             return
 if service and exit_code == 0:
     while not stopping:
+        poll_control()
         reap()
         if not children():
             break
@@ -190,8 +227,26 @@ async def _terminate(process: asyncio.subprocess.Process) -> None:
     with contextlib.suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGKILL)
     if process.returncode is None:
-        with contextlib.suppress(ProcessLookupError):
-            await asyncio.wait_for(process.wait(), timeout=5)
+        # Process.wait() can also wait for inherited stdout to reach EOF. Keep
+        # that wait bounded; the caller drains or closes the pipe separately.
+        with contextlib.suppress(ProcessLookupError, TimeoutError):
+            await asyncio.wait_for(process.wait(), timeout=0.25)
+
+
+async def _notify_service_stop(controls: tuple[int, int]) -> bool:
+    try:
+        control_write, ack_read = controls
+        os.write(control_write, b'1')
+        deadline = time.monotonic() + 1
+        while True:
+            try:
+                return os.read(ack_read, 1) == b'1'
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    return False
+                await asyncio.sleep(0.01)
+    except OSError:
+        return False
 
 
 async def _execute(
@@ -205,6 +260,7 @@ async def _execute(
     background: bool = False,
     processes: list[asyncio.subprocess.Process] | None = None,
     drains: list[asyncio.Task[None]] | None = None,
+    service_controls: dict[int, tuple[int, int]] | None = None,
     ignore_dependencies: bool = False,
     redactions: frozenset[str] = frozenset(),
 ) -> CheckResult:
@@ -222,6 +278,8 @@ async def _execute(
         return result
     started = time.monotonic()
     process = None
+    ack_read = ack_write = None
+    control_read = control_write = None
     drain = None
     tail = bytearray()
     total = 0
@@ -243,8 +301,14 @@ async def _execute(
         if sys.platform == 'linux':
             read_fd, write_fd = os.pipe()
             inherited_fds = (read_fd,)
+            if background:
+                ack_read, ack_write = os.pipe()
+                os.set_blocking(ack_read, False)
+                control_read, control_write = os.pipe()
+                inherited_fds += (ack_write, control_read)
             arguments = [sys.executable, '-I', '-c', _LINUX_SUPERVISOR, str(read_fd),
-                         'service' if background else 'command', *argv]
+                         'service' if background else 'command', str(ack_write if ack_write is not None else -1),
+                         str(control_read if control_read is not None else -1), *argv]
             child_policy = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'LANG': 'C.UTF-8'}
         try:
             process = await asyncio.create_subprocess_exec(
@@ -253,6 +317,12 @@ async def _execute(
                 stderr=asyncio.subprocess.STDOUT, start_new_session=True,
                 pass_fds=inherited_fds,
             )
+            if ack_write is not None:
+                os.close(ack_write)
+                ack_write = None
+            if control_read is not None:
+                os.close(control_read)
+                control_read = None
             if read_fd is not None:
                 os.close(read_fd)
                 read_fd = None
@@ -288,6 +358,12 @@ async def _execute(
                 assert processes is not None and drains is not None
                 processes.append(process)
                 drains.append(drain)
+                if ack_read is not None:
+                    assert service_controls is not None
+                    assert control_write is not None
+                    service_controls[process.pid] = (control_write, ack_read)
+                    ack_read = None
+                    control_write = None
                 result.status = "pass"
                 return result
         try:
@@ -301,6 +377,9 @@ async def _execute(
         result.status = "fail"
         tail.extend(str(exc).encode())
     finally:
+        for descriptor in (ack_read, ack_write, control_read, control_write):
+            if descriptor is not None:
+                os.close(descriptor)
         if process is not None and (processes is None or process not in processes):
             await _terminate(process)
             if drain is not None:
@@ -393,6 +472,7 @@ async def manifest_services(
     processes: list[asyncio.subprocess.Process] = []
     drains: list[asyncio.Task[None]] = []
     supervisors: dict[int, str] = {}
+    service_controls: dict[int, tuple[int, int]] = {}
     try:
         command_service = {command.id: service.id for service in manifest.services
                            for command in [service.init, service.start, service.health] if command}
@@ -423,6 +503,7 @@ async def manifest_services(
                         background=command is service.start,
                         processes=processes,
                         drains=drains,
+                        service_controls=service_controls,
                         redactions=redactions,
                     )
                 else:
@@ -445,6 +526,22 @@ async def manifest_services(
         try:
             async with asyncio.timeout(30):
                 for service in reversed(started):
+                    for process in processes:
+                        if supervisors[process.pid] != service.start.id or process.returncode is not None:
+                            continue
+                        controls = service_controls.get(process.pid)
+                        if controls is None:
+                            continue
+
+                        if not await _notify_service_stop(controls):
+                            cleanup_id = '__infrastructure__/stop/' + service.start.id
+                            result = CheckResult(
+                                id=cleanup_id, status='indeterminate', required=True,
+                                manifest_digest=manifest.digest(), context=scope,
+                                output='service supervisor did not acknowledge teardown',
+                            )
+                            results[cleanup_id] = result
+                            lifecycle.append(result)
                     result = await _execute(
                         service.stop,
                         roots=roots,
@@ -461,8 +558,18 @@ async def manifest_services(
         finally:
             for process in processes:
                 await _terminate(process)
-                if sys.platform == 'linux' and process.returncode is not None and (
-                    process.returncode < 0 or process.returncode == 125
+                for descriptor in service_controls.pop(process.pid, ()):
+                    os.close(descriptor)
+                if sys.platform == 'linux':
+                    start_result = results[supervisors[process.pid]]
+                    start_result.exit_code = process.returncode
+                    start_result.status = (
+                        'pass' if process.returncode == 0 else
+                        'indeterminate' if process.returncode is None or process.returncode < 0
+                        or process.returncode == 125 else 'fail'
+                    )
+                if sys.platform == 'linux' and (
+                    process.returncode is None or process.returncode < 0 or process.returncode == 125
                 ):
                     cleanup_id = '__infrastructure__/cleanup/' + supervisors[process.pid]
                     result = CheckResult(

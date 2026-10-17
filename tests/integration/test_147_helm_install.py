@@ -353,6 +353,9 @@ class TestChartRBAC:
             ("list", "pods"),
             ("delete", "pods"),
             ("get", "pods/log"),
+            ("create", "secrets"),
+            ("get", "secrets"),
+            ("delete", "secrets"),
         ],
     )
     def test_the_runtime_can_do_its_job(self, release, verb: str, resource: str) -> None:
@@ -364,8 +367,9 @@ class TestChartRBAC:
         ("verb", "resource"),
         [
             ("watch", "pods"),
-            ("get", "secrets"),
             ("list", "secrets"),
+            ("update", "secrets"),
+            ("patch", "secrets"),
             ("list", "nodes"),
             ("create", "clusterrolebindings"),
         ],

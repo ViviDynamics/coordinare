@@ -249,9 +249,13 @@ async def test_tail_redacts_secret_and_missing_binary_is_failure(tmp_path, monke
 async def test_detached_descendant_cannot_hold_output_drain_unbounded(tmp_path):
     import time
 
+    # Keep the parent alive beyond its deadline: Linux can otherwise legitimately
+    # finish a successful parent and reap its detached child before the timeout.
     manifest = contract([{'id': 'detached', 'timeout_seconds': 0.05,
         'argv': [sys.executable, '-c',
-            'import subprocess,sys;subprocess.Popen([sys.executable,"-c","import time;time.sleep(2)"],start_new_session=True)']}])
+            'import subprocess,sys,time;'
+            'subprocess.Popen([sys.executable,"-c","import time;time.sleep(2)"],start_new_session=True);'
+            'time.sleep(20)']}])
     started = time.monotonic()
     report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
     assert time.monotonic() - started < 1.5
@@ -371,17 +375,24 @@ async def test_cli_restores_transient_secret_values_after_trusted_python_start(t
 @pytest.mark.skipif(sys.platform != 'linux', reason='Linux command-local subreaper adapter')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('timeout', [False, True])
-async def test_linux_supervisor_reaps_setsid_descendants_with_closed_streams(tmp_path, timeout):
+@pytest.mark.parametrize('closed_streams', [False, True])
+async def test_linux_supervisor_reaps_setsid_descendants(tmp_path, timeout, closed_streams):
+    import time
+
     code = (
         'import subprocess,sys,pathlib,time;'
         'p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(30)"],'
-        'start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);'
+        'start_new_session=True'
+        + (',stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL' if closed_streams else '')
+        + ');'
         'pathlib.Path("escaped").write_text(str(p.pid));'
         + ('time.sleep(30)' if timeout else 'time.sleep(0)')
     )
     manifest = contract([{'id': 'baseline', 'argv': [sys.executable, '-c', code],
                           'timeout_seconds': 0.5 if timeout else 3.0}])
+    started = time.monotonic()
     report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    assert time.monotonic() - started < 1.5
     assert report.passed is not timeout
     with pytest.raises(ProcessLookupError):
         os.kill(int((tmp_path / 'escaped').read_text()), 0)
@@ -403,6 +414,45 @@ async def test_linux_supervisor_preserves_daemonized_service_until_teardown(tmp_
         'stop': {'id': 'stop', 'argv': ['true']}}])
     report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
     assert report.passed
+    with pytest.raises(ProcessLookupError):
+        os.kill(int((tmp_path / 'service_pid').read_text()), 0)
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux command-local subreaper adapter')
+@pytest.mark.asyncio
+@pytest.mark.parametrize('exit_code', [None, 0, 7, 143, 'stop'])
+async def test_linux_service_start_records_supervised_completion(tmp_path, exit_code):
+    service_code = (
+        'import os,pathlib,time;pathlib.Path("service_pid").write_text(str(os.getpid()));'
+        'exec("while not pathlib.Path(\\\"finish\\\").exists(): time.sleep(0.01)");'
+        f'raise SystemExit({exit_code if isinstance(exit_code, int) else 7})'
+    )
+    check = 'pass'
+    if isinstance(exit_code, int):
+        check = (
+            'import os,pathlib,time\n'
+            'pid=int(pathlib.Path("service_pid").read_text())\n'
+            'pathlib.Path("finish").touch()\n'
+            'while True:\n'
+            '    try: os.kill(pid,0)\n'
+            '    except ProcessLookupError: break\n'
+            '    time.sleep(0.01)\n'
+        )
+    stop = ['true']
+    if exit_code == 'stop':
+        stop = [sys.executable, '-c',
+                'import os,pathlib,signal;os.kill(int(pathlib.Path("service_pid").read_text()),signal.SIGTERM)']
+    manifest = contract([{'id': 'baseline', 'argv': [sys.executable, '-c', check]}], services=[{
+        'id': 'foreground', 'start': {'id': 'start', 'argv': [sys.executable, '-c', service_code]},
+        'health': {'id': 'health', 'argv': [sys.executable, '-c',
+            'import os,pathlib;os.kill(int(pathlib.Path("service_pid").read_text()),0)']},
+        'stop': {'id': 'stop', 'argv': stop}}])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    start = next(result for result in report.results if result.id == 'start')
+    assert start.exit_code == (exit_code if isinstance(exit_code, int) else 0)
+    failed = exit_code in (7, 143)
+    assert start.status == ('fail' if failed else 'pass')
+    assert report.passed is not failed
     with pytest.raises(ProcessLookupError):
         os.kill(int((tmp_path / 'service_pid').read_text()), 0)
 

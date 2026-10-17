@@ -80,6 +80,11 @@ checks must all pass for the applicable consumer scope. Failed prerequisites,
 missing commands/results, timeouts and indeterminate outcomes hold readiness.
 Optional results remain visible and cannot downgrade required requirements.
 
+A foreground service remains supervised through health checks and required checks.
+Its start result is finalized after teardown using the supervisor’s completion
+evidence. Requested termination during the declared stop phase is distinct from
+an earlier service failure; missing or failed cleanup evidence holds readiness.
+
 ## Limits and cache invalidation
 
 Each discovery and review phase defaults to 256 reads, 256 KiB per file, 4 MiB of
