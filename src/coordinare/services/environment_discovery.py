@@ -212,21 +212,34 @@ async def _prepare_review_evidence(reviewer: _Inspection, manifest: EnvironmentM
         except EnvironmentDiscoveryError as exc:
             if exc.code != "environment_discovery_held":
                 raise
-            raise EnvironmentDiscoveryError("mandatory review evidence unavailable or exceeds source bounds",
-                code="review_evidence_unavailable") from None
+            message = "mandatory review evidence unavailable or exceeds source bounds"
+            raise EnvironmentDiscoveryError(message, code="review_evidence_unavailable") from None
         for item in result["files"]:
             if item["sha256"] != manifest.inputs[item["path"]]:
-                raise EnvironmentDiscoveryError("mandatory review evidence hash changed", code="review_evidence_drift")
+                message = "mandatory review evidence hash changed"
+                raise EnvironmentDiscoveryError(message, code="review_evidence_drift")
             evidence.append(item)
             if budget is not None:
                 budget.mandatory_inputs_delivered += 1
     return evidence
 
 
+async def _timed_review_evidence(reviewer: _Inspection, manifest: EnvironmentManifest) -> list[dict[str, str]]:
+    budget = cast("AttemptBudget", reviewer.budget)
+    try:
+        async with asyncio.timeout(min(reviewer.limits.phase_timeout_seconds, max(0, budget.deadline - time.monotonic()))):
+            return await _prepare_review_evidence(reviewer, manifest)
+    except TimeoutError:
+        budget.check()
+        message = "review evidence preparation deadline exceeded"
+        raise EnvironmentDiscoveryError(message, code="review_preparation_deadline") from None
+
+
 def _check_review_context(messages: list[dict[str, str]], limits: DiscoveryLimits) -> int:
     measured = len(_json(messages).encode("utf-8"))
     if measured > limits.max_review_context_bytes:
-        raise EnvironmentDiscoveryError("complete review context exceeds configured byte limit", code="review_context_limit")
+        message = "complete review context exceeds configured byte limit"
+        raise EnvironmentDiscoveryError(message, code="review_context_limit")
     return measured
 
 
@@ -481,13 +494,7 @@ async def _discover_attempt(
             manifest = validate_candidate(candidate)
             prior_manifests.append(manifest)
             reviewer = _Inspection("review", inventory, fetch, bounds, budget)
-            try:
-                async with asyncio.timeout(min(bounds.phase_timeout_seconds, max(0, budget.deadline - time.monotonic()))):
-                    mandatory_evidence = await _prepare_review_evidence(reviewer, manifest)
-            except TimeoutError:
-                budget.check()
-                raise EnvironmentDiscoveryError("review evidence preparation deadline exceeded",
-                    code="review_preparation_deadline") from None
+            mandatory_evidence = await _timed_review_evidence(reviewer, manifest)
             assessment_data, reviewer_reads = await _phase(
                 inspection=reviewer, chat=chat, budget=budget, validate=_CoverageProposal.model_validate,
                 messages=[

@@ -124,8 +124,8 @@ class AttemptBudget:
             message = "model reply has unsupported metadata"
             raise EnvironmentDiscoveryError(message, code="model_reply_invalid")
         if reply.error_code is not None:
-            raise EnvironmentDiscoveryError("environment model provider rejected or failed the request",
-                code="provider_request_failed")
+            message = "environment model provider rejected or failed the request"
+            raise EnvironmentDiscoveryError(message, code="provider_request_failed")
         self.metadata_available |= reply.usage is not None or reply.finish_reason is not None
         for key, value in (reply.usage or {}).items():
             if (key in {"input", "output", "input_tokens", "output_tokens", "cache_read", "cache_write"}
