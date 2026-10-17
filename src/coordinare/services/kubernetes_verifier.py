@@ -25,7 +25,7 @@ from coordinare_service_inference.cache_provenance import (
     MAX_SCRIPT_BYTES,
     RESULT_SENTINEL,
 )
-from coordinare_service_inference.environment.models import source_path
+from coordinare_service_inference.environment.source_payload import encode_sources
 
 # The container name, and the label that marks a verifier pod for the operator and the orphan sweep.
 VERIFIER_CONTAINER = "verifier"
@@ -183,12 +183,7 @@ def check_project_files(files: dict[str, str]) -> None:
 
     Raises ``ValueError`` with the reason.
     """
-    for rel in files:
-        source_path(rel)
-    total = len(json.dumps(files, ensure_ascii=False).encode("utf-8"))
-    if total > PROJECT_FILES_MAX_BYTES:
-        msg = f"project files total {total} bytes, over the {PROJECT_FILES_MAX_BYTES} byte bound"
-        raise ValueError(msg)
+    encode_sources(files)
 
 
 def _payload_environment(name: str, value: str) -> dict[str, str]:
