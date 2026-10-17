@@ -31,6 +31,16 @@ def manifest_data():
     }
 
 
+@pytest.mark.parametrize("variable", ["BASH_ENV", "ENV"])
+@pytest.mark.parametrize("location", ["activation", "command"])
+def test_shell_startup_hooks_are_not_manifest_environment(variable, location):
+    data = manifest_data()
+    target = data["activation"] if location == "activation" else data["checks"][0]
+    target["env"] = {variable: "{repo}/startup-hook"}
+    with pytest.raises(ValidationError, match="shell startup"):
+        EnvironmentManifest.model_validate(data)
+
+
 def test_canonical_digest_covers_requiredness():
     data = manifest_data()
     first = EnvironmentManifest.model_validate(data)

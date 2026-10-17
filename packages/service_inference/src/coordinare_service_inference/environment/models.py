@@ -105,6 +105,8 @@ class Command(StrictModel):
             raise ValueError("invalid environment variable name")
         if any(key.startswith("COORDINARE_ENV_") for key in value):
             raise ValueError("secret-name policy is reserved for trusted orchestration")
+        if {"BASH_ENV", "ENV"} & value.keys():
+            raise ValueError("shell startup hooks are reserved for trusted orchestration")
         environment_order(value)
         for key, item in value.items():
             reject_literal_credentials(item)

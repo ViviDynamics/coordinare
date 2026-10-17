@@ -177,8 +177,8 @@ def manifest_environment(
     inherited = {name for name in existing_names if isinstance(name, str)} if isinstance(existing_names, list) else set()
     env['COORDINARE_ENV_SECRET_NAMES'] = json.dumps(sorted(inherited | set(secret_names)))
     # Bash startup hooks must never run before an explicit declared command.
-    env["BASH_ENV"] = ""
-    env["ENV"] = ""
+    env.pop("BASH_ENV", None)
+    env.pop("ENV", None)
     for key in environment_order(manifest.activation.env):
         env[key] = _expand(manifest.activation.env[key], roots, env)
     paths = [_expand(path, roots, env) for path in manifest.activation.path]

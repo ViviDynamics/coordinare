@@ -28,6 +28,23 @@ def contract(checks, **changes):
 
 
 @pytest.mark.asyncio
+async def test_inherited_shell_startup_hooks_remain_unset(tmp_path, monkeypatch):
+    hook = tmp_path / "startup-hook"
+    marker = tmp_path / "hook-ran"
+    hook.write_text(f"touch '{marker}'\n")
+    monkeypatch.setenv("BASH_ENV", str(hook))
+    monkeypatch.setenv("ENV", str(hook))
+    manifest = contract([{
+        "id": "shell",
+        "argv": ["bash", "-c", 'test -z "${BASH_ENV+x}" && test -z "${ENV+x}"'],
+    }])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    assert report.passed
+    assert report.results[0].exit_code == 0
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
 async def test_required_false_cannot_forge_success(tmp_path):
     manifest = contract(
         [
