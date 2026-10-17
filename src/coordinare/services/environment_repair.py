@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from coordinare.models.env_cache import EnvCacheState
     from coordinare.services.environment_discovery import DiscoveryLimits
 
+PRE_PROBE_JOURNAL_VERSION = 2
 JOURNAL_MAX_BYTES = 4 * 1024 * 1024
 MAX_ARCHIVED_ATTEMPTS = 3
 REPORT_MAX_BYTES = 256 * 1024
@@ -90,7 +91,7 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
         data["version"] = 2
         for name in ("schema_repairs", "coverage_revisions", "execution_repairs"):
             data[name], data["max_" + name] = consumed, maximum
-    if isinstance(data, dict) and data.get("version") == 2:
+    if isinstance(data, dict) and data.get("version") == PRE_PROBE_JOURNAL_VERSION:
         if data.get("status") != "ready":
             _refuse("legacy environment run requires explicit restart after confirmed cleanup", code="legacy_attempt_requires_restart")
         data = {**data, "version": 3}
@@ -176,6 +177,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
         max_coverage_revisions=journal.max_coverage_revisions, max_execution_repairs=journal.max_execution_repairs)
     budget.calls, budget.reads = journal.calls, journal.reads
     budget.probe_batches = journal.probe_batches
+    budget.probe_reports = list(journal.probe_reports)
     for name in ("schema_repairs", "coverage_revisions", "execution_repairs"):
         if getattr(journal, name) > getattr(journal, "max_" + name):
             _refuse(f"environment {name} limit exceeded after configuration change", code="attempt_" + name.split("_")[0] + "_limit")

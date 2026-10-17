@@ -63,6 +63,7 @@ async def test_invalid_refs_then_valid_revision_fresh_review(kind):
         invalid["requirements"][0]["checks"] = ["zog --version"]
     else:
         invalid["install"] = [{"id": "install-dev", "argv": ["true"]}]
+        valid["install"] = copy.deepcopy(invalid["install"])
         invalid["checks"][0]["depends_on"] = ["install-dev"]
     replies = Replies([{"tool": "read_file", "path": PATH}, {"manifest": invalid}, {"manifest": valid},
         {"tool": "read_file", "path": PATH}, assessment(valid)])
@@ -94,7 +95,7 @@ async def test_revision_requires_new_independent_conversation_and_digest():
     revision_feedback = json.loads(replies.messages[4][-1]["content"])
     assert revision_feedback["coverage_revision"]["required_ids"] == {
         group: sorted(item["id"] for item in original[group] if item.get("required", True))
-        for group in ("requirements", "checks", "services")
+        for group in ("requirements", "install", "checks", "services")
     }
     assert "never rename" in revision_feedback["instruction"].lower()
     assert len(replies.messages[5]) == 2

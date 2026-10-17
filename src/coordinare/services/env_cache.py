@@ -103,6 +103,7 @@ if TYPE_CHECKING:
     from coordinare_service_inference.schema import ServicesManifest
 
     from coordinare.services.environment_discovery import ChatJson
+    from coordinare.services.environment_probes import ProbePlan, ProbeReport
 
     class _GitHubFileReader(Protocol):
         async def get_file_content(self, org: str, repo: str, path: str, *, ref: str = "HEAD") -> str | None: ...
@@ -2426,10 +2427,21 @@ class EnvCacheService:
                 paths = await github_service.get_repository_paths(
                     github_org, repo, ref=commit, max_entries=limits.max_inventory_entries,
                 )
+                from coordinare.services.environment_probe_service import (
+                    ProbeServiceContext,
+                    run_owned_probe,
+                )
+
+                probe_state = {**self._kubernetes_state,
+                    "probe_backend": "docker" if daemon_sees_performer_cache(self._kubernetes_state) else "kubernetes"}
+
+                async def probe_executor(plan: ProbePlan) -> ProbeReport:
+                    return await run_owned_probe(plan, context=ProbeServiceContext(cache_state, probe_state, fetch, budget, limits))
+
                 manifest, assessment = await discover_and_review(
                     symphony_name=symphony_name, commit=commit, paths=paths,
                     fetch=fetch, chat=llm_chat, capabilities=capabilities, declared_services=declared_services,
-                    limits=limits, budget=budget, previous_manifest=previous, execution_feedback=feedback,
+                    limits=limits, budget=budget, previous_manifest=previous, execution_feedback=feedback, probe_executor=probe_executor,
                 )
         except TimeoutError:
             budget.error_code = "attempt_deadline"

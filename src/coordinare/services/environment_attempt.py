@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 MAX_ATTEMPT_SECONDS = 3600
 MAX_REPAIRS = 2
+MAX_PROBE_BATCHES = 2
 RepairKind = Literal["schema", "coverage", "execution"]
 REPAIR_COUNTERS = {"schema": "schema_repairs", "coverage": "coverage_revisions", "execution": "execution_repairs"}
 
@@ -46,6 +47,7 @@ class AttemptBudget:
     calls_completed: int = 0
     reads: int = 0
     probe_batches: int = 0
+    probe_reports: list[dict[str, Any]] = field(default_factory=list, repr=False)
     schema_repairs: int = 0
     coverage_revisions: int = 0
     execution_repairs: int = 0
@@ -87,8 +89,9 @@ class AttemptBudget:
 
     def reserve_probe_batch(self) -> None:
         self.check()
-        if self.probe_batches >= 2:
-            raise EnvironmentDiscoveryError("environment probe batch limit exceeded", code="attempt_probe_limit")
+        if self.probe_batches >= MAX_PROBE_BATCHES:
+            message = "environment probe batch limit exceeded"
+            raise EnvironmentDiscoveryError(message, code="attempt_probe_limit")
         self.probe_batches += 1
 
     def reserve_reads(self, count: int) -> None:
@@ -146,7 +149,7 @@ class AttemptBudget:
         """Only trusted stages/codes, counters and allowlisted provider metadata escape."""
         return {"stage": self.stage, "outcome": self.outcome, "error_code": self.error_code,
                 "elapsed_seconds": round(time.monotonic() - self.started, 3),
-                "probe_batches": self.probe_batches, "max_probe_batches": 2, "calls": self.calls, "calls_completed": self.calls_completed, "reads": self.reads,
+                "probe_batches": self.probe_batches, "max_probe_batches": MAX_PROBE_BATCHES, "calls": self.calls, "calls_completed": self.calls_completed, "reads": self.reads,
                 "repairs": self.repairs, **{name: getattr(self, name) for counter in REPAIR_COUNTERS.values()
                     for name in (counter, "max_" + counter)}, "inspected_bytes": self.inspected_bytes,
                 "context_bytes": self.context_bytes, "review_context_bytes": self.review_context_bytes,
