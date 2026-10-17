@@ -269,7 +269,7 @@ async def test_the_bootstrap_self_report_never_decides_on_kubernetes(tmp_path: P
     assert ok is False
     assert infra is False
     assert "clean-room verifier" in (err or "")
-    assert "ruby 3.4.2 not runnable" in (err or "")
+    assert "required execution evidence is malformed or missing" in (err or "")
 
 
 @pytest.mark.asyncio
@@ -395,3 +395,18 @@ async def test_docker_transport_still_runs_the_clean_verify(
 
     clean.assert_awaited_once()
     assert (ok, err, infra) == (True, None, False)
+
+
+@pytest.mark.asyncio
+async def test_failed_kubernetes_report_retains_actual_identity_without_provenance_walk(tmp_path):
+    runtime = _FakeRuntime((False, ""))
+    daemon, svc = _k8s_daemon(tmp_path, runtime=runtime, github=_FakeGitHub({}))
+    cache = daemon._state["env_cache"]["sym"]
+    report = json.loads(runtime.execution_log)
+    report["results"][0].update(status="fail", exit_code=2)
+    runtime.verdict = False, json.dumps(report)
+    ok, _reason, infra = await daemon._verify_bootstrap_in_clean_context("sym", svc, "job")
+    assert ok is False and infra is False
+    assert len(runtime.calls) == 1
+    assert cache.environment_verification["results"][0]["status"] == "fail"
+    assert cache.environment_verification["image_ref"] == runtime.calls[0]["spec"].image

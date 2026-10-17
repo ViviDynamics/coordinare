@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
 
 MAX_ATTEMPT_SECONDS = 3600
@@ -50,6 +50,7 @@ class AttemptBudget:
     finish_reasons: dict[str, int] = field(default_factory=dict)
     metadata_available: bool = False
     validation_codes: list[str] = field(default_factory=list)
+    checkpoint: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if (not 0 < self.timeout_seconds <= MAX_ATTEMPT_SECONDS or self.max_calls < 1 or self.max_reads < 1
@@ -86,6 +87,13 @@ class AttemptBudget:
             message = "environment discovery budget repair limit exceeded"
             raise EnvironmentDiscoveryError(message, code="attempt_repair_limit")
         self.repairs += 1
+
+    async def flush(self) -> None:
+        """Persist reservations before calling a model, source reader or executor."""
+        self.check()
+        if self.checkpoint is not None:
+            await self.checkpoint()
+        self.check()
 
     def record_reply(self, reply: str | DiscoveryChatReply) -> str:
         self.calls_completed += 1

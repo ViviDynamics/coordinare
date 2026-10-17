@@ -93,7 +93,8 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
         _refuse('environment bootstrap deadline exceeded', code='attempt_deadline')
     if journal.status == 'held':
         _refuse('environment executable repair is held or exhausted')
-    budget = AttemptBudget(timeout_seconds=journal.expires_at-now, max_calls=journal.max_calls,
+    budget = AttemptBudget(timeout_seconds=journal.expires_at-journal.started_at,
+        started=time.monotonic()-(now-journal.started_at), max_calls=journal.max_calls,
         max_reads=journal.max_reads, max_repairs=journal.max_repairs)
     budget.calls, budget.reads, budget.repairs = journal.calls, journal.reads, journal.repairs
     return budget
@@ -221,7 +222,7 @@ def restore_attempt_generation(cache: EnvCacheState, *, interrupted: bool = Fals
             or cache.sanitised_name not in {journal.origin_slug, journal.base_slug, name}):
         _refuse('environment repair generation differs from configured cache parent')
     cache.sanitised_name = name
-    cache.cache_dir = cache.cache_dir.parent / name
+    cache.cache_dir = (cache.cache_dir.parent / name) if journal.generation else Path(journal.base_cache_dir)
     if interrupted and journal.status == 'executing':
         journal.status = 'held'
         journal.last_error = 'cleanup_unconfirmed'
@@ -265,9 +266,47 @@ def prepare_repair(cache: EnvCacheState) -> tuple[EnvironmentManifest, dict[str,
 def mark_attempt_ready(cache: EnvCacheState, *, now: float | None = None) -> None:
     """A successful final readiness decision retains all earlier rejected evidence."""
     if cache.environment_attempt is not None:
-        if not cache.cache_dir_ready or not saved_execution_accepted(cache) or cache.provenance_digest is None:
+        if not saved_execution_accepted(cache) or cache.provenance_digest is None:
             _refuse("environment readiness lacks required execution or frozen provenance")
         journal = journal_for(cache)
         _budget(journal, time.time() if now is None else now)
         journal.status = 'ready'
+        _publish(cache, journal)
+
+
+def remaining_seconds(cache: EnvCacheState, *, now: float | None = None) -> float:
+    """Return the original deadline's remainder; unknown/held state cannot renew it."""
+    journal = journal_for(cache)
+    now = time.time() if now is None else now
+    _budget(journal, now)
+    return journal.expires_at-now
+
+
+def repair_context(cache: EnvCacheState) -> tuple[EnvironmentManifest | None, dict[str, Any] | None]:
+    """Return bounded feedback only after a fresh generation has been prepared."""
+    journal = journal_for(cache)
+    if not journal.generation or not journal.rejected:
+        return None, None
+    if journal.status != 'discovering':
+        _refuse('environment repair requires a prepared fresh cache generation')
+    entry = journal.rejected[-1]
+    previous = EnvironmentManifest.model_validate(entry['manifest'])
+    failed = [item for item in entry['report']['results'] if item['status'] != 'pass']
+    return previous, {'rejected_manifest_digest': previous.digest(), 'results': failed[:16]}
+
+
+def finish_attempt(cache: EnvCacheState, success: bool, evidence: dict[str, Any] | None,
+                   *, cleanup_confirmed: bool) -> None:
+    """Complete one execution without resetting its journal or rejected history."""
+    if cache.environment_attempt is None:
+        return
+    if success:
+        mark_attempt_ready(cache)
+        return
+    journal = journal_for(cache)
+    if journal.status == 'executing':
+        record_execution_failure(cache, evidence or {}, cleanup_confirmed=cleanup_confirmed)
+    elif journal.status == 'discovering':
+        journal.status = 'held'
+        journal.last_error = 'discovery_refused'
         _publish(cache, journal)

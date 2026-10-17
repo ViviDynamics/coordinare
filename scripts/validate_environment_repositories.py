@@ -39,6 +39,7 @@ from coordinare.services.environment_acceptance import (
     saved_execution_accepted,
 )
 from coordinare.services.environment_attempt import DiscoveryChatReply, EnvironmentDiscoveryError
+from coordinare.services.environment_repair import journal_for, remaining_seconds
 
 if TYPE_CHECKING:
     from coordinare.services.environment_discovery import ChatJson
@@ -208,16 +209,18 @@ async def _bounded_wait(process: asyncio.subprocess.Process, timeout: float) -> 
             await process.wait()
 
 
-async def _remove_container(name: str) -> None:
+async def _remove_container(name: str) -> bool:
     proc = await asyncio.create_subprocess_exec(
-        "docker",
-        "rm",
-        "-f",
-        name,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
+        "docker", "rm", "-f", name,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
     )
-    await _bounded_wait(proc, 30)
+    try:
+        _, error = await asyncio.wait_for(proc.communicate(), 30)
+        return proc.returncode == 0 or b"No such container" in error
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
 
 
 async def _install(
@@ -313,10 +316,14 @@ async def _install(
         assert process.returncode is not None
         return process.returncode, output
     finally:
-        await _remove_container(name)
-        if process.returncode is None:
-            process.kill()
-            await process.wait()
+        try:
+            removed = await _remove_container(name)
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+        if not removed:
+            raise RuntimeError("installer cleanup could not be confirmed")
 
 
 async def execute_accepted(
@@ -334,7 +341,8 @@ async def execute_accepted(
     if manifest is None:
         raise ValueError("independent acceptance is required before execution")
     marker = target / "execution-approved.json"
-    deadline = time.monotonic() + profile.approval_timeout
+    remaining = remaining_seconds(cache) if cache.environment_attempt is not None else profile.approval_timeout
+    deadline = time.monotonic() + min(profile.approval_timeout, remaining)
     while not execution_authorized(
         marker, manifest_digest=manifest.digest(), source_commit=snapshot.commit, image=image,
     ):
@@ -355,7 +363,10 @@ async def execute_accepted(
         and report.platform == cache.environment_capabilities["platform"]
     )
     if not result["installer_passed"]:
-        result.update(status="held", reason_code="installer_failed")
+        evidence = {**report.model_dump(mode="json"), "image_ref": image}
+        result.update(status="held", reason_code="installer_failed", installer_evidence=evidence)
+        service.record_bootstrap_execution(snapshot.name, state, evidence, cleanup_confirmed=True)
+        service.on_bootstrap_complete(snapshot.name, False, state)
         return
     result.update(stage="clean_consumer", clean_consumer_ran=True)
     passed, detail = await verify_env_cache_clean(
@@ -371,6 +382,9 @@ async def execute_accepted(
     )
     if passed is not True:
         result.update(status="held", reason_code="clean_consumer_held")
+        service.record_bootstrap_execution(snapshot.name, state, cache.environment_verification,
+            cleanup_confirmed=passed is False)
+        service.on_bootstrap_complete(snapshot.name, False, state)
         return
     frozen, reason = await service.freeze_provenance(snapshot.name, state)
     result.update(provenance_frozen=frozen, provenance_detail=reason)
@@ -416,7 +430,9 @@ async def _cleanup_case(target: Path, cache: EnvCacheState, image: str) -> bool:
             if await _bounded_wait(proc, 60):
                 return False
         finally:
-            await _remove_container(name)
+            removed = await _remove_container(name)
+        if not removed:
+            return False
         root.rmdir()
     return True
 
@@ -518,41 +534,51 @@ async def validate_repository(
         )
         return response
 
+    async def persist_attempt():
+        _write(output / "environment-attempt.json", cache.environment_attempt)
+
+    state["snapshot_save_fn"] = persist_attempt
+    service.bind_kubernetes_state(state)
+    attempts = []
+    attempt_target = output
     try:
         await snapshot.verify()
-        await service._build_manifest_artifacts(
-            performer_mounts=(output,),
-            symphony_name=snapshot.name,
-            repo=snapshot.name,
-            github_org=snapshot.org,
-            github_service=snapshot,
-            readme_contents={},
-            current_sha=snapshot.commit,
-            cache_dir=cache.cache_dir,
-            cache_mount_path="/devenv/" + cache.sanitised_name,
-            llm_chat=recorded,
-            cache_state=cache,
-        )
-        _write(output / "accepted-manifest.json", cache.environment_manifest)
-        _write(output / "accepted-assessment.json", cache.environment_assessment)
-        _write(output / "execution-capabilities.json", cache.environment_capabilities)
-        result.update(
-            status="accepted_not_executed",
-            stage="coverage",
-            manifest_digest=accepted_environment(cache).digest(),
-        )
-        result["independent_review_reached"] = review_starts > 0
-        _write(output / "discovery-result.json", result)
-        _event(
-            repository=snapshot.name,
-            stage="coverage",
-            status="accepted",
-            manifest_digest=result["manifest_digest"],
-        )
-        if profile.execute:
-            await execute_accepted(
-                snapshot, service, state, image=image, target=output, profile=profile, result=result,
+        for generation in range(3):
+            service.prepare_bootstrap_generation(cache)
+            attempt_target = output / f"attempt-{generation:03}"
+            new_profile_directory(attempt_target)
+            await service._build_manifest_artifacts(
+                performer_mounts=(output,), symphony_name=snapshot.name, repo=snapshot.name,
+                github_org=snapshot.org, github_service=snapshot, readme_contents={},
+                current_sha=snapshot.commit, cache_dir=cache.cache_dir,
+                cache_mount_path="/devenv/" + cache.sanitised_name,
+                llm_chat=recorded, cache_state=cache,
             )
+            for name, data in (("accepted-manifest.json", cache.environment_manifest),
+                               ("accepted-assessment.json", cache.environment_assessment),
+                               ("execution-capabilities.json", cache.environment_capabilities)):
+                _write(attempt_target / name, data)
+                _write(output / name, data)
+            result.update(status="accepted_not_executed", stage="coverage",
+                manifest_digest=accepted_environment(cache).digest(), generation=generation)
+            _write(attempt_target / "discovery-result.json", result)
+            _write(output / "discovery-result.json", result)
+            _event(repository=snapshot.name, stage="coverage", status="accepted",
+                generation=generation, manifest_digest=result["manifest_digest"])
+            if profile.execute:
+                async with asyncio.timeout(remaining_seconds(cache)):
+                    await execute_accepted(snapshot, service, state, image=image,
+                        target=attempt_target, profile=profile, result=result)
+            attempts.append(dict(result))
+            _write(attempt_target / "result.json", result)
+            await persist_attempt()
+            if journal_for(cache).status != "repair_pending":
+                break
+            # All executor cleanup was confirmed before admitting the rejected report.
+            # Remove private source/cache contents before preparing another generation.
+            if not await _cleanup_case(attempt_target, cache, image):
+                result.update(status="held", reason_code="cleanup_unconfirmed")
+                break
     except EnvironmentDiscoveryError as exc:
         result.update(status="held", reason_code=exc.code, reason=str(exc))
     except Exception as exc:
@@ -565,9 +591,10 @@ async def validate_repository(
             model_calls=calls,
             independent_review_reached=review_starts > 0,
             independent_review_invocations=review_starts,
+            attempts=attempts,
         )
         if not profile.keep_caches and (result["installer_ran"] or result["clean_consumer_ran"]):
-            result["private_runtime_contents_removed"] = await _cleanup_case(output, cache, image)
+            result["private_runtime_contents_removed"] = await _cleanup_case(attempt_target, cache, image)
         try:
             await snapshot.verify()
             result["snapshot_unchanged"] = True

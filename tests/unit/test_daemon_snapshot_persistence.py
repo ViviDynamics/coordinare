@@ -135,7 +135,7 @@ def _ready_state(cache_dir, verify_text):
 def _docker_answers(run_rc: int, manifest):
     """218: the daemon probe (docker version) answers 0; the verify run answers ``run_rc``."""
     async def _fake(*argv, **_kwargs):
-        return _FakeProc(0 if "version" in argv else run_rc, manifest)
+        return _FakeProc(0 if "version" in argv or "rm" in argv else run_rc, manifest)
 
     return _fake
 
