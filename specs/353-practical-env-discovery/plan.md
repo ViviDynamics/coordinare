@@ -1,3 +1,5 @@
+> Amendment: [repair-amendment.md](repair-amendment.md) supersedes proposal provenance ownership and extends the shared repair budget through executable failures. Implementation: [repair-plan.md](repair-plan.md). User explicitly authorized implementation and retesting.
+
 # Practical Reviewed Environment Discovery Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
