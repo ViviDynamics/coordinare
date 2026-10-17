@@ -1123,7 +1123,8 @@ class EnvCacheConfig(BaseModel):
             return data
         fields = ("manifest_max_schema_repairs", "manifest_max_coverage_revisions", "manifest_max_execution_repairs")
         if any(name in data for name in fields):
-            raise ValueError("cannot combine legacy and category manifest repair limits")
+            message = "cannot combine legacy and category manifest repair limits"
+            raise ValueError(message)
         return {**data, **dict.fromkeys(fields, data["manifest_max_repairs"])}
 
 
