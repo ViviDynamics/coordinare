@@ -2539,11 +2539,13 @@ class GitHubService(CardIdentityMap):
         return [n for n in nodes if isinstance(n, dict)]
 
     async def get_repository_paths(
-        self, owner: str, repo: str, *, ref: str,
+        self, owner: str, repo: str, *, ref: str, max_entries: int = 100_000,
     ) -> list[str]:
         """Return a complete pinned blob inventory, refusing partial source trees."""
         if not ref or not owner or not repo:
             raise GitHubError("repository inventory requires owner, repository and ref")
+        if max_entries < 1:
+            raise GitHubError("repository inventory entry limit must be positive")
         token = await self._current_token()
         if not token.strip():
             raise GitHubError("repository inventory requires GitHub authentication")
@@ -2565,7 +2567,7 @@ class GitHubService(CardIdentityMap):
         if not isinstance(data, dict) or data.get("truncated") is not False:
             raise GitHubError("repository inventory is incomplete")
         entries = data.get("tree")
-        if not isinstance(entries, list) or len(entries) > 100_000:
+        if not isinstance(entries, list) or len(entries) > max_entries:
             raise GitHubError("repository inventory is invalid or exceeds limit")
         paths: set[str] = set()
         for entry in entries:

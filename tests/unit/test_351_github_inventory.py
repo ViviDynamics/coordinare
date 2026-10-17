@@ -47,3 +47,18 @@ async def test_inventory_is_pinned_and_contains_all_blob_paths(monkeypatch):
     assert await service.get_repository_paths("org", "repo", ref="abc123") == ["arbitrary/instructions.zog", "entry"]
     assert requests[0].url.path.endswith("/git/trees/abc123")
     assert requests[0].url.params["recursive"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_inventory_honors_configured_entry_limit(monkeypatch):
+    payload = {"truncated": False, "tree": [
+        {"type": "blob", "path": "one"}, {"type": "blob", "path": "two"},
+    ]}
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, json=payload))
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr("coordinare.services.github.httpx.AsyncClient", lambda **kw: real_client(transport=transport, **kw))
+    service = GitHubService(org="org", project_number=1, token="token")
+    service._current_token = AsyncMock(return_value="token")
+    with pytest.raises(GitHubError, match="limit"):
+        await service.get_repository_paths("org", "repo", ref="abc123", max_entries=1)
+    assert await service.get_repository_paths("org", "repo", ref="abc123", max_entries=2) == ["one", "two"]

@@ -83,7 +83,8 @@ Optional results remain visible and cannot downgrade required requirements.
 ## Limits and cache invalidation
 
 Each discovery and review phase defaults to 256 reads, 256 KiB per file, 4 MiB of
-source text and 120 seconds. The complete inventory is capped at 100,000 entries;
+source text and 120 seconds. The complete inventory defaults to a 100,000-entry cap,
+controlled by `manifest_max_inventory_entries`;
 serialized inventory also has a source-byte admission bound. Manifest and assessment
 each have a 256 KiB serialization cap. Reads, model turns and replies are bounded;
 exhaustion is an explicit hold, never truncated acceptance. The YAML above names
@@ -99,7 +100,9 @@ budgets continue to apply. Individual commands default to a 180-second timeout.
 
 ## Upgrade and recover
 
-Upgrade daemon, performer and trusted verifier images together; they must share
+Use immutable image references where supported by the configured transport; image
+identity and deployment policy remain part of verification applicability. Upgrade
+daemon, performer and trusted verifier images together; they must share
 the environment contract capability. State schema 40 adds the accepted manifest
 and assessment. Restored older caches have no accepted pair and hold consumers
 until reviewed reconstruction and clean verification complete. Existing bytes are
