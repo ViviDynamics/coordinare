@@ -77,7 +77,8 @@ async def test_accepts_unfamiliar_nested_evidence_with_fresh_review():
     reviewer_start = chat.calls[2]
     assert len(reviewer_start) == 2
     assert not any(message["role"] == "assistant" for message in reviewer_start)
-    assert SOURCE not in json.dumps(reviewer_start)
+    assert json.loads(reviewer_start[1]["content"])["mandatory_evidence"] == [
+        {"path": PATH, "content": SOURCE, "sha256": hashlib.sha256(SOURCE.encode()).hexdigest()}]
     assert PATH in json.dumps(reviewer_start)
 
 
@@ -102,17 +103,25 @@ async def test_refuses_unaccepted_or_unproven_output(change):
 
 
 @pytest.mark.asyncio
-async def test_review_must_independently_read_manifest_evidence():
+async def test_review_receives_independently_fetched_evidence_without_model_read_requests():
     chat = ScriptedChat()
     original = chat.__call__
+    fetched = []
+
+    async def fetch(path):
+        fetched.append(path)
+        return SOURCE
 
     async def no_review_reads(messages):
         if len(chat.calls) == 2:
             chat.calls.append(copy.deepcopy(messages))
         return await original(messages)
 
-    with pytest.raises(EnvironmentDiscoveryError, match=r"review.*read|inspect"):
-        await discover(no_review_reads)
+    manifest, review = await discover_and_review(symphony_name="suite", commit=COMMIT,
+        paths=[PATH, "other/evidence"], fetch=fetch, chat=no_review_reads, capabilities=CAPABILITIES)
+    assert fetched == [PATH, PATH]
+    assert review.inputs == manifest.inputs
+    assert review.verdict == "accept"
 
 
 @pytest.mark.asyncio
