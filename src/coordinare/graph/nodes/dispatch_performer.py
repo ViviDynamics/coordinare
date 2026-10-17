@@ -2510,9 +2510,22 @@ async def _env_readiness_gate(state: CoordinareState, service: Any, card_id: str
         #     same env_cache_not_current hold (re-bootstrap is triggered by the
         #     bootstrap-completion path / budget machinery — single hold point).
         #   None  (verification could not run) ⇒ hold until execution is confirmed.
-        _readiness_passed, _readiness_detail = await verify_env_cache_clean(
-            state, _symphony_name_for_ec, service, performer_mounts=_performer_mounts(state),
+        from coordinare.services.environment_capabilities import (
+            capabilities_match,
+            resolve_execution_capabilities,
         )
+
+        try:
+            capabilities = await resolve_execution_capabilities(state, _symphony_name_for_ec)
+            current_capabilities = capabilities_match(_ec_state_for_sym, capabilities)
+        except (ValueError, OSError, RuntimeError):
+            current_capabilities = False
+        if current_capabilities:
+            _readiness_passed, _readiness_detail = await verify_env_cache_clean(
+                state, _symphony_name_for_ec, service, performer_mounts=_performer_mounts(state),
+            )
+        else:
+            _readiness_passed, _readiness_detail = False, "consumer execution capabilities changed or unavailable"
         if _readiness_passed is True and isinstance(service, HTTPPerformerService):
             from coordinare.services.environment_acceptance import consumer_image_matches
 

@@ -35,7 +35,9 @@ def accepted_environment(cache: EnvCacheState) -> EnvironmentManifest | None:
     except (ValidationError, TypeError):
         return None
     if (
-        assessment.verdict != "accept"
+        not manifest.capabilities_digest
+        or assessment.capabilities_digest != manifest.capabilities_digest
+        or assessment.verdict != "accept"
         or assessment.manifest_digest != manifest.digest()
         or assessment.source_commit != manifest.source_commit
         or cache.bootstrap_commit_sha != manifest.source_commit

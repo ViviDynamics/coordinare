@@ -1393,6 +1393,7 @@ class ProjectConfiguration(BaseSettings):
     kubernetes_cache_claim: str | None = None
     kubernetes_image_pull_secrets: list[str] = Field(default_factory=list)
     # 265: daemon-owned verifier image. Reviewed cache consumers must use this image too.
+    kubernetes_verifier_platform: str | None = Field(default=None, pattern=r"^linux/(x86_64|aarch64)$")
     kubernetes_verifier_image: str | None = Field(
         default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$",
     )

@@ -7,7 +7,10 @@ import hashlib
 import json
 
 import pytest
-from coordinare_service_inference.environment.models import EnvironmentManifest
+from coordinare_service_inference.environment.models import (
+    EnvironmentManifest,
+    ExecutionCapabilities,
+)
 
 from coordinare.services.environment_discovery import (
     DiscoveryLimits,
@@ -20,8 +23,12 @@ PATH = "nested/how-to.zog"
 COMMIT = "a" * 40
 
 
+CAPABILITIES = ExecutionCapabilities(schema_version=1, image_ref="trusted/global@sha256:" + "a" * 64,
+    platform="linux/x86_64", cache_mount_path="/devenv/suite", install_network="enabled", verify_network="disabled")
+
 def candidate():
     return {
+        "capabilities_digest": CAPABILITIES.digest(),
         "schema_version": 1, "policy_version": "351-v1", "symphony_name": "suite",
         "source_commit": COMMIT, "inputs": {PATH: hashlib.sha256(SOURCE.encode()).hexdigest()},
         "requirements": [{"id": "tool", "description": "zog version 7", "source": PATH, "checks": ["version"], "required": True}],
@@ -46,6 +53,7 @@ class ScriptedChat:
         if index == 2:
             return json.dumps({"manifest": self.manifest})
         return json.dumps({"assessment": {
+            "capabilities_digest": CAPABILITIES.digest(),
             "schema_version": 1, "policy_version": "351-v1", "source_commit": COMMIT,
             "manifest_digest": self.digest or EnvironmentManifest.model_validate(self.manifest).digest(),
             "verdict": self.verdict, "rationale": "Evidence covers documented constraints", "sources": self.sources,
@@ -56,7 +64,7 @@ async def discover(chat, **kwargs):
     async def fetch(path):
         return SOURCE if path == PATH else "additional evidence"
     return await discover_and_review(symphony_name="suite", commit=COMMIT,
-        paths=[PATH, "other/evidence"], fetch=fetch, chat=chat, **kwargs)
+        paths=[PATH, "other/evidence"], fetch=fetch, chat=chat, capabilities=CAPABILITIES, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -171,7 +179,7 @@ async def test_snapshot_must_not_change_between_discovery_and_review():
         return SOURCE if count == 1 else SOURCE + "changed"
 
     with pytest.raises(EnvironmentDiscoveryError):
-        await discover_and_review(symphony_name="suite", commit=COMMIT, paths=[PATH], fetch=fetch, chat=ScriptedChat())
+        await discover_and_review(symphony_name="suite", commit=COMMIT, paths=[PATH], fetch=fetch, chat=ScriptedChat(), capabilities=CAPABILITIES)
 
 
 @pytest.mark.asyncio
@@ -180,7 +188,7 @@ async def test_source_unavailable_holds():
         return None
 
     with pytest.raises(EnvironmentDiscoveryError, match="unavailable"):
-        await discover_and_review(symphony_name="suite", commit=COMMIT, paths=[PATH], fetch=fetch, chat=ScriptedChat())
+        await discover_and_review(symphony_name="suite", commit=COMMIT, paths=[PATH], fetch=fetch, chat=ScriptedChat(), capabilities=CAPABILITIES)
 
 
 @pytest.mark.asyncio
@@ -208,7 +216,7 @@ def test_persisted_review_rationale_contains_only_daemon_generated_text():
     sensitive = 'repository credential must never be persisted: private-value'
     assessment = _validated_assessment({
         'schema_version': 1, 'policy_version': '351-v1', 'source_commit': COMMIT,
-        'manifest_digest': manifest.digest(), 'verdict': 'accept',
+        'manifest_digest': manifest.digest(), 'verdict': 'accept', 'capabilities_digest': CAPABILITIES.digest(),
         'rationale': sensitive, 'sources': [PATH],
     }, {PATH: manifest.inputs[PATH]}, manifest)
     assert assessment.rationale == 'Independent coverage review accepted; source identities validated by daemon.'

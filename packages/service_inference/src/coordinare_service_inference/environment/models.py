@@ -65,6 +65,27 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+class ExecutionCapabilities(StrictModel):
+    """Actual target identity and generic installer/consumer constraints."""
+
+    schema_version: Literal[1]
+    image_ref: str = Field(pattern=r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+    platform: str = Field(pattern=r"^[a-z0-9_]+/[a-z0-9_]+$")
+    cache_mount_path: str
+    install_network: Literal["enabled", "disabled"]
+    verify_network: Literal["disabled"]
+
+    @field_validator("cache_mount_path")
+    @classmethod
+    def valid_cache_mount(cls, value: str) -> str:
+        if not value.startswith("/"):
+            raise ValueError("cache mount must be absolute")
+        return execution_path(value)
+
+    def digest(self) -> str:
+        return hashlib.sha256(json.dumps(self.model_dump(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def reject_literal_credentials(value: str) -> None:
     """Credential-bearing URLs are runtime references, never persisted command data."""
     if "://" not in value:
@@ -131,7 +152,7 @@ class Requirement(StrictModel):
     id: str = Field(min_length=1)
     description: str = Field(min_length=1)
     source: str
-    checks: list[str] = Field(min_length=1)
+    checks: list[str] = Field(min_length=1, description="IDs from checks[].id of required executable checks, never command strings or install-only IDs.")
     required: bool = True
     _source = field_validator("source")(source_path)
 
@@ -171,6 +192,7 @@ class EnvironmentManifest(StrictModel):
     symphony_name: str = Field(min_length=1)
     source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     inputs: dict[str, str]
+    capabilities_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     requirements: list[Requirement]
     install: list[Command]
     checks: list[Command] = Field(min_length=1)
@@ -259,6 +281,7 @@ class EnvironmentManifest(StrictModel):
 
 
 class CoverageAssessment(StrictModel):
+    capabilities_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     schema_version: Literal[1]
     manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
