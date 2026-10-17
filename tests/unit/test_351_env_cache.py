@@ -129,7 +129,9 @@ async def test_discovery_inventory_respects_outer_bootstrap_budget(tmp_path: Pat
         env_cache=SimpleNamespace(bootstrap_max_seconds=0.01))))
     cache = EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=tmp_path, bootstrap_commit_sha="a" * 40)
     github = SimpleNamespace(get_repository_paths=stalled)
-    with pytest.raises(TimeoutError):
+    from coordinare.services.environment_discovery import EnvironmentDiscoveryError
+
+    with pytest.raises(EnvironmentDiscoveryError, match="deadline"):
         await service._build_manifest_artifacts(
             performer_mounts=(tmp_path,), symphony_name="sym", repo="sym", github_org="org",
             github_service=github, readme_contents={}, current_sha="a" * 40, cache_dir=tmp_path,

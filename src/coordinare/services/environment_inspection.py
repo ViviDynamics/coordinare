@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from coordinare_service_inference.environment.models import source_path
 
-from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -19,7 +19,8 @@ if TYPE_CHECKING:
 class SourceInspection:
     """One independent phase's exact read ledger; no ecosystem-specific navigation."""
 
-    def __init__(self, paths: Sequence[str], fetch: Fetch, limits: DiscoveryLimits) -> None:
+    def __init__(self, paths: Sequence[str], fetch: Fetch, limits: DiscoveryLimits, budget: AttemptBudget | None = None) -> None:
+        self.budget = budget
         self.name = "discovery"
         self.paths = sorted(paths)
         self.inventory = set(paths)
@@ -73,6 +74,8 @@ class SourceInspection:
             raise EnvironmentDiscoveryError(f"{self.name} source is unavailable or not text")
         encoded = content.encode("utf-8")
         self.total_bytes += len(encoded)
+        if self.budget is not None:
+            self.budget.inspected_bytes += len(encoded)
         if len(encoded) > self.limits.max_file_bytes or self.total_bytes > self.limits.max_source_bytes:
             raise EnvironmentDiscoveryError(f"{self.name} source byte limit exceeded")
         digest = hashlib.sha256(encoded).hexdigest()
@@ -82,11 +85,13 @@ class SourceInspection:
         self.source_files[path] = content
         return {"path": path, "content": content, "sha256": digest}
 
-    async def read_files(self, paths: Sequence[str]) -> dict[str, Any]:
+    async def read_files(self, paths: Sequence[str]) -> dict[str, list[dict[str, str]]]:
         if (not isinstance(paths, list | tuple) or not 1 <= len(paths) <= 8
                 or any(not isinstance(path, str) or path not in self.inventory for path in paths)
                 or len(set(paths)) != len(paths)):
             raise EnvironmentDiscoveryError(f"{self.name} requested invalid source batch or paths")
+        if self.budget is not None:
+            self.budget.reserve_reads(len(paths))
         self.reads += len(paths)
         if self.reads > self.limits.max_reads:
             raise EnvironmentDiscoveryError(f"{self.name} file read limit exceeded")
@@ -109,4 +114,4 @@ class SourceInspection:
             return await self.read_files(reply["paths"])
         if set(reply) == {"tool", "path"} and reply.get("tool") == "read_file":
             return await self.read(reply["path"])
-        raise EnvironmentDiscoveryError(f"{self.name} returned an unsupported tool or envelope")
+        raise EnvironmentDiscoveryError(f"{self.name} returned an unsupported tool or envelope", code="unsupported_envelope")

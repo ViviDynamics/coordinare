@@ -198,7 +198,7 @@ async def test_duplicate_envelope_keys_hold():
     async def chat(messages):
         return '{"tool":"list_files","tool":"list_files"}'
 
-    with pytest.raises(EnvironmentDiscoveryError, match="malformed"):
+    with pytest.raises(EnvironmentDiscoveryError, match="repair limit"):
         await discover(chat)
 
 

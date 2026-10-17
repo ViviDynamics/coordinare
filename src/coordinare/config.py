@@ -1107,6 +1107,10 @@ class EnvCacheConfig(BaseModel):
     manifest_max_source_bytes: int = Field(default=4 * 1024 * 1024, ge=1, le=16 * 1024 * 1024)
     manifest_max_inventory_entries: int = Field(default=100_000, ge=1, le=1_000_000)
     manifest_phase_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
+    manifest_attempt_timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
+    manifest_max_model_calls: int = Field(default=128, ge=1, le=4096)
+    manifest_max_total_reads: int = Field(default=512, ge=1, le=8192)
+    manifest_max_repairs: int = Field(default=2, ge=0, le=2)
 
 
     # 234: the bounds on one frozen env cache. A cache over either is refused at freeze (or at a later check),
