@@ -88,7 +88,7 @@ def _state(tmp_path: Path) -> dict[str, Any]:
     state = EnvCacheState(
         symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache,
         rendered_verify_sh="#!/bin/sh\nexit 0\n", rendered_activate_sh="ACT=1\n",
-        bootstrap_commit_sha="abc", **{key: value for key, value in reviewed_metadata().items() if key != "environment_manifest_digest"},
+        bootstrap_commit_sha="a" * 40, **{key: value for key, value in reviewed_metadata().items() if key != "environment_manifest_digest"},
     )
     return {"env_cache": {"sym": state}}
 

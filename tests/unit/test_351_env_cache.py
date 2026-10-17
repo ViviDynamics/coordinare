@@ -144,7 +144,7 @@ def test_clean_report_requires_service_lifecycle_evidence(tmp_path: Path) -> Non
     metadata = reviewed_metadata(services=[{"id": "db", "start": {"id": "start", "argv": ["true"]},
         "health": {"id": "health", "argv": ["true"]}, "stop": {"id": "stop", "argv": ["true"]}}])
     cache = EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=tmp_path,
-        bootstrap_commit_sha="abc", environment_manifest=metadata["environment_manifest"],
+        bootstrap_commit_sha="a" * 40, environment_manifest=metadata["environment_manifest"],
         environment_assessment=metadata["environment_assessment"])
     digest = metadata["environment_manifest_digest"]
     report = {"manifest_digest": digest, "platform": "linux/arm64", "results": [{"id": "baseline", "status": "pass",
@@ -212,3 +212,29 @@ async def test_unrun_clean_verification_invalidates_previous_readiness(tmp_path:
         result, _ = await verify_env_cache_clean({"env_cache": {"sym": cache}}, "sym", SimpleNamespace(), performer_mounts=())
     assert result is None
     assert cache.environment_verification is None
+
+
+@pytest.mark.parametrize("command_id", ["start", "health", "init", "stop"])
+@pytest.mark.parametrize("exit_code", [None, 1, 125])
+def test_parent_report_rejects_nonzero_required_service_result(tmp_path: Path, command_id: str, exit_code: int | None) -> None:
+    import json
+
+    from coordinare.services.environment_acceptance import execution_report
+    from tests.unit.env_manifest_fixture import (
+        reviewed_cache,
+        reviewed_metadata,
+        verification_output,
+    )
+
+    cache = reviewed_cache(EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=tmp_path))
+    metadata = reviewed_metadata(services=[{
+        "id": "db", **{name: {"id": name, "argv": ["true"]} for name in ("start", "health", "init", "stop")},
+    }])
+    cache.environment_manifest = metadata["environment_manifest"]
+    cache.environment_assessment = metadata["environment_assessment"]
+    report = json.loads(verification_output(cache.environment_manifest))
+    for result in report["results"]:
+        if result["id"] == command_id:
+            result["exit_code"] = exit_code
+    with pytest.raises(ValueError, match="exit code zero"):
+        execution_report(json.dumps(report), cache)

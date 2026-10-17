@@ -108,7 +108,7 @@ def _state(cache: Path, verify: str = VERIFY_TEXT, activate: str = ACTIVATE_TEXT
     return EnvCacheState(
         symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache,
         rendered_verify_sh=verify, rendered_activate_sh=activate,
-        bootstrap_commit_sha="abc", **{key: value for key, value in reviewed_metadata().items() if key != "environment_manifest_digest"},
+        bootstrap_commit_sha="a" * 40, **{key: value for key, value in reviewed_metadata().items() if key != "environment_manifest_digest"},
     )
 
 

@@ -122,7 +122,7 @@ def _state(
         rendered_verify_sh=verify,
         rendered_activate_sh=activate,
         cache_dir_ready=True, last_bootstrap_succeeded=True,
-        bootstrap_commit_sha="abc", **{key: value for key, value in reviewed_metadata().items() if key != "environment_manifest_digest"},
+        bootstrap_commit_sha="a" * 40, **{key: value for key, value in reviewed_metadata().items() if key != "environment_manifest_digest"},
     ))
 
 
@@ -398,7 +398,7 @@ async def test_honest_bootstrap_passes_end_to_end(
 ) -> None:
     cache = _cache(tmp_path)
     state = EnvCacheState(
-        symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache, bootstrap_commit_sha="abc",
+        symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache, bootstrap_commit_sha="a" * 40,
     )
     files = {
         ".ruby-version": "3.4.2\n",

@@ -165,7 +165,7 @@ class Service(StrictModel):
 class EnvironmentManifest(StrictModel):
     schema_version: Literal[1]
     symphony_name: str = Field(min_length=1)
-    source_commit: str = Field(min_length=1)
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     inputs: dict[str, str]
     requirements: list[Requirement]
     install: list[Command]
@@ -257,7 +257,7 @@ class EnvironmentManifest(StrictModel):
 class CoverageAssessment(StrictModel):
     schema_version: Literal[1]
     manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    source_commit: str = Field(min_length=1)
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     symphony_name: str = ""
     verdict: Literal["accept", "revise", "indeterminate"]
     rationale: str = Field(min_length=1)

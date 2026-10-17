@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
+
 import pytest
-from coordinare_service_inference.environment.models import EnvironmentManifest
+from coordinare_service_inference.environment.models import CoverageAssessment, EnvironmentManifest
 from pydantic import ValidationError
 
 
@@ -9,7 +11,7 @@ def manifest_data():
     return {
         "schema_version": 1,
         "symphony_name": "fixture",
-        "source_commit": "abc",
+        "source_commit": "a" * 40,
         "inputs": {"guide.any": "a" * 64},
         "requirements": [
             {
@@ -104,3 +106,37 @@ def test_contract_processing_performance_budget() -> None:
     )
     measurement = json.loads(result.stdout)
     assert measurement
+
+
+def assessment_data():
+    return {
+        "schema_version": 1,
+        "manifest_digest": "b" * 64,
+        "source_commit": "a" * 40,
+        "verdict": "accept",
+        "rationale": "Independently inspected repository inputs",
+        "sources": ["guide.any"],
+        "inputs": {"guide.any": "a" * 64},
+        "policy_version": "351-v1",
+    }
+
+
+@pytest.mark.parametrize("model,fixture", [
+    (EnvironmentManifest, manifest_data), (CoverageAssessment, assessment_data),
+])
+@pytest.mark.parametrize("commit", ["main", "abc", "a" * 39, "a" * 65, "A" * 40, "g" * 40, "a" * 40 + "\n"])
+def test_contract_rejects_unpinned_source_commit(model, fixture, commit):
+    data = fixture()
+    data["source_commit"] = commit
+    with pytest.raises(ValidationError, match="source_commit"):
+        model.model_validate_json(json.dumps(data))
+
+
+@pytest.mark.parametrize("model,fixture", [
+    (EnvironmentManifest, manifest_data), (CoverageAssessment, assessment_data),
+])
+@pytest.mark.parametrize("commit", ["0123456789abcdef" * 2 + "01234567", "abcdef0123456789" * 4])
+def test_contract_accepts_pinned_source_commit(model, fixture, commit):
+    data = fixture()
+    data["source_commit"] = commit
+    assert model.model_validate_json(json.dumps(data)).source_commit == commit

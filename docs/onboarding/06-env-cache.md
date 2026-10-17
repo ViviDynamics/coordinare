@@ -133,6 +133,9 @@ Kubernetes selects the verifier through `kubernetes_verifier_image`, defaulting 
 `performer_image`; symphony endpoint images cannot select it. In Helm, configure
 `config.kubernetes_verifier_image` and `performers.imagePullSecrets` as needed.
 Set an immutable digest even when a registry tag already exists.
+When Kubernetes environment caching is configured, consumer endpoint images must
+equal `kubernetes_verifier_image`; configuration loading rejects a mismatch.
+Only an endpoint whose roles are exclusively `env_bootstrap` may use another image.
 
 Kubernetes also requires externally enforced verifier egress isolation. Configure
 a NetworkPolicy for pods labeled `coordinare.role: env-verifier`, ensure the

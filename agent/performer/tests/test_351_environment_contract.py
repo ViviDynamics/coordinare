@@ -34,14 +34,14 @@ def contract_score(tmp_path, *, failed=False):
     from coordinare_service_inference.environment.models import EnvironmentManifest
 
     manifest = EnvironmentManifest.model_validate({
-        "schema_version": 1, "symphony_name": "example", "source_commit": "abc",
+        "schema_version": 1, "symphony_name": "example", "source_commit": "a" * 40,
         "inputs": {"tools.plan": "a" * 64}, "requirements": [],
         "install": [{"id": "install", "argv": ["python3", "-c", "from pathlib import Path; Path('installed').touch(); Path('alien/bin').mkdir(parents=True, exist_ok=True)"]}],
         "checks": [{"id": "check", "argv": ["python3", "-c", "raise SystemExit(1)" if failed else "from pathlib import Path; assert Path('installed').exists()"]}],
         "activation": {"path": ["{cache}/alien/bin"], "env": {"ALIEN_HOME": "{cache}/alien"}},
         "services": [], "empty_reason": "Baseline image suffices", "policy_version": "351-v1",
     })
-    review = {"schema_version": 1, "manifest_digest": manifest.digest(), "source_commit": "abc",
+    review = {"schema_version": 1, "manifest_digest": manifest.digest(), "source_commit": "a" * 40,
               "verdict": "accept", "rationale": "Inspected setup instructions", "sources": ["tools.plan"], "inputs": dict(manifest.inputs), "policy_version": "351-v1"}
     return Score(title="bootstrap", repo_url="https://github.com/a/b", branch="main", role="env_bootstrap",
                  env_cache_path=str(tmp_path), environment_manifest=manifest.model_dump(),
@@ -56,7 +56,7 @@ def test_contract_rejects_tampered_review(tmp_path, mutation):
     if mutation == "digest":
         score.environment_manifest["checks"][0]["argv"] = ["true"]
     elif mutation == "commit":
-        score.environment_assessment["source_commit"] = "different"
+        score.environment_assessment["source_commit"] = "b" * 40
     elif mutation == "verdict":
         score.environment_assessment["verdict"] = "revise"
     else:
@@ -232,8 +232,8 @@ async def test_bootstrap_checkout_is_pinned_to_reviewed_commit(tmp_path, monkeyp
     monkeypatch.setattr(workspace.tempfile, "mkdtemp", temporary)
     stand = await workspace.clone_repository(score)
     try:
-        assert ["git", "fetch", "origin", "abc"] in commands
-        assert ["git", "checkout", "--detach", "abc"] in commands
+        assert ["git", "fetch", "origin", "a" * 40] in commands
+        assert ["git", "checkout", "--detach", "a" * 40] in commands
         assert not any("push" in command for command in commands)
     finally:
         await close_environment(stand)
@@ -392,3 +392,21 @@ async def test_status_advertises_reviewed_manifest_capability():
     import platform
 
     assert status["environment_platform"] == platform.system().lower() + "/" + platform.machine().lower()
+
+
+def test_consumer_rejects_mutable_source_commit(tmp_path):
+    import hashlib
+    import json
+
+    from performer.environment_contract import accepted_manifest
+
+    score = contract_score(tmp_path)
+    score.environment_manifest["source_commit"] = "main"
+    score.environment_assessment["source_commit"] = "main"
+    # Keep both review identities consistent to expose acceptance of a mutable ref.
+    canonical = json.dumps(score.environment_manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    digest = hashlib.sha256(canonical.encode()).hexdigest()
+    score.environment_manifest_digest = digest
+    score.environment_assessment["manifest_digest"] = digest
+    with pytest.raises(ValueError):
+        accepted_manifest(score)

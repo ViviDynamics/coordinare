@@ -159,12 +159,12 @@ def reviewed_environment_metadata():
     from coordinare_service_inference.environment.models import EnvironmentManifest
 
     manifest = EnvironmentManifest.model_validate({
-        "schema_version": 1, "symphony_name": "sym", "source_commit": "abc",
+        "schema_version": 1, "symphony_name": "sym", "source_commit": "a" * 40,
         "inputs": {"tools.plan": "a" * 64}, "requirements": [], "install": [],
         "checks": [{"id": "baseline", "argv": ["true"]}], "activation": {},
         "services": [], "empty_reason": "Image baseline suffices", "policy_version": "351-v1",
     })
     return {"environment_manifest": manifest.model_dump(), "environment_manifest_digest": manifest.digest(),
             "environment_assessment": {"schema_version": 1, "manifest_digest": manifest.digest(),
-                "source_commit": "abc", "verdict": "accept", "rationale": "Inspected source",
+                "source_commit": "a" * 40, "verdict": "accept", "rationale": "Inspected source",
                 "sources": ["tools.plan"], "inputs": dict(manifest.inputs), "policy_version": "351-v1"}}

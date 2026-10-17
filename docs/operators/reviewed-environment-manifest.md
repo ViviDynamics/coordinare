@@ -108,7 +108,11 @@ none`; installation may have separate network access, but verification cannot re
 on it.
 
 For Kubernetes, set `kubernetes_verifier_image` to an immutable reference (or pin
-its `performer_image` fallback). Configure and validate a NetworkPolicy that
+its `performer_image` fallback). When a symphony configures environment caching,
+every endpoint with a consumer role must use that exact image reference; a
+different consumer image is rejected during configuration loading. An endpoint
+whose only role is `env_bootstrap` may use a different image because the clean
+verifier runs separately after bootstrap. Configure and validate a NetworkPolicy that
 isolates verifier pods labeled `coordinare.role: env-verifier`, using a CNI that
 actually enforces the policy. Only after validating deployment enforcement, add:
 

@@ -1392,7 +1392,7 @@ class ProjectConfiguration(BaseSettings):
     # describes most minikube and microk8s installs.
     kubernetes_cache_claim: str | None = None
     kubernetes_image_pull_secrets: list[str] = Field(default_factory=list)
-    # 265: daemon-owned verifier image, independent of symphony endpoints.
+    # 265: daemon-owned verifier image. Reviewed cache consumers must use this image too.
     kubernetes_verifier_image: str | None = Field(
         default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$",
     )
@@ -2709,6 +2709,26 @@ class CoordinareConfiguration(BaseModel):
                 msg = (
                     f"Symphony '{symphony.name}' env_bootstrap_performer_id "
                     f"'{symphony.env_bootstrap_performer_id}' not found in performer_endpoints"
+                )
+                raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def validate_kubernetes_consumer_images(self) -> CoordinareConfiguration:
+        """A shared reviewed cache is verified for one daemon-selected consumer image."""
+        if self.agent_transport != "kubernetes" or not any(
+            symphony.env_bootstrap_performer_id is not None for symphony in self.symphonies
+        ):
+            return self
+        verifier_image = self.global_config.kubernetes_verifier_image
+        for endpoint in self.global_config.performer_endpoints:
+            if not any(role != "env_bootstrap" for role in endpoint.roles):
+                continue
+            if endpoint.image != verifier_image:
+                msg = (
+                    f"Consumer performer endpoint '{endpoint.id}' must use kubernetes_verifier_image "
+                    "when Kubernetes environment caching is configured; set both to the same immutable "
+                    "image reference. An endpoint with only the env_bootstrap role may use a different image."
                 )
                 raise ValueError(msg)
         return self

@@ -6,7 +6,7 @@ import hashlib
 from coordinare_service_inference.environment.models import EnvironmentManifest
 
 
-def reviewed_metadata(*, checks=None, install=None, services=None, activation=None, source_commit="abc",
+def reviewed_metadata(*, checks=None, install=None, services=None, activation=None, source_commit="a" * 40,
                       symphony_name="sym", inputs=None, empty_reason="Image baseline is sufficient"):
     manifest = EnvironmentManifest.model_validate({
         "schema_version": 1, "symphony_name": symphony_name, "source_commit": source_commit,
@@ -22,7 +22,7 @@ def reviewed_metadata(*, checks=None, install=None, services=None, activation=No
                 "sources": list(manifest.inputs), "inputs": dict(manifest.inputs), "policy_version": "351-v1"}}
 
 
-def reviewed_cache(cache, *, files=None, source_commit="abc"):
+def reviewed_cache(cache, *, files=None, source_commit="a" * 40):
     """Bind a persisted cache fixture to actual inspected source bytes."""
     contents = files if files is not None else {"tools.plan": "baseline"}
     inputs = {path: hashlib.sha256(text.encode()).hexdigest() for path, text in contents.items()}

@@ -13,7 +13,7 @@ def contract(checks, **changes):
     data = {
         "schema_version": 1,
         "symphony_name": "fixture",
-        "source_commit": "abc",
+        "source_commit": "a" * 40,
         "inputs": {},
         "requirements": [],
         "install": [],

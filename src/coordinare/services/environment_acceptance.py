@@ -104,7 +104,7 @@ def _validate_execution_results(report: VerificationReport, manifest: Environmen
         raise ValueError(message)
     if any(
         result.status == "pass" and result.exit_code != 0
-        for check in manifest.checks if check.required for result in [by_id[check.id]]
+        for check in required for result in [by_id[check.id]]
     ):
         message = "required passing checks must record exit code zero"
         raise ValueError(message)
