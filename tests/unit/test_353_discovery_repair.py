@@ -158,9 +158,9 @@ async def test_aggregate_deadline_cancels_backend_work():
 
 
 def test_aggregate_read_and_call_budgets_do_not_reset():
-    budget = AttemptBudget(timeout_seconds=600, max_calls=2, max_reads=2, max_repairs=2)
+    budget = AttemptBudget(timeout_seconds=600, max_calls=2, max_reads=2, max_schema_repairs=2)
     budget.reserve_call()
-    budget.reserve_repair()
+    budget.reserve_repair("schema")
     budget.reserve_call()
     with pytest.raises(EnvironmentDiscoveryError, match="call limit"):
         budget.reserve_call()
@@ -223,24 +223,25 @@ async def test_backend_metadata_remains_request_local(monkeypatch):
     assert isinstance(await backend.chat_json([{"role": "user", "content": "first"}]), str)
 
 
-@pytest.mark.parametrize("changes", [{"max_repairs": 3}, {"max_repairs": -1}, {"timeout_seconds": 3601}, {"max_calls": 0}])
+@pytest.mark.parametrize("changes", [{"max_schema_repairs": 3}, {"max_schema_repairs": -1}, {"timeout_seconds": 3601}, {"max_calls": 0}])
 def test_invalid_attempt_bounds_cannot_extend_policy(changes):
     with pytest.raises(ValueError):
         AttemptBudget(**changes)
 
 
 @pytest.mark.asyncio
-async def test_protocol_and_review_revision_share_repair_budget():
+async def test_schema_limit_is_independent_of_coverage_revision():
     valid = candidate()
     invalid = copy.deepcopy(valid)
     invalid["requirements"][0]["checks"] = ["not-a-check"]
     replies = Replies([{}, {"tool": "read_file", "path": PATH}, {"manifest": valid},
-        {"tool": "read_file", "path": PATH}, assessment(valid, "revise"), {"manifest": invalid}])
+        {"tool": "read_file", "path": PATH}, assessment(valid, "revise"), {"manifest": invalid}, {"manifest": invalid}])
     events = []
     with pytest.raises(EnvironmentDiscoveryError, match="repair limit"):
         await run(replies, diagnostics=events.append)
-    assert len(replies.messages) == 6
-    assert events[-1]["repairs"] == 2
+    assert len(replies.messages) == 7
+    assert events[-1]["schema_repairs"] == 2
+    assert events[-1]["coverage_revisions"] == 1
 
 
 @pytest.mark.asyncio

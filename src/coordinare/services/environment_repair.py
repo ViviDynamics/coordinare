@@ -41,7 +41,7 @@ class RepairJournal(BaseModel):
     """Daemon-owned state; a pending repair survives snapshot roundtrips."""
 
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     source_commit: str = Field(pattern=r'^[0-9a-f]{40,64}$')
     base_slug: str = Field(pattern=r'^[a-z0-9][a-z0-9_-]{0,180}$')
     base_cache_dir: str
@@ -51,10 +51,14 @@ class RepairJournal(BaseModel):
     expires_at: float
     max_calls: int = Field(ge=1)
     max_reads: int = Field(ge=1)
-    max_repairs: int = Field(ge=0, le=2)
+    max_schema_repairs: int = Field(ge=0, le=2)
+    max_coverage_revisions: int = Field(ge=0, le=2)
+    max_execution_repairs: int = Field(ge=0, le=2)
     calls: int = Field(default=0, ge=0)
     reads: int = Field(default=0, ge=0)
-    repairs: int = Field(default=0, ge=0, le=2)
+    schema_repairs: int = Field(default=0, ge=0, le=2)
+    coverage_revisions: int = Field(default=0, ge=0, le=2)
+    execution_repairs: int = Field(default=0, ge=0, le=2)
     generation: int = Field(default=0, ge=0, le=2)
     status: Literal['discovering', 'executing', 'repair_pending', 'held', 'ready'] = 'discovering'
     target: ExecutionCapabilities | None = None
@@ -68,10 +72,21 @@ def _refuse(message: str, *, code: str = 'execution_repair_held') -> NoReturn:
 
 def journal_for(cache: EnvCacheState) -> RepairJournal:
     """Parse only bounded, supported journal state, never repair unknown snapshots."""
+    data = cache.environment_attempt
+    if isinstance(data, dict) and data.get("version") == 1:
+        if data.get("status") != "ready":
+            _refuse("legacy environment run requires explicit restart after confirmed cleanup", code="legacy_attempt_requires_restart")
+        # Only frozen generation metadata can be read from the old journal. No
+        # pending legacy work can obtain renewed category allowances.
+        data = dict(data)
+        consumed, maximum = data.pop("repairs", None), data.pop("max_repairs", None)
+        data["version"] = 2
+        for name in ("schema_repairs", "coverage_revisions", "execution_repairs"):
+            data[name], data["max_" + name] = consumed, maximum
     try:
         if len(json.dumps(cache.environment_attempt).encode()) > JOURNAL_MAX_BYTES:
             _refuse('environment repair journal exceeds its bound')
-        journal = RepairJournal.model_validate(cache.environment_attempt)
+        journal = RepairJournal.model_validate(data)
     except (TypeError, ValueError, ValidationError):
         _refuse('environment repair journal is invalid')
     if not 0 < journal.expires_at - journal.started_at <= MAX_ATTEMPT_SECONDS:
@@ -95,8 +110,13 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
         _refuse('environment executable repair is held or exhausted')
     budget = AttemptBudget(timeout_seconds=journal.expires_at-journal.started_at,
         started=time.monotonic()-(now-journal.started_at), max_calls=journal.max_calls,
-        max_reads=journal.max_reads, max_repairs=journal.max_repairs)
-    budget.calls, budget.reads, budget.repairs = journal.calls, journal.reads, journal.repairs
+        max_reads=journal.max_reads, max_schema_repairs=journal.max_schema_repairs,
+        max_coverage_revisions=journal.max_coverage_revisions, max_execution_repairs=journal.max_execution_repairs)
+    budget.calls, budget.reads = journal.calls, journal.reads
+    for name in ("schema_repairs", "coverage_revisions", "execution_repairs"):
+        if getattr(journal, name) > getattr(journal, "max_" + name):
+            _refuse(f"environment {name} limit exceeded after configuration change", code="attempt_" + name.split("_")[0] + "_limit")
+        setattr(budget, name, getattr(journal, name))
     return budget
 
 
@@ -116,13 +136,15 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
             base_slug=cache.sanitised_name, base_cache_dir=str(cache.cache_dir),
             origin_slug=previous.origin_slug if previous else cache.sanitised_name,
             started_at=now, expires_at=now+seconds, max_calls=limits.max_model_calls,
-            max_reads=limits.max_total_reads, max_repairs=limits.max_repairs)
+            max_reads=limits.max_total_reads, max_schema_repairs=limits.max_schema_repairs,
+            max_coverage_revisions=limits.max_coverage_revisions, max_execution_repairs=limits.max_execution_repairs)
     else:
         journal = previous
         journal.expires_at = min(journal.expires_at, journal.started_at+seconds)
         journal.max_calls = min(journal.max_calls, limits.max_model_calls)
         journal.max_reads = min(journal.max_reads, limits.max_total_reads)
-        journal.max_repairs = min(journal.max_repairs, limits.max_repairs)
+        for name in ("max_schema_repairs", "max_coverage_revisions", "max_execution_repairs"):
+            setattr(journal, name, min(getattr(journal, name), getattr(limits, name)))
     budget = _budget(journal, now)
     _publish(cache, journal)
     return budget
@@ -133,7 +155,8 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
     journal = journal_for(cache)
     journal.calls = max(journal.calls, budget.calls)
     journal.reads = max(journal.reads, budget.reads)
-    journal.repairs = max(journal.repairs, budget.repairs)
+    for name in ("schema_repairs", "coverage_revisions", "execution_repairs"):
+        setattr(journal, name, max(getattr(journal, name), getattr(budget, name)))
     if executing:
         capabilities = ExecutionCapabilities.model_validate(cache.environment_capabilities)
         if journal.target is not None and (
@@ -187,8 +210,8 @@ def record_execution_failure(cache: EnvCacheState, report: dict[str, Any], *, cl
         evidence = _rejected_evidence(cache, report)
         journal.rejected.append(evidence)
         budget = _budget(journal, time.time() if now is None else now)
-        budget.reserve_repair()
-        journal.repairs = budget.repairs
+        budget.reserve_repair("execution")
+        journal.execution_repairs = budget.execution_repairs
         journal.status = 'repair_pending'
     except (KeyError, TypeError, ValueError, EnvironmentDiscoveryError) as exc:
         journal.status = 'held'
