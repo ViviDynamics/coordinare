@@ -96,7 +96,7 @@ from coordinare.services.test_env_loader import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Mapping, Sequence
+    from collections.abc import AsyncIterator, Callable, Coroutine, Mapping, Sequence
     from typing import Protocol
 
     from coordinare_service_inference.schema import ServicesManifest
@@ -1585,88 +1585,102 @@ class EnvCacheService:
             return
 
 
-        # 092: load the symphony's configured test-environment so the bootstrap
-        # performer's start-phase dry-run (which runs INSIDE this performer) sees
-        # the secret-like vars and clears the unset-secret gate (e.g. the website
-        # symphony's POSTGRESQL_PASSWORD). A configured-but-missing file is a clear
-        # coordinare-side error, not a silent empty dict — abort dispatch so the
-        # operator fixes config instead of getting a confusing QA failure later.
-        try:
-            test_env_vars = await self._load_test_env_vars(
+        async with self._bootstrap_execution_window(cache_state):
+            # 092: load the symphony's configured test-environment so the bootstrap
+            # performer's start-phase dry-run (which runs INSIDE this performer) sees
+            # the secret-like vars and clears the unset-secret gate (e.g. the website
+            # symphony's POSTGRESQL_PASSWORD). A configured-but-missing file is a clear
+            # coordinare-side error, not a silent empty dict — abort dispatch so the
+            # operator fixes config instead of getting a confusing QA failure later.
+            try:
+                test_env_vars = await self._load_test_env_vars(
+                    symphony_name=symphony_name,
+                    symphony_config=symphony_config,
+                    github_org=eff_config.github_org,
+                    repo=repo,
+                    github_service=github_service,
+                    fallback_source=cache_state.test_env_source,
+                )
+            except TestEnvFileError as exc:
+                # The error message carries only the resolved path + field, never values.
+                logger.error(
+                    "env_cache.test_env_load_failed",
+                    symphony=symphony_name,
+                    error=str(exc),
+                )
+                return
+
+            payload = BootstrapJobPayload(
                 symphony_name=symphony_name,
-                symphony_config=symphony_config,
-                github_org=eff_config.github_org,
-                repo=repo,
-                github_service=github_service,
-                fallback_source=cache_state.test_env_source,
+                symphony_org=eff_config.github_org,
+                symphony_repo=repo,
+                env_spec_files=symphony_config.env_spec_files,
+                env_spec_contents=env_spec_contents,
+                cache_mount_path=cache_mount_path,
+                # 077: feed the prior attempt's verification failure back to the agent
+                # so it fixes the specific gap (e.g. a pinned Ruby version) on retry.
+                last_failure=cache_state.last_bootstrap_error,
+                environment_manifest=cache_state.environment_manifest,
+                environment_assessment=cache_state.environment_assessment,
+                environment_manifest_digest=(cache_state.environment_assessment["manifest_digest"]
+                                             if cache_state.environment_assessment is not None else None),
+                environment_verification_image=target_capabilities.image_ref,
+                environment_verification_platform=target_capabilities.platform,
+                dependency_checklist=dependency_checklist,
+                verify_provided=verify_provided,
+                activate_provided=activate_provided,
+                declared_services=declared_services,
+                test_env_vars=test_env_vars,
+                coordinare_manages_services=manages_services,
+                # 265: the daemon's rendered scripts ride the dispatch. The bootstrap pod cannot read the daemon's cache.
+                rendered_verify_sh=cache_state.rendered_verify_sh,
+                rendered_activate_sh=cache_state.rendered_activate_sh,
             )
-        except TestEnvFileError as exc:
-            # The error message carries only the resolved path + field, never values.
-            logger.error(
-                "env_cache.test_env_load_failed",
+
+            # Mark in-flight BEFORE dispatching. dispatch_fn may fail SYNCHRONOUSLY
+            # (e.g. a readiness timeout inside dispatch_card) and call
+            # on_bootstrap_complete(False) itself — which clears bootstrap_in_flight.
+            # If we set bootstrap_in_flight=True AFTER dispatch_fn returns, we clobber
+            # that reset and wedge in_flight=True forever with no container and no poll
+            # task: a stale-in-flight deadlock that blocks every consumer AND the
+            # auto-retry (its `if bootstrap_in_flight: return` guard). Setting it first
+            # lets the in-handler reset stick; the async-success path leaves it True
+            # until the poll task fires completion.
+            cache_state.bootstrap_budget_sha = cache_state.forced_manifest_sha if cache_state.bootstrap_forced else current_sha
+            cache_state.readme_sha = current_sha
+            cache_state.bootstrap_in_flight = True
+            logger.info(
+                "env_cache.bootstrap_dispatched",
                 symphony=symphony_name,
-                error=str(exc),
+                performer_id=symphony_config.env_bootstrap_performer_id,
+                new_sha=current_sha,
             )
-            return
+            try:
+                await dispatch_fn(symphony_config.env_bootstrap_performer_id, payload)
+            except Exception as exc:
+                logger.warning(
+                    "env_cache.dispatch_failed",
+                    symphony=symphony_name,
+                    error=str(exc),
+                )
+                # Roll back the optimistic in-flight state so the next cycle retries
+                # instead of wedging on a dispatch that never produced a job.
+                cache_state.bootstrap_in_flight = False
+                cache_state.readme_sha = None
+                return
 
-        payload = BootstrapJobPayload(
-            symphony_name=symphony_name,
-            symphony_org=eff_config.github_org,
-            symphony_repo=repo,
-            env_spec_files=symphony_config.env_spec_files,
-            env_spec_contents=env_spec_contents,
-            cache_mount_path=cache_mount_path,
-            # 077: feed the prior attempt's verification failure back to the agent
-            # so it fixes the specific gap (e.g. a pinned Ruby version) on retry.
-            last_failure=cache_state.last_bootstrap_error,
-            environment_manifest=cache_state.environment_manifest,
-            environment_assessment=cache_state.environment_assessment,
-            environment_manifest_digest=(cache_state.environment_assessment["manifest_digest"]
-                                         if cache_state.environment_assessment is not None else None),
-            environment_verification_image=target_capabilities.image_ref,
-            environment_verification_platform=target_capabilities.platform,
-            dependency_checklist=dependency_checklist,
-            verify_provided=verify_provided,
-            activate_provided=activate_provided,
-            declared_services=declared_services,
-            test_env_vars=test_env_vars,
-            coordinare_manages_services=manages_services,
-            # 265: the daemon's rendered scripts ride the dispatch. The bootstrap pod cannot read the daemon's cache.
-            rendered_verify_sh=cache_state.rendered_verify_sh,
-            rendered_activate_sh=cache_state.rendered_activate_sh,
-        )
-
-        # Mark in-flight BEFORE dispatching. dispatch_fn may fail SYNCHRONOUSLY
-        # (e.g. a readiness timeout inside dispatch_card) and call
-        # on_bootstrap_complete(False) itself — which clears bootstrap_in_flight.
-        # If we set bootstrap_in_flight=True AFTER dispatch_fn returns, we clobber
-        # that reset and wedge in_flight=True forever with no container and no poll
-        # task: a stale-in-flight deadlock that blocks every consumer AND the
-        # auto-retry (its `if bootstrap_in_flight: return` guard). Setting it first
-        # lets the in-handler reset stick; the async-success path leaves it True
-        # until the poll task fires completion.
-        cache_state.bootstrap_budget_sha = cache_state.forced_manifest_sha if cache_state.bootstrap_forced else current_sha
-        cache_state.readme_sha = current_sha
-        cache_state.bootstrap_in_flight = True
-        logger.info(
-            "env_cache.bootstrap_dispatched",
-            symphony=symphony_name,
-            performer_id=symphony_config.env_bootstrap_performer_id,
-            new_sha=current_sha,
-        )
+    @contextlib.asynccontextmanager
+    async def _bootstrap_execution_window(self, cache: EnvCacheState) -> AsyncIterator[None]:
+        """Preparation and dispatch share the same expiry as discovery and polling."""
+        deadline = max(0.0, journal_for(cache).expires_at - time.time())
         try:
-            await dispatch_fn(symphony_config.env_bootstrap_performer_id, payload)
-        except Exception as exc:
-            logger.warning(
-                "env_cache.dispatch_failed",
-                symphony=symphony_name,
-                error=str(exc),
-            )
-            # Roll back the optimistic in-flight state so the next cycle retries
-            # instead of wedging on a dispatch that never produced a job.
-            cache_state.bootstrap_in_flight = False
-            cache_state.readme_sha = None
-            return
+            async with asyncio.timeout(deadline):
+                yield
+        except TimeoutError:
+            state = dict(self._kubernetes_state) or {"env_cache": {cache.symphony_name: cache}}
+            self.record_bootstrap_execution(cache.symphony_name, state, None, cleanup_confirmed=False)
+            self.on_bootstrap_complete(cache.symphony_name, False, state,
+                error="environment bootstrap preparation or dispatch deadline exceeded")
 
     async def _current_manifest_sha(
         self, symphony_name: str, symphony_config: Any, github_service: Any,

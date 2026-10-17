@@ -274,3 +274,38 @@ async def test_cancelled_http_dispatch_drains_creation_then_confirms_owned_clean
         await task
     assert events[-1] == 'confirmed'
     assert not service._active_jobs
+
+
+@pytest.mark.asyncio
+async def test_post_review_preparation_shares_original_deadline(tmp_path, monkeypatch):
+    import asyncio
+    import time
+    from unittest.mock import AsyncMock
+
+    from tests.unit.test_353_bootstrap_pipeline import Repository
+
+    service, cache, state, capability = setup(tmp_path)
+    service.bind_kubernetes_state(state)
+    original = service._build_manifest_artifacts
+    async def build(**kwargs):
+        result = await original(**kwargs, capabilities=capability)
+        cache.environment_attempt['expires_at'] = time.time()+0.02
+        return result
+    stopped = asyncio.Event()
+    async def credentials(**kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+    monkeypatch.setattr(service, '_build_manifest_artifacts', build)
+    monkeypatch.setattr(service, '_load_test_env_vars', credentials)
+    monkeypatch.setattr(service, '_fetch_declared_services', AsyncMock(return_value=[]))
+    dispatch = AsyncMock()
+    await asyncio.wait_for(service._do_dispatch(symphony_name='suite',
+        symphony_config=SimpleNamespace(env_spec_files=[], env_bootstrap_performer_id='bootstrap'),
+        github_service=Repository(), eff_config=SimpleNamespace(project_name='suite', github_org='org'),
+        current_sha='fingerprint', cache_state=cache, dispatch_fn=dispatch, llm_chat=Proposal()), 0.2)
+    assert stopped.is_set()
+    dispatch.assert_not_awaited()
+    assert cache.environment_attempt['status'] == 'held'
+    assert not cache.cache_dir_ready
