@@ -2385,7 +2385,9 @@ class EnvCacheService:
             attempt_timeout_seconds=getattr(cfg, "manifest_attempt_timeout_seconds", 600.0),
             max_model_calls=getattr(cfg, "manifest_max_model_calls", 128),
             max_total_reads=getattr(cfg, "manifest_max_total_reads", 512),
-            max_repairs=getattr(cfg, "manifest_max_repairs", 2),
+            max_schema_repairs=getattr(cfg, "manifest_max_schema_repairs", 2),
+            max_coverage_revisions=getattr(cfg, "manifest_max_coverage_revisions", 2),
+            max_execution_repairs=getattr(cfg, "manifest_max_execution_repairs", 2),
         )
         outer_budget = getattr(cfg, "bootstrap_max_seconds",
             getattr(self._coordinare_config.global_config, "bootstrap_max_seconds", 3600))

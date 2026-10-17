@@ -36,7 +36,7 @@ def started(cache, *, now=100, repairs=0):
     budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=now)
     budget.calls = 4
     budget.reads = 2
-    budget.repairs = repairs
+    budget.execution_repairs = repairs
     save_attempt(cache, budget, executing=True)
     return budget
 
@@ -46,7 +46,7 @@ def test_unconfirmed_cleanup_never_requests_a_repair(tmp_path, confirmed):
     cache = cache_fixture(tmp_path)
     started(cache)
     assert not record_execution_failure(cache, failed_report(cache), cleanup_confirmed=confirmed, now=101)
-    assert cache.environment_attempt['repairs'] == 0
+    assert cache.environment_attempt['execution_repairs'] == 0
     assert cache.environment_attempt['status'] == 'held'
 
 
@@ -57,7 +57,7 @@ def test_failed_execution_uses_same_budget_and_new_empty_cache_generation(tmp_pa
     old_path.mkdir()
     (old_path/'installer-only').write_text('must not be reused')
     assert record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=101)
-    assert cache.environment_attempt['repairs'] == 2
+    assert cache.environment_attempt['execution_repairs'] == 2
     previous, feedback = prepare_repair(cache)
     assert previous.digest() == cache.environment_attempt['rejected'][0]['manifest_digest']
     assert cache.cache_dir != old_path
@@ -75,7 +75,7 @@ def test_third_repair_holds_without_renewing_counters(tmp_path):
     started(cache, repairs=2)
     assert not record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=101)
     assert len(cache.environment_attempt['rejected']) == 1
-    assert cache.environment_attempt['repairs'] == 2
+    assert cache.environment_attempt['execution_repairs'] == 2
     with pytest.raises(EnvironmentDiscoveryError, match=r'held|exhausted'):
         begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=102)
 
@@ -149,7 +149,7 @@ def test_duplicate_failure_cannot_consume_a_second_repair_for_the_same_execution
     assert record_execution_failure(cache, report, cleanup_confirmed=True, now=101)
     assert not record_execution_failure(cache, report, cleanup_confirmed=True, now=102)
     assert len(cache.environment_attempt['rejected']) == 1
-    assert cache.environment_attempt['repairs'] == 1
+    assert cache.environment_attempt['execution_repairs'] == 1
 
 
 def test_saving_stale_counters_cannot_renew_the_budget(tmp_path):
@@ -159,7 +159,7 @@ def test_saving_stale_counters_cannot_renew_the_budget(tmp_path):
     save_attempt(cache, AttemptBudget())
     assert cache.environment_attempt['calls'] == 4
     assert cache.environment_attempt['reads'] == 2
-    assert cache.environment_attempt['repairs'] == 1
+    assert cache.environment_attempt['execution_repairs'] == 1
 
 
 def test_ready_marker_cannot_waive_missing_execution_or_freeze(tmp_path):
@@ -235,3 +235,63 @@ def test_a_successful_later_attempt_restores_the_actual_generation(tmp_path):
         SimpleNamespace(env_cache=_persist_env_cache({'suite': cache})))
     assert restored.cache_dir == cache.cache_dir
     assert restored.sanitised_name == cache.sanitised_name
+
+
+def test_category_counters_survive_restart(tmp_path):
+    cache = cache_fixture(tmp_path)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
+    budget.reserve_repair('schema')
+    budget.reserve_repair('coverage')
+    budget.reserve_repair('coverage')
+    save_attempt(cache, budget)
+    resumed = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=120)
+    assert (resumed.schema_repairs, resumed.coverage_revisions, resumed.execution_repairs) == (1, 2, 0)
+    assert cache.environment_attempt['version'] == 2
+    assert cache.environment_attempt['expires_at'] == 700
+
+
+def test_lowered_limit_does_not_replenish_consumption(tmp_path):
+    cache = cache_fixture(tmp_path)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
+    budget.reserve_repair('coverage')
+    save_attempt(cache, budget)
+    with pytest.raises(EnvironmentDiscoveryError, match='coverage'):
+        begin_attempt(cache, DiscoveryLimits(max_coverage_revisions=0), outer_seconds=3600, now=120)
+    assert cache.environment_attempt['coverage_revisions'] == 1
+
+
+@pytest.mark.parametrize('status', ['discovering', 'held', 'executing', 'repair_pending'])
+def test_legacy_pending_requires_explicit_restart(tmp_path, status):
+    cache = cache_fixture(tmp_path)
+    begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
+    current = cache.environment_attempt
+    legacy = {k:v for k,v in current.items() if k not in {
+        'schema_repairs', 'coverage_revisions', 'execution_repairs',
+        'max_schema_repairs', 'max_coverage_revisions', 'max_execution_repairs'}}
+    legacy.update(version=1, repairs=1, max_repairs=2, status=status)
+    cache.environment_attempt = legacy
+    with pytest.raises(EnvironmentDiscoveryError) as exc:
+        begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=120)
+    assert exc.value.code == 'legacy_attempt_requires_restart'
+    assert cache.environment_attempt == legacy
+
+
+def test_legacy_ready_generation_can_restore_without_resuming_its_budget(tmp_path):
+    cache = cache_fixture(tmp_path)
+    begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
+    legacy = {k:v for k,v in cache.environment_attempt.items() if k not in {
+        'schema_repairs', 'coverage_revisions', 'execution_repairs',
+        'max_schema_repairs', 'max_coverage_revisions', 'max_execution_repairs'}}
+    legacy.update(version=1, repairs=1, max_repairs=2, status='ready')
+    cache.environment_attempt = legacy
+    restore_attempt_generation(cache, interrupted=True)
+    assert cache.environment_attempt == legacy
+
+
+@pytest.mark.parametrize('version', [3, '2', None])
+def test_unknown_journal_version_holds(tmp_path, version):
+    cache = cache_fixture(tmp_path)
+    begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
+    cache.environment_attempt['version'] = version
+    with pytest.raises(EnvironmentDiscoveryError):
+        begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=120)
