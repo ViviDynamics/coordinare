@@ -157,7 +157,7 @@ def candidate_image(base_image: str, output: Path) -> Iterator[str]:
             cleanup.append({"kind": "image_ref", "name": reference, "exit_code": result.returncode})
         if registry_attempted:
             result = subprocess.run(
-                [DOCKER, "rm", "-f", registry],
+                [DOCKER, "rm", "-f", "-v", registry],
                 capture_output=True,
                 text=True,
                 check=False,

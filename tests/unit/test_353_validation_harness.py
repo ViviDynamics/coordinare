@@ -283,3 +283,35 @@ async def test_harness_archives_rejected_attempt_and_requires_new_scope(tmp_path
         assert paths[0] != paths[1]
         assert (output/'attempt-001/accepted-assessment.json').exists()
     assert not result['ready_at_validation']
+
+
+def test_candidate_cleanup_releases_owned_registry_storage(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from scripts import environment_validation_image as images
+
+    storage = {'owned_registry_volume', 'unrelated_volume'}
+    registry = None
+    def docker(*args, **kwargs):
+        nonlocal registry
+        if args[0] == 'run':
+            registry = args[args.index('--name')+1]
+        if args[0] == 'push':
+            return 'digest: sha256:'+'a'*64
+        if args[:2] == ('image', 'inspect'):
+            return '[]'
+        return ''
+    def process(args, **kwargs):
+        if args[1] == 'logs':
+            return SimpleNamespace(returncode=0, stdout='listening on 127.0.0.1:5000', stderr='')
+        if args[1] == 'rm':
+            assert args[-1] == registry
+            if '-v' in args or '--volumes' in args:
+                storage.remove('owned_registry_volume')
+        return SimpleNamespace(returncode=0, stdout='', stderr='')
+    monkeypatch.setattr(images, '_docker', docker)
+    monkeypatch.setattr(images.subprocess, 'run', process)
+    monkeypatch.setattr(images, 'verify_image_code', lambda image: {'image_ref':image})
+    with images.candidate_image('base@sha256:'+'b'*64, tmp_path/'image'):
+        assert 'owned_registry_volume' in storage
+    assert storage == {'unrelated_volume'}, 'registry removal leaked its anonymous upload storage'
