@@ -89,4 +89,6 @@ Copilot did not deliver a review; the shipping workflow fallback used independen
 - [x] T045 Version-two durable journal, no budget renewal, explicit legacy migration holds (Task 2).
 - [x] T046 Deterministic fresh mandatory-input delivery and bounded review context (Task 3).
 - [x] T047 Pipeline integration, safe diagnostics and complete Elm-sequence replay (Task 4).
-- [ ] T048 Independent full-diff review, CI and the same 29 pinned repositories, with separate Elm1800 profile (Task 5). T039 still requires actual clean-success gates.
+- [x] T048 Independent full-diff review, CI and the same 29 pinned repositories, with separate Elm1800 profile (Task 5). T039 still requires actual clean-success gates.
+
+The complete-evidence amendment retest also held for all 29 default repositories and the separately labeled Elm1800 experiment. T048 records completed implementation/review/CI/validation attempts; T039 and SC-004 remain unmet. See validation.md for exact revisions and outcomes.
