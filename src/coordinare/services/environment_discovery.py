@@ -290,7 +290,7 @@ async def discover_and_review(
             return result
     except TimeoutError:
         budget.error_code = "attempt_deadline"
-        message = "environment attempt deadline exceeded"
+        message = "environment discovery budget deadline exceeded"
         raise EnvironmentDiscoveryError(message, code="attempt_deadline") from None
     except EnvironmentDiscoveryError as exc:
         budget.error_code = exc.code

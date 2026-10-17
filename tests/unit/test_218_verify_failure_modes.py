@@ -22,7 +22,7 @@ import pytest
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.services import env_cache
 from coordinare.services.env_cache import EnvCacheService, verify_env_cache_clean
-from tests.unit.env_manifest_fixture import reviewed_cache, reviewed_metadata
+from tests.unit.env_manifest_fixture import record_verified_cache_fixture, reviewed_cache
 from tests.unit.env_mount_stub import mount_config
 
 
@@ -32,8 +32,10 @@ def _accepted_source_fixture(monkeypatch):
 
     monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",
                         AsyncMock(return_value={"tools.plan": "baseline"}))
+    monkeypatch.setattr("coordinare.services.environment_capabilities._docker_identity",
+        AsyncMock(return_value=("trusted/global@sha256:" + "a" * 64, "linux/x86_64")))
     # These tests exercise trusted verifier execution, not source archive materialisation.
-    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files: "")
+    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files, **kwargs: "")
 
 
 SVC = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img@sha256:" + "1" * 64))
@@ -88,9 +90,10 @@ def _state(tmp_path: Path) -> dict[str, Any]:
     state = EnvCacheState(
         symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache,
         rendered_verify_sh="#!/bin/sh\nexit 0\n", rendered_activate_sh="ACT=1\n",
-        bootstrap_commit_sha="a" * 40, **{key: value for key, value in reviewed_metadata().items() if key != "environment_manifest_digest"},
+        bootstrap_commit_sha="a" * 40,
     )
-    return {"env_cache": {"sym": state}}
+    reviewed_cache(state)
+    return {"env_cache": {"sym": state}, "config": SimpleNamespace(performer_image="trusted/global@sha256:" + "a" * 64, performer_endpoints=[])}
 
 
 @pytest.mark.asyncio
@@ -176,6 +179,7 @@ def test_a_success_resets_the_infrastructure_budget(tmp_path: Path) -> None:
     (state.cache_dir / "toolchain" / "bin").mkdir()
     (state.cache_dir / "toolchain" / "bin" / "ruby").write_text("bin")
 
+    record_verified_cache_fixture(state)
     svc.on_bootstrap_complete("sym", True, ctx)
 
     assert state.infra_failures == 0
