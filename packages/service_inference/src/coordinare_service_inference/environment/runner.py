@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 OUTPUT_LIMIT = 4096
 ATTEMPT_OUTPUT_LIMIT = 256 * 1024
-_ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_VALUE_REFERENCE = re.compile(r"\$\{(?P<environment>[A-Za-z_][A-Za-z0-9_]*)\}|\{(?P<root>cache|repo|scratch)\}")
 
 
 # This isolated helper owns only one command's descendant tree. Its environment is
@@ -149,16 +149,15 @@ os._exit(exit_code)
 
 
 def _expand(value: str, roots: dict[str, str], env: dict[str, str]) -> str:
-    for key, root in roots.items():
-        value = value.replace("{" + key + "}", root)
-
     def reference(match: re.Match[str]) -> str:
-        name = match.group(1)
+        name = match.group("environment")
+        if name is None:
+            return roots[match.group("root")]
         if name not in env:
             raise ValueError(f"unresolved environment reference: {name}")
         return env[name]
 
-    return _ENV_REFERENCE.sub(reference, value)
+    return _VALUE_REFERENCE.sub(reference, value)
 
 
 def manifest_environment(
