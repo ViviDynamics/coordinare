@@ -576,6 +576,12 @@ class HTTPPerformerService:
                     actual_platform = getattr(status, "environment_platform", "") if advertised else ""
                     if not verified_platform or not actual_platform or actual_platform != verified_platform:
                         message = "consumer runtime platform differs from the clean verified platform; rebuild the environment"
+                        if verified_platform and actual_platform:
+                            from coordinare.services.environment_acceptance import (
+                                EnvironmentIdentityMismatchError,
+                            )
+
+                            raise EnvironmentIdentityMismatchError(message)
                         raise ValueError(message)
         if payload.role == "env_bootstrap":
             return  # the cache writer has capability/isolation gates but no frozen payload
@@ -713,6 +719,10 @@ class HTTPPerformerService:
         except ValueError as exc:
             if ephemeral_job is not None:
                 await self._refuse_job(ephemeral_job)
+            from coordinare.services.environment_acceptance import EnvironmentIdentityMismatchError
+
+            if isinstance(exc, EnvironmentIdentityMismatchError):
+                return {"status": "error", "reason": str(exc), "reason_code": exc.reason_code}
             return {"status": "error", "reason": str(exc)}
         # 129: the coordinare session id is the run identity. Using it as the job
         # id means the performer's transcript run id and the daemon's transcript

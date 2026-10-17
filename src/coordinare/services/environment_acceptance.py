@@ -21,6 +21,12 @@ if TYPE_CHECKING:
 _MAX_EXECUTION_EVIDENCE_BYTES = 1024 * 1024
 
 
+class EnvironmentIdentityMismatchError(ValueError):
+    """A known runtime identity differs from the accepted clean environment."""
+
+    reason_code = "environment_identity_mismatch"
+
+
 def accepted_environment(cache: EnvCacheState) -> EnvironmentManifest | None:
     """Return only the complete, matching independently accepted contract."""
     try:

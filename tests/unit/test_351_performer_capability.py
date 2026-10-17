@@ -127,3 +127,47 @@ async def test_consumer_requires_verified_platform_metadata():
 async def test_consumer_requires_clean_verified_image_identity():
     with pytest.raises(ValueError, match="verified image"):
         await service()._require_provenance_capability(payload("implementer"), status(1))
+
+
+@pytest.mark.asyncio
+async def test_platform_mismatch_has_structured_rebuild_reason():
+    actual = status(1)
+    actual.environment_platform = 'different/platform'
+    with pytest.raises(ValueError) as error:
+        await service()._require_provenance_capability(payload('implementer', IMAGE), actual)
+    assert getattr(error.value, 'reason_code', None) == 'environment_identity_mismatch'
+
+
+@pytest.mark.asyncio
+async def test_dispatch_platform_drift_refuses_before_post_and_requests_rebuild(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import httpx
+
+    from coordinare.models.performer_endpoint import JobInitPayload, PerformerEndpointConfig
+    from coordinare.services import performer_lifecycle
+    from coordinare.services.performer_runtime import StartedPerformer
+    from coordinare.transport.http_transport import PerformerHTTPClient
+
+    requests = []
+    client = PerformerHTTPClient('http://127.0.0.1:8080', client=httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: requests.append(request) or httpx.Response(500))))
+    runtime = SimpleNamespace(start_ephemeral=AsyncMock(return_value=StartedPerformer('pod', 'http://127.0.0.1:8080')),
+                              stop=AsyncMock())
+    instance = HTTPPerformerService(PerformerEndpointConfig(id='p', mode='ephemeral', roles=['implementer'], image=IMAGE),
+                                    runtime=runtime, client=client)
+    wire = JobInitPayload(job_id='j', card_id='card', role='implementer', backend='codex', persona='work',
+        repo_url='https://github.com/a/b', branch='main', env_cache_path='/devenv/sym', env_provenance={},
+        metadata={'environment_verification_image': IMAGE, 'environment_verification_platform': PLATFORM})
+    actual = status(1)
+    actual.environment_platform = 'different/platform'
+    monkeypatch.setattr(instance, '_build_job_payload', lambda *args: wire)
+    monkeypatch.setattr(performer_lifecycle, 'wait_ready', AsyncMock(return_value=actual))
+    try:
+        response = await instance.dispatch_card({'id': 'card', 'role': 'implementer'})
+        assert response['status'] == 'error'
+        assert response['reason_code'] == 'environment_identity_mismatch'
+        assert requests == []
+        runtime.stop.assert_awaited_once_with('pod')
+    finally:
+        await instance.aclose()

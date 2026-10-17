@@ -2323,13 +2323,14 @@ async def _prepare_env_dispatch(state: CoordinareState, service: Any, card_id: s
         )
         # 234: the frozen steps travel with the mount they describe. A persistent performer mounts nothing and
         # carries no payload.
-        if provenance is not None and card_context.get("env_cache_path") and _ec_state_for_sym is not None:
-            card_context["env_provenance"] = provenance
+        if card_context.get("env_cache_path") and _ec_state_for_sym is not None:
             card_context["environment_manifest"] = _ec_state_for_sym.environment_manifest
             card_context["environment_assessment"] = _ec_state_for_sym.environment_assessment
             card_context["environment_manifest_digest"] = (_ec_state_for_sym.environment_assessment or {}).get("manifest_digest")
-            card_context["environment_verification_image"] = (_ec_state_for_sym.environment_verification or {}).get("image_ref")
-            card_context["environment_verification_platform"] = (_ec_state_for_sym.environment_verification or {}).get("platform")
+            if provenance is not None:
+                card_context["env_provenance"] = provenance
+                card_context["environment_verification_image"] = (_ec_state_for_sym.environment_verification or {}).get("image_ref")
+                card_context["environment_verification_platform"] = (_ec_state_for_sym.environment_verification or {}).get("platform")
         await _inject_test_env_vars(
             state, card_context, card_id, _symphony_name_for_ec,
             _ec_state_for_sym, _is_bootstrap_dispatch,
@@ -2826,6 +2827,14 @@ async def _dispatch_result_error(state: CoordinareState, result: Any, ctx: dict[
             logger.warning("workspace_teardown_failed.after_dispatch_error", card_id=card_id)
     state["workspace_path"] = None
     state["workspace_branch"] = None
+    if result.get("reason_code") == "environment_identity_mismatch":
+        symphony = state.get("current_symphony")
+        cache_service = state.get("env_cache_service")
+        if symphony is not None and cache_service is not None:
+            cache_service.mark_runtime_health_failed(symphony, state)
+            _release_slot_on_error()
+            state["phase"] = "idle"
+            return state
     # Reset stale error state from a previous card.
     if state.get("system_error_notified"):
         state["system_error_count"] = 0
