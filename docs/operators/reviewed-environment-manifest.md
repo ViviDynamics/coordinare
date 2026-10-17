@@ -30,6 +30,10 @@ env_cache:
   manifest_max_source_bytes: 4194304
   manifest_max_inventory_entries: 100000
   manifest_phase_timeout_seconds: 120
+  manifest_attempt_timeout_seconds: 600
+  manifest_max_model_calls: 128
+  manifest_max_total_reads: 512
+  manifest_max_repairs: 2
 ```
 
 Set the named API-key variable in the daemon environment, using the deployment's
@@ -88,45 +92,70 @@ an earlier service failure; missing or failed cleanup evidence holds readiness.
 ## Limits and cache invalidation
 
 Each discovery and review phase defaults to 256 reads, 256 KiB per file, 4 MiB of
-source text and 120 seconds. The complete inventory defaults to a 100,000-entry cap,
-controlled by `manifest_max_inventory_entries`;
-serialized inventory also has a source-byte admission bound. Manifest and assessment
-each have a 256 KiB serialization cap. Reads, model turns and replies are bounded;
-exhaustion is an explicit hold, never truncated acceptance. The YAML above names
-the operator-configurable inspection limits. Separately, the accepted manifest's
-source inputs must fit the fixed 256 KiB aggregate clean-verifier transfer budget,
-measured as UTF-8 JSON including paths and escaping, before base64 encoding. Discovery
-holds before accepting a contract that exceeds this shared Docker/Kubernetes bound;
-increasing inspection limits does not increase it. Review may read additional context
-within the inspection limits without adding it to the verifier transfer. Docker
-materializes source through verifier stdin; Kubernetes splits source, verification
-script and provenance configuration into 64 KiB environment chunks and reconstructs
-them inside the trusted Python process. This keeps each argument and environment
-value below Linux's 128 KiB per-string limit without raising aggregate payload caps. Increase
-only the relevant inspection bound after checking the held reason and repository size.
+source text and 120 seconds. One attempt, including runtime identity resolution and
+inventory fetching, defaults to 600 seconds, 128 model calls, 512 total reads and at
+most two repair rounds. The configured outer `bootstrap_max_seconds` also applies;
+zero there never removes discovery's own bound. `manifest_attempt_timeout_seconds`
+can be raised to at most 3600 seconds. Phase changes and fresh reviews cannot reset
+the aggregate counters.
 
-A changed source head invalidates discovery, including newly added files and nested
-projects whose old inputs were untouched. An unchanged source identity does not
-invoke discovery/review again when accepted readiness is still applicable. Content
-changes in the installed cache invalidate provenance independently of source
-changes. Existing outer bootstrap attempt/deadline limits and workflow repair
-budgets continue to apply. Individual commands default to a 180-second timeout.
+The complete inventory defaults to 100,000 paths and remains daemon-side. Agents
+navigate sorted directory pages of at most 200 entries / 32 KiB and request batches
+of at most eight text files. All inspected discovery inputs retain their exact
+hashes; the inventory digest also binds unread path additions/deletions. The initial
+prompt contains a bounded root listing, not the full inventory.
+
+Malformed proposals receive trusted validation codes and field locations, with no
+candidate values in diagnostic events. A coverage `revise` verdict can request a
+repair within the same two-round budget. Every changed manifest receives a new
+independent review conversation. Indeterminate review, source/identity drift,
+unavailable evidence, exhausted budgets and dropped required obligations hold.
+Repair never waives execution or invents source evidence.
+
+Manifest and assessment each retain their 256 KiB serialization cap. Accepted source
+contents use one canonical UTF-8 JSON document bounded at 16 MiB, with 64 KiB decoded
+chunks and at most 256 chunks. JSON escaping counts against admission before review
+acceptance. Docker transports source via trusted stdin. Kubernetes creates immutable,
+Pod-owned Secret payloads outside Pod environment/command text. Trusted init code
+checks chunk count, document digest, exact paths and per-file hashes before writing
+private scratch source; the verification container does not mount source Secrets.
+Each API object remains below 900 KiB. Failed creation, cancellation and uncertain
+cleanup hold verification. Restart reconciliation checks ownership and removes
+interrupted verifier Pods and their source payloads; Pod ownership also enables
+Kubernetes garbage collection. Verification/provenance scripts still use bounded
+environment chunks, separate from source payloads.
+
+Acceptance binds the immutable image, platform, cache mount path and installation/
+verification network policies through `capabilities_digest`. These actual execution
+constraints are supplied to both agents. Old contracts lacking capability or inventory
+binding require rediscovery. Source commit, inventory, capabilities, policy and
+rendered activation changes invalidate the corresponding accepted/frozen evidence.
+Diagnostics record stage, elapsed time, calls, reads, context bytes, inspected bytes,
+repairs and trusted held codes. Provider usage and finish reasons are recorded when
+available; absent metadata is explicitly marked unavailable. A timeout alone is not
+proof of token exhaustion. Existing outer retry/repair budgets still apply.
 
 ## Upgrade and recover
 
 Clean verification requires an immutable `image@sha256:<64 lowercase hex digits>`
-reference on both Docker and Kubernetes. Mutable tags hold readiness. Docker uses
-the selected bootstrap performer's configured image, so pin that actual image,
-including any endpoint override. The clean Docker verifier runs with `--network
-none`; installation may have separate network access, but verification cannot rely
+reference on both Docker and Kubernetes. Docker resolves the configured consumer
+image to a locally inspected immutable reference; pin consumer
+endpoint overrides consistently. Multiple distinct consumer images require separate
+environment targets and hold this shared cache. The clean Docker verifier runs
+with `--network none`; installation may have separate network access, but verification cannot rely
 on it.
 
 For Kubernetes, set `kubernetes_verifier_image` to an immutable reference (or pin
-its `performer_image` fallback). When a symphony configures environment caching,
+its `performer_image` fallback), and set `kubernetes_verifier_platform` explicitly
+to `linux/x86_64` or `linux/aarch64`. Verifier node selectors enforce that target;
+the daemon host architecture is never used to infer it. When a symphony configures
+environment caching,
 every endpoint with a consumer role must use that exact image reference; a
-different consumer image is rejected during configuration loading. An endpoint
-whose only role is `env_bootstrap` may use a different image because the clean
-verifier runs separately after bootstrap. Configure and validate a NetworkPolicy that
+different consumer image is rejected during configuration loading. The bootstrap endpoint must also use that target image/platform. Earlier
+configurations with a distinct bootstrap-only image remain parseable, but capability
+resolution holds until installation and clean verification use the same target.
+The installer runtime status is checked before project execution; missing or
+different image/platform metadata refuses dispatch. Configure and validate a NetworkPolicy that
 isolates verifier pods labeled `coordinare.role: env-verifier`, using a CNI that
 actually enforces the policy. Only after validating deployment enforcement, add:
 

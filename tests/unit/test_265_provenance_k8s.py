@@ -15,7 +15,11 @@ from coordinare.graph.nodes import dispatch_performer
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.services.env_cache import EnvCacheService, verify_env_cache_clean
 from coordinare.services.kubernetes_verifier import VerifierSpec, build_verifier_pod_manifest
-from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
+from tests.unit.env_manifest_fixture import (
+    record_verified_cache_fixture,
+    reviewed_cache,
+    verification_output,
+)
 from tests.unit.services.test_400_forced_regen_single_bootstrap import _cycle, _github
 from tests.unit.services.test_env_cache_phase4 import _make_cfg, _seed_state
 from tests.unit.test_060_env_cache import _accepted_discovery as _accepted_discovery
@@ -194,6 +198,7 @@ def test_consumer_refusal_spends_budget_across_successful_rebuilds(tmp_path: Pat
     service.mark_runtime_health_failed("sym", state)
     assert ec.bootstrap_attempts == 1
     ec.runtime_health_failed = False
+    record_verified_cache_fixture(state["env_cache"]["sym"])
     service.on_bootstrap_complete("sym", True, state)
     assert ec.bootstrap_attempts == 1
     service.mark_runtime_health_failed("sym", state)
@@ -299,6 +304,8 @@ async def test_first_runtime_repair_dispatches_with_single_attempt_budget(
     assert ec.bootstrap_attempts == SINGLE_ATTEMPT_BUDGET
 
     _seed_toolchain(cache)
+    if repair_succeeds:
+        record_verified_cache_fixture(ec)
     service.on_bootstrap_complete(name, repair_succeeds, state)
     if repair_succeeds:
         assert not ec.bootstrap_exhausted
@@ -314,6 +321,7 @@ async def test_runtime_budget_survives_restart_after_a_successful_repair(tmp_pat
     service, ec, state, _daemon, _performer, _runtime = setup(tmp_path, [])
     service.mark_runtime_health_failed("sym", state)
     ec.runtime_health_failed = False
+    record_verified_cache_fixture(state["env_cache"]["sym"])
     service.on_bootstrap_complete("sym", True, state)
     persisted = _persist_env_cache(state["env_cache"])["sym"]
     fresh = EnvCacheState(symphony_name="sym", sanitised_name="sym-abc", cache_dir=ec.cache_dir)
@@ -346,6 +354,7 @@ async def test_forced_inflight_cycles_and_restart_do_not_rearm_the_refusal_budge
     await _cycle(restarted, name, sym, github, state, dispatched)
     assert fresh.bootstrap_attempts == 1
     _seed_toolchain(cache)
+    record_verified_cache_fixture(state["env_cache"][name])
     restarted.on_bootstrap_complete(name, True, state)
     assert fresh.bootstrap_attempts == 1
 
@@ -353,6 +362,7 @@ async def test_forced_inflight_cycles_and_restart_do_not_rearm_the_refusal_budge
     await _cycle(restarted, name, sym, github, state, dispatched)
     await _cycle(restarted, name, sym, github, state, dispatched)
     _seed_toolchain(cache)
+    record_verified_cache_fixture(state["env_cache"][name])
     restarted.on_bootstrap_complete(name, True, state)
     assert fresh.bootstrap_attempts == 2
     restarted.mark_runtime_health_failed(name, state)

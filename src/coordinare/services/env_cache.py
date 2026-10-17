@@ -326,6 +326,7 @@ def _clear_reviewed_environment(cache: EnvCacheState) -> None:
     """Drop every readiness artifact before producing a replacement contract."""
     cache.rendered_verify_sh = None
     cache.rendered_activate_sh = None
+    cache.environment_capabilities = None
     cache.environment_manifest = None
     cache.environment_assessment = None
     cache.environment_verification = None
@@ -1541,6 +1542,11 @@ class EnvCacheService:
                 declared_services=declared_services,
                 cache_state=cache_state,
             )
+            from coordinare_service_inference.environment.models import ExecutionCapabilities
+
+            target_capabilities = ExecutionCapabilities.model_validate(cache_state.environment_capabilities)
+            if target_capabilities.digest() != (cache_state.environment_manifest or {}).get("capabilities_digest"):
+                raise ValueError("accepted environment runtime identity differs from installer target")
         except (RuntimeError, ValueError, OSError) as exc:
             cache_state.readme_sha = current_sha
             cache_state.bootstrap_budget_sha = current_sha
@@ -1590,6 +1596,8 @@ class EnvCacheService:
             environment_assessment=cache_state.environment_assessment,
             environment_manifest_digest=(cache_state.environment_assessment["manifest_digest"]
                                          if cache_state.environment_assessment is not None else None),
+            environment_verification_image=target_capabilities.image_ref,
+            environment_verification_platform=target_capabilities.platform,
             dependency_checklist=dependency_checklist,
             verify_provided=verify_provided,
             activate_provided=activate_provided,
@@ -2242,7 +2250,7 @@ class EnvCacheService:
             logger.info(
                 "env_cache.declared_services_unparseable",
                 symphony=symphony_name,
-                error=str(exc),
+                error_type=type(exc).__name__,
             )
             return []
         services = [svc.model_dump() for svc in manifest.services]
@@ -2281,6 +2289,7 @@ class EnvCacheService:
         """
         from coordinare_service_inference.environment.render import render_activate, render_verify
 
+        from coordinare.services.environment_capabilities import EnvironmentCapabilityError
         from coordinare.services.environment_discovery import (
             DiscoveryLimits,
             EnvironmentDiscoveryError,
@@ -2290,6 +2299,7 @@ class EnvCacheService:
         if cache_state is None or not cache_state.bootstrap_commit_sha:
             message = "environment discovery requires an immutable source commit"
             raise EnvironmentDiscoveryError(message)
+        cache_state.environment_capabilities = None
         cache_state.environment_manifest = None
         cache_state.environment_assessment = None
         cache_state.environment_verification = None
@@ -2349,6 +2359,9 @@ class EnvCacheService:
         except EnvironmentDiscoveryError as exc:
             budget.error_code = exc.code
             raise
+        except EnvironmentCapabilityError as exc:
+            budget.error_code = exc.code
+            raise EnvironmentDiscoveryError(str(exc), code=exc.code) from None
         except (ValueError, OSError, RuntimeError):
             budget.error_code = "capability_unavailable" if budget.stage == "capabilities" else "inventory_unavailable"
             raise EnvironmentDiscoveryError("environment runtime or source inventory is unavailable", code=budget.error_code) from None
@@ -2371,6 +2384,7 @@ class EnvCacheService:
             raise
         # Publication occurs only after the complete, independently accepted contract
         # and all informational cache copies have been written successfully.
+        cache_state.environment_capabilities = capabilities.model_dump(mode="json")
         cache_state.environment_manifest = manifest.model_dump(mode="json")
         cache_state.environment_assessment = assessment.model_dump(mode="json")
         cache_state.manifest_items = [requirement.model_dump(mode="json") for requirement in manifest.requirements]
@@ -2673,42 +2687,23 @@ class EnvCacheService:
         cache_state.bootstrap_in_flight = False
         cache_state.last_bootstrap_at = datetime.now(UTC)
 
-        # 092: a bootstrap that reports success but leaves the mount holding only
-        # the three coordinare-seeded files installed the toolchain in the wrong
-        # place (the agent treated the absolute cache_mount_path as cwd-relative
-        # and built under <cwd>/devenv/<name> instead). The real mount is empty,
-        # so consumers would get no toolchain. Downgrade to failure LOUDLY here
-        # rather than letting cache_dir_ready flip True on an empty cache; the
-        # failure flows through the normal attempt-counter/exhaust path below.
+        # A transport's boolean cannot waive independent review, executable
+        # evidence or frozen provenance. The accepted generic contract decides
+        # installed layout; a verified flat file is as valid as a directory.
         accepted_contract = accepted_environment(cache_state)
         if success and accepted_contract is None:
             success = False
             error = "no independently accepted environment manifest; rebuild the cache"
+        if success and not saved_execution_accepted(cache_state):
+            success = False
+            error = "required clean consumer execution is missing or failed; rebuild the cache"
+        if success and cache_state.provenance_digest is None:
+            success = False
+            error = "frozen environment provenance is missing; rebuild the cache"
         refusal_error = self._cache_refusal_error(symphony_name, cache_state) if success else None
         if success and refusal_error is not None:
-            # 219 review: a refused cache dir is not "wrong location". Say what was refused.
             success = False
             error = refusal_error
-        elif (success and not (accepted_contract is not None and accepted_contract.empty_reason)
-              and daemon_sees_performer_cache(state) and not _cache_dir_is_populated(
-            cache_state.cache_dir, performer_mounts=self._performer_mounts(),
-        )):
-            # 265 (review B3): on Kubernetes the daemon's cache_dir is the seed directory, so this check would always
-            # downgrade a real success. The clean-room verifier pod has already checked the claim.
-            success = False
-            error = (
-                "env-cache mount contains only coordinare-seeded files "
-                "(activate.sh, manifest.json, verify.sh) after a reported-"
-                "successful bootstrap — the toolchain was installed in the "
-                f"wrong location; the absolute mount {cache_state.cache_dir} is "
-                "empty. The bootstrap agent likely treated the absolute "
-                "cache_mount_path as a cwd-relative path. Cache rejected."
-            )
-            logger.error(
-                "env_cache.bootstrap_mount_empty",
-                symphony=symphony_name,
-                cache_dir=str(cache_state.cache_dir),
-            )
 
         cache_state.last_bootstrap_succeeded = success
         if not success:

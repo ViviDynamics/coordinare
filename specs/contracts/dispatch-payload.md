@@ -176,8 +176,8 @@ When adding a new field to the dispatch payload:
 | `environment_manifest` | object or null | Daemon-owned accepted requirements and executable actions. |
 | `environment_assessment` | object or null | Independent coverage acceptance bound to the manifest. |
 | `environment_manifest_digest` | string | Canonical identity shared by installer and consumer. |
-| `environment_verification_image` | string or null | Required immutable image identity for cache consumers. |
-| `environment_verification_platform` | string or null | Required verified OS/architecture, matched to the performer status. |
+| `environment_verification_image` | string or null | Expected immutable installer target for bootstrap; clean-verified identity for consumers. |
+| `environment_verification_platform` | string or null | Expected installer OS/architecture for bootstrap; verified consumer platform, matched to runtime status. |
 | `environment_secret_names` | string array | Names for output redaction; values use the secret channel. |
 
 ### Reviewed environment identity extensions (353)

@@ -729,6 +729,7 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             last_bootstrap_succeeded=get("last_bootstrap_succeeded"),
             cache_dir_ready=bool(get("cache_dir_ready") or False),
             # 218: the daemon-rendered scripts the verification and activate gate use.
+            environment_capabilities=get("environment_capabilities"),
             environment_manifest=get("environment_manifest"),
             environment_assessment=get("environment_assessment"),
             environment_verification=get("environment_verification"),
@@ -1053,6 +1054,7 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             live.last_bootstrap_error = redact_state_value(persisted.last_bootstrap_error)
             live.cache_dir_ready = persisted.cache_dir_ready
             # 218: restore the daemon-rendered scripts; the cache copies are never read back.
+            live.environment_capabilities = persisted.environment_capabilities
             live.environment_manifest = persisted.environment_manifest
             live.environment_assessment = persisted.environment_assessment
             live.environment_verification = persisted.environment_verification
