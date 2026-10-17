@@ -1110,7 +1110,21 @@ class EnvCacheConfig(BaseModel):
     manifest_attempt_timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
     manifest_max_model_calls: int = Field(default=128, ge=1, le=4096)
     manifest_max_total_reads: int = Field(default=512, ge=1, le=8192)
-    manifest_max_repairs: int = Field(default=2, ge=0, le=2)
+    manifest_max_repairs: int | None = Field(default=None, ge=0, le=2, exclude=True)
+    manifest_max_schema_repairs: int = Field(default=2, ge=0, le=2)
+    manifest_max_coverage_revisions: int = Field(default=2, ge=0, le=2)
+    manifest_max_execution_repairs: int = Field(default=2, ge=0, le=2)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_repair_limit(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or data.get("manifest_max_repairs") is None:
+            return data
+        fields = ("manifest_max_schema_repairs", "manifest_max_coverage_revisions", "manifest_max_execution_repairs")
+        if any(name in data for name in fields):
+            raise ValueError("cannot combine legacy and category manifest repair limits")
+        return {**data, **{name: data["manifest_max_repairs"] for name in fields}}
+
 
 
     # 234: the bounds on one frozen env cache. A cache over either is refused at freeze (or at a later check),
