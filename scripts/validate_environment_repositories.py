@@ -225,6 +225,8 @@ async def _install(
 ) -> tuple[int, bytes]:
     """A private local clone carries no host credential configuration into the image."""
     workspace = target / "installer-source"
+    git_environment = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                           GIT_NO_REPLACE_OBJECTS="1")
     cloned = await asyncio.create_subprocess_exec(
         "git",
         "-c",
@@ -237,6 +239,7 @@ async def _install(
         str(workspace),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
+        env=git_environment,
     )
     if await _bounded_wait(cloned, 60):
         raise RuntimeError("private installer snapshot clone failed")
@@ -252,6 +255,7 @@ async def _install(
         snapshot.commit,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
+        env=git_environment,
     )
     if await _bounded_wait(checkout, 60):
         raise RuntimeError("private installer snapshot checkout failed")
