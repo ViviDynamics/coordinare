@@ -97,10 +97,11 @@ class TestVerifyRenderer:
         return EnvManifest(
             symphony_name="sym",
             items=[
-                ManifestItem(name="ruby", kind="runtime", version="3.4.2", source=".ruby-version"),
-                ManifestItem(name="bundler", kind="gem", version="2.5.6", source="Gemfile.lock"),
-                ManifestItem(name="rails", kind="gem", source="Gemfile"),
-                ManifestItem(name="chromium", kind="system", source="README.md"),
+                ManifestItem(name="alpha", kind="runtime", version="3.4.2", source="fixture", check="true", version_check="true"),
+                ManifestItem(name="beta", kind="gem", version="2.5.6", source="fixture", check="true"),
+                ManifestItem(name="gamma", kind="gem", source="fixture", check="false"),
+                ManifestItem(name="optional", kind="system", source="fixture", check="false"),
+                ManifestItem(name="legacy", kind="system", source="fixture"),
             ],
         )
 
@@ -115,63 +116,23 @@ class TestVerifyRenderer:
         assert "exit 1" in sh
         assert "exit 0" in sh
 
-    def test_ruby_version_pinned_check(self) -> None:
+    def test_generic_check_and_version_harness(self) -> None:
         sh = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym")
-        assert "RUBY_VERSION" in sh
-        assert "3.4.2" in sh
-        assert 'want 3.4.2' in sh
+        assert "OK: runtime alpha" in sh and "OK: runtime alpha version" in sh
 
-    def test_gem_and_system_checks_present(self) -> None:
+    def test_hard_fail_soft_warn_and_missing_check(self) -> None:
         sh = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym")
-        assert "gem rails" in sh.lower() or "bundle show rails" in sh
-        assert "chromium" in sh
+        assert 'echo "FAIL: gem gamma"' in sh and "FAILED=1" in sh
+        assert 'echo "WARN: system optional"' in sh
+        assert 'WARN: system legacy no check command' in sh
+        assert "rails" not in sh.lower()
 
-    def test_system_pkg_check_is_soft_runtime_gem_hard(self) -> None:
-        """077: system packages (chromium/psql) are test/qa-only — a missing one
-        must WARN, never set FAILED (don't block the whole pipeline). Runtimes and
-        gems stay hard (FAILED=1)."""
-        sh = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym")
-        # The chromium (system) line warns and does not flip FAILED.
-        chromium_line = next(ln for ln in sh.splitlines() if "chromium" in ln)
-        assert "WARN" in chromium_line and "FAILED=1" not in chromium_line
-        # The ruby (runtime) and rails (gem) lines DO hard-fail.
-        ruby_line = next(ln for ln in sh.splitlines() if "RUBY_VERSION" in ln)
-        rails_line = next(ln for ln in sh.splitlines() if "gem rails" in ln)
-        assert "FAILED=1" in ruby_line
-        assert "FAILED=1" in rails_line
-
-    def test_runtimes_rendered_before_gems(self) -> None:
-        sh = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym")
-        assert sh.index("RUBY_VERSION") < sh.index("rails")
-
-    def test_rails_boot_smoke_test_emitted_when_rails_present(self) -> None:
-        """When a ``rails`` gem is present, verify.sh must boot Rails to catch
-        native-extension failures (e.g. psych without libyaml-dev) that pass a
-        gem-presence check but fail at ``require`` time. The block hard-fails."""
-        sh = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym")
-        assert "Rails boot smoke-test" in sh
-        assert "require 'rails'; require 'psych'" in sh
-        # the smoke-test is a hard failure (sets FAILED), gated on the repo mount
-        boot_line = next(ln for ln in sh.splitlines() if "require 'rails'" in ln)
-        assert "FAILED=1" in boot_line
-        # 265: the smoke runs in the checkout the verify was started from, not a path baked in.
-        assert '_REPO="${COORDINARE_REPO_DIR:-/repo}"' in sh
-        assert 'if [ -f "$_REPO/Gemfile" ]; then' in sh
-        assert "BUNDLE_GEMFILE=/repo/Gemfile" not in sh
-
-    def test_rails_boot_smoke_test_absent_when_no_rails(self) -> None:
-        """A manifest with no ``rails`` gem must NOT emit the Rails-boot block —
-        the smoke-test is Rails-specific and would fail spuriously elsewhere."""
-        manifest = EnvManifest(
-            symphony_name="sym",
-            items=[
-                ManifestItem(name="ruby", kind="runtime", version="3.4.2", source=".ruby-version"),
-                ManifestItem(name="pg", kind="gem", source="Gemfile"),
-            ],
-        )
-        sh = render_verify_sh(manifest, cache_mount_path="/devenv/sym")
-        assert "Rails boot smoke-test" not in sh
-        assert "require 'rails'" not in sh
+    def test_renderer_is_agnostic(self) -> None:
+        verify = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        activate = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        own_sections = verify + activate
+        for forbidden in ("bundle show", "gem list", "node -v", "RUBY_VERSION", "pip ", "cargo ", "rbenv", "rails"):
+            assert forbidden not in own_sections
 
 
 class TestServiceReadinessChecklist:
@@ -237,7 +198,7 @@ class TestServiceReadinessChecklist:
         sh = render_verify_sh(
             self._manifest(), cache_mount_path="/devenv/sym", services=[self._service()],
         )
-        assert "RUBY_VERSION" in sh  # toolchain check still present
+        assert "WARN: runtime ruby no check command" in sh
         assert 'if [ "$FAILED" -ne 0 ]; then' in sh
         assert "exit 1" in sh
         assert sh.rstrip().endswith("exit 0")
@@ -292,23 +253,17 @@ class TestActivateRenderer:
         # shells — discovery must be plain PATH prepends, not `eval "$(rbenv init)"`.
         assert "rbenv init" not in sh
 
-    def test_ruby_discovery_covers_dot_and_nondot_rbenv(self) -> None:
-        """The bug: agent built Ruby under .rbenv (dot) but pointed RBENV_ROOT at
-        rbenv (no dot). Discovery must probe BOTH layouts (+ asdf) for the pinned
-        version and guard on the real ruby binary."""
+    def test_manifest_activation_globs_are_prepended(self) -> None:
         sh = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
-        assert "$DEVENV/.rbenv/versions/3.4.2" in sh
-        assert "$DEVENV/rbenv/versions/3.4.2" in sh
-        assert "$DEVENV/.asdf/installs/ruby/3.4.2" in sh
-        assert '-x "$_r/bin/ruby"' in sh
-        assert "RBENV_ROOT=" in sh
+        assert ".rbenv/versions/3.4.2/bin" not in sh
+        fixture = EnvManifest(symphony_name="x", items=[ManifestItem(name="x", kind="runtime", source="fixture", activation_paths=["tool/bin"], activation_env={"ROOT": "tool"})])
+        generic = render_activate_sh(fixture, cache_mount_path="/devenv/sym")
+        assert '"$DEVENV"/tool/bin' in generic
+        assert 'export ROOT="$DEVENV/tool"' in generic
 
-    def test_node_discovery_covers_nvm_and_tarball(self) -> None:
+    def test_activation_renderer_has_no_ecosystem_knowledge(self) -> None:
         sh = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
-        assert "$DEVENV/.nvm/versions/node/v18.12.1/bin" in sh
-        assert "$DEVENV/nvm/versions/node/v18.12.1/bin" in sh
-        assert "node-v18.12.1-" in sh  # extracted-tarball glob fallback
-        assert '-x "$_n/node"' in sh
+        assert "rbenv" not in sh and ".nvm" not in sh
 
     def test_non_exact_versions_skipped(self) -> None:
         """package.json engines are ranges (^20, >=18) with no deterministic

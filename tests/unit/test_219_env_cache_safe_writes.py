@@ -436,7 +436,7 @@ def test_manifest_artifacts_happy_path_modes_and_contents(tmp_path: Path) -> Non
     assert verify_provided is True
     assert activate_provided is True
     assert "RUBY_VERSION" in (cache / "verify.sh").read_text()
-    assert "$DEVENV/.rbenv/versions/3.4.2" in (cache / "activate.sh").read_text()
+    assert '"$DEVENV"/.rbenv/versions/3.4.2/bin' in (cache / "activate.sh").read_text()
     assert "rails" in (cache / "manifest.json").read_text()
     assert stat.S_IMODE((cache / "verify.sh").stat().st_mode) == 0o755
     assert stat.S_IMODE((cache / "activate.sh").stat().st_mode) == 0o755

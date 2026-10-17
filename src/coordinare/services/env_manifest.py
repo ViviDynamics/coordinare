@@ -17,7 +17,11 @@ import json
 import re
 from typing import Any
 
+import structlog
+
 from coordinare.models.env_manifest import EnvManifest, ManifestItem
+
+logger = structlog.get_logger(__name__)
 
 # Structured project files coordinare fetches (in addition to the README) to
 # derive pinned runtimes and declared dependencies.  Missing files are skipped.
@@ -44,21 +48,21 @@ def _parse_ruby_version(content: str) -> list[ManifestItem]:
     v = _clean_version(content)
     if not v:
         return []
-    return [ManifestItem(name="ruby", kind="runtime", version=v, source=".ruby-version")]
+    return [ManifestItem(name="ruby", kind="runtime", version=v, source=".ruby-version", check='command -v ruby >/dev/null 2>&1', version_check=f'[ "$(ruby -e "print RUBY_VERSION" 2>/dev/null)" = "{v}" ]', activation_paths=[f'.rbenv/versions/{v}/bin', f'rbenv/versions/{v}/bin', f'.asdf/installs/ruby/{v}/bin', f'ruby-{v}/bin'], activation_env={"RBENV_ROOT": ".rbenv"})]
 
 
 def _parse_python_version(content: str) -> list[ManifestItem]:
     v = _clean_version(content)
     if not v:
         return []
-    return [ManifestItem(name="python", kind="runtime", version=v, source=".python-version")]
+    return [ManifestItem(name="python", kind="runtime", version=v, source=".python-version", check='command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1', version_check=f'[ "$(python --version 2>&1 | awk "{{print \\$2}}")" = "{v}" ] || [ "$(python3 --version 2>&1 | awk "{{print \\$2}}")" = "{v}" ]', activation_paths=[f".pyenv/versions/{v}/bin", f"pyenv/versions/{v}/bin", f".asdf/installs/python/{v}/bin"])]
 
 
 def _parse_nvmrc(content: str) -> list[ManifestItem]:
     v = _clean_version(content)
     if not v:
         return []
-    return [ManifestItem(name="node", kind="runtime", version=v, source=".nvmrc")]
+    return [ManifestItem(name="node", kind="runtime", version=v, source=".nvmrc", check='command -v node >/dev/null 2>&1', version_check=f'[ "$(node -v 2>/dev/null | sed "s/^v//")" = "{v}" ]', activation_paths=[f'.nvm/versions/node/v{v}/bin', f'nvm/versions/node/v{v}/bin', f'.asdf/installs/nodejs/{v}/bin', f'node-v{v}-*/bin'])]
 
 
 def _parse_tool_versions(content: str) -> list[ManifestItem]:
@@ -77,7 +81,9 @@ def _parse_tool_versions(content: str) -> list[ManifestItem]:
         if canonical and version:
             items.append(
                 ManifestItem(
-                    name=canonical, kind="runtime", version=version, source=".tool-versions",
+                    name=canonical, kind="runtime", version=version, source=".tool-versions", activation_paths=([f".rbenv/versions/{version}/bin", f"rbenv/versions/{version}/bin", f".asdf/installs/ruby/{version}/bin"] if canonical == "ruby" else [f".nvm/versions/node/v{version}/bin", f".asdf/installs/nodejs/{version}/bin"] if canonical == "node" else [f".pyenv/versions/{version}/bin", f".asdf/installs/python/{version}/bin"]),
+                    check=f'command -v {canonical} >/dev/null 2>&1',
+                    version_check=(f'[ "$(ruby -e "print RUBY_VERSION" 2>/dev/null)" = "{version}" ]' if canonical == "ruby" else f'[ "$(node -v 2>/dev/null | sed "s/^v//")" = "{version}" ]' if canonical == "node" else f'[ "$(python --version 2>&1 | awk "{{print \\$2}}")" = "{version}" ]'),
                 ),
             )
     return items
@@ -102,6 +108,7 @@ def _parse_package_json(content: str) -> list[ManifestItem]:
                         # engines specs are ranges (^20, >=18); keep raw, don't over-pin.
                         version=spec.strip(),
                         source="package.json",
+                        check=f'command -v {tool} >/dev/null 2>&1',
                     ),
                 )
     return items
@@ -119,7 +126,7 @@ def _parse_gemfile(content: str) -> list[ManifestItem]:
         if name in seen:
             continue
         seen.add(name)
-        items.append(ManifestItem(name=name, kind="gem", source="Gemfile"))
+        items.append(ManifestItem(name=name, kind="gem", source="Gemfile", check=f'gem list -i {name} >/dev/null 2>&1'))
     return items
 
 
@@ -134,6 +141,8 @@ def _parse_gemfile_lock(content: str) -> list[ManifestItem]:
     return [
         ManifestItem(
             name="bundler", kind="gem", version=m.group(1).strip(), source="Gemfile.lock",
+            check="command -v bundle >/dev/null 2>&1",
+            version_check=f'[ "$(bundle --version 2>/dev/null | awk "{{print \\$3}}")" = "{m.group(1).strip()}" ]',
         ),
     ]
 
@@ -218,6 +227,7 @@ def derive_service_install_items(services: list[Any]) -> list[ManifestItem]:
                     name=pkg,
                     kind="system",
                     source=f"services.json:{svc_name}",
+                    check=f"command -v {pkg} >/dev/null 2>&1",
                     install_hint=(
                         f"service '{svc_name}' (kind={kind}); fetch as .deb into "
                         "<cache>/debs/ via the system-package path" + vendor_note
@@ -254,6 +264,9 @@ def derive_manifest(
             # Prefer a version-bearing item over a bare one.
             if existing is None or (existing.version is None and item.version is not None):
                 by_key[key] = item
+    for item in by_key.values():
+        if not item.check:
+            logger.warning("env_manifest.item_missing_check", name=item.name, kind=item.kind, source=item.source)
     return EnvManifest(
         symphony_name=symphony_name,
         items=list(by_key.values()),
@@ -262,55 +275,12 @@ def derive_manifest(
 
 
 def _default_check(item: ManifestItem) -> str:
-    """Render a shell check that prints OK/FAIL and sets FAILED=1 on failure."""
-    name = item.name
-    if item.kind == "runtime":
-        if name == "ruby" and item.version:
-            return (
-                f'_got=$(ruby -e "print RUBY_VERSION" 2>/dev/null) || FAILED=1; '
-                f'if [ "$_got" = "{item.version}" ]; then echo "OK: ruby {item.version}"; '
-                f'else echo "FAIL: ruby version (want {item.version}, got ${{_got:-none}})"; FAILED=1; fi'
-            )
-        if name == "node":
-            ver = item.version or ""
-            if ver and re.fullmatch(r"[0-9][0-9.]*", ver):
-                return (
-                    f'_got=$(node -v 2>/dev/null | sed "s/^v//") || FAILED=1; '
-                    f'case "$_got" in {ver}*) echo "OK: node $_got";; '
-                    f'*) echo "FAIL: node version (want {ver}, got ${{_got:-none}})"; FAILED=1;; esac'
-                )
-            return 'command -v node >/dev/null 2>&1 && echo "OK: node" || { echo "FAIL: node missing"; FAILED=1; }'
-        if name == "python":
-            return (
-                'command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1'
-                ' && echo "OK: python" || { echo "FAIL: python missing"; FAILED=1; }'
-            )
-        if name == "npm":
-            return 'command -v npm >/dev/null 2>&1 && echo "OK: npm" || { echo "FAIL: npm missing"; FAILED=1; }'
-        return f'command -v {name} >/dev/null 2>&1 && echo "OK: {name}" || {{ echo "FAIL: {name} missing"; FAILED=1; }}'
-    if item.kind == "gem":
-        if name == "bundler":
-            return 'command -v bundle >/dev/null 2>&1 && echo "OK: bundler" || { echo "FAIL: bundler missing"; FAILED=1; }'
-        return (
-            f'( bundle show {name} >/dev/null 2>&1 || gem list -i {name} >/dev/null 2>&1 ) '
-            f'&& echo "OK: gem {name}" || {{ echo "FAIL: gem {name} not installed"; FAILED=1; }}'
-        )
-    # system / node_pkg → SOFT check (warn, do NOT set FAILED). These are
-    # consumer/test-stage services (chromium for system tests, psql for the DB):
-    # the builder stages (assess/architect/implement/review/security) don't need
-    # them, so a missing one must not hard-fail the whole env-cache and block the
-    # entire pipeline. The qa stage handles missing browser/DB on its own.
-    return (
-        f'command -v {name} >/dev/null 2>&1 && echo "OK: {name}" '
-        f'|| echo "WARN: {name} not on PATH (test/qa-only; non-blocking)"'
-    )
+    """Fail-open marker for a cached manifest without a check command."""
+    return f'echo "WARN: {item.kind} {item.name} no check command"'
 
 
 _KIND_LABELS = {
-    "runtime": "language runtime (install the EXACT version via a version manager / build tool, NOT apt)",
-    "gem": "Ruby gem (must be installed and loadable)",
-    "system": "system package / binary, best-effort (test/qa-only; not bootstrap-gating)",
-    "node_pkg": "Node package (best-effort; not bootstrap-gating)",
+    "runtime": "runtime", "gem": "dependency", "system": "system dependency", "node_pkg": "package",
 }
 
 
@@ -320,7 +290,7 @@ def render_checklist(manifest: EnvManifest) -> str:
         return ""
     lines = [
         "AUTHORITATIVE DEPENDENCY CHECKLIST (derived by coordinare from the project files).",
-        "Install EXACTLY these — each MUST be present for the bootstrap to pass:",
+        "Install these declared dependencies:",
     ]
     order = {"runtime": 0, "gem": 1, "node_pkg": 2, "system": 3}
     for item in sorted(manifest.items, key=lambda i: order.get(i.kind, 9)):
@@ -447,39 +417,22 @@ def render_verify_sh(
         "# --- activation (daemon-rendered, inlined: the cache copy is never read) ---",
         *[ln for ln in activate_text.splitlines() if not ln.startswith("#!")],
         "# --- end of activation ---",
-        # 265: the bundle the bootstrap installed in the cache is found by bundler from the checkout, not the repo.
-        # Honoured only when the operator has not set BUNDLE_PATH and the cache holds that bundle directory.
-        "# --- bundle location (the cache-hosted gem dir, when the bootstrap installed the bundle there) ---",
-        'if [ -z "${BUNDLE_PATH:-}" ] && [ -d "$DEVENV/project/bundle" ]; then export BUNDLE_PATH="$DEVENV/project/bundle"; fi',
         "",
     ]
-    # Runtimes first (everything else depends on them), then gems, then system.
+    # Manifest checks are data; the harness only applies kind policy.
     order = {"runtime": 0, "gem": 1, "node_pkg": 2, "system": 3}
-    has_rails = any(item.kind == "gem" and item.name == "rails" for item in manifest.items)
     for item in sorted(manifest.items, key=lambda i: order.get(i.kind, 9)):
-        if item.kind in {"runtime", "gem"}:
-            # An OR-list would suppress ERR inside the group, hiding failures before a final success.
-            # Scope the trap to this hard check so activation and optional checks remain non-blocking.
-            lines.extend(["trap 'FAILED=1' ERR", "{", item.check or _default_check(item), "}", "trap - ERR"])
-        elif item.check:
-            lines.extend(["{", item.check, "} || echo 'WARN: optional tool check failed (test/qa-only; non-blocking)'"])
+        hard = item.kind in {"runtime", "gem"}
+        if not item.check:
+            lines.append(f'echo "WARN: {item.kind} {item.name} no check command"')
         else:
-            lines.append(_default_check(item))
-    # If Rails is present, boot the app to catch native-extension failures (e.g. psych/libyaml)
-    # that pass gem-presence checks but fail at require time.
-    if has_rails:
-        lines += [
-            "",
-            "# Rails boot smoke-test: catches native extension failures (e.g. psych without libyaml-dev)",
-            # 265: the checkout the verify runs from (COORDINARE_REPO_DIR), never a path baked in. Outside a
-            # performer (the clean-context container has no checkout) the default /repo is absent and the smoke is skipped.
-            '_REPO="${COORDINARE_REPO_DIR:-/repo}"',
-            'if [ -f "$_REPO/Gemfile" ]; then',
-            "  (cd \"$_REPO\" && BUNDLE_GEMFILE=\"$_REPO/Gemfile\" bundle exec ruby -e \"require 'rails'; require 'psych'\") "
-            '2>/dev/null && echo "OK: rails/psych native extensions load" || '
-            '{ echo "FAIL: rails/psych failed to load (native extension or config error)" >&2; FAILED=1; }',
-            "fi",
-        ]
+            lines += ["if (", item.check, ") >/dev/null 2>&1; then", f'  echo "OK: {item.kind} {item.name}"', "else"]
+            lines += [f'  echo "FAIL: {item.kind} {item.name}"', "  FAILED=1"] if hard else [f'  echo "WARN: {item.kind} {item.name}"']
+            lines.append("fi")
+        if item.version and item.version_check:
+            lines += ["if (", item.version_check, "); then", f'  echo "OK: {item.kind} {item.name} version"', "else"]
+            lines += [f'  echo "FAIL: {item.kind} {item.name} version"', "  FAILED=1"] if hard else [f'  echo "WARN: {item.kind} {item.name} version"']
+            lines.append("fi")
     # spec 112: verify.sh checks the TOOLCHAIN only — it must NOT probe live service
     # readiness (pg_isready / redis PING). verify.sh is run by `verify_env_cache_clean`
     # in a CLEAN consumer-context where NO services are started (the consumer cache is
@@ -502,81 +455,16 @@ def render_verify_sh(
     return "\n".join(lines)
 
 
-# Only an EXACT, fully-resolved version (e.g. "3.4.2") yields a deterministic
-# install path. Range specs from package.json `engines` ("^20", ">=18.0.0") do
-# not, so activation discovery skips them.
-_EXACT_VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
-
-
-def _ruby_activation_block(version: str) -> list[str]:
-    """rbenv (.rbenv OR rbenv), asdf, or a source-compile prefix — probe each for
-    the pinned ruby and put its bin (+ rbenv shims) on PATH."""
-    return [
-        f"# --- runtime: ruby {version} ---",
-        f'for _r in "$DEVENV/.rbenv/versions/{version}" "$DEVENV/rbenv/versions/{version}" '
-        f'"$DEVENV/.asdf/installs/ruby/{version}" "$DEVENV/ruby-{version}"; do',
-        '  if [ -x "$_r/bin/ruby" ]; then',
-        "    case \"$_r\" in",
-        '      */.rbenv/*|*/rbenv/*) RBENV_ROOT="${_r%/versions/*}"; export RBENV_ROOT; '
-        'export PATH="$_r/bin:$RBENV_ROOT/shims:$RBENV_ROOT/bin:$PATH";;',
-        '      *) export PATH="$_r/bin:$PATH";;',
-        "    esac",
-        "    break",
-        "  fi",
-        "done",
-    ]
-
-
-def _node_activation_block(version: str) -> list[str]:
-    """nvm (.nvm OR nvm), asdf, or an extracted node tarball — probe each for the
-    pinned node and put its bin on PATH."""
-    return [
-        f"# --- runtime: node {version} ---",
-        f'for _n in "$DEVENV/.nvm/versions/node/v{version}/bin" '
-        f'"$DEVENV/nvm/versions/node/v{version}/bin" '
-        f'"$DEVENV/.asdf/installs/nodejs/{version}/bin" "$DEVENV"/node-v{version}-*/bin; do',
-        '  if [ -x "$_n/node" ]; then export PATH="$_n:$PATH"; break; fi',
-        "done",
-    ]
-
-
-def _python_activation_block(version: str) -> list[str]:
-    """pyenv (.pyenv OR pyenv) or asdf — probe each for the pinned python."""
-    return [
-        f"# --- runtime: python {version} ---",
-        f'for _p in "$DEVENV/.pyenv/versions/{version}/bin" "$DEVENV/pyenv/versions/{version}/bin" '
-        f'"$DEVENV/.asdf/installs/python/{version}/bin"; do',
-        '  if [ -x "$_p/python" ] || [ -x "$_p/python3" ]; then export PATH="$_p:$PATH"; break; fi',
-        "done",
-    ]
-
-
-_RUNTIME_ACTIVATION = {
-    "ruby": _ruby_activation_block,
-    "node": _node_activation_block,
-    "python": _python_activation_block,
-}
-
-
 def render_activate_sh(manifest: EnvManifest, *, cache_mount_path: str) -> str:
-    """Render an authoritative, auto-discovering activate.sh from the manifest.
-
-    Coordinare owns activate.sh the same way it owns verify.sh: the bootstrap agent
-    installs the pinned toolchain, but it no longer hand-writes the activation
-    paths — a forgetful model writing those by hand fumbled the .rbenv-vs-rbenv
-    (and .nvm-vs-nvm) dot-prefix every run, leaving a fully-built cache that
-    verify.sh couldn't see. This script *discovers* the toolchain at source time
-    (after install) wherever the agent placed it, so it is correct regardless.
+    """Render activation from manifest-supplied cache-relative paths and values.
 
     CRITICAL: activate.sh is sourced into EVERY shell (bash AND dash) via
     BASH_ENV / /etc/profile.d, so it MUST NOT ``exit``/``return`` non-zero or use
-    ``set -e``/``set -u`` (that terminates the calling shell), and MUST stay POSIX
-    (no ``eval "$(rbenv init)"`` — it emits shell-specific code and has deadlocked
-    sourced dash shells). Discovery is plain, guarded PATH prepends only.
+    ``set -e``/``set -u`` (that terminates the calling shell), and MUST stay POSIX.
     """
     lines = [
         "# AUTHORITATIVE activate.sh — generated by coordinare from the env manifest.",
-        "# Discovers the installed toolchain under the cache and puts it on PATH.",
+        "# Applies manifest-provided paths and variables under the cache.",
         "# Do NOT edit by hand; the bootstrap agent installs the toolchain, coordinare",
         "# owns the activation. Sourced into EVERY shell (bash AND dash): must never",
         "# abort the caller (no errexit/nounset, no non-zero exit) — plain guarded",
@@ -585,15 +473,11 @@ def render_activate_sh(manifest: EnvManifest, *, cache_mount_path: str) -> str:
         "export DEVENV",
         "",
     ]
-    for item in manifest.runtime_pins():
-        version = item.version or ""
-        if not _EXACT_VERSION_RE.match(version):
-            continue
-        builder = _RUNTIME_ACTIVATION.get(item.name)
-        if builder is None:
-            continue
-        lines += builder(version)
-        lines.append("")
+    for item in manifest.items:
+        for pattern in item.activation_paths:
+            lines += [f'for _activation_path in "$DEVENV"/{pattern}; do', '  [ -d "$_activation_path" ] && export PATH="$_activation_path:$PATH"', "done"]
+        for key, value in item.activation_env.items():
+            lines.append(f'export {key}="$DEVENV/{value}"')
     # Extracted-deb binaries (e.g. a headless browser) — best-effort, test/qa-only
     # and non-blocking. SHARED LIBS are handled separately by the coordinare-owned
     # profile (LD_LIBRARY_PATH); this only surfaces extracted BINARIES on PATH.

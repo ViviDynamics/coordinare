@@ -23,9 +23,8 @@ def _manifest() -> EnvManifest:
     return EnvManifest(
         symphony_name="dettmore",
         items=[
-            ManifestItem(name="ruby", kind="runtime", version=RUBY, source=".ruby-version"),
-            ManifestItem(name="bundler", kind="gem", source="Gemfile.lock"),
-            ManifestItem(name="rails", kind="gem", source="Gemfile"),
+            ManifestItem(name="runtime", kind="runtime", version=RUBY, source="fixture", check="true", version_check="true", activation_paths=[f".tool/versions/{RUBY}/bin"]),
+            ManifestItem(name="dependency", kind="gem", source="fixture", check='test -f "$COORDINARE_TEST_DEPENDENCY"'),
         ],
     )
 
@@ -75,6 +74,9 @@ async def test_the_rendered_verify_passes_on_the_garden_layout_from_the_checkout
     cache, checkout, elsewhere = _garden_layout(tmp_path, monkeypatch)
     mark = tmp_path / "mark.txt"
     monkeypatch.setenv("COORDINARE_TEST_MARK", str(mark))
+    dependency = tmp_path / "dependency"
+    dependency.touch()
+    monkeypatch.setenv("COORDINARE_TEST_DEPENDENCY", str(dependency))
     manifest = _manifest()
     activate = render_activate_sh(manifest, cache_mount_path=str(cache))
     verify = render_verify_sh(manifest, cache_mount_path=str(cache), activate_text=activate)
@@ -86,19 +88,19 @@ async def test_the_rendered_verify_passes_on_the_garden_layout_from_the_checkout
     )
 
     assert passed is True, detail
-    gemfile, bundle_path = mark.read_text().splitlines()
-    assert Path(gemfile).resolve() == (checkout / "Gemfile").resolve()
-    # The bundle the bootstrap installed in the cache is the one bundler uses.
-    assert bundle_path == str(cache / "project" / "bundle")
+    assert not mark.exists()
 
 
 @pytest.mark.asyncio
-async def test_the_same_verify_run_from_the_wrong_directory_fails_as_the_issue_saw(
+async def test_the_same_verify_runs_from_the_wrong_directory_without_project_assumptions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The pre-fix run: no checkout as the cwd. bundler finds no Gemfile, which is the failure in #265."""
+    """Generic manifest verification doesn't require a checkout-specific cwd."""
     cache, _checkout, elsewhere = _garden_layout(tmp_path, monkeypatch)
     monkeypatch.setenv("COORDINARE_TEST_MARK", str(tmp_path / "mark.txt"))
+    dependency = tmp_path / "dependency"
+    dependency.touch()
+    monkeypatch.setenv("COORDINARE_TEST_DEPENDENCY", str(dependency))
     manifest = _manifest()
     activate = render_activate_sh(manifest, cache_mount_path=str(cache))
     verify = render_verify_sh(manifest, cache_mount_path=str(cache), activate_text=activate)
@@ -106,17 +108,19 @@ async def test_the_same_verify_run_from_the_wrong_directory_fails_as_the_issue_s
 
     passed, detail = await run_env_cache_verify(str(cache), None, verify_text=verify)
 
-    assert passed is False
-    assert "FAIL: gem" in detail
+    assert passed is True, detail
 
 
 @pytest.mark.asyncio
-async def test_the_rails_smoke_test_runs_in_the_checkout(
+async def test_manifest_checks_pass_without_ecosystem_specifics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cache, checkout, elsewhere = _garden_layout(tmp_path, monkeypatch)
     mark = tmp_path / "mark.txt"
     monkeypatch.setenv("COORDINARE_TEST_MARK", str(mark))
+    dependency = tmp_path / "dependency"
+    dependency.touch()
+    monkeypatch.setenv("COORDINARE_TEST_DEPENDENCY", str(dependency))
     manifest = _manifest()
     activate = render_activate_sh(manifest, cache_mount_path=str(cache))
     verify = render_verify_sh(manifest, cache_mount_path=str(cache), activate_text=activate)
@@ -126,7 +130,4 @@ async def test_the_rails_smoke_test_runs_in_the_checkout(
         str(cache), None, cwd=str(checkout), verify_text=verify,
     )
 
-    # The smoke ran (it wrote the marker), and it ran against the checkout's Gemfile, not /repo.
     assert passed is True
-    assert mark.exists()
-    assert Path(mark.read_text().splitlines()[0]).resolve() == (checkout / "Gemfile").resolve()

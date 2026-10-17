@@ -38,10 +38,15 @@ class ManifestItem(BaseModel):
     check: str | None = Field(
         default=None,
         description=(
-            "Shell snippet that exits non-zero if the dependency is missing/wrong. "
-            "When None, the verify renderer generates a sensible default for the kind."
+            "POSIX shell snippet that exits zero iff the dependency is installed and usable."
         ),
     )
+    version_check: str | None = Field(
+        default=None,
+        description="POSIX shell snippet that exits zero iff the pinned version is installed.",
+    )
+    activation_paths: list[str] = Field(default_factory=list, description="Cache-relative path globs to prepend to PATH.")
+    activation_env: dict[str, str] = Field(default_factory=dict, description="Environment variables to export during activation.")
     install_hint: str | None = Field(
         default=None,
         description="Optional hint for HOW to install (e.g. 'rbenv install 3.4.2'). Advisory.",
