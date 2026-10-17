@@ -84,6 +84,17 @@
 
 ### Functional Requirements
 
+<!--
+  Constitution VI (Project Ecosystem Neutrality): When this feature orchestrates
+  user repositories, state outcomes in project-neutral terms. Setup, activation,
+  services and checks must derive from cited repository evidence and validated
+  generic declarations. Specify holds for incomplete evidence or unsupported
+  capabilities, and required executable verification that agent judgment cannot
+  waive. Include an unfamiliar toolchain/nested-layout acceptance scenario.
+  This does not restrict Coordinare's own implementation stack or explicitly
+  selected generic platform facilities.
+-->
+
 - **FR-001**: System MUST [specific capability, e.g., "allow users to create accounts"]
 - **FR-002**: System MUST [specific capability, e.g., "validate email addresses"]  
 - **FR-003**: Users MUST be able to [key interaction, e.g., "reset their password"]

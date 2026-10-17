@@ -33,6 +33,20 @@
 
 [Gates determined based on constitution file]
 
+For changes that orchestrate user-project environments, explicitly check
+Constitution VI (Project Ecosystem Neutrality):
+
+- Identify where immutable repository evidence becomes a validated generic
+  contract for setup, activation, services and executable verification.
+- Confirm core behavior does not branch on project language, framework, library,
+  dependency filename or runtime-manager layout. Distinguish Coordinare's own
+  dependencies and operator-selected generic platform facilities.
+- Preserve required checks, independent review, trust/provenance and all existing
+  quality gates; define explicit holds for missing evidence or capabilities.
+- Plan unfamiliar-toolchain and nested-project fixtures that need no new
+  ecosystem-specific production branches. Mark this gate N/A with a reason when
+  the feature does not affect user-project environment orchestration.
+
 ## Project Structure
 
 ### Documentation (this feature)
