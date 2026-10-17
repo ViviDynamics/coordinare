@@ -33,7 +33,10 @@ env_cache:
   manifest_attempt_timeout_seconds: 600
   manifest_max_model_calls: 128
   manifest_max_total_reads: 512
-  manifest_max_repairs: 2
+  manifest_max_schema_repairs: 2
+  manifest_max_coverage_revisions: 2
+  manifest_max_execution_repairs: 2
+  manifest_max_review_context_bytes: 1048576
 ```
 
 Set the named API-key variable in the daemon environment, using the deployment's
@@ -290,3 +293,35 @@ frozen provenance; discovery alone exits unsuccessfully. These are direct servic
 entrypoint tests, not a live daemon or outer retry-loop test. Runtime cache contents
 and temporary images are removed by default; readiness in a report is historical
 for that validation attempt, not an installed deployment.
+
+
+## Complete reviewer evidence and correction limits
+
+Before each fresh coverage judgment, Coordinare independently fetches every manifest
+input at the pinned commit, verifies its hash and delivers its contents to the reviewer.
+The reviewer can inspect more files and must still judge executable coverage. Delivery
+establishes the supplied bytes; it does not establish that the model understood them.
+Source drift and missing evidence hold before judgment. The full serialized review
+conversation, including additional tool results, is limited to 1 MiB by default
+(`manifest_max_review_context_bytes`, maximum 16 MiB). Oversized evidence holds without
+truncation or automatic partitioning. The JSON-chat backend currently exposes no input
+token capacity; the byte cap does not guarantee provider context capacity. Provider
+request failures hold and do not consume schema corrections. Output limits remain set
+on the model backend.
+
+Schema corrections, coverage revisions and executable repairs each have an independent
+maximum of two, configurable from zero to two. All categories share the original
+aggregate deadline, model-call and source-read limits. A new candidate, new reviewer,
+cache generation or daemon restart never renews them. The old `manifest_max_repairs`
+configuration is a deprecated alias supplying all three limits; combining it with any
+new category setting is rejected. A valid coverage revision can add obligations but
+cannot remove, make optional or narrow existing required checks or lifecycle scopes.
+
+Attempt journal version two stores every category's consumption. Pending or held
+version-one journals require an explicit clean rebuild after confirming no executor is
+running; they are never silently granted new allowances. Frozen accepted caches remain
+readable. Preserve rejected evidence and confirm owned-runtime cleanup before an operator
+clears the old attempt state and requests a new run. Interrupted execution still holds.
+Current diagnostics record the actual stage, category consumed/max counts, mandatory
+inputs delivered/required, context bytes and remaining aggregate time. Raw source and
+model rationale are excluded from these summaries.

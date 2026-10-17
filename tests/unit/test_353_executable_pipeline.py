@@ -65,7 +65,7 @@ async def test_failed_clean_execution_gets_new_installation_and_fresh_independen
     repaired = accepted_environment(cache)
     assert repaired.digest() != original.digest()
     assert agent.review_starts == 2
-    assert cache.environment_attempt['repairs'] == 1
+    assert cache.environment_attempt['execution_repairs'] == 1
     repo.mkdir()
     (repo/'guide').write_text(SOURCE)
     assert (await run_manifest(repaired, cache=cache.cache_dir, repo=repo, scratch=scratch, install=True)).passed
@@ -113,7 +113,7 @@ async def test_reservations_are_durable_before_model_and_source_requests(tmp_pat
     await publish(service, cache, state, capability, model)
     assert saves[-1]['status'] == 'executing'
     assert saves[-1]['calls'] == 4
-    assert saves[-1]['reads'] == 2
+    assert saves[-1]['reads'] == 3
 
 
 @pytest.mark.asyncio

@@ -348,3 +348,21 @@ async def test_bare_manifest_and_schema_echo_review_repair_with_explicit_envelop
     assert review.manifest_digest == manifest.digest()
     assert events[-1]["repairs"] == 2
     assert sum(len(messages) == 2 for messages in calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_provider_error_is_not_retried_as_malformed_json(monkeypatch):
+    import httpx
+
+    from coordinare.services.conducting import OpenAiApiBackend
+    original = httpx.AsyncClient
+    def answer(request):
+        return httpx.Response(400, json={'error': {'code':'context_length_exceeded', 'message':'request rejected'}})
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: original(transport=httpx.MockTransport(answer), **kwargs))
+    backend = OpenAiApiBackend(api_key='fixture', base_url='https://test.invalid/v1')
+    events = []
+    with pytest.raises(EnvironmentDiscoveryError) as exc:
+        await run(backend.chat_json_with_metadata, diagnostics=events.append)
+    assert exc.value.code == 'provider_request_failed'
+    assert events[-1]['calls'] == 1
+    assert events[-1]['schema_repairs'] == 0

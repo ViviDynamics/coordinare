@@ -161,3 +161,56 @@ async def test_cancelled_review_preparation_drains_source_reads():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_elm_sequence_schema_then_two_coverage_revisions():
+    discovery_outputs = [None, 'schema_invalid', 'valid', 'valid', 'valid']
+    review_count = 0
+    budget = AttemptBudget()
+    async def fetch(path):
+        return SOURCE
+    async def chat(messages):
+        nonlocal review_count
+        context = json.loads(messages[1]['content'])
+        if 'manifest' in context:
+            assert {item['path'] for item in context['mandatory_evidence']} == {PATH}
+            review_count += 1
+            result = assessment(candidate(), 'revise' if review_count <= 2 else 'accept')
+            result['assessment']['rationale'] = ('Missing required lanes' if review_count == 1 else
+                'Conflicting pinned versions and no usability check' if review_count == 2 else 'Complete executable coverage')
+            return json.dumps(result)
+        step = discovery_outputs.pop(0)
+        if step is None:
+            return json.dumps({'tool':'read_file', 'path':PATH})
+        value = candidate()
+        if step == 'schema_invalid':
+            value['activation']['env'] = {'UNSAFE': '${UNSAFE}:suffix'}
+        return json.dumps({'manifest':value})
+    _, review = await discover_and_review(symphony_name='suite', commit=COMMIT, paths=[PATH],
+        capabilities=CAPABILITIES, fetch=fetch, chat=chat, budget=budget)
+    assert review.verdict == 'accept'
+    assert review_count == 3
+    assert (budget.schema_repairs, budget.coverage_revisions, budget.execution_repairs) == (1, 2, 0)
+
+
+@pytest.mark.asyncio
+async def test_preparation_phase_deadline_is_not_reported_as_aggregate_expiry():
+    import asyncio
+    reads = 0
+    async def fetch(path):
+        nonlocal reads
+        reads += 1
+        if reads > 1:
+            await asyncio.Event().wait()
+        return SOURCE
+    async def chat(messages):
+        return json.dumps({'tool':'read_file', 'path':PATH}) if len(messages) == 2 else json.dumps({'manifest':candidate()})
+    events = []
+    with pytest.raises(EnvironmentDiscoveryError) as exc:
+        await discover_and_review(symphony_name='suite', commit=COMMIT, paths=[PATH],
+            capabilities=CAPABILITIES, fetch=fetch, chat=chat, diagnostics=events.append,
+            limits=DiscoveryLimits(phase_timeout_seconds=0.02))
+    assert exc.value.code == 'review_preparation_deadline'
+    assert events[-1]['stage'] == 'review_preparation'
+    assert events[-1]['remaining_seconds'] > 500

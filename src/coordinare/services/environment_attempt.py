@@ -28,6 +28,7 @@ class DiscoveryChatReply:
     text: str
     usage: Mapping[str, int] | None = None
     finish_reason: str | None = None
+    error_code: str | None = None
 
 
 @dataclass
@@ -101,7 +102,12 @@ class AttemptBudget:
         if getattr(self, counter) >= getattr(self, "max_" + counter):
             message = f"environment discovery {kind} repair limit exceeded"
             raise EnvironmentDiscoveryError(message, code=f"attempt_{kind}_limit")
-        setattr(self, counter, getattr(self, counter) + 1)
+        if kind == "schema":
+            self.schema_repairs += 1
+        elif kind == "coverage":
+            self.coverage_revisions += 1
+        else:
+            self.execution_repairs += 1
 
     async def flush(self) -> None:
         """Persist reservations before calling a model, source reader or executor."""
@@ -117,6 +123,9 @@ class AttemptBudget:
         if not isinstance(reply, DiscoveryChatReply):
             message = "model reply has unsupported metadata"
             raise EnvironmentDiscoveryError(message, code="model_reply_invalid")
+        if reply.error_code is not None:
+            raise EnvironmentDiscoveryError("environment model provider rejected or failed the request",
+                code="provider_request_failed")
         self.metadata_available |= reply.usage is not None or reply.finish_reason is not None
         for key, value in (reply.usage or {}).items():
             if (key in {"input", "output", "input_tokens", "output_tokens", "cache_read", "cache_write"}

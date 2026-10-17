@@ -59,6 +59,10 @@ class Profile:
     installer_timeout: float = 900
     save_transcripts: bool = False
     keep_caches: bool = False
+    max_schema_repairs: int = 2
+    max_coverage_revisions: int = 2
+    max_execution_repairs: int = 2
+    max_review_context_bytes: int = 1024 * 1024
 
 
 @dataclass
@@ -452,6 +456,10 @@ async def validate_repository(
     settings = EnvCacheConfig(
         manifest_phase_timeout_seconds=profile.phase_timeout,
         manifest_attempt_timeout_seconds=profile.attempt_timeout,
+        manifest_max_schema_repairs=profile.max_schema_repairs,
+        manifest_max_coverage_revisions=profile.max_coverage_revisions,
+        manifest_max_execution_repairs=profile.max_execution_repairs,
+        manifest_max_review_context_bytes=profile.max_review_context_bytes,
     )
     global_config = SimpleNamespace(
         performer_image=image,
@@ -586,6 +594,11 @@ async def validate_repository(
             status="held", reason_code="validation_stage_failed", error_type=type(exc).__name__,
         )
     finally:
+        if isinstance(cache.environment_attempt, dict):
+            diagnostics = cache.environment_attempt.get("diagnostics", {})
+            result["diagnostics"] = diagnostics
+            if result["stage"] == "discovery" and diagnostics.get("stage"):
+                result["stage"] = diagnostics["stage"]
         result.update(
             seconds=round(time.monotonic() - started, 2),
             model_calls=calls,
@@ -646,6 +659,10 @@ def main() -> int:
     parser.add_argument("--effort")
     parser.add_argument("--phase-timeout", type=float, default=120)
     parser.add_argument("--attempt-timeout", type=float, default=600)
+    parser.add_argument("--max-schema-repairs", type=int, choices=range(3), default=2)
+    parser.add_argument("--max-coverage-revisions", type=int, choices=range(3), default=2)
+    parser.add_argument("--max-execution-repairs", type=int, choices=range(3), default=2)
+    parser.add_argument("--max-review-context-bytes", type=int, default=1024 * 1024)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--approval-timeout", type=float, default=600)
     parser.add_argument("--save-transcripts", action="store_true")
@@ -664,6 +681,10 @@ def main() -> int:
         approval_timeout=args.approval_timeout,
         save_transcripts=args.save_transcripts,
         keep_caches=args.keep_caches,
+        max_schema_repairs=args.max_schema_repairs,
+        max_coverage_revisions=args.max_coverage_revisions,
+        max_execution_repairs=args.max_execution_repairs,
+        max_review_context_bytes=args.max_review_context_bytes,
     )
     revision = subprocess.check_output([shutil.which("git") or "/usr/bin/git", "rev-parse", "HEAD"], text=True).strip()
     _write(

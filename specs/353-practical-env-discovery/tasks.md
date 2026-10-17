@@ -85,8 +85,8 @@ Copilot did not deliver a review; the shipping workflow fallback used independen
 
 ## Approved complete-review-evidence amendment
 
-- [ ] T044 Independent schema/coverage/execution budgets and compatible configuration (review-evidence-plan Task 1).
-- [ ] T045 Version-two durable journal, no budget renewal, explicit legacy migration holds (Task 2).
-- [ ] T046 Deterministic fresh mandatory-input delivery and bounded review context (Task 3).
-- [ ] T047 Pipeline integration, safe diagnostics and complete Elm-sequence replay (Task 4).
+- [x] T044 Independent schema/coverage/execution budgets and compatible configuration (review-evidence-plan Task 1).
+- [x] T045 Version-two durable journal, no budget renewal, explicit legacy migration holds (Task 2).
+- [x] T046 Deterministic fresh mandatory-input delivery and bounded review context (Task 3).
+- [x] T047 Pipeline integration, safe diagnostics and complete Elm-sequence replay (Task 4).
 - [ ] T048 Independent full-diff review, CI and the same 29 pinned repositories, with separate Elm1800 profile (Task 5). T039 still requires actual clean-success gates.

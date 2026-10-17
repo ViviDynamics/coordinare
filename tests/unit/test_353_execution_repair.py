@@ -295,3 +295,18 @@ def test_unknown_journal_version_holds(tmp_path, version):
     cache.environment_attempt['version'] = version
     with pytest.raises(EnvironmentDiscoveryError):
         begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=120)
+
+
+def test_durable_diagnostics_keep_actual_stage_and_category_counts(tmp_path):
+    cache = cache_fixture(tmp_path)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
+    budget.stage = 'review'
+    budget.reserve_repair('schema')
+    budget.mandatory_inputs_required = 8
+    budget.mandatory_inputs_delivered = 8
+    save_attempt(cache, budget)
+    summary = cache.environment_attempt['diagnostics']
+    assert summary['stage'] == 'review'
+    assert summary['schema_repairs'] == 1
+    assert summary['mandatory_inputs_required'] == summary['mandatory_inputs_delivered'] == 8
+    assert summary['max_execution_repairs'] == 2
