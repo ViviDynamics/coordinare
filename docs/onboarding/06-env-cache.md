@@ -203,3 +203,8 @@ and service action remains mandatory, regardless of probes or reviewer approval.
 The private validation harness requires separate scope approval for each exact
 probe plan and accepted manifest digest. Timeout defaults remain unchanged;
 longer validation profiles are explicit experiments and never renew a live attempt.
+
+Production bootstrap requires completed capability preflight before it can accept
+a manifest. A premature manifest gets one stage reminder; repeatedly skipping
+preflight holds without renewing any budget. A repaired attempt may reuse prior
+complete base-image observations only while source/image/platform identities match.

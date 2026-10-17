@@ -101,3 +101,9 @@ The complete-evidence amendment retest also held for all 29 default repositories
 - [x] T052 Discovery/review integration and required install assertions (FR-004/005).
 - [x] T053 Separate probe scope approval and accurate diagnostics (FR-007).
 - [ ] T054 Independent review, CI and Elm-first 3600-second live validation (acceptance 1-9).
+
+### Correction following the first executable-preflight Elm run
+
+- [x] T055 Require actual capability preflight in production/harness before accepting a manifest; no budget renewal or readiness waiver.
+- [x] T056 Normalize only unambiguous schema-valid bare review objects; retain citation/provenance validation and reject extra fields.
+- [ ] T057 Run focused/preflight checks, CI, and one fresh pinned Elm-only 3600-second profile; preserve prior failed evidence and explicit scope approvals.

@@ -311,6 +311,16 @@ async def test_cleanup_requires_confirmed_container_absence(monkeypatch, code, e
 @pytest.mark.asyncio
 @pytest.mark.parametrize('confirmed,expected', [(True, 2), (False, 1)])
 async def test_harness_archives_rejected_attempt_and_requires_new_scope(tmp_path, monkeypatch, confirmed, expected):
+    from tests.unit.test_353_bootstrap_pipeline import probe_transport
+    async def approve_probe(target, plan, **kwargs):
+        from scripts.validate_environment_repositories import probe_authorized
+        (target/'probe-approved.json').write_text(json.dumps({'approved':True,'scope':'environment_probe',
+            'plan_digest':plan.digest(),'source_commit':plan.source_commit,'image_ref':plan.capabilities.image_ref,
+            'platform':plan.capabilities.platform}))
+        assert probe_authorized(target/'probe-approved.json', plan)
+    monkeypatch.setattr('coordinare.services.environment_probe_service.execute_environment_probe', probe_transport)
+    monkeypatch.setattr('scripts.validate_environment_repositories.await_probe_approval', approve_probe)
+
     from tests.unit.env_manifest_fixture import verification_output
     from tests.unit.test_353_bootstrap_pipeline import SOURCE, Proposal
 
