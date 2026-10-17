@@ -1419,18 +1419,39 @@ async def _docker_logs_lines(container_id: str, tail: int) -> list[str]:
     return stdout_b.decode(errors="replace").splitlines()
 
 
+def _runtime_tail_logs(svc: Any) -> Any:
+    """Return the service runtime's best-effort log tail, or None.
+
+    344: ``PerformerRuntime.tail_logs`` runs ``docker logs`` against a container
+    id and the ``pods/log`` endpoint against a Pod name, so the caller never has
+    to know which transport it is on. Shelling out to the docker binary here is
+    how the kubernetes transport lost every bootstrap traceback: the daemon
+    container has no docker, and the handle is a Pod name.
+    """
+    runtime = getattr(svc, "_runtime", None)
+    tail_logs = getattr(runtime, "tail_logs", None)
+    return tail_logs if callable(tail_logs) else None
+
+
 async def _snapshot_container_logs(
-    container_id: str | None, last_snapshot: list[str],
+    svc: Any, container_id: str | None, last_snapshot: list[str],
 ) -> list[str]:
-    """Snapshot container logs for idle detection.  Snapshot *before*
+    """Snapshot performer logs for idle detection.  Snapshot *before*
     check_status, because a terminal status causes HTTPPerformerService to
-    stop and ``--rm``-remove the container, after which ``docker logs``
-    returns nothing.  ``--tail 500`` keeps enough history that the
+    stop and remove the container or Pod, after which logs return
+    nothing.  ``--tail 500`` keeps enough history that the
     meaningful (non-poll) lines don't scroll out of the idle-detection
     window under poll-noise.
     """
     if not container_id:
         return last_snapshot
+    tail = _runtime_tail_logs(svc)
+    if tail is not None:
+        try:
+            snap: list[str] = await tail(container_id, lines=500)
+            return snap[-500:] if snap else last_snapshot
+        except Exception:
+            return last_snapshot
     try:
         snap = await _docker_logs_lines(container_id, 500)
         if snap:
@@ -1447,8 +1468,10 @@ async def _bootstrap_failure_logs(
     last_logs_snapshot: list[str],
 ) -> list[str]:
     """Collect the log tail attached to a terminal bootstrap failure:
-    the pre-poll snapshot, then a direct ``docker logs`` pull, then the
-    service's agent-log buffer as a last resort.
+    the pre-poll snapshot, then a direct pull through the service's
+    runtime (344: ``docker logs`` under docker, the ``pods/log`` endpoint
+    under kubernetes), then the service's agent-log buffer as a last
+    resort.
     """
     logs_tail: list[str] = list(last_logs_snapshot[-60:]) if last_logs_snapshot else []
     # Pull logs directly from the bootstrap container by id.
@@ -1467,11 +1490,19 @@ async def _bootstrap_failure_logs(
         except Exception:
             bootstrap_cid = None
     if bootstrap_cid and not logs_tail:
-        try:
-            lines = await _docker_logs_lines(bootstrap_cid, 100)
-            logs_tail = list(lines)[-60:]
-        except Exception as exc:
-            logs_tail = [f"<docker logs failed: {exc}>"]
+        tail = _runtime_tail_logs(svc)
+        if tail is not None:
+            try:
+                lines = await tail(bootstrap_cid, lines=100)
+                logs_tail = list(lines)[-60:]
+            except Exception as exc:
+                logs_tail = [f"<tail_logs failed: {exc}>"]
+        else:
+            try:
+                lines = await _docker_logs_lines(bootstrap_cid, 100)
+                logs_tail = list(lines)[-60:]
+            except Exception as exc:
+                logs_tail = [f"<docker logs failed: {exc}>"]
     if not logs_tail and hasattr(svc, "get_agent_logs"):
         try:
             raw_logs = svc.get_agent_logs()
@@ -4084,7 +4115,7 @@ class CoordinareDaemon:
                 # hangs cannot hold the job past the wall clock.
                 async with asyncio.timeout(max(0, deadline - monotonic())):
                     poll.last_logs_snapshot = await _snapshot_container_logs(
-                        container_id, poll.last_logs_snapshot,
+                        svc, container_id, poll.last_logs_snapshot,
                     )
                     status_result = await svc.check_status(job_id)
             except TimeoutError:

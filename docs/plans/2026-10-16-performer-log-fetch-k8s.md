@@ -35,10 +35,10 @@ no chart or config changes.
 
 ## Tasks
 
-- [ ] 1. Red: unit tests in `tests/unit/test_564_bootstrap_failure_logs_k8s.py` proving
+- [x] 1. Red: unit tests in `tests/unit/test_564_bootstrap_failure_logs_k8s.py` proving
   `_bootstrap_failure_logs` and `_snapshot_container_logs` fetch through the service
   runtime's `tail_logs` (kubernetes-shaped fake) and never invoke the docker path; watch
   them fail for the right reason.
-- [ ] 2. Green: minimal change in `src/coordinare/daemon.py` — both functions prefer
+- [x] 2. Green: minimal change in `src/coordinare/daemon.py` — both functions prefer
   `runtime.tail_logs`, poll loop passes `svc` into `_snapshot_container_logs`.
-- [ ] 3. Regression: full unit suite, lint and typecheck green (preflight).
+- [x] 3. Regression: full unit suite, lint and typecheck green (preflight).
