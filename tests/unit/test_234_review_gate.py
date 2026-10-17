@@ -50,6 +50,7 @@ def _wired_state(tmp_path: Path, state_ec: Any, service: EnvCacheService) -> dic
         "env_cache": {"sym": state_ec},
         "env_cache_service": service,
         "coordinare_config": mount_config(
+            performer_image="trusted/global@sha256:" + "a" * 64,
             env_cache_root=str(tmp_path / "caches"),
             state_file_path=str(tmp_path / "state" / "coordinare.state.json"),
         ),
@@ -64,6 +65,11 @@ def _service(tmp_path: Path) -> EnvCacheService:
 
 
 def _no_docker(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("coordinare.services.environment_capabilities._docker_identity",
+        AsyncMock(return_value=("trusted/global@sha256:" + "a" * 64, "linux/x86_64")))
+
     async def _verify(*_a: Any, **_k: Any) -> tuple[bool | None, str]:
         return True, "trusted clean verification fixture"
 

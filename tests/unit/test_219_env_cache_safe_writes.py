@@ -114,11 +114,14 @@ def _manifest(cache: Path, performer_mounts: tuple[Path, ...] = ()) -> tuple[str
     from coordinare_service_inference.environment.models import (
         CoverageAssessment,
         EnvironmentManifest,
+        ExecutionCapabilities,
     )
 
     service = EnvCacheService(_configured(MagicMock()))
     commit = _head("safe-write-source")
-    metadata = reviewed_metadata(source_commit=commit,
+    capabilities = ExecutionCapabilities(schema_version=1, image_ref="trusted/global@sha256:" + "a" * 64,
+        platform="linux/x86_64", cache_mount_path="/devenv/sym", install_network="enabled", verify_network="disabled")
+    metadata = reviewed_metadata(source_commit=commit, capabilities=capabilities,
         checks=[{"id": "baseline", "argv": ["zog", "--check", "7"]}],
         activation={"path": ["{cache}/toolchain/bin"]})
     manifest = EnvironmentManifest.model_validate(metadata["environment_manifest"])
@@ -132,7 +135,7 @@ def _manifest(cache: Path, performer_mounts: tuple[Path, ...] = ()) -> tuple[str
         return asyncio.run(service._build_manifest_artifacts(
             performer_mounts=performer_mounts, symphony_name="sym", repo="sym", github_org="org",
             github_service=github, readme_contents={}, current_sha="source-key", cache_dir=cache,
-            cache_mount_path="/devenv/sym", llm_chat=AsyncMock(), cache_state=state))
+            cache_mount_path="/devenv/sym", llm_chat=AsyncMock(), cache_state=state, capabilities=capabilities))
 
 
 # ---------------------------------------------------------------------------
