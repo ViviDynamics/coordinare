@@ -1,0 +1,141 @@
+"""Probe observations are bounded and cannot manufacture runtime identity."""
+from __future__ import annotations
+
+import copy
+
+import pytest
+from pydantic import ValidationError
+
+from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
+from tests.unit.test_353_discovery_repair import CAPABILITIES, COMMIT, PATH
+
+
+def request_data():
+    return {'schema_version': 1, 'commands': [{'id': 'tool', 'argv': ['unfamiliar-tool', '--version'],
+        'timeout_seconds': 30.0}], 'citations': {'tool': [PATH]}, 'questions': {'tool': 'Is the required tool available?'}}
+
+
+def plan():
+    from coordinare.services.environment_probes import ProbePlan, ProbeRequest
+    return ProbePlan(request=ProbeRequest.model_validate(request_data()), source_commit=COMMIT,
+        inventory_digest='b'*64, inputs={PATH:'c'*64}, capabilities=CAPABILITIES)
+
+
+def report_data(p=None):
+    p = p or plan()
+    return {'schema_version':1, 'plan_digest':p.digest(), 'source_commit':COMMIT,
+        'image_ref':CAPABILITIES.image_ref, 'platform':CAPABILITIES.platform,
+        'results':[{'id':'tool', 'status':'completed', 'exit_code':127, 'output':'not found', 'truncated':False}],
+        'cleanup_confirmed':True}
+
+
+@pytest.mark.parametrize('mutation', ['many', 'duplicate', 'scope', 'optional', 'dependency', 'timeout', 'identity', 'hook'])
+def test_invalid_probe_request_is_rejected(mutation):
+    from coordinare.services.environment_probes import ProbeRequest
+    data = request_data()
+    command = data['commands'][0]
+    if mutation == 'many':
+        data['commands'] = [dict(command, id=f'c{i}') for i in range(17)]
+    elif mutation == 'duplicate':
+        data['commands'].append(copy.deepcopy(command))
+    elif mutation == 'identity':
+        data['source_commit'] = COMMIT
+    else:
+        key, value = {'scope':('scope',['qa']), 'optional':('required',False),
+            'dependency':('depends_on',['other']), 'timeout':('timeout_seconds',float('inf')),
+            'hook':('env',{'BASH_ENV':'/bad'})}[mutation]
+        command[key] = value
+    with pytest.raises(ValidationError):
+        ProbeRequest.model_validate(data)
+
+
+def test_absent_executable_is_an_observation_not_a_pass():
+    from coordinare.services.environment_probes import ProbeReport, validate_probe_report
+    p = plan()
+    report = ProbeReport.model_validate(report_data(p))
+    validate_probe_report(p, report)
+    assert report.results[0].exit_code == 127
+    with pytest.raises(ValidationError):
+        type(p)(request=p.request, source_commit=COMMIT, inventory_digest='b'*64, inputs={}, capabilities=CAPABILITIES)
+
+
+@pytest.mark.parametrize('mutation', ['identity', 'missing', 'duplicate', 'exit', 'output', 'cleanup'])
+def test_untrusted_probe_report_holds(mutation):
+    from coordinare.services.environment_probes import ProbeReport, validate_probe_report
+    p = plan()
+    data = report_data(p)
+    if mutation == 'identity':
+        data['platform'] = 'linux/other'
+    elif mutation == 'missing':
+        data['results'] = []
+    elif mutation == 'duplicate':
+        data['results'] *= 2
+    elif mutation == 'exit':
+        data['results'][0]['exit_code'] = None
+    elif mutation == 'output':
+        data['results'][0]['output'] = '\u00e9'*8193
+    elif mutation == 'cleanup':
+        data['cleanup_confirmed'] = False
+    with pytest.raises((ValidationError, EnvironmentDiscoveryError)):
+        validate_probe_report(p, ProbeReport.model_validate(data))
+
+
+def test_probe_budget_survives_save_and_resume(tmp_path):
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_repair import begin_attempt, save_attempt
+    from tests.unit.test_353_execution_repair import cache_fixture
+    cache = cache_fixture(tmp_path)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    budget.reserve_probe_batch()
+    save_attempt(cache, budget)
+    restored = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    assert restored.probe_batches == 1
+    restored.reserve_probe_batch()
+    with pytest.raises(EnvironmentDiscoveryError, match='probe'):
+        restored.reserve_probe_batch()
+
+
+def test_probe_request_reservation_is_bounded():
+    budget = AttemptBudget()
+    budget.reserve_probe_batch()
+    budget.reserve_probe_batch()
+    with pytest.raises(EnvironmentDiscoveryError):
+        budget.reserve_probe_batch()
+
+
+def test_probe_ownership_refuses_overlap_and_retains_report(tmp_path):
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_probes import ProbeReport
+    from coordinare.services.environment_repair import (
+        begin_attempt,
+        finish_probe,
+        reserve_probe,
+        save_attempt,
+    )
+    from tests.unit.test_353_execution_repair import cache_fixture
+    cache = cache_fixture(tmp_path)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    budget.reserve_probe_batch()
+    save_attempt(cache, budget)
+    p = plan()
+    reserve_probe(cache, p)
+    with pytest.raises(EnvironmentDiscoveryError):
+        reserve_probe(cache, p)
+    with pytest.raises(EnvironmentDiscoveryError):
+        begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    finish_probe(cache, ProbeReport.model_validate(report_data(p)))
+    assert cache.environment_attempt['probe_owner'] is None
+    assert len(cache.environment_attempt['probe_reports']) == 1
+    assert begin_attempt(cache, DiscoveryLimits(), outer_seconds=600).probe_batches == 1
+
+
+def test_pending_version_two_journal_requires_explicit_restart(tmp_path):
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_repair import begin_attempt
+    from tests.unit.test_353_execution_repair import cache_fixture
+    cache = cache_fixture(tmp_path)
+    begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    cache.environment_attempt['version'] = 2
+    with pytest.raises(EnvironmentDiscoveryError) as exc:
+        begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    assert exc.value.code == 'legacy_attempt_requires_restart'

@@ -26,6 +26,7 @@ from coordinare.services.environment_attempt import (
     AttemptBudget,
     EnvironmentDiscoveryError,
 )
+from coordinare.services.environment_probes import ProbePlan, ProbeReport, validate_probe_report
 
 if TYPE_CHECKING:
     from coordinare.models.env_cache import EnvCacheState
@@ -42,7 +43,11 @@ class RepairJournal(BaseModel):
     """Daemon-owned state; a pending repair survives snapshot roundtrips."""
 
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
-    version: Literal[2] = 2
+    version: Literal[3] = 3
+    probe_batches: int = Field(default=0, ge=0, le=2)
+    probe_reports: list[dict[str, Any]] = Field(default_factory=list, max_length=2)
+    probe_owner: str | None = None
+    probe_plan: dict[str, Any] | None = None
     source_commit: str = Field(pattern=r'^[0-9a-f]{40,64}$')
     base_slug: str = Field(pattern=r'^[a-z0-9][a-z0-9_-]{0,180}$')
     base_cache_dir: str
@@ -85,6 +90,10 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
         data["version"] = 2
         for name in ("schema_repairs", "coverage_revisions", "execution_repairs"):
             data[name], data["max_" + name] = consumed, maximum
+    if isinstance(data, dict) and data.get("version") == 2:
+        if data.get("status") != "ready":
+            _refuse("legacy environment run requires explicit restart after confirmed cleanup", code="legacy_attempt_requires_restart")
+        data = {**data, "version": 3}
     try:
         if len(json.dumps(cache.environment_attempt).encode()) > JOURNAL_MAX_BYTES:
             _refuse('environment repair journal exceeds its bound')
@@ -109,7 +118,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
     data = cache.environment_attempt
     if data is None:
         return
-    if not isinstance(data, dict) or data.get("version") not in (1, 2):
+    if not isinstance(data, dict) or data.get("version") not in (1, 2, 3):
         _refuse("unknown environment journal cannot be reset without reconciliation")
     normalized = dict(data)
     if normalized["version"] == 1:
@@ -117,6 +126,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
         normalized["version"] = 2
         for counter in ("schema_repairs", "coverage_revisions", "execution_repairs"):
             normalized[counter], normalized["max_" + counter] = used, maximum
+    normalized["version"] = 3
     try:
         parsed = RepairJournal.model_validate(normalized)
     except ValidationError:
@@ -165,6 +175,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
         max_reads=journal.max_reads, max_schema_repairs=journal.max_schema_repairs,
         max_coverage_revisions=journal.max_coverage_revisions, max_execution_repairs=journal.max_execution_repairs)
     budget.calls, budget.reads = journal.calls, journal.reads
+    budget.probe_batches = journal.probe_batches
     for name in ("schema_repairs", "coverage_revisions", "execution_repairs"):
         if getattr(journal, name) > getattr(journal, "max_" + name):
             _refuse(f"environment {name} limit exceeded after configuration change", code="attempt_" + name.split("_")[0] + "_limit")
@@ -179,7 +190,7 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
     """Resume an existing finite budget; a new source gets a separate logical attempt."""
     now = time.time() if now is None else now
     previous = journal_for(cache) if cache.environment_attempt is not None else None
-    if previous is not None and (previous.last_error == "cleanup_unconfirmed" or previous.status == "executing"):
+    if previous is not None and (previous.last_error == "cleanup_unconfirmed" or previous.status == "executing" or previous.probe_owner is not None):
         _refuse("environment repair requires confirmed cleanup of interrupted execution")
     seconds = min(limits.attempt_timeout_seconds, outer_seconds if outer_seconds > 0 else MAX_ATTEMPT_SECONDS,
                   MAX_ATTEMPT_SECONDS)
@@ -209,6 +220,7 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
     """Save consumed reservations before external work; never move the original expiry."""
     journal = journal_for(cache)
     journal.diagnostics = budget.summary()
+    journal.probe_batches = max(journal.probe_batches, budget.probe_batches)
     journal.calls = max(journal.calls, budget.calls)
     journal.reads = max(journal.reads, budget.reads)
     journal.schema_repairs = max(journal.schema_repairs, budget.schema_repairs)
@@ -222,6 +234,30 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
             _refuse('environment repair runtime identity changed')
         journal.target = capabilities
         journal.status = 'executing'
+    _publish(cache, journal)
+
+
+def reserve_probe(cache: EnvCacheState, plan: ProbePlan) -> None:
+    """Claim an already-reserved batch before any external executor work."""
+    journal = journal_for(cache)
+    if (journal.probe_owner is not None or journal.status != "discovering"
+            or journal.probe_batches != len(journal.probe_reports) + 1 or journal.source_commit != plan.source_commit):
+        _refuse("environment probe overlaps or lacks a durable reservation", code="probe_reservation_invalid")
+    journal.probe_owner = plan.digest()
+    journal.probe_plan = plan.model_dump(mode="json")
+    _publish(cache, journal)
+
+
+def finish_probe(cache: EnvCacheState, report: ProbeReport) -> None:
+    """Release ownership only after exact complete evidence and confirmed cleanup."""
+    journal = journal_for(cache)
+    if journal.probe_plan is None or journal.probe_owner != report.plan_digest:
+        _refuse("environment probe ownership mismatch", code="probe_report_invalid")
+    plan = ProbePlan.model_validate(journal.probe_plan)
+    validate_probe_report(plan, report)
+    journal.probe_reports.append(report.model_dump(mode="json"))
+    journal.probe_owner = None
+    journal.probe_plan = None
     _publish(cache, journal)
 
 
