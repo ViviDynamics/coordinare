@@ -292,7 +292,8 @@ def _default_check(item: ManifestItem) -> str:
         if name == "bundler":
             return 'command -v bundle >/dev/null 2>&1 && echo "OK: bundler" || { echo "FAIL: bundler missing"; FAILED=1; }'
         return (
-            f'( bundle show {name} >/dev/null 2>&1 || gem list -i {name} >/dev/null 2>&1 ) '
+            f'( cd "$DEVENV/project" && BUNDLE_GEMFILE="$DEVENV/project/Gemfile" '
+            f'bundle show {name} >/dev/null 2>&1 || gem list -i {name} >/dev/null 2>&1 ) '
             f'&& echo "OK: gem {name}" || {{ echo "FAIL: gem {name} not installed"; FAILED=1; }}'
         )
     # system / node_pkg → SOFT check (warn, do NOT set FAILED). These are
