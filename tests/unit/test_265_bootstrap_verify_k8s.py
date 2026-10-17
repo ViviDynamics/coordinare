@@ -32,7 +32,11 @@ from coordinare.services.env_cache import (
 )
 from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.kubernetes_verifier import VerifierConfigurationError
-from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
+from tests.unit.env_manifest_fixture import (
+    record_verified_cache_fixture,
+    reviewed_cache,
+    verification_output,
+)
 
 RENDERED_VERIFY = "#!/bin/bash\necho 'FAIL: ruby 3.4.2 not runnable' >&2\nexit 1\n"
 RENDERED_ACTIVATE = "# AUTHORITATIVE activate.sh (daemon-rendered)\n"
@@ -211,6 +215,7 @@ def _k8s_daemon(
         agent_transport=transport, global_config=SimpleNamespace(
             performer_endpoints=[], performer_log_dir=None, env_cache_root=state_dir,
             performer_image="trusted/global@sha256:" + "a" * 64,
+            kubernetes_verifier_platform="linux/x86_64",
             env_cache=SimpleNamespace(kubernetes_verifier_network_isolated=True)),
     )
     daemon._state["github_service"] = github
@@ -351,6 +356,7 @@ async def test_kubernetes_success_is_not_downgraded_by_the_daemon_seed_directory
     }
 
     reviewed_cache(ec, source_commit="f" * 40)
+    record_verified_cache_fixture(ec)
     service.on_bootstrap_complete("sym", True, state)
 
     assert ec.last_bootstrap_succeeded is True

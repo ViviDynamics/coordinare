@@ -26,6 +26,7 @@ from coordinare.services import env_cache
 from coordinare.services.env_cache import EnvCacheService, get_env_volume_for_symphony
 from coordinare.services.mounted_file import replace_mounted_file
 from coordinare.services.test_env_loader import TestEnvFileError, load_test_env
+from tests.unit.env_manifest_fixture import record_verified_cache_fixture
 from tests.unit.test_060_env_cache import _accept
 from tests.unit.test_219_env_cache_safe_writes import _manifest
 
@@ -240,6 +241,7 @@ def test_refused_cache_dir_is_reported_as_refused_not_wrong_location(tmp_path: P
     }
 
     _accept(state["env_cache"]["sym"])
+    record_verified_cache_fixture(state["env_cache"]["sym"])
     with capture_logs():
         svc.on_bootstrap_complete("sym", True, state, None)
 
