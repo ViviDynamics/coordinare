@@ -92,3 +92,12 @@ Copilot did not deliver a review; the shipping workflow fallback used independen
 - [x] T048 Independent full-diff review, CI and the same 29 pinned repositories, with separate Elm1800 profile (Task 5). T039 still requires actual clean-success gates.
 
 The complete-evidence amendment retest also held for all 29 default repositories and the separately labeled Elm1800 experiment. T048 records completed implementation/review/CI/validation attempts; T039 and SC-004 remain unmet. See validation.md for exact revisions and outcomes.
+
+## Executable preflight amendment (approved spec and plan)
+
+- [ ] T049 Complete mandatory repair evidence and context admission (FR-001).
+- [ ] T050 Versioned probe contracts, durable reservations and journal migration (FR-002/006).
+- [ ] T051 Disposable bounded probe executor and confirmed cleanup (FR-003).
+- [ ] T052 Discovery/review integration and required install assertions (FR-004/005).
+- [ ] T053 Separate probe scope approval and accurate diagnostics (FR-007).
+- [ ] T054 Independent review, CI and Elm-first 3600-second live validation (acceptance 1-9).
