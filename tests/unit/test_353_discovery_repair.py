@@ -305,3 +305,31 @@ async def test_present_but_wrong_proposal_identity_never_gets_a_repair(field):
         await run(replies, diagnostics=events.append)
     assert len(replies.messages) == 2
     assert events[-1]["repairs"] == 0
+
+
+@pytest.mark.asyncio
+async def test_bare_manifest_and_schema_echo_review_repair_with_explicit_envelopes():
+    valid = candidate()
+    calls = []
+
+    async def protocol_model(messages):
+        calls.append(copy.deepcopy(messages))
+        context = json.loads(messages[1]["content"])
+        reviewing = "manifest" in context
+        if len(messages) == 2:
+            return json.dumps({"tool": "read_file", "path": PATH})
+        last = json.loads(messages[-1]["content"])
+        if "validation_errors" in last:
+            expected = last["expected_envelope"]
+            assert expected == ("assessment" if reviewing else "manifest")
+            body = assessment(valid)["assessment"] if reviewing else valid
+            return json.dumps({expected: body})
+        if reviewing:
+            return json.dumps({"assessment": {"properties": {}}, **assessment(valid)["assessment"]})
+        return json.dumps(valid)
+
+    events = []
+    manifest, review = await run(protocol_model, diagnostics=events.append)
+    assert review.manifest_digest == manifest.digest()
+    assert events[-1]["repairs"] == 2
+    assert sum(len(messages) == 2 for messages in calls) == 2
