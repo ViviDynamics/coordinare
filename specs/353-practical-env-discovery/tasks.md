@@ -69,3 +69,10 @@ Each implementation task follows red, green, focused verification and commit; fu
 Phases 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7. Phase 6 analysis step runs first.
 No parallel implementation: shared manifest, runtime and acceptance interfaces require sequential ownership.
 See each plan task for exact files, signatures, test names and requirement mappings.
+
+## Approved executable repair amendment
+
+- [ ] T040 Declaration-only proposals, authoritative provenance and portable-root guidance; focused red/green coverage per repair-plan Task 1.
+- [ ] T041 Durable repair journal, finite shared budget, rejected evidence and fresh cache generations; focused red/green coverage per Task 2.
+- [ ] T042 Production daemon and live harness orchestration, restart/cleanup/transport integration; focused red/green coverage per Task 3.
+- [ ] T043 Documentation, independent review, focused preflight, CI and repeated pinned real-repository validation per Task 4; original live-success merge gate remains.

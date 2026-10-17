@@ -1,3 +1,5 @@
+> Amendment: [repair-amendment.md](repair-amendment.md) supersedes proposal provenance ownership and extends the shared repair budget through executable failures. Implementation: [repair-plan.md](repair-plan.md). User explicitly authorized implementation and retesting.
+
 # Feature Specification: Practical reviewed environment discovery
 
 **Feature Branch**: `353-practical-env-discovery`
