@@ -101,7 +101,7 @@ def test_the_bootstrap_writer_and_jobs_without_a_cache_are_never_gapped(tmp_path
 
 @pytest.mark.asyncio
 async def test_a_wiped_claim_refuses_the_job_and_asks_for_a_rebootstrap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reviewed_environment_metadata,
 ) -> None:
     """End to end through _perform_job: no agent work runs, and the summary carries the health flag."""
     cache = tmp_path / "sym-abc"
@@ -109,7 +109,9 @@ async def test_a_wiped_claim_refuses_the_job_and_asks_for_a_rebootstrap(
     monkeypatch.setattr(main, "PROVENANCE_ROOT", tmp_path / "provenance")
     monkeypatch.setenv(PROVENANCE_ROOT_ENV, "")
 
-    result = await main._perform_job(_consumer(cache))
+    payload = _consumer(cache)
+    payload.metadata.update(reviewed_environment_metadata)
+    result = await main._perform_job(payload)
 
     assert result.success is False
     assert result.error_code == "env_cache_missing"

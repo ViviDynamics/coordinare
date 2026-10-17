@@ -1,143 +1,104 @@
-# 06 — Environment Cache
+# 06: Environment Cache
 
-Performers need a **real dev environment** to do real work — the right runtimes, the project's
-dependencies, and any services (Postgres, Redis) the tests need. The **env-cache** is the
-per-symphony cached environment that makes this fast and repeatable.
+The environment cache supplies each symphony's project tools and dependencies to
+performers. Bootstrap writes the cache; consumers mount it read-only. Project setup
+comes from repository evidence and an independently reviewed environment manifest.
+Coordinare does not choose a project's runtime, framework or service from a built-in
+catalog.
 
-## The idea
+For configuration, limits and recovery, read the
+[reviewed environment operator guide](../operators/reviewed-environment-manifest.md).
 
-> Build the project's dev environment **once**, cache it on the host, and **mount it into every
-> performer** at `/devenv`. Refresh it only when the project's environment spec changes.
-
-```
-~/.coordinare/env-caches/<symphony-slug>/
-├── activate.sh          # puts the toolchain on PATH (sourced on activation)
-├── verify.sh            # coordinare-rendered checks (did the toolchain install?)
-├── debs/                # captured .deb packages
-├── services/            # services-{start,health,stop}.sh
-├── services-extract/    # extracted service binaries (postgres, redis…)
-└── <toolchain dirs>     # rbenv/nvm/etc.
-```
-
-- Mounted at `/devenv` — **rw for the bootstrap performer**, **ro for everyone else** (QA,
-  implementer…).
-- Container path == `/devenv/<slug>`; the slug is `sanitise_symphony_name()` + a short hash.
-
-## Bootstrap flow
+## Bootstrap and readiness
 
 ```mermaid
 flowchart TB
-  CHG["env spec file changed<br/>(README SHA differs from readme_sha)"]
-  CHG --> DISP["dispatch env_bootstrap performer<br/>(/devenv mounted rw)"]
-  DISP --> MAN["derive manifest<br/>(.ruby-version, package.json, .tool-versions…)<br/>+ optional LLM service inference"]
-  MAN --> INSTALL["performer installs toolchain<br/>into the cache"]
-  INSTALL --> ACT["coordinare writes activate.sh / verify.sh"]
-  ACT --> VERIFY["run verify.sh"]
-  VERIFY -->|pass| READY["cache_dir_ready = true<br/>→ consumer cards may dispatch"]
-  VERIFY -->|fail| CB["bootstrap_attempts++<br/>(circuit breaker, spec 088)"]
-  CB -->|N fails| EXH["bootstrap_exhausted<br/>→ hold dispatch until spec SHA changes"]
+  SOURCE["Pinned source head and complete file inventory"] --> DISCOVER["Read-only discovery agent"]
+  DISCOVER --> REVIEW["Fresh-context coverage review"]
+  REVIEW -->|accept same manifest digest| INSTALL["Execute accepted installation actions"]
+  REVIEW -->|revise, indeterminate or missing evidence| HOLD["Hold consumer dispatch"]
+  INSTALL --> CLEAN["Quiesce writer and freeze provenance"]
+  CLEAN --> VERIFY["Clean consumer verifies required checks"]
+  VERIFY -->|all required checks pass| READY["Publish matching readiness evidence"]
+  VERIFY -->|fail, timeout or missing result| HOLD
 ```
 
-1. **Change detection** (`env_cache.check_and_trigger`): coordinare hashes the symphony's
-   `env_spec_files` (e.g. `README.md`) each poll; a changed SHA triggers a bootstrap.
-2. **Dispatch**: the `env_bootstrap` performer (`symphony.env_bootstrap_performer_id`) runs in a
-   container with `/devenv` **rw**.
-3. **Manifest derivation** (`env_manifest.py`): parse structured files (`.ruby-version`,
-   `.tool-versions`, `.nvmrc`, `package.json`, `Gemfile`…) into pinned runtimes/deps. Optional
-   LLM **service inference** reads the README for services documented only in prose.
-4. **Install**: the performer installs the toolchain into the cache.
-5. **Verify**: coordinare-rendered `verify.sh` confirms the tools/versions are present.
-6. **Circuit breaker** (spec 088): N consecutive bootstrap failures for a spec SHA →
-   `bootstrap_exhausted` → consumer dispatch is **held** (with a human-readable reason) until the
-   spec SHA changes (a README fix) or an operator clears it. This prevents an infinite
-   bootstrap-fail loop. The operator's manual trigger (`POST /api/symphonies/{name}/env-bootstrap`,
-   also the dashboard's "Force bootstrap now") resets the retry budget and the breaker, then
-   bootstraps; the activity feed names who triggered it. Each symphony permits one manual
-   reset per 15 minutes. A reset during the cooldown returns 429 with the next allowed UTC
-   time, without changing state or adding an activity entry. The cooldown is kept in memory
-   for the daemon lifetime and applies to dashboard and MCP triggers.
+1. The daemon pins discovery reads to the source commit and obtains a complete
+   repository file inventory. Source-head changes invalidate discovery, including
+   additions or deletions outside previously read files. An unchanged source head
+   reuses applicable accepted state without another discovery or review call.
+2. A discovery agent reads arbitrary repository paths, including documentation,
+   automation and nested projects. It produces explicit requirements, installation
+   commands, activation declarations, service lifecycle commands and checks. Each
+   required requirement maps to required executable checks.
+3. An independent reviewer starts a separate conversation with the candidate and
+   the same snapshot. It independently reads the cited inputs and may inspect more
+   files. Only an `accept` assessment bound to the candidate's digest and commit
+   permits installation. Missing configuration, malformed output, exhausted limits
+   and nonaccept verdicts hold the environment.
+4. The performer installs the accepted contract. Its success message cannot make
+   the cache ready. Contract edits require a new independent assessment.
+5. After the writer stops, the configured Docker or Kubernetes verifier runs the
+   accepted checks in a clean consumer context with a read-only cache, supplied
+   source and writable scratch state. Required failures, timeouts, missing results
+   and failed prerequisites hold dispatch. Optional results remain visible.
+6. The daemon publishes readiness only with matching acceptance, successful
+   verification and frozen cache provenance. Trusted manifest, activation and
+   verification data remain outside installer authority.
 
-**Pausing.** A symphony with `enabled: false` is paused: the env-cache cycle, its first
-bootstrap at boot, its retries and its restart re-verify are all skipped, and its persisted
-env-cache state is left as it was. A bootstrap already running when the symphony is paused
-finishes (or is reaped by the limits below), but nothing new is dispatched until it resumes.
-The manual trigger is refused with 409 while paused. Advocate and curator intake runs and
-wiki initialization also run only for enabled symphonies. Queued wiki requests for a paused
-symphony wait until it resumes.
+The existing conducting brain's `openai_api` JSON-chat configuration supplies both
+agent phases. Review uses fresh conversation state; it does not require a separate
+model role or vendor. Other conducting backends do not currently provide this
+JSON-chat seam. See the operator guide before enabling environment caching.
 
-**Hung bootstraps.** The daemon ends a bootstrap that has stopped making progress, or that has
-run past its wall clock, whatever the performer does. Progress is the status poll's event
-stream (the same signal as card stall detection). Idle time uses elapsed monotonic time,
-including time spent in status calls. `bootstrap_idle_timeout_seconds` defaults to 1800
-seconds (`0` disables idle reaping). An unmatched tool call suspends the idle timer and has
-a separate 2700 second limit, so a long install is not mistaken for silence. A matching tool
-result restarts the idle timer. `bootstrap_max_seconds` defaults to 3600 seconds (`0` restores
-the legacy cap) and bounds the whole job, including open tools.
+## Cache and consumer lifecycle
 
-Immediately before either reap, the daemon reads status once more, allowing up to 5 seconds
-for that final read. A job that finished in the gap is handled as its real result. Otherwise
-the runtime stops the job and the attempt is recorded as failed against the retry budget.
-Persistent performer cancellation waits at most 20 seconds for cooperative cleanup, then
-kills the registered backend process group when available, frees the slot, and logs
-`job.cancel_forced`. Late results and progress from the old task cannot update the next job.
+The host cache lives under `~/.coordinare/env-caches/<symphony-slug>/`; its container
+mount is `/devenv/<slug>`. Bootstrap receives a writable mount and consumers receive
+a read-only mount. Installed paths are project declarations, not prescribed
+runtime-manager directories.
 
-## Activation — what happens when a performer starts
+Activation applies the accepted PATH entries and environment updates using the
+explicit `{cache}`, `{repo}` and `{scratch}` roots. `${NAME}` references resolve at
+runtime. Activation is repeatable and does not implicitly start services or search
+for tools. Generic platform facilities such as native archive extraction remain
+separate from project selection.
 
-Every performer container sources the coordinare-owned profile (`devenv-profile.sh`) via
-`BASH_ENV`, **before any shell command**. Activation does three things, in order:
+Services declare their initialization, start, health and stop commands. They use
+writable consumer-local scratch state rather than writing runtime state into the
+read-only cache. Required health gates verification; cleanup runs at the explicit
+lifecycle boundary. The bootstrap container's running processes are not reused by
+consumers. Legacy inferred service kinds and built-in recipes do not establish
+readiness under the reviewed contract.
 
-```mermaid
-flowchart LR
-  A["1 · extract native libs<br/>debs/*.deb → /var/lib/devenv/&lt;slug&gt;/lib<br/>prepend LD_LIBRARY_PATH (spec 087)"]
-  B["2 · source the cache's activate.sh<br/>(toolchain on PATH, $DEVENV set)"]
-  C["3 · start declared services<br/>services-start.sh (spec 117)"]
-  A --> B --> C
-```
+## Attempts, pauses and recovery
 
-1. **Deterministic native-lib extraction (spec 087)** — coordinare-owned, *not* trusted to the
-   LLM. Extracts `*.so` from cached `.deb`s into a writable lib dir on `LD_LIBRARY_PATH`. (A
-   forgetful model can't be relied on to do this in `activate.sh`.)
-2. **Source `activate.sh`** — the toolchain (rbenv/nvm/etc.) goes on PATH; `$DEVENV` is set.
-3. **Start services (spec 117)** — runs `services-start.sh` once per container.
+Existing bootstrap deadlines, attempt limits and manual-trigger cooldowns still
+apply. Review cannot waive them or waive a required check. An exhausted attempt
+holds consumer dispatch with a reason; it must not restart discovery every poll.
+The dashboard's **Force bootstrap now**, or
+`POST /api/symphonies/{name}/env-bootstrap`, resets the bootstrap budget subject to
+the existing one-reset-per-15-minutes limit. A cooldown refusal returns 429.
 
-### Why services start at *activation* (not bootstrap)
+A symphony with `enabled: false` is paused. No new bootstrap, retry or restart
+reverification starts while paused; a running bootstrap can finish or be reaped.
+A manual trigger while paused returns 409. Resume the symphony before retrying.
 
-Stateful services have **container-local runtime state** (`/tmp/coordinare-services/`), not the
-read-only cache mount. The bootstrap container exits; its running Postgres dies with it. So
-services must be started **in the performer's own container** — the one whose app-under-test
-connects to them — which is exactly what activation does. (This was the fix in spec 117; before
-it, services were started in the wrong, soon-to-exit container.)
+Idle bootstrap reaping defaults to 1800 seconds; an unmatched tool call has a
+separate 2700-second bound. The outer bootstrap wall clock defaults to 3600 seconds.
+These existing job limits also constrain bounded workflows. Discovery and review
+have their own shorter phase budgets, described in the operator guide.
 
-## Performer-owned vs coordinare-managed services (spec 116)
+State schema 40 persists the reviewed manifest and assessment. Older snapshots
+load without an accepted pair and require reconstruction before consumer dispatch.
+Existing cache bytes are retained while replacement evidence is obtained; old
+success flags or scripts do not count as acceptance. Upgrade daemon, performer and
+trusted verifier images together. Before retrying, pin the clean verifier image by
+SHA256 digest and configure the transport network isolation described below.
 
-There's a toggle, **`coordinare_manages_services`**, defaulting to **`false`**:
+## Optional bounded bootstrap workflow
 
-- **`false` (default — performer owns it):** the env_bootstrap performer installs and sets up
-  services itself; coordinare stays out of the deb-fetch/script-rendering/readiness-gating. The
-  091→115 "coordinare-managed services" subsystem is dormant code, kept for possible re-enable.
-- **`true`:** coordinare injects a deb-fetch persona, renders the service scripts, and gates the
-  bootstrap on a `run_service_readiness` check (the pre-116 behavior).
-
-This default was chosen after the coordinare-managed approach proved fragile; letting the
-performer own env setup end-to-end is simpler and more robust.
-
-## State & where to look
-
-| Concern | Location |
-|---|---|
-| Env-cache state (per symphony) | `EnvCacheState` in `src/coordinare/models/env_cache.py` + `coordinare.state.json` |
-| Bootstrap orchestration | `src/coordinare/services/env_cache.py` |
-| Manifest / verify / activate rendering | `src/coordinare/services/env_manifest.py` |
-| Activation profile (in performer image) | `agent/performer/devenv-profile.sh` |
-| Toggle + cache root | `EnvCacheConfig` in `src/coordinare/config.py` |
-
-Next: **[07 — Roadmap](07-roadmap.md)**.
-</content>
-
-## Optional bounded bootstrap workflow (174)
-
-Select the workflow on the bootstrap role using the same backend and mode catalogs
-as the existing deployment. For example, with a mode already named `bootstrap-mode`:
+Select the workflow using an existing backend and mode:
 
 ```yaml
 performers:
@@ -150,51 +111,57 @@ performers:
       ENV_BOOTSTRAP_TIMEOUT_SECONDS: "1800"
 ```
 
-The workflow runs installation through the configured harness, then service inference,
-readiness (when coordinare manages services), and verification. If readiness or verification
-fails, the next bounded turn receives the actual failure text and repairs the existing
-cache. It re-runs the ordered gates before reporting success. Default repair budget is
-one; accepted range is zero to two. The whole workflow defaults to 1800 seconds (range
-1..3600), limited further by the daemon's positive bootstrap time budget. Outer bootstrap
-attempt limits and clean consumer-container verification still apply.
+Repairs may fix installed content and rerun the accepted checks. They cannot change
+requirements, commands, activation or requiredness. The repair budget defaults to
+one and accepts zero through two. The workflow timeout defaults to 1800 seconds
+and accepts 1 through 3600, further bounded by the daemon's positive outer deadline.
+The prose bootstrap path must satisfy the same accepted-contract gate.
 
-The workflow requires a passing verify.sh. If coordinare supplied verify.sh or activate.sh,
-it records their fingerprints in performer memory before installation and rejects changed,
-missing, or symlinked artifacts. This catches accidental installer rewrites; it does not
-sandbox hostile code running with the performer's own privileges. Git change reports alone
-cannot protect files in the separate cache mount.
+## Docker and Kubernetes trust
 
-Progress events name install, inference, readiness, verify, repair and report. Step durations
-and harness-turn counts are available in workflow metrics. A timeout stops the inner harness;
-cancelling verification also kills its process group. The workflow adds no planning/judging
-model calls. Removing `workflow` preserves the legacy bootstrap behavior, including its
-degraded missing-verifier handling. No workflow is inherited from a fallback implementer role.
+Both transports retain writer-quiescence checks, safe cache writes, frozen
+provenance, trusted result collection and clean verification. Installer-writable
+scripts and process output cannot authorize readiness. Trusted runtime code
+records actual command exit status for the accepted digest.
 
-## Kubernetes bootstrap verifier
+Clean verification requires an immutable `image@sha256:<64 lowercase hex digits>`
+reference on both transports; a mutable tag holds readiness. Docker uses the
+selected bootstrap performer's image and runs the clean verifier with
+`--network none`. Pin the image actually configured for that performer/endpoint.
 
-Roll daemon and performer together, including the verifier image. The daemon selects the trusted image through
-`kubernetes_verifier_image`; it defaults to the daemon's `performer_image`, currently `coordinare-performer:full`.
-Symphony endpoint images cannot select the verifier. Empty or malformed explicit settings fail validation. Set an
-immutable image digest if registry content pinning is required. In Helm set `config.kubernetes_verifier_image` and
-`performers.imagePullSecrets` for a private registry. Both initial verification and claim rechecks use those settings.
+Kubernetes selects the verifier through `kubernetes_verifier_image`, defaulting to
+`performer_image`; symphony endpoint images cannot select it. In Helm, configure
+`config.kubernetes_verifier_image` and `performers.imagePullSecrets` as needed.
+Set an immutable digest even when a registry tag already exists.
+When Kubernetes environment caching is configured, consumer endpoint images must
+equal `kubernetes_verifier_image`; configuration loading rejects a mismatch.
+Only an endpoint whose roles are exclusively `env_bootstrap` may use another image.
 
-The pod runs with fixed UID and GID 10001, `runAsNonRoot`, `seccompProfile: RuntimeDefault`, no privilege escalation,
-all capabilities dropped and a read only root filesystem. `/tmp` is a writable `emptyDir` and also `HOME`.
-`enableServiceLinks` and service account token automount are disabled. No `fsGroup` changes the read only claim.
-Claim files must be world readable or readable by UID/GID 10001; directories must allow traversal and tool binaries
-must be executable. Root bootstrap writers must preserve these permissions.
+Kubernetes also requires externally enforced verifier egress isolation. Configure
+a NetworkPolicy for pods labeled `coordinare.role: env-verifier`, ensure the
+cluster's CNI enforces it, and validate the policy before setting
+`env_cache.kubernetes_verifier_network_isolated: true`. This flag defaults to
+`false` and attests to deployment policy; setting it does not create or enforce a
+policy. Missing attestation holds clean verification. Network isolation and image
+pinning cannot substitute for coverage review or required checks.
 
-Schema v38 stores the frozen claim summary and the stat refusal counter. The first bootstrap after deployment runs
-the trusted walk and clean verification in one pod before enabling consumers. Older successful caches without a
-summary require one verified bootstrap. A restored current summary requires a walk only recheck before use.
-Kubernetes consumer payload version 2 requires a stat digest. Daemon and performer must support it together.
+The verifier pod uses UID/GID 10001, a read-only root filesystem, no privilege
+escalation, dropped capabilities and `seccompProfile: RuntimeDefault`. `/tmp` is a
+writable `emptyDir`; service-account token automount and service links are disabled.
+Cache files must be readable and binaries executable by the verifier identity.
+The serialized verifier pod remains bounded at 768 KiB, including supplied inputs.
+Validate the externally enforced Kubernetes network controls at the deployment
+boundary. These documents do not claim that live Docker or Kubernetes deployments
+have been validated.
 
-Verification reads a bounded log tail and requires the sentinel to be the final nonempty line. Missing sentinels and
-walker infrastructure errors refuse transiently. Image pull and container configuration failures stop immediately.
-The entire serialized verifier pod has a 768 KiB bound, including base64 inputs; oversized pods refuse as
-infrastructure before creation. More than three confirmed consumer stat refusals request regeneration through the
-bootstrap budget, with an operator visible reason. The counter survives restart and resets on a successful consumer or new bootstrap
-freeze. Infrastructure rechecks do not consume this allowance.
+## State and implementation
 
-Live cluster validation remains an operational follow up. The pod has no network isolation beyond deployment policy;
-configure and validate any required egress controls separately.
+| Concern | Location |
+|---|---|
+| Per-symphony readiness state | `EnvCacheState` and `coordinare.state.json` |
+| Bootstrap orchestration | `src/coordinare/services/env_cache.py` |
+| Snapshot discovery and independent review | `src/coordinare/services/environment_discovery.py` |
+| Shared schema, runner and trusted rendering | `packages/service_inference/src/coordinare_service_inference/environment/` |
+| Limits and cache configuration | `EnvCacheConfig` in `src/coordinare/config.py` |
+
+Next: **[07: Roadmap](07-roadmap.md)**.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -12,6 +13,7 @@ from coordinare.graph.nodes.dispatch_performer import dispatch_performer
 from coordinare.graph.state import initial_state
 from coordinare.services.persona_service import DEFAULT_INSTRUCTIONS
 from coordinare.workspace import WorkspaceInfo
+from tests.unit.env_manifest_fixture import reviewed_cache
 from tests.unit.env_mount_stub import mount_global
 
 # ---------------------------------------------------------------------------
@@ -1412,6 +1414,7 @@ def _make_http_service(*, mode: str = "ephemeral", devenv_root: str = "/devenv")
 
     svc = MagicMock(spec=HTTPPerformerService)
     svc.mode = mode
+    svc._config = SimpleNamespace(image="trusted/global@sha256:" + "a" * 64)
     svc.devenv_root = devenv_root
     svc.check_health = AsyncMock(return_value={"status": "accepted"})
     svc.dispatch_card = AsyncMock(return_value={"status": "accepted", "session_id": "sess-1"})
@@ -1432,12 +1435,12 @@ def _provenance_gate_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _readiness_gate_degraded(monkeypatch: pytest.MonkeyPatch) -> None:
-    """218: the fixture cache has no daemon-run verify (it would call docker). Keep the 093 gate
-    in its degraded pass-through, as before 218. A test that drives the gate patches it again."""
+def _readiness_gate_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Volume-wiring tests use a passing clean-verifier seam with bound fixture evidence.
+    Dedicated readiness tests override the seam to exercise each real gate outcome."""
     monkeypatch.setattr(
         "coordinare.graph.nodes.dispatch_performer.verify_env_cache_clean",
-        AsyncMock(return_value=(None, "verify not run in this test")),
+        AsyncMock(return_value=(True, "fixture clean verification passed")),
     )
 
 
@@ -1464,6 +1467,7 @@ def _ready_env_cache(tmp_path: Path, symphony_name: str = "my-project") -> dict:
         last_seen_spec_sha="abc123",
         rendered_activate_sh=_RENDERED_ACTIVATE,
     )
+    reviewed_cache(state)
     return {symphony_name: state}
 
 
@@ -1724,10 +1728,10 @@ async def test_consumer_held_when_cache_predates_current_spec(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_env_cache_persistent_http_service_warns_and_skips_volumes(
+async def test_env_cache_persistent_http_service_holds_without_ephemeral_cleanup(
     tmp_path: Path,
 ) -> None:
-    """Persistent HTTP service: warning logged, no volumes passed (Docker can't hot-add mounts)."""
+    """A persistent container cannot guarantee per-job cleanup for reviewed environments."""
     svc = _make_http_service(mode="persistent")
     symphony_name = "my-project"
     env_cache = _ready_env_cache(tmp_path, symphony_name)
@@ -1742,12 +1746,8 @@ async def test_env_cache_persistent_http_service_warns_and_skips_volumes(
 
     await dispatch_performer(state)
 
-    assert svc.dispatch_card.called
-    call_kwargs = svc.dispatch_card.call_args.kwargs
-    # Volumes are NOT passed — Docker cannot hot-add mounts to a running container.
-    assert call_kwargs.get("extra_volumes") is None
-    card_context = svc.dispatch_card.call_args.args[0]
-    assert "env_cache_path" not in card_context
+    assert not svc.dispatch_card.called
+    assert "ephemeral per-job performer" in env_cache[symphony_name].last_bootstrap_error
 
 
 @pytest.mark.asyncio

@@ -1762,6 +1762,7 @@ def test_restore_env_cache_overlays_readme_sha_onto_live_entry() -> None:
 
     from coordinare.models.env_cache import EnvCacheState
     from coordinare.state_store import EnvCacheStateSnapshot
+    from tests.unit.env_manifest_fixture import reviewed_cache
 
     daemon = _make_daemon()
     # Simulate EnvCacheService.initialise(): live entry with readme_sha=None
@@ -1775,6 +1776,9 @@ def test_restore_env_cache_overlays_readme_sha_onto_live_entry() -> None:
     )
     daemon._state["env_cache"] = {"sym-one": live_entry}
 
+    reviewed = reviewed_cache(EnvCacheState(
+        symphony_name="sym-one", sanitised_name="sym-one-a1b2c3", cache_dir=Path("/devenv/sym-one"),
+    ))
     t_boot = datetime(2026, 5, 25, 12, 0, 0, tzinfo=UTC)
     snap = WorkflowSnapshot(
         snapshot_at=datetime.now(UTC),
@@ -1785,6 +1789,10 @@ def test_restore_env_cache_overlays_readme_sha_onto_live_entry() -> None:
                 sanitised_name="sym-one-a1b2c3",
                 cache_dir="/devenv/sym-one",
                 readme_sha="deadbeef",
+                bootstrap_commit_sha=reviewed.bootstrap_commit_sha,
+                environment_manifest=reviewed.environment_manifest,
+                environment_assessment=reviewed.environment_assessment,
+                environment_verification=reviewed.environment_verification,
                 last_bootstrap_at=t_boot,
                 last_bootstrap_succeeded=True,
                 cache_dir_ready=True,

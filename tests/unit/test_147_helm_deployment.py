@@ -89,7 +89,8 @@ def test_endpoint_routing_configmap_passes_through_without_extra_rbac() -> None:
     objects = _render(**{"config.performer_endpoints": [endpoint]})
     assert _rendered_config(objects)["performer_endpoints"] == [endpoint]
     resources = {resource for rule in _one(objects, "Role")["rules"] for resource in rule["resources"]}
-    assert resources == {"pods", "pods/log"}
+    assert resources == {"pods", "pods/log", "secrets"}
+    assert "configmaps" not in resources
 
 
 # ---------------------------------------------------------------------------

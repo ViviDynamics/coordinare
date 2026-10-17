@@ -15,8 +15,10 @@ from coordinare.graph.nodes import dispatch_performer
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.services.env_cache import EnvCacheService, verify_env_cache_clean
 from coordinare.services.kubernetes_verifier import VerifierSpec, build_verifier_pod_manifest
+from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
 from tests.unit.services.test_400_forced_regen_single_bootstrap import _cycle, _github
 from tests.unit.services.test_env_cache_phase4 import _make_cfg, _seed_state
+from tests.unit.test_060_env_cache import _accepted_discovery as _accepted_discovery
 from tests.unit.test_060_env_cache import _seed_toolchain
 
 ACTIVATE = "export PATH=$DEVENV/bin:$PATH\n"
@@ -55,21 +57,25 @@ class FakeRuntime:
 
 
 def setup(tmp_path: Path, results: list[tuple[bool | None, str]]) -> tuple[Any, ...]:
-    runtime = FakeRuntime([(True, "verify passed"), *results] if results else [])
+    runtime = FakeRuntime(list(results))
     cfg = SimpleNamespace(agent_transport="kubernetes", global_config=SimpleNamespace(
-        performer_endpoints=[], performer_image="trusted/global:release", env_cache_root=tmp_path / "daemon", env_bootstrap_max_attempts=2,
+        performer_endpoints=[], performer_log_dir=None, performer_image="trusted/global@sha256:" + "a" * 64,
+        env_cache=SimpleNamespace(kubernetes_verifier_network_isolated=True), env_cache_root=tmp_path / "daemon", env_bootstrap_max_attempts=2,
         state_file_path=tmp_path / "state.json",
     ))
     service = EnvCacheService(cfg)
     ec = EnvCacheState(symphony_name="sym", sanitised_name="sym-abc", cache_dir=tmp_path / "daemon" / "sym-abc",
                        rendered_activate_sh=ACTIVATE, rendered_verify_sh="exit 0\n", readme_sha="cache-key",
                        bootstrap_commit_sha="e" * 40)
+    reviewed_cache(ec, source_commit="e" * 40)
+    if results:
+        runtime.results.insert(0, (True, verification_output(ec.environment_manifest).decode()))
     performer = SimpleNamespace(_runtime=runtime, _config=SimpleNamespace(image="performer:full"), devenv_root="/devenv")
     sym_cfg = SimpleNamespace(env_bootstrap_performer_id="bootstrap", effective_config=lambda _: SimpleNamespace(
         github_org="org", project_name="repo"))
     state = {"coordinare_config": cfg, "env_cache": {"sym": ec}, "env_cache_service": service,
              "performer_services_by_id": {"bootstrap": performer}, "symphony_configs": {"sym": sym_cfg},
-             "github_service": SimpleNamespace(get_file_content=AsyncMock(return_value=None))}
+             "github_service": SimpleNamespace(get_file_content=AsyncMock(return_value="baseline"))}
     daemon = CoordinareDaemon(AsyncMock(), max_cycles=1, sleep_func=AsyncMock())
     daemon._state.update(state)
     return service, ec, state, daemon, performer, runtime
@@ -256,7 +262,8 @@ async def test_kubernetes_bootstrap_pins_all_rendering_reads_to_one_commit(
         refs.append(ref)
         return "Environment" if path == "README.md" else None
 
-    github = SimpleNamespace(get_branch_head_sha=AsyncMock(return_value="e" * 40), get_file_content=content)
+    github = SimpleNamespace(get_branch_head_sha=AsyncMock(return_value="e" * 40),
+                             get_repository_paths=AsyncMock(return_value=["README.md"]), get_file_content=content)
     await service._do_dispatch(symphony_name="sym", symphony_config=sym, github_service=github,
                                eff_config=sym.effective_config(cfg.global_config), current_sha="cache-key",
                                cache_state=ec, dispatch_fn=AsyncMock())
@@ -360,13 +367,14 @@ async def test_forced_metadata_failure_cannot_erase_the_refusal_budget(tmp_path:
     ec.readme_sha = await service._current_manifest_sha(name, sym, github, sym.effective_config(cfg.global_config), ec)
     fingerprint = ec.readme_sha
     service.mark_runtime_health_failed(name, state)
-    github.get_file_blob_sha.return_value = None
+    original_head = github.get_branch_head_sha.return_value
+    github.get_branch_head_sha.return_value = None
     dispatched: list[str] = []
     await _cycle(service, name, sym, github, state, dispatched)
     assert dispatched == []
     assert ec.runtime_health_failed
     assert ec.bootstrap_budget_sha == fingerprint
-    github.get_file_blob_sha.return_value = "sealed-sha"
+    github.get_branch_head_sha.return_value = original_head
     await _cycle(service, name, sym, github, state, dispatched)
     await _cycle(service, name, sym, github, state, dispatched)
     assert len(dispatched) == 1

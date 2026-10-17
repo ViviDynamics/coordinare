@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -11,6 +9,15 @@ import pytest
 
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.services.env_cache import EnvCacheService, sanitise_symphony_name
+from tests.unit.test_060_env_cache import (
+    _accepted_discovery as _accepted_discovery,
+)
+from tests.unit.test_060_env_cache import (
+    _accepted_state,
+    _configured,
+    _head,
+    _source_fingerprint,
+)
 
 
 def _make_cfg(sym_name: str, cache_root: Path) -> tuple[MagicMock, MagicMock]:
@@ -29,23 +36,27 @@ def _make_cfg(sym_name: str, cache_root: Path) -> tuple[MagicMock, MagicMock]:
     eff = MagicMock()
     eff.github_org = "myorg"
     eff.project_name = "my-project"
+    eff.base_branch = "main"
     sym.effective_config = MagicMock(return_value=eff)
 
     cfg = MagicMock()
     cfg.global_config = global_cfg
     cfg.symphonies = [sym]
-    return cfg, sym
+    return _configured(cfg), sym
 
 
 def _seed_state(tmp_path: Path, sym_name: str) -> tuple[dict, Path, EnvCacheState]:
     sanitised = sanitise_symphony_name(sym_name)
     cache_dir = tmp_path / sanitised
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cs = EnvCacheState(
+    (cache_dir / "activate.sh").write_text("# accepted activation\n")
+    cs = _accepted_state(
         symphony_name=sym_name,
         sanitised_name=sanitised,
         cache_dir=cache_dir,
-        readme_sha="sealed-sha",
+        readme_sha=_source_fingerprint({"head": "sealed-sha"}),
+        rendered_activate_sh="# accepted activation\n",
+        bootstrap_commit_sha=_head("sealed-sha"),
         cache_dir_ready=True,
     )
     return {"env_cache": {sym_name: cs}}, cache_dir, cs
@@ -80,10 +91,10 @@ async def test_forced_regen_dispatches_even_when_sha_unchanged(tmp_path: Path) -
     svc.mark_runtime_health_failed(sym_name, state)
 
     gh = AsyncMock()
-    # Health failure path should not even fetch SHAs — we dispatch unconditionally.
-    gh.get_file_blob_sha = AsyncMock(return_value="sealed-sha")
+    # Forced rebuild still pins the source identity used by discovery and completion.
+    gh.get_branch_head_sha = AsyncMock(return_value=_head("sealed-sha"))
 
-    async def _content(_o: str, _r: str, p: str) -> str | None:
+    async def _content(_o: str, _r: str, p: str, *, ref: str) -> str | None:
         return "x"
 
     gh.get_file_content = AsyncMock(side_effect=_content)
@@ -107,18 +118,12 @@ async def test_forced_regen_dispatches_even_when_sha_unchanged(tmp_path: Path) -
 @pytest.mark.asyncio
 async def test_no_forced_regen_when_flag_unset(tmp_path: Path) -> None:
     sym_name = "my-project"
-    state, _, cs = _seed_state(tmp_path, sym_name)
+    state, _, _cs = _seed_state(tmp_path, sym_name)
     cfg, sym = _make_cfg(sym_name, tmp_path)
     svc = EnvCacheService(cfg)
 
     gh = AsyncMock()
-    gh.get_file_blob_sha = AsyncMock(return_value="sealed-sha-12")
-
-    # No prior manifest → no inference suffix, sha equals 12-char prefix.
-    # We seal cache_state to that exact prefix below.
-    serialised = json.dumps({"README.md": "sealed-sha-12"}, separators=(",", ":"))
-    expected = hashlib.sha256(serialised.encode()).hexdigest()[:12]
-    cs.readme_sha = expected
+    gh.get_branch_head_sha = AsyncMock(return_value=_head("sealed-sha"))
 
     dispatched: list = []
 

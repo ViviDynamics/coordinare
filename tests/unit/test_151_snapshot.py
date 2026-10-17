@@ -9,7 +9,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from coordinare.dashboard import DashboardStore
+from coordinare.models.env_cache import EnvCacheState
 from coordinare.services.system_health import DEGRADED, NOT_MONITORED, SYSTEM_HEALTH
+from tests.unit.env_manifest_fixture import reviewed_cache
 from tests.unit.test_dashboard import _make_mock_daemon, _make_mock_health, _make_mock_metrics
 
 
@@ -62,9 +64,13 @@ def test_a_symphony_whose_env_cache_failed_degrades_the_disk_and_env_row(
     monkeypatch.setattr("coordinare.dashboard.store._disk_free_fraction", lambda config: 0.6)
     daemon = _make_mock_daemon()
     daemon.state["config"] = _config(tmp_path)
+    ready = reviewed_cache(EnvCacheState(
+        symphony_name="beta", sanitised_name="beta", cache_dir=tmp_path / "beta",
+        cache_dir_ready=True, last_bootstrap_succeeded=True,
+    ))
     daemon.state["env_cache"] = {
         "alpha": SimpleNamespace(bootstrap_exhausted=True, last_bootstrap_succeeded=False),
-        "beta": SimpleNamespace(bootstrap_exhausted=False, last_bootstrap_succeeded=True),
+        "beta": ready,
     }
     row = _rows(DashboardStore().build_snapshot(daemon, _make_mock_metrics(), _make_mock_health([])))["disk_env_cache"]
     assert row["status"] == DEGRADED

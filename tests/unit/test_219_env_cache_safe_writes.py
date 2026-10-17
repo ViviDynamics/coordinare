@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from coordinare_service_inference.schema import ServiceEntry, ServiceInit, ServicesManifest
@@ -35,6 +35,8 @@ from coordinare.services.mounted_file import (
     mounted_dir_refusal,
     read_mounted_dir_names,
 )
+from tests.unit.env_manifest_fixture import reviewed_metadata
+from tests.unit.test_060_env_cache import _configured, _head
 
 HOST_TEXT = "HOST SECRET\n"
 HOST_MODE = 0o640
@@ -107,34 +109,30 @@ def _service_models() -> list[ServiceEntry]:
     return [pg, redis]
 
 
-def _manifest(cache: Path) -> tuple[str | None, bool, bool]:
-    """Run the manifest artifact writer for *cache*, the way the bootstrap does."""
-    svc = EnvCacheService(MagicMock())
-    files = {
-        ".ruby-version": "3.4.2\n",
-        "Gemfile": 'gem "rails"\n',
-        "Gemfile.lock": "BUNDLED WITH\n   2.5.6\n",
-    }
-
-    async def fake_get(org: str, repo: str, path: str) -> str | None:
-        return files.get(path)
-
-    github = MagicMock()
-    github.get_file_content = fake_get
-    return asyncio.run(
-        svc._build_manifest_artifacts(
-            performer_mounts=(),
-            symphony_name="sym",
-            repo="sym",
-            github_org="org",
-            github_service=github,
-            readme_contents={"README.md": "Rails app."},
-            current_sha="abc123",
-            cache_dir=cache,
-            cache_mount_path="/devenv/sym",
-            llm_chat=None,
-        ),
+def _manifest(cache: Path, performer_mounts: tuple[Path, ...] = ()) -> tuple[str | None, bool, bool]:
+    """Reach real anchored publication with an independently accepted generic contract."""
+    from coordinare_service_inference.environment.models import (
+        CoverageAssessment,
+        EnvironmentManifest,
     )
+
+    service = EnvCacheService(_configured(MagicMock()))
+    commit = _head("safe-write-source")
+    metadata = reviewed_metadata(source_commit=commit,
+        checks=[{"id": "baseline", "argv": ["zog", "--check", "7"]}],
+        activation={"path": ["{cache}/toolchain/bin"]})
+    manifest = EnvironmentManifest.model_validate(metadata["environment_manifest"])
+    assessment = CoverageAssessment.model_validate(metadata["environment_assessment"])
+    state = EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=cache,
+        bootstrap_commit_sha=commit)
+    github = AsyncMock()
+    github.get_repository_paths.return_value = ["tools.plan"]
+    with patch("coordinare.services.environment_discovery.discover_and_review",
+               AsyncMock(return_value=(manifest, assessment))):
+        return asyncio.run(service._build_manifest_artifacts(
+            performer_mounts=performer_mounts, symphony_name="sym", repo="sym", github_org="org",
+            github_service=github, readme_contents={}, current_sha="source-key", cache_dir=cache,
+            cache_mount_path="/devenv/sym", llm_chat=AsyncMock(), cache_state=state))
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +149,7 @@ def test_link_at_a_manifest_file_is_refused_and_host_untouched(tmp_path: Path, n
     finished, result = _bounded(_manifest, cache)
 
     assert finished is True
-    assert result[1] is False  # verify_provided
+    assert isinstance(result, OSError)  # publication refused, never partial readiness
     _assert_host_file_untouched(host)
 
 
@@ -195,7 +193,7 @@ def test_link_at_cache_dir_is_refused_and_host_dir_untouched(tmp_path: Path) -> 
     finished, result = _bounded(_manifest, root / "sym")
 
     assert finished is True
-    assert result[1] is False
+    assert isinstance(result, OSError)
     assert (
         write_service_scripts(root / "sym", _service_models(), symphony="sym", performer_mounts=())
         is False
@@ -243,7 +241,7 @@ def test_hard_link_at_a_manifest_file_is_refused(tmp_path: Path, name: str) -> N
     finished, result = _bounded(_manifest, cache)
 
     assert finished is True
-    assert result[1] is False
+    assert isinstance(result, OSError)
     _assert_host_file_untouched(host)
 
 
@@ -268,7 +266,7 @@ def test_fifo_at_a_manifest_file_does_not_block_and_is_kept(tmp_path: Path, name
     finished, result = _bounded(_manifest, cache)
 
     assert finished is True
-    assert result[1] is False
+    assert isinstance(result, OSError)
     assert stat.S_ISFIFO((cache / name).lstat().st_mode)
 
 
@@ -307,7 +305,7 @@ def test_regular_file_where_cache_dir_is_expected_is_refused(tmp_path: Path) -> 
     finished, result = _bounded(_manifest, root / "sym")
 
     assert finished is True
-    assert result[1] is False
+    assert isinstance(result, OSError)
     assert (root / "sym").read_text() == "keep\n"
 
 
@@ -435,9 +433,9 @@ def test_manifest_artifacts_happy_path_modes_and_contents(tmp_path: Path) -> Non
     assert checklist is not None
     assert verify_provided is True
     assert activate_provided is True
-    assert "RUBY_VERSION" in (cache / "verify.sh").read_text()
-    assert "$DEVENV/.rbenv/versions/3.4.2" in (cache / "activate.sh").read_text()
-    assert "rails" in (cache / "manifest.json").read_text()
+    assert '"argv":["zog","--check","7"]' in (cache / "verify.sh").read_text()
+    assert "/devenv/sym/toolchain/bin" in (cache / "activate.sh").read_text()
+    assert '"zog"' in (cache / "manifest.json").read_text()
     assert stat.S_IMODE((cache / "verify.sh").stat().st_mode) == 0o755
     assert stat.S_IMODE((cache / "activate.sh").stat().st_mode) == 0o755
     assert stat.S_IMODE((cache / "manifest.json").stat().st_mode) == 0o644
@@ -451,7 +449,7 @@ def test_manifest_json_keeps_the_mode_of_an_existing_file(tmp_path: Path) -> Non
     _manifest(cache)
 
     assert stat.S_IMODE((cache / "manifest.json").stat().st_mode) == 0o600
-    assert "rails" in (cache / "manifest.json").read_text()
+    assert '"zog"' in (cache / "manifest.json").read_text()
 
 
 def test_refused_write_logs_a_named_error(tmp_path: Path) -> None:
@@ -459,7 +457,7 @@ def test_refused_write_logs_a_named_error(tmp_path: Path) -> None:
     cache = _cache(tmp_path)
     os.symlink(host, cache / "verify.sh")
 
-    with capture_logs() as logs:
+    with capture_logs() as logs, pytest.raises(OSError):
         _manifest(cache)
 
     assert any(

@@ -15,12 +15,13 @@ from coordinare.services.env_cache import (
     get_env_volume_for_symphony,
     get_kubernetes_consumer_volume,
 )
+from tests.unit.env_manifest_fixture import reviewed_cache
 
 RENDERED_ACTIVATE = "# AUTHORITATIVE activate.sh (daemon-rendered)\n"
 
 
 def _state(cache: Path, *, succeeded: bool | None, ready: bool) -> EnvCacheState:
-    return EnvCacheState(
+    return reviewed_cache(EnvCacheState(
         symphony_name="sym",
         sanitised_name="sym-abc",
         cache_dir=cache,
@@ -30,7 +31,7 @@ def _state(cache: Path, *, succeeded: bool | None, ready: bool) -> EnvCacheState
         provenance_digest="a" * 64 if succeeded else None,
         provenance_stat_digest="b" * 64 if succeeded else None,
         provenance_inputs={} if succeeded else None,
-    )
+    ))
 
 
 def _daemon_copy(cache: Path) -> None:

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import platform
 from collections.abc import AsyncIterator
 
 import structlog
@@ -28,6 +29,7 @@ from pydantic import BaseModel, Field
 from performer.server.job_runner import JobNotFoundError, JobRunner
 from performer.server.models import (
     ENV_PROVENANCE_CAPABILITY_VERSION,
+    ENVIRONMENT_MANIFEST_CAPABILITY_VERSION,
     JobAcceptResponse,
     JobInitPayload,
     JobStatus,
@@ -104,6 +106,8 @@ def register_routes(app: FastAPI) -> None:
             current_job_id=current_id,
             version=request.app.state.version,
             env_provenance_version=ENV_PROVENANCE_CAPABILITY_VERSION,
+            environment_manifest_version=ENVIRONMENT_MANIFEST_CAPABILITY_VERSION,
+            environment_platform=platform.system().lower() + "/" + platform.machine().lower(),
         )
 
     @app.post("/jobs")

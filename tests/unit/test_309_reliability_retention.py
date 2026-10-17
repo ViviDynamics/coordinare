@@ -4,6 +4,7 @@ import sqlite3
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -74,8 +75,13 @@ async def test_month_reliability_reports_short_retention_only(tmp_path: Path, re
 @pytest.mark.asyncio
 @pytest.mark.parametrize("retention_days,checks,partial", [(7, 168, True), (30, 720, False)])
 async def test_retention_prune_history_survives_restart_with_month_policy(
-    tmp_path: Path, retention_days: int, checks: int, partial: bool,
+    tmp_path: Path, retention_days: int, checks: int, partial: bool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from coordinare.services import stats_reliability
+
+    # Test retained counts independently of worker scheduling. The dedicated
+    # query-deadline tests advance this clock to verify interrupted reads.
+    monkeypatch.setattr(stats_reliability, "time", SimpleNamespace(monotonic=lambda: 0.0))
     path = tmp_path / "events.db"
     with sqlite3.connect(path) as db:
         create_schema(db, enable_fts=False)
@@ -91,7 +97,7 @@ async def test_retention_prune_history_survives_restart_with_month_policy(
     await store.start()
     await store.close()
     result = await figure(path, tmp_path)
-    assert result["checks"] == checks
+    assert result["checks"] == checks, result
     assert result["success_rate"] == 1
     assert bool(result.get("partial")) is partial
     if partial:

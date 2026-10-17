@@ -13,6 +13,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock
 import pytest
 
 import coordinare.daemon as daemon_mod
+from coordinare.config import EnvCacheConfig
 from coordinare.daemon import CoordinareDaemon
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
 from coordinare.services.docker_runtime import DockerRuntime
@@ -24,6 +25,7 @@ from coordinare.services.env_cache import (
     sanitise_symphony_name,
     write_service_scripts,
 )
+from tests.unit.env_manifest_fixture import reviewed_metadata, verification_output
 
 
 class _BootstrapClock:
@@ -37,10 +39,75 @@ class _BootstrapClock:
         self.now += seconds
 
 
-def _combined_sha(per_file: dict[str, str]) -> str:
-    """Compute the 12-char combined SHA that EnvCacheService stores."""
-    s = json.dumps(dict(sorted(per_file.items())), separators=(",", ":"))
-    return hashlib.sha256(s.encode()).hexdigest()[:12]
+def _head(label: str) -> str:
+    return hashlib.sha256(label.encode()).hexdigest()[:40]
+
+
+def _source_fingerprint(per_file: dict[str, str]) -> str:
+    """Known source/policy identity used to set up cache lifecycle transitions."""
+    head = _head(next(iter(per_file.values())))
+    policy = {"schema": "351-v1", "head": head, "image": None,
+              "consumer_images": [], "conducting": "None",
+              "verifier_image": None, "limits": EnvCacheConfig().model_dump()}
+    digest = hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()[:12]
+    return f"351-v1:{head}:{digest}"
+
+
+def _configured(coordinare_config):
+    coordinare_config.performer_image = None
+    coordinare_config.global_config.performer_image = None
+    coordinare_config.global_config.performer_endpoints = []
+    coordinare_config.global_config.conducting = None
+    coordinare_config.global_config.kubernetes_verifier_image = None
+    coordinare_config.global_config.env_cache = EnvCacheConfig()
+    return coordinare_config
+
+
+def _accept(cache_state: EnvCacheState, *, nonempty: bool = False) -> EnvCacheState:
+    from coordinare_service_inference.environment.models import EnvironmentManifest
+
+    cache_state.bootstrap_commit_sha = cache_state.bootstrap_commit_sha or _head("same_sha")
+    metadata = reviewed_metadata(source_commit=cache_state.bootstrap_commit_sha)
+    data = metadata["environment_manifest"]
+    data["symphony_name"] = cache_state.symphony_name
+    if nonempty:
+        data["requirements"] = [{"id": "tool", "description": "Fixture tool usable",
+                                 "source": "tools.plan", "checks": ["baseline"], "required": True}]
+        data["empty_reason"] = None
+    manifest = EnvironmentManifest.model_validate(data)
+    cache_state.environment_manifest = manifest.model_dump()
+    cache_state.environment_assessment = {**metadata["environment_assessment"], "manifest_digest": manifest.digest()}
+    cache_state.environment_verification = json.loads(verification_output(cache_state.environment_manifest))
+    cache_state.environment_verification["image_ref"] = "trusted/global@sha256:" + "a" * 64
+    return cache_state
+
+
+def _accepted_state(**kwargs) -> EnvCacheState:
+    if kwargs.get("cache_dir_ready"):
+        kwargs.setdefault("last_bootstrap_succeeded", True)
+    return _accept(EnvCacheState(**kwargs))
+
+
+@pytest.fixture(autouse=True)
+def _accepted_discovery(monkeypatch):
+    """Exercise real publication with a separately tested discovery boundary."""
+    from coordinare_service_inference.environment.models import (
+        CoverageAssessment,
+        EnvironmentManifest,
+    )
+
+    async def discover(**kwargs):
+        metadata = reviewed_metadata(source_commit=kwargs["commit"])
+        metadata["environment_manifest"]["symphony_name"] = kwargs["symphony_name"]
+        manifest = EnvironmentManifest.model_validate(metadata["environment_manifest"])
+        assessment = CoverageAssessment.model_validate({**metadata["environment_assessment"],
+            "manifest_digest": manifest.digest()})
+        return manifest, assessment
+
+    from coordinare.services.environment_discovery import discover_and_review as real_discovery
+
+    monkeypatch.setattr("coordinare.services.environment_discovery.discover_and_review", discover)
+    return real_discovery
 
 
 def _seed_toolchain(cache_dir: Path) -> None:
@@ -184,7 +251,7 @@ class TestGetEnvVolumeForSymphony:
         assert result is None
 
     def test_returns_none_when_cache_dir_missing(self, tmp_path: Path) -> None:
-        state = EnvCacheState(
+        state = _accepted_state(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=tmp_path / "nonexistent",
@@ -198,7 +265,7 @@ class TestGetEnvVolumeForSymphony:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
         (cache_dir / "activate.sh").write_text(_RENDERED)
-        state = EnvCacheState(
+        state = _accepted_state(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
@@ -217,7 +284,7 @@ class TestGetEnvVolumeForSymphony:
     def test_returns_rw_volume_for_bootstrap_performer(self, tmp_path: Path) -> None:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        state = EnvCacheState(
+        state = _accepted_state(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
@@ -238,7 +305,7 @@ class TestGetEnvVolumeForSymphony:
         """
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        state = EnvCacheState(
+        state = _accepted_state(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
@@ -259,7 +326,7 @@ class TestGetEnvVolumeForSymphony:
         """
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        state = EnvCacheState(
+        state = _accepted_state(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
@@ -268,17 +335,14 @@ class TestGetEnvVolumeForSymphony:
         result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False, performer_mounts=())
         assert result is None
 
-    def test_returns_ro_volume_when_activate_present_but_flag_false(
+    def test_holds_consumer_when_activate_present_but_ready_flag_false(
         self, tmp_path: Path,
     ) -> None:
-        """Post-restart cache survival: activate.sh on disk from a prior boot
-        is enough to dispatch consumers, even though cache_dir_ready resets to
-        False every coordinare restart.
-        """
+        """Activation on disk cannot replace a fresh ready decision after restart."""
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
         (cache_dir / "activate.sh").write_text(_RENDERED)
-        state = EnvCacheState(
+        state = _accepted_state(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
@@ -286,15 +350,13 @@ class TestGetEnvVolumeForSymphony:
             rendered_activate_sh=_RENDERED,
         )
         result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False, performer_mounts=())
-        assert result is not None
-        vol, _ = result
-        assert vol.mode == "ro"
+        assert result is None
 
     def test_uses_custom_container_devenv_root(self, tmp_path: Path) -> None:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
         (cache_dir / "activate.sh").write_text(_RENDERED)
-        state = EnvCacheState(
+        state = _accepted_state(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
@@ -312,7 +374,7 @@ class TestGetEnvVolumeForSymphony:
 
 class TestEnvCacheServiceCheckAndTrigger:
     def _make_service(self) -> tuple[EnvCacheService, MagicMock]:
-        coordinare_config = MagicMock()
+        coordinare_config = _configured(MagicMock())
         coordinare_config.symphonies = []
         svc = EnvCacheService(coordinare_config)
         return svc, coordinare_config
@@ -332,6 +394,7 @@ class TestEnvCacheServiceCheckAndTrigger:
         eff = MagicMock()
         eff.github_org = "org"
         eff.project_name = "repo"
+        eff.base_branch = "main"
         return eff
 
     @pytest.mark.asyncio
@@ -348,7 +411,7 @@ class TestEnvCacheServiceCheckAndTrigger:
         svc, _ = self._make_service()
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=cache_dir,
@@ -358,7 +421,7 @@ class TestEnvCacheServiceCheckAndTrigger:
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value="new_sha")
+        github.get_branch_head_sha = AsyncMock(return_value=_head("new_sha"))
         github.get_file_content = AsyncMock(return_value="# README content")
         dispatch_fn = AsyncMock()
 
@@ -370,24 +433,24 @@ class TestEnvCacheServiceCheckAndTrigger:
 
         dispatch_fn.assert_awaited_once()
         assert cache_state.bootstrap_in_flight is True
-        assert cache_state.readme_sha == _combined_sha({"README.md": "new_sha"})
+        assert cache_state.readme_sha == _source_fingerprint({"README.md": "new_sha"})
 
     @pytest.mark.asyncio
     async def test_skips_dispatch_when_sha_unchanged(self, tmp_path: Path) -> None:
         svc, _ = self._make_service()
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=cache_dir,
-            readme_sha=_combined_sha({"README.md": "same_sha"}),
+            readme_sha=_source_fingerprint({"README.md": "same_sha"}),
         )
         global_cfg = MagicMock()
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value="same_sha")
+        github.get_branch_head_sha = AsyncMock(return_value=_head("same_sha"))
         dispatch_fn = AsyncMock()
 
         state: dict = {"env_cache": {"sym": cache_state}, "config": global_cfg}
@@ -405,11 +468,11 @@ class TestEnvCacheServiceCheckAndTrigger:
         svc, _ = self._make_service()
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=cache_dir,
-            readme_sha=_combined_sha({"README.md": "same_sha"}),
+            readme_sha=_source_fingerprint({"README.md": "same_sha"}),
             last_bootstrap_succeeded=False,
             last_bootstrap_at=datetime.now(UTC)
             - timedelta(seconds=BOOTSTRAP_RETRY_COOLDOWN_S + 5),
@@ -417,7 +480,7 @@ class TestEnvCacheServiceCheckAndTrigger:
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value="same_sha")
+        github.get_branch_head_sha = AsyncMock(return_value=_head("same_sha"))
         github.get_file_content = AsyncMock(return_value="# README content")
         dispatch_fn = AsyncMock()
 
@@ -440,11 +503,11 @@ class TestEnvCacheServiceCheckAndTrigger:
         svc, _ = self._make_service()
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()  # exists, but NO activate.sh inside (hollow cache)
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=cache_dir,
-            readme_sha=_combined_sha({"README.md": "same_sha"}),
+            readme_sha=_source_fingerprint({"README.md": "same_sha"}),
             last_bootstrap_succeeded=True,
             cache_dir_ready=True,
             last_bootstrap_at=datetime.now(UTC)
@@ -453,7 +516,7 @@ class TestEnvCacheServiceCheckAndTrigger:
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value="same_sha")
+        github.get_branch_head_sha = AsyncMock(return_value=_head("same_sha"))
         github.get_file_content = AsyncMock(return_value="# README content")
         dispatch_fn = AsyncMock()
 
@@ -471,18 +534,18 @@ class TestEnvCacheServiceCheckAndTrigger:
         svc, _ = self._make_service()
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=cache_dir,
-            readme_sha=_combined_sha({"README.md": "same_sha"}),
+            readme_sha=_source_fingerprint({"README.md": "same_sha"}),
             last_bootstrap_succeeded=False,
             last_bootstrap_at=datetime.now(UTC) - timedelta(seconds=5),
         )
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value="same_sha")
+        github.get_branch_head_sha = AsyncMock(return_value=_head("same_sha"))
         dispatch_fn = AsyncMock()
 
         state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
@@ -501,7 +564,7 @@ class TestEnvCacheServiceCheckAndTrigger:
         svc, _ = self._make_service()
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=cache_dir,
@@ -511,7 +574,7 @@ class TestEnvCacheServiceCheckAndTrigger:
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value="new_sha")
+        github.get_branch_head_sha = AsyncMock(return_value=_head("new_sha"))
         github.get_file_content = AsyncMock(return_value="# README content")
         state: dict = {"env_cache": {"sym": cache_state}, "config": global_cfg}
 
@@ -540,7 +603,7 @@ class TestEnvCacheServiceCheckAndTrigger:
         svc, _ = self._make_service()
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir,
         )
         sym_cfg = self._make_symphony_config()
@@ -555,13 +618,13 @@ class TestEnvCacheServiceCheckAndTrigger:
         svc, _ = self._make_service()
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir,
         )
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(side_effect=RuntimeError("timeout"))
+        github.get_branch_head_sha = AsyncMock(side_effect=RuntimeError("timeout"))
         dispatch_fn = AsyncMock()
         state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
         await svc.check_and_trigger("sym", sym_cfg, github, state, dispatch_fn)
@@ -572,13 +635,13 @@ class TestEnvCacheServiceCheckAndTrigger:
         svc, _ = self._make_service()
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir,
         )
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value=None)
+        github.get_branch_head_sha = AsyncMock(return_value=None)
         dispatch_fn = AsyncMock()
         state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
         await svc.check_and_trigger("sym", sym_cfg, github, state, dispatch_fn)
@@ -589,13 +652,13 @@ class TestEnvCacheServiceCheckAndTrigger:
         svc, _ = self._make_service()
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir, readme_sha="old",
         )
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value="new_sha")
+        github.get_branch_head_sha = AsyncMock(return_value=_head("new_sha"))
         github.get_file_content = AsyncMock(side_effect=RuntimeError("fetch failed"))
         dispatch_fn = AsyncMock()
         state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
@@ -608,13 +671,13 @@ class TestEnvCacheServiceCheckAndTrigger:
         svc, _ = self._make_service()
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir, readme_sha="old",
         )
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value="new_sha")
+        github.get_branch_head_sha = AsyncMock(return_value=_head("new_sha"))
         github.get_file_content = AsyncMock(return_value="# content")
         dispatch_fn = AsyncMock(side_effect=RuntimeError("dispatch error"))
         state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
@@ -626,7 +689,7 @@ class TestEnvCacheServiceCheckAndTrigger:
         svc, _ = self._make_service()
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=cache_dir,
@@ -637,14 +700,14 @@ class TestEnvCacheServiceCheckAndTrigger:
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value="newer_sha")
+        github.get_branch_head_sha = AsyncMock(return_value=_head("newer_sha"))
         dispatch_fn = AsyncMock()
 
         state: dict = {"env_cache": {"sym": cache_state}, "config": global_cfg}
         await svc.check_and_trigger("sym", sym_cfg, github, state, dispatch_fn)
 
         dispatch_fn.assert_not_called()
-        assert cache_state.pending_sha == _combined_sha({"README.md": "newer_sha"})
+        assert cache_state.pending_sha == _source_fingerprint({"README.md": "newer_sha"})
 
 
 class TestEnvCacheServiceInitialise:
@@ -663,6 +726,7 @@ class TestEnvCacheServiceInitialise:
         eff = MagicMock()
         eff.github_org = "org"
         eff.project_name = "repo"
+        eff.base_branch = "main"
         sym.effective_config = MagicMock(return_value=eff)
         return sym
 
@@ -708,7 +772,7 @@ class TestEnvCacheServiceInitialise:
         sym = self._make_symphony()
         svc = self._make_service(tmp_path, [sym])
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value="abc123")
+        github.get_branch_head_sha = AsyncMock(return_value=_head("abc123"))
         env_cache: dict = {}
         await svc.initialise(env_cache, {"sym": github})
         assert env_cache["sym"].readme_sha is None
@@ -730,7 +794,7 @@ class TestEnvCacheServiceInitialise:
 
 class TestOnBootstrapComplete:
     def _make_service(self) -> EnvCacheService:
-        coordinare_config = MagicMock()
+        coordinare_config = _configured(MagicMock())
         coordinare_config.symphonies = []
         # 088: a real budget so MagicMock's int-coercion (1) doesn't trip the
         # circuit breaker on the first simulated failure in these tests.
@@ -744,7 +808,7 @@ class TestOnBootstrapComplete:
 
     def test_clears_in_flight_flag(self, tmp_path: Path) -> None:
         svc = self._make_service()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=tmp_path,
@@ -761,7 +825,7 @@ class TestOnBootstrapComplete:
         """077: a failed bootstrap stores last_bootstrap_error (for the dashboard);
         a successful one clears it."""
         svc = self._make_service()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=tmp_path,
@@ -779,7 +843,7 @@ class TestOnBootstrapComplete:
 
     def test_forces_recheck_when_pending_sha_differs(self, tmp_path: Path) -> None:
         svc = self._make_service()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=tmp_path,
@@ -794,7 +858,7 @@ class TestOnBootstrapComplete:
 
     def test_no_recheck_when_pending_sha_same(self, tmp_path: Path) -> None:
         svc = self._make_service()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=tmp_path,
@@ -815,7 +879,7 @@ class TestOnBootstrapComplete:
         still holds (last_bootstrap_succeeded=False), so the cache is not
         treated as usable."""
         svc = self._make_service()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=tmp_path,
@@ -831,7 +895,7 @@ class TestOnBootstrapComplete:
 
     def test_preserves_sha_on_success(self, tmp_path: Path) -> None:
         svc = self._make_service()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=tmp_path,
@@ -856,7 +920,7 @@ class TestOnBootstrapComplete:
         (tmp_path / "activate.sh").write_text("# seed\n")
         (tmp_path / "manifest.json").write_text("{}\n")
         (tmp_path / "verify.sh").write_text("# seed\n")
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=tmp_path,
@@ -864,6 +928,7 @@ class TestOnBootstrapComplete:
             bootstrap_in_flight=True,
         )
         state = {"env_cache": {"sym": cache_state}}
+        _accept(cache_state, nonempty=True)
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.last_bootstrap_succeeded is False
         assert cache_state.cache_dir_ready is False
@@ -879,7 +944,7 @@ class TestOnBootstrapComplete:
         gate on actual bootstrap success.
         """
         svc = self._make_service()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=tmp_path,
@@ -892,7 +957,7 @@ class TestOnBootstrapComplete:
 
     def test_does_not_mark_cache_ready_on_failure(self, tmp_path: Path) -> None:
         svc = self._make_service()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=tmp_path,
@@ -902,12 +967,10 @@ class TestOnBootstrapComplete:
         svc.on_bootstrap_complete("sym", False, state)
         assert cache_state.cache_dir_ready is False
 
-    def test_keeps_cache_ready_true_across_bootstrap_failure(self, tmp_path: Path) -> None:
-        """A failed re-bootstrap on an already-populated cache must NOT
-        invalidate the cache — better to serve a stale cache than nothing.
-        """
+    def test_invalidates_ready_cache_after_bootstrap_failure(self, tmp_path: Path) -> None:
+        """A failed refresh invalidates readiness until matching verification passes."""
         svc = self._make_service()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=tmp_path,
@@ -916,14 +979,14 @@ class TestOnBootstrapComplete:
         )
         state = {"env_cache": {"sym": cache_state}}
         svc.on_bootstrap_complete("sym", False, state)
-        assert cache_state.cache_dir_ready is True
+        assert cache_state.cache_dir_ready is False
 
     def test_no_job_id_scenario_resolves_in_flight(self, tmp_path: Path) -> None:
         # Regression: when _bootstrap_dispatch_fn receives no job_id from the
         # performer, it must call on_bootstrap_complete(success=False) so that
         # bootstrap_in_flight is not permanently stuck True.
         svc = self._make_service()
-        cache_state = EnvCacheState(
+        cache_state = _accepted_state(
             symphony_name="sym",
             sanitised_name="sym-abc",
             cache_dir=tmp_path,
@@ -956,7 +1019,7 @@ class TestCollectEnvVolumesForPersistentPerformer:
         """
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        state = EnvCacheState(
+        state = _accepted_state(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
@@ -973,14 +1036,14 @@ class TestCollectEnvVolumesForPersistentPerformer:
         dir_b.mkdir()
         (dir_b / "activate.sh").write_text(_RENDERED)
         states = {
-            "sym-a": EnvCacheState(
+            "sym-a": _accepted_state(
                 symphony_name="sym-a",
                 sanitised_name="sym-a-111111",
                 cache_dir=dir_a,
                 cache_dir_ready=True,
                 rendered_activate_sh=_RENDERED,
             ),
-            "sym-b": EnvCacheState(
+            "sym-b": _accepted_state(
                 symphony_name="sym-b",
                 sanitised_name="sym-b-222222",
                 cache_dir=dir_b,
@@ -1000,7 +1063,7 @@ class TestCollectEnvVolumesForPersistentPerformer:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
         (cache_dir / "activate.sh").write_text(_RENDERED)
-        state = EnvCacheState(
+        state = _accepted_state(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
@@ -1985,107 +2048,33 @@ class TestValidateEnvBootstrapPerformerIds:
         assert cfg.symphonies[0].env_bootstrap_performer_id is None
 
 
-def test_env_bootstrap_persona_mandates_idempotent_reinstall() -> None:
-    """077: the bootstrap persona must instruct the agent to RE-RUN installs on a
-    populated cache (idempotent), so a newly-documented dependency (e.g. a
-    headless browser added to the README) gets installed rather than skipped
-    because the cache already has a toolchain/activate.sh. Without this, the
-    env-cache SHA-change re-bootstrap silently no-ops and never picks up new deps.
-    """
+def test_env_bootstrap_persona_preserves_declared_install_contract() -> None:
+    """A refresh installs in place and cannot substitute a different toolchain."""
     from coordinare.services.http_performer_service import HTTPPerformerService
 
-    card_context = {
-        "symphony_org": "ViviDynamics",
-        "symphony_repo": "website",
-        "cache_mount_path": "/devenv/website",
-        "env_spec_files": ["README.md"],
-        "env_spec_contents": {
-            "README.md": "Install Google Chrome / Chromium for the system tests.",
-        },
-        "backend": "opencode",
-    }
-
-    # The method does not use ``self`` — call it with None as the instance.
-    payload = HTTPPerformerService._build_env_bootstrap_payload(None, card_context)
+    payload = HTTPPerformerService._build_env_bootstrap_payload(None, _bootstrap_card_context())
     persona = payload.persona.lower()
-
-    # Must mandate re-running idempotent installs on an already-populated cache.
-    assert "re-run" in persona
-    assert "idempotent" in persona
-    assert "already" in persona
-    # The spec-file content is embedded so the agent sees the documented dep.
-    assert "chrome" in persona
-    # 077: system packages must be made self-contained via the cache's debs/ dir
-    # (offline-safe), NOT a bare apt-get install that fails silently without apt
-    # lists / egress — the bug that left Chromium uninstalled.
-    assert "debs/" in persona
-    assert "apt-get download" in persona
-    assert "silently" in persona
-    # 077 Tier 1: agent must write verify.sh and confirm the install before exit.
-    assert "verify.sh" in persona
-    assert "confirm the installation before exiting" in persona
-    # 077: activate.sh is sourced into every shell — it MUST NOT abort (a sourced
-    # `exit 1` killed CLI installs and deadlocked bootstraps). Hard assertions go
-    # in verify.sh (run standalone), not activate.sh.
-    assert "sourced into every shell" in persona
-    assert "never abort" in persona
-    # 077: pinned language runtimes (e.g. Ruby 3.4.2) are NOT in apt — the agent
-    # must install the EXACT pinned version via a version manager / build tool,
-    # not accept the distro default (the Ruby-3.3.8-vs-3.4.2 cascade failure).
-    assert "pinned" in persona
-    assert ".ruby-version" in persona
-    assert "ruby-build" in persona
-    # 087: captured-deb SHARED LIBRARIES are now activated deterministically by the
-    # coordinare-owned profile (it extracts the *.so files and prepends them to
-    # LD_LIBRARY_PATH before activate.sh is sourced). So activate.sh no longer needs
-    # to `dpkg -i` / `apt-get install` the debs just to make libraries loadable —
-    # that is the coordinare's job now (Guardrails for Forgetful Models). A package
-    # whose BINARY must be on PATH is extracted with `dpkg-deb -x` and its bin dir
-    # prepended to PATH, never `dpkg -i` (needs root, mutates the system).
-    assert "ld_library_path" in persona
-    assert "dpkg-deb -x" in persona
-    # Guard the binary-on-PATH guidance against regression (adversarial review):
-    # `dpkg-deb -x` recreates the deb's absolute layout, so binaries land under
-    # <prefix>/usr/bin, NOT <prefix>/bin — the persona must say so explicitly or
-    # an agent prepends the wrong dir and the binary is never found.
-    assert "usr/bin" in persona
-    # And it must forbid `dpkg -i` (needs root, mutates the container).
-    assert "never `dpkg -i`" in persona
-
+    assert "declared install actions" in persona
+    assert "install in place" in persona
+    assert "/devenv/website" in persona
+    assert "do not infer a different toolchain" in persona
+    assert "required failure or unrun check cannot be waived" in persona
+    assert "read-only at the same absolute path" in persona
+    assert "never your success prose" in persona
+    assert ".ruby-version" not in persona
+    assert "ruby-build" not in persona
 
 def test_env_bootstrap_persona_defers_activation_when_coordinare_owns_it() -> None:
-    """087: when coordinare has written an authoritative activate.sh
-    (activate_provided=True), the persona MUST tell the agent NOT to
-    create/overwrite it and that activation is auto-discovered — the durable fix
-    for the .rbenv-vs-rbenv / .nvm-vs-nvm path the agent fumbled every run,
-    leaving a fully-built cache that verify.sh couldn't see."""
+    """Accepted declarative activation is never replaced by installer scripts."""
     from coordinare.services.http_performer_service import HTTPPerformerService
 
-    card_context = {
-        "symphony_org": "ViviDynamics",
-        "symphony_repo": "website",
-        "cache_mount_path": "/devenv/website",
-        "env_spec_files": [".ruby-version"],
-        "env_spec_contents": {".ruby-version": "3.4.2\n"},
-        "backend": "opencode",
-        "activate_provided": True,
-        "verify_provided": True,
-    }
-    payload = HTTPPerformerService._build_env_bootstrap_payload(None, card_context)
-    persona = payload.persona
-    low = persona.lower()
-
-    # Coordinare owns activate.sh; the agent must not author it.
-    assert "do not create, overwrite, or delete" in low
-    assert "activate.sh" in persona
-    assert "coordinare" in low
-    assert "auto-discover" in low or "discovers" in low
-    # It must NOT carry the fallback "write your own activate.sh" mandate, which is
-    # exactly what produced the broken hand-written activation paths.
-    assert "write a sourceable shell script" not in low
-    # The agent still installs the pinned runtime into the cache (discoverable).
-    assert "ruby-build" in low or "version manager" in low
-
+    payload = HTTPPerformerService._build_env_bootstrap_payload(None,
+        _bootstrap_card_context(activate_provided=True, verify_provided=True))
+    persona = payload.persona.lower()
+    assert "daemon owns activate.sh and verify.sh" in persona
+    assert "do not rewrite either file" in persona
+    assert "preserve its requirements, checks, activation and service lifecycle" in persona
+    assert "write a sourceable shell script" not in persona
 
 def _bootstrap_card_context(**extra) -> dict:
     ctx = {
@@ -2101,100 +2090,84 @@ def _bootstrap_card_context(**extra) -> dict:
 
 
 class TestManifestArtifacts:
-    """077: coordinare derives the manifest, writes an authoritative verify.sh."""
+    """Accepted generic contracts generate both trusted scripts atomically."""
 
     @pytest.mark.asyncio
-    async def test_writes_verify_and_returns_checklist(self, tmp_path: Path) -> None:
-        svc = EnvCacheService(MagicMock())
-        files = {
-            ".ruby-version": "3.4.2\n",
-            "Gemfile": 'gem "rails"\ngem "puma"\n',
-            "Gemfile.lock": "BUNDLED WITH\n   2.5.6\n",
-        }
-
-        async def fake_get(org: str, repo: str, path: str) -> str | None:
-            return files.get(path)
-
-        github = MagicMock()
-        github.get_file_content = fake_get
-        cache_dir = tmp_path / "cache"
-
-        checklist, verify_provided, activate_provided = await svc._build_manifest_artifacts(performer_mounts=(),
-            symphony_name="website",
-            repo="website",
-            github_org="ViviDynamics",
-            github_service=github,
-            readme_contents={"README.md": "Rails app."},
-            current_sha="abc123",
-            cache_dir=cache_dir,
-            cache_mount_path="/devenv/website",
-            llm_chat=None,
+    async def test_writes_verify_and_returns_accepted_contract(self, tmp_path: Path, monkeypatch) -> None:
+        from coordinare_service_inference.environment.models import (
+            CoverageAssessment,
+            EnvironmentManifest,
         )
 
-        assert verify_provided is True
-        assert "ruby ==3.4.2" in checklist
-        verify = (cache_dir / "verify.sh").read_text()
-        assert "RUBY_VERSION" in verify and "3.4.2" in verify
-        assert (cache_dir / "verify.sh").stat().st_mode & 0o100  # executable
-        manifest = (cache_dir / "manifest.json").read_text()
-        assert "rails" in manifest and "2.5.6" in manifest
-        # 087: coordinare also owns activate.sh — the auto-discovering activation
-        # that verify.sh sources (so the agent no longer hand-writes the paths).
-        assert activate_provided is True
-        activate = (cache_dir / "activate.sh").read_text()
-        assert "$DEVENV/.rbenv/versions/3.4.2" in activate
-        assert "$DEVENV/rbenv/versions/3.4.2" in activate  # both dot + no-dot probed
-        assert (cache_dir / "activate.sh").stat().st_mode & 0o100  # executable
+        svc = EnvCacheService(_configured(MagicMock()))
+        cache_dir = tmp_path / "cache"
+        cache_state = EnvCacheState(symphony_name="sym", sanitised_name="sym-abc",
+            cache_dir=cache_dir, bootstrap_commit_sha=_head("same_sha"))
+        metadata = reviewed_metadata(source_commit=cache_state.bootstrap_commit_sha,
+            checks=[{"id": "baseline", "argv": ["zog", "--check", "7"]}],
+            activation={"path": ["{cache}/zog-tools/bin"]})
+        manifest = EnvironmentManifest.model_validate(metadata["environment_manifest"])
+        assessment = CoverageAssessment.model_validate(metadata["environment_assessment"])
+        discover = AsyncMock(return_value=(manifest, assessment))
+        monkeypatch.setattr("coordinare.services.environment_discovery.discover_and_review", discover)
+        github = AsyncMock()
+        github.get_repository_paths.return_value = ["tools.plan"]
+
+        checklist, verify_provided, activate_provided = await svc._build_manifest_artifacts(
+            performer_mounts=(), symphony_name="sym", repo="project", github_org="org",
+            github_service=github, readme_contents={}, current_sha="source-key",
+            cache_dir=cache_dir, cache_mount_path="/devenv/sym", llm_chat=AsyncMock(),
+            cache_state=cache_state)
+
+        assert verify_provided is True and activate_provided is True
+        assert "ACCEPTED ENVIRONMENT CONTRACT" in checklist
+        assert '"zog"' in checklist
+        assert manifest.canonical_json() in (cache_dir / "verify.sh").read_text()
+        assert "/devenv/sym/zog-tools/bin" in (cache_dir / "activate.sh").read_text()
+        assert json.loads((cache_dir / "manifest.json").read_text()) == manifest.model_dump()
+        assert cache_state.environment_manifest == manifest.model_dump()
+        assert cache_state.environment_assessment == assessment.model_dump()
+        assert (cache_dir / "verify.sh").stat().st_mode & 0o100
+        assert (cache_dir / "activate.sh").stat().st_mode & 0o100
+        github.get_repository_paths.assert_awaited_once_with("org", "project",
+            ref=cache_state.bootstrap_commit_sha, max_entries=100_000)
 
     @pytest.mark.asyncio
-    async def test_no_deps_still_renders_daemon_scripts(self, tmp_path: Path) -> None:
-        """218: a project with no parseable pin files still gets the daemon-owned
-        verify.sh and activate.sh, so no bootstrap rests on performer-written scripts."""
-        svc = EnvCacheService(MagicMock())
+    async def test_no_deps_without_review_cannot_render_ready_scripts(self, tmp_path: Path, monkeypatch, _accepted_discovery) -> None:
+        """An empty parse is insufficient evidence for an accepted environment."""
+        from coordinare.services.environment_discovery import EnvironmentDiscoveryError
 
-        async def fake_get(org: str, repo: str, path: str) -> str | None:
-            return None
-
-        github = MagicMock()
-        github.get_file_content = fake_get
+        svc = EnvCacheService(_configured(MagicMock()))
         cache_dir = tmp_path / "cache"
+        cache_state = EnvCacheState(symphony_name="sym", sanitised_name="sym-abc",
+            cache_dir=cache_dir, bootstrap_commit_sha=_head("same_sha"))
+        monkeypatch.setattr("coordinare.services.environment_discovery.discover_and_review",
+            _accepted_discovery)
+        github = AsyncMock()
+        github.get_repository_paths.return_value = ["instructions"]
 
-        checklist, verify_provided, activate_provided = await svc._build_manifest_artifacts(performer_mounts=(),
-            symphony_name="sym",
-            repo="sym",
-            github_org="org",
-            github_service=github,
-            readme_contents={"README.md": "no structured deps"},
-            current_sha="sha",
-            cache_dir=cache_dir,
-            cache_mount_path="/devenv/sym",
-            llm_chat=None,
-        )
-        assert checklist is None
-        assert verify_provided is True
-        assert activate_provided is True
-        assert "Bootstrap verification PASSED" in (cache_dir / "verify.sh").read_text()
-        assert (cache_dir / "activate.sh").is_file()
+        with pytest.raises(EnvironmentDiscoveryError, match="configuration"):
+            await svc._build_manifest_artifacts(performer_mounts=(), symphony_name="sym",
+                repo="project", github_org="org", github_service=github,
+                readme_contents={"instructions": "No extra dependencies"}, current_sha="source-key",
+                cache_dir=cache_dir, cache_mount_path="/devenv/sym", llm_chat=None,
+                cache_state=cache_state)
+        assert cache_state.environment_manifest is None
+        assert cache_state.environment_assessment is None
+        assert cache_state.rendered_verify_sh is None
+        assert not (cache_dir / "verify.sh").exists()
 
 
 def test_env_bootstrap_persona_injects_previous_failure_on_retry() -> None:
-    """077 feedback-injection: on a retry, the prior verification failure is put
-    FIRST in the persona so the agent fixes the specific gap (e.g. the pinned
-    Ruby version) instead of repeating the same miss."""
+    """A bounded repair receives the exact prior verification failure."""
     from coordinare.services.http_performer_service import HTTPPerformerService
 
-    ctx = _bootstrap_card_context(
-        last_failure="version mismatch (expected 3.4.2, got 3.3.8)\nFAIL: Bundler is not available",
-    )
-    payload = HTTPPerformerService._build_env_bootstrap_payload(None, ctx)
-    persona = payload.persona
-
-    assert "RETRY" in persona
-    assert "3.4.2" in persona  # the specific failure is injected verbatim
-    assert "Bundler is not available" in persona
-    # The failure appears BEFORE the generic bootstrap instructions.
-    assert persona.index("RETRY") < persona.index("environment bootstrap agent")
-
+    failure = "version mismatch (expected zog7, got zog6); executable check failed"
+    payload = HTTPPerformerService._build_env_bootstrap_payload(None,
+        _bootstrap_card_context(last_failure=failure))
+    assert failure in payload.persona
+    assert "Previous failure:" in payload.persona
+    assert "weaken checks" in payload.persona
 
 def test_env_bootstrap_persona_no_retry_block_on_first_attempt() -> None:
     """No prior failure → no retry block (first/clean bootstrap)."""
@@ -2205,48 +2178,29 @@ def test_env_bootstrap_persona_no_retry_block_on_first_attempt() -> None:
 
 
 def test_env_bootstrap_persona_injects_manifest_checklist() -> None:
-    """077: the coordinare-derived checklist is injected (authoritative install list),
-    and a coordinare-provided verify.sh flips the persona to 'run it, don't write it'."""
+    """The authoritative accepted contract is visible to the installer."""
     from coordinare.services.http_performer_service import HTTPPerformerService
 
-    checklist = (
-        "AUTHORITATIVE DEPENDENCY CHECKLIST (derived by coordinare from the project files).\n"
-        "  - [runtime] ruby ==3.4.2  (language runtime; from .ruby-version)"
-    )
-    ctx = _bootstrap_card_context(
-        dependency_checklist=checklist,
-        verify_provided=True,
-    )
-    payload = HTTPPerformerService._build_env_bootstrap_payload(None, ctx)
-    persona = payload.persona
+    checklist = 'ACCEPTED ENVIRONMENT CONTRACT: {"tool":"zog", "version":"7"}'
+    payload = HTTPPerformerService._build_env_bootstrap_payload(None,
+        _bootstrap_card_context(dependency_checklist=checklist, verify_provided=True))
+    assert checklist in payload.persona
+    assert "daemon owns activate.sh and verify.sh" in payload.persona
+    assert "Do not rewrite either file" in payload.persona
 
-    # Checklist present and ahead of the free-form spec files.
-    assert "AUTHORITATIVE DEPENDENCY CHECKLIST" in persona
-    assert "ruby ==3.4.2" in persona
-    assert persona.index("AUTHORITATIVE DEPENDENCY CHECKLIST") < persona.index("Spec files")
-    # verify_provided → coordinare owns verify.sh; agent must not author it.
-    assert "coordinare-owned" in persona.lower()
-    assert "do not create, overwrite, or delete it" in persona.lower()
-
-
-def test_env_bootstrap_persona_agent_writes_verify_when_not_provided() -> None:
-    """Without a coordinare manifest, the agent is still told to author verify.sh."""
+def test_env_bootstrap_persona_does_not_authorize_unreviewed_verification() -> None:
+    """Missing legacy flags cannot authorize installer-owned verification."""
     from coordinare.services.http_performer_service import HTTPPerformerService
 
-    payload = HTTPPerformerService._build_env_bootstrap_payload(None, _bootstrap_card_context())
-    persona = payload.persona.lower()
-    assert "also write an executable verification script" in persona
-    assert "authoritative dependency checklist" not in persona
-
-
-# ---------------------------------------------------------------------------
-# 088 US4 — bootstrap circuit breaker (FR-009/FR-010)
-# ---------------------------------------------------------------------------
-
+    persona = HTTPPerformerService._build_env_bootstrap_payload(None,
+        _bootstrap_card_context()).persona.lower()
+    assert "also write an executable verification script" not in persona
+    assert "daemon owns activate.sh and verify.sh" in persona
+    assert "separate clean consumer executes the accepted checks" in persona
 
 class TestBootstrapCircuitBreaker:
     def _make_service(self, max_attempts: int = 3) -> EnvCacheService:
-        coordinare_config = MagicMock()
+        coordinare_config = _configured(MagicMock())
         coordinare_config.symphonies = []
         coordinare_config.global_config.env_bootstrap_max_attempts = max_attempts
         return EnvCacheService(coordinare_config)
@@ -2258,7 +2212,7 @@ class TestBootstrapCircuitBreaker:
             "cache_dir": tmp_path,
         }
         defaults.update(overrides)
-        return EnvCacheState(**defaults)
+        return _accepted_state(**defaults)
 
     def _make_symphony_config(self) -> MagicMock:
         cfg = MagicMock()
@@ -2270,6 +2224,7 @@ class TestBootstrapCircuitBreaker:
         eff = MagicMock()
         eff.github_org = "org"
         eff.project_name = "repo"
+        eff.base_branch = "main"
         cfg.effective_config = MagicMock(return_value=eff)
         return cfg
 
@@ -2346,13 +2301,13 @@ class TestBootstrapCircuitBreaker:
         svc = self._make_service()
         sym_cfg = self._make_symphony_config()
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value="same_sha")
+        github.get_branch_head_sha = AsyncMock(return_value=_head("same_sha"))
         github.get_file_content = AsyncMock(return_value="# README")
         dispatch_fn = AsyncMock()
 
         cache_state = self._make_cache_state(
             tmp_path,
-            readme_sha=_combined_sha({"README.md": "same_sha"}),
+            readme_sha=_source_fingerprint({"README.md": "same_sha"}),
             last_bootstrap_succeeded=False,
             bootstrap_attempts=1,
             last_bootstrap_at=datetime.now(UTC)
@@ -2375,13 +2330,13 @@ class TestBootstrapCircuitBreaker:
         svc = self._make_service()
         sym_cfg = self._make_symphony_config()
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value="same_sha")
+        github.get_branch_head_sha = AsyncMock(return_value=_head("same_sha"))
         github.get_file_content = AsyncMock(return_value="# README")
         dispatch_fn = AsyncMock()
 
         cache_state = self._make_cache_state(
             tmp_path,
-            readme_sha=_combined_sha({"README.md": "same_sha"}),
+            readme_sha=_source_fingerprint({"README.md": "same_sha"}),
             last_bootstrap_succeeded=False,
             bootstrap_attempts=3,
             bootstrap_exhausted=True,
@@ -2398,13 +2353,13 @@ class TestBootstrapCircuitBreaker:
         svc = self._make_service()
         sym_cfg = self._make_symphony_config()
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value="brand_new_sha")
+        github.get_branch_head_sha = AsyncMock(return_value=_head("brand_new_sha"))
         github.get_file_content = AsyncMock(return_value="# README v2")
         dispatch_fn = AsyncMock()
 
         cache_state = self._make_cache_state(
             tmp_path,
-            readme_sha=_combined_sha({"README.md": "old_sha"}),
+            readme_sha=_source_fingerprint({"README.md": "old_sha"}),
             last_bootstrap_succeeded=False,
             bootstrap_attempts=3,
             bootstrap_exhausted=True,
@@ -2445,10 +2400,10 @@ class TestRestartHonorPath:
     """A fresh coordinare boot with a persisted successful bootstrap and an
     unchanged spec SHA must run the cheap clean-room verify instead of a full
     bootstrap (SC-004: ready in <2 min). Verify pass ⇒ ready; fail ⇒ full
-    bootstrap; un-runnable (None) ⇒ degraded, trust the persisted success."""
+    bootstrap; un-runnable (None) ⇒ hold readiness until verification can run."""
 
     def _make_service(self) -> EnvCacheService:
-        coordinare_config = MagicMock()
+        coordinare_config = _configured(MagicMock())
         coordinare_config.symphonies = []
         coordinare_config.global_config.env_bootstrap_max_attempts = 3
         return EnvCacheService(coordinare_config)
@@ -2463,6 +2418,7 @@ class TestRestartHonorPath:
         eff = MagicMock()
         eff.github_org = "org"
         eff.project_name = "repo"
+        eff.base_branch = "main"
         cfg.effective_config = MagicMock(return_value=eff)
         return cfg
 
@@ -2477,17 +2433,17 @@ class TestRestartHonorPath:
             "symphony_name": "sym",
             "sanitised_name": "sym-abc",
             "cache_dir": cache_dir,
-            "readme_sha": _combined_sha({"README.md": "same_sha"}),
+            "readme_sha": _source_fingerprint({"README.md": "same_sha"}),
             "last_bootstrap_succeeded": True,
             "last_bootstrap_at": datetime.now(UTC),
             "cache_dir_ready": True,
         }
         defaults.update(overrides)
-        return EnvCacheState(**defaults)
+        return _accepted_state(**defaults)
 
     def _make_github(self, sha: str = "same_sha") -> AsyncMock:
         github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(return_value=sha)
+        github.get_branch_head_sha = AsyncMock(return_value=_head(sha))
         github.get_file_content = AsyncMock(return_value="# README")
         return github
 
@@ -2541,7 +2497,7 @@ class TestRestartHonorPath:
         health — go straight to a full bootstrap, don't waste a verify run."""
         svc = self._make_service()
         cache_state = self._make_cache_state(
-            tmp_path, readme_sha=_combined_sha({"README.md": "old_sha"}),
+            tmp_path, readme_sha=_source_fingerprint({"README.md": "old_sha"}),
         )
         state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
         dispatch_fn = AsyncMock()
@@ -2556,9 +2512,8 @@ class TestRestartHonorPath:
         dispatch_fn.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_verify_none_trusts_persisted_success(self, tmp_path: Path) -> None:
-        """Verify un-runnable (no verify.sh in cache / docker error) ⇒ degraded:
-        trust the persisted success — do NOT downgrade it or re-bootstrap."""
+    async def test_verify_none_holds_persisted_success(self, tmp_path: Path) -> None:
+        """Unavailable clean verification cannot preserve ready status."""
         svc = self._make_service()
         cache_state = self._make_cache_state(tmp_path)
         state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
@@ -2572,8 +2527,8 @@ class TestRestartHonorPath:
 
         verify_fn.assert_awaited_once()
         dispatch_fn.assert_not_called()
-        assert cache_state.last_bootstrap_succeeded is True
-        assert cache_state.cache_dir_ready is True
+        assert cache_state.last_bootstrap_succeeded is False
+        assert cache_state.cache_dir_ready is False
 
     @pytest.mark.asyncio
     async def test_verify_runs_only_once_per_process(self, tmp_path: Path) -> None:

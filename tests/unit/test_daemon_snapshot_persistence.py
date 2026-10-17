@@ -16,7 +16,16 @@ from unittest.mock import AsyncMock
 import pytest
 
 from coordinare.daemon import CoordinareDaemon
+from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
 from tests.unit.env_mount_stub import mount_config
+
+
+@pytest.fixture(autouse=True)
+def _accepted_verification_sources(monkeypatch):
+    """These tests cover verifier outcomes and persistence, with pinned inputs supplied."""
+    monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",
+        AsyncMock(return_value={"tools.plan": "baseline"}))
+    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files: "")
 
 
 def _daemon() -> CoordinareDaemon:
@@ -111,10 +120,10 @@ def _ready_state(cache_dir, verify_text):
     from coordinare.models.env_cache import EnvCacheState
     activate = "# daemon-rendered activate.sh\n"
     (cache_dir / "activate.sh").write_text(activate)
-    return EnvCacheState(
+    return reviewed_cache(EnvCacheState(
         symphony_name="sym", sanitised_name="sym", cache_dir=cache_dir,
         rendered_verify_sh=verify_text, rendered_activate_sh=activate,
-    )
+    ))
 
 
 def _docker_answers(run_rc: int):
@@ -133,7 +142,7 @@ class _FakeProc:
         return self.returncode
 
     async def communicate(self, input: bytes | None = None):
-        return (b"verify output", None)
+        return (verification_output(), None)
 
 
 @pytest.mark.asyncio
@@ -143,7 +152,7 @@ async def test_clean_verify_refuses_without_daemon_rendered_script(tmp_path) -> 
     cache = tmp_path / "sym"
     cache.mkdir()
     daemon._state["env_cache"] = {"sym": _ec_state(cache)}
-    svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"))
+    svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img@sha256:" + "a" * 64))
     _res, _detail = await daemon._verify_env_cache_clean("sym", svc)
     assert _res is False
 
@@ -154,7 +163,7 @@ async def test_clean_verify_passes_on_zero_exit(tmp_path, monkeypatch) -> None:
     cache = tmp_path / "sym"
     cache.mkdir()
     daemon._state["env_cache"] = {"sym": _ready_state(cache, "#!/bin/sh\nexit 0\n")}
-    svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"))
+    svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img@sha256:" + "a" * 64))
     monkeypatch.setattr("asyncio.create_subprocess_exec", _docker_answers(0))
     _res, _detail = await daemon._verify_env_cache_clean("sym", svc)
     assert _res is True
@@ -168,7 +177,7 @@ async def test_clean_verify_fails_on_nonzero_exit(tmp_path, monkeypatch) -> None
     cache = tmp_path / "sym"
     cache.mkdir()
     daemon._state["env_cache"] = {"sym": _ready_state(cache, "#!/bin/sh\nexit 1\n")}
-    svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"))
+    svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img@sha256:" + "a" * 64))
     monkeypatch.setattr("asyncio.create_subprocess_exec", _docker_answers(1))
     _res, _detail = await daemon._verify_env_cache_clean("sym", svc)
     assert _res is False
@@ -201,7 +210,7 @@ async def test_bootstrap_completion_flushes_snapshot_to_disk(tmp_path) -> None:
     # holds only coordinare-seeded files; seed toolchain content for the success.
     (cache / "toolchain").mkdir()
     (cache / "toolchain" / "ruby").write_text("bin")
-    daemon._state["env_cache"] = {"sym": _ec_state(cache)}
+    daemon._state["env_cache"] = {"sym": reviewed_cache(_ec_state(cache))}
 
     svc = EnvCacheService(
         mount_config(env_bootstrap_max_attempts=3),

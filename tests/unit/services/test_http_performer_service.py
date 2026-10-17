@@ -19,6 +19,7 @@ from coordinare.transport.http_transport import (
     PerformerHTTPClient,
 )
 from coordinare.workspace import WorkspaceInfo
+from tests.unit.env_manifest_fixture import reviewed_metadata
 
 
 def _persistent_config(**overrides: object) -> PerformerEndpointConfig:
@@ -1734,6 +1735,8 @@ def test_build_env_bootstrap_payload_synthesizes_workspace(monkeypatch) -> None:
         "cache_mount_path": "/devenv/website-abc123",
     }
 
+    accepted = _accepted_bootstrap_context(install=[{"id": "dependencies", "argv": ["npm", "install"]}])
+    card_context.update({key: value for key, value in accepted.items() if key.startswith("environment_") or key == "dependency_checklist"})
     payload = svc._build_job_payload(card_context, None)
 
     assert payload.role == "env_bootstrap"
@@ -1741,59 +1744,37 @@ def test_build_env_bootstrap_payload_synthesizes_workspace(monkeypatch) -> None:
     assert payload.branch.startswith("env-bootstrap-")
     assert payload.backend == "claude_code"
     assert "/devenv/website-abc123" in payload.persona
-    assert "npm install" in payload.persona
+    assert payload.metadata["environment_manifest"]["install"][0]["argv"] == ["npm", "install"]
+    assert payload.metadata["env_spec_contents"] == card_context["env_spec_contents"]
     assert "activate.sh" in payload.persona  # 060/Option B: persona must mandate activation script
     assert "GITHUB_TOKEN" in payload.secrets
     assert payload.secrets["GITHUB_TOKEN"].get_secret_value() == "ghs_test"
     assert "ANTHROPIC_API_KEY" in payload.secrets
 
 
-def test_build_env_bootstrap_payload_instructs_bundle_install(monkeypatch) -> None:
-    """092 toolchain fix: the persona must explicitly tell the agent to install the
-    project's DECLARED dependencies via the native dependency manager — for a
-    Gemfile that means `bundle install`, not piecemeal `gem install`. Without this
-    bundler + every gem cascade to 'not installed' and verify.sh fails, which is
-    what skipped service inference for the website symphony (services=[])."""
-    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
-    )
-    persona = svc._build_job_payload(_bootstrap_card_context(), None).persona
-    assert "PROJECT DEPENDENCIES" in persona
-    assert "bundle install" in persona
-    # 265: the install runs from the repo checkout the agent actually has, not a hardcoded /repo.
-    assert "cd <your repo checkout> && bundle install" in persona
-    assert "cd /repo" not in persona
-    # And it must steer AWAY from the piecemeal path the agent kept defaulting to.
-    assert "gem install <name>" in persona
+def test_build_env_bootstrap_payload_preserves_accepted_dependency_install(monkeypatch) -> None:
+    """Dependency-manager commands come from the contract and retain their cwd."""
+    svc = HTTPPerformerService(_persistent_config(), client=_client(lambda r: httpx.Response(204)))
+    install = [{"id": "dependencies", "argv": ["zog", "sync", "--locked"], "cwd": "{repo}/nested"}]
+    ctx = _accepted_bootstrap_context(install=install)
+    payload = svc._build_job_payload(ctx, None)
+    command = payload.metadata["environment_manifest"]["install"][0]
+    assert command["argv"] == ["zog", "sync", "--locked"]
+    assert command["cwd"] == "{repo}/nested"
+    assert "zog" in payload.persona and "--locked" in payload.persona
+    assert "Do not infer a different toolchain" in payload.persona
 
-
-def test_build_env_bootstrap_payload_front_loads_required_sequence(monkeypatch) -> None:
-    """092 toolchain fix: a forgetful model did the cheap setup (git-clone
-    rbenv/ruby-build, extract debs) then declared done — never running the
-    expensive `rbenv install` / `bundle install`, leaving .rbenv/ with no
-    versions/<ver>/bin/ruby. A front-loaded, numbered execution sequence that
-    names that EXACT anti-pattern must lead the persona (forgetful models attend
-    to the top), gated on verify.sh exiting 0 before the turn ends."""
-    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
-    )
-    persona = svc._build_job_payload(_bootstrap_card_context(), None).persona
-    assert "REQUIRED EXECUTION SEQUENCE" in persona
-    # Names the exact observed anti-pattern: cloning a version manager != installing.
-    assert "CLONING A VERSION MANAGER IS NOT INSTALLING THE RUNTIME" in persona
-    assert "rbenv install" in persona
-    # Gates turn-end on the coordinare-owned contract.
-    assert "until verify.sh exits 0" in persona
-    # Must lead the persona, ahead of the detailed prose wall, so a forgetful model
-    # sees the imperative sequence first.
-    assert persona.index("REQUIRED EXECUTION SEQUENCE") < persona.index(
-        "You are an environment bootstrap agent",
-    )
-
+def test_build_env_bootstrap_payload_front_loads_accepted_execution_authority(monkeypatch) -> None:
+    """Installation prose cannot replace the contract or clean required checks."""
+    svc = HTTPPerformerService(_persistent_config(), client=_client(lambda r: httpx.Response(204)))
+    ctx = _accepted_bootstrap_context()
+    payload = svc._build_job_payload(ctx, None)
+    assert payload.persona.startswith("You are the environment installer for an independently reviewed manifest")
+    assert "Execute its declared install actions" in payload.persona
+    assert "A required failure or unrun check cannot be waived" in payload.persona
+    assert "separate clean consumer executes the accepted checks" in payload.persona
+    assert payload.metadata["environment_manifest_digest"] == ctx["environment_manifest_digest"]
+    assert payload.metadata["environment_assessment"] == ctx["environment_assessment"]
 
 def _bootstrap_card_context(declared_services=None) -> dict[str, object]:
     ctx: dict[str, object] = {
@@ -1807,100 +1788,58 @@ def _bootstrap_card_context(declared_services=None) -> dict[str, object]:
     }
     if declared_services is not None:
         ctx["declared_services"] = declared_services
+    ctx.update(reviewed_metadata(symphony_name="website", source_commit="a" * 40))
     return ctx
 
 
-def test_build_env_bootstrap_payload_emits_service_install_for_declared_postgres(
-    monkeypatch,
-) -> None:
-    """091/T017/SC-004: a declared postgres service makes the bootstrap persona
-    instruct fetching its server + client deb into <cache>/debs/."""
-    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
-    )
-    declared = [
-        {
-            "name": "postgres",
-            "binary": "postgres",
-            "version": "16",
-            "data_dir": "/tmp/pg-data",
-            "port": 5432,
-            "why_needed": "Primary application database",
-            "sources": ["config/database.yml"],
-            "kind": "postgres",
-            "init": {"superuser": "root", "databases": ["app_dev"]},
-        },
-    ]
-    payload = svc._build_job_payload(_bootstrap_card_context(declared), None)
-    persona = payload.persona
-    assert "SYSTEM SERVICES" in persona
-    # Reuses the existing deb-into-<cache>/debs/ delivery (FR-006/FR-007).
-    assert "/devenv/website-abc123/debs" in persona
-    assert "postgresql" in persona
-    # C-11/T018: the client package providing pg_isready is included.
-    assert "postgresql-client" in persona
+def _accepted_bootstrap_context(*, install=None, services=None, activation=None):
+    ctx = _bootstrap_card_context()
+    metadata = reviewed_metadata(symphony_name="website", source_commit="a" * 40,
+        install=install, services=services, activation=activation)
+    ctx.update(metadata)
+    ctx["dependency_checklist"] = "ACCEPTED ENVIRONMENT CONTRACT\n" + json.dumps(metadata["environment_manifest"])
+    return ctx
 
 
-def test_service_install_uses_closure_resolving_download(monkeypatch) -> None:
-    """102/US1: the service-deb fetch must resolve the meta-package's full
-    dependency closure (so the versioned postgresql-NN server lands), via
-    `apt-get install --download-only` — NOT the fragile `apt-cache depends|grep`
-    download pipeline that dropped the server binaries (website Postgres gap)."""
-    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
-    )
-    declared = [{"name": "postgres", "kind": "postgres", "binary": "postgres",
-                 "data_dir": "/tmp/pg", "port": 5432, "why_needed": "db",
-                 "sources": ["config/database.yml"]}]
-    persona = svc._build_job_payload(_bootstrap_card_context(declared), None).persona
-    assert "SYSTEM SERVICES" in persona
-    # Scope assertions to the SYSTEM SERVICES block — the generic system-package
-    # / shared-library instruction elsewhere in the persona legitimately uses
-    # `apt-cache depends`; the SERVICE fetch must not.
-    block = persona[persona.index("SYSTEM SERVICES"):]
-    block = block[: block.index("\n\n") + 2]
-    # Robust, closure-resolving download:
-    assert "apt-get install" in block and "--download-only" in block
-    assert "Dir::Cache::archives" in block
-    # The fragile pipeline must be gone from the service block:
-    assert "apt-cache depends" not in block
-    # Still extracted into the cache, into a CONCRETE dir (no unsubstituted
-    # `<prefix>` placeholder the agent might take literally):
-    assert "dpkg-deb -x" in block
-    assert "<prefix>" not in block
-    assert "services-extract" in block
-    # Both server + client still named (apt resolves the meta to the server):
-    assert "postgresql" in block and "postgresql-client" in block
+def test_build_env_bootstrap_payload_preserves_explicit_service_lifecycle(monkeypatch) -> None:
+    """Required initialization, health and shutdown survive as generic actions."""
+    svc = HTTPPerformerService(_persistent_config(), client=_client(lambda r: httpx.Response(204)))
+    service = {"id": "store", "required": True,
+        "init": {"id": "store-init", "argv": ["store-tool", "init", "{scratch}/store"]},
+        "start": {"id": "store-start", "argv": ["store-tool", "start", "{scratch}/store"]},
+        "health": {"id": "store-health", "argv": ["store-tool", "health"]},
+        "stop": {"id": "store-stop", "argv": ["store-tool", "stop"]}}
+    ctx = _accepted_bootstrap_context(services=[service])
+    payload = svc._build_job_payload(ctx, None)
+    result = payload.metadata["environment_manifest"]["services"][0]
+    for phase in ("init", "start", "health", "stop"):
+        assert result[phase]["argv"] == service[phase]["argv"]
+    assert result["required"] is True
+    assert "store-tool" in payload.persona
+    assert "SYSTEM SERVICES" not in payload.persona
 
+def test_service_install_keeps_project_declared_dependency_closure_command(monkeypatch) -> None:
+    """The project's explicit closure-resolving action is forwarded without a recipe."""
+    svc = HTTPPerformerService(_persistent_config(), client=_client(lambda r: httpx.Response(204)))
+    argv = ["archive-fetch", "--closure", "--into", "{cache}/archives"]
+    payload = svc._build_job_payload(_accepted_bootstrap_context(
+        install=[{"id": "closure", "argv": argv}]), None)
+    assert payload.metadata["environment_manifest"]["install"][0]["argv"] == argv
+    assert "archive-fetch" in payload.persona and "--closure" in payload.persona
+    assert "apt-cache depends" not in payload.persona
+    assert "postgresql-client" not in payload.persona
 
-def test_service_install_resolves_against_base_state_snapshot(monkeypatch) -> None:
-    """106: the fetch must resolve against the pristine BASE-image dpkg status
-    (Dir::State::status=<snapshot>) so the service's full runtime-lib closure
-    (e.g. libicu76) is downloaded even when an earlier bootstrap step already
-    installed it into the container — with a fallback to the live status on
-    older images that lack the snapshot."""
-    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
-    )
-    declared = [{"name": "postgres", "kind": "postgres", "binary": "postgres",
-                 "data_dir": "/tmp/pg", "port": 5432, "why_needed": "db",
-                 "sources": ["config/database.yml"]}]
-    persona = svc._build_job_payload(_bootstrap_card_context(declared), None).persona
-    block = persona[persona.index("SYSTEM SERVICES"):]
-    block = block[: block.index("\n\n") + 2]
-    # resolves against the base snapshot, with a live-status fallback
-    assert "Dir::State::status" in block
-    assert "/opt/coordinare-base-dpkg-status" in block
-    assert "/var/lib/dpkg/status" in block  # fallback path
-    # still the closure-resolving download into the cache (102 retained)
-    assert "--download-only" in block and "Dir::Cache::archives" in block
-
+def test_service_install_preserves_explicit_base_state_reference(monkeypatch) -> None:
+    """Install state references are declared evidence, with no implicit live-state fallback."""
+    svc = HTTPPerformerService(_persistent_config(), client=_client(lambda r: httpx.Response(204)))
+    environment = {"BASE_STATE": "{cache}/base-state"}
+    payload = svc._build_job_payload(_accepted_bootstrap_context(install=[{
+        "id": "archive", "argv": ["archive-fetch", "--base-state", "${BASE_STATE}"],
+        "env": environment}]), None)
+    command = payload.metadata["environment_manifest"]["install"][0]
+    assert command["env"] == environment
+    assert command["argv"][-1] == "${BASE_STATE}"
+    assert "/var/lib/dpkg/status" not in payload.persona
 
 def test_service_install_no_hardcoded_server_version(monkeypatch) -> None:
     """102/US2: version-resilient — names the version-agnostic meta, NOT a
@@ -1917,20 +1856,18 @@ def test_service_install_no_hardcoded_server_version(monkeypatch) -> None:
     assert not re.search(r"postgresql-\d", persona), "must not hard-pin a versioned server"
 
 
-def test_service_install_renders_for_redis(monkeypatch) -> None:
-    """102/US3: the closure-resolving fetch renders for any coordinare-known kind."""
-    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
-    )
-    declared = [{"name": "cache", "kind": "redis", "binary": "redis-server",
-                 "data_dir": "/tmp/redis", "port": 6379, "why_needed": "cache", "sources": ["x"]}]
-    persona = svc._build_job_payload(_bootstrap_card_context(declared), None).persona
-    assert "SYSTEM SERVICES" in persona
-    assert "redis-server" in persona
-    assert "apt-get install" in persona and "--download-only" in persona
-
+def test_service_install_supports_unfamiliar_service_without_core_recipe(monkeypatch) -> None:
+    """Arbitrary service commands require no known-kind or package mapping."""
+    svc = HTTPPerformerService(_persistent_config(), client=_client(lambda r: httpx.Response(204)))
+    service = {"id": "novel-queue",
+        "start": {"id": "queue-start", "argv": ["novel-queued", "--state", "{scratch}/queue"]},
+        "health": {"id": "queue-health", "argv": ["novel-queue-check"]},
+        "stop": {"id": "queue-stop", "argv": ["novel-queue-stop"]}}
+    payload = svc._build_job_payload(_accepted_bootstrap_context(services=[service]), None)
+    assert payload.metadata["environment_manifest"]["services"][0]["start"]["argv"] == service["start"]["argv"]
+    assert "novel-queued" in payload.persona
+    assert "apt-get install" not in payload.persona
+    assert "redis-server" not in payload.persona
 
 def test_build_env_bootstrap_payload_no_service_block_when_none_declared(
     monkeypatch,

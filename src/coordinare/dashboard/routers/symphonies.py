@@ -135,6 +135,8 @@ def _register_get_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                     ),
                     "last_bootstrap_succeeded": getattr(ec, "last_bootstrap_succeeded", None),
                     "last_bootstrap_error": getattr(ec, "last_bootstrap_error", None),
+                    "environment_assessment": getattr(ec, "environment_assessment", None),
+                    "environment_verification": getattr(ec, "environment_verification", None),
                     # 063 T026d: service-inference summary
                     "last_inference_at": (
                         ec.last_inference_at.isoformat()
