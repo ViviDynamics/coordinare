@@ -361,6 +361,9 @@ def _rbac_applied() -> None:
         ("list", "pods", ""),
         ("delete", "pods", ""),
         ("get", "pods", "log"),
+        ("create", "secrets", ""),
+        ("get", "secrets", ""),
+        ("delete", "secrets", ""),
     ],
 )
 def test_shipped_rbac_grants_everything_the_runtime_actually_does(
@@ -371,6 +374,8 @@ def test_shipped_rbac_grants_everything_the_runtime_actually_does(
     Each entry is an operation ``KubernetesRuntime`` genuinely performs:
     ``create`` to start, ``get``/``list`` to await readiness and sweep
     orphans, ``delete`` to stop, and ``pods/log`` to capture logs before removal.
+    Verifier credentials use namespaced Secret create/get/delete; broader Secret
+    reads or mutation remain forbidden.
     A grant that is missing one of these fails at dispatch time on a real
     cluster, which is far too late to discover it.
     """
@@ -388,8 +393,10 @@ def test_shipped_rbac_grants_everything_the_runtime_actually_does(
         # rbac.yaml said "no watch"; the cluster said yes. That is the entire
         # reason these assertions ask the authorizer instead of the file.
         ("watch", "pods", NAMESPACE),
-        ("get", "secrets", NAMESPACE),
         ("list", "secrets", NAMESPACE),
+        ("update", "secrets", NAMESPACE),
+        ("patch", "secrets", NAMESPACE),
+        ("get", "secrets", "kube-system"),
         ("create", "pods", "kube-system"),
         ("delete", "pods", "kube-system"),
         ("list", "nodes", None),

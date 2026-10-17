@@ -81,7 +81,7 @@ def test_the_pod_has_no_checkout_no_credentials_and_no_stdin() -> None:
     assert _container(manifest)["stdin"] is False
     env_names = {e["name"] for e in _container(manifest)["env"]}
     assert env_names == {
-        "DEVENV", "HOME", "VERIFY_B64", "PROJECT_FILES_B64", "SETUP_PY", "PROVENANCE_CONFIG", "WALK_ONLY",
+        "DEVENV", "HOME", "VERIFY_B64", "PROJECT_FILES_B64", "SETUP_PY", "WALK_SETUP_PY", "PROVENANCE_CONFIG", "WALK_ONLY",
         "WALK_DIAGNOSTICS_PY", "WALK_DIAGNOSTIC_PREFIX", "WALK_DIAGNOSTIC_MAX_BYTES",
     }
     assert "GITHUB_TOKEN" not in env_names

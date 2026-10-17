@@ -8,7 +8,7 @@ import shlex
 from typing import TYPE_CHECKING, Any
 
 from coordinare.services.environment_acceptance import accepted_environment
-from coordinare.services.kubernetes_verifier import check_project_files
+from coordinare.services.kubernetes_verifier import check_project_files, credential_environment
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -53,7 +53,7 @@ async def verification_sources(state: Mapping[str, Any], name: str, cache: EnvCa
 def source_setup(files: dict[str, str]) -> str:
     """Create private source files in the verifier, with no shell interpolation of their contents."""
     check_project_files(files)
-    encoded = base64.b64encode(json.dumps(files).encode()).decode()
+    encoded = base64.b64encode(json.dumps(files, ensure_ascii=False).encode("utf-8")).decode("ascii")
     program = (
         "import base64,json,os,tempfile\n"
         "from pathlib import Path\n"
@@ -66,12 +66,23 @@ def source_setup(files: dict[str, str]) -> str:
         "print(root)\n"
     )
     return (
-        "set -e\nCOORDINARE_REPO_DIR=$(/usr/local/bin/python -I -c " + shlex.quote(program)
-        + ")\nexport COORDINARE_REPO_DIR\n"
+        "set -e\nCOORDINARE_REPO_DIR=$(/usr/local/bin/python -I <<'COORDINARE_SOURCE_PY'\n"
+        + program + "COORDINARE_SOURCE_PY\n)\nexport COORDINARE_REPO_DIR\n"
     )
 
 
 async def verification_environment(
+    state: Mapping[str, Any], name: str, cache: EnvCacheState, performer_mounts: Sequence[Path],
+) -> str:
+    """Export bounded encoded credentials for restoration after trusted startup."""
+    encoded = await verification_credentials(state, name, cache, performer_mounts)
+    if not encoded:
+        return ""
+    return "".join("export " + key + "=" + shlex.quote(value) + "\n"
+                   for key, value in credential_environment(encoded).items())
+
+
+async def verification_credentials(
     state: Mapping[str, Any], name: str, cache: EnvCacheState, performer_mounts: Sequence[Path],
 ) -> str:
     """Resolve curated credentials just in time; values travel only in verifier stdin."""
@@ -118,4 +129,5 @@ async def verification_environment(
         message = "test environment attempts to override verifier controls"
         raise ValueError(message)
     encoded = base64.b64encode(json.dumps(values).encode()).decode()
-    return "export COORDINARE_ENV_SECRET_VALUES=" + shlex.quote(encoded) + "\n"
+    credential_environment(encoded)  # Validate the same aggregate bound for both transports.
+    return encoded

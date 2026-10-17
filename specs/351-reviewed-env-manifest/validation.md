@@ -100,3 +100,31 @@ specific skips on macOS; these scenarios execute on Linux CI.
 
 The benchmark is now exercised by a normal unit test on CI runners. The local
 measurement above remains the only recorded timing until CI completes.
+
+
+## Review transfer and platform regressions
+
+Discovery now admits accepted source inputs against the existing 256 KiB serialized
+UTF-8 JSON transport limit before coverage acceptance; reviewer context retains its
+separate inspection budget. Multi-file and escaped-text overflow regressions reject
+contracts that cannot be transferred. Docker and Kubernetes preserve identical bytes.
+
+Linux Docker reproduced the per-string execution limit with 200 KiB of UTF-8 source.
+Docker source setup now uses stdin, while Kubernetes source, verification and provenance
+payloads use 64 KiB chunks reconstructed by trusted Python. Actual Linux runs execute
+large source setup, verification and provenance walking successfully. Aggregate source
+and Pod bounds remain unchanged. These are container proofs, not live cluster validation.
+
+Non-Linux live services explicitly hold with indeterminate completion evidence, while
+immediate successful starts remain supported. Linux supervisor lifecycle regressions
+continue to pass. The GitHub inventory protocol has a strict type-check proof against
+the concrete service, and kind RBAC assertions cover the required Secret lifecycle and
+forbid broader mutations or cross-namespace reads. Full-suite status remains CI-owned.
+
+Credential transfer uses the same 64 KiB fragment size within its existing
+384 KiB encoded total bound. Independent Linux execution restores a 100,800-byte
+credential with identical SHA256, removes transport controls from the check
+environment, and redacts printed original values. The final rebuilt image also
+passes all three Docker trust scenarios in 7.41 seconds. Strict type checks cover
+321 daemon modules and all four shared environment modules; no new suppressions
+or increased baseline debt were introduced.

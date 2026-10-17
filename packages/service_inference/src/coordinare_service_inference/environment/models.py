@@ -67,6 +67,8 @@ class StrictModel(BaseModel):
 
 def reject_literal_credentials(value: str) -> None:
     """Credential-bearing URLs are runtime references, never persisted command data."""
+    if "://" not in value:
+        return
     for match in re.finditer(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/@]+:([^\s/@]+)@", value):
         if not re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", match.group(1)):
             raise ValueError("credentials must use a named runtime reference")
@@ -101,7 +103,7 @@ class Command(StrictModel):
     def valid_env(cls, value: dict[str, str]) -> dict[str, str]:
         if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) for key in value):
             raise ValueError("invalid environment variable name")
-        if {"COORDINARE_ENV_SECRET_NAMES", "COORDINARE_ENV_SECRET_VALUES"}.intersection(value):
+        if any(key.startswith("COORDINARE_ENV_") for key in value):
             raise ValueError("secret-name policy is reserved for trusted orchestration")
         environment_order(value)
         for key, item in value.items():

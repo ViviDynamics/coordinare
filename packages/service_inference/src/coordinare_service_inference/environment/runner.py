@@ -194,7 +194,7 @@ def _secret_values(env: dict[str, str]) -> set[str]:
     names = set(declared) if isinstance(declared, list) and all(isinstance(n, str) for n in declared) else set()
     return {value for key, value in env.items() if key != "COORDINARE_ENV_SECRET_NAMES" and value and (
         key in names or re.search(r"token|secret|password|credential|api.?key", key, re.IGNORECASE)
-        or re.search(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/@]+:[^\s/@]+@", value)
+        or ("://" in value and re.search(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/@]+:[^\s/@]+@", value))
     )}
 
 
@@ -210,6 +210,8 @@ def _redact(
 ) -> str:
     for value in sorted(_secret_values(env) | extra_values, key=len, reverse=True):
         text = text.replace(value, "[REDACTED]")
+    if "://" not in text:
+        return text
     return re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s/@]+:[^\s/@]+@", r"\1[REDACTED]@", text)
 
 
@@ -364,7 +366,13 @@ async def _execute(
                     service_controls[process.pid] = (control_write, ack_read)
                     ack_read = None
                     control_write = None
-                result.status = "pass"
+                if sys.platform == 'linux':
+                    result.status = "pass"
+                else:
+                    # Process-group cleanup cannot prove a running service's
+                    # successful completion; only the Linux supervisor can.
+                    result.status = "indeterminate"
+                    tail.extend(b"\nbackground service completion requires Linux supervision")
                 return result
         try:
             await asyncio.wait_for(process.wait(), command.timeout_seconds)
@@ -673,6 +681,25 @@ async def run_manifest(
     )
 
 
+def _secret_payload() -> str:
+    """Remove all transport controls before restoring values or launching children."""
+    prefix = "COORDINARE_ENV_SECRET_VALUES"
+    fields = {key: os.environ.pop(key) for key in tuple(os.environ)
+              if key == prefix or key.startswith(prefix + "_")}
+    count = fields.pop(prefix + "_COUNT", None)
+    encoded = fields.pop(prefix, "")
+    if count is not None:
+        if not count.isascii() or not count.isdecimal() or not 1 <= int(count) <= 6 or encoded:
+            raise ValueError("invalid credential fragment count")
+        fragments = [fields.pop(prefix + "_" + str(index)) for index in range(int(count))]
+        if any(len(fragment) > 64 * 1024 for fragment in fragments):
+            raise ValueError("credential fragment exceeds transfer bound")
+        encoded = "".join(fragments)
+    if fields or len(encoded) > 384 * 1024:
+        raise ValueError("credential payload exceeds transfer bound")
+    return encoded
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest")
@@ -684,7 +711,10 @@ def main() -> None:
     parser.add_argument("--install", action="store_true")
     args = parser.parse_args()
     secret_names: list[str] = []
-    encoded_secrets = os.environ.pop('COORDINARE_ENV_SECRET_VALUES', '')
+    try:
+        encoded_secrets = _secret_payload()
+    except (ValueError, KeyError):
+        parser.error('invalid transient secret environment payload')
     if encoded_secrets:
         try:
             if len(encoded_secrets) > 384 * 1024:
@@ -692,7 +722,8 @@ def main() -> None:
             supplied = json.loads(base64.b64decode(encoded_secrets, validate=True))
             if not isinstance(supplied, dict) or any(
                 not isinstance(key, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key)
-                or key in {'COORDINARE_ENV_SECRET_VALUES', 'COORDINARE_ENV_SECRET_NAMES'}
+                or key.startswith('COORDINARE_ENV_')
+                or key in {'BASH_ENV', 'ENV', 'COORDINARE_REPO_DIR'}
                 or not isinstance(value, str) or '\0' in value
                 for key, value in supplied.items()
             ):

@@ -115,7 +115,7 @@ async def test_accepted_required_failures_never_establish_readiness(tmp_path: Pa
     if failure == "service-health":
         data["services"] = [{"id": "declared-service",
             "init": {"id": "init", "argv": [sys.executable, "-c", "from pathlib import Path;Path('initialized').touch()"], "cwd": "{scratch}"},
-            "start": {"id": "start", "argv": [sys.executable, "-c", "import time;time.sleep(30)"]},
+            "start": {"id": "start", "argv": ["true"]},
             "health": {"id": "health", "argv": ["false"]},
             "stop": {"id": "stop", "argv": [sys.executable, "-c", "pass"]}}]
     manifest = EnvironmentManifest.model_validate(data)

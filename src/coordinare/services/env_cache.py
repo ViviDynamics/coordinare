@@ -94,10 +94,15 @@ if TYPE_CHECKING:
 
     from coordinare.services.env_manifest_llm import ChatJson
 
-    class _GitHubService(Protocol):
-        async def get_file_blob_sha(self, org: str, repo: str, path: str) -> str | None: ...
+    class _GitHubFileReader(Protocol):
         async def get_file_content(self, org: str, repo: str, path: str, *, ref: str = "HEAD") -> str | None: ...
+
+    class _GitHubService(_GitHubFileReader, Protocol):
+        async def get_file_blob_sha(self, org: str, repo: str, path: str) -> str | None: ...
         async def get_branch_head_sha(self, branch_name: str = "main") -> str | None: ...
+        async def get_repository_paths(
+            self, owner: str, repo: str, *, ref: str, max_entries: int = 100_000,
+        ) -> list[str]: ...
 
 logger = structlog.get_logger(__name__)
 
@@ -163,7 +168,7 @@ def load_prior_manifest_bounded(
 
 
 async def _bootstrap_file_content(
-    github: _GitHubService, org: str, repo: str, path: str, commit: str | None,
+    github: _GitHubFileReader, org: str, repo: str, path: str, commit: str | None,
 ) -> str | None:
     if commit is None:
         return await github.get_file_content(org, repo, path)
@@ -466,7 +471,7 @@ async def resolve_test_env_vars(
     test_env: Any,
     github_org: str,
     repo: str,
-    github_service: _GitHubService,
+    github_service: _GitHubFileReader,
     fallback_source: str | None = None,
     performer_mounts: Sequence[Path],
 ) -> dict[str, str]:
@@ -2227,7 +2232,7 @@ class EnvCacheService:
         symphony_name: str,
         repo: str,
         github_org: str,
-        github_service: Any,
+        github_service: _GitHubService,
         readme_contents: dict[str, str],
         current_sha: str,
         cache_dir: Path,

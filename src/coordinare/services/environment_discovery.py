@@ -15,6 +15,8 @@ from typing import Any, NotRequired, TypedDict, Unpack
 from coordinare_service_inference.environment.models import CoverageAssessment, EnvironmentManifest
 from pydantic import ValidationError
 
+from coordinare.services.kubernetes_verifier import check_project_files
+
 Fetch = Callable[[str], Awaitable[str | None]]
 ChatJson = Callable[[list[dict[str, str]]], Awaitable[str]]
 _ASCII_CONTROL_BOUND = 32
@@ -88,6 +90,7 @@ class _Inspection:
     fetch: Fetch
     limits: DiscoveryLimits
     inputs: dict[str, str] = field(default_factory=dict)
+    source_files: dict[str, str] = field(default_factory=dict, repr=False)
     reads: int = 0
     total_bytes: int = 0
     inventory: set[str] = field(init=False)
@@ -117,6 +120,7 @@ class _Inspection:
             message = f"{self.name} source snapshot changed during inspection"
             raise EnvironmentDiscoveryError(message)
         self.inputs[path] = digest
+        self.source_files[path] = content
         return {"path": path, "content": content, "sha256": digest}
 
     async def tool_result(self, reply: dict[str, Any]) -> dict[str, Any]:
@@ -246,8 +250,9 @@ async def discover_and_review(
     )
     identity = {"symphony_name": symphony_name, "source_commit": commit, "paths": inventory}
     try:
+        discovery = _Inspection("discovery", inventory, fetch, bounds)
         candidate, inspected = await _phase(
-            inspection=_Inspection("discovery", inventory, fetch, bounds), chat=chat,
+            inspection=discovery, chat=chat,
             messages=[
                 {"role": "system", "content": tools + (
                     'Discover the project environment from arbitrary repository evidence, including '
@@ -269,6 +274,14 @@ async def discover_and_review(
             ],
         )
         manifest = _validated_manifest(candidate, inspected, symphony_name, commit)
+        # Inspection context may be larger than the clean verifier's transfer.
+        # Every accepted manifest input must fit the shared Docker/Kubernetes
+        # serialized source budget, including paths and JSON escaping.
+        try:
+            check_project_files(discovery.source_files)
+        except ValueError:
+            message = "discovery source transfer byte limit exceeded"
+            raise EnvironmentDiscoveryError(message) from None
         assessment_data, reviewer_reads = await _phase(
             inspection=_Inspection("review", inventory, fetch, bounds), chat=chat,
             messages=[

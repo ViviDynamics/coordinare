@@ -59,7 +59,8 @@ This existing wheel is installed in both daemon and performer images.
 ## Constraints and bounds
 
 Follow spec FR-001..023 and SC-001..009. No ecosystem catalog in the new active path.
-256 KiB manifest/assessment, 256 reads, 256 KiB per file, 4 MiB aggregate source,
+256 KiB manifest/assessment, 256 reads, 256 KiB per file, 4 MiB aggregate inspection
+source, and 256 KiB serialized accepted-source transfer (paths and escaping included),
 100,000 inventory entries, 120-second discovery/review, 180-second default checks,
 30-second cleanup, 4 KiB output/check and 256 KiB/attempt. Preserve outer deadline and
 attempt accounting. Reject unsupported capabilities; no silent old-path fallback.

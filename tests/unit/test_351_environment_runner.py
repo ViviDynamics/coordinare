@@ -123,10 +123,52 @@ async def test_service_init_background_health_and_teardown(tmp_path):
     }
     manifest = contract([{"id": "usable", "argv": ["true"]}], services=[service])
     report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
-    assert report.passed
+    assert report.passed is (sys.platform == "linux")
     assert marker.exists()
     with pytest.raises(ProcessLookupError):
         os.kill(int(pidfile.read_text()), 0)
+
+
+@pytest.mark.asyncio
+async def test_nonlinux_live_service_start_is_indeterminate_and_still_cleaned_up(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    manifest = contract([{"id": "usable", "argv": ["true"]}], services=[{
+        "id": "foreground",
+        "start": {"id": "start", "argv": [sys.executable, "-c",
+            'import os,pathlib,time;pathlib.Path("pid").write_text(str(os.getpid()));time.sleep(30)']},
+        "health": {"id": "health", "argv": ["true"]},
+        "stop": {"id": "stop", "argv": [sys.executable, "-c",
+            'from pathlib import Path;Path("stopped").touch()']},
+    }])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    results = {result.id: result for result in report.results}
+    assert results["start"].required
+    assert results["start"].status == "indeterminate"
+    assert results["start"].exit_code is None
+    assert "Linux" in results["start"].output
+    assert results["health"].status == "not_run"
+    assert results["usable"].status == "not_run"
+    assert not report.passed
+    assert results["stop"].status == "pass"
+    assert (tmp_path / "stopped").exists()
+    with pytest.raises(ProcessLookupError):
+        os.kill(int((tmp_path / "pid").read_text()), 0)
+
+
+@pytest.mark.asyncio
+async def test_nonlinux_completed_service_start_can_pass(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    manifest = contract([{"id": "usable", "argv": ["true"]}], services=[{
+        "id": "completed",
+        "start": {"id": "start", "argv": ["true"]},
+        "health": {"id": "health", "argv": ["true"]},
+        "stop": {"id": "stop", "argv": ["true"]},
+    }])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    start = next(result for result in report.results if result.id == "start")
+    assert start.status == "pass"
+    assert start.exit_code == 0
+    assert report.passed
 
 
 @pytest.mark.asyncio

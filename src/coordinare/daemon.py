@@ -4354,14 +4354,14 @@ class CoordinareDaemon:
         if files is None:
             message = "env verification could not resolve the symphony repository for the clean-room verifier"
             raise RuntimeError(message)
-        from coordinare.services.environment_verification import verification_environment
+        from coordinare.services.environment_verification import verification_credentials
 
-        credentials = await verification_environment(self._state, symphony_name, ec, self._performer_mounts())
+        credentials = await verification_credentials(self._state, symphony_name, ec, self._performer_mounts())
         return VerifierSpec(
             image=configured_verifier_image(config), cache_claim="", cache_subpath=ec.sanitised_name,
             mount_path=f"{getattr(svc, 'devenv_root', '/devenv')}/{ec.sanitised_name}",
             verify_text=str(ec.rendered_verify_sh),
-            transient_credentials=credentials.removeprefix("export COORDINARE_ENV_SECRET_VALUES=").strip(),
+            transient_credentials=credentials,
             project_files=files, max_entries=limits.max_entries, max_bytes=limits.max_bytes,
         )
 

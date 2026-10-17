@@ -338,7 +338,10 @@ previously inspected files and confirm that discovery cannot reuse stale coverag
   configurable, and exhaustion must be explicit. An incomplete inventory or truncated
   source cannot establish coverage unless the reviewer obtains the missing evidence
   within the configured limits. Input-size and command-count admission limits must
-  reject oversized work before scheduling it.
+  reject oversized work before scheduling it. Accepted source inputs additionally
+  fit the existing 256 KiB clean-verifier transfer bound as UTF-8 JSON, including
+  paths and escaping. Inspection context limits do not enlarge this transport
+  bound; admission rejects an untransferable contract before acceptance.
 - **SC-009**: Before merge, lint, typecheck, affected unit/integration/contract tests,
   full required checks, and `make test-all` pass. Full-diff adversarial review verifies
   the readiness and trust claims by execution. Operator documentation describes the

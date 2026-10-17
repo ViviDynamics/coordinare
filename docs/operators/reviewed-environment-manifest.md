@@ -93,8 +93,17 @@ controlled by `manifest_max_inventory_entries`;
 serialized inventory also has a source-byte admission bound. Manifest and assessment
 each have a 256 KiB serialization cap. Reads, model turns and replies are bounded;
 exhaustion is an explicit hold, never truncated acceptance. The YAML above names
-the operator-configurable inspection limits. Increase only the relevant bound after
-checking the held reason and repository size.
+the operator-configurable inspection limits. Separately, the accepted manifest's
+source inputs must fit the fixed 256 KiB aggregate clean-verifier transfer budget,
+measured as UTF-8 JSON including paths and escaping, before base64 encoding. Discovery
+holds before accepting a contract that exceeds this shared Docker/Kubernetes bound;
+increasing inspection limits does not increase it. Review may read additional context
+within the inspection limits without adding it to the verifier transfer. Docker
+materializes source through verifier stdin; Kubernetes splits source, verification
+script and provenance configuration into 64 KiB environment chunks and reconstructs
+them inside the trusted Python process. This keeps each argument and environment
+value below Linux's 128 KiB per-string limit without raising aggregate payload caps. Increase
+only the relevant inspection bound after checking the held reason and repository size.
 
 A changed source head invalidates discovery, including newly added files and nested
 projects whose old inputs were untouched. An unchanged source identity does not
@@ -143,8 +152,10 @@ Secret reference. The Kubernetes Pod is created first, then its API-issued UID o
 the short-lived Secret; Pod garbage collection covers daemon crashes. Removal must
 be confirmed before readiness. Update the shipped namespace Role to grant Secret
 create/get/delete (no list, update, patch or cluster grant); use a dedicated namespace
-for this permission boundary. Kubernetes Pod specs contain only the Secret name and
-key. Values are restored after the trusted interpreter starts. Manifests use named
+for this permission boundary. Encoded credential envelopes retain a 384 KiB aggregate
+cap and use 64 KiB fragments in both transports. Kubernetes Pod specs contain only
+Secret names, keys and fragment counts. Values are restored and transport fragments
+removed after the trusted interpreter starts. Manifests use named
 references; literal credential URLs are refused.
 
 Upgrade daemon, performer and trusted verifier images together; they must share

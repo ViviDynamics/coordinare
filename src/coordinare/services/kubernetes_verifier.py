@@ -59,6 +59,9 @@ PROJECT_FILE_PATHS: tuple[str, ...] = ("Gemfile", "Gemfile.lock", ".ruby-version
 # Bound serialized project JSON, including paths and escaping, before base64 expansion.
 # Together with the verify text this leaves over 200 KiB for pod metadata and setup.
 PROJECT_FILES_MAX_BYTES = 256 * 1024
+# Linux limits each argument/environment string to 128 KiB, independently
+# of ARG_MAX. Keep payload chunks comfortably below that per-string limit.
+VERIFIER_ENV_CHUNK_BYTES = 64 * 1024
 _CACHE_VOLUME = "devenv-cache"
 _POD_NAME_MAX = 63
 _POD_NAME_UUID_CHARS = 8
@@ -69,15 +72,22 @@ class VerifierConfigurationError(ValueError):
     """Operator inputs prevent verification; retrying the same configuration cannot help."""
 
 
-# The setup, run before the verify, with the verifier's own environment. It writes the daemon's verify.sh and the project
-# files (from the commit) into a private directory, and resolves the bundle path the way bundler will see it. Bundler
-# resolves a relative BUNDLE_PATH against the Gemfile's directory. A cache whose bundle was installed against a vendored
-# Gemfile at the cache root therefore resolves against the cache root, not the checkout, so the path is made absolute here.
-SETUP_PY = r'''
+# The trusted setup writes the daemon's verify.sh and pinned source inputs into a
+# private workspace. Activation comes from the accepted environment contract.
+READ_PAYLOAD_PY = r'''
+def read_payload(name):
+    count = os.environ.pop(name + "_COUNT", None)
+    if count is None:
+        return os.environ.pop(name, "")
+    os.environ.pop(name, None)
+    return "".join(os.environ.pop(name + "_" + str(i)) for i in range(int(count)))
+'''
+
+SETUP_PY = READ_PAYLOAD_PY + r'''
 import base64, json, os, re, shlex, sys
 d = sys.argv[1]
 devenv = os.environ["DEVENV"]
-files = json.loads(base64.b64decode(os.environ["PROJECT_FILES_B64"]).decode("utf-8"))
+files = json.loads(base64.b64decode(read_payload("PROJECT_FILES_B64")).decode("utf-8"))
 repo = os.path.join(d, "repo")
 os.makedirs(repo, mode=0o700)
 for rel, text in files.items():
@@ -90,10 +100,18 @@ for rel, text in files.items():
         fh.write(text)
 verify = os.path.join(d, "verify.sh")
 with open(verify, "w", encoding="utf-8") as fh:
-    fh.write(base64.b64decode(os.environ["VERIFY_B64"]).decode("utf-8"))
+    fh.write(base64.b64decode(read_payload("VERIFY_B64")).decode("utf-8"))
 os.chmod(verify, 0o600)
 with open(os.path.join(d, "env.sh"), "w", encoding="utf-8") as fh:
     fh.write("export COORDINARE_REPO_DIR=" + shlex.quote(repo) + "\n")
+'''
+
+# Assemble large configuration only after Python starts. run_module invokes the
+# trusted walker in this process, so the assembled value never enters execve.
+WALK_SETUP_PY = READ_PAYLOAD_PY + r'''
+import os, runpy
+os.environ["PROVENANCE_CONFIG"] = read_payload("PROVENANCE_CONFIG")
+runpy.run_module("performer.cache_verifier", run_name="__main__")
 '''
 
 # Stdlib only, so an unavailable performer module can still be diagnosed. Read a
@@ -101,8 +119,6 @@ with open(os.path.join(d, "env.sh"), "w", encoding="utf-8") as fh:
 # diagnostic. JSON escaping keeps even a multiline traceback on one log line.
 WALK_DIAGNOSTICS_PY = r"""
 from __future__ import annotations
-
-from coordinare_service_inference.environment.models import source_path
 
 import json, os, re, sys
 prefix = os.environ["WALK_DIAGNOSTIC_PREFIX"]
@@ -140,7 +156,7 @@ VERIFIER_SCRIPT = (
     # captured walker result, leaving the sentinel on the final nonempty line.
     'if [ "$WALK_ONLY" = "1" ]; then\n'
     '  rc=0\n'
-    '  python3 -P -m performer.cache_verifier </dev/null >"$HOME/walk.stdout" 2>"$HOME/walk.stderr" || rc=$?\n'
+    '  python3 -P -c "$WALK_SETUP_PY" </dev/null >"$HOME/walk.stdout" 2>"$HOME/walk.stderr" || rc=$?\n'
     '  python3 -c "$WALK_DIAGNOSTICS_PY" "$HOME/walk.stderr"\n'
     '  cat "$HOME/walk.stdout"\n'
     '  exit "$rc"\n'
@@ -173,6 +189,25 @@ def check_project_files(files: dict[str, str]) -> None:
     if total > PROJECT_FILES_MAX_BYTES:
         msg = f"project files total {total} bytes, over the {PROJECT_FILES_MAX_BYTES} byte bound"
         raise ValueError(msg)
+
+
+def _payload_environment(name: str, value: str) -> dict[str, str]:
+    """Bound individual environment strings without changing aggregate caps."""
+    if len(value.encode("utf-8")) <= VERIFIER_ENV_CHUNK_BYTES:
+        return {name: value}
+    # Callers pass base64 or ASCII JSON, so character slicing is byte slicing.
+    chunks = [value[offset:offset + VERIFIER_ENV_CHUNK_BYTES]
+              for offset in range(0, len(value), VERIFIER_ENV_CHUNK_BYTES)]
+    return {name: "", name + "_COUNT": str(len(chunks)),
+            **{name + "_" + str(index): chunk for index, chunk in enumerate(chunks)}}
+
+
+def credential_environment(encoded: str) -> dict[str, str]:
+    """Keep the bounded encoded secret envelope below Linux's per-string cap."""
+    if not encoded.isascii() or len(encoded) > 384 * 1024:
+        message = "transient credential payload exceeds transfer bound"
+        raise ValueError(message)
+    return _payload_environment("COORDINARE_ENV_SECRET_VALUES", encoded)
 
 
 @dataclass(frozen=True)
@@ -231,6 +266,7 @@ def build_verifier_pod_manifest(
         "VERIFY_B64": base64.b64encode(verify_bytes).decode("ascii"),
         "PROJECT_FILES_B64": base64.b64encode(json.dumps(spec.project_files, ensure_ascii=False).encode("utf-8")).decode("ascii"),
         "SETUP_PY": SETUP_PY,
+        "WALK_SETUP_PY": WALK_SETUP_PY,
         "WALK_ONLY": "1" if spec.walk_only else "0",
         "WALK_DIAGNOSTICS_PY": WALK_DIAGNOSTICS_PY,
         "WALK_DIAGNOSTIC_PREFIX": WALK_DIAGNOSTIC_PREFIX,
@@ -239,6 +275,8 @@ def build_verifier_pod_manifest(
                                         "max_entries": spec.max_entries,
                                         "max_bytes": spec.max_bytes}) if spec.walk_only and spec.activate_text is not None else "",
     }
+    for payload_name in ("PROJECT_FILES_B64", "VERIFY_B64", "PROVENANCE_CONFIG"):
+        env.update(_payload_environment(payload_name, env[payload_name]))
     manifest: dict[str, Any] = {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -290,13 +328,14 @@ def build_verifier_pod_manifest(
         if spec.walk_only:
             message = 'provenance walker must not receive credentials'
             raise ValueError(message)
-        if len(spec.transient_credentials) > 384 * 1024:
-            message = 'transient credential payload exceeds transfer bound'
-            raise ValueError(message)
-        manifest['spec']['containers'][0]['env'].append({
-            'name': 'COORDINARE_ENV_SECRET_VALUES',
-            'valueFrom': {'secretKeyRef': {'name': name + '-credentials', 'key': 'values'}},
-        })
+        for field_name, value in credential_environment(spec.transient_credentials).items():
+            if field_name.endswith("_COUNT"):
+                entry: dict[str, Any] = {"name": field_name, "value": value}
+            else:
+                key = "values" + field_name.removeprefix("COORDINARE_ENV_SECRET_VALUES")
+                entry = {"name": field_name, "valueFrom": {
+                    "secretKeyRef": {"name": name + "-credentials", "key": key}}}
+            manifest["spec"]["containers"][0]["env"].append(entry)
     if owner:
         manifest["metadata"]["labels"][OWNER_LABEL] = owner
     if len(json.dumps(manifest).encode("utf-8")) > VERIFIER_POD_MAX_BYTES:
@@ -321,7 +360,10 @@ def build_verifier_credentials_secret(
             'metadata': {'name': name + '-credentials', 'namespace': namespace, 'labels': labels,
                          'ownerReferences': [{'apiVersion': 'v1', 'kind': 'Pod', 'name': name,
                                               'uid': pod_uid, 'controller': False, 'blockOwnerDeletion': False}]},
-            'data': {'values': base64.b64encode(spec.transient_credentials.encode()).decode('ascii')}}
+            'data': {"values" + field_name.removeprefix("COORDINARE_ENV_SECRET_VALUES"):
+                     base64.b64encode(value.encode("ascii")).decode("ascii")
+                     for field_name, value in credential_environment(spec.transient_credentials).items()
+                     if not field_name.endswith("_COUNT")}}
 
 
 __all__ = [
