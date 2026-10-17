@@ -9,6 +9,7 @@ import re
 import signal
 import sys
 import time
+from typing import Any
 
 
 def expand(value: str) -> str:
@@ -16,7 +17,7 @@ def expand(value: str) -> str:
     return re.sub(r"(?<!\$)\{(repo|cache|scratch)\}", lambda match: roots[match.group(1)], value)
 
 
-async def execute(command: dict, seconds: float) -> dict:
+async def execute(command: dict[str, Any], seconds: float) -> dict[str, Any]:
     result = {"id": command["id"], "status": "execution_error", "exit_code": None, "output": "", "truncated": False}
     env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": "/scratch", "TMPDIR": "/scratch", "LANG": "C.UTF-8"}
     env.update({key: expand(value) for key, value in command.get("env", {}).items() if key not in {"BASH_ENV", "ENV"}})
@@ -24,7 +25,8 @@ async def execute(command: dict, seconds: float) -> dict:
     process = None
 
     async def drain() -> None:
-        assert process is not None and process.stdout is not None
+        if process is None or process.stdout is None:
+            return
         while chunk := await process.stdout.read(8192):
             room = max(0, 16384 - len(output))
             output.extend(chunk[:room])
