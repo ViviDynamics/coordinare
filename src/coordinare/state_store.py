@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 39  # 276: persist the env-cache bootstrap exhaustion reason
+CURRENT_SCHEMA_VERSION: int = 40  # 351: persist the independently accepted environment contract
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -691,6 +691,9 @@ class EnvCacheStateSnapshot(BaseModel):
     # copies. Old snapshots load with None, which fails closed (one re-bootstrap). The model
     # strips whitespace by default, which would drop the trailing newline and break the exact
     # activate.sh comparison, so these two fields keep their text byte for byte.
+    environment_manifest: dict[str, Any] | None = None
+    environment_assessment: dict[str, Any] | None = None
+    environment_verification: dict[str, Any] | None = None
     rendered_verify_sh: Annotated[str | None, StringConstraints(strip_whitespace=False)] = None
     rendered_activate_sh: Annotated[str | None, StringConstraints(strip_whitespace=False)] = None
     # 218 (review round 3): the infrastructure-failure budget, separate from the 088 verdict budget.

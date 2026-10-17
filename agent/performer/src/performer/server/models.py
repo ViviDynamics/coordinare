@@ -9,6 +9,8 @@ is the source of truth that keeps the two in sync.
 
 from __future__ import annotations
 
+import platform
+
 from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -47,10 +49,14 @@ class PerformerStatus(BaseModel):
     version: str | None = None
     # 234: the env-provenance capability. The daemon refuses a frozen payload to an image reporting less.
     env_provenance_version: int = 0
+    # 351: old images omit this and cannot enforce independently reviewed manifests.
+    environment_manifest_version: int = 0
+    environment_platform: str = Field(default_factory=lambda: platform.system().lower() + "/" + platform.machine().lower())
 
 
 # 234: the version this image implements. Reported on GET /status as env_provenance_version.
 ENV_PROVENANCE_CAPABILITY_VERSION = 2
+ENVIRONMENT_MANIFEST_CAPABILITY_VERSION = 1
 
 _SHA256_HEX_LEN = 64
 _SCRIPT_MAX_CHARS = 256 * 1024

@@ -37,9 +37,9 @@ _ITEM = {
 }
 
 
-def test_current_schema_version_is_24() -> None:
-    """354 adds the per-session queued-for-slot wait stamp; prior fields remain supported."""
-    assert CURRENT_SCHEMA_VERSION == 39  # 276: persisted env-cache bootstrap exhaustion reason
+def test_current_schema_version_is_40() -> None:
+    """351 persists the independently accepted environment contract; prior versions load."""
+    assert CURRENT_SCHEMA_VERSION == 40
 
 
 def test_old_session_loads_with_surfaced_stale_reviews_default() -> None:

@@ -23,6 +23,7 @@ from coordinare.services.kubernetes_provenance import parse_summary
 from coordinare.services.kubernetes_verifier import WALK_DIAGNOSTIC_PREFIX
 from tests.unit.services.test_400_forced_regen_single_bootstrap import _cycle, _github
 from tests.unit.services.test_env_cache_phase4 import _make_cfg, _seed_state
+from tests.unit.test_060_env_cache import _accepted_discovery as _accepted_discovery
 from tests.unit.test_265_k8s_verifier import _manifest, _run_in_pod
 from tests.unit.test_265_provenance_k8s import ACTIVATE, freeze, logs, setup, summary
 from tests.unit.test_276_review_blockers import (
@@ -246,6 +247,9 @@ async def test_spec_change_clears_configuration_exhaustion_reason(tmp_path: Path
     ec.readme_sha = await service._current_manifest_sha(name, sym, github, sym.effective_config(cfg.global_config), ec)
     service.refuse_verifier_configuration(ec, state, "invalid image")
     assert ec.bootstrap_exhaustion_reason == "configuration_refusal"
-    await _cycle(service, name, sym, _github("new-sha"), state, [])
+    dispatched = []
+    await _cycle(service, name, sym, _github("new-sha"), state, dispatched)
+    assert len(dispatched) == 1
+    assert ec.bootstrap_in_flight
     assert not ec.bootstrap_exhausted
     assert ec.bootstrap_exhaustion_reason is None

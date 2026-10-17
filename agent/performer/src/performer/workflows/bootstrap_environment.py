@@ -34,6 +34,12 @@ class BootstrapEnvironment:
         from performer.main import _read_declared_services, _run_service_inference
 
         if step == "snapshot":
+            from performer.environment_contract import accepted_manifest
+
+            try:
+                accepted_manifest(self.score)
+            except ValueError as exc:
+                return {"passed": False, "reason": str(exc)}
             if not self.score.env_cache_path or not Path(self.score.env_cache_path).is_absolute():
                 return {"passed": False, "reason": "bootstrap requires an absolute env_cache_path"}
             for name, promised in (("verify.sh", self.score.verify_provided),
@@ -53,6 +59,20 @@ class BootstrapEnvironment:
                 if not unchanged:
                     return {"passed": False, "reason": f"coordinare-owned artifact changed: {name}"}
             return {"passed": True}
+        if self.score.environment_manifest is not None:
+            from performer.environment_contract import execute_contract
+
+            if step in {"inference", "readiness"}:
+                return {"passed": True, "inference": {}}
+            if step in {"install", "verify"}:
+                integrity = await self.run("integrity")
+                if not integrity["passed"]:
+                    return {**integrity, "integrity_failure": True}
+                result = await execute_contract(self.score, self.stand, install=step == "install")
+                integrity = await self.run("integrity")
+                if not integrity["passed"]:
+                    return {**integrity, "integrity_failure": True}
+                return result
         if step == "inference":
             try:
                 self.inference = await asyncio.wait_for(

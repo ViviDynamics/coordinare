@@ -29,14 +29,26 @@ from coordinare.services.env_cache import (
     verify_env_cache_clean,
 )
 from coordinare.state_store import EnvCacheStateSnapshot
+from tests.unit.env_manifest_fixture import reviewed_cache, reviewed_metadata, verification_output
 from tests.unit.env_mount_stub import mount_config
+
+
+@pytest.fixture(autouse=True)
+def _accepted_source_fixture(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",
+                        AsyncMock(return_value={"tools.plan": "baseline"}))
+    # These tests exercise trusted verifier execution, not source archive materialisation.
+    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files: "")
+
 
 _REAL_EXEC = asyncio.create_subprocess_exec
 
 # What the daemon rendered at bootstrap time (held in daemon memory / the snapshot).
 RENDERED_VERIFY = "#!/bin/sh\necho 'FAIL: ruby 3.4.2 not runnable' >&2\nexit 1\n"
 RENDERED_ACTIVATE = "# AUTHORITATIVE activate.sh (daemon-rendered)\n"
-SVC = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"))
+SVC = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img@sha256:" + "1" * 64))
 
 
 def _run_argv(fake: Any) -> tuple[str, ...]:
@@ -47,9 +59,10 @@ def _run_argv(fake: Any) -> tuple[str, ...]:
 class _FakeDocker:
     """Stands in for ``asyncio.create_subprocess_exec`` for the docker calls."""
 
-    def __init__(self, *, run_locally: bool, rc: int = 0) -> None:
+    def __init__(self, *, run_locally: bool, rc: int = 0, manifest=None) -> None:
         self.run_locally = run_locally
         self.rc = rc
+        self.manifest = manifest
         self.calls: list[tuple[str, ...]] = []
         self.stdin_seen: list[bytes | None] = []
 
@@ -70,10 +83,11 @@ class _FakeDockerProc:
 
     async def communicate(self, **kwargs: Any) -> tuple[bytes, None]:
         data = kwargs.get("input")
-        self._owner.stdin_seen.append(data)
+        if data is not None:
+            self._owner.stdin_seen.append(data)
         if not self._owner.run_locally:
             self.returncode = self._owner.rc
-            return b"", None
+            return verification_output(self._owner.manifest) if self._owner.rc == 0 else b"", None
         proc = await _REAL_EXEC(
             "sh", "-s",
             stdin=asyncio.subprocess.PIPE,
@@ -101,13 +115,15 @@ def _state(
     verify: str | None = RENDERED_VERIFY,
     activate: str | None = RENDERED_ACTIVATE,
 ) -> EnvCacheState:
-    return EnvCacheState(
+    return reviewed_cache(EnvCacheState(
         symphony_name="sym",
         sanitised_name="sym-abc",
         cache_dir=cache,
         rendered_verify_sh=verify,
         rendered_activate_sh=activate,
-    )
+        cache_dir_ready=True, last_bootstrap_succeeded=True,
+        bootstrap_commit_sha="abc", **{key: value for key, value in reviewed_metadata().items() if key != "environment_manifest_digest"},
+    ))
 
 
 def _ctx(state: EnvCacheState) -> dict[str, Any]:
@@ -145,7 +161,7 @@ async def test_rewritten_verify_sh_that_exits_zero_does_not_pass(
     assert passed is False
     assert "FAIL" in detail
     # The daemon's own text went to the container on stdin, and the cache copy was never named.
-    assert fake.stdin_seen == [RENDERED_VERIFY.encode()]
+    assert [data for data in fake.stdin_seen if data is not None] == [RENDERED_VERIFY.encode()]
     assert all("verify.sh" not in arg for call in fake.calls for arg in call)
     assert "-i" in _run_argv(fake)
     assert "-s" in _run_argv(fake)
@@ -166,7 +182,7 @@ async def test_clean_verify_pipes_the_daemon_script_read_only(
     )
 
     assert passed is True
-    assert fake.stdin_seen == [RENDERED_VERIFY.encode()]
+    assert [data for data in fake.stdin_seen if data is not None] == [RENDERED_VERIFY.encode()]
     argv = _run_argv(fake)
     assert f"{cache}:/devenv/sym-abc:ro" in argv
     assert argv[-1] == "-s"
@@ -310,6 +326,13 @@ async def test_dummy_file_fails_the_bootstrap_completion(tmp_path: Path) -> None
     _seeds(cache)
     (cache / "dummy").write_text("not a toolchain\n")
     state = _state(cache)
+    # A nonempty required environment must install material, unlike an accepted empty baseline.
+    state.environment_manifest["requirements"] = [{"id": "tool", "description": "Required tool",
+        "source": "tools.plan", "checks": ["baseline"], "required": True}]
+    state.environment_manifest["empty_reason"] = None
+    from coordinare_service_inference.environment.models import EnvironmentManifest
+
+    state.environment_assessment["manifest_digest"] = EnvironmentManifest.model_validate(state.environment_manifest).digest()
     svc = EnvCacheService(MagicMock())
 
     svc.on_bootstrap_complete("sym", success=True, state=_ctx(state))
@@ -375,7 +398,7 @@ async def test_honest_bootstrap_passes_end_to_end(
 ) -> None:
     cache = _cache(tmp_path)
     state = EnvCacheState(
-        symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache,
+        symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache, bootstrap_commit_sha="abc",
     )
     files = {
         ".ruby-version": "3.4.2\n",
@@ -388,7 +411,18 @@ async def test_honest_bootstrap_passes_end_to_end(
 
     github = MagicMock()
     github.get_file_content = fake_get
-    svc = EnvCacheService(MagicMock())
+    svc = EnvCacheService(mount_config())
+    from coordinare_service_inference.environment.models import (
+        CoverageAssessment,
+        EnvironmentManifest,
+    )
+
+    reviewed_cache(state, files=files)
+    manifest = EnvironmentManifest.model_validate(state.environment_manifest)
+    assessment = CoverageAssessment.model_validate(state.environment_assessment)
+    github.get_repository_paths = AsyncMock(return_value=list(files))
+    monkeypatch.setattr("coordinare.services.environment_discovery.discover_and_review",
+                        AsyncMock(return_value=(manifest, assessment)))
 
     # 1. The daemon renders and records its scripts at dispatch.
     await svc._build_manifest_artifacts(
@@ -411,14 +445,14 @@ async def test_honest_bootstrap_passes_end_to_end(
     _honest_toolchain(cache)
 
     # 3. Completion: the daemon's clean verify passes and the floor holds.
-    fake = _FakeDocker(run_locally=False, rc=0)
+    fake = _FakeDocker(run_locally=False, rc=0, manifest=state.environment_manifest)
     _install_fake(monkeypatch, fake)
     daemon = CoordinareDaemon(AsyncMock(), max_cycles=1, sleep_func=AsyncMock())
     daemon._state["coordinare_config"] = mount_config()
     daemon._state["env_cache"] = _ctx(state)["env_cache"]
     ok, err, _infra = await daemon._verify_bootstrap_in_clean_context("sym", SVC, "job-1")
     assert (ok, err, _infra) == (True, None, False)
-    assert fake.stdin_seen == [state.rendered_verify_sh.encode()]
+    assert [data for data in fake.stdin_seen if data is not None] == [state.rendered_verify_sh.encode()]
 
     svc.on_bootstrap_complete("sym", success=True, state=daemon._state)
     assert state.last_bootstrap_succeeded is True

@@ -11,6 +11,7 @@ from coordinare.config import PerformerRoleConfig, PerformersConfig
 from coordinare.daemon import CoordinareDaemon
 from coordinare.models.env_cache import BootstrapJobPayload
 from coordinare.services.http_performer_service import HTTPPerformerService
+from tests.unit.env_manifest_fixture import reviewed_metadata
 from tests.unit.env_mount_stub import mount_global
 
 
@@ -26,14 +27,14 @@ async def test_bootstrap_only_uses_its_own_workflow_and_round_trips_flags(enable
     daemon._state["coordinare_config"] = SimpleNamespace(bootstrap_max_seconds=60, global_config=mount_global())
     service = MagicMock()
     service.dispatch_card = AsyncMock(return_value={"status": "error", "reason": "fixture"})
-    payload = BootstrapJobPayload(symphony_name="sym", symphony_org="o", symphony_repo="r",
+    payload = BootstrapJobPayload(**reviewed_metadata(), symphony_name="sym", symphony_org="o", symphony_repo="r",
                                   cache_mount_path="/devenv/sym", verify_provided=True,
                                   activate_provided=True)
     await daemon._execute_bootstrap_dispatch("bootstrap", payload, "sym", {"bootstrap": service}, MagicMock())
     context = service.dispatch_card.call_args.args[0]
     # Builder has no dependency on initialized runtime state for this pure transformation.
     wire = HTTPPerformerService._build_env_bootstrap_payload(object(), context)
-    score = Score.model_validate({**wire.metadata, "repo_url": str(wire.repo_url),
+    score = Score.model_validate({**reviewed_metadata(), **wire.metadata, "repo_url": str(wire.repo_url),
                                   "branch": wire.branch, "role": wire.role})
     assert score.verify_provided and score.activate_provided
     assert score.workflow == ("env_bootstrap" if enabled else "")

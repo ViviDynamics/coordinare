@@ -243,3 +243,179 @@ async def test_tail_redacts_secret_and_missing_binary_is_failure(tmp_path, monke
     assert report.results[0].output_truncated
     assert report.results[1].status == 'fail'
     assert not report.passed
+
+
+@pytest.mark.asyncio
+async def test_detached_descendant_cannot_hold_output_drain_unbounded(tmp_path):
+    import time
+
+    manifest = contract([{'id': 'detached', 'timeout_seconds': 0.05,
+        'argv': [sys.executable, '-c',
+            'import subprocess,sys;subprocess.Popen([sys.executable,"-c","import time;time.sleep(2)"],start_new_session=True)']}])
+    started = time.monotonic()
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    assert time.monotonic() - started < 1.5
+    assert not report.passed
+
+
+@pytest.mark.asyncio
+async def test_activation_moves_declared_path_ahead_of_existing_image_tools(tmp_path):
+    import asyncio
+
+    manifest = contract([{'id': 'base', 'argv': ['true']}],
+                        activation={'path': ['{cache}/bin', '{cache}/other']})
+    activation = render_activate(manifest, cache_mount_path=str(tmp_path))
+    process = await asyncio.create_subprocess_exec(
+        'bash', '--noprofile', '--norc', '-c',
+        activation + '\n' + activation + '\nprintf "%s" "$PATH"',
+        env={**os.environ, 'PATH': f'/usr/bin:{tmp_path}/other:/bin:{tmp_path}/bin'},
+        stdout=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await process.communicate()
+    assert stdout.decode().split(':') == [str(tmp_path / 'bin'), str(tmp_path / 'other'), '/usr/bin', '/bin']
+
+
+@pytest.mark.asyncio
+async def test_clean_verification_executes_required_checks_in_every_scope(tmp_path):
+    manifest = contract([
+        {"id": "baseline", "argv": ["true"]},
+        {"id": "scoped", "argv": ["false"], "scope": ["implementer"]},
+    ])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    scoped = next(result for result in report.results if result.id == "scoped")
+    assert scoped.required and scoped.status == "fail"
+    assert not report.passed
+
+
+@pytest.mark.asyncio
+async def test_explicit_secret_names_and_credential_urls_are_redacted(tmp_path, monkeypatch):
+    monkeypatch.setenv("FIXTURE_DSN", "unusual-private-value")
+    monkeypatch.setenv("DATABASE_URL", "postgres://private_user:private_password@database/db")
+    manifest = contract([{"id": "baseline", "argv": [sys.executable, "-c",
+        "import os;print(os.environ['FIXTURE_DSN']);print(os.environ['DATABASE_URL'])"]}])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path,
+                                secret_names=["FIXTURE_DSN"])
+    serialized = report.model_dump_json()
+    assert "unusual-private-value" not in serialized
+    assert "private_password" not in serialized
+    assert report.passed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('overlay', ['activation', 'command', 'service'])
+async def test_explicit_secret_values_survive_declaration_overlays(tmp_path, monkeypatch, overlay):
+    monkeypatch.setenv('FIXTURE_DSN', 'private-through-alias')
+    monkeypatch.setenv('ALIAS', 'private-through-alias')
+    env = {'FIXTURE_DSN': 'public'}
+    printer = {'id': 'baseline', 'argv': [sys.executable, '-c', 'import os;print(os.environ["ALIAS"])']}
+    changes = {}
+    if overlay == 'activation':
+        changes['activation'] = {'env': env}
+    elif overlay == 'command':
+        printer['env'] = env
+    else:
+        changes['services'] = [{'id': 'svc',
+            'start': {'id': 'start', 'argv': ['true']},
+            'health': {'id': 'health', 'argv': printer['argv'], 'env': env},
+            'stop': {'id': 'stop', 'argv': ['true']}}]
+        printer['argv'] = ['true']
+    manifest = contract([printer], **changes)
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path,
+                                secret_names=['FIXTURE_DSN'])
+    assert 'private-through-alias' not in report.model_dump_json()
+    assert report.passed
+
+
+@pytest.mark.parametrize('phase', ['activation', 'command', 'service'])
+@pytest.mark.parametrize('channel', ['COORDINARE_ENV_SECRET_NAMES', 'COORDINARE_ENV_SECRET_VALUES'])
+def test_secret_name_channel_cannot_be_declared_by_manifest(phase, channel):
+    from pydantic import ValidationError
+
+    env = {channel: '${' + channel + '}'}
+    printer = {'id': 'baseline', 'argv': ['true']}
+    changes = {}
+    if phase == 'activation':
+        changes['activation'] = {'env': env}
+    elif phase == 'command':
+        printer['env'] = env
+    else:
+        changes['services'] = [{'id': 'svc',
+            'start': {'id': 'start', 'argv': ['true'], 'env': env},
+            'health': {'id': 'health', 'argv': ['true']},
+            'stop': {'id': 'stop', 'argv': ['true']}}]
+    with pytest.raises(ValidationError):
+        contract([printer], **changes)
+
+
+@pytest.mark.asyncio
+async def test_cli_restores_transient_secret_values_after_trusted_python_start(tmp_path):
+    import asyncio
+    import base64
+    import json
+
+    manifest = contract([{'id': 'baseline', 'argv': [sys.executable, '-c',
+        'import os;assert os.environ["UNUSUAL_DSN"]=="restored-secret";print(os.environ["UNUSUAL_DSN"])']}])
+    env = {**os.environ, 'COORDINARE_ENV_SECRET_VALUES': base64.b64encode(
+        json.dumps({'UNUSUAL_DSN': 'restored-secret'}).encode()).decode()}
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, '-I', '-m', 'coordinare_service_inference.environment.runner',
+        '--manifest', manifest.canonical_json(), '--cache', str(tmp_path), '--repo', str(tmp_path),
+        '--scratch', str(tmp_path), env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    assert process.returncode == 0, stderr.decode()
+    assert 'restored-secret' not in stdout.decode()
+    assert json.loads(stdout)['passed']
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux command-local subreaper adapter')
+@pytest.mark.asyncio
+@pytest.mark.parametrize('timeout', [False, True])
+async def test_linux_supervisor_reaps_setsid_descendants_with_closed_streams(tmp_path, timeout):
+    code = (
+        'import subprocess,sys,pathlib,time;'
+        'p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(30)"],'
+        'start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);'
+        'pathlib.Path("escaped").write_text(str(p.pid));'
+        + ('time.sleep(30)' if timeout else 'time.sleep(0)')
+    )
+    manifest = contract([{'id': 'baseline', 'argv': [sys.executable, '-c', code],
+                          'timeout_seconds': 0.5 if timeout else 3.0}])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    assert report.passed is not timeout
+    with pytest.raises(ProcessLookupError):
+        os.kill(int((tmp_path / 'escaped').read_text()), 0)
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux command-local subreaper adapter')
+@pytest.mark.asyncio
+async def test_linux_supervisor_preserves_daemonized_service_until_teardown(tmp_path):
+    code = (
+        'import subprocess,sys,pathlib;'
+        'p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(30)"],'
+        'start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);'
+        'pathlib.Path("service_pid").write_text(str(p.pid))'
+    )
+    health = 'import os,pathlib;os.kill(int(pathlib.Path("service_pid").read_text()),0)'
+    manifest = contract([{'id': 'baseline', 'argv': [sys.executable, '-c', health]}], services=[{
+        'id': 'daemon', 'start': {'id': 'start', 'argv': [sys.executable, '-c', code]},
+        'health': {'id': 'health', 'argv': [sys.executable, '-c', health]},
+        'stop': {'id': 'stop', 'argv': ['true']}}])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    assert report.passed
+    with pytest.raises(ProcessLookupError):
+        os.kill(int((tmp_path / 'service_pid').read_text()), 0)
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux command-local subreaper adapter')
+@pytest.mark.asyncio
+async def test_optional_command_cannot_hide_unconfirmed_supervisor_cleanup(tmp_path):
+    manifest = contract([
+        {'id': 'baseline', 'argv': ['true']},
+        {'id': 'kill-supervisor', 'required': False, 'argv': [sys.executable, '-c',
+            'import os,signal;os.kill(os.getppid(),signal.SIGKILL)']},
+    ])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    assert not report.passed
+    assert any(result.required and result.id.startswith('__infrastructure__/cleanup/')
+               for result in report.results)

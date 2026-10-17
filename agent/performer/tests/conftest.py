@@ -151,3 +151,20 @@ def _docker_logs(container_id: str) -> str:
     )
     combined = (result.stdout or "") + (result.stderr or "")
     return combined.strip() or "(no logs)"
+
+
+@pytest.fixture
+def reviewed_environment_metadata():
+    """Accepted source-bound pair for transport/provenance regression fixtures."""
+    from coordinare_service_inference.environment.models import EnvironmentManifest
+
+    manifest = EnvironmentManifest.model_validate({
+        "schema_version": 1, "symphony_name": "sym", "source_commit": "abc",
+        "inputs": {"tools.plan": "a" * 64}, "requirements": [], "install": [],
+        "checks": [{"id": "baseline", "argv": ["true"]}], "activation": {},
+        "services": [], "empty_reason": "Image baseline suffices", "policy_version": "351-v1",
+    })
+    return {"environment_manifest": manifest.model_dump(), "environment_manifest_digest": manifest.digest(),
+            "environment_assessment": {"schema_version": 1, "manifest_digest": manifest.digest(),
+                "source_commit": "abc", "verdict": "accept", "rationale": "Inspected source",
+                "sources": ["tools.plan"], "inputs": dict(manifest.inputs), "policy_version": "351-v1"}}

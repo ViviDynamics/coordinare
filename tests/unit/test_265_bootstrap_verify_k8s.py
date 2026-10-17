@@ -32,6 +32,7 @@ from coordinare.services.env_cache import (
 )
 from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.kubernetes_verifier import VerifierConfigurationError
+from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
 
 RENDERED_VERIFY = "#!/bin/bash\necho 'FAIL: ruby 3.4.2 not runnable' >&2\nexit 1\n"
 RENDERED_ACTIVATE = "# AUTHORITATIVE activate.sh (daemon-rendered)\n"
@@ -47,6 +48,7 @@ def _state(cache: Path, *, transport: str, verify: str | None = RENDERED_VERIFY)
         rendered_activate_sh=RENDERED_ACTIVATE,
         bootstrap_commit_sha="f" * 40,
     )
+    reviewed_cache(ec, source_commit="f" * 40)
     return {
         "coordinare_config": SimpleNamespace(agent_transport=transport, performer_image="trusted/global:release"),
         "env_cache": {"sym": ec},
@@ -171,6 +173,8 @@ class _FakeRuntime:
         self.calls.append(kwargs)
         if self.raises is not None:
             raise self.raises
+        if self.verdict[0] is True and not kwargs["spec"].walk_only:
+            return True, self.execution_log
         return self.verdict
 
 
@@ -204,9 +208,17 @@ def _k8s_daemon(
         ),
     }
     daemon._state["coordinare_config"] = SimpleNamespace(
-        agent_transport=transport, global_config=SimpleNamespace(performer_image="trusted/global:release"),
+        agent_transport=transport, global_config=SimpleNamespace(
+            performer_endpoints=[], performer_log_dir=None, env_cache_root=state_dir,
+            performer_image="trusted/global@sha256:" + "a" * 64,
+            env_cache=SimpleNamespace(kubernetes_verifier_network_isolated=True)),
     )
     daemon._state["github_service"] = github
+    if github is not None and not github.files:
+        github.files["tools.plan"] = "baseline"
+    ec = daemon._state["env_cache"]["sym"]
+    reviewed_cache(ec, files=github.files if github is not None else None, source_commit="f" * 40)
+    runtime.execution_log = verification_output(ec.environment_manifest).decode()
     svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="coordinare-performer:full"), _runtime=runtime)
     return daemon, svc
 
@@ -338,6 +350,7 @@ async def test_kubernetes_success_is_not_downgraded_by_the_daemon_seed_directory
         "coordinare_config": SimpleNamespace(agent_transport="kubernetes", performer_image="trusted/global:release"),
     }
 
+    reviewed_cache(ec, source_commit="f" * 40)
     service.on_bootstrap_complete("sym", True, state)
 
     assert ec.last_bootstrap_succeeded is True

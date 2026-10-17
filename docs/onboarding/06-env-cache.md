@@ -93,7 +93,8 @@ State schema 40 persists the reviewed manifest and assessment. Older snapshots
 load without an accepted pair and require reconstruction before consumer dispatch.
 Existing cache bytes are retained while replacement evidence is obtained; old
 success flags or scripts do not count as acceptance. Upgrade daemon, performer and
-trusted verifier images together.
+trusted verifier images together. Before retrying, pin the clean verifier image by
+SHA256 digest and configure the transport network isolation described below.
 
 ## Optional bounded bootstrap workflow
 
@@ -123,18 +124,32 @@ provenance, trusted result collection and clean verification. Installer-writable
 scripts and process output cannot authorize readiness. Trusted runtime code
 records actual command exit status for the accepted digest.
 
+Clean verification requires an immutable `image@sha256:<64 lowercase hex digits>`
+reference on both transports; a mutable tag holds readiness. Docker uses the
+selected bootstrap performer's image and runs the clean verifier with
+`--network none`. Pin the image actually configured for that performer/endpoint.
+
 Kubernetes selects the verifier through `kubernetes_verifier_image`, defaulting to
 `performer_image`; symphony endpoint images cannot select it. In Helm, configure
 `config.kubernetes_verifier_image` and `performers.imagePullSecrets` as needed.
-Use an immutable image digest when pinning registry content.
+Set an immutable digest even when a registry tag already exists.
+
+Kubernetes also requires externally enforced verifier egress isolation. Configure
+a NetworkPolicy for pods labeled `coordinare.role: env-verifier`, ensure the
+cluster's CNI enforces it, and validate the policy before setting
+`env_cache.kubernetes_verifier_network_isolated: true`. This flag defaults to
+`false` and attests to deployment policy; setting it does not create or enforce a
+policy. Missing attestation holds clean verification. Network isolation and image
+pinning cannot substitute for coverage review or required checks.
 
 The verifier pod uses UID/GID 10001, a read-only root filesystem, no privilege
 escalation, dropped capabilities and `seccompProfile: RuntimeDefault`. `/tmp` is a
 writable `emptyDir`; service-account token automount and service links are disabled.
 Cache files must be readable and binaries executable by the verifier identity.
 The serialized verifier pod remains bounded at 768 KiB, including supplied inputs.
-Configure required network controls at the deployment boundary; these documents do
-not claim that live Docker or Kubernetes deployments have been validated.
+Validate the externally enforced Kubernetes network controls at the deployment
+boundary. These documents do not claim that live Docker or Kubernetes deployments
+have been validated.
 
 ## State and implementation
 

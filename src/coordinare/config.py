@@ -1100,6 +1100,15 @@ class EnvCacheConfig(BaseModel):
     # verify.sh). Flip to True to re-enable coordinare-managed services.
     coordinare_manages_services: bool = False
 
+    # 351: bounded read-only discovery and mandatory independent coverage review.
+    kubernetes_verifier_network_isolated: bool = False
+    manifest_max_reads: int = Field(default=256, ge=1, le=4096)
+    manifest_max_file_bytes: int = Field(default=256 * 1024, ge=1, le=4 * 1024 * 1024)
+    manifest_max_source_bytes: int = Field(default=4 * 1024 * 1024, ge=1, le=16 * 1024 * 1024)
+    manifest_max_inventory_entries: int = Field(default=100_000, ge=1, le=1_000_000)
+    manifest_phase_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
+
+
     # 234: the bounds on one frozen env cache. A cache over either is refused at freeze (or at a later check),
     # with a reason that names the knob. The defaults suit a real toolchain (see services/env_provenance.py).
     provenance_max_entries: int = Field(default=1_000_000, ge=1_000, le=10_000_000)

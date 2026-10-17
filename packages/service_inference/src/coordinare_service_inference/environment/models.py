@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import platform as runtime_platform
 import re
 from graphlib import CycleError, TopologicalSorter
+from itertools import pairwise
 from pathlib import PurePosixPath
 from typing import Literal, Self
 
@@ -21,10 +23,22 @@ def source_path(value: str) -> str:
         or value == "."
         or "\0" in value
         or path.is_absolute()
-        or ".." in path.parts
+        or any(part in {"", ".", ".."} for part in value.split("/"))
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
         or "\\" in value
     ):
         raise ValueError("source must be a relative repository path without traversal")
+    return value
+
+
+def execution_path(value: str) -> str:
+    """Execution roots are explicit; never normalize traversal into a new context."""
+    root = re.match(r'^(?:/(?!/)|\{(?:cache|repo|scratch)\}|\$\{[A-Za-z_][A-Za-z0-9_]*\})', value)
+    remaining = re.sub(r'\$\{[A-Za-z_][A-Za-z0-9_]*\}|\{(?:cache|repo|scratch)\}', '', value)
+    if (not root or any(part in {'.', '..'} for part in value.split('/'))
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+            or '{' in remaining or '}' in remaining or '\\' in value):
+        raise ValueError('execution path needs an absolute or declared root without traversal')
     return value
 
 
@@ -51,6 +65,25 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+def reject_literal_credentials(value: str) -> None:
+    """Credential-bearing URLs are runtime references, never persisted command data."""
+    for match in re.finditer(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/@]+:([^\s/@]+)@", value):
+        if not re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", match.group(1)):
+            raise ValueError("credentials must use a named runtime reference")
+
+
+def reject_nested_credentials(value: object) -> None:
+    if isinstance(value, str):
+        reject_literal_credentials(value)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            reject_nested_credentials(key)
+            reject_nested_credentials(item)
+    elif isinstance(value, list):
+        for item in value:
+            reject_nested_credentials(item)
+
+
 class Command(StrictModel):
     id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
     argv: list[str] = Field(min_length=1)
@@ -61,13 +94,18 @@ class Command(StrictModel):
     required: bool = True
     scope: list[str] = Field(default_factory=list)
 
+    _cwd = field_validator("cwd")(execution_path)
+
     @field_validator("env")
     @classmethod
     def valid_env(cls, value: dict[str, str]) -> dict[str, str]:
         if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) for key in value):
             raise ValueError("invalid environment variable name")
+        if {"COORDINARE_ENV_SECRET_NAMES", "COORDINARE_ENV_SECRET_VALUES"}.intersection(value):
+            raise ValueError("secret-name policy is reserved for trusted orchestration")
         environment_order(value)
         for key, item in value.items():
+            reject_literal_credentials(item)
             if (
                 re.search(r"token|secret|password|credential|api.?key", key, re.IGNORECASE)
                 and item != "${" + key + "}"
@@ -80,6 +118,8 @@ class Command(StrictModel):
     def valid_argv(cls, value: list[str]) -> list[str]:
         if not value[0] or any("\0" in item for item in value):
             raise ValueError("invalid executable or NUL in argument")
+        for item in value:
+            reject_literal_credentials(item)
         return value
 
 
@@ -95,6 +135,14 @@ class Requirement(StrictModel):
 class Activation(StrictModel):
     path: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator('path')
+    @classmethod
+    def valid_paths(cls, value: list[str]) -> list[str]:
+        for path in value:
+            execution_path(path)
+        return value
+
     @field_validator("env")
     @classmethod
     def valid_env(cls, value: dict[str, str]) -> dict[str, str]:
@@ -129,6 +177,7 @@ class EnvironmentManifest(StrictModel):
 
     @model_validator(mode="after")
     def validate_contract(self) -> Self:
+        reject_nested_credentials(self.model_dump())
         if len(self.model_dump_json().encode()) > MAX_DOCUMENT_BYTES:
             raise ValueError("manifest exceeds 256 KiB")
         for path, digest in self.inputs.items():
@@ -154,7 +203,7 @@ class EnvironmentManifest(StrictModel):
         graph = {command.id: list(command.depends_on) for command in commands}
         for service in self.services:
             stages = [command for command in [service.init, service.start, service.health] if command]
-            for previous, current in zip(stages, stages[1:], strict=False):
+            for previous, current in pairwise(stages):
                 graph[current.id].append(previous.id)
         if any(dependency not in graph for deps in graph.values() for dependency in deps):
             raise ValueError('missing prerequisite')
@@ -218,6 +267,7 @@ class CoverageAssessment(StrictModel):
 
     @model_validator(mode="after")
     def validate_sources(self) -> Self:
+        reject_nested_credentials(self.model_dump())
         for path in [*self.sources, *self.inputs]:
             source_path(path)
         if len(self.model_dump_json().encode()) > MAX_DOCUMENT_BYTES:
@@ -238,6 +288,7 @@ class CheckResult(StrictModel):
 
 
 class VerificationReport(StrictModel):
+    platform: str = Field(default_factory=lambda: runtime_platform.system().lower() + "/" + runtime_platform.machine().lower())
     manifest_digest: str
     scope: str = ""
     results: list[CheckResult]

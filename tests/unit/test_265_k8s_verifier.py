@@ -8,20 +8,23 @@ reinstall.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from coordinare_service_inference.environment.models import EnvironmentManifest
+from coordinare_service_inference.environment.render import render_verify
 from kubernetes.client.rest import ApiException
 
-from coordinare.models.env_manifest import EnvManifest, ManifestItem
 from coordinare.models.performer_endpoint import PerformerEndpointConfig
 from coordinare.services import kubernetes_runtime
-from coordinare.services.env_manifest import render_activate_sh, render_verify_sh
 from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.kubernetes_runtime import KubernetesRuntime
 from coordinare.services.kubernetes_verifier import (
@@ -32,6 +35,7 @@ from coordinare.services.kubernetes_verifier import (
     check_project_files,
     verifier_pod_name,
 )
+from tests.unit.env_manifest_fixture import reviewed_metadata, verification_output
 
 CLAIM = "coordinare-devenv-cache"
 NAMESPACE = "coordinare-performers"
@@ -141,24 +145,19 @@ def _run_in_pod(manifest: dict[str, Any], cwd: Path, extra_env: dict[str, str] |
     )
 
 
-def test_the_setup_resolves_a_relative_bundle_path_against_the_cache_root(tmp_path: Path) -> None:
-    """The vendored Gemfile sits at the cache root, so bundler's root is the cache: the relative path resolves there."""
+def test_the_setup_supplies_commit_files_without_inventing_bundle_activation(tmp_path: Path) -> None:
+    """Activation now belongs to the accepted manifest, rather than pod ecosystem inference."""
     cache, _checkout, other = _layout(tmp_path)
     verify = (
-        'echo "BUNDLE_PATH=$BUNDLE_PATH"; echo "BUNDLE_GEMFILE=$BUNDLE_GEMFILE"; echo "REPO=$COORDINARE_REPO_DIR"\n'
-        '[ "$BUNDLE_PATH" = "' + str(cache / "project" / "bundle") + '" ] || exit 3\n'
-        '[ -f "$COORDINARE_REPO_DIR/Gemfile" ] || exit 4\n'
-        'exit 0\n'
+        '[ "${BUNDLE_PATH-unset}" = unset ] || exit 3\n'
+        '[ "${BUNDLE_GEMFILE-unset}" = unset ] || exit 4\n'
+        '[ -f "$COORDINARE_REPO_DIR/Gemfile" ] || exit 5\n'
+        'cat "$COORDINARE_REPO_DIR/Gemfile"\n'
     )
-    manifest = _manifest(mount_path=str(cache), verify_text=verify, project_files=PROJECT)
-
-    result = _run_in_pod(manifest, other)
-
+    pod = _manifest(mount_path=str(cache), verify_text=verify, project_files=PROJECT)
+    result = _run_in_pod(pod, other)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert f"BUNDLE_PATH={cache / 'project' / 'bundle'}" in result.stdout
-    # The commit's Gemfile is the one bundler is given. The cache's vendored copy is not.
-    assert "BUNDLE_GEMFILE=" in result.stdout
-    assert str(cache) not in result.stdout.split("BUNDLE_GEMFILE=")[1].splitlines()[0]
+    assert result.stdout == PROJECT["Gemfile"]
 
 
 def test_the_verifier_runs_from_its_own_checkout_not_the_callers_directory(tmp_path: Path) -> None:
@@ -219,7 +218,7 @@ class _FakeCoreV1:
 
     def read_namespaced_pod_log(self, name: str, namespace: str, container: str, tail_lines: int, limit_bytes: int) -> str:
         assert container == "verifier"
-        return "========= Bootstrap verification PASSED =========\n"
+        return verification_output().decode()
 
     def delete_namespaced_pod(self, name: str, namespace: str, grace_period_seconds: int) -> None:
         self.deleted.append(name)
@@ -244,7 +243,7 @@ async def test_a_succeeded_pod_is_a_pass_and_is_removed() -> None:
     ok, detail = await _run(_runtime(core))
 
     assert ok is True
-    assert detail == ""
+    assert json.loads(detail)["passed"] is True
     assert len(core.created) == 1
     assert core.created[0]["body"]["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"] == CLAIM
     assert core.deleted == [core.created[0]["body"]["metadata"]["name"]]
@@ -321,31 +320,30 @@ def _persona(runtime: object, *, verify_provided: bool = True) -> str:
         "cache_mount_path": MOUNT,
         "verify_provided": verify_provided,
         "activate_provided": True,
+        "dependency_checklist": "ACCEPTED CONTRACT: CLEANROOM_MARKER",
     }
     return svc._build_job_payload(ctx, None).persona
 
 
-def test_the_readme_reaches_the_bootstrap_persona() -> None:
+def test_the_reviewed_checklist_reaches_the_bootstrap_persona() -> None:
     persona = _persona(SimpleNamespace(verifies_clean_room=True))
-    assert "CLEANROOM_MARKER" in persona
+    assert "ACCEPTED CONTRACT: CLEANROOM_MARKER" in persona
 
 
-def test_on_kubernetes_the_context_comes_first_and_says_where_work_is_checked() -> None:
+def test_on_kubernetes_the_persona_requires_the_clean_consuming_context() -> None:
     persona = _persona(SimpleNamespace(verifies_clean_room=True))
-    assert persona.startswith("VERIFICATION CONTEXT")
-    assert "NO checkout of your work" in persona
-    assert f"READ-ONLY at {MOUNT}" in persona
-    assert f"DEVENV={MOUNT}" in persona
-    assert "BUNDLE_GEMFILE" in persona
-    assert "stdin closed" in persona
-    # The old instruction to decide in the agent's own checkout is gone from the verify wording.
-    assert "the run coordinare makes" not in persona
+    assert persona.startswith("You are the environment installer for an independently reviewed manifest")
+    assert f"absolute path {MOUNT}" in persona
+    assert "read-only at the same absolute path" in persona
+    assert "after this workload has stopped" in persona
+    assert "A required failure or unrun check cannot be waived" in persona
+    assert "Do not rewrite either file" in persona
 
 
-def test_on_docker_the_persona_keeps_the_checkout_wording() -> None:
+def test_on_docker_the_persona_requires_the_same_reviewed_contract() -> None:
     persona = _persona(SimpleNamespace())
-    assert "VERIFICATION CONTEXT" not in persona
-    assert "the run coordinare makes" in persona
+    assert persona == _persona(SimpleNamespace(verifies_clean_room=True))
+    assert "frozen provenance decide readiness" in persona
 
 
 
@@ -370,22 +368,25 @@ def test_the_rendered_verify_passes_on_garden_s_cache_in_the_pod(tmp_path: Path)
     no_gem = tmp_path / "no-gem"
     no_gem.mkdir()
     _fake(no_gem / "gem", "exit 1\n")
-    manifest = EnvManifest(
-        symphony_name="dettmore",
-        items=[
-            ManifestItem(name="ruby", kind="runtime", version="3.4.2", source=".ruby-version"),
-            ManifestItem(name="bundler", kind="gem", source="Gemfile.lock"),
-        ],
+    metadata = reviewed_metadata(
+        inputs={path: hashlib.sha256(text.encode()).hexdigest() for path, text in PROJECT.items()},
+        activation={"path": ["{cache}/.rbenv/versions/3.4.2/bin"], "env": {
+            "BUNDLE_PATH": "{cache}/project/bundle", "BUNDLE_GEMFILE": "{repo}/Gemfile"}},
+        checks=[{"id": "ruby-version", "argv": ["bash", "-c", '[ "$(ruby)" = "3.4.2" ]']},
+                {"id": "bundle-check", "argv": ["bundle", "check"]}],
     )
-    activate = render_activate_sh(manifest, cache_mount_path=str(cache))
-    verify = render_verify_sh(manifest, cache_mount_path=str(cache), activate_text=activate)
+    manifest = EnvironmentManifest.model_validate(metadata["environment_manifest"])
+    verify = render_verify(manifest, cache_mount_path=str(cache))
+    verify = verify.replace("/usr/local/bin/python", shlex.quote(sys.executable))
     pod = _manifest(mount_path=str(cache), verify_text=verify, project_files=PROJECT)
     env_extra = {"PATH": f"{no_gem}{os.pathsep}{os.environ['PATH']}"}
 
     result = _run_in_pod(pod, other, extra_env=env_extra)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "PASSED" in result.stdout
+    report = json.loads(result.stdout)
+    assert report["passed"] is True
+    assert {item["id"] for item in report["results"]} == {"ruby-version", "bundle-check"}
 
 
 @pytest.mark.asyncio

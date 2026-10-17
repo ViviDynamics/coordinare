@@ -543,23 +543,42 @@ class HTTPPerformerService:
 
         An ephemeral container passes the version it read in ``wait_ready``. A persistent one is asked now.
         """
-        if payload.role == "env_bootstrap":
-            return  # the cache writer mounts its own cache and carries no frozen payload
-        if payload.env_provenance is None:
-            if payload.env_cache_path:
-                # 234 review: a cache mount with no frozen payload is refused whatever the image reports. The
-                # performer would otherwise run the cache's own scripts.
-                message = "env cache without provenance (#234): refusing to run the cache's own scripts"
-                logger.error("http_performer.env_provenance_refused", performer_id=self._config.id, reason=message)
-                raise ValueError(message)
+        if payload.env_cache_path and self._config.mode != "ephemeral":
+            raise ValueError("reviewed environments require a per-job container for confirmed process cleanup")
+        if not payload.env_cache_path and payload.env_provenance is None:
             return
-        version: int | None = ready_status.env_provenance_version if ready_status is not None else None
-        if version is None:
+        status = ready_status
+        if status is None:
             try:
-                version = (await self._ensure_client().get_status()).env_provenance_version
+                status = await self._ensure_client().get_status()
             except (PerformerAuthError, PerformerUnreachableError, TransportError) as exc:
                 message = f"performer status unavailable for env-cache provenance (#234): {exc}"
                 raise ValueError(message) from exc
+        if payload.env_cache_path:
+            if getattr(status, "environment_manifest_version", 0) < 1:
+                raise ValueError("performer image too old for reviewed environment manifests (#351); roll out daemon and performer together")
+            if payload.role != "env_bootstrap":
+                verified_image = payload.metadata.get("environment_verification_image")
+                if not isinstance(verified_image, str) or not verified_image:
+                    raise ValueError("consumer requires immutable clean verified image identity; rebuild the environment")
+                if verified_image is not None:
+                    from coordinare.services.environment_acceptance import immutable_verifier_image
+
+                    image = immutable_verifier_image(str(self._config.image))
+                    if image != verified_image:
+                        raise ValueError("consumer image differs from the clean verified image; rebuild the environment")
+                    verified_platform = payload.metadata.get("environment_verification_platform")
+                    advertised = "environment_platform" in getattr(status, "model_fields_set", {"environment_platform"})
+                    actual_platform = getattr(status, "environment_platform", "") if advertised else ""
+                    if not verified_platform or not actual_platform or actual_platform != verified_platform:
+                        raise ValueError("consumer runtime platform differs from the clean verified platform; rebuild the environment")
+        if payload.role == "env_bootstrap":
+            return  # the cache writer has capability/isolation gates but no frozen payload
+        if payload.env_provenance is None:
+            message = "env cache without provenance (#234): refusing to run the cache's own scripts"
+            logger.error("http_performer.env_provenance_refused", performer_id=self._config.id, reason=message)
+            raise ValueError(message)
+        version = status.env_provenance_version
         if payload.env_provenance.get("stat_digest") is not None and version < _STAT_PROVENANCE_CAPABILITY_VERSION:
             raise ValueError("performer image too old for Kubernetes stat provenance (#265); roll out daemon and performer together")
         refusal = image_capability_refusal(provenance_sent=True, performer_version=version)
@@ -2008,6 +2027,7 @@ class HTTPPerformerService:
         # 234: the frozen env-cache steps ride their own field, not the unredacted metadata.
         meta_src = {k: v for k, v in card_context.items() if k not in ("test_env_vars", "env_provenance")}
         metadata = json.loads(json.dumps(meta_src, default=str))
+        metadata["environment_secret_names"] = sorted(secrets)
 
         env_cache_path = card_context.get("env_cache_path")
         return JobInitPayload.model_validate(
@@ -2141,15 +2161,8 @@ class HTTPPerformerService:
         branch = f"env-bootstrap-{uuid.uuid4().hex[:8]}"
 
         cache_mount_path = str(card_context.get("cache_mount_path") or "")
-        env_spec_files = list(card_context.get("env_spec_files") or [])
-        env_spec_contents: dict[str, str] = dict(card_context.get("env_spec_contents") or {})
         # 077: coordinare-derived authoritative manifest artifacts.
-        dependency_checklist = str(card_context.get("dependency_checklist") or "").strip()
-        verify_provided = bool(card_context.get("verify_provided"))
-        activate_provided = bool(card_context.get("activate_provided"))
         # 265: on Kubernetes the verifier pod decides, so the context block says where and how, and comes first.
-        clean_room = bool(getattr(getattr(self, "_runtime", None), "verifies_clean_room", False))
-        verifier_context = self._verifier_context_block(cache_mount_path) if clean_room else ""
 
         secrets: dict[str, str] = {}
         # 092: THE load-bearing dry-run fix. The service-inference start-phase
@@ -2202,335 +2215,21 @@ class HTTPPerformerService:
 
         _inject_orchestration_secrets(secrets, card_context.get("orchestration"))
 
-        spec_block = "\n\n".join(
-            f"=== {path} ===\n{content}" for path, content in env_spec_contents.items()
-        )
-        # 077: feedback-injection — if the previous bootstrap failed verification,
-        # put the exact failure FIRST so the agent fixes those specific checks
-        # instead of repeating the same miss (retries otherwise run blind).
-        last_failure = str(card_context.get("last_failure") or "").strip()
-        retry_block = ""
-        if last_failure:
-            retry_block = (
-                "⚠ RETRY — your PREVIOUS attempt FAILED verification. These are the "
-                "EXACT checks verify.sh re-runs; fix them specifically this time "
-                "(do not just repeat the same steps):\n"
-                f"{last_failure}\n\n"
-                "Frequent root cause: a spec-PINNED tool version (e.g. the Ruby "
-                "version in .ruby-version) was not actually installed (a different "
-                "version was used), so bundler and every gem cascaded to failure. "
-                "Install the EXACT pinned versions the spec/.tool-version files "
-                "require, then re-run your own verify.sh until it passes.\n\n"
-            )
-        # 077: the coordinare-derived checklist goes right after any retry failure
-        # so the agent has the authoritative, itemised list of what to install
-        # (with exact pinned versions) before the free-form spec files.
-        checklist_block = f"{dependency_checklist}\n\n" if dependency_checklist else ""
-        # 091: a durably-declared stateful service (postgres/redis) makes the
-        # bootstrap fetch its binary into the cache via the SAME deb-into-<cache>/debs/
-        # path as any other system package — the base image gains nothing. Empty
-        # declared_services ⇒ no extra block (behavior unchanged).
-        service_install_block = HTTPPerformerService._render_service_install_block(
-            card_context.get("declared_services") or [], cache_mount_path,
-        )
-        # 077: when coordinare has written an authoritative verify.sh from the
-        # manifest, the agent must RUN it (not author it) — coordinare owns the
-        # verification contract. Otherwise fall back to having the agent write one.
-        if verify_provided and clean_room:
-            # 265: the verifier context block (first in the persona) says where verification runs.
-            verify_block = ""
-        elif verify_provided:
-            # 265: say exactly where and how verification runs, so the agent can reproduce it.
-            verify_block = (
-                "VERIFICATION (coordinare-owned): an authoritative verify.sh has "
-                f"ALREADY been written at {cache_mount_path}/verify.sh. It is the "
-                "contract that decides whether this bootstrap succeeded. coordinare "
-                "writes its own copy over that file when this job starts, so an edit "
-                "you make to it is discarded and does not change the decision. Do NOT "
-                "create, overwrite, or delete it. Coordinare runs it from your REPO "
-                "CHECKOUT (your working directory when you start), with DEVENV="
-                f"{cache_mount_path} and COORDINARE_REPO_DIR set to that checkout. "
-                "After installing, reproduce that exact run: `cd <your repo checkout> "
-                f"&& DEVENV={cache_mount_path} bash {cache_mount_path}/verify.sh`. If it "
-                "exits non-zero, FIX the missing/broken dependency it reports (especially "
-                "a pinned language-runtime version) and re-run until it passes. Do NOT end "
-                "your turn until verify.sh passes from the checkout, and confirm the "
-                "installation before exiting.\n\n"
-            )
-        else:
-            verify_block = (
-                "MANDATORY: also write an executable verification script at "
-                f"{cache_mount_path}/verify.sh that, AFTER sourcing "
-                f"{cache_mount_path}/activate.sh, asserts every dependency the spec "
-                "files require is actually present and runnable — e.g. "
-                "`command -v chromium >/dev/null && chromium --version`, "
-                "`command -v bundle && bundle -v`, a language/runtime version check, "
-                "etc. It MUST `exit 1` (loudly, to stderr) on the FIRST missing or "
-                "broken dependency, and `exit 0` only when ALL are verified. This "
-                "script is the contract: the bootstrap is considered successful ONLY "
-                "if verify.sh passes — a silent install failure here fails the whole "
-                "bootstrap and triggers a retry, so make the checks real (actually "
-                "invoke the tools, do not just test for file existence).\n\n"
-                "FINALLY, before you finish: run verify.sh yourself from your repo checkout "
-                f"(`cd <your repo checkout> && bash {cache_mount_path}/verify.sh`). If it exits non-zero, FIX the "
-                "missing/broken dependency and re-run it. Do NOT end your turn until "
-                "verify.sh passes — confirm the installation before exiting.\n\n"
-            )
-        # 087: coordinare owns activate.sh too (like verify.sh) — an auto-discovering
-        # activation rendered from the manifest. The agent installs the pinned
-        # toolchain into the cache but must NOT hand-write the activation paths: a
-        # forgetful model fumbled the .rbenv-vs-rbenv / .nvm-vs-nvm dot-prefix every
-        # run, leaving a fully-built cache that verify.sh couldn't see. Fallback (no
-        # manifest → activate_provided False): the agent writes activate.sh itself.
-        if activate_provided:
-            activate_block = (
-                "ACTIVATION (coordinare-owned): an authoritative activate.sh has "
-                f"ALREADY been written at {cache_mount_path}/activate.sh. It "
-                "AUTO-DISCOVERS the toolchain you install — it probes BOTH dotted and "
-                "non-dotted version-manager roots under the cache (.rbenv/rbenv "
-                "versions/<ver>, .nvm/nvm node versions, asdf, pyenv) and any "
-                "extracted-deb */usr/bin directories, and puts them on PATH. So just "
-                "install the pinned runtimes with a standard version manager / build "
-                "tool (rbenv+ruby-build, nvm, asdf, pyenv) INTO "
-                f"{cache_mount_path} (use it as the install prefix, e.g. RBENV_ROOT="
-                f"{cache_mount_path}/.rbenv) and extract any deb binaries INTO "
-                f"{cache_mount_path} — coordinare's activate.sh will find them. Do NOT "
-                f"create, overwrite, or delete {cache_mount_path}/activate.sh — "
-                "coordinare owns the activation contract and editing it would clobber "
-                "the auto-discovery.\n\n"
-            )
-        else:
-            activate_block = (
-                "MANDATORY: After installing, write a sourceable shell script at "
-                f"{cache_mount_path}/activate.sh that consumer agents will source "
-                "before running their tools. It MUST export PATH (prepending any "
-                "bin directories you created, e.g. virtualenv bin, node_modules/.bin, "
-                "language toolchain bin), and any other env vars needed to use the "
-                "installed tooling (VIRTUAL_ENV, NODE_PATH, etc.). Without this "
-                "file the cache is unusable and downstream performers will reinstall. "
-                "Make it idempotent and safe to source repeatedly.\n\n"
-                "CRITICAL — activate.sh is SOURCED into EVERY shell in the container "
-                "(via BASH_ENV / /etc/profile.d), including the backend-CLI installer "
-                "and every tool call. It MUST therefore NEVER call `exit`, `return` "
-                "with a non-zero status, or `set -e`/`set -u` that aborts — doing so "
-                "TERMINATES the calling shell and breaks the whole container (a sourced "
-                "`exit 1` has knocked out CLI installs and deadlocked bootstraps). On "
-                "ANY failure inside activate.sh, print a warning to stderr and CONTINUE; "
-                "never abort. Hard assertions go ONLY in verify.sh, which is RUN "
-                "standalone (never sourced), so its `exit 1` is safe.\n\n"
-            )
-        # 092 toolchain fix: a forgetful model reads the detailed prose below, does
-        # the CHEAP setup (git-clone rbenv/ruby-build, extract debs) and then DECLARES
-        # DONE — never running the expensive `rbenv install` / `nvm install` /
-        # `bundle install` that actually build the toolchain. The result is a cache
-        # with .rbenv/ but no .rbenv/versions/<ver>, no ruby binary, no gems, and
-        # verify.sh fails. A front-loaded, numbered, imperative sequence that names
-        # this EXACT anti-pattern is what forgetful models attend to — the prose wall
-        # alone did not stop it. Keep this FIRST (after any retry feedback).
-        required_sequence = (
-            "REQUIRED EXECUTION SEQUENCE — DO NOT SKIP A STEP, DO NOT STOP EARLY.\n"
-            "The #1 way this job FAILS: you git-clone a version manager (rbenv, "
-            "ruby-build, nvm, asdf, pyenv) and extract some .deb files, then declare "
-            "done. CLONING A VERSION MANAGER IS NOT INSTALLING THE RUNTIME. A cache "
-            "with .rbenv/ but no .rbenv/versions/<version>/bin/ruby is BROKEN. You "
-            "MUST actually RUN the install command and WAIT for it to finish "
-            "(`rbenv install <version>` COMPILES Ruby and can take many minutes — let "
-            "it run to completion; do not abort it). FIRST, before any step below, "
-            f"`cd {cache_mount_path}` and run `pwd`: it MUST print exactly "
-            f"{cache_mount_path} (with its leading '/') — see THE INSTALL TARGET IS AN "
-            "ABSOLUTE PATH rule below; every step's install prefix must be that "
-            "absolute path or a subdirectory of it. Then execute, in order:\n"
-            "  1. Install the EXACT pinned language runtime(s) — set the version "
-            "manager's install prefix/root to a subdirectory of "
-            f"{cache_mount_path} (NOT its default under $HOME; see the INSTALL-IN-PLACE "
-            "rule below), run its install (e.g. `rbenv install <ver>`, "
-            "`nvm install <ver>`) and WAIT for it to finish. Then confirm the binary "
-            "exists (`ruby -v`, `node -v`) BEFORE moving on.\n"
-            "  2. Install the dependency manager, then the project's declared "
-            "dependencies via the lockfile (`gem install bundler` + "
-            "`cd <your repo checkout> && bundle install`; `npm ci`; `pip install -r requirements.txt`). "
-            "Confirm with `bundle -v` / installed-gem checks.\n"
-            "  3. Fetch + extract any declared stateful-service and system-package "
-            f"debs into {cache_mount_path}/debs (see the service-install and "
-            "apt-package sections below).\n"
-            f"  4. RUN `cd <your repo checkout> && bash {cache_mount_path}/verify.sh` yourself "
-            + (
-                "as a pre-check only (the decision is the verifier pod's; see VERIFICATION CONTEXT) "
-                if clean_room
-                else "(the run coordinare makes; see VERIFICATION) "
-            )
-            + "and read its "
-            "output. If it exits non-zero, FIX the specific dependency it names and "
-            "re-run. DO NOT end your turn, and DO NOT report success, until verify.sh "
-            "exits 0. Every detail of HOW to do each step is in the sections below — "
-            "but these four steps, actually executed and verified, are mandatory.\n\n"
-        )
-        # 092 cache-relocation fix (toolchain-agnostic). Root cause is a PATH mismatch,
-        # not a writability one: whatever is installed here is CONSUMED as-is by later
-        # performers, which mount this exact directory at this exact container path and
-        # run the toolchain — they do NOT rebuild it. Many toolchains bake their absolute
-        # build-time install path into compiled binaries (ELF RUNPATH) and generated
-        # wrapper scripts (shebang lines). Installing at a default/$HOME location and
-        # relocating into the cache leaves those baked paths pointing at the original
-        # (now-absent) location, so the cache looks complete but its binaries/wrappers
-        # fail to resolve in the consumer (verify.sh fails) — and that holds whether the
-        # consume mount is read-only or read-write, because the build-time path simply
-        # does not exist in the consumer container. Coordinare names NO specific tool
-        # here: it states the constraint and the WHY; the agent (which already infers the
-        # toolchain) owns the per-tool mechanism (install prefix / root env var).
-        # 092 absolute-path fix (toolchain-agnostic). Observed failure: a forgetful
-        # model treated cache_mount_path (an ABSOLUTE path like /devenv/<name>) as if
-        # it were relative to its shell cwd, so the leading '/' was effectively dropped
-        # and the toolchain was built under <cwd>/devenv/<name> (e.g.
-        # /tmp/performer-XXXX/devenv/<name>) — ~1GB of a complete, self-consistent
-        # install in the WRONG place. The real mounted volume stayed empty, the agent's
-        # own verify.sh (written into the wrong dir) passed locally, and coordinare's
-        # convergence check (run against the empty real mount) rejected it. This is
-        # distinct from build-then-relocate (relocation_block): the path is never even
-        # resolved to the right absolute location. Coordinare names no tool here; it
-        # states the invariant (use the path verbatim, confirm pwd) and the WHY.
-        absolute_path_block = (
-            "THE INSTALL TARGET IS AN ABSOLUTE PATH — USE IT VERBATIM (a top cause of a "
-            "broken cache). The install directory you are given, "
-            f"{cache_mount_path}, is an ABSOLUTE path: it begins with a leading '/' and "
-            "resolves from the filesystem root, NOT from your shell's current working "
-            "directory. It is a real, already-mounted volume that exists at exactly that "
-            "path inside this container right now. A frequent and FATAL mistake is to "
-            "treat it as relative — running an install from some working directory so "
-            "the leading '/' is effectively dropped and the path gets joined onto the "
-            f"cwd, silently creating a DIFFERENT directory (e.g. <cwd>{cache_mount_path} "
-            f"instead of {cache_mount_path}). When that happens you build a complete, "
-            "self-consistent toolchain in the WRONG place: the real mounted volume stays "
-            "empty, nothing you installed persists for downstream consumers, and the "
-            "bootstrap is REJECTED even though your own local checks passed. To prevent "
-            f"this, before installing anything: `cd {cache_mount_path}` and run `pwd` — "
-            f"it MUST print exactly {cache_mount_path}, leading '/' included. Always "
-            "reference the cache by this absolute path verbatim (with the leading '/'); "
-            "never strip it, never join it onto another directory, and never assume your "
-            "shell cwd is the cache. Every install prefix / root you set must be this "
-            f"absolute path or a subdirectory of it (e.g. {cache_mount_path}/<subdir>), "
-            "written out in full.\n\n"
-        )
-        relocation_block = (
-            "INSTALL IN PLACE — NEVER BUILD-THEN-RELOCATE (the #1 cause of a "
-            "complete-looking but BROKEN cache). Whatever you install here is CONSUMED "
-            "as-is by later performers: they mount this exact directory at this exact "
-            f"path ({cache_mount_path}) and run your toolchain — they do NOT rebuild it. "
-            "Many toolchains bake their absolute build-time install path into compiled "
-            "binaries (the ELF RUNPATH) and into generated wrapper scripts (shebang "
-            "lines on dependency-manager executables). If you install a toolchain "
-            f"ANYWHERE other than under {cache_mount_path} — for example at its default "
-            "location under $HOME — and then move or copy it into the cache, those "
-            "baked-in absolute paths still point at the ORIGINAL build location, which "
-            "does not exist in the consumer container. The result is a cache that passes "
-            "your own eyeball check but whose binaries and wrappers fail to resolve for "
-            "every downstream consumer (and the consume mount may be read-only there, so "
-            "the paths cannot even be patched after the fact). Therefore: set each "
-            "toolchain's install prefix / root to a subdirectory of "
-            f"{cache_mount_path} BEFORE you install, so everything compiles, links, and "
-            "writes its wrapper shebangs against the FINAL consume-time path. Never "
-            "install to a default or $HOME location and relocate.\n\n"
-        )
         persona = (
-            verifier_context
-            + retry_block
-            + checklist_block
-            + required_sequence
-            + absolute_path_block
-            + relocation_block
-            + "You are an environment bootstrap agent. Your job is to install "
-            f"all build/test/runtime dependencies for this project into "
-            f"the directory {cache_mount_path!r}, which is a writable volume "
-            "shared with later performer containers as a read-only devenv root.\n\n"
-            "Read the install/setup instructions from the following project "
-            "spec files and execute the commands they describe. Use "
-            f"{cache_mount_path} (NOT the repo root and NOT $HOME) as the "
-            "install prefix for language toolchains, virtualenvs, node_modules, "
-            "and any other generated artefacts that should persist across "
-            "performer runs. Do NOT modify the cloned repo working tree, do "
-            "NOT push commits, and do NOT open a PR — this job exists only to "
-            "populate the cache directory.\n\n"
-            "This cache directory MAY already be partially populated by a "
-            "previous bootstrap. Do NOT skip installation just because a "
-            "toolchain, activate.sh, or some packages are already present — "
-            "RE-RUN the install/setup commands from the spec files every time. "
-            "Standard package managers (apt-get, bundle, npm/yarn, pip, etc.) "
-            "are idempotent and skip anything already installed at the correct "
-            "version, so re-running is cheap and installs ONLY missing or "
-            "newly-added dependencies (for example, a system package — like a "
-            "headless browser — that a spec file now documents but a prior "
-            "bootstrap predated). The spec files are the source of truth for "
-            "what MUST be present in the cache.\n\n"
-            "SYSTEM PACKAGES (apt) — CRITICAL: this image ships NO apt package "
-            "lists and consumer containers may have NO network egress, so a bare "
-            "`apt-get install <pkg>` (especially one placed in activate.sh that "
-            "runs at consumer activation) FAILS SILENTLY ('E: Unable to locate "
-            "package') and the binary never lands. Do NOT install system packages "
-            "that way. Instead make them self-contained in the cache, the SAME way "
-            "PostgreSQL/Redis are handled: during THIS bootstrap run `apt-get "
-            "update`, then download the package AND its full dependency closure as "
-            f".deb files into {cache_mount_path}/debs/ (e.g. `cd {cache_mount_path}/debs "
-            "&& apt-get download $(apt-cache depends --recurse --no-recommends "
-            "--no-suggests --no-conflicts --no-breaks --no-replaces --no-enhances "
-            "-i <pkg> | grep '^\\w' | sort -u)`). SHARED LIBRARIES are handled FOR "
-            "you: the coordinare-owned profile automatically extracts the *.so files "
-            f"from {cache_mount_path}/debs/*.deb and prepends them to LD_LIBRARY_PATH "
-            "before activate.sh is sourced, so you do NOT need to `dpkg -i` or "
-            "`apt-get install` the debs in activate.sh just to make native libraries "
-            "loadable — that now happens deterministically. For a package whose "
-            "BINARY must be on PATH (for example a headless browser such as chromium "
-            "and its chromedriver), extract the deb into the cache without touching "
-            f"the system (`dpkg-deb -x {cache_mount_path}/debs/<pkg>.deb "
-            f"{cache_mount_path}/<prefix>`). NOTE: `dpkg-deb -x` recreates the "
-            "deb's absolute layout under <prefix>, so the binaries land in "
-            f"{cache_mount_path}/<prefix>/usr/bin (and sometimes "
-            f"{cache_mount_path}/<prefix>/usr/lib/<pkg>/), NOT {cache_mount_path}/"
-            "<prefix>/bin — confirm the real path with `find "
-            f"{cache_mount_path}/<prefix> -name <binary> -type f`. Putting that "
-            "extracted bin dir on PATH is handled per the ACTIVATION section below "
-            "(coordinare's activate.sh auto-discovers */usr/bin dirs under the cache); "
-            "do NOT bake PATH edits into the install commands. Never "
-            "`dpkg -i` (it needs root and mutates the "
-            "container) and never install from the network. The hard pass/fail "
-            "assertion that the binary is on PATH belongs in verify.sh (below).\n\n"
-            "PINNED LANGUAGE RUNTIMES — CRITICAL: when a spec file pins an EXACT "
-            "language/runtime version (e.g. .ruby-version, .tool-versions, .nvmrc, "
-            ".python-version, or a Gemfile / package.json `engines` field), the "
-            "distro package manager almost NEVER provides that exact version — "
-            "`apt-get install ruby` yields the distro's Ruby (e.g. 3.3.x), NOT a "
-            "pinned 3.4.2, and every gem/bundler step then cascades to failure. You "
-            "MUST install the EXACT pinned version with a version manager or build "
-            "tool (rbenv + ruby-build, asdf, pyenv, nvm, or a ruby-build/source "
-            f"compile) INTO {cache_mount_path} (use it as the install prefix, e.g. "
-            f"RBENV_ROOT={cache_mount_path}/.rbenv, or asdf/nvm/pyenv under "
-            f"{cache_mount_path}). Putting that runtime's bin on PATH is handled per "
-            "the ACTIVATION section below (coordinare's activate.sh auto-discovers the "
-            "pinned runtime under the cache). Do NOT accept the system/distro default — verify.sh "
-            "asserts the exact version (e.g. `ruby -v` matches .ruby-version) and a "
-            "mismatch FAILS the whole bootstrap. Install the pinned runtime FIRST, "
-            "before bundler/gems/node modules, since those build against it.\n\n"
-            "PROJECT DEPENDENCIES — CRITICAL: installing the pinned runtime is only "
-            "step one. You MUST then install the project's DECLARED dependencies with "
-            "its native dependency manager, or every gem/module the checklist lists "
-            "will be missing and verify.sh will FAIL. Specifically: if the repo has a "
-            "Gemfile/Gemfile.lock, first `gem install bundler` (match the version in "
-            "Gemfile.lock's `BUNDLED WITH` if one is pinned), then run `bundle install` "
-            "from the repo root (`cd <your repo checkout> && bundle install`) so bundler AND every gem "
-            "in the Gemfile are installed under the pinned Ruby — that Ruby lives in "
-            f"{cache_mount_path}, so its gem dir persists in the cache automatically. "
-            "Likewise run `npm ci` (or `npm install`) for a package.json, and "
-            "`pip install -r requirements.txt` / `pip install .` for a Python project "
-            f"— all resolving INTO {cache_mount_path}. Do NOT hand-install gems "
-            "one-by-one with `gem install <name>`; use the lockfile-driven "
-            "`bundle install` so versions resolve correctly and transitive deps come "
-            "along. The dependency checklist above enumerates the individual gems ONLY "
-            "so verify.sh can assert each is present — the way to SATISFY that list is "
-            "`bundle install`, not piecemeal installs.\n\n"
-            + service_install_block
-            + activate_block
-            + verify_block
-            + f"Spec files ({', '.join(env_spec_files) or 'none'}):\n\n"
-            f"{spec_block}\n"
+            "You are the environment installer for an independently reviewed manifest. "
+            "Execute its declared install actions and preserve its requirements, checks, "
+            "activation and service lifecycle. Do not infer a different toolchain or "
+            "weaken checks. A required failure or unrun check cannot be waived.\n\n"
+            f"INSTALL IN PLACE under the absolute path {cache_mount_path}. "
+            "Use that exact prefix before building; do not install elsewhere and relocate. "
+            "Consumers mount this cache read-only at the same absolute path, so all "
+            "persistent tools must work there without installer-only state.\n\n"
+            "The daemon owns activate.sh and verify.sh. Do not rewrite either file. "
+            "A separate clean consumer executes the accepted checks after this workload "
+            "has stopped. Its result and frozen provenance decide readiness, never "
+            "your success prose. Do not commit, push, or open a pull request.\n\n"
+            + str(card_context.get("dependency_checklist") or "")
+            + "\nPrevious failure: " + str(card_context.get("last_failure") or "none")
         )
 
         # 092: also drop test_env_vars — secret-like values ride the redacted
@@ -2554,6 +2253,7 @@ class HTTPPerformerService:
             f"Install dev environment into {cache_mount_path} per project spec files.",
         )
         metadata = json.loads(json.dumps(meta_src, default=str))
+        metadata["environment_secret_names"] = sorted(secrets)
         # 265: both scripts or neither. A half-set pair is not written, so the performer falls back to the cache copy.
         rendered_verify = card_context.get("rendered_verify_sh")
         rendered_activate = card_context.get("rendered_activate_sh")

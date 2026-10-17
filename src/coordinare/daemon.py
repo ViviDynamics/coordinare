@@ -94,7 +94,6 @@ from coordinare.services.env_provenance import DEFAULT_LIMITS, ProvenanceTransie
 from coordinare.services.http_performer_service import DispatchStoppingError, HTTPPerformerService
 from coordinare.services.kubernetes_provenance import parse_summary
 from coordinare.services.kubernetes_verifier import (
-    PROJECT_FILE_PATHS,
     VerifierConfigurationError,
     VerifierSpec,
     configured_verifier_image,
@@ -730,6 +729,9 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             last_bootstrap_succeeded=get("last_bootstrap_succeeded"),
             cache_dir_ready=bool(get("cache_dir_ready") or False),
             # 218: the daemon-rendered scripts the verification and activate gate use.
+            environment_manifest=get("environment_manifest"),
+            environment_assessment=get("environment_assessment"),
+            environment_verification=get("environment_verification"),
             rendered_verify_sh=get("rendered_verify_sh"),
             rendered_activate_sh=get("rendered_activate_sh"),
             # 218 (review round 3): the infrastructure budget survives a restart.
@@ -1051,6 +1053,9 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             live.last_bootstrap_error = redact_state_value(persisted.last_bootstrap_error)
             live.cache_dir_ready = persisted.cache_dir_ready
             # 218: restore the daemon-rendered scripts; the cache copies are never read back.
+            live.environment_manifest = persisted.environment_manifest
+            live.environment_assessment = persisted.environment_assessment
+            live.environment_verification = persisted.environment_verification
             live.rendered_verify_sh = persisted.rendered_verify_sh
             live.rendered_activate_sh = persisted.rendered_activate_sh
             live.infra_failures = persisted.infra_failures
@@ -1065,6 +1070,10 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             live.provenance_total_bytes = persisted.provenance_total_bytes
             live.runtime_repair_budget = persisted.runtime_repair_budget
             live.consumer_stat_refusals = persisted.consumer_stat_refusals
+            from coordinare.services.environment_acceptance import saved_execution_accepted
+
+            if not saved_execution_accepted(live):
+                live.cache_dir_ready = False
             live.bootstrap_budget_sha = persisted.bootstrap_budget_sha
             # 088 (FR-009): the breaker budget survives restarts.
             live.bootstrap_attempts = persisted.bootstrap_attempts
@@ -4019,9 +4028,9 @@ class CoordinareDaemon:
             logger.info("runtime_event", **event)
 
     def _get_manifest_llm_chat(self) -> Any:
-        """077: build (once) a JSON-chat callable for the env-manifest README
-        pass, from the coordinare's conducting-brain config. Returns None when the
-        brain isn't an OpenAI-compatible backend (→ deterministic-only manifest).
+        """Build the JSON-chat seam for bounded discovery and independent coverage review.
+
+        Missing compatible configuration holds bootstrap; there is no parser fallback.
         """
         sentinel = object()
         cached = getattr(self, "_manifest_llm_chat", sentinel)
@@ -4275,17 +4284,12 @@ class CoordinareDaemon:
         None when the symphony's repository or the GitHub service cannot be resolved. A listed file the commit does not
         have is simply not passed in.
         """
-        github = (self._state.get("symphony_github_services") or {}).get(symphony_name) or self._state.get("github_service")
-        repo = self._symphony_repo(symphony_name)
-        if github is None or repo is None or not sha:
+        from coordinare.services.environment_verification import verification_sources
+
+        ec = (self._state.get("env_cache") or {}).get(symphony_name)
+        if ec is None or ec.bootstrap_commit_sha != sha:
             return None
-        org, name = repo
-        files: dict[str, str] = {}
-        for path in PROJECT_FILE_PATHS:
-            text = await github.get_file_content(org, name, path, ref=sha)
-            if text is not None:
-                files[path] = text
-        return files
+        return await verification_sources(self._state, symphony_name, ec)
 
     def _clean_room_refusal(self, symphony_name: str, svc: Any) -> str | None:
         """265: why the clean-room verifier cannot run for this bootstrap, or None when it can."""
@@ -4331,6 +4335,24 @@ class CoordinareDaemon:
         if refusal is not None:
             return False, refusal, False
         ec = (self._state.get("env_cache") or {})[symphony_name]
+        from coordinare.services.environment_acceptance import (
+            accepted_environment,
+            immutable_verifier_image,
+        )
+
+        if accepted_environment(ec) is None:
+            return False, "no independently accepted environment contract; rebuild the cache", False
+        config = self._state.get("coordinare_config")
+        env_config = getattr(getattr(config, "global_config", config), "env_cache", None)
+        if not getattr(env_config, "kubernetes_verifier_network_isolated", False):
+            return self._verifier_configuration_refusal(
+                ec, "clean verifier requires enforced egress isolation; configure a verifier NetworkPolicy "
+                "on an enforcing CNI, then set env_cache.kubernetes_verifier_network_isolated",
+            )
+        try:
+            immutable_verifier_image(configured_verifier_image(config))
+        except ValueError as exc:
+            return self._verifier_configuration_refusal(ec, str(exc))
         ec.verifier_provenance = None
         cache_service = self._state.get("env_cache_service")
         limits = cache_service._provenance_limits() if cache_service is not None else DEFAULT_LIMITS
@@ -4338,23 +4360,29 @@ class CoordinareDaemon:
         bootstrap_activate = ec.rendered_activate_sh
         try:
             files = await self._fetch_project_files(symphony_name, bootstrap_sha)
+        except ValueError as exc:
+            return self._verifier_configuration_refusal(ec, str(exc))
         except Exception as exc:
             return False, f"env verification could not resolve project files at the bootstrap SHA: {type(exc).__name__}", True
         if files is None:
             return False, "env verification could not resolve the symphony repository for the clean-room verifier", True
+        from coordinare.services.environment_verification import verification_environment
+
         try:
+            credentials = await verification_environment(self._state, symphony_name, ec, self._performer_mounts())
             spec = VerifierSpec(
                 image=configured_verifier_image(self._state.get("coordinare_config")),
                 cache_claim="",  # the runtime owns the claim it mounts
                 cache_subpath=ec.sanitised_name,
                 mount_path=f"{getattr(svc, 'devenv_root', '/devenv')}/{ec.sanitised_name}",
                 verify_text=str(ec.rendered_verify_sh),
+                transient_credentials=credentials.removeprefix("export COORDINARE_ENV_SECRET_VALUES=").strip(),
                 project_files=files,
                 max_entries=limits.max_entries,
                 max_bytes=limits.max_bytes,
             )
             ok, detail = await svc._runtime.run_verifier(slug=ec.sanitised_name, spec=spec)
-        except VerifierConfigurationError as exc:
+        except (VerifierConfigurationError, ValueError) as exc:
             return self._verifier_configuration_refusal(ec, str(exc))
         logger.info(
             "env_cache.clean_room_verify",
@@ -4367,7 +4395,17 @@ class CoordinareDaemon:
         record_verification(self._state, symphony_name, ok, detail)
         if ok is not True:
             return self._clean_room_verdict(ok, detail)
-        walk_spec = replace(spec, verify_text="", project_files={}, walk_only=True,
+        from coordinare.services.environment_acceptance import execution_report
+
+        try:
+            report = execution_report(detail, ec)
+        except ValueError as exc:
+            return False, str(exc), False
+        if not report.passed:
+            return False, "required environment checks did not pass", False
+        if ec.environment_verification is not None:
+            ec.environment_verification["image_ref"] = spec.image
+        walk_spec = replace(spec, verify_text="", project_files={}, transient_credentials="", walk_only=True,
                             activate_text=bootstrap_activate)
         return await self._verify_bootstrap_claim(svc, ec, walk_spec, bootstrap_sha, limits)
 

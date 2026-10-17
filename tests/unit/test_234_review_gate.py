@@ -8,6 +8,7 @@ an old image accepting a cache mount with no payload. The wiring tests drive the
 from __future__ import annotations
 
 import asyncio
+import platform
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,14 +24,17 @@ from tests.unit.test_234_honest_path import ACTIVATE, _bootstrapped, _state_map
 
 def _service_for_gate() -> HTTPPerformerService:
     svc = object.__new__(HTTPPerformerService)
-    svc._config = SimpleNamespace(id="perf-1")
+    svc._config = SimpleNamespace(id="perf-1", mode="ephemeral", image="img@sha256:" + "1" * 64)
     return svc
 
 
 @pytest.mark.parametrize("version", [0, 1])
 def test_a_cache_mount_without_a_frozen_payload_is_refused_on_any_image(version: int) -> None:
-    payload = SimpleNamespace(env_provenance=None, env_cache_path="/devenv/sym-abc", role="implementer")
-    status = SimpleNamespace(env_provenance_version=version)
+    payload = SimpleNamespace(env_provenance=None, env_cache_path="/devenv/sym-abc", role="implementer", metadata={
+        "environment_verification_image": "img@sha256:" + "1" * 64,
+        "environment_verification_platform": platform.system().lower() + "/" + platform.machine().lower()})
+    status = SimpleNamespace(env_provenance_version=version, environment_manifest_version=1,
+                             environment_platform=platform.system().lower() + "/" + platform.machine().lower())
     with pytest.raises(ValueError, match="env cache without provenance"):
         asyncio.run(_service_for_gate()._require_provenance_capability(payload, status))
 
@@ -61,7 +65,7 @@ def _service(tmp_path: Path) -> EnvCacheService:
 
 def _no_docker(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _verify(*_a: Any, **_k: Any) -> tuple[bool | None, str]:
-        return None, "verify not run in this test"
+        return True, "trusted clean verification fixture"
 
     monkeypatch.setattr(dispatch_performer, "verify_env_cache_clean", _verify)
 
@@ -78,7 +82,7 @@ def test_the_real_gate_runs_in_prepare_env_dispatch_and_refuses_a_drifted_cache(
     released: list[bool] = []
     state = _wired_state(tmp_path, state_ec, service)
     card_context: dict[str, Any] = {}
-    stub = SimpleNamespace(_config=SimpleNamespace(image="img"), devenv_root="/devenv")
+    stub = SimpleNamespace(_config=SimpleNamespace(image="img@sha256:" + "1" * 64, mode="ephemeral"), devenv_root="/devenv")
 
     volumes, terminal = asyncio.run(
         dispatch_performer._prepare_env_dispatch(
@@ -102,7 +106,7 @@ def test_an_honest_cache_is_mounted_with_the_frozen_payload_attached(
     _no_docker(monkeypatch)
     state = _wired_state(tmp_path, state_ec, service)
     card_context: dict[str, Any] = {}
-    stub = SimpleNamespace(_config=SimpleNamespace(image="img"), devenv_root="/devenv")
+    stub = SimpleNamespace(_config=SimpleNamespace(image="img@sha256:" + "1" * 64, mode="ephemeral"), devenv_root="/devenv")
 
     volumes, terminal = asyncio.run(
         dispatch_performer._prepare_env_dispatch(

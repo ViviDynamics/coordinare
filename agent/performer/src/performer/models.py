@@ -368,6 +368,11 @@ class Score(BaseModel):
     env_cache_path: str = ""  # 060: container path of mounted env-cache; sourced via activate.sh
     # 234: the daemon-frozen env-cache steps. Declared here or extra="ignore" drops them in transit.
     env_provenance: dict[str, Any] | None = None
+    # 351: accepted contract travels outside the installer-writable cache.
+    environment_manifest: dict[str, Any] | None = None
+    environment_assessment: dict[str, Any] | None = None
+    environment_manifest_digest: str = ""
+    environment_secret_names: list[str] = Field(default_factory=list)
     # 265: the daemon-rendered verify.sh text the bootstrap verifies. Declared so extra="ignore" keeps it.
     bootstrap_verify_sh: str | None = None
     reasoning_policy: Literal["disable_thinking"] | None = None
@@ -538,6 +543,8 @@ class Stand:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     git_env: dict[str, str] = field(default_factory=dict)
     cache_env: dict[str, str] = field(default_factory=dict)
+    bootstrap_environment: Any = None
+    environment_lifecycle: Any = None
 
 
 # ---------------------------------------------------------------------------

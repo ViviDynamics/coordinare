@@ -16,7 +16,6 @@ operations (tmp_path) and mocked GitHub/dispatch. Covers:
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -29,15 +28,20 @@ from coordinare.services.env_cache import (
     get_env_volume_for_symphony,
     sanitise_symphony_name,
 )
+from tests.unit.env_manifest_fixture import verification_output
+from tests.unit.test_060_env_cache import (
+    _accepted_discovery as _accepted_discovery,
+)
+from tests.unit.test_060_env_cache import (
+    _configured,
+    _head,
+    _source_fingerprint,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-
-def _combined_sha(per_file: dict[str, str]) -> str:
-    s = json.dumps(dict(sorted(per_file.items())), separators=(",", ":"))
-    return hashlib.sha256(s.encode()).hexdigest()[:12]
 
 
 def _make_coordinare_config(symphony_name: str, cache_root: Path, performer_id: str = "bootstrap-env") -> MagicMock:
@@ -56,17 +60,18 @@ def _make_coordinare_config(symphony_name: str, cache_root: Path, performer_id: 
     eff = MagicMock()
     eff.github_org = "myorg"
     eff.project_name = "my-project"
+    eff.base_branch = "main"
     sym.effective_config = MagicMock(return_value=eff)
 
     cfg = MagicMock()
     cfg.global_config = global_cfg
     cfg.symphonies = [sym]
-    return cfg, sym
+    return _configured(cfg), sym
 
 
 def _make_github(sha: str = "abc123", content: str = "# README") -> MagicMock:
     gh = AsyncMock()
-    gh.get_file_blob_sha = AsyncMock(return_value=sha)
+    gh.get_branch_head_sha = AsyncMock(return_value=_head(sha))
     gh.get_file_content = AsyncMock(return_value=content)
     return gh
 
@@ -106,7 +111,7 @@ async def test_full_lifecycle(tmp_path: Path) -> None:
     full_state = {"env_cache": env_cache}
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
     dispatch_fn.assert_called_once()
-    expected_initial = _combined_sha({"README.md": initial_sha})
+    expected_initial = _source_fingerprint({"README.md": initial_sha})
     assert state.readme_sha == expected_initial
     assert state.bootstrap_in_flight is True
 
@@ -128,7 +133,7 @@ async def test_full_lifecycle(tmp_path: Path) -> None:
 
     # ---- 3. check_and_trigger() — SHA changed, bootstrap dispatched ----
     new_sha = "bbb222"
-    github.get_file_blob_sha = AsyncMock(return_value=new_sha)
+    github.get_branch_head_sha = AsyncMock(return_value=_head(new_sha))
     github.get_file_content = AsyncMock(return_value="# Updated README")
     dispatch_fn.reset_mock()
 
@@ -146,20 +151,24 @@ async def test_full_lifecycle(tmp_path: Path) -> None:
     assert sanitised in payload_arg.cache_mount_path
 
     assert state.bootstrap_in_flight is True
-    assert state.readme_sha == _combined_sha({"README.md": new_sha})
+    assert state.readme_sha == _source_fingerprint({"README.md": new_sha})
 
     # ---- 4. on_bootstrap_complete(success=True) ----
     svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
     assert state.bootstrap_in_flight is False
     assert state.last_bootstrap_succeeded is True
     assert state.last_bootstrap_at is not None
-    assert state.readme_sha == _combined_sha({"README.md": new_sha})  # preserved
+    assert state.readme_sha == _source_fingerprint({"README.md": new_sha})  # preserved
 
-    # Simulate the bootstrap performer writing activate.sh — its on-disk
-    # presence is the authoritative readiness gate for consumer mounts
-    # (cache_dir_ready alone is not enough since it resets on restart).
+    # The accepted activation copy must match the daemon record in addition
+    # to the reviewed contract and completed readiness decision.
     (state.cache_dir / "activate.sh").write_text("# daemon-rendered activate.sh\n")
     state.rendered_activate_sh = "# daemon-rendered activate.sh\n"
+
+    # The trusted clean consumer contributes per-check results and immutable
+    # image identity; a bootstrap success flag alone cannot authorize mounting.
+    state.environment_verification = json.loads(verification_output(state.environment_manifest))
+    state.environment_verification["image_ref"] = "trusted/global@sha256:" + "a" * 64
 
     # ---- 5. get_env_volume_for_symphony() — regular performer gets ro mount ----
     result = get_env_volume_for_symphony(sym_name, env_cache, is_bootstrap=False, performer_mounts=())
@@ -200,7 +209,7 @@ async def test_pending_sha_queued_while_bootstrap_in_flight(tmp_path: Path) -> N
     svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
 
     # Start a bootstrap for sha-v2.
-    github.get_file_blob_sha = AsyncMock(return_value="sha-v2")
+    github.get_branch_head_sha = AsyncMock(return_value=_head("sha-v2"))
     github.get_file_content = AsyncMock(return_value="v2 content")
     dispatch_fn.reset_mock()
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
@@ -208,11 +217,11 @@ async def test_pending_sha_queued_while_bootstrap_in_flight(tmp_path: Path) -> N
     dispatch_fn.assert_called_once()
 
     # A new change arrives while bootstrap is in-flight — should be queued, not dispatched.
-    github.get_file_blob_sha = AsyncMock(return_value="sha-v3")
+    github.get_branch_head_sha = AsyncMock(return_value=_head("sha-v3"))
     dispatch_fn.reset_mock()
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
     dispatch_fn.assert_not_called()
-    assert state.pending_sha == _combined_sha({"README.md": "sha-v3"})
+    assert state.pending_sha == _source_fingerprint({"README.md": "sha-v3"})
 
     # After bootstrap completes, readme_sha cleared so next cycle triggers re-dispatch.
     svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
@@ -246,7 +255,7 @@ async def test_bootstrap_failure_keeps_sha_and_gates_retry(tmp_path: Path) -> No
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
     svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
 
-    github.get_file_blob_sha = AsyncMock(return_value="sha-v2")
+    github.get_branch_head_sha = AsyncMock(return_value=_head("sha-v2"))
     github.get_file_content = AsyncMock(return_value="v2 content")
     dispatch_fn.reset_mock()
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
@@ -299,17 +308,13 @@ def test_no_volume_for_unconfigured_symphony(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_multi_file_combined_sha(tmp_path: Path) -> None:
-    """Bootstrap is triggered when any watched file changes (multi-file mode)."""
+async def test_multi_file_source_fingerprint(tmp_path: Path) -> None:
+    """Source identity changes cover nested inputs while preserving payload spec files."""
     sym_name = "multi-file-project"
     coordinare_cfg, sym_cfg = _make_coordinare_config(sym_name, tmp_path)
     sym_cfg.env_spec_files = ["README.md", "pyproject.toml"]
 
-    github = AsyncMock()
-    github.get_file_blob_sha = AsyncMock(side_effect=lambda org, repo, f: {
-        "README.md": "readme-sha-1", "pyproject.toml": "toml-sha-1",
-    }[f])
-    github.get_file_content = AsyncMock(return_value="content")
+    github = _make_github(sha="multi-initial", content="content")
 
     env_cache: dict = {}
     svc = EnvCacheService(coordinare_cfg)
@@ -322,15 +327,13 @@ async def test_multi_file_combined_sha(tmp_path: Path) -> None:
     dispatch_fn = AsyncMock()
     full_state = {"env_cache": env_cache}
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
-    initial_combined = _combined_sha({"README.md": "readme-sha-1", "pyproject.toml": "toml-sha-1"})
+    initial_combined = _source_fingerprint({"head": "multi-initial"})
     assert state.readme_sha == initial_combined
     dispatch_fn.assert_called_once()
     svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
 
-    # Only pyproject.toml changes — combined SHA must differ → dispatch.
-    github.get_file_blob_sha = AsyncMock(side_effect=lambda org, repo, f: {
-        "README.md": "readme-sha-1", "pyproject.toml": "toml-sha-2",
-    }[f])
+    # A commit changing only a nested project's input changes source identity.
+    github.get_branch_head_sha = AsyncMock(return_value=_head("multi-next"))
     dispatch_fn.reset_mock()
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
     dispatch_fn.assert_called_once()

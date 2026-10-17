@@ -139,11 +139,11 @@ def test_tmp_and_home_use_writable_scratch() -> None:
 @pytest.mark.asyncio
 async def test_initial_and_recheck_images_are_daemon_pinned(tmp_path: Path) -> None:
     service, ec, state, daemon, performer, runtime = setup(tmp_path, [(True, logs(summary())), (True, logs(summary()))])
-    state["coordinare_config"].global_config.kubernetes_verifier_image = "trusted/verifier:pinned"
+    state["coordinare_config"].global_config.kubernetes_verifier_image = "trusted/verifier@sha256:" + "d" * 64
     performer._config.image = "symphony/untrusted:latest"
     await freeze(service, state, daemon, performer)
     await service.run_full_pass("sym", ec)
-    assert [spec.image for spec in runtime.specs] == ["trusted/verifier:pinned"] * 3
+    assert [spec.image for spec in runtime.specs] == ["trusted/verifier@sha256:" + "d" * 64] * 3
 
 
 def test_verifier_image_defaults_to_global_performer_image() -> None:

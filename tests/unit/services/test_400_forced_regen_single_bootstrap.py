@@ -38,14 +38,20 @@ import pytest
 
 from coordinare.services.env_cache import EnvCacheService
 from tests.unit.services.test_env_cache_phase4 import _make_cfg, _seed_state
-from tests.unit.test_060_env_cache import _seed_toolchain
+from tests.unit.test_060_env_cache import (
+    _accepted_discovery as _accepted_discovery,
+)
+from tests.unit.test_060_env_cache import (
+    _head,
+    _seed_toolchain,
+)
 
 
 def _github(blob_sha: str) -> AsyncMock:
     gh = AsyncMock()
-    gh.get_file_blob_sha = AsyncMock(return_value=blob_sha)
+    gh.get_branch_head_sha = AsyncMock(return_value=_head(blob_sha))
 
-    async def _content(_o: str, _r: str, _p: str) -> str | None:
+    async def _content(_o: str, _r: str, _p: str, *, ref: str) -> str | None:
         return "x"
 
     gh.get_file_content = AsyncMock(side_effect=_content)
@@ -104,7 +110,7 @@ async def test_a_manifest_change_during_a_forced_regen_still_rebootstraps(tmp_pa
     await _cycle(svc, sym_name, sym, gh, state, dispatched)
     assert len(dispatched) == 1
 
-    gh.get_file_blob_sha = AsyncMock(return_value="changed-sha")  # README edited mid-run
+    gh.get_branch_head_sha = AsyncMock(return_value=_head("changed-sha"))  # README edited mid-run
     await _cycle(svc, sym_name, sym, gh, state, dispatched)
     assert len(dispatched) == 1, "still in flight; the change is queued, not dispatched"
 

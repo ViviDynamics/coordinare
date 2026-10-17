@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform
 from datetime import datetime  # noqa: TC003 — needed at runtime for pydantic type resolution
 from pathlib import (  # noqa: TC003 — needed at runtime for pydantic type resolution
     Path,
@@ -445,6 +446,9 @@ class PerformerStatus(BaseModel):
     version: str | None = None
     # 234: the env-provenance capability. An image that predates it omits the field, which reads as 0.
     env_provenance_version: int = 0
+    # 351: old images omit this and cannot enforce independently reviewed manifests.
+    environment_manifest_version: int = 0
+    environment_platform: str = Field(default_factory=lambda: platform.system().lower() + "/" + platform.machine().lower())
 
 
 __all__ = [

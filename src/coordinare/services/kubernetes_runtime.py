@@ -48,6 +48,7 @@ from coordinare.services.kubernetes_verifier import (
     VERIFIER_ROLE_LABEL,
     VerifierConfigurationError,
     VerifierSpec,
+    build_verifier_credentials_secret,
     build_verifier_pod_manifest,
     verifier_pod_name,
 )
@@ -767,27 +768,124 @@ class KubernetesRuntime:
             message = f"verifier pod spec refused: {exc}"
             raise VerifierConfigurationError(message) from exc
         name = str(manifest["metadata"]["name"])
-        try:
-            await asyncio.to_thread(
-                self._api.create_namespaced_pod, namespace=self._namespace, body=manifest,
-            )
-        except Exception as exc:
-            return None, f"verifier pod could not be created: {type(exc).__name__}"
+        secret_attempted = False
+        pod_attempted = False
+        removed = True
+        credentials_removed = True
         configuration_error = None
+        result: tuple[bool | None, str] = (None, 'verifier did not execute')
+
+        async def finish_thread_request(call: Any, *, resource: str, **kwargs: Any) -> Any:
+            nonlocal secret_attempted, pod_attempted, removed
+            # Cancellation does not cancel an in-flight API thread. Wait for it
+            # before removal, so creation cannot finish after cleanup has run.
+            task = asyncio.create_task(asyncio.to_thread(call, **kwargs))
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                while not task.done():
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                failure = task.exception() if not task.cancelled() else None
+                if isinstance(failure, ApiException) and failure.status == 409:
+                    if resource == 'secret':
+                        secret_attempted = False
+                    else:
+                        pod_attempted = False
+                        removed = False
+                raise
+
+        async def cleanup() -> None:
+            nonlocal removed, credentials_removed
+            if pod_attempted:
+                removed = await self._remove_verifier(name)
+            if secret_attempted and removed:
+                credentials_removed = await self._remove_verifier_credentials(name + '-credentials')
+
         try:
-            result = await self._await_verifier(name, walk_only=spec.walk_only, poll_interval_s=poll_interval_s)
+            # The Pod initially waits on its missing Secret. Creating it first
+            # gives the Secret an API-issued Pod UID owner for crash-safe GC.
+            pod_attempted = True
+            try:
+                pod = await finish_thread_request(
+                    self._api.create_namespaced_pod, resource='pod', namespace=self._namespace, body=manifest,
+                )
+            except ApiException as exc:
+                if exc.status == 409:
+                    pod_attempted = False
+                    removed = False
+                result = None, 'verifier pod could not be created'
+            except Exception as exc:
+                result = None, f'verifier pod could not be created: {type(exc).__name__}'
+            else:
+                if spec.transient_credentials:
+                    metadata = pod.get('metadata', {}) if isinstance(pod, dict) else getattr(pod, 'metadata', None)
+                    pod_uid = metadata.get('uid') if isinstance(metadata, dict) else getattr(metadata, 'uid', None)
+                    if not isinstance(pod_uid, str) or not pod_uid:
+                        return None, 'verifier Pod UID is missing; refusing unowned credential Secret'
+                    secret_attempted = True
+                    try:
+                        await finish_thread_request(
+                            self._api.create_namespaced_secret, resource='secret', namespace=self._namespace,
+                            body=build_verifier_credentials_secret(
+                                spec, name=name, namespace=self._namespace, owner=self._owner, pod_uid=pod_uid,
+                            ),
+                        )
+                    except ApiException as exc:
+                        if exc.status == 409:
+                            secret_attempted = False
+                        return None, 'verifier credential Secret could not be created'
+                    except Exception as exc:
+                        return None, f'verifier credential Secret could not be created: {type(exc).__name__}'
+                result = await self._await_verifier(name, walk_only=spec.walk_only, poll_interval_s=poll_interval_s)
         except VerifierConfigurationError as exc:
             configuration_error = exc
             result = None, str(exc)
         except Exception as exc:
-            result = None, f"verifier pod could not be read: {type(exc).__name__}"
+            result = None, f'verifier pod could not be read: {type(exc).__name__}'
         finally:
-            removed = await self._remove_verifier(name)
+            task = asyncio.create_task(cleanup())
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                while not task.done():
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        continue
+                await task
+                raise
         if not removed:
-            return None, "verifier pod could not be confirmed removed; retry before starting another pod"
+            return None, 'verifier pod could not be confirmed removed; retry before starting another pod'
+        if not credentials_removed:
+            return None, 'verifier credential Secret could not be confirmed removed'
         if configuration_error is not None:
             raise configuration_error
         return result
+
+    async def _remove_verifier_credentials(self, name: str) -> bool:
+        """Delete only after the consuming Pod is gone and confirm API absence."""
+        try:
+            await asyncio.to_thread(self._api.delete_namespaced_secret, name=name, namespace=self._namespace)
+        except ApiException as exc:
+            return bool(exc.status == 404)
+        except Exception:
+            return False
+        deadline = asyncio.get_running_loop().time() + VERIFIER_REMOVAL_TIMEOUT_S
+        while True:
+            try:
+                await asyncio.to_thread(self._api.read_namespaced_secret, name=name, namespace=self._namespace)
+            except ApiException as exc:
+                return bool(exc.status == 404)
+            except Exception:
+                return False
+            if asyncio.get_running_loop().time() >= deadline:
+                return False
+            await asyncio.sleep(0.1)
 
     async def _await_verifier(self, name: str, *, walk_only: bool, poll_interval_s: float) -> tuple[bool | None, str]:
         deadline = asyncio.get_running_loop().time() + VERIFIER_DEADLINE_S
@@ -804,7 +902,7 @@ class KubernetesRuntime:
                     return None, f"verifier container infrastructure failure: {reason}"
             phase = getattr(status, "phase", None)
             if phase == "Succeeded":
-                return True, await self._verifier_logs(name) if walk_only else ""
+                return True, await self._verifier_logs(name)
             if phase == "Failed" and getattr(pod.status, "reason", None) in VERIFIER_INFRASTRUCTURE_REASONS:
                 return None, f"verifier pod infrastructure failure: {pod.status.reason}"
             if phase == "Failed":

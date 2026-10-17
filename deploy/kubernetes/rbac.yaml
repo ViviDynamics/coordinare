@@ -1,12 +1,12 @@
 # Minimal RBAC for coordinare's Kubernetes transport (spec 146 / issue #200).
 #
 # Namespace-scoped by design. Coordinare needs to create, observe and delete the
-# performer Pods it owns, read their logs before deleting them, and nothing else.
+# performer Pods it owns, read their logs, and manage transient verifier credentials.
 # There is no ClusterRole here and there should never need to be.
 #
 # Verified rather than asserted: every verb below is exercised by the transport,
 # and tests/unit/test_146_kubernetes_transport.py checks both that the required
-# verbs are present AND that secrets and cluster-scoped resources are absent — a
+# verbs are present AND that Secret verbs stay at create/get/delete, with no cluster-scoped resources — a
 # Role that works because it is over-broad passes the first half and defeats the
 # purpose.
 #
@@ -41,6 +41,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
+  # Reviewed verifier credentials use a separate, ephemeral Secret. Create its
+  # Pod first, bind the Secret ownerReference to the returned Pod UID, and delete
+  # it only after confirmed Pod removal. Get confirms deletion; no list/update.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

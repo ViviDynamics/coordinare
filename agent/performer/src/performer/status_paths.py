@@ -1355,72 +1355,35 @@ async def bootstrap_path(
     backend_status,
     settings: Settings | None,
 ) -> PerformerResponse:
-    """Env-bootstrap role path (spec 060/101/107): workflow report mapping, service inference, readiness gate, verify."""
-    from performer import main as _m
+    """351: complete only after accepted contract checks and immutable artifact gates pass."""
+    from performer.environment_contract import accepted_manifest
+    from performer.workflows.bootstrap_environment import BootstrapEnvironment
 
-    _extract_json = _m._extract_json
-    get_settings = _m.get_settings
-    asyncio = _m.asyncio
-    _run_service_inference = _m._run_service_inference
+    try:
+        accepted_manifest(perf.score)
+    except ValueError as exc:
+        perf.state = "error"
+        perf.error_reason = str(exc)
+        return PerformerResponse(status="error", session_id=perf.session_id, reason=str(exc))
 
     _workflow = await _bootstrap_workflow_response(perf, backend_status)
     if _workflow is not None:
         return _workflow
-    # 107: START declared services BEFORE running verify.sh. verify.sh
-    # embeds a LIVE service probe (spec-093 pg_isready/redis PING) that
-    # hard-fails when the service isn't running, so it MUST run after the
-    # spec-101 readiness gate has started the services. Order:
-    #   inference (writes services-start.sh) → readiness (starts + health-
-    #   checks) → verify (toolchain + live service probe, now satisfied).
-    # Running verify first made it fail on the service probe before anything
-    # started the service, returning early so the readiness gate that starts
-    # it was never reached (the website-postgres "never came up" bug).
-    inference_timeout = get_settings().SERVICE_INFERENCE_TIMEOUT
-    try:
-        perf.inference_state = await asyncio.wait_for(
-            _run_service_inference(
-                perf.stand.path, perf.score.env_cache_path,
-            ),
-            timeout=inference_timeout,
-        )
-    except asyncio.TimeoutError:
-        # 076 (live QA #150): service_inference is a best-effort,
-        # secondary probe; a timeout MUST NOT by itself fail the whole
-        # bootstrap (re-dispatch-forever). Record the skip and fall
-        # through to the 101 readiness gate, which only blocks when the
-        # symphony declares REQUIRED services that aren't connectable.
-        log.warning(
-            "service_inference.timeout",
-            job_id=perf.session_id,
-            timeout_seconds=inference_timeout,
-            detail=(
-                "inference timed out (best-effort); deferring to the "
-                "service-readiness gate for required-service handling"
-            ),
-        )
-        perf.inference_state = {
-            "inference_succeeded": False,
-            "inference_skipped_reason": "timeout",
-        }
-    ready_ok, ready_failures = await _bootstrap_service_readiness(perf)
-    if not ready_ok:
-        perf.state = "error"
-        perf.error_reason = (
-            "env-cache required service(s) not ready: "
-            + "; ".join(f["reason"] for f in ready_failures)
-        )
-        log.warning(
-            "env_bootstrap.service_readiness_failed",
-            session_id=perf.session_id,
-            failures=[f["service"] for f in ready_failures],
-        )
-        return PerformerResponse(
-            status="error",
-            session_id=perf.session_id,
-            reason=perf.error_reason,
-        )
-
-    return await _bootstrap_verify_response(perf)
+    environment = perf.stand.bootstrap_environment
+    if environment is None:
+        environment = BootstrapEnvironment(perf.stand, perf.score)
+        checked = await environment.run("snapshot")
+        if checked["passed"]:
+            checked = await environment.run("install")
+    else:
+        checked = await environment.run("verify")
+    perf.state = "env_bootstrap_complete" if checked["passed"] else "error"
+    perf.error_reason = checked.get("reason") or None
+    return PerformerResponse(
+        status=perf.state, session_id=perf.session_id,
+        reason=perf.error_reason, env_verify_basis=checked.get("verify_basis"),
+        report={"environment_verification": checked.get("environment_verification")},
+    )
 
 
 async def _bootstrap_workflow_response(
@@ -1449,6 +1412,7 @@ async def _bootstrap_workflow_response(
                 "session_id": perf.session_id,
                 "reason": run.reason or None,
                 "env_verify_basis": run.verify_basis,
+                "report": {"environment_verification": run.environment_verification},
             }, strict=True)
         except (ValidationError, ValueError):
             perf.state = "error"

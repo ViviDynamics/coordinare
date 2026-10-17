@@ -25,6 +25,7 @@ class BootstrapRun(BaseModel):
     inference: dict[str, Any]
     # 265: which script decided the verify ("daemon_rendered" or "cache_file"); None when it did not pass.
     verify_basis: str | None = Field(default=None, max_length=32)
+    environment_verification: dict[str, Any] | None = None
 
 
 def _budget(env: dict[str, str], key: str, default: int, low: int, high: int) -> int:
@@ -53,6 +54,7 @@ class EnvBootstrapWorkflow:
     async def run(self, stand: Stand, score: Score, toolkit: Toolkit) -> WorkflowResult:
         inference: dict[str, Any] = {}
         repairs = 0
+        verification: dict[str, Any] | None = None
 
         async def step(name: str) -> dict[str, Any]:
             toolkit.emit(BackendEvent(type=BackendEventType.progress, text=f"env_bootstrap.{name}"))
@@ -69,6 +71,7 @@ class EnvBootstrapWorkflow:
             return WorkflowResult(report={"env_bootstrap_run": {
                 "status": status, "reason": reason[-1000:], "repairs": repairs,
                 "inference": inference, "verify_basis": verify_basis,
+                "environment_verification": verification,
             }}, metrics=toolkit.metrics)
 
         try:
@@ -82,6 +85,22 @@ class EnvBootstrapWorkflow:
                 for attempt in range(max_repairs + 1):
                     kind = "install" if attempt == 0 else "repair"
                     repairs = attempt
+                    if attempt == 0 and score.environment_manifest is not None:
+                        installed = await step("install")
+                        verification = installed.get("environment_verification")
+                        if installed.get("integrity_failure"):
+                            return report("error", installed["reason"])
+                        if installed["passed"]:
+                            checked = await step("verify")
+                            verification = checked.get("environment_verification")
+                            if checked["passed"]:
+                                return report("complete", verify_basis=checked.get("verify_basis"))
+                            if checked.get("integrity_failure"):
+                                return report("error", checked["reason"])
+                            feedback = checked.get("reason") or "environment verification failed"
+                        else:
+                            feedback = installed.get("reason") or "environment installation failed"
+                        continue
                     toolkit.emit(BackendEvent(type=BackendEventType.progress, text=f"env_bootstrap.{kind}"))
                     started = time.monotonic()
                     try:
@@ -108,6 +127,7 @@ class EnvBootstrapWorkflow:
                         return report("error", integrity["reason"])
                     if checked["passed"]:
                         checked = await step("verify")
+                        verification = checked.get("environment_verification")
                     if checked.get("integrity_failure"):
                         return report("error", checked["reason"])
                     if checked["passed"]:

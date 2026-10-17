@@ -72,3 +72,35 @@ def test_checks_cannot_depend_on_install_only_evidence():
     data["checks"][0]["depends_on"] = ["install"]
     with pytest.raises(ValidationError):
         EnvironmentManifest.model_validate(data)
+
+
+@pytest.mark.parametrize('path', ['.', './guide', 'a//guide', 'a/./guide', 'a/../guide', 'guide\n'])
+def test_source_paths_reject_normalization_and_controls(path):
+    data = manifest_data()
+    data['inputs'] = {path: 'a' * 64}
+    data['requirements'][0]['source'] = path
+    with pytest.raises(ValidationError):
+        EnvironmentManifest.model_validate(data)
+
+
+@pytest.mark.parametrize('path', ['{workspace}/bin', '{repo}/../outside', 'relative/bin', '${BAD:-fallback}'])
+def test_execution_paths_reject_unknown_roots(path):
+    data = manifest_data()
+    data['activation']['path'] = [path]
+    with pytest.raises(ValidationError):
+        EnvironmentManifest.model_validate(data)
+
+
+def test_contract_processing_performance_budget() -> None:
+    """Exercise the documented 1,000-check budget on every CI test runner."""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).parents[2] / "scripts/benchmark_environment_manifest.py")],
+        capture_output=True, text=True, check=True, timeout=60,
+    )
+    measurement = json.loads(result.stdout)
+    assert measurement

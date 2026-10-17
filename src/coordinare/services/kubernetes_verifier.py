@@ -15,7 +15,7 @@ import base64
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from coordinare_service_inference.cache_provenance import (
@@ -25,6 +25,7 @@ from coordinare_service_inference.cache_provenance import (
     MAX_SCRIPT_BYTES,
     RESULT_SENTINEL,
 )
+from coordinare_service_inference.environment.models import source_path
 
 # The container name, and the label that marks a verifier pod for the operator and the orphan sweep.
 VERIFIER_CONTAINER = "verifier"
@@ -91,22 +92,8 @@ verify = os.path.join(d, "verify.sh")
 with open(verify, "w", encoding="utf-8") as fh:
     fh.write(base64.b64decode(os.environ["VERIFY_B64"]).decode("utf-8"))
 os.chmod(verify, 0o600)
-bundle = None
-cfg = os.path.join(devenv, ".bundle", "config")
-if os.path.isfile(cfg):
-    with open(cfg, encoding="utf-8") as fh:
-        found = re.search(r'^BUNDLE_PATH:\s*"?([^"\n]+?)"?\s*$', fh.read(), re.M)
-    if found:
-        bundle = found.group(1)
-        if not os.path.isabs(bundle):
-            bundle = os.path.normpath(os.path.join(devenv, bundle))
-if bundle is None and os.path.isdir(os.path.join(devenv, "project", "bundle")):
-    bundle = os.path.join(devenv, "project", "bundle")
 with open(os.path.join(d, "env.sh"), "w", encoding="utf-8") as fh:
     fh.write("export COORDINARE_REPO_DIR=" + shlex.quote(repo) + "\n")
-    fh.write("export BUNDLE_GEMFILE=" + shlex.quote(os.path.join(repo, "Gemfile")) + "\n")
-    if bundle is not None:
-        fh.write("export BUNDLE_PATH=" + shlex.quote(bundle) + "\n")
 '''
 
 # Stdlib only, so an unavailable performer module can still be diagnosed. Read a
@@ -114,6 +101,8 @@ with open(os.path.join(d, "env.sh"), "w", encoding="utf-8") as fh:
 # diagnostic. JSON escaping keeps even a multiline traceback on one log line.
 WALK_DIAGNOSTICS_PY = r"""
 from __future__ import annotations
+
+from coordinare_service_inference.environment.models import source_path
 
 import json, os, re, sys
 prefix = os.environ["WALK_DIAGNOSTIC_PREFIX"]
@@ -179,10 +168,7 @@ def check_project_files(files: dict[str, str]) -> None:
     Raises ``ValueError`` with the reason.
     """
     for rel in files:
-        parts = rel.split("/")
-        if not rel or rel.startswith("/") or not _SAFE_RELATIVE.match(rel) or any(p in ("", ".", "..") for p in parts):
-            msg = f"project file path {rel!r} is not a plain relative path"
-            raise ValueError(msg)
+        source_path(rel)
     total = len(json.dumps(files, ensure_ascii=False).encode("utf-8"))
     if total > PROJECT_FILES_MAX_BYTES:
         msg = f"project files total {total} bytes, over the {PROJECT_FILES_MAX_BYTES} byte bound"
@@ -204,6 +190,7 @@ class VerifierSpec:
     walk_only: bool = False
     max_entries: int = DEFAULT_MAX_ENTRIES
     max_bytes: int = DEFAULT_MAX_BYTES
+    transient_credentials: str = field(default="", repr=False)
 
 
 def configured_verifier_image(config: Any) -> str:
@@ -299,12 +286,39 @@ def build_verifier_pod_manifest(
         },
     }
 
+    if spec.transient_credentials:
+        if spec.walk_only:
+            raise ValueError('provenance walker must not receive credentials')
+        if len(spec.transient_credentials) > 384 * 1024:
+            raise ValueError('transient credential payload exceeds transfer bound')
+        manifest['spec']['containers'][0]['env'].append({
+            'name': 'COORDINARE_ENV_SECRET_VALUES',
+            'valueFrom': {'secretKeyRef': {'name': name + '-credentials', 'key': 'values'}},
+        })
     if owner:
         manifest["metadata"]["labels"][OWNER_LABEL] = owner
     if len(json.dumps(manifest).encode("utf-8")) > VERIFIER_POD_MAX_BYTES:
         message = f"verifier pod exceeds the {VERIFIER_POD_MAX_BYTES} byte bound"
         raise ValueError(message)
     return manifest
+
+
+def build_verifier_credentials_secret(
+    spec: VerifierSpec, *, name: str, namespace: str, owner: str | None, pod_uid: str,
+) -> dict[str, Any]:
+    """Keep transient credentials in the Secret API, never Pod command/env text."""
+    if not pod_uid:
+        raise ValueError('credential Secret requires its Pod UID')
+    labels = {'app.kubernetes.io/managed-by': 'coordinare',
+              VERIFIER_ROLE_LABEL: 'env-verifier-credentials',
+              'coordinare.vividynamics.com/verifier-pod': name}
+    if owner:
+        labels[OWNER_LABEL] = owner
+    return {'apiVersion': 'v1', 'kind': 'Secret', 'type': 'Opaque',
+            'metadata': {'name': name + '-credentials', 'namespace': namespace, 'labels': labels,
+                         'ownerReferences': [{'apiVersion': 'v1', 'kind': 'Pod', 'name': name,
+                                              'uid': pod_uid, 'controller': False, 'blockOwnerDeletion': False}]},
+            'data': {'values': base64.b64encode(spec.transient_credentials.encode()).decode('ascii')}}
 
 
 __all__ = [

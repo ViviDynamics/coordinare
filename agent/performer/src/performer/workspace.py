@@ -392,6 +392,19 @@ async def clone_repository(score: Score) -> Stand:
         shutil.rmtree(stand_path, ignore_errors=True)
         raise WorkspaceSetupError(f"git checkout failed (exit {returncode}): {stderr}")
 
+    if score.role == "env_bootstrap":
+        from performer.environment_contract import accepted_manifest
+
+        manifest = accepted_manifest(score)
+        fetch_rc, detail = await _run_git(["git", "fetch", "origin", manifest.source_commit], cwd=stand_path, env=env)
+        if fetch_rc == 0:
+            fetch_rc, detail = await _run_git(
+                ["git", "checkout", "--detach", manifest.source_commit], cwd=stand_path, env=env,
+            )
+        if fetch_rc != 0:
+            shutil.rmtree(stand_path, ignore_errors=True)
+            raise WorkspaceSetupError(f"cannot check out reviewed environment source: {detail}")
+
     # Set git identity so commits show as the bot, not the host user
     for cfg_cmd in [
         ["git", "config", "user.name", "vivi-coordinare[bot]"],
@@ -416,6 +429,15 @@ async def clone_repository(score: Score) -> Stand:
     # 397: extract first, to completion. The snapshot and the services start
     # below both source the profile and both used to race the extraction it
     # triggered; now they find the libs already published.
+    if score.environment_manifest is not None:
+        from performer.environment_contract import prepare_environment
+
+        try:
+            await prepare_environment(score, stand)
+        except BaseException:
+            shutil.rmtree(stand_path, ignore_errors=True)
+            raise
+        return stand
     await _extract_env_cache_libs(score.env_cache_path)
     stand.cache_env = await _activate_env_cache(score.env_cache_path)
     await _start_env_cache_services(score.env_cache_path, stand.cache_env)

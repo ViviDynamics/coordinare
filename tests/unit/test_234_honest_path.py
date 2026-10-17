@@ -8,6 +8,7 @@ runs docker. The daemon's own decisions are the real code paths.
 from __future__ import annotations
 
 import asyncio
+import platform
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from coordinare.graph.nodes import dispatch_performer
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.services.env_cache import EnvCacheService
 from coordinare.state_store import CURRENT_SCHEMA_VERSION, EnvCacheStateSnapshot
+from tests.unit.env_manifest_fixture import reviewed_cache
 from tests.unit.env_mount_stub import mount_config
 
 ACTIVATE = "# daemon-rendered activate\nexport PATH=$DEVENV/bin:$PATH\n"
@@ -46,6 +48,9 @@ def _bootstrapped(tmp_path: Path) -> tuple[EnvCacheState, Path]:
         cache_dir_ready=True,
         last_seen_spec_sha="spec-sha",
     )
+    reviewed_cache(state)
+    state.environment_verification = {"image_ref": "img@sha256:" + "1" * 64,
+                                      "platform": platform.system().lower() + "/" + platform.machine().lower()}
     return state, cache
 
 
@@ -128,7 +133,7 @@ def test_a_cache_without_frozen_provenance_is_refused(tmp_path: Path) -> None:
 
 
 def test_snapshot_carries_the_digest_and_v36_loads_without_it() -> None:
-    assert CURRENT_SCHEMA_VERSION == 39
+    assert CURRENT_SCHEMA_VERSION == 40
     snap = EnvCacheStateSnapshot(
         symphony_name="sym",
         sanitised_name="sym-abc",

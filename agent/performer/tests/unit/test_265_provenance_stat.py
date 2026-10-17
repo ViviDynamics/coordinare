@@ -42,13 +42,13 @@ def test_stat_match_allows_frozen_activation(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("empty", [True, False])
-def test_admission_routes_stat_refusal_to_content_recheck(tmp_path: Path, empty: bool) -> None:
+def test_admission_routes_stat_refusal_to_content_recheck(tmp_path: Path, empty: bool, reviewed_environment_metadata) -> None:
     cache = tmp_path / "sym-abc"
     cache.mkdir()
     if not empty:
         (cache / "activate.sh").write_text("exit 99\n")
     payload = JobInitPayload(job_id="j", card_id="c", role="implementer", backend="claude_code", persona="p",
-                             repo_url="https://github.com/org/repo.git", branch="b", env_cache_path=str(cache),
+                             repo_url="https://github.com/org/repo.git", branch="b", env_cache_path=str(cache), metadata=reviewed_environment_metadata,
                              env_provenance=EnvProvenance(slug="sym-abc", cache_path=str(cache), digest="a" * 64,
                                                           stat_digest="b" * 64, activate_sh="exit 0\n"))
     refusal = main._admission_refusal(payload)

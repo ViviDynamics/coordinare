@@ -25,8 +25,20 @@ from coordinare.models.env_cache import EnvCacheState
 from coordinare.models.env_manifest import EnvManifest, ManifestItem
 from coordinare.services.env_cache import verify_env_cache_clean
 from coordinare.services.env_manifest import render_activate_sh, render_verify_sh
+from tests.unit.env_manifest_fixture import reviewed_metadata, verification_output
 
-SVC = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"))
+
+@pytest.fixture(autouse=True)
+def _accepted_source_fixture(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",
+                        AsyncMock(return_value={"tools.plan": "baseline"}))
+    # These tests exercise trusted verifier execution, not source archive materialisation.
+    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files: "")
+
+
+SVC = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img@sha256:" + "1" * 64))
 CACHE_PATH = "/devenv/sym-abc"
 ACTIVATE_TEXT = "DEVENV_MARKER_ACTIVATE=1\n"
 VERIFY_TEXT = "#!/bin/sh\necho 'FAIL: nothing installed' >&2\nexit 1\n"
@@ -66,7 +78,7 @@ class _Proc:
             self._owner.on_run()
         if not self._owner.run_locally:
             self.returncode = self._owner.rc
-            return b"", None
+            return verification_output() if self._owner.rc == 0 else b"", None
         proc = await _REAL_EXEC(
             "sh", "-s",
             stdin=asyncio.subprocess.PIPE,
@@ -96,6 +108,7 @@ def _state(cache: Path, verify: str = VERIFY_TEXT, activate: str = ACTIVATE_TEXT
     return EnvCacheState(
         symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache,
         rendered_verify_sh=verify, rendered_activate_sh=activate,
+        bootstrap_commit_sha="abc", **{key: value for key, value in reviewed_metadata().items() if key != "environment_manifest_digest"},
     )
 
 
@@ -150,7 +163,7 @@ async def test_verify_stdin_is_the_daemon_script_and_never_the_cache_copy(
 
     await verify_env_cache_clean(_ctx(_state(cache)), "sym", SVC, performer_mounts=())
 
-    assert fake.stdin == [VERIFY_TEXT.encode()]
+    assert [data for data in fake.stdin if data is not None] == [VERIFY_TEXT.encode()]
     assert all("verify.sh" not in arg for arg in _docker_argv(fake))
 
 
@@ -193,4 +206,4 @@ async def test_a_cache_activate_rewrite_during_the_run_does_not_change_the_verdi
 
     assert _seed != (cache / "activate.sh").read_text()  # the writer really did swap it mid-run
     assert passed is True
-    assert fake.stdin == [rendered.encode()]
+    assert [data for data in fake.stdin if data is not None] == [rendered.encode()]

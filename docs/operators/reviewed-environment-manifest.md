@@ -100,9 +100,45 @@ budgets continue to apply. Individual commands default to a 180-second timeout.
 
 ## Upgrade and recover
 
-Use immutable image references where supported by the configured transport; image
-identity and deployment policy remain part of verification applicability. Upgrade
-daemon, performer and trusted verifier images together; they must share
+Clean verification requires an immutable `image@sha256:<64 lowercase hex digits>`
+reference on both Docker and Kubernetes. Mutable tags hold readiness. Docker uses
+the selected bootstrap performer's configured image, so pin that actual image,
+including any endpoint override. The clean Docker verifier runs with `--network
+none`; installation may have separate network access, but verification cannot rely
+on it.
+
+For Kubernetes, set `kubernetes_verifier_image` to an immutable reference (or pin
+its `performer_image` fallback). Configure and validate a NetworkPolicy that
+isolates verifier pods labeled `coordinare.role: env-verifier`, using a CNI that
+actually enforces the policy. Only after validating deployment enforcement, add:
+
+```yaml
+env_cache:
+  kubernetes_verifier_network_isolated: true
+```
+
+This value defaults to `false` and is an operator attestation of externally
+enforced isolation. It does not install a policy or make a non-enforcing CNI
+secure. Kubernetes clean verification holds when the attestation is absent.
+These execution-policy gates do not waive independent review or required checks.
+The consumer must use the exact verified image and runtime platform; an OCI index
+digest alone cannot authorize a different architecture. Reviewed cache jobs require
+ephemeral per-job containers. Persistent performers hold because cache mounts and
+whole-job cleanup cannot be established for an existing container.
+
+Linux commands run under a dedicated subreaper that kills and reaps detached
+descendants before reporting completion. Other operating systems retain a process
+group adapter for development; production container verification uses Linux.
+Curated test credentials use transient Docker verifier stdin or a Kubernetes
+Secret reference. The Kubernetes Pod is created first, then its API-issued UID owns
+the short-lived Secret; Pod garbage collection covers daemon crashes. Removal must
+be confirmed before readiness. Update the shipped namespace Role to grant Secret
+create/get/delete (no list, update, patch or cluster grant); use a dedicated namespace
+for this permission boundary. Kubernetes Pod specs contain only the Secret name and
+key. Values are restored after the trusted interpreter starts. Manifests use named
+references; literal credential URLs are refused.
+
+Upgrade daemon, performer and trusted verifier images together; they must share
 the environment contract capability. State schema 40 adds the accepted manifest
 and assessment. Restored older caches have no accepted pair and hold consumers
 until reviewed reconstruction and clean verification complete. Existing bytes are
@@ -119,8 +155,10 @@ When an environment is held:
 3. For required check failures, repair the installed environment or the documented
    requirement. A failed check cannot be disabled through a review verdict.
 4. For image/capability mismatches, roll matching daemon, performer and verifier
-   images. For provenance refusal, stop competing writers and rebuild through the
-   normal bootstrap path.
+   images with immutable SHA256 references. For Kubernetes isolation refusal,
+   configure and validate the enforcing CNI/NetworkPolicy before setting the
+   attestation. For provenance refusal, stop competing writers and rebuild through
+   the normal bootstrap path.
 5. After correcting the cause, use **Force bootstrap now** on the dashboard or
    `POST /api/symphonies/{name}/env-bootstrap`. This resets the existing bootstrap
    budget; the 15-minute manual-reset cooldown still applies. Paused symphonies

@@ -41,13 +41,22 @@ def render_activate(manifest: EnvironmentManifest, *, cache_mount_path: str) -> 
         lines.extend(
             [
                 "_coordinare_path=" + _shell_value(path, cache_mount_path),
-                'case ":${PATH-}:" in',
-                '  *":${_coordinare_path}:"*) ;;',
-                '  *) export PATH="${_coordinare_path}${PATH:+:${PATH}}" ;;',
-                "esac",
+                '_coordinare_remaining=${PATH-}',
+                '_coordinare_filtered=',
+                'while :; do',
+                '  case "$_coordinare_remaining" in',
+                '    *:*) _coordinare_entry=${_coordinare_remaining%%:*}; _coordinare_remaining=${_coordinare_remaining#*:}; _coordinare_more=1 ;;',
+                '    *) _coordinare_entry=$_coordinare_remaining; _coordinare_more=0 ;;',
+                '  esac',
+                '  if [ "$_coordinare_entry" != "$_coordinare_path" ]; then',
+                '    _coordinare_filtered="${_coordinare_filtered}:${_coordinare_entry}"',
+                '  fi',
+                '  [ "$_coordinare_more" = 1 ] || break',
+                'done',
+                'export PATH="${_coordinare_path}${_coordinare_filtered}"',
             ],
         )
-    lines.append("unset _coordinare_path")
+    lines.append("unset _coordinare_path _coordinare_remaining _coordinare_filtered _coordinare_entry _coordinare_more")
     return "\n".join(lines) + "\n"
 
 

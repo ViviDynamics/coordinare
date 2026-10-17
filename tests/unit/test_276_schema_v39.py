@@ -22,7 +22,8 @@ EXHAUSTION_REASON_SCHEMA_VERSION = 39
 
 
 def test_schema_version_records_persisted_exhaustion_reason() -> None:
-    assert CURRENT_SCHEMA_VERSION == EXHAUSTION_REASON_SCHEMA_VERSION
+    assert CURRENT_SCHEMA_VERSION == 40
+    assert EXHAUSTION_REASON_SCHEMA_VERSION in range(1, CURRENT_SCHEMA_VERSION + 1)
 
 
 @pytest.mark.parametrize("reason", [None, "configuration_refusal"])
