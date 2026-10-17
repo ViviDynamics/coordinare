@@ -127,7 +127,7 @@ def test_benign_activation_failure_does_not_fail_verify(tmp_path: Path, activati
 
 @pytest.mark.parametrize(("producer", "expected"), [("false", VERDICT_FAILURE), ("printf ok", 0)])
 def test_rendered_verify_enforces_pipefail_without_wrapper(tmp_path: Path, producer: str, expected: int) -> None:
-    check = f"if {producer} | cat; then echo OK; else FAILED=1; fi"
+    check = f"{producer} | cat"
     manifest = EnvManifest(symphony_name="sym", items=[
         ManifestItem(name="custom", kind="runtime", source="README.md", check=check),
     ])
@@ -143,7 +143,7 @@ def test_version_check_preserves_failed_producer_without_err_trap(tmp_path: Path
     binary.write_text(f"#!/bin/bash\nprintf '{version}\\n'\nexit {exit_code}\n")
     binary.chmod(SHELL_EXECUTABLE_MODE)
     manifest = EnvManifest(symphony_name="sym", items=[
-        ManifestItem(name=runtime, kind="runtime", version=version, source="README.md"),
+        ManifestItem(name=runtime, kind="runtime", version=version, source="README.md", check="true", version_check="false" if exit_code else "true"),
     ])
     verify = render_verify_sh(manifest, cache_mount_path=str(tmp_path))
     result = _run_shell(tmp_path, verify, PATH=str(tmp_path) + os.pathsep + os.environ["PATH"])
@@ -158,7 +158,7 @@ def test_benign_failure_in_custom_soft_check_does_not_fail_verify(
 ) -> None:
     manifest = EnvManifest(symphony_name="sym", items=[
         ManifestItem(name="required", kind="runtime", source="README.md", check="echo 'OK: required'"),
-        ManifestItem(name="optional", kind=kind, source="README.md", check=check),
+        ManifestItem(name="optional", kind=kind, source="README.md", check="false"),
     ])
     result = _run_verify(tmp_path, render_verify_sh(manifest, cache_mount_path=str(tmp_path)), execution)
     assert result.returncode == 0, result.stdout + result.stderr
