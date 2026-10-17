@@ -2142,8 +2142,8 @@ class TestManifestArtifacts:
         # that verify.sh sources (so the agent no longer hand-writes the paths).
         assert activate_provided is True
         activate = (cache_dir / "activate.sh").read_text()
-        assert "$DEVENV/.rbenv/versions/3.4.2" in activate
-        assert "$DEVENV/rbenv/versions/3.4.2" in activate  # both dot + no-dot probed
+        assert '"$DEVENV"/.rbenv/versions/3.4.2/bin' in activate
+        assert '"$DEVENV"/rbenv/versions/3.4.2/bin' in activate
         assert (cache_dir / "activate.sh").stat().st_mode & 0o100  # executable
 
     @pytest.mark.asyncio
