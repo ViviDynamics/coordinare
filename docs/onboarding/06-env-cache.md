@@ -178,3 +178,28 @@ unchanged aggregate deadline. Missing or oversized evidence holds; successful cl
 execution of every required check remains mandatory. See the
 [operator guide](../operators/reviewed-environment-manifest.md#complete-reviewer-evidence-and-correction-limits)
 for configuration and legacy-attempt migration.
+
+### Capability probes and installation assertions
+
+Discovery can request bounded, repository-cited capability probes in the pinned
+consumer image before constructing a manifest. Probes have no network, runtime
+secrets, host sockets, writable source or writable cache. Each logical attempt
+permits two batches of at most 16 commands, with 30 seconds per command and 120
+seconds per batch, subject to its original remaining deadline. Output is bounded
+at 16 KiB per command; incomplete or truncated observations hold. An absent tool
+is evidence for installation planning, not a passing required check.
+
+The Docker adapter supplies this isolation. Other adapters hold when they cannot
+establish the same restrictions; a Kubernetes deployment never falls back to the
+local Docker daemon. Pending older attempt journals require an explicit operator
+restart after confirmed cleanup. Existing accepted frozen contracts remain readable.
+
+Repair automatically receives every previous input with independently verified
+hashes. Independent coverage review still fetches its own evidence. Required
+installation assertions use ordinary install commands and dependency edges to
+establish outputs before dependent actions. Every required clean-consumer check
+and service action remains mandatory, regardless of probes or reviewer approval.
+
+The private validation harness requires separate scope approval for each exact
+probe plan and accepted manifest digest. Timeout defaults remain unchanged;
+longer validation profiles are explicit experiments and never renew a live attempt.

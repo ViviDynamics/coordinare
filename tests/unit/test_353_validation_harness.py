@@ -45,6 +45,81 @@ def test_scope_refuses_deployment_command_without_operator_review(tmp_path):
     )
 
 
+def test_probe_scope_is_separate_and_binds_exact_runtime(tmp_path):
+    from scripts.validate_environment_repositories import probe_authorized
+
+    from tests.unit.test_353_environment_probes import plan
+    p = plan()
+    path = tmp_path/'probe-approved.json'
+    assert not probe_authorized(path, p)
+    approval = {'approved':True, 'scope':'environment_probe', 'plan_digest':p.digest(),
+        'source_commit':p.source_commit, 'image_ref':p.capabilities.image_ref, 'platform':p.capabilities.platform}
+    path.write_text(json.dumps(approval))
+    assert probe_authorized(path, p)
+    assert not execution_authorized(path, manifest_digest=p.digest(), source_commit=p.source_commit,
+        image=p.capabilities.image_ref)
+    for key in ('scope', 'plan_digest', 'source_commit', 'image_ref', 'platform'):
+        path.write_text(json.dumps({**approval,key:'wrong'}))
+        assert not probe_authorized(path, p)
+
+
+@pytest.mark.asyncio
+async def test_probe_approval_timeout_cannot_execute_or_renew_deadline(tmp_path):
+    import time
+
+    from scripts.validate_environment_repositories import await_probe_approval
+
+    from tests.unit.test_353_environment_probes import plan
+    before = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await await_probe_approval(tmp_path, plan(), seconds=0.01)
+    assert time.monotonic() - before < 1
+    assert (tmp_path/'probe-proposal.json').exists()
+    assert not (tmp_path/'probe-approved.json').exists()
+
+
+@pytest.mark.asyncio
+async def test_repair_discovery_failure_reports_current_stage(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from coordinare.services.env_cache import EnvCacheService
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_repair import begin_attempt
+    from tests.unit.env_manifest_fixture import reviewed_cache
+
+    calls = 0
+    async def verify():
+        return None
+    snapshot = SimpleNamespace(name='suite', org='fixture', commit='a'*40, verify=verify)
+    async def build(self, **kwargs):
+        nonlocal calls
+        calls += 1
+        cache = kwargs['cache_state']
+        if calls == 1:
+            begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+            reviewed_cache(cache)
+            return
+        cache.environment_attempt['diagnostics'] = {'stage':'repair_preparation', 'error_code':'repair_evidence_unavailable'}
+        raise EnvironmentDiscoveryError('mandatory evidence unavailable', code='repair_evidence_unavailable')
+    async def execute(snapshot, service, state, **kwargs):
+        state['env_cache']['suite'].environment_attempt['status'] = 'repair_pending'
+        kwargs['result'].update(stage='installer', installer_ran=True)
+    async def cleanup(*args):
+        return True
+    monkeypatch.setattr(EnvCacheService, '_build_manifest_artifacts', build)
+    monkeypatch.setattr(EnvCacheService, 'prepare_bootstrap_generation', lambda *args:None)
+    monkeypatch.setattr('scripts.validate_environment_repositories.execute_accepted', execute)
+    monkeypatch.setattr('scripts.validate_environment_repositories._cleanup_case', cleanup)
+    result = await validate_repository(snapshot, image='trusted@sha256:'+'a'*64,
+        output=tmp_path/'profile', profile=Profile(model='fixture',base_url='http://localhost:1',execute=True),
+        chat=lambda messages:None)
+    assert calls == 2
+    assert result['stage'] == 'repair_preparation'
+    assert result['reason_code'] == 'repair_evidence_unavailable'
+    assert result['ready_at_validation'] is False
+
+
 @pytest.mark.parametrize(
     "values", [(True, None, True), (True, False, True), (False, True, True), (True, True, False)],
 )

@@ -95,9 +95,9 @@ The complete-evidence amendment retest also held for all 29 default repositories
 
 ## Executable preflight amendment (approved spec and plan)
 
-- [ ] T049 Complete mandatory repair evidence and context admission (FR-001).
-- [ ] T050 Versioned probe contracts, durable reservations and journal migration (FR-002/006).
-- [ ] T051 Disposable bounded probe executor and confirmed cleanup (FR-003).
-- [ ] T052 Discovery/review integration and required install assertions (FR-004/005).
-- [ ] T053 Separate probe scope approval and accurate diagnostics (FR-007).
+- [x] T049 Complete mandatory repair evidence and context admission (FR-001).
+- [x] T050 Versioned probe contracts, durable reservations and journal migration (FR-002/006).
+- [x] T051 Disposable bounded probe executor and confirmed cleanup (FR-003).
+- [x] T052 Discovery/review integration and required install assertions (FR-004/005).
+- [x] T053 Separate probe scope approval and accurate diagnostics (FR-007).
 - [ ] T054 Independent review, CI and Elm-first 3600-second live validation (acceptance 1-9).
