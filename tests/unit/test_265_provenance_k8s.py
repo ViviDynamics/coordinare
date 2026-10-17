@@ -334,7 +334,8 @@ async def test_runtime_budget_survives_restart_after_a_successful_repair(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_forced_inflight_cycles_and_restart_do_not_rearm_the_refusal_budget(tmp_path: Path) -> None:
+@pytest.mark.parametrize("legacy", [True, False])
+async def test_forced_inflight_cycles_and_restart_do_not_rearm_the_refusal_budget(tmp_path: Path, legacy: bool) -> None:
     name = "my-project"
     state, cache, ec = _seed_state(tmp_path, name)
     cfg, sym = _make_cfg(name, tmp_path)
@@ -346,6 +347,8 @@ async def test_forced_inflight_cycles_and_restart_do_not_rearm_the_refusal_budge
     await _cycle(service, name, sym, github, state, dispatched)
     await _cycle(service, name, sym, github, state, dispatched)
     assert ec.bootstrap_attempts == 1
+    if legacy:
+        ec.environment_attempt = None  # Explicit legacy snapshot has no durable execution journal.
     persisted = _persist_env_cache(state["env_cache"])[name]
     fresh = EnvCacheState(symphony_name=name, sanitised_name=ec.sanitised_name, cache_dir=cache)
     _rehydrate_env_cache({"env_cache": {name: fresh}}, SimpleNamespace(env_cache={name: persisted}))
@@ -353,6 +356,12 @@ async def test_forced_inflight_cycles_and_restart_do_not_rearm_the_refusal_budge
     state["env_cache"][name] = fresh
     await _cycle(restarted, name, sym, github, state, dispatched)
     assert fresh.bootstrap_attempts == 1
+    if not legacy:
+        assert fresh.environment_attempt["last_error"] == "cleanup_unconfirmed"
+        assert fresh.environment_attempt["status"] == "held"
+        assert len(dispatched) == 1
+        assert not fresh.cache_dir_ready
+        return
     _seed_toolchain(cache)
     record_verified_cache_fixture(state["env_cache"][name])
     restarted.on_bootstrap_complete(name, True, state)

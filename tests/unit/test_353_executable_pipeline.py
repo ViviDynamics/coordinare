@@ -169,3 +169,108 @@ async def test_clean_verifier_deadline_cancels_before_readiness(tmp_path, monkey
     assert stopped.is_set()
     assert 'deadline' in reason
     assert not cache.cache_dir_ready
+
+
+@pytest.mark.asyncio
+async def test_real_daemon_checkpoint_propagates_disk_failure(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+
+    from coordinare.daemon import CoordinareDaemon
+
+    service, cache, state, capability = setup(tmp_path)
+    daemon = CoordinareDaemon(AsyncMock(), max_cycles=1, sleep_func=AsyncMock())
+    daemon._state = state
+    daemon._state_store = SimpleNamespace(save=AsyncMock(side_effect=OSError('disk failure')))
+    monkeypatch.setattr(daemon, '_build_snapshot', Mock(return_value=object()))
+    state['snapshot_save_fn'] = daemon._flush_snapshot
+    # Same strict callback production wires when it exists; fallback reproduces old behavior.
+    state['snapshot_checkpoint_fn'] = getattr(daemon, '_checkpoint_snapshot', daemon._flush_snapshot)
+    service.bind_kubernetes_state(state)
+    model = Proposal()
+    with pytest.raises(RuntimeError, match='persisted'):
+        await publish(service, cache, state, capability, model)
+    assert cache.environment_attempt['calls'] == 1
+    assert model.review_starts == 0
+    assert cache.environment_manifest is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_deadline_cancels_before_poller_starts(tmp_path):
+    import asyncio
+    import time
+    from unittest.mock import AsyncMock
+
+    from coordinare.daemon import CoordinareDaemon
+
+    service, cache, state, capability = setup(tmp_path)
+    await publish(service, cache, state, capability, Proposal())
+    cache.environment_attempt['expires_at'] = time.time()+0.02
+    daemon = CoordinareDaemon(AsyncMock(), max_cycles=1, sleep_func=AsyncMock())
+    daemon._state = state
+    cancelled = asyncio.Event()
+    async def blocked(*args, **kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+    task = asyncio.create_task(daemon._finish_bootstrap_dispatch(
+        SimpleNamespace(dispatch_card=blocked), 'bootstrap', 'suite', {}, {}, service))
+    try:
+        await asyncio.sleep(0.08)
+        assert task.done(), 'expired dispatch kept running without a poller'
+        assert cancelled.is_set()
+        assert not daemon._bootstrap_poll_tasks
+        assert not cache.cache_dir_ready
+        assert cache.environment_attempt['status'] == 'held'
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase', ['start', 'ready', 'post'])
+async def test_cancelled_http_dispatch_drains_creation_then_confirms_owned_cleanup(monkeypatch, phase):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from coordinare.services.http_performer_service import HTTPPerformerService
+    from coordinare.services.performer_runtime import StartedPerformer
+    from tests.unit.services.test_http_performer_service import _card, _ephemeral_config, _workspace
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    events = []
+    async def barrier(at):
+        if phase == at:
+            entered.set()
+            await release.wait()
+    async def start(*args, **kwargs):
+        events.append('creating')
+        await barrier('start')
+        events.append('created')
+        return StartedPerformer(handle='owned', endpoint='http://localhost:1')
+    async def ready(*args, **kwargs):
+        await barrier('ready')
+        return
+    async def post(*args, **kwargs):
+        await barrier('post')
+        return SimpleNamespace(accepted=True, job_id='job')
+    runtime = SimpleNamespace(start_ephemeral=start)
+    client = AsyncMock()
+    client.post_job.side_effect = post
+    service = HTTPPerformerService(_ephemeral_config(), client=client, runtime=runtime)
+    async def stopped(session_id):
+        assert 'created' in events, 'absence checked before pending create settled'
+        events.append('confirmed')
+        service._active_jobs.pop(session_id, None)
+        return True
+    monkeypatch.setattr(service, 'stop_session_confirmed', stopped)
+    monkeypatch.setattr('coordinare.services.performer_lifecycle.wait_ready', ready)
+    task = asyncio.create_task(service.dispatch_card(_card(), _workspace()))
+    await entered.wait()
+    task.cancel()
+    # Late creation completes after cancellation; ownership must survive that race.
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert events[-1] == 'confirmed'
+    assert not service._active_jobs
