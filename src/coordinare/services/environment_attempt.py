@@ -47,6 +47,9 @@ class AttemptBudget:
     schema_repairs: int = 0
     coverage_revisions: int = 0
     execution_repairs: int = 0
+    review_context_bytes: int = 0
+    mandatory_inputs_required: int = 0
+    mandatory_inputs_delivered: int = 0
     inspected_bytes: int = 0
     context_bytes: int = 0
     stage: str = "inventory"
@@ -130,6 +133,9 @@ class AttemptBudget:
                 "calls": self.calls, "calls_completed": self.calls_completed, "reads": self.reads,
                 "repairs": self.repairs, **{name: getattr(self, name) for counter in REPAIR_COUNTERS.values()
                     for name in (counter, "max_" + counter)}, "inspected_bytes": self.inspected_bytes,
-                "context_bytes": self.context_bytes, "usage": dict(self.usage),
+                "context_bytes": self.context_bytes, "review_context_bytes": self.review_context_bytes,
+                "mandatory_inputs_required": self.mandatory_inputs_required,
+                "mandatory_inputs_delivered": self.mandatory_inputs_delivered,
+                "remaining_seconds": round(max(0, self.deadline - time.monotonic()), 3), "usage": dict(self.usage),
                 "finish_reasons": dict(self.finish_reasons), "metadata_available": self.metadata_available,
                 "validation_codes": list(self.validation_codes)}

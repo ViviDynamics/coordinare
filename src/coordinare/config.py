@@ -1110,6 +1110,7 @@ class EnvCacheConfig(BaseModel):
     manifest_attempt_timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
     manifest_max_model_calls: int = Field(default=128, ge=1, le=4096)
     manifest_max_total_reads: int = Field(default=512, ge=1, le=8192)
+    manifest_max_review_context_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)
     manifest_max_repairs: int | None = Field(default=None, ge=0, le=2, exclude=True)
     manifest_max_schema_repairs: int = Field(default=2, ge=0, le=2)
     manifest_max_coverage_revisions: int = Field(default=2, ge=0, le=2)
@@ -1123,7 +1124,7 @@ class EnvCacheConfig(BaseModel):
         fields = ("manifest_max_schema_repairs", "manifest_max_coverage_revisions", "manifest_max_execution_repairs")
         if any(name in data for name in fields):
             raise ValueError("cannot combine legacy and category manifest repair limits")
-        return {**data, **{name: data["manifest_max_repairs"] for name in fields}}
+        return {**data, **dict.fromkeys(fields, data["manifest_max_repairs"])}
 
 
 

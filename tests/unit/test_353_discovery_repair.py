@@ -259,7 +259,7 @@ async def test_invalid_navigation_can_repair_without_fabricated_source(tool):
     assert manifest.inputs == full_candidate()["inputs"]
     assert review.verdict == "accept"
     assert events[-1]["repairs"] == 1
-    assert events[-1]["reads"] == 2
+    assert events[-1]["reads"] == 3
     feedback = json.loads(replies.messages[1][-1]["content"])
     assert feedback["validation_errors"][0]["code"] == "invalid_tool_arguments"
 
