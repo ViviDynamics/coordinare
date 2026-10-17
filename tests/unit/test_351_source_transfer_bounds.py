@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from coordinare_service_inference.environment.models import EnvironmentManifest
 
-from coordinare.services.environment_discovery import EnvironmentDiscoveryError, discover_and_review
+from coordinare.services.environment_discovery import discover_and_review
 from coordinare.services.environment_verification import source_setup
 from coordinare.services.kubernetes_verifier import (
     PROJECT_FILES_MAX_BYTES,
@@ -62,10 +62,11 @@ async def _discover(files: dict[str, str], reviewer_extra: str = ""):
     {"first": "a" * (150 * 1024), "second": "b" * (150 * 1024)},
     {"escaped": "\0" * (50 * 1024)},
 ])
-async def test_discovery_refuses_aggregate_or_json_escaped_inputs_that_cannot_transfer(files):
-    # Each raw file fits 256 KiB and the sum fits 4 MiB; serialized transfer does not.
-    with pytest.raises(EnvironmentDiscoveryError, match=r"source transfer.*limit"):
-        await _discover(files)
+async def test_discovery_accepts_aggregate_and_escaped_inputs_within_shared_document_limit(files):
+    # Raw and canonical document admission are shared; platform transport is separate.
+    manifest, assessment = await _discover(files)
+    assert set(manifest.inputs) == set(files)
+    assert assessment.verdict == "accept"
 
 
 @pytest.mark.asyncio
