@@ -406,7 +406,8 @@ class OpenAiApiBackend:
         from coordinare.services.environment_attempt import DiscoveryChatReply
 
         reply = await self._chat_reply(messages, json_mode=True)
-        return DiscoveryChatReply(text=reply.text, usage=reply.usage, finish_reason=reply.finish_reason)
+        return DiscoveryChatReply(text=reply.text, usage=reply.usage, finish_reason=reply.finish_reason,
+            error_code="provider_request_failed" if reply.error else None)
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
         prompt = _build_assess_prompt(card)

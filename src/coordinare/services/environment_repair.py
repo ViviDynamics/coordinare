@@ -64,6 +64,7 @@ class RepairJournal(BaseModel):
     target: ExecutionCapabilities | None = None
     rejected: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
     last_error: str | None = None
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
 def _refuse(message: str, *, code: str = 'execution_repair_held') -> NoReturn:
@@ -116,7 +117,9 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     for name in ("schema_repairs", "coverage_revisions", "execution_repairs"):
         if getattr(journal, name) > getattr(journal, "max_" + name):
             _refuse(f"environment {name} limit exceeded after configuration change", code="attempt_" + name.split("_")[0] + "_limit")
-        setattr(budget, name, getattr(journal, name))
+    budget.schema_repairs = journal.schema_repairs
+    budget.coverage_revisions = journal.coverage_revisions
+    budget.execution_repairs = journal.execution_repairs
     return budget
 
 
@@ -143,8 +146,9 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
         journal.expires_at = min(journal.expires_at, journal.started_at+seconds)
         journal.max_calls = min(journal.max_calls, limits.max_model_calls)
         journal.max_reads = min(journal.max_reads, limits.max_total_reads)
-        for name in ("max_schema_repairs", "max_coverage_revisions", "max_execution_repairs"):
-            setattr(journal, name, min(getattr(journal, name), getattr(limits, name)))
+        journal.max_schema_repairs = min(journal.max_schema_repairs, limits.max_schema_repairs)
+        journal.max_coverage_revisions = min(journal.max_coverage_revisions, limits.max_coverage_revisions)
+        journal.max_execution_repairs = min(journal.max_execution_repairs, limits.max_execution_repairs)
     budget = _budget(journal, now)
     _publish(cache, journal)
     return budget
@@ -153,10 +157,12 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
 def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool = False) -> None:
     """Save consumed reservations before external work; never move the original expiry."""
     journal = journal_for(cache)
+    journal.diagnostics = budget.summary()
     journal.calls = max(journal.calls, budget.calls)
     journal.reads = max(journal.reads, budget.reads)
-    for name in ("schema_repairs", "coverage_revisions", "execution_repairs"):
-        setattr(journal, name, max(getattr(journal, name), getattr(budget, name)))
+    journal.schema_repairs = max(journal.schema_repairs, budget.schema_repairs)
+    journal.coverage_revisions = max(journal.coverage_revisions, budget.coverage_revisions)
+    journal.execution_repairs = max(journal.execution_repairs, budget.execution_repairs)
     if executing:
         capabilities = ExecutionCapabilities.model_validate(cache.environment_capabilities)
         if journal.target is not None and (

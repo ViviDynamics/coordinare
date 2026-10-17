@@ -879,7 +879,10 @@ conducting:
 #   manifest_attempt_timeout_seconds: 600
 #   manifest_max_model_calls: 128
 #   manifest_max_total_reads: 512
-#   manifest_max_repairs: 2
+#   manifest_max_schema_repairs: 2
+#   manifest_max_coverage_revisions: 2
+#   manifest_max_execution_repairs: 2
+#   manifest_max_review_context_bytes: 1048576
 # For Kubernetes clean verification, also configure an immutable verifier image,
 # enforced egress isolation and an explicit linux/x86_64 or linux/aarch64 platform.
 # kubernetes_verifier_platform: "linux/x86_64"

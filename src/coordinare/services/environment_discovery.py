@@ -481,8 +481,13 @@ async def _discover_attempt(
             manifest = validate_candidate(candidate)
             prior_manifests.append(manifest)
             reviewer = _Inspection("review", inventory, fetch, bounds, budget)
-            async with asyncio.timeout(min(bounds.phase_timeout_seconds, max(0, budget.deadline - time.monotonic()))):
-                mandatory_evidence = await _prepare_review_evidence(reviewer, manifest)
+            try:
+                async with asyncio.timeout(min(bounds.phase_timeout_seconds, max(0, budget.deadline - time.monotonic()))):
+                    mandatory_evidence = await _prepare_review_evidence(reviewer, manifest)
+            except TimeoutError:
+                budget.check()
+                raise EnvironmentDiscoveryError("review evidence preparation deadline exceeded",
+                    code="review_preparation_deadline") from None
             assessment_data, reviewer_reads = await _phase(
                 inspection=reviewer, chat=chat, budget=budget, validate=_CoverageProposal.model_validate,
                 messages=[
