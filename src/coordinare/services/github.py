@@ -2538,6 +2538,52 @@ class GitHubService(CardIdentityMap):
             return []
         return [n for n in nodes if isinstance(n, dict)]
 
+    async def get_repository_paths(
+        self, owner: str, repo: str, *, ref: str,
+    ) -> list[str]:
+        """Return a complete pinned blob inventory, refusing partial source trees."""
+        if not ref or not owner or not repo:
+            raise GitHubError("repository inventory requires owner, repository and ref")
+        token = await self._current_token()
+        if not token.strip():
+            raise GitHubError("repository inventory requires GitHub authentication")
+        url = (
+            f"{self._rest_api_base()}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
+            f"/git/trees/{quote(ref, safe='')}"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(
+                    url, params={"recursive": "1"},
+                    headers={"Authorization": f"Bearer {token}",
+                             "Accept": "application/vnd.github+json"},
+                )
+                response.raise_for_status()
+                data = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise GitHubError("repository inventory request failed") from exc
+        if not isinstance(data, dict) or data.get("truncated") is not False:
+            raise GitHubError("repository inventory is incomplete")
+        entries = data.get("tree")
+        if not isinstance(entries, list) or len(entries) > 100_000:
+            raise GitHubError("repository inventory is invalid or exceeds limit")
+        paths: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("type") not in {"blob", "tree"}:
+                raise GitHubError("repository inventory contains unsupported entry")
+            path = entry.get("path")
+            if (
+                not isinstance(path, str) or not path or path.startswith("/")
+                or "\\" in path or any(part in {"", ".", ".."} for part in path.split("/"))
+                or any(ord(char) < 32 for char in path)
+            ):
+                raise GitHubError("repository inventory contains invalid path")
+            if entry["type"] == "blob":
+                if path in paths:
+                    raise GitHubError("repository inventory contains duplicate path")
+                paths.add(path)
+        return sorted(paths)
+
     async def get_file_content(
         self, owner: str, repo: str, path: str, ref: str = "HEAD",
     ) -> str | None:
