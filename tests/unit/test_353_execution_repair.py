@@ -100,7 +100,7 @@ def test_wholly_unrun_report_does_not_request_repair(tmp_path):
 
 def test_wall_clock_expiry_or_backwards_clock_never_renews_attempt(tmp_path):
     cache = cache_fixture(tmp_path)
-    started(cache)
+    begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
     for now in (99, 701):
         with pytest.raises(EnvironmentDiscoveryError, match=r'deadline|clock'):
             begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=now)

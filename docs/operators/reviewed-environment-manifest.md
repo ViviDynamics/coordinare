@@ -320,8 +320,13 @@ cannot remove, make optional or narrow existing required checks or lifecycle sco
 Attempt journal version two stores every category's consumption. Pending or held
 version-one journals require an explicit clean rebuild after confirming no executor is
 running; they are never silently granted new allowances. Frozen accepted caches remain
-readable. Preserve rejected evidence and confirm owned-runtime cleanup before an operator
-clears the old attempt state and requests a new run. Interrupted execution still holds.
+readable. The existing authenticated environment-bootstrap action now archives the old
+journal and starts in a new empty cache sibling. Discovery-only holds need no executor
+cleanup. After execution, the action must confirm that its owned session stopped;
+a missing owner or failed confirmation returns a hold without clearing the journal or
+consuming the reset cooldown. At most three old journals and 4 MiB of archive evidence
+are retained; exceeding that bound requires explicit archival before another reset.
+Interrupted execution remains held across source changes and restarts.
 Current diagnostics record the actual stage, category consumed/max counts, mandatory
 inputs delivered/required, context bytes and remaining aggregate time. Raw source and
 model rationale are excluded from these summaries.

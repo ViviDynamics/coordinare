@@ -25,6 +25,7 @@ class EnvCacheState(BaseModel):
     bootstrap_in_flight: bool = False
     manifest_items: list[dict[str, Any]] = Field(default_factory=list)
     environment_attempt: dict[str, Any] | None = None
+    environment_attempt_archive: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
     environment_capabilities: dict[str, Any] | None = None
     environment_manifest: dict[str, Any] | None = None
     environment_assessment: dict[str, Any] | None = None

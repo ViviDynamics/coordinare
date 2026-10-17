@@ -1,12 +1,15 @@
 """Bootstrap progress tracking and operator reset budgets (270)."""
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import structlog
+
+from coordinare.services.environment_repair import restart_environment_attempt
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -25,9 +28,44 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+@dataclass(frozen=True)
+class _ResetRequest:
+    actor: str
+    activity_log: ActivityLog
+    cleanup_confirmed: bool = False
+
+
 def reset_env_bootstrap_breaker(
     state: CoordinareState, symphony: str, cache_state: EnvCacheState,
     actor: str, activity_log: ActivityLog,
+) -> datetime | None:
+    return _reset_breaker(state, symphony, cache_state, _ResetRequest(actor, activity_log))
+
+
+async def request_env_bootstrap_reset(
+    state: CoordinareState, symphony: str, cache_state: EnvCacheState,
+    actor: str, activity_log: ActivityLog,
+) -> datetime | None:
+    """Confirm owned runtime cleanup before the shared atomic operator reset."""
+    cleanup_confirmed = False
+    journal = cache_state.environment_attempt
+    if isinstance(journal, dict) and (journal.get("status") == "executing"
+            or journal.get("last_error") == "cleanup_unconfirmed"
+            or (journal.get("target") is not None and journal.get("status") not in {"ready", "repair_pending"})):
+        runtime = (state.get("bootstrap_runtimes") or {}).get(symphony)
+        stop = getattr(getattr(runtime, "service", None), "stop_session_confirmed", None)
+        job_id = getattr(runtime, "job_id", None)
+        if stop is not None and isinstance(job_id, str) and job_id:
+            try:
+                async with asyncio.timeout(15):
+                    cleanup_confirmed = await stop(job_id) is True
+            except (OSError, RuntimeError, TimeoutError):
+                cleanup_confirmed = False
+    return _reset_breaker(state, symphony, cache_state, _ResetRequest(actor, activity_log, cleanup_confirmed))
+
+
+def _reset_breaker(
+    state: CoordinareState, symphony: str, cache_state: EnvCacheState, request: _ResetRequest,
 ) -> datetime | None:
     """Reset once per cooldown. Return the next allowed time on refusal, without writes.
 
@@ -40,7 +78,9 @@ def reset_env_bootstrap_breaker(
         next_reset = previous_reset + MANUAL_BOOTSTRAP_RESET_COOLDOWN
         if now < next_reset:
             return next_reset
+    restart_environment_attempt(cache_state, cleanup_confirmed=request.cleanup_confirmed)
     state.setdefault("env_bootstrap_manual_resets", {})[symphony] = now
+    actor, activity_log = request.actor, request.activity_log
     previous, was_exhausted = cache_state.bootstrap_attempts, cache_state.bootstrap_exhausted
     cache_state.bootstrap_attempts = 0
     cache_state.bootstrap_exhausted = False

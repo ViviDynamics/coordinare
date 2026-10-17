@@ -1,7 +1,6 @@
 """Symphony CRUD and bootstrap routes (436)."""
 from __future__ import annotations
 
-import asyncio  # noqa: F401
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -24,7 +23,8 @@ from coordinare.dashboard.secret_overrides import (
 )
 from coordinare.services.config_documents import symphony_documents
 from coordinare.services.config_write_service import _validate_candidate, atomic_write_yaml
-from coordinare.services.env_bootstrap_control import reset_env_bootstrap_breaker
+from coordinare.services.env_bootstrap_control import request_env_bootstrap_reset
+from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -687,9 +687,12 @@ def _register_trigger_env_bootstrap(app: FastAPI, ctx: DashboardContext) -> None
                     status_code=409,
                 )
 
-            next_reset = reset_env_bootstrap_breaker(
-                daemon.state, name, cache_state, _session_actor(request), ctx.store.activity_log,
-            )
+            try:
+                next_reset = await request_env_bootstrap_reset(
+                    daemon.state, name, cache_state, _session_actor(request), ctx.store.activity_log,
+                )
+            except EnvironmentDiscoveryError as exc:
+                return JSONResponse({"error": str(exc), "status": exc.code}, status_code=409)
             if next_reset is not None:
                 allowed_at = next_reset.isoformat()
                 return JSONResponse({
