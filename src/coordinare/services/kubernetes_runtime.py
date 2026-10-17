@@ -251,6 +251,9 @@ def classify_pod_failure(reason: str, *, message: str = "") -> performer_lifecyc
     return performer_lifecycle.ContainerStartError(detail)
 
 
+_MAX_SOURCE_SECRETS = 32
+
+
 def build_pod_manifest(
     config: PerformerEndpointConfig,
     *,
@@ -861,26 +864,32 @@ class KubernetesRuntime:
         except Exception as exc:
             return f'verifier pod could not be created: {type(exc).__name__}'
         if spec.project_files and not spec.walk_only:
-            metadata = pod.get("metadata", {}) if isinstance(pod, dict) else getattr(pod, "metadata", None)
-            pod_uid = metadata.get("uid") if isinstance(metadata, dict) else getattr(metadata, "uid", None)
-            if not isinstance(pod_uid, str) or not pod_uid:
-                return "verifier Pod UID is missing; refusing unowned source Secret"
-            for secret in build_verifier_source_secrets(spec, name=attempt.name, namespace=self._namespace,
-                                                       owner=self._owner, pod_uid=pod_uid):
-                secret_name = secret["metadata"]["name"]
-                attempt.source_names.append(secret_name)
-                try:
-                    await _create_verifier_resource(self._api.create_namespaced_secret,
-                        attempt=attempt, resource="source:" + secret_name, namespace=self._namespace, body=secret)
-                except ApiException as exc:
-                    if exc.status == HTTPStatus.CONFLICT:
-                        attempt.creation_conflict("source:" + secret_name)
-                    return "verifier source Secret could not be created"
-                except Exception:
-                    return "verifier source Secret could not be created"
+            error = await self._prepare_verifier_sources(attempt, spec, pod)
+            if error is not None:
+                return error
         if not spec.transient_credentials:
             return None
         return await self._prepare_verifier_credentials(attempt, spec, pod)
+
+    async def _prepare_verifier_sources(self, attempt: _VerifierAttempt, spec: VerifierSpec, pod: Any) -> str | None:
+        metadata = pod.get("metadata", {}) if isinstance(pod, dict) else getattr(pod, "metadata", None)
+        pod_uid = metadata.get("uid") if isinstance(metadata, dict) else getattr(metadata, "uid", None)
+        if not isinstance(pod_uid, str) or not pod_uid:
+            return "verifier Pod UID is missing; refusing unowned source Secret"
+        for secret in build_verifier_source_secrets(spec, name=attempt.name, namespace=self._namespace,
+                                                   owner=self._owner, pod_uid=pod_uid):
+            secret_name = secret["metadata"]["name"]
+            attempt.source_names.append(secret_name)
+            try:
+                await _create_verifier_resource(self._api.create_namespaced_secret,
+                    attempt=attempt, resource="source:" + secret_name, namespace=self._namespace, body=secret)
+            except ApiException as exc:
+                if exc.status == HTTPStatus.CONFLICT:
+                    attempt.creation_conflict("source:" + secret_name)
+                return "verifier source Secret could not be created"
+            except Exception:
+                return "verifier source Secret could not be created"
+        return None
 
     async def _prepare_verifier_credentials(
         self, attempt: _VerifierAttempt, spec: VerifierSpec, pod: Any,
@@ -1126,7 +1135,7 @@ class KubernetesRuntime:
                 count = int(annotations.get("coordinare.vividynamics.com/source-secrets", "0"))
             except (TypeError, ValueError):
                 continue
-            if not 0 <= count <= 32:
+            if not 0 <= count <= _MAX_SOURCE_SECRETS:
                 continue
             source_names = []
             for index in range(count):

@@ -17,6 +17,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Any
 
 from coordinare_service_inference.cache_provenance import (
@@ -239,6 +240,10 @@ def _validate_verifier_image(image: Any) -> str:
     return image
 
 
+VERIFIER_SOURCE_REPO = str(PurePosixPath(VERIFIER_HOME) / "coordinare-source-repo")
+_PLATFORM_PARTS = 2
+
+
 def build_verifier_pod_manifest(
     spec: VerifierSpec, *, name: str, namespace: str, image_pull_secrets: tuple[str, ...] = (), owner: str | None = None,
 ) -> dict[str, Any]:
@@ -321,31 +326,13 @@ def build_verifier_pod_manifest(
 
     if spec.platform:
         parts = spec.platform.split("/")
-        if len(parts) != 2 or parts[0] != "linux" or parts[1] not in {"x86_64", "aarch64"}:
-            raise ValueError("unsupported verifier platform")
+        if len(parts) != _PLATFORM_PARTS or parts[0] != "linux" or parts[1] not in {"x86_64", "aarch64"}:
+            message = "unsupported verifier platform"
+            raise ValueError(message)
         manifest["spec"]["nodeSelector"] = {"kubernetes.io/os": "linux", "kubernetes.io/arch":
             {"x86_64": "amd64", "aarch64": "arm64"}[parts[1]]}
     if spec.project_files and not spec.walk_only:
-        payload = encode_sources(spec.project_files)
-        if spec.source_inputs is None:
-            raise ValueError("accepted source input identities are required")
-        decode_sources(payload, expected_inputs=spec.source_inputs)
-        count = (len(payload.chunks) + 7) // 8
-        manifest["metadata"]["annotations"] = {"coordinare.vividynamics.com/source-secrets": str(count)}
-        manifest["spec"]["securityContext"]["fsGroup"] = VERIFIER_GID
-        manifest["spec"]["volumes"].append({"name": "source-payload", "projected": {
-            "defaultMode": 0o440, "sources": [{"secret": {"name": source_secret_name(name, index)}} for index in range(count)]}})
-        manifest["spec"]["initContainers"] = [{
-            "name": "source-setup", "image": image,
-            "command": ["python3", "-I", "-m", "coordinare_service_inference.environment.source_payload",
-                        "/run/coordinare-source", "/tmp/coordinare-source-repo"],
-            "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]},
-                                "readOnlyRootFilesystem": True},
-            "volumeMounts": [{"name": "source-payload", "mountPath": "/run/coordinare-source", "readOnly": True},
-                             {"name": _SCRATCH_VOLUME, "mountPath": VERIFIER_HOME}],
-            "resources": {"limits": {"cpu": VERIFIER_CPU_LIMIT, "memory": VERIFIER_MEMORY_LIMIT}},
-        }]
-        manifest["spec"]["containers"][0]["env"].append({"name": "SOURCE_REPO", "value": "/tmp/coordinare-source-repo"})
+        _mount_source_payload(manifest, spec, name=name, image=image)
     if spec.transient_credentials:
         if spec.walk_only:
             message = 'provenance walker must not receive credentials'
@@ -378,7 +365,8 @@ def build_verifier_source_secrets(
     if not spec.project_files or spec.walk_only:
         return []
     if not pod_uid or spec.source_inputs is None:
-        raise ValueError("source payload requires Pod and accepted input identities")
+        message = "source payload requires Pod and accepted input identities"
+        raise ValueError(message)
     payload = encode_sources(spec.project_files)
     decode_sources(payload, expected_inputs=spec.source_inputs)
     labels = {"app.kubernetes.io/managed-by": "coordinare", VERIFIER_ROLE_LABEL: "env-verifier-source"}
@@ -397,7 +385,8 @@ def build_verifier_source_secrets(
                     "labels": dict(labels), "ownerReferences": [{"apiVersion": "v1", "kind": "Pod", "name": name,
                     "uid": pod_uid, "controller": False, "blockOwnerDeletion": False}]}, "data": data}
         if len(json.dumps(secret).encode()) > VERIFIER_POD_MAX_BYTES:
-            raise ValueError("source Secret exceeds API object byte bound")
+            message = "source Secret exceeds API object byte bound"
+            raise ValueError(message)
         secrets.append(secret)
     return secrets
 
@@ -432,3 +421,27 @@ __all__ = [
     "check_project_files",
     "verifier_pod_name",
 ]
+
+
+def _mount_source_payload(manifest: dict[str, Any], spec: VerifierSpec, *, name: str, image: str) -> None:
+    payload = encode_sources(spec.project_files)
+    if spec.source_inputs is None:
+        message = "accepted source input identities are required"
+        raise ValueError(message)
+    decode_sources(payload, expected_inputs=spec.source_inputs)
+    count = (len(payload.chunks) + 7) // 8
+    manifest["metadata"]["annotations"] = {"coordinare.vividynamics.com/source-secrets": str(count)}
+    manifest["spec"]["securityContext"]["fsGroup"] = VERIFIER_GID
+    manifest["spec"]["volumes"].append({"name": "source-payload", "projected": {
+        "defaultMode": 0o440, "sources": [{"secret": {"name": source_secret_name(name, index)}} for index in range(count)]}})
+    manifest["spec"]["initContainers"] = [{
+        "name": "source-setup", "image": image,
+        "command": ["python3", "-I", "-m", "coordinare_service_inference.environment.source_payload",
+                    "/run/coordinare-source", VERIFIER_SOURCE_REPO],
+        "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]},
+                            "readOnlyRootFilesystem": True},
+        "volumeMounts": [{"name": "source-payload", "mountPath": "/run/coordinare-source", "readOnly": True},
+                         {"name": _SCRATCH_VOLUME, "mountPath": VERIFIER_HOME}],
+        "resources": {"limits": {"cpu": VERIFIER_CPU_LIMIT, "memory": VERIFIER_MEMORY_LIMIT}},
+    }]
+    manifest["spec"]["containers"][0]["env"].append({"name": "SOURCE_REPO", "value": VERIFIER_SOURCE_REPO})

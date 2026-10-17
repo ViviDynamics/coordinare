@@ -16,6 +16,9 @@ if TYPE_CHECKING:
     from coordinare.services.environment_discovery import DiscoveryLimits, Fetch
 
 
+MAX_BATCH_FILES = 8
+
+
 class SourceInspection:
     """One independent phase's exact read ledger; no ecosystem-specific navigation."""
 
@@ -41,7 +44,8 @@ class SourceInspection:
                 kind = "file" if index == len(parts) - 1 else "directory"
                 entries = self._directories.setdefault(parent, {})
                 if child in entries and entries[child] != kind:
-                    raise EnvironmentDiscoveryError("source inventory contains overlapping file paths")
+                    message = "source inventory contains overlapping file paths"
+                    raise EnvironmentDiscoveryError(message)
                 entries[child] = kind
                 if kind == "directory":
                     self._directories.setdefault(child, {})
@@ -51,10 +55,12 @@ class SourceInspection:
     def list_directory(self, path: str = "", cursor: int = 0) -> dict[str, Any]:
         """Return a bounded page; the complete inventory never enters a tool result."""
         if not isinstance(path, str) or path not in self._entries or type(cursor) is not int:
-            raise EnvironmentDiscoveryError("source directory or cursor is invalid")
+            message = "source directory or cursor is invalid"
+            raise EnvironmentDiscoveryError(message)
         entries = self._entries[path]
         if cursor < 0 or cursor > len(entries):
-            raise EnvironmentDiscoveryError("source directory cursor is invalid")
+            message = "source directory cursor is invalid"
+            raise EnvironmentDiscoveryError(message)
         result: dict[str, Any] = {"entries": [], "next_cursor": None}
         for entry in entries[cursor:cursor + 200]:
             result["entries"].append(entry)
@@ -62,7 +68,8 @@ class SourceInspection:
             if len(json.dumps(result, ensure_ascii=False).encode()) > 32 * 1024:
                 result["entries"].pop()
                 if not result["entries"]:
-                    raise EnvironmentDiscoveryError("source directory entry exceeds page byte limit")
+                    message = "source directory entry exceeds page byte limit"
+                    raise EnvironmentDiscoveryError(message)
                 break
         end = cursor + len(result["entries"])
         result["next_cursor"] = end if end < len(entries) else None
@@ -71,30 +78,35 @@ class SourceInspection:
     async def _read(self, path: str) -> dict[str, str]:
         content = await self.fetch(path)
         if not isinstance(content, str):
-            raise EnvironmentDiscoveryError(f"{self.name} source is unavailable or not text")
+            message = f"{self.name} source is unavailable or not text"
+            raise EnvironmentDiscoveryError(message)
         encoded = content.encode("utf-8")
         self.total_bytes += len(encoded)
         if self.budget is not None:
             self.budget.inspected_bytes += len(encoded)
         if len(encoded) > self.limits.max_file_bytes or self.total_bytes > self.limits.max_source_bytes:
-            raise EnvironmentDiscoveryError(f"{self.name} source byte limit exceeded")
+            message = f"{self.name} source byte limit exceeded"
+            raise EnvironmentDiscoveryError(message)
         digest = hashlib.sha256(encoded).hexdigest()
         if path in self.inputs and self.inputs[path] != digest:
-            raise EnvironmentDiscoveryError(f"{self.name} source snapshot changed during inspection")
+            message = f"{self.name} source snapshot changed during inspection"
+            raise EnvironmentDiscoveryError(message)
         self.inputs[path] = digest
         self.source_files[path] = content
         return {"path": path, "content": content, "sha256": digest}
 
     async def read_files(self, paths: Sequence[str]) -> dict[str, list[dict[str, str]]]:
-        if (not isinstance(paths, list | tuple) or not 1 <= len(paths) <= 8
+        if (not isinstance(paths, list | tuple) or not 1 <= len(paths) <= MAX_BATCH_FILES
                 or any(not isinstance(path, str) or path not in self.inventory for path in paths)
                 or len(set(paths)) != len(paths)):
-            raise EnvironmentDiscoveryError(f"{self.name} requested invalid source batch or paths")
+            message = f"{self.name} requested invalid source batch or paths"
+            raise EnvironmentDiscoveryError(message)
         if self.budget is not None:
             self.budget.reserve_reads(len(paths))
         self.reads += len(paths)
         if self.reads > self.limits.max_reads:
-            raise EnvironmentDiscoveryError(f"{self.name} file read limit exceeded")
+            message = f"{self.name} file read limit exceeded"
+            raise EnvironmentDiscoveryError(message)
         tasks = [asyncio.create_task(self._read(path)) for path in paths]
         try:
             return {"files": await asyncio.gather(*tasks)}
@@ -114,4 +126,5 @@ class SourceInspection:
             return await self.read_files(reply["paths"])
         if set(reply) == {"tool", "path"} and reply.get("tool") == "read_file":
             return await self.read(reply["path"])
-        raise EnvironmentDiscoveryError(f"{self.name} returned an unsupported tool or envelope", code="unsupported_envelope")
+        message = f"{self.name} returned an unsupported tool or envelope"
+        raise EnvironmentDiscoveryError(message, code="unsupported_envelope")

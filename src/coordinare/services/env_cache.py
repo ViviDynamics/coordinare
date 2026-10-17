@@ -691,13 +691,11 @@ async def _verify_cache_clean(
     daemon method and the dispatch-time readiness gate (093) share one source of
     truth with no drift. Emits observability with NAMES/PATHS only.
     """
-    from coordinare.services.http_performer_service import HTTPPerformerService
 
     ec = (state.get("env_cache") or {}).get(symphony_name)
     if not isinstance(ec, EnvCacheState):
         return None, "no env-cache state for symphony"
     ec.environment_verification = None
-    cache_dir = Path(ec.cache_dir)
     # 218: the script that decides success is the one the DAEMON rendered, kept in daemon
     # memory and the snapshot. The copy in the cache is never executed. Every refusal here is
     # False, not None: None is degraded and would let a performer-caused refusal pass.
@@ -723,6 +721,17 @@ async def _verify_cache_clean(
             detail="the docker daemon did not answer; the clean verify was not run",
         )
         return None, "the docker daemon is not reachable; the clean verify was not run"
+    return await _verify_cache_runtime(state, symphony_name, svc, performer_mounts)
+
+
+async def _verify_cache_runtime(state: Mapping[str, Any], symphony_name: str, svc: Any,
+                                performer_mounts: Sequence[Path]) -> tuple[bool | None, str]:
+    ec = state["env_cache"][symphony_name]
+    contract = accepted_environment(ec)
+    script = str(ec.rendered_verify_sh)
+    from coordinare.services.http_performer_service import HTTPPerformerService
+
+    cache_dir = Path(ec.cache_dir)
     from coordinare.services.environment_capabilities import (
         capabilities_match,
         resolve_execution_capabilities,
@@ -768,9 +777,7 @@ async def _verify_cache_clean(
         immutable_verifier_image(image)
         files = await verification_sources(state, symphony_name, ec)
         credentials = await verification_environment(state, symphony_name, ec, performer_mounts)
-        if contract is None:
-            return False, "accepted environment contract disappeared"
-        script = source_setup(files, expected_inputs=contract.inputs) + credentials + script
+        script = source_setup(files, expected_inputs=contract.inputs if contract is not None else {}) + credentials + script
     except (ValueError, OSError, RuntimeError) as exc:
         return False, f"clean verification inputs refused: {exc}"
     try:
@@ -1542,11 +1549,10 @@ class EnvCacheService:
                 declared_services=declared_services,
                 cache_state=cache_state,
             )
-            from coordinare_service_inference.environment.models import ExecutionCapabilities
 
-            target_capabilities = ExecutionCapabilities.model_validate(cache_state.environment_capabilities)
-            if target_capabilities.digest() != (cache_state.environment_manifest or {}).get("capabilities_digest"):
-                raise ValueError("accepted environment runtime identity differs from installer target")
+            from coordinare.services.environment_capabilities import installer_capabilities
+
+            target_capabilities = installer_capabilities(cache_state)
         except (RuntimeError, ValueError, OSError) as exc:
             cache_state.readme_sha = current_sha
             cache_state.bootstrap_budget_sha = current_sha
@@ -2342,8 +2348,9 @@ class EnvCacheService:
                     capability_state.setdefault("coordinare_config", self._coordinare_config)
                     capability_state.setdefault("env_cache", {symphony_name: cache_state})
                     capabilities = await resolve_execution_capabilities(capability_state, symphony_name)
-                if capabilities.cache_mount_path != cache_mount_path:
-                    raise EnvironmentDiscoveryError("environment cache mount differs from runtime capabilities")
+                from coordinare.services.environment_capabilities import require_cache_mount
+
+                require_cache_mount(capabilities, cache_mount_path)
                 budget.stage = "inventory"
                 paths = await github_service.get_repository_paths(
                     github_org, repo, ref=commit, max_entries=limits.max_inventory_entries,
@@ -2355,7 +2362,8 @@ class EnvCacheService:
                 )
         except TimeoutError:
             budget.error_code = "attempt_deadline"
-            raise EnvironmentDiscoveryError("environment attempt deadline exceeded", code="attempt_deadline") from None
+            message = "environment attempt deadline exceeded"
+            raise EnvironmentDiscoveryError(message, code="attempt_deadline") from None
         except EnvironmentDiscoveryError as exc:
             budget.error_code = exc.code
             raise
@@ -2364,7 +2372,8 @@ class EnvCacheService:
             raise EnvironmentDiscoveryError(str(exc), code=exc.code) from None
         except (ValueError, OSError, RuntimeError):
             budget.error_code = "capability_unavailable" if budget.stage == "capabilities" else "inventory_unavailable"
-            raise EnvironmentDiscoveryError("environment runtime or source inventory is unavailable", code=budget.error_code) from None
+            message = "environment runtime or source inventory is unavailable"
+            raise EnvironmentDiscoveryError(message, code=budget.error_code) from None
         finally:
             logger.info("env_cache.manifest_attempt", symphony=symphony_name, **budget.summary())
         activation = render_activate(manifest, cache_mount_path=cache_mount_path)
@@ -2690,20 +2699,9 @@ class EnvCacheService:
         # A transport's boolean cannot waive independent review, executable
         # evidence or frozen provenance. The accepted generic contract decides
         # installed layout; a verified flat file is as valid as a directory.
-        accepted_contract = accepted_environment(cache_state)
-        if success and accepted_contract is None:
-            success = False
-            error = "no independently accepted environment manifest; rebuild the cache"
-        if success and not saved_execution_accepted(cache_state):
-            success = False
-            error = "required clean consumer execution is missing or failed; rebuild the cache"
-        if success and cache_state.provenance_digest is None:
-            success = False
-            error = "frozen environment provenance is missing; rebuild the cache"
-        refusal_error = self._cache_refusal_error(symphony_name, cache_state) if success else None
-        if success and refusal_error is not None:
-            success = False
-            error = refusal_error
+        refusal_error = self._completion_refusal(symphony_name, cache_state) if success else None
+        if refusal_error is not None:
+            success, error = False, refusal_error
 
         cache_state.last_bootstrap_succeeded = success
         if not success:
@@ -2770,6 +2768,15 @@ class EnvCacheService:
                 )
 
         self._flush_bootstrap_snapshot(state, symphony_name)
+
+    def _completion_refusal(self, symphony_name: str, cache_state: EnvCacheState) -> str | None:
+        if accepted_environment(cache_state) is None:
+            return "no independently accepted environment manifest; rebuild the cache"
+        if not saved_execution_accepted(cache_state):
+            return "required clean consumer execution is missing or failed; rebuild the cache"
+        if cache_state.provenance_digest is None:
+            return "frozen environment provenance is missing; rebuild the cache"
+        return self._cache_refusal_error(symphony_name, cache_state)
 
     def _flush_bootstrap_snapshot(self, state: dict[str, Any], symphony_name: str) -> None:
         """Save completion without waiting for a later lifecycle transition."""
