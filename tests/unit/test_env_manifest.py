@@ -126,6 +126,16 @@ class TestVerifyRenderer:
         assert "gem rails" in sh.lower() or "bundle show rails" in sh
         assert "chromium" in sh
 
+    def test_gem_check_runs_bundle_show_in_cache_project(self) -> None:
+        """The clean verify has no repo checkout, so `bundle show` must run in the
+        cache-hosted project dir (with its Gemfile) for the bundler path that
+        activate.sh itself exports to be visible; gem list stays the fallback."""
+        sh = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        gem_line = next(ln for ln in sh.splitlines() if "bundle show rails" in ln)
+        assert 'BUNDLE_GEMFILE="$DEVENV/project/Gemfile"' in gem_line
+        assert 'cd "$DEVENV/project"' in gem_line
+        assert "gem list -i rails" in gem_line
+
     def test_system_pkg_check_is_soft_runtime_gem_hard(self) -> None:
         """077: system packages (chromium/psql) are test/qa-only — a missing one
         must WARN, never set FAILED (don't block the whole pipeline). Runtimes and
