@@ -15,6 +15,10 @@ import statistics
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+from coordinare.models.env_cache import EnvCacheState
+from coordinare.services.environment_acceptance import execution_report
 
 from coordinare_service_inference.environment.models import (
     MAX_DOCUMENT_BYTES,
@@ -42,7 +46,7 @@ def fixture(count: int = 1000) -> tuple[dict, dict, dict]:
         "manifest_digest": digest, "verdict": "accept", "rationale": "Benchmark fixture",
         "sources": ["x"], "inputs": data["inputs"], "policy_version": "351-v1",
     }
-    report = {"manifest_digest": digest, "results": [
+    report = {"manifest_digest": digest, "platform": platform.system().lower() + "/" + platform.machine().lower(), "results": [
         {"id": f"c{i}", "status": "pass", "required": True, "exit_code": 0, "manifest_digest": digest}
         for i in range(count)
     ]}
@@ -58,6 +62,11 @@ def process(data: dict, assessment: dict, report_data: dict) -> None:
     assert review.verdict == "accept" and report.passed
     by_id = {result.id: result for result in report.results}
     assert all(by_id[check.id].status == "pass" for check in manifest.checks if check.required)
+    cache = EnvCacheState(
+        symphony_name=manifest.symphony_name, sanitised_name="benchmark", cache_dir=Path("/benchmark"),
+        bootstrap_commit_sha=manifest.source_commit, environment_manifest=data, environment_assessment=assessment,
+    )
+    assert execution_report(json.dumps(report_data), cache, publish=False).passed
 
 
 def hardware() -> dict:

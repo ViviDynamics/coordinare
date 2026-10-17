@@ -4322,6 +4322,49 @@ class CoordinareDaemon:
         reason = cache_service.refuse_verifier_configuration(ec, self._state, detail)
         return False, reason, False
 
+    async def _prepare_clean_verifier(
+        self, symphony_name: str, svc: Any, ec: EnvCacheState, limits: ProvenanceLimits,
+    ) -> VerifierSpec:
+        """Resolve reviewed policy and private inputs before starting a clean verifier."""
+        from coordinare.services.environment_acceptance import (
+            accepted_environment,
+            immutable_verifier_image,
+        )
+
+        if accepted_environment(ec) is None:
+            message = "no independently accepted environment contract; rebuild the cache"
+            raise VerifierConfigurationError(message)
+        config = self._state.get("coordinare_config")
+        env_config = getattr(getattr(config, "global_config", config), "env_cache", None)
+        if not getattr(env_config, "kubernetes_verifier_network_isolated", False):
+            message = (
+                "clean verifier requires enforced egress isolation; configure a verifier NetworkPolicy "
+                "on an enforcing CNI, then set env_cache.kubernetes_verifier_network_isolated"
+            )
+            raise VerifierConfigurationError(message)
+        immutable_verifier_image(configured_verifier_image(config))
+        ec.verifier_provenance = None
+        try:
+            files = await self._fetch_project_files(symphony_name, ec.bootstrap_commit_sha)
+        except ValueError:
+            raise
+        except Exception as exc:
+            message = f"env verification could not resolve project files at the bootstrap SHA: {type(exc).__name__}"
+            raise RuntimeError(message) from exc
+        if files is None:
+            message = "env verification could not resolve the symphony repository for the clean-room verifier"
+            raise RuntimeError(message)
+        from coordinare.services.environment_verification import verification_environment
+
+        credentials = await verification_environment(self._state, symphony_name, ec, self._performer_mounts())
+        return VerifierSpec(
+            image=configured_verifier_image(config), cache_claim="", cache_subpath=ec.sanitised_name,
+            mount_path=f"{getattr(svc, 'devenv_root', '/devenv')}/{ec.sanitised_name}",
+            verify_text=str(ec.rendered_verify_sh),
+            transient_credentials=credentials.removeprefix("export COORDINARE_ENV_SECRET_VALUES=").strip(),
+            project_files=files, max_entries=limits.max_entries, max_bytes=limits.max_bytes,
+        )
+
     async def _verify_bootstrap_on_kubernetes(
         self, symphony_name: str, svc: Any, job_id: str, env_verify_basis: str | None,
     ) -> tuple[bool, str | None, bool]:
@@ -4335,55 +4378,17 @@ class CoordinareDaemon:
         if refusal is not None:
             return False, refusal, False
         ec = (self._state.get("env_cache") or {})[symphony_name]
-        from coordinare.services.environment_acceptance import (
-            accepted_environment,
-            immutable_verifier_image,
-        )
-
-        if accepted_environment(ec) is None:
-            return False, "no independently accepted environment contract; rebuild the cache", False
-        config = self._state.get("coordinare_config")
-        env_config = getattr(getattr(config, "global_config", config), "env_cache", None)
-        if not getattr(env_config, "kubernetes_verifier_network_isolated", False):
-            return self._verifier_configuration_refusal(
-                ec, "clean verifier requires enforced egress isolation; configure a verifier NetworkPolicy "
-                "on an enforcing CNI, then set env_cache.kubernetes_verifier_network_isolated",
-            )
-        try:
-            immutable_verifier_image(configured_verifier_image(config))
-        except ValueError as exc:
-            return self._verifier_configuration_refusal(ec, str(exc))
-        ec.verifier_provenance = None
         cache_service = self._state.get("env_cache_service")
         limits = cache_service._provenance_limits() if cache_service is not None else DEFAULT_LIMITS
         bootstrap_sha = ec.bootstrap_commit_sha
         bootstrap_activate = ec.rendered_activate_sh
         try:
-            files = await self._fetch_project_files(symphony_name, bootstrap_sha)
-        except ValueError as exc:
-            return self._verifier_configuration_refusal(ec, str(exc))
-        except Exception as exc:
-            return False, f"env verification could not resolve project files at the bootstrap SHA: {type(exc).__name__}", True
-        if files is None:
-            return False, "env verification could not resolve the symphony repository for the clean-room verifier", True
-        from coordinare.services.environment_verification import verification_environment
-
-        try:
-            credentials = await verification_environment(self._state, symphony_name, ec, self._performer_mounts())
-            spec = VerifierSpec(
-                image=configured_verifier_image(self._state.get("coordinare_config")),
-                cache_claim="",  # the runtime owns the claim it mounts
-                cache_subpath=ec.sanitised_name,
-                mount_path=f"{getattr(svc, 'devenv_root', '/devenv')}/{ec.sanitised_name}",
-                verify_text=str(ec.rendered_verify_sh),
-                transient_credentials=credentials.removeprefix("export COORDINARE_ENV_SECRET_VALUES=").strip(),
-                project_files=files,
-                max_entries=limits.max_entries,
-                max_bytes=limits.max_bytes,
-            )
+            spec = await self._prepare_clean_verifier(symphony_name, svc, ec, limits)
             ok, detail = await svc._runtime.run_verifier(slug=ec.sanitised_name, spec=spec)
         except (VerifierConfigurationError, ValueError) as exc:
             return self._verifier_configuration_refusal(ec, str(exc))
+        except RuntimeError as exc:
+            return False, str(exc), True
         logger.info(
             "env_cache.clean_room_verify",
             symphony=symphony_name,
@@ -4401,13 +4406,14 @@ class CoordinareDaemon:
             report = execution_report(detail, ec)
         except ValueError as exc:
             return False, str(exc), False
-        if not report.passed:
-            return False, "required environment checks did not pass", False
-        if ec.environment_verification is not None:
+        if report.passed and ec.environment_verification is not None:
             ec.environment_verification["image_ref"] = spec.image
         walk_spec = replace(spec, verify_text="", project_files={}, transient_credentials="", walk_only=True,
                             activate_text=bootstrap_activate)
-        return await self._verify_bootstrap_claim(svc, ec, walk_spec, bootstrap_sha, limits)
+        return (
+            await self._verify_bootstrap_claim(svc, ec, walk_spec, bootstrap_sha, limits)
+            if report.passed else (False, "required environment checks did not pass", False)
+        )
 
     async def _verify_bootstrap_claim(
         self, svc: Any, ec: EnvCacheState, walk_spec: VerifierSpec, bootstrap_sha: str,

@@ -544,7 +544,8 @@ class HTTPPerformerService:
         An ephemeral container passes the version it read in ``wait_ready``. A persistent one is asked now.
         """
         if payload.env_cache_path and self._config.mode != "ephemeral":
-            raise ValueError("reviewed environments require a per-job container for confirmed process cleanup")
+            message = "reviewed environments require a per-job container for confirmed process cleanup"
+            raise ValueError(message)
         if not payload.env_cache_path and payload.env_provenance is None:
             return
         status = ready_status
@@ -556,22 +557,26 @@ class HTTPPerformerService:
                 raise ValueError(message) from exc
         if payload.env_cache_path:
             if getattr(status, "environment_manifest_version", 0) < 1:
-                raise ValueError("performer image too old for reviewed environment manifests (#351); roll out daemon and performer together")
+                message = "performer image too old for reviewed environment manifests (#351); roll out daemon and performer together"
+                raise ValueError(message)
             if payload.role != "env_bootstrap":
                 verified_image = payload.metadata.get("environment_verification_image")
                 if not isinstance(verified_image, str) or not verified_image:
-                    raise ValueError("consumer requires immutable clean verified image identity; rebuild the environment")
+                    message = "consumer requires immutable clean verified image identity; rebuild the environment"
+                    raise ValueError(message)
                 if verified_image is not None:
                     from coordinare.services.environment_acceptance import immutable_verifier_image
 
                     image = immutable_verifier_image(str(self._config.image))
                     if image != verified_image:
-                        raise ValueError("consumer image differs from the clean verified image; rebuild the environment")
+                        message = "consumer image differs from the clean verified image; rebuild the environment"
+                        raise ValueError(message)
                     verified_platform = payload.metadata.get("environment_verification_platform")
                     advertised = "environment_platform" in getattr(status, "model_fields_set", {"environment_platform"})
                     actual_platform = getattr(status, "environment_platform", "") if advertised else ""
                     if not verified_platform or not actual_platform or actual_platform != verified_platform:
-                        raise ValueError("consumer runtime platform differs from the clean verified platform; rebuild the environment")
+                        message = "consumer runtime platform differs from the clean verified platform; rebuild the environment"
+                        raise ValueError(message)
         if payload.role == "env_bootstrap":
             return  # the cache writer has capability/isolation gates but no frozen payload
         if payload.env_provenance is None:
@@ -580,7 +585,8 @@ class HTTPPerformerService:
             raise ValueError(message)
         version = status.env_provenance_version
         if payload.env_provenance.get("stat_digest") is not None and version < _STAT_PROVENANCE_CAPABILITY_VERSION:
-            raise ValueError("performer image too old for Kubernetes stat provenance (#265); roll out daemon and performer together")
+            message = "performer image too old for Kubernetes stat provenance (#265); roll out daemon and performer together"
+            raise ValueError(message)
         refusal = image_capability_refusal(provenance_sent=True, performer_version=version)
         if refusal is not None:
             logger.error("http_performer.env_provenance_refused", performer_id=self._config.id, reason=refusal)

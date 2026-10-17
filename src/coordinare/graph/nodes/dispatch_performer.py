@@ -2519,7 +2519,7 @@ async def _env_readiness_gate(state: CoordinareState, service: Any, card_id: str
                 _readiness_passed = False
                 _readiness_detail = "consumer image differs from the clean verification image"
         if _readiness_passed is not True:
-            _ec_state_for_sym.last_bootstrap_error = f"consumer verification held: {_readiness_detail}"
+            _ec_state_for_sym.last_bootstrap_error = redact_state_value(f"consumer verification held: {_readiness_detail}")
             logger.info(
                 "dispatch_performer.env_cache_not_current",
                 card_id=card_id,

@@ -21,7 +21,8 @@ async def verification_sources(state: Mapping[str, Any], name: str, cache: EnvCa
     """Fetch only accepted source inputs at the accepted commit; reject any drift."""
     manifest = accepted_environment(cache)
     if manifest is None:
-        raise ValueError("environment has no independently accepted contract; rebuild the cache")
+        message = "environment has no independently accepted contract; rebuild the cache"
+        raise ValueError(message)
     github = (state.get("symphony_github_services") or {}).get(name) or state.get("github_service")
     config = state.get("coordinare_config")
     global_config = getattr(config, "global_config", None) or state.get("config")
@@ -34,14 +35,16 @@ async def verification_sources(state: Mapping[str, Any], name: str, cache: EnvCa
             effective = symphony.effective_config(global_config)
             break
     if github is None or effective is None:
-        raise ValueError("clean verification cannot resolve repository source inputs")
+        message = "clean verification cannot resolve repository source inputs"
+        raise ValueError(message)
     files: dict[str, str] = {}
     for path, digest in manifest.inputs.items():
         text = await github.get_file_content(
             effective.github_org, effective.project_name or name, path, ref=manifest.source_commit,
         )
         if text is None or hashlib.sha256(text.encode()).hexdigest() != digest:
-            raise ValueError("clean verification source inputs differ from the accepted snapshot")
+            message = "clean verification source inputs differ from the accepted snapshot"
+            raise ValueError(message)
         files[path] = text
     check_project_files(files)
     return files
@@ -88,7 +91,8 @@ async def verification_environment(
         try:
             values = load_test_env(test_env, repo_root=Path("/"), performer_mounts=performer_mounts)
         except TestEnvFileError:
-            raise ValueError("clean verifier test environment source is unavailable or refused") from None
+            message = "clean verifier test environment source is unavailable or refused"
+            raise ValueError(message) from None
     elif path:
         from coordinare_service_inference.environment.models import source_path
 
@@ -96,12 +100,14 @@ async def verification_environment(
         effective = symphony.effective_config(global_config) if symphony is not None else global_config
         github = (state.get("symphony_github_services") or {}).get(name) or state.get("github_service")
         if github is None or effective is None:
-            raise ValueError("clean verifier cannot resolve configured test environment")
+            message = "clean verifier cannot resolve configured test environment"
+            raise ValueError(message)
         content = await github.get_file_content(
             effective.github_org, effective.project_name or name, path, ref=cache.bootstrap_commit_sha,
         )
         if content is None:
-            raise ValueError("clean verifier test environment source is missing")
+            message = "clean verifier test environment source is missing"
+            raise ValueError(message)
         values = parse_test_env(content)
     if not values:
         return ""
@@ -109,6 +115,7 @@ async def verification_environment(
     # Refuse startup hooks and internal control variables from external dotenv files.
     reserved = {"BASH_ENV", "ENV", "COORDINARE_ENV_SECRET_NAMES", "COORDINARE_REPO_DIR"}
     if any(key in reserved or key.startswith("COORDINARE_ENV_") for key in values):
-        raise ValueError("test environment attempts to override verifier controls")
+        message = "test environment attempts to override verifier controls"
+        raise ValueError(message)
     encoded = base64.b64encode(json.dumps(values).encode()).decode()
     return "export COORDINARE_ENV_SECRET_VALUES=" + shlex.quote(encoded) + "\n"

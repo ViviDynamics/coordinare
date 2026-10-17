@@ -372,6 +372,8 @@ class Score(BaseModel):
     environment_manifest: dict[str, Any] | None = None
     environment_assessment: dict[str, Any] | None = None
     environment_manifest_digest: str = ""
+    environment_verification_image: str | None = None
+    environment_verification_platform: str | None = None
     environment_secret_names: list[str] = Field(default_factory=list)
     # 265: the daemon-rendered verify.sh text the bootstrap verifies. Declared so extra="ignore" keeps it.
     bootstrap_verify_sh: str | None = None

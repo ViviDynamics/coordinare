@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import EnvironmentManifest
@@ -16,6 +16,23 @@ class EnvironmentReadinessError(ValueError):
     """The accepted cache failed consumer checks and must be rebuilt."""
 
 
+def _refuse_contract(reason: str) -> NoReturn:
+    """Reject a dispatch contract without exposing schema input values."""
+    raise ValueError(reason) from None
+
+
+def _require_ready(result: dict[str, Any]) -> None:
+    if not result["passed"]:
+        reason = "reviewed environment checks failed: " + result["reason"]
+        raise EnvironmentReadinessError(reason)
+
+
+def _require_services_ready(results: Any) -> None:
+    if any(item.required and item.status != "pass" for item in results):
+        reason = "reviewed environment required service failed"
+        raise EnvironmentReadinessError(reason)
+
+
 def accepted_manifest(metadata: Any) -> EnvironmentManifest:
     """Validate the exact independently accepted contract carried by the daemon."""
     def get(name: str) -> Any:
@@ -23,29 +40,29 @@ def accepted_manifest(metadata: Any) -> EnvironmentManifest:
 
     raw, assessment = get("environment_manifest"), get("environment_assessment")
     if not isinstance(raw, dict) or not isinstance(assessment, dict):
-        raise ValueError("reviewed environment manifest and assessment are required")
+        _refuse_contract("reviewed environment manifest and assessment are required")
     if any(len(json.dumps(item, ensure_ascii=False).encode()) > 256 * 1024 for item in (raw, assessment)):
-        raise ValueError("environment contract exceeds size limit")
+        _refuse_contract("environment contract exceeds size limit")
     from coordinare_service_inference.environment.models import CoverageAssessment, EnvironmentManifest
 
     try:
         manifest = EnvironmentManifest.model_validate(raw)
         review = CoverageAssessment.model_validate(assessment)
     except ValueError:
-        raise ValueError("environment manifest or review schema is malformed or unsupported") from None
+        _refuse_contract("environment manifest or review schema is malformed or unsupported")
     digest = manifest.digest()
     if get("environment_manifest_digest") != digest or review.manifest_digest != digest:
-        raise ValueError("environment review digest does not match manifest")
+        _refuse_contract("environment review digest does not match manifest")
     if review.source_commit != manifest.source_commit or review.verdict != "accept":
-        raise ValueError("environment review does not accept this source commit")
+        _refuse_contract("environment review does not accept this source commit")
     if review.symphony_name and review.symphony_name != manifest.symphony_name:
-        raise ValueError("environment review symphony does not match manifest")
+        _refuse_contract("environment review symphony does not match manifest")
     if not review.inputs or any(review.inputs.get(path) != digest for path, digest in manifest.inputs.items()):
-        raise ValueError("environment review source identities do not match manifest")
+        _refuse_contract("environment review source identities do not match manifest")
     if not set(review.sources).issubset(review.inputs):
-        raise ValueError("environment review cites uninspected sources")
+        _refuse_contract("environment review cites uninspected sources")
     if not {item.source for item in manifest.requirements}.issubset(review.inputs):
-        raise ValueError("environment review lacks requirement sources")
+        _refuse_contract("environment review lacks requirement sources")
     return manifest
 
 
@@ -85,8 +102,7 @@ async def prepare_environment(score: Score, stand: Stand) -> None:
         # Bootstrap actions create missing paths; verification runs after installation.
         if score.role != "env_bootstrap":
             result = await execute_contract(score, stand)
-            if not result["passed"]:
-                raise EnvironmentReadinessError("reviewed environment checks failed: " + result["reason"])
+            _require_ready(result)
             from coordinare_service_inference.environment.render import render_activate
 
             activation = Path(scratch) / "activate.sh"
@@ -97,8 +113,7 @@ async def prepare_environment(score: Score, stand: Stand) -> None:
             results = await lifecycle.enter_async_context(
                 manifest_services(manifest, **roots, scope=score.role, secret_names=score.environment_secret_names),
             )
-            if any(item.required and item.status != "pass" for item in results):
-                raise EnvironmentReadinessError("reviewed environment required service failed")
+            _require_services_ready(results)
             from performer.workspace import _mark_services_healthy
 
             _mark_services_healthy()

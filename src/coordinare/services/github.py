@@ -2543,12 +2543,15 @@ class GitHubService(CardIdentityMap):
     ) -> list[str]:
         """Return a complete pinned blob inventory, refusing partial source trees."""
         if not ref or not owner or not repo:
-            raise GitHubError("repository inventory requires owner, repository and ref")
+            message = "repository inventory requires owner, repository and ref"
+            raise GitHubError(message)
         if max_entries < 1:
-            raise GitHubError("repository inventory entry limit must be positive")
+            message = "repository inventory entry limit must be positive"
+            raise GitHubError(message)
         token = await self._current_token()
         if not token.strip():
-            raise GitHubError("repository inventory requires GitHub authentication")
+            message = "repository inventory requires GitHub authentication"
+            raise GitHubError(message)
         url = (
             f"{self._rest_api_base()}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
             f"/git/trees/{quote(ref, safe='')}"
@@ -2563,26 +2566,32 @@ class GitHubService(CardIdentityMap):
                 response.raise_for_status()
                 data = response.json()
         except (httpx.HTTPError, ValueError) as exc:
-            raise GitHubError("repository inventory request failed") from exc
+            message = "repository inventory request failed"
+            raise GitHubError(message) from exc
         if not isinstance(data, dict) or data.get("truncated") is not False:
-            raise GitHubError("repository inventory is incomplete")
+            message = "repository inventory is incomplete"
+            raise GitHubError(message)
         entries = data.get("tree")
         if not isinstance(entries, list) or len(entries) > max_entries:
-            raise GitHubError("repository inventory is invalid or exceeds limit")
+            message = "repository inventory is invalid or exceeds limit"
+            raise GitHubError(message)
         paths: set[str] = set()
         for entry in entries:
             if not isinstance(entry, dict) or entry.get("type") not in {"blob", "tree"}:
-                raise GitHubError("repository inventory contains unsupported entry")
+                message = "repository inventory contains unsupported entry"
+                raise GitHubError(message)
             path = entry.get("path")
             if (
                 not isinstance(path, str) or not path or path.startswith("/")
                 or "\\" in path or any(part in {"", ".", ".."} for part in path.split("/"))
                 or any(ord(char) < 32 for char in path)
             ):
-                raise GitHubError("repository inventory contains invalid path")
+                message = "repository inventory contains invalid path"
+                raise GitHubError(message)
             if entry["type"] == "blob":
                 if path in paths:
-                    raise GitHubError("repository inventory contains duplicate path")
+                    message = "repository inventory contains duplicate path"
+                    raise GitHubError(message)
                 paths.add(path)
         return sorted(paths)
 

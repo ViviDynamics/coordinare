@@ -16,7 +16,8 @@ The script creates 1,000 distinct requirements and 1,000 distinct required check
 with each requirement mapped to its own check. Each measured iteration validates
 the entire manifest, serializes it canonically and hashes it, validates the matching
 coverage assessment and 1,000-result verification report, verifies their shared
-identity, aggregates required outcomes and checks required-check coverage. It excludes
+identity, aggregates required outcomes and invokes the daemon’s execution-report
+admission path, including required-check coverage. It excludes
 agent calls, subprocess execution, network, source reads and provenance walks.
 Ten warmup iterations precede 100 measured iterations; p95 uses the nearest-rank
 95th sample. The process exits nonzero when p95 exceeds 250 ms.
@@ -26,9 +27,9 @@ macOS 26.5.2, Python 3.14.6. This is the development host, **not a CI runner**.
 
 | Metric | Result |
 | --- | ---: |
-| Median | 24.48 ms |
-| p95 | 30.72 ms |
-| Maximum | 33.70 ms |
+| Median | 58.05 ms |
+| p95 | 67.94 ms |
+| Maximum | 74.43 ms |
 | Acceptance threshold | 250 ms |
 | Fully serialized manifest | 199,994 bytes |
 | Manifest/assessment document cap | 262,144 bytes |

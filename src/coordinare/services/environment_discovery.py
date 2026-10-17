@@ -9,14 +9,15 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, NotRequired, TypedDict, Unpack
 
 from coordinare_service_inference.environment.models import CoverageAssessment, EnvironmentManifest
 from pydantic import ValidationError
 
 Fetch = Callable[[str], Awaitable[str | None]]
 ChatJson = Callable[[list[dict[str, str]]], Awaitable[str]]
+_ASCII_CONTROL_BOUND = 32
 
 
 class EnvironmentDiscoveryError(RuntimeError):
@@ -37,14 +38,15 @@ class DiscoveryLimits:
 
     def __post_init__(self) -> None:
         if any(value <= 0 for value in self.__dict__.values()):
-            raise ValueError("discovery limits must be positive")
+            message = "discovery limits must be positive"
+            raise ValueError(message)
 
 
 def _valid_path(path: Any) -> bool:
     return (
         isinstance(path, str) and bool(path) and not path.startswith("/")
         and "\\" not in path and all(part not in {"", ".", ".."} for part in path.split("/"))
-        and not any(ord(char) < 32 for char in path)
+        and not any(ord(char) < _ASCII_CONTROL_BOUND for char in path)
     )
 
 
@@ -52,7 +54,8 @@ def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError("duplicate JSON key")
+            message = "duplicate JSON key"
+            raise ValueError(message)
         result[key] = value
     return result
 
@@ -61,63 +64,163 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
-async def _phase(
-    *, name: str, messages: list[dict[str, str]], paths: list[str],
-    fetch: Fetch, chat: ChatJson, limits: DiscoveryLimits,
-) -> tuple[dict[str, Any], dict[str, str]]:
-    inputs: dict[str, str] = {}
-    reads = 0
-    total_bytes = 0
-    inventory = set(paths)
+def _decode_reply(raw: str, name: str, limits: DiscoveryLimits) -> dict[str, Any]:
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > limits.max_output_bytes:
+        message = f"{name} output limit exceeded"
+        raise EnvironmentDiscoveryError(message)
     try:
-        async with asyncio.timeout(limits.phase_timeout_seconds):
-            for _ in range(limits.max_model_calls):
+        reply = json.loads(raw, object_pairs_hook=_object)
+    except (ValueError, RecursionError) as exc:
+        message = f"{name} returned malformed JSON"
+        raise EnvironmentDiscoveryError(message) from exc
+    if not isinstance(reply, dict):
+        message = f"{name} returned an invalid envelope"
+        raise EnvironmentDiscoveryError(message)
+    return reply
+
+
+@dataclass
+class _Inspection:
+    """One phase's independent read ledger and source admission budgets."""
+
+    name: str
+    paths: list[str]
+    fetch: Fetch
+    limits: DiscoveryLimits
+    inputs: dict[str, str] = field(default_factory=dict)
+    reads: int = 0
+    total_bytes: int = 0
+    inventory: set[str] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.inventory = set(self.paths)
+
+    async def read(self, path: Any) -> dict[str, Any]:
+        if not _valid_path(path) or path not in self.inventory:
+            message = f"{self.name} requested a path outside the source inventory"
+            raise EnvironmentDiscoveryError(message)
+        self.reads += 1
+        if self.reads > self.limits.max_reads:
+            message = f"{self.name} file read limit exceeded"
+            raise EnvironmentDiscoveryError(message)
+        content = await self.fetch(path)
+        if not isinstance(content, str):
+            message = f"{self.name} source is unavailable or not text"
+            raise EnvironmentDiscoveryError(message)
+        encoded = content.encode("utf-8")
+        self.total_bytes += len(encoded)
+        if len(encoded) > self.limits.max_file_bytes or self.total_bytes > self.limits.max_source_bytes:
+            message = f"{self.name} source byte limit exceeded"
+            raise EnvironmentDiscoveryError(message)
+        digest = hashlib.sha256(encoded).hexdigest()
+        if path in self.inputs and self.inputs[path] != digest:
+            message = f"{self.name} source snapshot changed during inspection"
+            raise EnvironmentDiscoveryError(message)
+        self.inputs[path] = digest
+        return {"path": path, "content": content, "sha256": digest}
+
+    async def tool_result(self, reply: dict[str, Any]) -> dict[str, Any]:
+        if reply == {"tool": "list_files"}:
+            return {"paths": self.paths, "complete": True}
+        if set(reply) == {"tool", "path"} and reply.get("tool") == "read_file":
+            return await self.read(reply["path"])
+        message = f"{self.name} returned an unsupported tool or envelope"
+        raise EnvironmentDiscoveryError(message)
+
+
+async def _phase(
+    *, inspection: _Inspection, messages: list[dict[str, str]], chat: ChatJson,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    try:
+        async with asyncio.timeout(inspection.limits.phase_timeout_seconds):
+            for _ in range(inspection.limits.max_model_calls):
                 raw = await chat(messages)
-                if not isinstance(raw, str) or len(raw.encode("utf-8")) > limits.max_output_bytes:
-                    raise EnvironmentDiscoveryError(f"{name} output limit exceeded")
-                try:
-                    reply = json.loads(raw, object_pairs_hook=_object)
-                except (ValueError, RecursionError) as exc:
-                    raise EnvironmentDiscoveryError(f"{name} returned malformed JSON") from exc
-                if not isinstance(reply, dict):
-                    raise EnvironmentDiscoveryError(f"{name} returned an invalid envelope")
-                final = "manifest" if name == "discovery" else "assessment"
+                reply = _decode_reply(raw, inspection.name, inspection.limits)
+                final = "manifest" if inspection.name == "discovery" else "assessment"
                 if set(reply) == {final} and isinstance(reply[final], dict):
-                    return reply[final], inputs
-                if reply == {"tool": "list_files"}:
-                    result: dict[str, Any] = {"paths": paths, "complete": True}
-                elif set(reply) == {"tool", "path"} and reply.get("tool") == "read_file":
-                    path = reply["path"]
-                    if not _valid_path(path) or path not in inventory:
-                        raise EnvironmentDiscoveryError(f"{name} requested a path outside the source inventory")
-                    reads += 1
-                    if reads > limits.max_reads:
-                        raise EnvironmentDiscoveryError(f"{name} file read limit exceeded")
-                    content = await fetch(path)
-                    if not isinstance(content, str):
-                        raise EnvironmentDiscoveryError(f"{name} source is unavailable or not text")
-                    encoded = content.encode("utf-8")
-                    total_bytes += len(encoded)
-                    if len(encoded) > limits.max_file_bytes or total_bytes > limits.max_source_bytes:
-                        raise EnvironmentDiscoveryError(f"{name} source byte limit exceeded")
-                    digest = hashlib.sha256(encoded).hexdigest()
-                    if path in inputs and inputs[path] != digest:
-                        raise EnvironmentDiscoveryError(f"{name} source snapshot changed during inspection")
-                    inputs[path] = digest
-                    result = {"path": path, "content": content, "sha256": digest}
-                else:
-                    raise EnvironmentDiscoveryError(f"{name} returned an unsupported tool or envelope")
+                    return reply[final], inspection.inputs
+                result = await inspection.tool_result(reply)
                 messages.append({"role": "assistant", "content": raw})
                 messages.append({"role": "user", "content": _json({"tool_result": result})})
     except TimeoutError as exc:
-        raise EnvironmentDiscoveryError(f"{name} deadline exceeded") from exc
-    raise EnvironmentDiscoveryError(f"{name} model call limit exceeded")
+        message = f"{inspection.name} deadline exceeded"
+        raise EnvironmentDiscoveryError(message) from exc
+    message = f"{inspection.name} model call limit exceeded"
+    raise EnvironmentDiscoveryError(message)
+
+
+class _DiscoveryOptionKeywords(TypedDict):
+    declared_services: NotRequired[Any]
+    limits: NotRequired[DiscoveryLimits | None]
+
+
+@dataclass(frozen=True)
+class _DiscoveryOptions:
+    declared_services: Any = None
+    limits: DiscoveryLimits | None = None
+
+
+def _checked_inventory(paths: Sequence[str], bounds: DiscoveryLimits) -> list[str]:
+    if isinstance(paths, str) or len(paths) > bounds.max_inventory_entries:
+        message = "source inventory limit exceeded or invalid inventory"
+        raise EnvironmentDiscoveryError(message)
+    if any(not _valid_path(path) for path in paths) or len(set(paths)) != len(paths):
+        message = "source inventory contains invalid or duplicate paths"
+        raise EnvironmentDiscoveryError(message)
+    inventory = sorted(paths)
+    if len(_json(inventory).encode()) > bounds.max_source_bytes:
+        message = "source inventory byte limit exceeded"
+        raise EnvironmentDiscoveryError(message)
+    return inventory
+
+
+def _validated_manifest(
+    candidate: dict[str, Any], inspected: dict[str, str], symphony_name: str, commit: str,
+) -> EnvironmentManifest:
+    manifest = EnvironmentManifest.model_validate(candidate)
+    if manifest.source_commit != commit or manifest.symphony_name != symphony_name:
+        message = "discovery source identity does not match requested snapshot"
+        raise EnvironmentDiscoveryError(message)
+    if not inspected or manifest.inputs != inspected:
+        message = "discovery input hashes do not match actual source reads"
+        raise EnvironmentDiscoveryError(message)
+    if any(requirement.source not in inspected for requirement in manifest.requirements):
+        message = "discovery requirement cites unread source"
+        raise EnvironmentDiscoveryError(message)
+    return manifest
+
+
+def _validated_assessment(
+    data: dict[str, Any], reviewer_reads: dict[str, str], manifest: EnvironmentManifest,
+) -> CoverageAssessment:
+    assessment = CoverageAssessment.model_validate(data)
+    if assessment.source_commit != manifest.source_commit or assessment.manifest_digest != manifest.digest():
+        message = "review identity does not match candidate manifest"
+        raise EnvironmentDiscoveryError(message)
+    if any(reviewer_reads.get(path) != digest for path, digest in manifest.inputs.items()):
+        message = "review must independently read every manifest input"
+        raise EnvironmentDiscoveryError(message)
+    if not assessment.sources or any(path not in reviewer_reads for path in assessment.sources):
+        message = "review sources must cite independently read evidence"
+        raise EnvironmentDiscoveryError(message)
+    if assessment.verdict != "accept":
+        message = f"coverage review held: {assessment.verdict}"
+        raise EnvironmentDiscoveryError(message)
+    if assessment.symphony_name and assessment.symphony_name != manifest.symphony_name:
+        message = "review symphony identity does not match candidate"
+        raise EnvironmentDiscoveryError(message)
+    if assessment.inputs and assessment.inputs != reviewer_reads:
+        message = "review input hashes do not match actual source reads"
+        raise EnvironmentDiscoveryError(message)
+    # The daemon, rather than model output, records the complete inspection ledger.
+    return CoverageAssessment.model_validate({
+        **assessment.model_dump(), "symphony_name": manifest.symphony_name, "inputs": reviewer_reads,
+    })
 
 
 async def discover_and_review(
     *, symphony_name: str, commit: str, paths: Sequence[str], fetch: Fetch,
-    chat: ChatJson | None, declared_services: Any = None,
-    limits: DiscoveryLimits | None = None,
+    chat: ChatJson | None, **options: Unpack[_DiscoveryOptionKeywords],
 ) -> tuple[EnvironmentManifest, CoverageAssessment]:
     """Discover a candidate and require fresh-context, independently read acceptance.
 
@@ -125,17 +228,15 @@ async def discover_and_review(
     incomplete evidence, or any nonaccept verdict raises ``EnvironmentDiscoveryError``.
     """
     if chat is None or not callable(chat):
-        raise EnvironmentDiscoveryError("environment discovery/review model configuration is required")
+        message = "environment discovery/review model configuration is required"
+        raise EnvironmentDiscoveryError(message)
     if not symphony_name or not commit:
-        raise EnvironmentDiscoveryError("environment discovery requires source identity")
-    bounds = limits or DiscoveryLimits()
-    if isinstance(paths, str) or len(paths) > bounds.max_inventory_entries:
-        raise EnvironmentDiscoveryError("source inventory limit exceeded or invalid inventory")
-    if any(not _valid_path(path) for path in paths) or len(set(paths)) != len(paths):
-        raise EnvironmentDiscoveryError("source inventory contains invalid or duplicate paths")
-    inventory = sorted(paths)
-    if len(_json(inventory).encode()) > bounds.max_source_bytes:
-        raise EnvironmentDiscoveryError("source inventory byte limit exceeded")
+        message = "environment discovery requires source identity"
+        raise EnvironmentDiscoveryError(message)
+    configured = _DiscoveryOptions(**options)
+    declared_services = configured.declared_services
+    bounds = configured.limits or DiscoveryLimits()
+    inventory = _checked_inventory(paths, bounds)
     tools = (
         'Reply with one JSON object only: {"tool":"read_file","path":"relative/path"}, '
         '{"tool":"list_files"}, or the requested final envelope. These tools only read '
@@ -146,7 +247,7 @@ async def discover_and_review(
     identity = {"symphony_name": symphony_name, "source_commit": commit, "paths": inventory}
     try:
         candidate, inspected = await _phase(
-            name="discovery", paths=inventory, fetch=fetch, chat=chat, limits=bounds,
+            inspection=_Inspection("discovery", inventory, fetch, bounds), chat=chat,
             messages=[
                 {"role": "system", "content": tools + (
                     'Discover the project environment from arbitrary repository evidence, including '
@@ -167,15 +268,9 @@ async def discover_and_review(
                 {"role": "user", "content": _json({**identity, "declared_services": declared_services})},
             ],
         )
-        manifest = EnvironmentManifest.model_validate(candidate)
-        if manifest.source_commit != commit or manifest.symphony_name != symphony_name:
-            raise EnvironmentDiscoveryError("discovery source identity does not match requested snapshot")
-        if not inspected or manifest.inputs != inspected:
-            raise EnvironmentDiscoveryError("discovery input hashes do not match actual source reads")
-        if any(requirement.source not in inspected for requirement in manifest.requirements):
-            raise EnvironmentDiscoveryError("discovery requirement cites unread source")
+        manifest = _validated_manifest(candidate, inspected, symphony_name, commit)
         assessment_data, reviewer_reads = await _phase(
-            name="review", paths=inventory, fetch=fetch, chat=chat, limits=bounds,
+            inspection=_Inspection("review", inventory, fetch, bounds), chat=chat,
             messages=[
                 {"role": "system", "content": tools + (
                     'Independently review coverage of the candidate against the repository snapshot. '
@@ -193,28 +288,15 @@ async def discover_and_review(
                     "declared_services": declared_services})},
             ],
         )
-        assessment = CoverageAssessment.model_validate(assessment_data)
-        if assessment.source_commit != commit or assessment.manifest_digest != manifest.digest():
-            raise EnvironmentDiscoveryError("review identity does not match candidate manifest")
-        if any(reviewer_reads.get(path) != digest for path, digest in manifest.inputs.items()):
-            raise EnvironmentDiscoveryError("review must independently read every manifest input")
-        if not assessment.sources or any(path not in reviewer_reads for path in assessment.sources):
-            raise EnvironmentDiscoveryError("review sources must cite independently read evidence")
-        if assessment.verdict != "accept":
-            raise EnvironmentDiscoveryError(f"coverage review held: {assessment.verdict}")
-        if assessment.symphony_name and assessment.symphony_name != symphony_name:
-            raise EnvironmentDiscoveryError("review symphony identity does not match candidate")
-        if assessment.inputs and assessment.inputs != reviewer_reads:
-            raise EnvironmentDiscoveryError("review input hashes do not match actual source reads")
-        # The daemon, rather than model output, records the complete inspection ledger.
-        assessment = CoverageAssessment.model_validate({
-            **assessment.model_dump(), "symphony_name": symphony_name, "inputs": reviewer_reads,
-        })
-        return manifest, assessment
+        assessment = _validated_assessment(assessment_data, reviewer_reads, manifest)
     except EnvironmentDiscoveryError:
         raise
     except (ValidationError, ValueError, TypeError):
         # Validation errors include input values: never propagate them into operator logs.
-        raise EnvironmentDiscoveryError("environment discovery/review contract is malformed or unsupported") from None
+        message = "environment discovery/review contract is malformed or unsupported"
+        raise EnvironmentDiscoveryError(message) from None
     except Exception as exc:
-        raise EnvironmentDiscoveryError("environment discovery/review model or source request failed") from exc
+        message = "environment discovery/review model or source request failed"
+        raise EnvironmentDiscoveryError(message) from exc
+
+    return manifest, assessment

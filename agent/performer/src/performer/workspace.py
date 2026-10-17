@@ -403,7 +403,8 @@ async def clone_repository(score: Score) -> Stand:
             )
         if fetch_rc != 0:
             shutil.rmtree(stand_path, ignore_errors=True)
-            raise WorkspaceSetupError(f"cannot check out reviewed environment source: {detail}")
+            reason = f"cannot check out reviewed environment source: {detail}"
+            raise WorkspaceSetupError(reason)
 
     # Set git identity so commits show as the bot, not the host user
     for cfg_cmd in [

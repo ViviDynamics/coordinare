@@ -13,7 +13,12 @@ from coordinare_service_inference.environment.models import (
 from pydantic import ValidationError
 
 if TYPE_CHECKING:
+    from coordinare_service_inference.environment.models import Command
+
     from coordinare.models.env_cache import EnvCacheState
+
+
+_MAX_EXECUTION_EVIDENCE_BYTES = 1024 * 1024
 
 
 def accepted_environment(cache: EnvCacheState) -> EnvironmentManifest | None:
@@ -41,7 +46,8 @@ def accepted_environment(cache: EnvCacheState) -> EnvironmentManifest | None:
 def immutable_verifier_image(image: str) -> str:
     """Require content identity so an image tag cannot silently invalidate evidence."""
     if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", image):
-        raise ValueError("environment verification requires an immutable image@sha256 digest")
+        message = "environment verification requires an immutable image@sha256 digest"
+        raise ValueError(message)
     return image
 
 
@@ -54,46 +60,73 @@ def consumer_image_matches(evidence: dict[str, Any] | None, image: str) -> bool:
     return evidence is not None and evidence.get("image_ref") == image
 
 
-def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True) -> VerificationReport:
-    """Validate parent-collected results; success text cannot substitute for execution."""
-    manifest = accepted_environment(cache)
-    if manifest is None:
-        raise ValueError("required accepted environment contract is missing")
-    if len(text.encode()) > 1024 * 1024:
-        raise ValueError("required execution evidence exceeds its bound")
+def _execution_data(text: str) -> dict[str, Any]:
+    data = json.loads(text)
+    if not isinstance(data, dict) or not data.get("platform"):
+        message = "execution evidence must be an object"
+        raise ValueError(message)
+    data.pop("passed", None)  # Recompute, never trust an asserted aggregate.
+    return data
+
+
+def _parse_execution_report(text: str) -> VerificationReport:
     try:
-        data = json.loads(text)
-        if not isinstance(data, dict) or not data.get("platform"):
-            raise ValueError("execution evidence must be an object")
-        data.pop("passed", None)  # Recompute, never trust an asserted aggregate.
-        report = VerificationReport.model_validate(data)
+        return VerificationReport.model_validate(_execution_data(text))
     except (ValueError, TypeError) as exc:
-        raise ValueError("required execution evidence is malformed or missing") from exc
-    if report.scope != "":
-        raise ValueError("required clean execution evidence must cover every scope")
-    if report.manifest_digest != manifest.digest():
-        raise ValueError("required execution evidence has the wrong manifest identity")
-    by_id = {result.id: result for result in report.results}
-    if len(by_id) != len(report.results):
-        raise ValueError("required execution evidence contains duplicate checks")
+        message = "required execution evidence is malformed or missing"
+        raise ValueError(message) from exc
+
+
+def _required_commands(manifest: EnvironmentManifest, scope: str) -> list[Command]:
     required = [check for check in manifest.checks if check.required
-                and (not report.scope or not check.scope or report.scope in check.scope)]
+                and (not scope or not check.scope or scope in check.scope)]
     for service in manifest.services:
         if service.required:
             required.extend([service.start, service.health, service.stop])
             if service.init is not None:
                 required.append(service.init)
+    return required
+
+
+def _validate_execution_results(report: VerificationReport, manifest: EnvironmentManifest) -> None:
+    by_id = {result.id: result for result in report.results}
+    if len(by_id) != len(report.results):
+        message = "required execution evidence contains duplicate checks"
+        raise ValueError(message)
+    required = _required_commands(manifest, report.scope)
+    digest = manifest.digest()
     if not required or any(
         check.id not in by_id or not by_id[check.id].required
-        or by_id[check.id].manifest_digest != manifest.digest()
+        or by_id[check.id].manifest_digest != digest
         for check in required
     ):
-        raise ValueError("required execution evidence omitted a check or its identity")
+        message = "required execution evidence omitted a check or its identity"
+        raise ValueError(message)
     if any(
         result.status == "pass" and result.exit_code != 0
         for check in manifest.checks if check.required for result in [by_id[check.id]]
     ):
-        raise ValueError("required passing checks must record exit code zero")
+        message = "required passing checks must record exit code zero"
+        raise ValueError(message)
+
+
+def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True) -> VerificationReport:
+    """Validate parent-collected results; success text cannot substitute for execution."""
+    manifest = accepted_environment(cache)
+    if manifest is None:
+        message = "required accepted environment contract is missing"
+        raise ValueError(message)
+    if len(text.encode()) > _MAX_EXECUTION_EVIDENCE_BYTES:
+        message = "required execution evidence exceeds its bound"
+        raise ValueError(message)
+    report = _parse_execution_report(text)
+    if report.scope != "":
+        message = "required clean execution evidence must cover every scope"
+        raise ValueError(message)
+    if report.manifest_digest != manifest.digest():
+        message = "required execution evidence has the wrong manifest identity"
+        raise ValueError(message)
+    _validate_execution_results(report, manifest)
     if publish:
         cache.environment_verification = report.model_dump(mode="json")
     return report

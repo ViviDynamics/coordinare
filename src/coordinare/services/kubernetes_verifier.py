@@ -288,9 +288,11 @@ def build_verifier_pod_manifest(
 
     if spec.transient_credentials:
         if spec.walk_only:
-            raise ValueError('provenance walker must not receive credentials')
+            message = 'provenance walker must not receive credentials'
+            raise ValueError(message)
         if len(spec.transient_credentials) > 384 * 1024:
-            raise ValueError('transient credential payload exceeds transfer bound')
+            message = 'transient credential payload exceeds transfer bound'
+            raise ValueError(message)
         manifest['spec']['containers'][0]['env'].append({
             'name': 'COORDINARE_ENV_SECRET_VALUES',
             'valueFrom': {'secretKeyRef': {'name': name + '-credentials', 'key': 'values'}},
@@ -308,7 +310,8 @@ def build_verifier_credentials_secret(
 ) -> dict[str, Any]:
     """Keep transient credentials in the Secret API, never Pod command/env text."""
     if not pod_uid:
-        raise ValueError('credential Secret requires its Pod UID')
+        message = 'credential Secret requires its Pod UID'
+        raise ValueError(message)
     labels = {'app.kubernetes.io/managed-by': 'coordinare',
               VERIFIER_ROLE_LABEL: 'env-verifier-credentials',
               'coordinare.vividynamics.com/verifier-pod': name}

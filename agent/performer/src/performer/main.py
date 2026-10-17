@@ -1626,16 +1626,51 @@ async def _stop_orchestration_proxy(perf: Performance) -> None:
             pass
 
 
+def _require_bootstrap_integrity(result: dict[str, Any]) -> None:
+    if result.get("integrity_failure"):
+        raise ValueError(result["reason"])
+
+
+async def _prepare_prose_bootstrap(score: Score, stand: Stand) -> None:
+    """Install the accepted contract before giving a repair harness the workspace."""
+    from performer.workflows.bootstrap_environment import BootstrapEnvironment
+
+    stand.bootstrap_environment = BootstrapEnvironment(stand, score)
+    snapshot = await stand.bootstrap_environment.run("snapshot")
+    if not snapshot["passed"]:
+        from performer.environment_contract import close_environment
+
+        await close_environment(stand)
+        cleanup_stand(stand)
+        raise ValueError(snapshot["reason"])
+    # A failed deterministic installation is repairable by the harness.
+    try:
+        installed = await stand.bootstrap_environment.run("install")
+        _require_bootstrap_integrity(installed)
+    except BaseException:
+        from performer.environment_contract import close_environment
+
+        await close_environment(stand)
+        cleanup_stand(stand)
+        raise
+    if not installed["passed"]:
+        score.persona_instructions += "\nRepair the accepted environment checks: " + installed.get("reason", "")
+
+
+def _require_dispatch_environment(score: Score) -> None:
+    if score.role == "env_bootstrap" or score.env_cache_path:
+        from performer.environment_contract import accepted_manifest
+
+        accepted_manifest(score)
+
+
 async def handle_dispatch(
     msg: PerformerMessage,
     settings: Settings,
 ) -> tuple[PerformerResponse, Performance]:
     """Clone the repo, start the backend, and return accepted + session_id."""
     score = Score(**msg.payload)
-    if score.role == "env_bootstrap" or score.env_cache_path:
-        from performer.environment_contract import accepted_manifest
-
-        accepted_manifest(score)
+    _require_dispatch_environment(score)
     # All fields now come from Score (proper pydantic fields, not raw payload)
     role = _ROLE_ALIASES.get(score.role, score.role)
     raw_backend = score.backend or settings.AGENT_BACKEND
@@ -1651,29 +1686,7 @@ async def handle_dispatch(
 
     stand: Stand = await clone_repository(score)
     if role == "env_bootstrap" and score.workflow != "env_bootstrap":
-        from performer.workflows.bootstrap_environment import BootstrapEnvironment
-
-        stand.bootstrap_environment = BootstrapEnvironment(stand, score)
-        snapshot = await stand.bootstrap_environment.run("snapshot")
-        if not snapshot["passed"]:
-            from performer.environment_contract import close_environment
-
-            await close_environment(stand)
-            cleanup_stand(stand)
-            raise ValueError(snapshot["reason"])
-        # A failed deterministic installation is repairable by the harness.
-        try:
-            installed = await stand.bootstrap_environment.run("install")
-            if installed.get("integrity_failure"):
-                raise ValueError(installed["reason"])
-        except BaseException:
-            from performer.environment_contract import close_environment
-
-            await close_environment(stand)
-            cleanup_stand(stand)
-            raise
-        if not installed["passed"]:
-            score.persona_instructions += "\nRepair the accepted environment checks: " + installed.get("reason", "")
+        await _prepare_prose_bootstrap(score, stand)
     try:
         orchestration_proxy = await _launch_dispatch_proxy(
             score, backend_name, model_name, stand, settings,
@@ -3066,6 +3079,25 @@ def _prepare_env_provenance(payload: JobInitPayload) -> str | None:
     return None
 
 
+def _failed_job_dispatch(exc: Exception) -> JobResult:
+    from performer.server.models import JobResult
+
+    from performer.environment_contract import EnvironmentReadinessError
+
+    if isinstance(exc, EnvironmentReadinessError):
+        response = PerformerResponse(status="error", reason=str(exc), env_cache_health_failed=True)
+        return JobResult(success=False, summary=response.model_dump_json(exclude_none=True),
+                         error_code="env_cache_health_failed")
+    log.exception("perform_job.dispatch_failed", exc_type=type(exc).__name__)
+    return JobResult(
+        success=False,
+        summary=_redact_secrets(
+            f"dispatch failed: {type(exc).__name__}: {exc}",
+        ),
+        error_code="dispatch_error",
+    )
+
+
 async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no cover
     """Bridge between the spec-056 HTTP job protocol and handle_dispatch/handle_status.
 
@@ -3124,20 +3156,7 @@ async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no 
         try:
             _accepted_resp, perf = await handle_dispatch(dispatch_msg, settings)
         except Exception as exc:
-            from performer.environment_contract import EnvironmentReadinessError
-
-            if isinstance(exc, EnvironmentReadinessError):
-                response = PerformerResponse(status="error", reason=str(exc), env_cache_health_failed=True)
-                return JobResult(success=False, summary=response.model_dump_json(exclude_none=True),
-                                 error_code="env_cache_health_failed")
-            log.exception("perform_job.dispatch_failed", exc_type=type(exc).__name__)
-            return JobResult(
-                success=False,
-                summary=_redact_secrets(
-                    f"dispatch failed: {type(exc).__name__}: {exc}",
-                ),
-                error_code="dispatch_error",
-            )
+            return _failed_job_dispatch(exc)
 
         resp = await _poll_job_status(perf, settings)
 

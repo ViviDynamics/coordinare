@@ -317,6 +317,17 @@ def _mount_for(
     return state.cache_dir, f"{container_devenv_root}/{state.sanitised_name}"
 
 
+def _clear_reviewed_environment(cache: EnvCacheState) -> None:
+    """Drop every readiness artifact before producing a replacement contract."""
+    cache.rendered_verify_sh = None
+    cache.rendered_activate_sh = None
+    cache.environment_manifest = None
+    cache.environment_assessment = None
+    cache.environment_verification = None
+    cache.cache_dir_ready = False
+    cache.last_bootstrap_succeeded = None
+
+
 def kubernetes_cache_verified(ec: EnvCacheState) -> bool:
     """Persisted verifier success plus a complete frozen claim summary gates Kubernetes readiness."""
     return (saved_execution_accepted(ec) and ec.last_bootstrap_succeeded is True and ec.cache_dir_ready
@@ -671,19 +682,18 @@ async def _verify_cache_clean(
     # 218: the script that decides success is the one the DAEMON rendered, kept in daemon
     # memory and the snapshot. The copy in the cache is never executed. Every refusal here is
     # False, not None: None is degraded and would let a performer-caused refusal pass.
-    if accepted_environment(ec) is None:
-        return False, "no independently accepted environment contract; rebuild the cache"
     script = ec.rendered_verify_sh
-    if script is None:
-        logger.error(
-            "env_cache.clean_verify_refused",
-            symphony=symphony_name,
-            reason="no daemon-rendered verify.sh on record",
-        )
-        return False, "no daemon-rendered verify.sh on record for this cache"
-    refusal = _verify_cache_refusal(symphony_name, ec, performer_mounts)
+    refusal = None
+    if accepted_environment(ec) is None:
+        refusal = "no independently accepted environment contract; rebuild the cache"
+    elif script is None:
+        refusal = "no daemon-rendered verify.sh on record for this cache"
+    else:
+        refusal = _verify_cache_refusal(symphony_name, ec, performer_mounts)
     if refusal is not None:
+        logger.error("env_cache.clean_verify_refused", symphony=symphony_name, reason=refusal)
         return False, refusal
+    script = str(script)
     # 218 (round 4): an unreachable daemon is infrastructure. The CLI exits 1 for it, the same code as a
     # failed verdict, so the probe answers first. A planted toolchain that exits 1 or 125 is still a verdict.
     if not await _docker_daemon_reachable():
@@ -697,10 +707,6 @@ async def _verify_cache_clean(
         svc.devenv_root if isinstance(svc, HTTPPerformerService) else DEFAULT_DEVENV_ROOT
     )
     image = getattr(getattr(svc, "_config", None), "image", None) or "coordinare-performer:full"
-    try:
-        immutable_verifier_image(image)
-    except ValueError as exc:
-        return False, str(exc)
     # Mount at the SAME container path the bootstrap used, since activate.sh /
     # verify.sh hardcode that absolute DEVEENV path.
     container_path = f"{devenv_root}/{ec.sanitised_name}"
@@ -728,11 +734,12 @@ async def _verify_cache_clean(
     )
 
     try:
+        immutable_verifier_image(image)
         files = await verification_sources(state, symphony_name, ec)
         credentials = await verification_environment(state, symphony_name, ec, performer_mounts)
         script = source_setup(files) + credentials + script
-    except (ValueError, OSError, RuntimeError):
-        return False, "could not obtain the accepted verification source snapshot"
+    except (ValueError, OSError, RuntimeError) as exc:
+        return False, f"clean verification inputs refused: {exc}"
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -750,8 +757,8 @@ async def _verify_cache_clean(
     outcome = await _verify_outcome(proc, name, symphony_name, script, cache=ec)
     if outcome[0] is True:
         if not await _remove_verify_container(name):
-            return None, "clean verifier container removal was not confirmed"
-        if ec.environment_verification is not None:
+            outcome = None, "clean verifier container removal was not confirmed"
+        elif ec.environment_verification is not None:
             ec.environment_verification["image_ref"] = image
     return outcome
 
@@ -1462,21 +1469,8 @@ class EnvCacheService:
 
         cache_mount_path = f"{container_devenv_root}/{cache_state.sanitised_name}"
 
-        # 077: derive an authoritative dependency manifest from the symphony's
-        # structured project files (best-effort: missing files are normal), then
-        # layer in README-described system packages via the optional LLM pass.
-        # The manifest drives BOTH the install checklist (persona) and the
-        # verification (coordinare-written verify.sh) so a pinned tool version
-        # can't be silently missed by a free-forming agent.
-        # 091: surface durably-declared stateful services so the bootstrap fetches
-        # their binaries into the cache (deb-into-<cache>/debs/). Best-effort: a
-        # missing/invalid .coordinare/score.json is normal — fall back to no services.
-        # Fetched BEFORE the manifest artifacts so verify.sh can emit a live
-        # readiness probe (093) for each coordinare-managed service.
-        # 116: when coordinare does not manage stateful services (the default), the
-        # env-bootstrap PERFORMER owns env setup end-to-end. Leave declared_services
-        # empty so no deb-fetch persona block is injected and coordinare writes no
-        # service scripts; the performer's own service inference handles services.
+        # Service declarations are evidence for the reviewed generic lifecycle.
+        # Core execution never selects recipes from a service or language name.
         manages_services = False
         declared_services = await self._fetch_declared_services(
             github_org=eff_config.github_org, repo=repo, github_service=github_service,
@@ -1486,13 +1480,7 @@ class EnvCacheService:
         # 218: forget the previous bootstrap's scripts. Only a complete write in
         # _build_manifest_artifacts sets them again, so a refused or failed write leaves none
         # and the verify fails closed.
-        cache_state.rendered_verify_sh = None
-        cache_state.rendered_activate_sh = None
-        cache_state.environment_manifest = None
-        cache_state.environment_assessment = None
-        cache_state.environment_verification = None
-        cache_state.cache_dir_ready = False
-        cache_state.last_bootstrap_succeeded = None
+        _clear_reviewed_environment(cache_state)
         # 234: the cache is about to be rewritten, so the frozen manifest of the previous one is no longer true.
         # Consumers are refused until the next verified bootstrap freezes a new one.
         cache_state.provenance_digest = None
@@ -2264,7 +2252,8 @@ class EnvCacheService:
         )
 
         if cache_state is None or not cache_state.bootstrap_commit_sha:
-            raise EnvironmentDiscoveryError("environment discovery requires an immutable source commit")
+            message = "environment discovery requires an immutable source commit"
+            raise EnvironmentDiscoveryError(message)
         cache_state.environment_manifest = None
         cache_state.environment_assessment = None
         cache_state.environment_verification = None
