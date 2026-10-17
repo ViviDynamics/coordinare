@@ -87,10 +87,14 @@ A manual trigger while paused returns 409. Resume the symphony before retrying.
 Idle bootstrap reaping defaults to 1800 seconds; an unmatched tool call has a
 separate 2700-second bound. The outer bootstrap wall clock defaults to 3600 seconds.
 These existing job limits also constrain bounded workflows. Discovery and review
-have their own shorter phase budgets, described in the operator guide.
+have a shared 600-second attempt budget plus 120-second phase budgets, at most
+two repair rounds, 128 total model calls and 512 total reads by default. Directory
+pages and batched reads bound model context. See the operator guide for configuration.
 
 State schema 40 persists the reviewed manifest and assessment. Older snapshots
-load without an accepted pair and require reconstruction before consumer dispatch.
+load without usable capability/inventory bindings and require reconstruction before
+consumer dispatch. A completion success flag cannot waive missing/failed clean
+execution or frozen provenance, and verified installations may use any layout.
 Existing cache bytes are retained while replacement evidence is obtained; old
 success flags or scripts do not count as acceptance. Upgrade daemon, performer and
 trusted verifier images together. Before retrying, pin the clean verifier image by

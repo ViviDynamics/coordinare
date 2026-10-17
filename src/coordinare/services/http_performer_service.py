@@ -559,30 +559,29 @@ class HTTPPerformerService:
             if getattr(status, "environment_manifest_version", 0) < 1:
                 message = "performer image too old for reviewed environment manifests (#351); roll out daemon and performer together"
                 raise ValueError(message)
-            if payload.role != "env_bootstrap":
-                verified_image = payload.metadata.get("environment_verification_image")
-                if not isinstance(verified_image, str) or not verified_image:
-                    message = "consumer requires immutable clean verified image identity; rebuild the environment"
+            verified_image = payload.metadata.get("environment_verification_image")
+            if not isinstance(verified_image, str) or not verified_image:
+                message = "consumer requires immutable clean verified image identity; rebuild the environment"
+                raise ValueError(message)
+            if verified_image is not None:
+                from coordinare.services.environment_acceptance import immutable_verifier_image
+
+                image = immutable_verifier_image(str(self._config.image))
+                if image != verified_image:
+                    message = "consumer image differs from the clean verified image; rebuild the environment"
                     raise ValueError(message)
-                if verified_image is not None:
-                    from coordinare.services.environment_acceptance import immutable_verifier_image
+                verified_platform = payload.metadata.get("environment_verification_platform")
+                advertised = "environment_platform" in getattr(status, "model_fields_set", {"environment_platform"})
+                actual_platform = getattr(status, "environment_platform", "") if advertised else ""
+                if not verified_platform or not actual_platform or actual_platform != verified_platform:
+                    message = "consumer runtime platform differs from the clean verified platform; rebuild the environment"
+                    if verified_platform and actual_platform:
+                        from coordinare.services.environment_acceptance import (
+                            EnvironmentIdentityMismatchError,
+                        )
 
-                    image = immutable_verifier_image(str(self._config.image))
-                    if image != verified_image:
-                        message = "consumer image differs from the clean verified image; rebuild the environment"
-                        raise ValueError(message)
-                    verified_platform = payload.metadata.get("environment_verification_platform")
-                    advertised = "environment_platform" in getattr(status, "model_fields_set", {"environment_platform"})
-                    actual_platform = getattr(status, "environment_platform", "") if advertised else ""
-                    if not verified_platform or not actual_platform or actual_platform != verified_platform:
-                        message = "consumer runtime platform differs from the clean verified platform; rebuild the environment"
-                        if verified_platform and actual_platform:
-                            from coordinare.services.environment_acceptance import (
-                                EnvironmentIdentityMismatchError,
-                            )
-
-                            raise EnvironmentIdentityMismatchError(message)
-                        raise ValueError(message)
+                        raise EnvironmentIdentityMismatchError(message)
+                    raise ValueError(message)
         if payload.role == "env_bootstrap":
             return  # the cache writer has capability/isolation gates but no frozen payload
         if payload.env_provenance is None:

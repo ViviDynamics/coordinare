@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import hashlib
 
-from coordinare_service_inference.environment.models import EnvironmentManifest
+from coordinare_service_inference.environment.models import (
+    EnvironmentManifest,
+    ExecutionCapabilities,
+)
 
 
 def reviewed_metadata(*, capabilities=None, checks=None, install=None, services=None, activation=None, source_commit="a" * 40,
@@ -27,6 +30,11 @@ def reviewed_cache(cache, *, files=None, capabilities=None, source_commit="a" * 
     """Bind a persisted cache fixture to actual inspected source bytes."""
     contents = files if files is not None else {"tools.plan": "baseline"}
     inputs = {path: hashlib.sha256(text.encode()).hexdigest() for path, text in contents.items()}
+    if capabilities is None:
+        capabilities = ExecutionCapabilities(schema_version=1, image_ref="trusted/global@sha256:" + "a" * 64,
+            platform="linux/x86_64", cache_mount_path=f"/devenv/{cache.sanitised_name}",
+            install_network="enabled", verify_network="disabled")
+    cache.environment_capabilities = capabilities.model_dump()
     metadata = reviewed_metadata(inputs=inputs, capabilities=capabilities, source_commit=source_commit, symphony_name=cache.symphony_name)
     cache.environment_manifest = metadata["environment_manifest"]
     cache.environment_assessment = metadata["environment_assessment"]
@@ -52,3 +60,17 @@ def verification_output(manifest=None):
         CheckResult(id=command.id, status="pass", required=command.required, exit_code=0,
                     manifest_digest=accepted.digest()) for command in commands])
     return (report.model_dump_json() + "\n").encode()
+
+
+def record_verified_cache_fixture(cache):
+    """Model the trusted verifier/freeze callback in lifecycle unit tests only.
+
+    These tests replace external execution, so they must supply its contract-bound
+    evidence explicitly before simulating a successful completion notification.
+    The real-repository validation harness must never call this fixture helper.
+    """
+    import json
+
+    cache.environment_verification = json.loads(verification_output(cache.environment_manifest))
+    cache.environment_verification["image_ref"] = "trusted/global@sha256:" + "a" * 64
+    cache.provenance_digest = cache.provenance_digest or "f" * 64

@@ -2327,6 +2327,19 @@ async def _prepare_env_dispatch(state: CoordinareState, service: Any, card_id: s
             card_context["environment_manifest"] = _ec_state_for_sym.environment_manifest
             card_context["environment_assessment"] = _ec_state_for_sym.environment_assessment
             card_context["environment_manifest_digest"] = (_ec_state_for_sym.environment_assessment or {}).get("manifest_digest")
+            if _is_bootstrap_dispatch:
+                from coordinare_service_inference.environment.models import ExecutionCapabilities
+
+                try:
+                    target = ExecutionCapabilities.model_validate(_ec_state_for_sym.environment_capabilities)
+                    if target.digest() != (_ec_state_for_sym.environment_manifest or {}).get("capabilities_digest"):
+                        raise ValueError("installer runtime identity differs")
+                except ValueError:
+                    _ec_state_for_sym.last_bootstrap_error = "installer target identity is missing or differs; rediscovery required"
+                    _release_slot_on_error()
+                    return _extra_volumes, state
+                card_context["environment_verification_image"] = target.image_ref
+                card_context["environment_verification_platform"] = target.platform
             if provenance is not None:
                 card_context["env_provenance"] = provenance
                 card_context["environment_verification_image"] = (_ec_state_for_sym.environment_verification or {}).get("image_ref")

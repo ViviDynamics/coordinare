@@ -14,6 +14,7 @@ from tests.unit.env_manifest_fixture import reviewed_cache
 @pytest.mark.asyncio
 async def test_bootstrap_dispatch_carries_contract_without_consumer_provenance(tmp_path, monkeypatch):
     cache = reviewed_cache(EnvCacheState(symphony_name='sym', sanitised_name='sym', cache_dir=tmp_path))
+    cache.environment_verification = None  # Bootstrap has a target, not clean execution evidence yet.
     state = {'current_symphony': 'sym', 'env_cache': {'sym': cache}}
     context = {}
 
@@ -29,7 +30,8 @@ async def test_bootstrap_dispatch_carries_contract_without_consumer_provenance(t
     assert context['environment_assessment'] == cache.environment_assessment
     assert context['environment_manifest_digest'] == cache.environment_assessment['manifest_digest']
     assert 'env_provenance' not in context
-    assert 'environment_verification_image' not in context
+    assert context['environment_verification_image'] == cache.environment_capabilities['image_ref']
+    assert context['environment_verification_platform'] == cache.environment_capabilities['platform']
 
 
 @pytest.mark.asyncio

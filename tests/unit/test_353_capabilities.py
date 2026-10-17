@@ -121,3 +121,42 @@ async def test_docker_capabilities_use_inspected_image_platform(monkeypatch):
     assert result.image_ref == IMAGE
     assert result.platform == "linux/aarch64"
     assert result.cache_mount_path == "/devenv/sym"
+
+
+@pytest.mark.asyncio
+async def test_distinct_bootstrap_image_cannot_claim_target_capabilities():
+    global_config = SimpleNamespace(agent_transport="kubernetes", kubernetes_verifier_image=IMAGE,
+        kubernetes_verifier_platform="linux/x86_64", env_cache=SimpleNamespace(kubernetes_verifier_network_isolated=True),
+        performer_endpoints=[SimpleNamespace(id="bootstrap", image="other/image@sha256:" + "b" * 64)])
+    state = {"config": global_config, "env_cache": {"sym": cache_for(reviewed_metadata())},
+        "symphony_configs": {"sym": SimpleNamespace(env_bootstrap_performer_id="bootstrap")}}
+    with pytest.raises(ValueError, match=r"bootstrap.*image"):
+        await resolve_execution_capabilities(state, "sym")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["missing", "image", "platform"])
+async def test_installer_dispatch_checks_target_identity_before_execution(kind):
+    from tests.unit.test_351_performer_capability import PLATFORM, payload, service, status
+
+    target = payload(image="performer@sha256:" + "a" * 64)
+    if kind == "missing":
+        target.metadata = {}
+    elif kind == "image":
+        target.metadata["environment_verification_image"] = "other@sha256:" + "b" * 64
+    else:
+        target.metadata["environment_verification_platform"] = PLATFORM + "-changed"
+    with pytest.raises(ValueError, match=r"image|platform"):
+        await service()._require_provenance_capability(target, status(1))
+
+
+def test_target_description_survives_snapshot_before_installer_dispatch():
+    from coordinare.daemon import _persist_env_cache, _rehydrate_env_cache
+
+    target = capabilities()
+    cache = cache_for(reviewed_metadata(capabilities=target))
+    cache.environment_capabilities = target.model_dump()
+    snapshot = _persist_env_cache({"sym": cache})["sym"]
+    restored = EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir="/tmp/cache")
+    _rehydrate_env_cache({"env_cache": {"sym": restored}}, SimpleNamespace(env_cache={"sym": snapshot}))
+    assert restored.environment_capabilities == target.model_dump()

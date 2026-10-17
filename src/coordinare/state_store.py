@@ -691,6 +691,7 @@ class EnvCacheStateSnapshot(BaseModel):
     # copies. Old snapshots load with None, which fails closed (one re-bootstrap). The model
     # strips whitespace by default, which would drop the trailing newline and break the exact
     # activate.sh comparison, so these two fields keep their text byte for byte.
+    environment_capabilities: dict[str, Any] | None = None
     environment_manifest: dict[str, Any] | None = None
     environment_assessment: dict[str, Any] | None = None
     environment_verification: dict[str, Any] | None = None

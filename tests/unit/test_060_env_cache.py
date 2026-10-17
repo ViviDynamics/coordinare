@@ -25,7 +25,11 @@ from coordinare.services.env_cache import (
     sanitise_symphony_name,
     write_service_scripts,
 )
-from tests.unit.env_manifest_fixture import reviewed_metadata, verification_output
+from tests.unit.env_manifest_fixture import (
+    record_verified_cache_fixture,
+    reviewed_metadata,
+    verification_output,
+)
 
 
 class _BootstrapClock:
@@ -61,6 +65,7 @@ def _configured(coordinare_config):
     coordinare_config.global_config.conducting = None
     coordinare_config.global_config.kubernetes_verifier_image = None
     coordinare_config.global_config.env_cache = EnvCacheConfig()
+    coordinare_config.global_config.bootstrap_max_seconds = 3600
     return coordinare_config
 
 
@@ -821,6 +826,7 @@ class TestOnBootstrapComplete:
         )
         _seed_toolchain(tmp_path)
         state = {"env_cache": {"sym": cache_state}}
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.bootstrap_in_flight is False
         assert cache_state.last_bootstrap_succeeded is True
@@ -842,6 +848,7 @@ class TestOnBootstrapComplete:
         assert cache_state.last_bootstrap_error == "verify failed: chromium missing"
         # A later success clears the error.
         _seed_toolchain(tmp_path)
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.last_bootstrap_succeeded is True
         assert cache_state.last_bootstrap_error is None
@@ -857,6 +864,7 @@ class TestOnBootstrapComplete:
             pending_sha="sha2",
         )
         state = {"env_cache": {"sym": cache_state}}
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.readme_sha is None
         assert cache_state.pending_sha is None
@@ -872,6 +880,7 @@ class TestOnBootstrapComplete:
             pending_sha="sha1",
         )
         state = {"env_cache": {"sym": cache_state}}
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
         # Same SHA — no forced recheck needed
         assert cache_state.readme_sha == "sha1"
@@ -909,11 +918,12 @@ class TestOnBootstrapComplete:
         )
         _seed_toolchain(tmp_path)
         state = {"env_cache": {"sym": cache_state}}
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.last_bootstrap_succeeded is True
         assert cache_state.readme_sha == "sha1"
 
-    def test_empty_mount_downgrades_reported_success(self, tmp_path: Path) -> None:
+    def test_seed_only_mount_without_clean_execution_downgrades_reported_success(self, tmp_path: Path) -> None:
         """092: a bootstrap that reports success but leaves the mount holding
         only the coordinare-seeded files (or nothing) installed the toolchain in
         the wrong location. The success is downgraded to failure LOUDLY so the
@@ -934,12 +944,13 @@ class TestOnBootstrapComplete:
         )
         state = {"env_cache": {"sym": cache_state}}
         _accept(cache_state, nonempty=True)
+        cache_state.environment_verification = None
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.last_bootstrap_succeeded is False
         assert cache_state.cache_dir_ready is False
         assert cache_state.bootstrap_attempts == 1
         assert cache_state.last_bootstrap_error is not None
-        assert "wrong location" in cache_state.last_bootstrap_error
+        assert "required clean consumer execution" in cache_state.last_bootstrap_error
 
     def test_marks_cache_ready_only_on_success(self, tmp_path: Path) -> None:
         """061: cache_dir_ready must flip True only after a successful bootstrap.
@@ -957,6 +968,7 @@ class TestOnBootstrapComplete:
         )
         _seed_toolchain(tmp_path)
         state = {"env_cache": {"sym": cache_state}}
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.cache_dir_ready is True
 
@@ -2106,7 +2118,7 @@ class TestManifestArtifacts:
 
         svc = EnvCacheService(_configured(MagicMock()))
         cache_dir = tmp_path / "cache"
-        cache_state = EnvCacheState(symphony_name="sym", sanitised_name="sym-abc",
+        cache_state = EnvCacheState(symphony_name="sym", sanitised_name="sym",
             cache_dir=cache_dir, bootstrap_commit_sha=_head("same_sha"))
         metadata = reviewed_metadata(source_commit=cache_state.bootstrap_commit_sha,
             checks=[{"id": "baseline", "argv": ["zog", "--check", "7"]}],
@@ -2144,7 +2156,7 @@ class TestManifestArtifacts:
 
         svc = EnvCacheService(_configured(MagicMock()))
         cache_dir = tmp_path / "cache"
-        cache_state = EnvCacheState(symphony_name="sym", sanitised_name="sym-abc",
+        cache_state = EnvCacheState(symphony_name="sym", sanitised_name="sym",
             cache_dir=cache_dir, bootstrap_commit_sha=_head("same_sha"))
         monkeypatch.setattr("coordinare.services.environment_discovery.discover_and_review",
             _accepted_discovery)
@@ -2264,6 +2276,7 @@ class TestBootstrapCircuitBreaker:
         )
         _seed_toolchain(tmp_path)
         state = {"env_cache": {"sym": cache_state}}
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.bootstrap_attempts == 0
         assert cache_state.bootstrap_exhausted is False
@@ -2566,6 +2579,7 @@ class TestRestartHonorPath:
         svc = self._make_service()
         cache_state = self._make_cache_state(tmp_path, last_bootstrap_succeeded=None)
         state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
 
         dispatch_fn = AsyncMock()
