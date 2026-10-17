@@ -231,3 +231,22 @@ repair/review amendments, and the observed Elm failure. Artifact assertions reus
 existing action dependencies; probe evidence has separate identities and authority.
 No mandatory evidence or execution gate is relaxed. Written-spec and subsequent
 implementation-plan review remain outstanding; no product code accompanies this draft.
+
+## Approved correction after the first Elm run
+
+The user directed “Fix it” after the 237.66-second Elm hold. Production bootstrap
+and the shared validation harness now require at least one complete, validated
+capability-probe batch before accepting a manifest. A premature manifest receives
+one explicit preflight-stage reminder without consuming schema corrections; another
+attempt to skip preflight holds. Existing call/read/time/batch limits do not renew.
+Prior completed observations may serve a repair only when their source, image,
+platform, completion and cleanup evidence still validate. Direct low-level discovery
+callers retain optional probing; the production service always requires it.
+
+A bare review object containing exactly the three schema-valid fields `verdict`,
+`rationale` and `sources` is normalized to the existing assessment envelope before
+validation. No judgment, citation or provenance is invented. Extra authority/tool
+fields, ambiguous mixtures, malformed values and duplicate keys remain rejected.
+All independent evidence binding and coverage/executable gates still apply. This
+prevents a valid coverage revision from spending an exhausted schema allowance merely
+because its outer wrapper was absent.

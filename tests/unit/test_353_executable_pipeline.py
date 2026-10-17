@@ -15,9 +15,15 @@ from tests.unit.test_353_bootstrap_pipeline import (
     SOURCE,
     Proposal,
     local_clean_transport,
+    probe_transport,
     publish,
     setup,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_probe_io(monkeypatch):
+    monkeypatch.setattr('coordinare.services.environment_probe_service.execute_environment_probe', probe_transport)
 
 
 class PortableProposal(Proposal):
@@ -112,8 +118,9 @@ async def test_reservations_are_durable_before_model_and_source_requests(tmp_pat
         return await original(messages)
     await publish(service, cache, state, capability, model)
     assert saves[-1]['status'] == 'executing'
-    assert saves[-1]['calls'] == 4
-    assert saves[-1]['reads'] == 3
+    assert saves[-1]['calls'] == 5
+    assert saves[-1]['reads'] == 4
+    assert len(saves[-1]['probe_reports']) == 1
 
 
 @pytest.mark.asyncio

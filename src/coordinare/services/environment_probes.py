@@ -5,13 +5,13 @@ import hashlib
 import json
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from coordinare_service_inference.environment.models import (
     ExecutionCapabilities,  # noqa: TC002 - pydantic resolves field types at runtime
     ProbeCommand,  # noqa: TC002 - pydantic resolves field types at runtime
 )
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 
@@ -92,6 +92,19 @@ class ProbeReport(ProbeBase):
 
 
 ProbeExecutor = Callable[[ProbePlan], Awaitable[ProbeReport]]
+
+
+def validate_saved_probe_reports(reports: list[dict[str, Any]], source_commit: str, capabilities: ExecutionCapabilities) -> None:
+    try:
+        parsed = [ProbeReport.model_validate(data) for data in reports]
+    except ValidationError:
+        message = "saved capability preflight evidence is malformed"
+        raise EnvironmentDiscoveryError(message, code="probe_report_invalid") from None
+    if any(report.source_commit != source_commit or report.image_ref != capabilities.image_ref
+           or report.platform != capabilities.platform or not report.cleanup_confirmed
+           or any(item.status != "completed" or item.truncated for item in report.results) for report in parsed):
+        message = "saved capability preflight is incomplete or differs from the current target"
+        raise EnvironmentDiscoveryError(message, code="probe_report_invalid")
 
 
 def validate_probe_report(plan: ProbePlan, report: ProbeReport) -> None:

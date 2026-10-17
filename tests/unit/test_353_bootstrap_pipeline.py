@@ -81,6 +81,10 @@ class Proposal:
                 "source_commit": context["source_commit"], "manifest_digest": context["manifest_digest"], "sources": ["guide"],
                 "capabilities_digest": context["capabilities_digest"], "inventory_digest": context["inventory_digest"],
                 "verdict": self.verdict, "rationale": "The required persistent payload has an independent executable check."})})
+        if context.get('preflight_required') and not any('probe_result' in item['content'] for item in messages):
+            return json.dumps({'probe':{'schema_version':1,
+                'commands':[{'id':'payload-runtime','argv':[sys.executable,'--version']}],
+                'citations':{'payload-runtime':['guide']}, 'questions':{'payload-runtime':'Is the documented payload runtime available?'}}})
         data = {"schema_version": 1, "policy_version": "351-v1", "symphony_name": context["symphony_name"], "source_commit": context["source_commit"],
             "inputs": {"guide": hashlib.sha256(SOURCE.encode()).hexdigest()}, "inventory_digest": context["inventory_digest"],
             "capabilities_digest": context["capabilities_digest"], "requirements": [
@@ -99,10 +103,26 @@ class Proposal:
 async def publish(service, cache, state, capability, proposal):
     github = Repository()
     state["github_service"] = github
-    await service._build_manifest_artifacts(performer_mounts=(cache.cache_dir.parent,), symphony_name="suite",
-        repo="suite", github_org="org", github_service=github, readme_contents={}, current_sha="fingerprint",
-        cache_dir=cache.cache_dir, cache_mount_path=capability.cache_mount_path, llm_chat=proposal,
-        cache_state=cache, capabilities=capability)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr('coordinare.services.environment_probe_service.execute_environment_probe', probe_transport)
+        await service._build_manifest_artifacts(performer_mounts=(cache.cache_dir.parent,), symphony_name="suite",
+            repo="suite", github_org="org", github_service=github, readme_contents={}, current_sha="fingerprint",
+            cache_dir=cache.cache_dir, cache_mount_path=capability.cache_mount_path, llm_chat=proposal,
+            cache_state=cache, capabilities=capability)
+
+
+async def probe_transport(plan, **kwargs):
+    """Stub only disposable-runtime I/O; retain source reads, reservations and validators."""
+    from coordinare.services.environment_probes import ProbeReport
+    return ProbeReport(schema_version=1, plan_digest=plan.digest(), source_commit=plan.source_commit,
+        image_ref=plan.capabilities.image_ref, platform=plan.capabilities.platform,
+        results=[{'id':command.id,'status':'completed','exit_code':0,'output':'fixture runtime present','truncated':False}
+            for command in plan.request.commands], cleanup_confirmed=True)
+
+
+@pytest.fixture(autouse=True)
+def isolated_probe_io(monkeypatch):
+    monkeypatch.setattr('coordinare.services.environment_probe_service.execute_environment_probe', probe_transport)
 
 
 async def local_clean_transport(monkeypatch, capability, cache):

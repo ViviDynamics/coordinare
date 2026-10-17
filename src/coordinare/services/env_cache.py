@@ -2441,7 +2441,7 @@ class EnvCacheService:
                 manifest, assessment = await discover_and_review(
                     symphony_name=symphony_name, commit=commit, paths=paths,
                     fetch=fetch, chat=llm_chat, capabilities=capabilities, declared_services=declared_services,
-                    limits=limits, budget=budget, previous_manifest=previous, execution_feedback=feedback, probe_executor=probe_executor,
+                    limits=limits, budget=budget, previous_manifest=previous, execution_feedback=feedback, probe_executor=probe_executor, require_preflight=True,
                 )
         except TimeoutError:
             budget.error_code = "attempt_deadline"
