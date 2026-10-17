@@ -65,6 +65,14 @@ from coordinare.services.environment_acceptance import (
     immutable_verifier_image,
     saved_execution_accepted,
 )
+from coordinare.services.environment_repair import (
+    begin_attempt,
+    finish_attempt,
+    journal_for,
+    prepare_repair,
+    repair_context,
+    save_attempt,
+)
 from coordinare.services.kubernetes_provenance import parse_summary, validate_summary
 from coordinare.services.kubernetes_verifier import (
     VerifierConfigurationError,
@@ -795,7 +803,7 @@ async def _verify_cache_runtime(state: Mapping[str, Any], symphony_name: str, sv
         )
         return None, f"clean verify could not run: {exc}"
     outcome = await _verify_outcome(proc, name, symphony_name, script, cache=ec)
-    if outcome[0] is True:
+    if outcome[0] is not None:
         if not await _remove_verify_container(name):
             outcome = None, "clean verifier container removal was not confirmed"
         elif ec.environment_verification is not None:
@@ -1510,6 +1518,7 @@ class EnvCacheService:
                 )
                 return
 
+        self.prepare_bootstrap_generation(cache_state)
         cache_mount_path = f"{container_devenv_root}/{cache_state.sanitised_name}"
 
         # Service declarations are evidence for the reviewed generic lifecycle.
@@ -2269,6 +2278,29 @@ class EnvCacheService:
             )
         return services
 
+    def prepare_bootstrap_generation(self, cache_state: EnvCacheState) -> None:
+        """Prepare rejected execution's fresh generation before computing mount paths."""
+        if cache_state.environment_attempt is None:
+            return
+
+        journal = journal_for(cache_state)
+        if journal.source_commit == cache_state.bootstrap_commit_sha and journal.status == "repair_pending":
+            prepare_repair(cache_state)
+
+    async def _checkpoint_environment_attempt(self, cache_state: EnvCacheState, budget: Any) -> None:
+        """Await durable reservations; a failed state write prevents external work."""
+
+        save_attempt(cache_state, budget)
+        save = self._kubernetes_state.get("snapshot_save_fn")
+        if callable(save):
+            try:
+                await save()
+            except Exception:
+                message = "environment attempt checkpoint could not be persisted"
+                from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+
+                raise EnvironmentDiscoveryError(message, code="attempt_persistence") from None
+
     async def _build_manifest_artifacts(
         self,
         *,
@@ -2331,11 +2363,14 @@ class EnvCacheService:
         )
         outer_budget = getattr(cfg, "bootstrap_max_seconds",
             getattr(self._coordinare_config.global_config, "bootstrap_max_seconds", 3600))
-        from coordinare.services.environment_attempt import AttemptBudget
 
-        deadline = min(limits.attempt_timeout_seconds, outer_budget) if outer_budget > 0 else limits.attempt_timeout_seconds
-        budget = AttemptBudget(timeout_seconds=deadline, max_calls=limits.max_model_calls,
-            max_reads=limits.max_total_reads, max_repairs=limits.max_repairs)
+        budget = begin_attempt(cache_state, limits, outer_seconds=outer_budget)
+        previous, feedback = repair_context(cache_state)
+
+        async def checkpoint() -> None:
+            await self._checkpoint_environment_attempt(cache_state, budget)
+
+        budget.checkpoint = checkpoint
         try:
             async with asyncio.timeout_at(budget.deadline):
                 budget.stage = "capabilities"
@@ -2358,7 +2393,7 @@ class EnvCacheService:
                 manifest, assessment = await discover_and_review(
                     symphony_name=symphony_name, commit=commit, paths=paths,
                     fetch=fetch, chat=llm_chat, capabilities=capabilities, declared_services=declared_services,
-                    limits=limits, budget=budget,
+                    limits=limits, budget=budget, previous_manifest=previous, execution_feedback=feedback,
                 )
         except TimeoutError:
             budget.error_code = "attempt_deadline"
@@ -2375,6 +2410,7 @@ class EnvCacheService:
             message = "environment runtime or source inventory is unavailable"
             raise EnvironmentDiscoveryError(message, code=budget.error_code) from None
         finally:
+            save_attempt(cache_state, budget)
             logger.info("env_cache.manifest_attempt", symphony=symphony_name, **budget.summary())
         activation = render_activate(manifest, cache_mount_path=cache_mount_path)
         verification = render_verify(manifest, cache_mount_path=cache_mount_path)
@@ -2399,6 +2435,8 @@ class EnvCacheService:
         cache_state.manifest_items = [requirement.model_dump(mode="json") for requirement in manifest.requirements]
         cache_state.rendered_activate_sh = activation
         cache_state.rendered_verify_sh = verification
+        save_attempt(cache_state, budget, executing=True)
+        await self._checkpoint_environment_attempt(cache_state, budget)
         logger.info("env_cache.manifest_accepted", symphony=symphony_name,
                     digest=manifest.digest(), requirements=len(manifest.requirements))
         return "ACCEPTED ENVIRONMENT CONTRACT\n" + manifest.model_dump_json(indent=2), True, True
@@ -2671,6 +2709,15 @@ class EnvCacheService:
         )
         self._flush_bootstrap_snapshot(state, symphony_name)
 
+    def record_bootstrap_execution(
+        self, symphony_name: str, state: dict[str, Any], evidence: dict[str, Any] | None,
+        *, cleanup_confirmed: bool,
+    ) -> None:
+        """Admit rejected execution separately from publishing bootstrap completion."""
+        cache = (state.get("env_cache") or {}).get(symphony_name)
+        if cache is not None and cache.environment_attempt is not None:
+            finish_attempt(cache, False, evidence, cleanup_confirmed=cleanup_confirmed)
+
     def on_bootstrap_complete(
         self,
         symphony_name: str,
@@ -2702,6 +2749,11 @@ class EnvCacheService:
         refusal_error = self._completion_refusal(symphony_name, cache_state) if success else None
         if refusal_error is not None:
             success, error = False, refusal_error
+
+        try:
+            finish_attempt(cache_state, success, None, cleanup_confirmed=False)
+        except (ValueError, RuntimeError):
+            success, error = False, "environment attempt deadline or evidence refused completion"
 
         cache_state.last_bootstrap_succeeded = success
         if not success:

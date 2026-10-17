@@ -103,6 +103,7 @@ class SourceInspection:
             raise EnvironmentDiscoveryError(message, code="invalid_tool_arguments")
         if self.budget is not None:
             self.budget.reserve_reads(len(paths))
+            await self.budget.flush()
         self.reads += len(paths)
         if self.reads > self.limits.max_reads:
             message = f"{self.name} file read limit exceeded"

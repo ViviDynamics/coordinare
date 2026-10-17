@@ -214,3 +214,72 @@ async def test_private_installer_clone_ignores_host_git_filters(tmp_path, monkey
         await _install(Snapshot(source, commit, "fixture", "suite"), cache, capabilities.image_ref, target, 5)
     assert not marker.exists(), "repository attributes invoked a host Git filter outside the container"
     assert (target / "installer-source/payload").read_text() == "source bytes\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('code,error,confirmed', [
+    (0, b'', True), (1, b'Error: No such container: fixture', True),
+    (1, b'Cannot connect to the Docker daemon', False),
+])
+async def test_cleanup_requires_confirmed_container_absence(monkeypatch, code, error, confirmed):
+    from unittest.mock import AsyncMock
+
+    from scripts.validate_environment_repositories import _remove_container
+
+    process = AsyncMock()
+    process.returncode = code
+    process.communicate.return_value = (b'', error)
+    monkeypatch.setattr('asyncio.create_subprocess_exec', AsyncMock(return_value=process))
+    assert await _remove_container('fixture') is confirmed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('confirmed,expected', [(True, 2), (False, 1)])
+async def test_harness_archives_rejected_attempt_and_requires_new_scope(tmp_path, monkeypatch, confirmed, expected):
+    from tests.unit.env_manifest_fixture import verification_output
+    from tests.unit.test_353_bootstrap_pipeline import SOURCE, Proposal
+
+    source = tmp_path / 'source'
+    source.mkdir()
+    subprocess.run(['git', 'init', '-q', str(source)], check=True)
+    (source/'guide').write_text(SOURCE)
+    subprocess.run(['git', '-C', str(source), 'add', '.'], check=True)
+    subprocess.run(['git', '-C', str(source), '-c', 'user.name=Fixture', '-c',
+        'user.email=fixture@example.invalid', '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'source'], check=True)
+    commit = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+    image = 'trusted@sha256:'+'a'*64
+    async def identity(_image):
+        return image, 'linux/x86_64'
+    monkeypatch.setattr('coordinare.services.environment_capabilities._docker_identity', identity)
+    paths = []
+    async def cleanup(target, cache, image):
+        import shutil
+        if cache.cache_dir.exists():
+            shutil.rmtree(cache.cache_dir)
+        return True
+    monkeypatch.setattr('scripts.validate_environment_repositories._cleanup_case', cleanup)
+    async def execute(snapshot, service, state, *, target, result, **kwargs):
+        cache = state['env_cache'][snapshot.name]
+        paths.append(cache.cache_dir)
+        assert not (target/'execution-approved.json').exists()
+        if len(paths) == 1:
+            report = json.loads(verification_output(cache.environment_manifest))
+            report.update(platform='linux/x86_64', image_ref=image)
+            report['results'][0].update(status='fail', exit_code=2)
+            service.record_bootstrap_execution(snapshot.name, state, report, cleanup_confirmed=confirmed)
+            service.on_bootstrap_complete(snapshot.name, False, state)
+        result.update(status='held', reason_code='execution_scope_not_approved')
+    monkeypatch.setattr('scripts.validate_environment_repositories.execute_accepted', execute)
+    output = tmp_path/'profile'
+    agent = Proposal()
+    result = await validate_repository(Snapshot(source, commit, 'fixture', 'suite'), image=image,
+        output=output, profile=Profile(model='fixture', base_url='http://localhost:1', execute=True), chat=agent)
+    assert len(paths) == expected, result
+    assert agent.review_starts == expected
+    assert len(result['attempts']) == expected
+    assert (output/'attempt-000/accepted-manifest.json').exists()
+    assert (output/'attempt-000/result.json').exists()
+    if confirmed:
+        assert paths[0] != paths[1]
+        assert (output/'attempt-001/accepted-assessment.json').exists()
+    assert not result['ready_at_validation']

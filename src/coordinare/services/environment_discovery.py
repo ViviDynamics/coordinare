@@ -153,6 +153,7 @@ async def _phase(
         async with asyncio.timeout(min(inspection.limits.phase_timeout_seconds, max(0, budget.deadline - time.monotonic()))):
             for _ in range(inspection.limits.max_model_calls):
                 budget.reserve_call()
+                await budget.flush()
                 budget.context_bytes += sum(len(message["content"].encode()) for message in messages)
                 raw = budget.record_reply(await chat(messages))
                 try:
