@@ -2,7 +2,7 @@
 
 **Feature Branch**: `353-practical-env-discovery`
 **Created**: 2026-10-17
-**Status**: Draft for written-spec review
+**Status**: Approved by maintainer on 2026-10-17
 **Issue**: https://github.com/ViviDynamics/coordinare/issues/353
 **Input**: Fix the observed discovery and source-transfer blockers from PR #352,
 then repeat environment bootstrap validation against Elm and eligible Vivi repositories.
