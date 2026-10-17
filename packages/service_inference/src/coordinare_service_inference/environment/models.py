@@ -149,6 +149,12 @@ class Command(StrictModel):
         return value
 
 
+class ProbeCommand(Command):
+    """The same vocabulary with the actual capability-probe timeout bound."""
+
+    timeout_seconds: float = Field(default=30.0, gt=0, le=30)
+
+
 class Requirement(StrictModel):
     id: str = Field(min_length=1)
     description: str = Field(min_length=1)

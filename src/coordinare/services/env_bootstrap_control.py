@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.services.environment_probe_executor import confirm_probe_cleanup
+from coordinare.services.environment_probes import ProbePlan
 from coordinare.services.environment_repair import restart_environment_attempt
 
 if TYPE_CHECKING:
@@ -49,9 +51,19 @@ async def request_env_bootstrap_reset(
     """Confirm owned runtime cleanup before the shared atomic operator reset."""
     cleanup_confirmed = False
     journal = cache_state.environment_attempt
+    if isinstance(journal, dict) and (journal.get("probe_owner") is not None or journal.get("probe_plan") is not None):
+        try:
+            plan = ProbePlan.model_validate(journal.get("probe_plan"))
+            if plan.digest() == journal.get("probe_owner"):
+                cleanup_confirmed = await confirm_probe_cleanup(plan)
+        except (OSError, RuntimeError, TimeoutError, ValueError):
+            cleanup_confirmed = False
+        if not cleanup_confirmed:
+            return _reset_breaker(state, symphony, cache_state, _ResetRequest(actor, activity_log, False))
     if isinstance(journal, dict) and (journal.get("status") == "executing"
             or journal.get("last_error") == "cleanup_unconfirmed"
             or (journal.get("target") is not None and journal.get("status") not in {"ready", "repair_pending"})):
+        cleanup_confirmed = False
         runtime = (state.get("bootstrap_runtimes") or {}).get(symphony)
         stop = getattr(getattr(runtime, "service", None), "stop_session_confirmed", None)
         job_id = getattr(runtime, "job_id", None)

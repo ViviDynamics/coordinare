@@ -134,7 +134,8 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
         _refuse("malformed environment journal requires reconciliation before reset")
     if not 0 < parsed.expires_at - parsed.started_at <= MAX_ATTEMPT_SECONDS:
         _refuse("invalid environment deadline requires reconciliation before reset")
-    uncertain = (data.get("status") == "executing" or data.get("last_error") == "cleanup_unconfirmed"
+    uncertain = (data.get("probe_owner") is not None or data.get("probe_plan") is not None
+        or data.get("status") == "executing" or data.get("last_error") == "cleanup_unconfirmed"
         or (data.get("target") is not None and data.get("status") not in {"ready", "repair_pending"}))
     if cache.bootstrap_in_flight or (uncertain and cleanup_confirmed is not True):
         _refuse("operator restart requires confirmed executor cleanup", code="cleanup_unconfirmed")
@@ -439,6 +440,7 @@ def dispatch_refusal(cache: EnvCacheState, commit: str) -> str | None:
         journal = journal_for(cache)
     except (ValueError, RuntimeError):
         return "environment attempt journal is invalid; dispatch held"
-    if journal.status == "executing" or journal.last_error == "cleanup_unconfirmed" or (journal.status == "held" and journal.source_commit == commit):
+    if (journal.probe_owner is not None or journal.probe_plan is not None or journal.status == "executing"
+            or journal.last_error == "cleanup_unconfirmed" or (journal.status == "held" and journal.source_commit == commit)):
         return "environment attempt is held; confirmed cleanup and a valid repair budget are required"
     return None

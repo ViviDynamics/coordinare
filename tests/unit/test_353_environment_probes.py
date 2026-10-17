@@ -139,3 +139,82 @@ def test_pending_version_two_journal_requires_explicit_restart(tmp_path):
     with pytest.raises(EnvironmentDiscoveryError) as exc:
         begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
     assert exc.value.code == 'legacy_attempt_requires_restart'
+
+
+def test_probe_timeout_schema_matches_accepted_default():
+    from coordinare.services.environment_probes import ProbeRequest
+    data = request_data()
+    del data['commands'][0]['timeout_seconds']
+    request = ProbeRequest.model_validate(data)
+    assert request.commands[0].timeout_seconds == 30
+    schema = ProbeRequest.model_json_schema()
+    command_name = schema['properties']['commands']['items']['$ref'].split('/')[-1]
+    timeout = schema['$defs'][command_name]['properties']['timeout_seconds']
+    assert timeout['default'] == timeout['maximum'] == 30
+
+
+def test_operator_restart_cannot_discard_probe_ownership(tmp_path):
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_repair import (
+        begin_attempt,
+        reserve_probe,
+        restart_environment_attempt,
+        save_attempt,
+    )
+    from tests.unit.test_353_execution_repair import cache_fixture
+    cache = cache_fixture(tmp_path)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    budget.reserve_probe_batch()
+    save_attempt(cache, budget)
+    reserve_probe(cache, plan())
+    with pytest.raises(EnvironmentDiscoveryError, match='cleanup'):
+        restart_environment_attempt(cache)
+    assert cache.environment_attempt['probe_owner'] is not None
+
+
+def test_dispatch_refuses_probe_owner_even_after_source_change(tmp_path):
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_repair import (
+        begin_attempt,
+        dispatch_refusal,
+        reserve_probe,
+        save_attempt,
+    )
+    from tests.unit.test_353_execution_repair import cache_fixture
+    cache = cache_fixture(tmp_path)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    budget.reserve_probe_batch()
+    save_attempt(cache, budget)
+    reserve_probe(cache, plan())
+    assert dispatch_refusal(cache, 'b'*40) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('confirmed', [True, False])
+async def test_operator_request_reconciles_exact_probe_before_reset(tmp_path, monkeypatch, confirmed):
+    from types import SimpleNamespace
+
+    from coordinare.services.env_bootstrap_control import request_env_bootstrap_reset
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_repair import begin_attempt, reserve_probe, save_attempt
+    from tests.unit.test_353_execution_repair import cache_fixture
+    cache = cache_fixture(tmp_path)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    budget.reserve_probe_batch()
+    save_attempt(cache, budget)
+    p = plan()
+    reserve_probe(cache, p)
+    reconciled = []
+    async def cleanup(given):
+        reconciled.append(given.digest())
+        return confirmed
+    monkeypatch.setattr('coordinare.services.env_bootstrap_control.confirm_probe_cleanup', cleanup)
+    activity = SimpleNamespace(record=lambda **kwargs:None)
+    if confirmed:
+        await request_env_bootstrap_reset({}, 'suite', cache, 'test', activity)
+        assert cache.environment_attempt is None
+    else:
+        with pytest.raises(EnvironmentDiscoveryError, match='cleanup'):
+            await request_env_bootstrap_reset({}, 'suite', cache, 'test', activity)
+        assert cache.environment_attempt['probe_owner'] == p.digest()
+    assert reconciled == [p.digest()]

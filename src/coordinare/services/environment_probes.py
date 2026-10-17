@@ -8,8 +8,8 @@ from collections.abc import Awaitable, Callable
 from typing import Literal, Self
 
 from coordinare_service_inference.environment.models import (
-    Command,  # noqa: TC002 - pydantic resolves field types at runtime
     ExecutionCapabilities,  # noqa: TC002 - pydantic resolves field types at runtime
+    ProbeCommand,  # noqa: TC002 - pydantic resolves field types at runtime
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -26,7 +26,7 @@ class ProbeBase(BaseModel):
 
 class ProbeRequest(ProbeBase):
     schema_version: Literal[1]
-    commands: list[Command] = Field(min_length=1, max_length=16)
+    commands: list[ProbeCommand] = Field(min_length=1, max_length=16)
     citations: dict[str, list[str]]
     questions: dict[str, str]
 
