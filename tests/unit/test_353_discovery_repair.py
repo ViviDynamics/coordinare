@@ -17,11 +17,17 @@ from coordinare.services.environment_discovery import (
 from tests.unit.test_351_environment_discovery import (
     CAPABILITIES,
     COMMIT,
-    INVENTORY_DIGEST,
     PATH,
     SOURCE,
-    candidate,
 )
+from tests.unit.test_351_environment_discovery import (
+    candidate as full_candidate,
+)
+
+
+def candidate():
+    from tests.unit.env_manifest_fixture import manifest_proposal
+    return manifest_proposal(full_candidate())
 
 
 class Replies:
@@ -36,9 +42,7 @@ class Replies:
 
 
 def assessment(manifest, verdict="accept"):
-    return {"assessment": {"schema_version": 1, "policy_version": "351-v1", "source_commit": COMMIT,
-        "capabilities_digest": CAPABILITIES.digest(), "inventory_digest": INVENTORY_DIGEST,
-        "manifest_digest": EnvironmentManifest.model_validate(manifest).digest(), "verdict": verdict,
+    return {"assessment": {"verdict": verdict,
         "rationale": "Review source for required executable coverage", "sources": [PATH]}}
 
 
@@ -86,7 +90,7 @@ async def test_revision_requires_new_independent_conversation_and_digest():
         {"tool": "read_file", "path": PATH}, assessment(original, "revise"), {"manifest": revised},
         {"tool": "read_file", "path": PATH}, assessment(revised)])
     manifest, review = await run(replies)
-    assert manifest.digest() == review.manifest_digest != EnvironmentManifest.model_validate(original).digest()
+    assert manifest.digest() == review.manifest_digest != EnvironmentManifest.model_validate(full_candidate()).digest()
     revision_feedback = json.loads(replies.messages[4][-1]["content"])
     assert revision_feedback["coverage_revision"]["required_ids"] == {
         group: sorted(item["id"] for item in original[group] if item.get("required", True))
@@ -113,13 +117,15 @@ async def test_third_repair_held():
 
 
 @pytest.mark.asyncio
-async def test_identity_or_source_drift_never_repaired():
+async def test_agent_source_identity_is_forbidden_and_never_adopted():
     invalid = candidate()
     invalid["source_commit"] = "b" * 40
-    replies = Replies([{"tool": "read_file", "path": PATH}, {"manifest": invalid}])
-    with pytest.raises(EnvironmentDiscoveryError, match="identity"):
-        await run(replies)
-    assert len(replies.messages) == 2
+    replies = Replies([{"tool": "read_file", "path": PATH}, *[{"manifest": invalid}] * 3])
+    events = []
+    with pytest.raises(EnvironmentDiscoveryError, match="repair limit"):
+        await run(replies, diagnostics=events.append)
+    assert events[-1]["outcome"] == "held"
+    assert 'extra_forbidden' in events[-1]['validation_codes']
 
 
 @pytest.mark.asyncio
@@ -249,7 +255,7 @@ async def test_invalid_navigation_can_repair_without_fabricated_source(tool):
         {"tool": "read_file", "path": PATH}, assessment(valid)])
     events = []
     manifest, review = await run(replies, diagnostics=events.append)
-    assert manifest.inputs == candidate()["inputs"]
+    assert manifest.inputs == full_candidate()["inputs"]
     assert review.verdict == "accept"
     assert events[-1]["repairs"] == 1
     assert events[-1]["reads"] == 2
@@ -272,11 +278,11 @@ async def test_unavailable_snapshot_file_cannot_be_repaired():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["discovery", "review"])
-async def test_missing_new_identity_fields_are_required_in_proposal_schema_and_repairable(phase):
+async def test_missing_declaration_fields_are_required_in_proposal_schema_and_repairable(phase):
     valid = candidate()
     invalid = copy.deepcopy(valid if phase == "discovery" else assessment(valid)["assessment"])
-    invalid.pop("capabilities_digest")
-    invalid.pop("inventory_digest")
+    missing = "requirements" if phase == "discovery" else "sources"
+    invalid.pop(missing)
     if phase == "discovery":
         values = [{"tool": "read_file", "path": PATH}, {"manifest": invalid}, {"manifest": valid},
             {"tool": "read_file", "path": PATH}, assessment(valid)]
@@ -292,25 +298,27 @@ async def test_missing_new_identity_fields_are_required_in_proposal_schema_and_r
     manifest, review = await run(replies, diagnostics=events.append)
     assert manifest.capabilities_digest == review.capabilities_digest == CAPABILITIES.digest()
     errors = json.loads(replies.messages[feedback_index][-1]["content"])["validation_errors"]
-    assert {tuple(error["location"]) for error in errors} == {("inventory_digest",), ("capabilities_digest",)}
+    assert {tuple(error["location"]) for error in errors} == {(missing,)}
     assert {error["code"] for error in errors} == {"missing"}
     prompt = replies.messages[schema_index][0]["content"]
     schema = json.loads(prompt.rsplit("matching this schema: ", 1)[1])
-    assert {"inventory_digest", "capabilities_digest"} <= set(schema["required"])
+    assert missing in schema["required"]
+    assert not {"inventory_digest", "capabilities_digest", "source_commit", "inputs"} & set(schema["properties"])
     assert events[-1]["repairs"] == 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["inventory_digest", "capabilities_digest"])
-async def test_present_but_wrong_proposal_identity_never_gets_a_repair(field):
+async def test_supplied_proposal_identity_is_rejected_as_extra(field):
     invalid = candidate()
     invalid[field] = "b" * 64
-    replies = Replies([{"tool": "read_file", "path": PATH}, {"manifest": invalid}])
+    replies = Replies([{"tool": "read_file", "path": PATH}, {"manifest": invalid}, {"manifest": candidate()},
+        {"tool": "read_file", "path": PATH}, assessment(candidate())])
     events = []
-    with pytest.raises(EnvironmentDiscoveryError, match="identity"):
-        await run(replies, diagnostics=events.append)
-    assert len(replies.messages) == 2
-    assert events[-1]["repairs"] == 0
+    manifest, review = await run(replies, diagnostics=events.append)
+    assert getattr(manifest, field) == getattr(review, field) != "b" * 64
+    assert events[-1]["repairs"] == 1
+    assert 'extra_forbidden' in events[-1]['validation_codes']
 
 
 @pytest.mark.asyncio

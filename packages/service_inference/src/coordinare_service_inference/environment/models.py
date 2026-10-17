@@ -330,15 +330,20 @@ class VerificationReport(StrictModel):
         return bool(required) and all(result.status == "pass" for result in required)
 
 
-class EnvironmentManifestProposal(EnvironmentManifest):
-    """New proposals require bindings that remain nullable only for legacy storage."""
+class EnvironmentManifestProposal(StrictModel):
+    """Model-owned behavior only; immutable provenance is assembled by the daemon."""
 
-    inventory_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    capabilities_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    requirements: list[Requirement]
+    install: list[Command]
+    checks: list[Command] = Field(min_length=1)
+    activation: Activation
+    services: list[Service]
+    empty_reason: str | None
 
 
-class CoverageAssessmentProposal(CoverageAssessment):
-    """Fresh coverage review always supplies the current immutable bindings."""
+class CoverageAssessmentProposal(StrictModel):
+    """A judgment about the exact manifest supplied in this isolated conversation."""
 
-    inventory_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    capabilities_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    verdict: Literal["accept", "revise", "indeterminate"]
+    rationale: str = Field(min_length=1)
+    sources: list[str] = Field(min_length=1)

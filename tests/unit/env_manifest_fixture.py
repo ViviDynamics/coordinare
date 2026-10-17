@@ -74,3 +74,17 @@ def record_verified_cache_fixture(cache):
     cache.environment_verification = json.loads(verification_output(cache.environment_manifest))
     cache.environment_verification["image_ref"] = "trusted/global@sha256:" + "a" * 64
     cache.provenance_digest = cache.provenance_digest or "f" * 64
+
+
+def manifest_proposal(manifest):
+    """Convert a full persisted fixture to model-owned declarations, retaining unknown extras."""
+    daemon_fields = {'schema_version', 'policy_version', 'symphony_name', 'source_commit',
+                     'inputs', 'inventory_digest', 'capabilities_digest'}
+    return {key: value for key, value in manifest.items() if key not in daemon_fields}
+
+
+def review_proposal(assessment):
+    """Convert a full persisted assessment fixture to its model-owned judgment."""
+    daemon_fields = {'schema_version', 'policy_version', 'symphony_name', 'source_commit', 'inputs',
+                     'inventory_digest', 'capabilities_digest', 'manifest_digest'}
+    return {key: value for key, value in assessment.items() if key not in daemon_fields}
