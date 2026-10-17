@@ -310,3 +310,16 @@ def finish_attempt(cache: EnvCacheState, success: bool, evidence: dict[str, Any]
         journal.status = 'held'
         journal.last_error = 'discovery_refused'
         _publish(cache, journal)
+
+
+def dispatch_refusal(cache: EnvCacheState, commit: str) -> str | None:
+    """Held execution cannot burn another dispatch budget or bypass unknown cleanup."""
+    if cache.environment_attempt is None:
+        return None
+    try:
+        journal = journal_for(cache)
+    except (ValueError, RuntimeError):
+        return "environment attempt journal is invalid; dispatch held"
+    if journal.last_error == "cleanup_unconfirmed" or (journal.status == "held" and journal.source_commit == commit):
+        return "environment attempt is held; confirmed cleanup and a valid repair budget are required"
+    return None

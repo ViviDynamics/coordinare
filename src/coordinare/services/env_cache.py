@@ -67,6 +67,7 @@ from coordinare.services.environment_acceptance import (
 )
 from coordinare.services.environment_repair import (
     begin_attempt,
+    dispatch_refusal,
     finish_attempt,
     journal_for,
     prepare_repair,
@@ -328,6 +329,21 @@ def _mount_for(
         )
         return None
     return state.cache_dir, f"{container_devenv_root}/{state.sanitised_name}"
+
+
+async def _resolve_bootstrap_commit(github: _GitHubService, config: Any, cache: EnvCacheState) -> bool:
+    cache.bootstrap_commit_sha = None
+    commit = await github.get_branch_head_sha(str(getattr(config, "base_branch", None) or "main"))
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40,64}", commit) is None:
+        message = "could not resolve the bootstrap repository commit"
+        raise ProvenanceTransientError(message)
+    cache.bootstrap_commit_sha = commit
+    refusal = dispatch_refusal(cache, commit)
+    if refusal is not None:
+        cache.last_bootstrap_error = refusal
+        cache.cache_dir_ready = False
+        return False
+    return True
 
 
 def _clear_reviewed_environment(cache: EnvCacheState) -> None:
@@ -1496,12 +1512,8 @@ class EnvCacheService:
         llm_chat: ChatJson | None = None,
     ) -> None:
         repo = eff_config.project_name or symphony_name
-        cache_state.bootstrap_commit_sha = None
-        commit = await github_service.get_branch_head_sha(str(getattr(eff_config, "base_branch", None) or "main"))
-        if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40,64}", commit) is None:
-            message = "could not resolve the bootstrap repository commit"
-            raise ProvenanceTransientError(message)
-        cache_state.bootstrap_commit_sha = commit
+        if not await _resolve_bootstrap_commit(github_service, eff_config, cache_state):
+            return
         env_spec_contents: dict[str, str] = {}
         for spec_file in symphony_config.env_spec_files:
             try:
@@ -2291,7 +2303,7 @@ class EnvCacheService:
         """Await durable reservations; a failed state write prevents external work."""
 
         save_attempt(cache_state, budget)
-        save = self._kubernetes_state.get("snapshot_save_fn")
+        save = self._kubernetes_state.get("snapshot_checkpoint_fn") or self._kubernetes_state.get("snapshot_save_fn")
         if callable(save):
             try:
                 await save()

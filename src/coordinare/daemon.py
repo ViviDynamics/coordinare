@@ -2723,6 +2723,7 @@ class CoordinareDaemon:
         # the success to the NEXT stage transition and a restart in that
         # window would rewind it.
         self._state["snapshot_save_fn"] = self._flush_snapshot
+        self._state["snapshot_checkpoint_fn"] = self._checkpoint_snapshot
 
     @property
     def running(self) -> bool:
@@ -2771,6 +2772,13 @@ class CoordinareDaemon:
             session_stages,
             _recovery_signature(self._state) if not sessions else (),
         )
+
+    async def _checkpoint_snapshot(self) -> None:
+        """Required durable reservations fail closed instead of using best-effort flush."""
+        if self._state_store is None:
+            message = "environment attempt state store is unavailable"
+            raise RuntimeError(message)
+        await self._state_store.save(self._build_snapshot())
 
     async def _flush_snapshot(self) -> None:
         """088 (US5): save the snapshot NOW, bypassing the lifecycle-signature
@@ -5424,6 +5432,23 @@ class CoordinareDaemon:
             + (f" ({model})" if model else "") + ".",
         )
 
+    async def _dispatch_bootstrap_with_deadline(
+        self, svc: Any, name: str, payload: dict[str, Any], options: dict[str, Any],
+    ) -> dict[str, Any]:
+        cache = (self._state.get("env_cache") or {}).get(name)
+        if not isinstance(cache, EnvCacheState) or cache.environment_attempt is None:
+            return cast("dict[str, Any]", await svc.dispatch_card(payload, **options))
+        try:
+            async with asyncio.timeout(remaining_seconds(cache)):
+                return cast("dict[str, Any]", await svc.dispatch_card(payload, **options))
+        except (TimeoutError, RuntimeError, ValueError):
+            # The dispatch adapter owns cancellation cleanup, including a late create.
+            # No terminal evidence/confirmed cleanup means no repair or readiness.
+            self._state["env_cache_service"].record_bootstrap_execution(
+                name, self._state, None, cleanup_confirmed=False,
+            )
+            return {"status": "error", "reason": "environment dispatch deadline or context refused"}
+
     async def _finish_bootstrap_dispatch(
         self,
         svc: Any,
@@ -5437,7 +5462,7 @@ class CoordinareDaemon:
         success, else surface the rich dispatch status/reason and mark
         bootstrap complete-with-error."""
         try:
-            result = await svc.dispatch_card(dispatch_dict, **dispatch_kw)
+            result = await self._dispatch_bootstrap_with_deadline(svc, symphony_name, dispatch_dict, dispatch_kw)
         except DispatchStoppingError:
             # The optimistic marker and open history entry precede dispatch.
             # No job started, so leave the retry budget and prior result intact.
