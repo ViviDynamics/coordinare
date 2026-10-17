@@ -12,6 +12,7 @@ from pathlib import PurePosixPath
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 MAX_DOCUMENT_BYTES = 256 * 1024
 
@@ -226,7 +227,7 @@ class EnvironmentManifest(StrictModel):
         install_ids = {command.id for command in self.install}
         for command in commands[len(self.install) :]:
             if install_ids.intersection(command.depends_on):
-                raise ValueError("clean execution cannot depend on install-only evidence")
+                raise PydanticCustomError("clean_dependency_install_only", "clean execution cannot depend on install-only evidence")
         graph = {command.id: list(command.depends_on) for command in commands}
         for service in self.services:
             stages = [command for command in [service.init, service.start, service.health] if command]
@@ -267,7 +268,7 @@ class EnvironmentManifest(StrictModel):
                 if check_id not in checks or (
                     requirement.required and not checks[check_id].required
                 ):
-                    raise ValueError("requirement must reference required executable checks")
+                    raise PydanticCustomError("requirement_check_reference", "requirement must reference required executable checks")
         if not self.requirements and not (self.empty_reason and self.empty_reason.strip()):
             raise ValueError("empty environment requires justification")
         return self

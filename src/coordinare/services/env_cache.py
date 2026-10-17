@@ -92,7 +92,7 @@ if TYPE_CHECKING:
 
     from coordinare_service_inference.schema import ServicesManifest
 
-    from coordinare.services.env_manifest_llm import ChatJson
+    from coordinare.services.environment_discovery import ChatJson
 
     class _GitHubFileReader(Protocol):
         async def get_file_content(self, org: str, repo: str, path: str, *, ref: str = "HEAD") -> str | None: ...
@@ -641,7 +641,7 @@ async def verify_env_cache_clean(
     if not daemon_sees_performer_cache(state):
         ec = (state.get("env_cache") or {}).get(symphony_name)
         ready = isinstance(ec, EnvCacheState) and kubernetes_cache_verified(ec)
-        if ready:
+        if ready and isinstance(ec, EnvCacheState):
             from coordinare.services.environment_capabilities import (
                 capabilities_match,
                 resolve_execution_capabilities,
@@ -702,7 +702,8 @@ async def _verify_cache_clean(
     # False, not None: None is degraded and would let a performer-caused refusal pass.
     script = ec.rendered_verify_sh
     refusal = None
-    if accepted_environment(ec) is None:
+    contract = accepted_environment(ec)
+    if contract is None:
         refusal = "no independently accepted environment contract; rebuild the cache"
     elif script is None:
         refusal = "no daemon-rendered verify.sh on record for this cache"
@@ -766,7 +767,9 @@ async def _verify_cache_clean(
         immutable_verifier_image(image)
         files = await verification_sources(state, symphony_name, ec)
         credentials = await verification_environment(state, symphony_name, ec, performer_mounts)
-        script = source_setup(files, expected_inputs=accepted_environment(ec).inputs) + credentials + script
+        if contract is None:
+            return False, "accepted environment contract disappeared"
+        script = source_setup(files, expected_inputs=contract.inputs) + credentials + script
     except (ValueError, OSError, RuntimeError) as exc:
         return False, f"clean verification inputs refused: {exc}"
     try:
@@ -2295,16 +2298,6 @@ class EnvCacheService:
         cache_state.cache_dir_ready = False
         cache_state.last_bootstrap_succeeded = None
         commit = cache_state.bootstrap_commit_sha
-        if capabilities is None:
-            from coordinare.services.environment_capabilities import resolve_execution_capabilities
-
-            capability_state = dict(self._kubernetes_state)
-            capability_state.setdefault("coordinare_config", self._coordinare_config)
-            capability_state.setdefault("env_cache", {symphony_name: cache_state})
-            capabilities = await resolve_execution_capabilities(capability_state, symphony_name)
-        if capabilities.cache_mount_path != cache_mount_path:
-            raise EnvironmentDiscoveryError("environment cache mount differs from runtime capabilities")
-
         async def fetch(path: str) -> str | None:
             return await _bootstrap_file_content(github_service, github_org, repo, path, commit)
 
@@ -2315,17 +2308,52 @@ class EnvCacheService:
             max_source_bytes=getattr(cfg, "manifest_max_source_bytes", 4 * 1024 * 1024),
             max_inventory_entries=getattr(cfg, "manifest_max_inventory_entries", 100_000),
             phase_timeout_seconds=getattr(cfg, "manifest_phase_timeout_seconds", 120.0),
+            attempt_timeout_seconds=getattr(cfg, "manifest_attempt_timeout_seconds", 600.0),
+            max_model_calls=getattr(cfg, "manifest_max_model_calls", 128),
+            max_total_reads=getattr(cfg, "manifest_max_total_reads", 512),
+            max_repairs=getattr(cfg, "manifest_max_repairs", 2),
         )
-        outer_budget = getattr(cfg, "bootstrap_max_seconds", 3600)
-        deadline = min(limits.phase_timeout_seconds * 2, outer_budget) if outer_budget > 0 else limits.phase_timeout_seconds * 2
-        async with asyncio.timeout(deadline):
-            paths = await github_service.get_repository_paths(
-                github_org, repo, ref=commit, max_entries=limits.max_inventory_entries,
-            )
-            manifest, assessment = await discover_and_review(
-                symphony_name=symphony_name, commit=commit, paths=paths,
-                fetch=fetch, chat=llm_chat, capabilities=capabilities, declared_services=declared_services, limits=limits,
-            )
+        outer_budget = getattr(cfg, "bootstrap_max_seconds",
+            getattr(self._coordinare_config.global_config, "bootstrap_max_seconds", 3600))
+        from coordinare.services.environment_attempt import AttemptBudget
+
+        deadline = min(limits.attempt_timeout_seconds, outer_budget) if outer_budget > 0 else limits.attempt_timeout_seconds
+        budget = AttemptBudget(timeout_seconds=deadline, max_calls=limits.max_model_calls,
+            max_reads=limits.max_total_reads, max_repairs=limits.max_repairs)
+        try:
+            async with asyncio.timeout_at(budget.deadline):
+                budget.stage = "capabilities"
+                if capabilities is None:
+                    from coordinare.services.environment_capabilities import (
+                        resolve_execution_capabilities,
+                    )
+
+                    capability_state = dict(self._kubernetes_state)
+                    capability_state.setdefault("coordinare_config", self._coordinare_config)
+                    capability_state.setdefault("env_cache", {symphony_name: cache_state})
+                    capabilities = await resolve_execution_capabilities(capability_state, symphony_name)
+                if capabilities.cache_mount_path != cache_mount_path:
+                    raise EnvironmentDiscoveryError("environment cache mount differs from runtime capabilities")
+                budget.stage = "inventory"
+                paths = await github_service.get_repository_paths(
+                    github_org, repo, ref=commit, max_entries=limits.max_inventory_entries,
+                )
+                manifest, assessment = await discover_and_review(
+                    symphony_name=symphony_name, commit=commit, paths=paths,
+                    fetch=fetch, chat=llm_chat, capabilities=capabilities, declared_services=declared_services,
+                    limits=limits, budget=budget,
+                )
+        except TimeoutError:
+            budget.error_code = "attempt_deadline"
+            raise EnvironmentDiscoveryError("environment attempt deadline exceeded", code="attempt_deadline") from None
+        except EnvironmentDiscoveryError as exc:
+            budget.error_code = exc.code
+            raise
+        except (ValueError, OSError, RuntimeError):
+            budget.error_code = "capability_unavailable" if budget.stage == "capabilities" else "inventory_unavailable"
+            raise EnvironmentDiscoveryError("environment runtime or source inventory is unavailable", code=budget.error_code) from None
+        finally:
+            logger.info("env_cache.manifest_attempt", symphony=symphony_name, **budget.summary())
         activation = render_activate(manifest, cache_mount_path=cache_mount_path)
         verification = render_verify(manifest, cache_mount_path=cache_mount_path)
         mounts = _env_cache_mounts(cache_dir, performer_mounts)

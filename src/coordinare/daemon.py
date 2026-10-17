@@ -4055,7 +4055,7 @@ class CoordinareDaemon:
                 effort=cc.effort,
                 calls=self._state.get("conductor_calls"),
             )
-            chat = backend.chat_json
+            chat = backend.chat_json_with_metadata
         self._manifest_llm_chat = chat
         return chat
 
@@ -4331,7 +4331,8 @@ class CoordinareDaemon:
             immutable_verifier_image,
         )
 
-        if accepted_environment(ec) is None:
+        contract = accepted_environment(ec)
+        if contract is None:
             message = "no independently accepted environment contract; rebuild the cache"
             raise VerifierConfigurationError(message)
         config = self._state.get("coordinare_config")
@@ -4369,7 +4370,7 @@ class CoordinareDaemon:
             mount_path=f"{getattr(svc, 'devenv_root', '/devenv')}/{ec.sanitised_name}",
             verify_text=str(ec.rendered_verify_sh),
             transient_credentials=credentials,
-            project_files=files, source_inputs=accepted_environment(ec).inputs,
+            project_files=files, source_inputs=contract.inputs,
             platform=capabilities.platform, max_entries=limits.max_entries, max_bytes=limits.max_bytes,
         )
 
