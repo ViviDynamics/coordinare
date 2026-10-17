@@ -160,3 +160,12 @@ def test_target_description_survives_snapshot_before_installer_dispatch():
     restored = EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir="/tmp/cache")
     _rehydrate_env_cache({"env_cache": {"sym": restored}}, SimpleNamespace(env_cache={"sym": snapshot}))
     assert restored.environment_capabilities == target.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_kubernetes_capabilities_use_actual_consumer_cache_root():
+    global_config = SimpleNamespace(agent_transport="kubernetes", kubernetes_verifier_image=IMAGE,
+        kubernetes_verifier_platform="linux/x86_64", env_cache=SimpleNamespace(kubernetes_verifier_network_isolated=True),
+        performer_endpoints=[SimpleNamespace(roles=["implementer"], image=IMAGE, container_devenv_root="/custom")])
+    result = await resolve_execution_capabilities({"config": global_config, "env_cache": {"sym": cache_for(reviewed_metadata())}}, "sym")
+    assert result.cache_mount_path == "/custom/sym"

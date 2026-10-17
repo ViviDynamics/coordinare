@@ -56,11 +56,11 @@ class SourceInspection:
         """Return a bounded page; the complete inventory never enters a tool result."""
         if not isinstance(path, str) or path not in self._entries or type(cursor) is not int:
             message = "source directory or cursor is invalid"
-            raise EnvironmentDiscoveryError(message)
+            raise EnvironmentDiscoveryError(message, code="invalid_tool_arguments")
         entries = self._entries[path]
         if cursor < 0 or cursor > len(entries):
             message = "source directory cursor is invalid"
-            raise EnvironmentDiscoveryError(message)
+            raise EnvironmentDiscoveryError(message, code="invalid_tool_arguments")
         result: dict[str, Any] = {"entries": [], "next_cursor": None}
         for entry in entries[cursor:cursor + 200]:
             result["entries"].append(entry)
@@ -100,7 +100,7 @@ class SourceInspection:
                 or any(not isinstance(path, str) or path not in self.inventory for path in paths)
                 or len(set(paths)) != len(paths)):
             message = f"{self.name} requested invalid source batch or paths"
-            raise EnvironmentDiscoveryError(message)
+            raise EnvironmentDiscoveryError(message, code="invalid_tool_arguments")
         if self.budget is not None:
             self.budget.reserve_reads(len(paths))
         self.reads += len(paths)

@@ -251,7 +251,7 @@ def classify_pod_failure(reason: str, *, message: str = "") -> performer_lifecyc
     return performer_lifecycle.ContainerStartError(detail)
 
 
-_MAX_SOURCE_SECRETS = 32
+_MAX_SOURCE_SECRETS = 64
 
 
 def build_pod_manifest(

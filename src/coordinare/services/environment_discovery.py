@@ -129,6 +129,7 @@ def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any
     messages.extend([{"role": "assistant", "content": raw},
                      {"role": "user", "content": _json({"validation_errors": errors,
                         "instruction": "Correct the complete proposal. Preserve every required obligation and inspected input. "
+                        "Use list_files for directories and read_files only for exact file paths from listings. "
                         "Use required executable check IDs, not commands or install-only prerequisites. "
                         "Independent review and successful clean execution remain mandatory."})}])
 
@@ -162,9 +163,9 @@ async def _phase(
                 try:
                     result = await inspection.tool_result(reply)
                 except EnvironmentDiscoveryError as exc:
-                    if exc.code != "unsupported_envelope":
+                    if exc.code not in {"unsupported_envelope", "invalid_tool_arguments"}:
                         raise
-                    _repair(messages, raw, [{"location": [], "code": "unsupported_envelope"}], budget)
+                    _repair(messages, raw, [{"location": [], "code": exc.code}], budget)
                     continue
                 messages.append({"role": "assistant", "content": raw})
                 messages.append({"role": "user", "content": _json({"tool_result": result})})

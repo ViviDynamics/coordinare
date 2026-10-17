@@ -54,6 +54,7 @@ VERIFIER_REMOVAL_TIMEOUT_S = 10
 VERIFY_TEXT_MAX_BYTES = MAX_SCRIPT_BYTES
 # Below the API/etcd object limit, including JSON and base64 expansion.
 VERIFIER_POD_MAX_BYTES = 900 * 1024
+SOURCE_CHUNKS_PER_SECRET = 4
 # Claim files must be world readable and directories world traversable (o+rX).
 VERIFIER_UID = 10001
 VERIFIER_GID = 10001
@@ -375,13 +376,13 @@ def build_verifier_source_secrets(
     metadata = {"sha256": payload.sha256, "size_bytes": payload.size_bytes,
                 "count": len(payload.chunks), "inputs": spec.source_inputs}
     secrets = []
-    for start in range(0, len(payload.chunks), 8):
+    for start in range(0, len(payload.chunks), SOURCE_CHUNKS_PER_SECRET):
         data = {f"chunk-{index:04}": base64.b64encode(payload.chunks[index]).decode("ascii")
-                for index in range(start, min(start + 8, len(payload.chunks)))}
+                for index in range(start, min(start + SOURCE_CHUNKS_PER_SECRET, len(payload.chunks)))}
         if start == 0:
-            data["metadata.json"] = base64.b64encode(json.dumps(metadata, separators=(",", ":")).encode()).decode("ascii")
+            data["metadata.json"] = base64.b64encode(json.dumps(metadata, ensure_ascii=False, separators=(",", ":")).encode()).decode("ascii")
         secret = {"apiVersion": "v1", "kind": "Secret", "type": "Opaque", "immutable": True,
-                  "metadata": {"name": source_secret_name(name, start // 8), "namespace": namespace,
+                  "metadata": {"name": source_secret_name(name, start // SOURCE_CHUNKS_PER_SECRET), "namespace": namespace,
                     "labels": dict(labels), "ownerReferences": [{"apiVersion": "v1", "kind": "Pod", "name": name,
                     "uid": pod_uid, "controller": False, "blockOwnerDeletion": False}]}, "data": data}
         if len(json.dumps(secret).encode()) > VERIFIER_POD_MAX_BYTES:
@@ -429,7 +430,7 @@ def _mount_source_payload(manifest: dict[str, Any], spec: VerifierSpec, *, name:
         message = "accepted source input identities are required"
         raise ValueError(message)
     decode_sources(payload, expected_inputs=spec.source_inputs)
-    count = (len(payload.chunks) + 7) // 8
+    count = (len(payload.chunks) + SOURCE_CHUNKS_PER_SECRET - 1) // SOURCE_CHUNKS_PER_SECRET
     manifest["metadata"]["annotations"] = {"coordinare.vividynamics.com/source-secrets": str(count)}
     manifest["spec"]["securityContext"]["fsGroup"] = VERIFIER_GID
     manifest["spec"]["volumes"].append({"name": "source-payload", "projected": {
