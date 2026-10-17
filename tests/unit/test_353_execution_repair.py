@@ -246,7 +246,7 @@ def test_category_counters_survive_restart(tmp_path):
     save_attempt(cache, budget)
     resumed = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=120)
     assert (resumed.schema_repairs, resumed.coverage_revisions, resumed.execution_repairs) == (1, 2, 0)
-    assert cache.environment_attempt['version'] == 2
+    assert cache.environment_attempt['version'] == 3
     assert cache.environment_attempt['expires_at'] == 700
 
 
@@ -288,7 +288,7 @@ def test_legacy_ready_generation_can_restore_without_resuming_its_budget(tmp_pat
     assert cache.environment_attempt == legacy
 
 
-@pytest.mark.parametrize('version', [3, '2', None])
+@pytest.mark.parametrize('version', [4, '2', None])
 def test_unknown_journal_version_holds(tmp_path, version):
     cache = cache_fixture(tmp_path)
     begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
