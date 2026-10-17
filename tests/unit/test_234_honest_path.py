@@ -49,8 +49,9 @@ def _bootstrapped(tmp_path: Path) -> tuple[EnvCacheState, Path]:
         last_seen_spec_sha="spec-sha",
     )
     reviewed_cache(state)
-    state.environment_verification = {"image_ref": "img@sha256:" + "1" * 64,
-                                      "platform": platform.system().lower() + "/" + platform.machine().lower()}
+    assert state.environment_verification is not None
+    state.environment_verification.update({"image_ref": "img@sha256:" + "1" * 64,
+                                      "platform": platform.system().lower() + "/" + platform.machine().lower()})
     return state, cache
 
 
