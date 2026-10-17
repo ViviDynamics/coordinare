@@ -269,9 +269,9 @@ async def test_restart_between_verify_and_walk_requires_fresh_verification_witho
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class SequentialCore(_FakeCoreV1):
-        def create_namespaced_pod(self, namespace: str, body: dict[str, Any]) -> None:
+        def create_namespaced_pod(self, namespace: str, body: dict[str, Any]) -> Any:
             assert len(self.created) == len(self.deleted), "the previous pod must be gone"
-            super().create_namespaced_pod(namespace, body)
+            return super().create_namespaced_pod(namespace, body)
 
         def read_namespaced_pod_log(self, **kwargs: Any) -> str:
             pod = next(item["body"] for item in self.created

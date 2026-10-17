@@ -59,7 +59,7 @@ class FakeRuntime:
 def setup(tmp_path: Path, results: list[tuple[bool | None, str]]) -> tuple[Any, ...]:
     runtime = FakeRuntime(list(results))
     cfg = SimpleNamespace(agent_transport="kubernetes", global_config=SimpleNamespace(
-        performer_endpoints=[], performer_log_dir=None, performer_image="trusted/global@sha256:" + "a" * 64,
+        kubernetes_verifier_platform="linux/x86_64", performer_endpoints=[], performer_log_dir=None, performer_image="trusted/global@sha256:" + "a" * 64,
         env_cache=SimpleNamespace(kubernetes_verifier_network_isolated=True), env_cache_root=tmp_path / "daemon", env_bootstrap_max_attempts=2,
         state_file_path=tmp_path / "state.json",
     ))
@@ -67,7 +67,11 @@ def setup(tmp_path: Path, results: list[tuple[bool | None, str]]) -> tuple[Any, 
     ec = EnvCacheState(symphony_name="sym", sanitised_name="sym-abc", cache_dir=tmp_path / "daemon" / "sym-abc",
                        rendered_activate_sh=ACTIVATE, rendered_verify_sh="exit 0\n", readme_sha="cache-key",
                        bootstrap_commit_sha="e" * 40)
-    reviewed_cache(ec, source_commit="e" * 40)
+    from coordinare_service_inference.environment.models import ExecutionCapabilities
+
+    capability = ExecutionCapabilities(schema_version=1, image_ref=cfg.global_config.performer_image,
+        platform="linux/x86_64", cache_mount_path="/devenv/sym-abc", install_network="enabled", verify_network="disabled")
+    reviewed_cache(ec, capabilities=capability, source_commit="e" * 40)
     if results:
         runtime.results.insert(0, (True, verification_output(ec.environment_manifest).decode()))
     performer = SimpleNamespace(_runtime=runtime, _config=SimpleNamespace(image="performer:full"), devenv_root="/devenv")
@@ -104,7 +108,8 @@ async def test_freeze_uses_claim_summary_without_a_daemon_manifest(tmp_path: Pat
     assert pod["containers"][0]["volumeMounts"][0]["readOnly"] is True
     assert pod["automountServiceAccountToken"] is False
     assert pod["containers"][0]["stdin"] is False
-    assert len(pod["volumes"]) == 2
+    assert len(pod["volumes"]) == 3
+    assert all(mount["name"] != "source-payload" for mount in pod["containers"][0]["volumeMounts"])
 
 
 @pytest.mark.asyncio
@@ -385,6 +390,11 @@ async def test_forced_metadata_failure_cannot_erase_the_refusal_budget(tmp_path:
 async def test_kubernetes_consumer_payload_bounds_a_long_symphony_slug(tmp_path: Path) -> None:
     service, ec, state, daemon, performer, _runtime = setup(tmp_path, [(True, logs(summary()))])
     ec.sanitised_name = "symphony-" * 20
+    from coordinare.services.environment_capabilities import resolve_execution_capabilities
+
+    capability = await resolve_execution_capabilities(state, "sym")
+    reviewed_cache(ec, capabilities=capability, source_commit="e" * 40)
+    _runtime.results[0] = (True, verification_output(ec.environment_manifest).decode())
     await freeze(service, state, daemon, performer)
     check, payload = await service.resolve_provenance("sym", ec, container_path=f"/devenv/{ec.sanitised_name}")
     assert check.ok

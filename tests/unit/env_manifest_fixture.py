@@ -6,10 +6,10 @@ import hashlib
 from coordinare_service_inference.environment.models import EnvironmentManifest
 
 
-def reviewed_metadata(*, checks=None, install=None, services=None, activation=None, source_commit="a" * 40,
+def reviewed_metadata(*, capabilities=None, checks=None, install=None, services=None, activation=None, source_commit="a" * 40,
                       symphony_name="sym", inputs=None, empty_reason="Image baseline is sufficient"):
     manifest = EnvironmentManifest.model_validate({
-        "inventory_digest": "d" * 64, "capabilities_digest": "c" * 64,
+        "inventory_digest": "d" * 64, "capabilities_digest": capabilities.digest() if capabilities else "c" * 64,
         "schema_version": 1, "symphony_name": symphony_name, "source_commit": source_commit,
         "inputs": inputs if inputs is not None else {"tools.plan": hashlib.sha256(b"baseline").hexdigest()},
         "requirements": [], "install": install or [],
@@ -18,16 +18,16 @@ def reviewed_metadata(*, checks=None, install=None, services=None, activation=No
         "empty_reason": empty_reason, "policy_version": "351-v1",
     })
     return {"environment_manifest": manifest.model_dump(), "environment_manifest_digest": manifest.digest(),
-            "environment_assessment": {"inventory_digest": "d" * 64, "capabilities_digest": "c" * 64, "schema_version": 1, "manifest_digest": manifest.digest(),
+            "environment_assessment": {"inventory_digest": "d" * 64, "capabilities_digest": capabilities.digest() if capabilities else "c" * 64, "schema_version": 1, "manifest_digest": manifest.digest(),
                 "source_commit": source_commit, "verdict": "accept", "rationale": "Read source requirements",
                 "sources": list(manifest.inputs), "inputs": dict(manifest.inputs), "policy_version": "351-v1"}}
 
 
-def reviewed_cache(cache, *, files=None, source_commit="a" * 40):
+def reviewed_cache(cache, *, files=None, capabilities=None, source_commit="a" * 40):
     """Bind a persisted cache fixture to actual inspected source bytes."""
     contents = files if files is not None else {"tools.plan": "baseline"}
     inputs = {path: hashlib.sha256(text.encode()).hexdigest() for path, text in contents.items()}
-    metadata = reviewed_metadata(inputs=inputs, source_commit=source_commit, symphony_name=cache.symphony_name)
+    metadata = reviewed_metadata(inputs=inputs, capabilities=capabilities, source_commit=source_commit, symphony_name=cache.symphony_name)
     cache.environment_manifest = metadata["environment_manifest"]
     cache.environment_assessment = metadata["environment_assessment"]
     cache.bootstrap_commit_sha = source_commit
@@ -48,7 +48,7 @@ def verification_output(manifest=None):
         commands.extend([service.start, service.health, service.stop])
         if service.init:
             commands.append(service.init)
-    report = VerificationReport(manifest_digest=accepted.digest(), results=[
+    report = VerificationReport(platform="linux/x86_64", manifest_digest=accepted.digest(), results=[
         CheckResult(id=command.id, status="pass", required=command.required, exit_code=0,
                     manifest_digest=accepted.digest()) for command in commands])
     return (report.model_dump_json() + "\n").encode()

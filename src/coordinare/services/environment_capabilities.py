@@ -51,10 +51,10 @@ async def resolve_execution_capabilities(state: Mapping[str, Any], symphony_name
     cache = (state.get("env_cache") or {}).get(symphony_name)
     if global_config is None or cache is None:
         raise ValueError("environment runtime configuration is unavailable")
-    transport = getattr(global_config, "agent_transport", None)
+    transport = getattr(config, "agent_transport", None) or getattr(global_config, "agent_transport", None)
     root = "/devenv"
     if transport == "kubernetes":
-        image = getattr(global_config, "kubernetes_verifier_image", None)
+        image = getattr(global_config, "kubernetes_verifier_image", None) or getattr(global_config, "performer_image", None)
         platform = getattr(global_config, "kubernetes_verifier_platform", None)
         if not platform:
             raise ValueError("environment verifier platform must be configured")

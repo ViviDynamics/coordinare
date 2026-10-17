@@ -4354,15 +4354,23 @@ class CoordinareDaemon:
         if files is None:
             message = "env verification could not resolve the symphony repository for the clean-room verifier"
             raise RuntimeError(message)
+        from coordinare.services.environment_capabilities import (
+            capabilities_match,
+            resolve_execution_capabilities,
+        )
         from coordinare.services.environment_verification import verification_credentials
 
+        capabilities = await resolve_execution_capabilities(self._state, symphony_name)
+        if not capabilities_match(ec, capabilities):
+            raise VerifierConfigurationError("environment execution capabilities changed; rediscovery required")
         credentials = await verification_credentials(self._state, symphony_name, ec, self._performer_mounts())
         return VerifierSpec(
             image=configured_verifier_image(config), cache_claim="", cache_subpath=ec.sanitised_name,
             mount_path=f"{getattr(svc, 'devenv_root', '/devenv')}/{ec.sanitised_name}",
             verify_text=str(ec.rendered_verify_sh),
             transient_credentials=credentials,
-            project_files=files, max_entries=limits.max_entries, max_bytes=limits.max_bytes,
+            project_files=files, source_inputs=accepted_environment(ec).inputs,
+            platform=capabilities.platform, max_entries=limits.max_entries, max_bytes=limits.max_bytes,
         )
 
     async def _verify_bootstrap_on_kubernetes(
@@ -4406,6 +4414,9 @@ class CoordinareDaemon:
             report = execution_report(detail, ec)
         except ValueError as exc:
             return False, str(exc), False
+        if report.platform != spec.platform:
+            ec.environment_verification = None
+            return False, "clean verification platform differs from accepted capabilities", False
         if report.passed and ec.environment_verification is not None:
             ec.environment_verification["image_ref"] = spec.image
         walk_spec = replace(spec, verify_text="", project_files={}, transient_credentials="", walk_only=True,
