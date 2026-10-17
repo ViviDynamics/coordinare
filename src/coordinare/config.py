@@ -2658,6 +2658,11 @@ class CoordinareConfiguration(BaseModel):
     # symphonies share the same dispatcher invariants).
     dispatcher_dedup: DispatcherDedupConfig = Field(default_factory=DispatcherDedupConfig)
 
+    @property
+    def agent_transport(self) -> Literal["subprocess", "ssh", "kubernetes"]:
+        """Expose the global transport to services holding the root configuration."""
+        return self.global_config.agent_transport
+
     @field_validator("symphonies")
     @classmethod
     def validate_non_empty(cls, v: list[SymphonyConfig]) -> list[SymphonyConfig]:
