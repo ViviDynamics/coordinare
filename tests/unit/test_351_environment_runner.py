@@ -528,3 +528,22 @@ async def test_optional_command_cannot_hide_unconfirmed_supervisor_cleanup(tmp_p
     assert not report.passed
     assert any(result.required and result.id.startswith('__infrastructure__/cleanup/')
                for result in report.results)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['', ':/usr/bin::/bin:'])
+async def test_activation_never_adds_current_directory_to_path(tmp_path, path):
+    import subprocess
+
+    from coordinare_service_inference.environment.runner import manifest_environment
+
+    manifest = contract([{'id': 'base', 'argv': ['true']}],
+                        activation={'env': {'PATH': path}, 'path': ['{cache}/bin']})
+    expected = [str(tmp_path / 'bin'), *filter(None, path.split(':'))]
+    runtime = manifest_environment(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    assert runtime['PATH'].split(':') == expected
+    activation = render_activate(manifest, cache_mount_path=str(tmp_path))
+    actual = subprocess.check_output(['/bin/bash', '--noprofile', '--norc', '-c',
+                                      activation + '\n' + activation + '\nprintf "%s" "$PATH"'],
+                                     env={**os.environ, 'BASH_ENV': '', 'ENV': ''}, text=True)
+    assert actual.split(':') == expected

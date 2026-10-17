@@ -199,3 +199,17 @@ async def test_output_limit_holds():
 
     with pytest.raises(EnvironmentDiscoveryError, match="limit"):
         await discover(chat, limits=DiscoveryLimits(max_output_bytes=100))
+
+
+def test_persisted_review_rationale_contains_only_daemon_generated_text():
+    from coordinare.services.environment_discovery import _validated_assessment
+
+    manifest = EnvironmentManifest.model_validate(ScriptedChat().manifest)
+    sensitive = 'repository credential must never be persisted: private-value'
+    assessment = _validated_assessment({
+        'schema_version': 1, 'policy_version': '351-v1', 'source_commit': COMMIT,
+        'manifest_digest': manifest.digest(), 'verdict': 'accept',
+        'rationale': sensitive, 'sources': [PATH],
+    }, {PATH: manifest.inputs[PATH]}, manifest)
+    assert assessment.rationale == 'Independent coverage review accepted; source identities validated by daemon.'
+    assert sensitive not in assessment.model_dump_json()

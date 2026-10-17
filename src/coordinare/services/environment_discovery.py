@@ -216,9 +216,10 @@ def _validated_assessment(
     if assessment.inputs and assessment.inputs != reviewer_reads:
         message = "review input hashes do not match actual source reads"
         raise EnvironmentDiscoveryError(message)
-    # The daemon, rather than model output, records the complete inspection ledger.
+    # Persist trusted metadata only; free-form model prose may echo source secrets.
     return CoverageAssessment.model_validate({
         **assessment.model_dump(), "symphony_name": manifest.symphony_name, "inputs": reviewer_reads,
+        "rationale": "Independent coverage review accepted; source identities validated by daemon.",
     })
 
 

@@ -182,7 +182,9 @@ def manifest_environment(
     for key in environment_order(manifest.activation.env):
         env[key] = _expand(manifest.activation.env[key], roots, env)
     paths = [_expand(path, roots, env) for path in manifest.activation.path]
-    env["PATH"] = os.pathsep.join(dict.fromkeys([*paths, *env.get("PATH", "").split(os.pathsep)]))
+    env["PATH"] = os.pathsep.join(dict.fromkeys(
+        path for path in [*paths, *env.get("PATH", "").split(os.pathsep)] if path
+    ))
     return env
 
 

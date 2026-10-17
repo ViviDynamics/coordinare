@@ -48,7 +48,7 @@ def render_activate(manifest: EnvironmentManifest, *, cache_mount_path: str) -> 
                 '    *:*) _coordinare_entry=${_coordinare_remaining%%:*}; _coordinare_remaining=${_coordinare_remaining#*:}; _coordinare_more=1 ;;',
                 '    *) _coordinare_entry=$_coordinare_remaining; _coordinare_more=0 ;;',
                 '  esac',
-                '  if [ "$_coordinare_entry" != "$_coordinare_path" ]; then',
+                '  if [ -n "$_coordinare_entry" ] && [ "$_coordinare_entry" != "$_coordinare_path" ]; then',
                 '    _coordinare_filtered="${_coordinare_filtered}:${_coordinare_entry}"',
                 '  fi',
                 '  [ "$_coordinare_more" = 1 ] || break',
