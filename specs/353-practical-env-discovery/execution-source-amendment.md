@@ -2,7 +2,7 @@
 
 **Feature branch**: `353-practical-env-discovery`
 **Issue / PR**: #353 / #354
-**Status**: Draft for written-spec approval
+**Status**: Approved by the user on 2026-10-17
 **Date**: 2026-10-17
 
 ## Intent and authorization
