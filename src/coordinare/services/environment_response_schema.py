@@ -27,7 +27,7 @@ def response_schema(phase: str, *, allow_patch: bool = False) -> dict[str, Any]:
          'properties': {'tool': {'const': 'list_files'}, 'path': {'type': 'string'}, 'cursor': {'type': 'integer', 'minimum': 0}}},
     ]
     if allow_patch:
-        return {"type": "object", "anyOf": [*tools, PATCH_SCHEMA]}
+        tools.append(PATCH_SCHEMA)
     final: dict[str, Callable[[], dict[str, Any]]] = {'probe': ProbeEnvelope.model_json_schema, 'manifest': _MANIFEST_ENVELOPE.model_json_schema,
              'assessment': assessment_envelope_schema}
     if phase == 'source_tool':

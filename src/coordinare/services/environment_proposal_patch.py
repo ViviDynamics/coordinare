@@ -16,13 +16,19 @@ PATCH_SCHEMA = {'type':'object','additionalProperties':False,'required':['tool',
                 'items':{'anyOf':[{'type':'string'},{'type':'integer','minimum':0}]}},
                 'value_json':{'type':'string','description':'A complete JSON-encoded replacement value, e.g. [] encoded as the string "[]".'}}}}}}
 PATCH_INSTRUCTION = (
-    'A previous unambiguous complete declaration is available for correction. Return only small correction records or source inspection requests, preserving unrelated records: '
+    'A previous unambiguous complete declaration is available for correction. Prefer small correction records or source inspection requests, preserving unrelated records: '
     '{"tool":"repair_proposal","changes":[{"path":["finding_responses"],"value_json":"[]"}]}. '
     'Paths start with manifest, finding_responses, or assessment as appropriate for the current declaration. '
     'For manifest field validation locations, prefix manifest unless the location already starts with finding_responses. '
+    f'Use at most {MAX_CHANGES} correction records and paths of depth at most {MAX_PATH_DEPTH}. '
+    'If more fields need correction, replace their common existing array or object once with its complete corrected value, '
+    'preserving all unrelated records and required obligations. '
+    'For large array or object replacements, return the complete corrected declaration in the expected envelope instead, '
+    'preserving every unrelated record and obligation; this avoids encoding a large nested value inside value_json. '
     'Each value_json string encodes exactly one complete JSON replacement value. Array indices must identify existing entries; '
     'parents must exist. Corrections are applied atomically to the most recent unambiguous complete declaration, then fully revalidated. '
-    'Required obligations, original budgets, independent review and required execution remain mandatory. Do not re-emit the full declaration.'
+    'Do not split an invalid declaration across partial batches or mix a declaration with correction records. '
+    'Required obligations, original budgets, independent review and required execution remain mandatory.'
 )
 
 
