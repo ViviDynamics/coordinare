@@ -345,8 +345,8 @@ class EnvironmentManifestProposal(StrictModel):
 class CoverageAssessmentProposal(StrictModel):
     """A judgment about the exact manifest supplied in this isolated conversation."""
 
-    findings: list[FindingProposal]
-    decisions: list[FindingDecisionProposal]
+    findings: list[FindingProposal] = Field(max_length=32)
+    decisions: list[FindingDecisionProposal] = Field(max_length=32)
     capability_unavailable: bool
     verdict: Literal["accept", "revise", "indeterminate"]
     rationale: str = Field(min_length=1)

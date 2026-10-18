@@ -236,3 +236,28 @@ cleanup. Pending older journals require explicit restart after cleanup, and olde
 cache evidence needs normal rebuild/reverification. No old passing flag is promoted
 into source-complete evidence. Activation must make installed tools usable through
 normal project command names, not only absolute paths in version checks.
+
+### Persistent coverage findings
+
+Coverage objections stay in an attempt-owned ledger across revisions and restarts.
+Discovery responds to each open finding; every fresh reviewer independently decides
+every retained finding against the current manifest and pinned source evidence.
+An overall acceptance cannot silently drop an objection. A cited false-positive
+resolution is permitted, but required checks, scope and service obligations cannot
+be weakened. Required capabilities unavailable in the configured consumer hold
+bootstrap explicitly; no infrastructure permissions or verification network access
+are added automatically.
+
+The ledger allows 32 findings, 2 KiB of UTF-8 per finding issue/decision rationale,
+and 128 KiB including history. Existing context, call/read, deadline and category
+repair limits still apply. Operator summaries show counts, finding IDs and
+categories; detailed source-bound findings remain private evidence.
+
+New readiness requires coverage assessment version 2 and attempt journal version 5.
+Older review records remain readable as historical evidence but do not establish
+current readiness. Pending legacy attempts need an explicit operator restart after
+confirmed cleanup; this archives prior evidence without deleting unrelated caches.
+An old accepted cache must obtain current independent review and valid matching
+execution evidence before reuse. Failed, unknown or unrun checks never become
+successful through migration or review. The manifest schema and canonical digest
+are unchanged.

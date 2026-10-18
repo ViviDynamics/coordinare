@@ -25,6 +25,7 @@ from coordinare.services.config_documents import symphony_documents
 from coordinare.services.config_write_service import _validate_candidate, atomic_write_yaml
 from coordinare.services.env_bootstrap_control import request_env_bootstrap_reset
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.environment_findings import coverage_summary
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -135,7 +136,7 @@ def _register_get_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                     ),
                     "last_bootstrap_succeeded": getattr(ec, "last_bootstrap_succeeded", None),
                     "last_bootstrap_error": getattr(ec, "last_bootstrap_error", None),
-                    "environment_assessment": getattr(ec, "environment_assessment", None),
+                    "environment_assessment": coverage_summary(getattr(ec, "environment_assessment", None)),
                     "environment_verification": getattr(ec, "environment_verification", None),
                     # 063 T026d: service-inference summary
                     "last_inference_at": (
