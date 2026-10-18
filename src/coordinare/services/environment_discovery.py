@@ -736,7 +736,7 @@ async def _discover_attempt(
                     "manifest": manifest.model_dump(mode="json"), "manifest_digest": manifest.digest(),
                     "mandatory_evidence": mandatory_evidence, "probe_evidence": budget.probe_reports,
                     "declared_services": options.declared_services,
-                    "finding_ledger": budget.finding_ledger.model_dump(mode='json'),
+                    "finding_ledger": cast("FindingLedger", budget.finding_ledger).model_dump(mode='json'),
                     "finding_responses": [response.model_dump(mode='json') for response in discovery.finding_responses]})},
             ])
             assessment = _validated_assessment(assessment_data, reviewer_reads, manifest, require_accept=False,
