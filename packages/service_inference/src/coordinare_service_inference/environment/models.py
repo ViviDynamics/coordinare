@@ -8,28 +8,20 @@ import platform as runtime_platform
 import re
 from graphlib import CycleError, TopologicalSorter
 from itertools import pairwise
-from pathlib import PurePosixPath
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
+from .evidence_safety import reject_literal_credentials, reject_nested_credentials, source_path
+from .findings import (
+    FindingDecisionProposal,
+    FindingLedger,
+    FindingProposal,
+    validate_finding_ledger,
+)
+
 MAX_DOCUMENT_BYTES = 256 * 1024
-
-
-def source_path(value: str) -> str:
-    path = PurePosixPath(value)
-    if (
-        not value
-        or value == "."
-        or "\0" in value
-        or path.is_absolute()
-        or any(part in {"", ".", ".."} for part in value.split("/"))
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
-        or "\\" in value
-    ):
-        raise ValueError("source must be a relative repository path without traversal")
-    return value
 
 
 def execution_path(value: str) -> str:
@@ -85,27 +77,6 @@ class ExecutionCapabilities(StrictModel):
 
     def digest(self) -> str:
         return hashlib.sha256(json.dumps(self.model_dump(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-def reject_literal_credentials(value: str) -> None:
-    """Credential-bearing URLs are runtime references, never persisted command data."""
-    if "://" not in value:
-        return
-    for match in re.finditer(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/@]+:([^\s/@]+)@", value):
-        if not re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", match.group(1)):
-            raise ValueError("credentials must use a named runtime reference")
-
-
-def reject_nested_credentials(value: object) -> None:
-    if isinstance(value, str):
-        reject_literal_credentials(value)
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            reject_nested_credentials(key)
-            reject_nested_credentials(item)
-    elif isinstance(value, list):
-        for item in value:
-            reject_nested_credentials(item)
 
 
 class Command(StrictModel):
@@ -300,9 +271,11 @@ class EnvironmentManifest(StrictModel):
 
 
 class CoverageAssessment(StrictModel):
+    finding_ledger: FindingLedger | None = None
+    finding_ledger_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     inventory_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     capabilities_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     symphony_name: str = ""
@@ -310,10 +283,20 @@ class CoverageAssessment(StrictModel):
     rationale: str = Field(min_length=1)
     sources: list[str] = Field(min_length=1)
     inputs: dict[str, str] = Field(default_factory=dict)
-    policy_version: Literal["351-v1"]
+    policy_version: Literal["351-v1", "353-findings-v1"]
 
     @model_validator(mode="after")
     def validate_sources(self) -> Self:
+        if self.schema_version == 1:
+            if self.policy_version != '351-v1' or self.finding_ledger is not None or self.finding_ledger_digest is not None:
+                raise ValueError('legacy review cannot carry current findings')
+        else:
+            if (self.policy_version != '353-findings-v1' or self.finding_ledger is None
+                    or self.finding_ledger_digest != self.finding_ledger.digest()):
+                raise ValueError('current coverage review requires matching finding evidence')
+            if self.verdict == 'accept':
+                validate_finding_ledger(self.finding_ledger, manifest_digest=self.manifest_digest,
+                                       source_commit=self.source_commit, inputs=self.inputs)
         reject_nested_credentials(self.model_dump())
         for path in [*self.sources, *self.inputs]:
             source_path(path)
@@ -362,6 +345,9 @@ class EnvironmentManifestProposal(StrictModel):
 class CoverageAssessmentProposal(StrictModel):
     """A judgment about the exact manifest supplied in this isolated conversation."""
 
+    findings: list[FindingProposal]
+    decisions: list[FindingDecisionProposal]
+    capability_unavailable: bool
     verdict: Literal["accept", "revise", "indeterminate"]
     rationale: str = Field(min_length=1)
     sources: list[str] = Field(min_length=1)
