@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import inspect
 import json
 import os
 import re
@@ -23,6 +24,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+from scripts import environment_validation_cleanup
 from scripts.environment_validation_image import candidate_image, verify_image_code
 
 from coordinare.config import EnvCacheConfig
@@ -430,7 +432,7 @@ async def _cleanup_case(target: Path, cache: EnvCacheState, image: str) -> bool:
     existing = [root for root in roots if root.is_dir() and not root.is_symlink()]
     if not existing:
         return True
-    program = "import pathlib,shutil;root=pathlib.Path('/cleanup');[(shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()) for p in root.iterdir()]"
+    program = inspect.getsource(environment_validation_cleanup) + "\nremove_contents(Path('/cleanup'))"
     for root in existing:
         name = "coordinare-env-validation-cleanup-" + uuid.uuid4().hex[:12]
         proc = await asyncio.create_subprocess_exec(

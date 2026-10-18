@@ -282,3 +282,12 @@ Unknown IDs, malformed activation evidence and indeterminate outcomes still hold
 All required command records, confirmed cleanup, existing repair limits, new empty
 cache generation, independent review and complete clean execution remain mandatory.
 The failed profile is preserved; a fresh bounded Elm-only test evaluates the fix.
+
+The next Elm attempt reached valid execution repair admission, then held after
+454.32 seconds because deleting owner-read-only package-cache directories failed.
+A direct Docker reproduction confirmed `PermissionError`; relative bind paths were
+not the cause. The harness cleanup helper now restores owner permissions only on
+directories within its owned case root, without following symlinks, before removing
+contents. It still requires successful removal and confirmed cleanup-container
+termination before starting a new cache generation. Cleanup failure remains a hold;
+no platform, language or package-manager recipe is introduced.
