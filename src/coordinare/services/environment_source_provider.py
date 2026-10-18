@@ -339,14 +339,11 @@ async def acquire_github_source(
         raise
 
 
-async def ensure_execution_source(
-    state: Mapping[str, Any], name: str, cache: EnvCacheState, *, destination: Path, deadline: float,
+async def prepare_repository_source(
+    state: Mapping[str, Any], name: str, *, commit: str, review_inputs: Mapping[str, str],
+    destination: Path, deadline: float,
 ) -> ExecutionSourceBundle:
-    from coordinare.services.environment_acceptance import accepted_environment
-
-    manifest = accepted_environment(cache)
-    if manifest is None:
-        raise ValueError("execution source requires independently accepted manifest")
+    """Resolve an actual provider for a parent-owned commit and review hash set."""
     config = state.get("coordinare_config")
     global_config = getattr(config, "global_config", None) or state.get("config")
     symphony = (state.get("symphony_configs") or {}).get(name)
@@ -362,13 +359,25 @@ async def ensure_execution_source(
     bundle = await provider(
         effective.github_org,
         effective.project_name or name,
-        commit=manifest.source_commit,
+        commit=commit,
         destination=destination,
         deadline=deadline,
     )
     validate_execution_bundle(
-        bundle.payload_path, expected=bundle.identity, review_inputs=manifest.inputs,
+        bundle.payload_path, expected=bundle.identity, review_inputs=review_inputs,
     )
-    if bundle.identity.source_commit != manifest.source_commit:
+    if bundle.identity.source_commit != commit:
         raise ValueError("execution source commit differs from accepted manifest")
     return bundle
+
+
+async def ensure_execution_source(
+    state: Mapping[str, Any], name: str, cache: EnvCacheState, *, destination: Path, deadline: float,
+) -> ExecutionSourceBundle:
+    from coordinare.services.environment_acceptance import accepted_environment
+
+    manifest = accepted_environment(cache)
+    if manifest is None:
+        raise ValueError('execution source requires independently accepted manifest')
+    return await prepare_repository_source(state, name, commit=manifest.source_commit,
+        review_inputs=manifest.inputs, destination=destination, deadline=deadline)

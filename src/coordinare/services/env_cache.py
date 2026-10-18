@@ -756,6 +756,15 @@ async def _verify_cache_clean(
 
 async def _verify_cache_runtime(state: Mapping[str, Any], symphony_name: str, svc: Any,
                                 performer_mounts: Sequence[Path]) -> tuple[bool | None, str]:
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix='coordinare-verify-source-') as temporary:
+        return await _verify_cache_runtime_with_source(state, symphony_name, svc, performer_mounts, Path(temporary))
+
+
+async def _verify_cache_runtime_with_source(
+    state: Mapping[str, Any], symphony_name: str, svc: Any, performer_mounts: Sequence[Path], source_root: Path,
+) -> tuple[bool | None, str]:
     ec = state["env_cache"][symphony_name]
     contract = accepted_environment(ec)
     script = str(ec.rendered_verify_sh)
@@ -794,20 +803,22 @@ async def _verify_cache_runtime(state: Mapping[str, Any], symphony_name: str, sv
         "-e", "_DEVENV_SOURCED=1",
         "-e", "_DEVENV_SKIP_SERVICES=1",
         "-v", f"{cache_dir}:{container_path}:ro",
-        "--entrypoint", "bash", str(image),
-        "-s",
+        "--entrypoint", "/usr/local/bin/python", str(image),
+        "-I", "-m", "coordinare_service_inference.environment.execution_source_stdin",
     ]
-    from coordinare.services.environment_verification import (
-        source_setup,
-        verification_environment,
-        verification_sources,
-    )
+    from coordinare.services.environment_source_provider import ensure_execution_source
+    from coordinare.services.environment_source_transport import execution_input
+    from coordinare.services.environment_verification import verification_environment
 
     try:
         immutable_verifier_image(image)
-        files = await verification_sources(state, symphony_name, ec)
+        import time
+
+        bundle = await ensure_execution_source(state, symphony_name, ec,
+            destination=source_root/'payload', deadline=time.monotonic()+_VERIFY_TIMEOUT_S)
         credentials = await verification_environment(state, symphony_name, ec, performer_mounts)
-        script = source_setup(files, expected_inputs=contract.inputs if contract is not None else {}) + credentials + script
+        script_input = execution_input(bundle, credentials+script,
+            review_inputs=contract.inputs if contract is not None else {})
     except (ValueError, OSError, RuntimeError) as exc:
         return False, f"clean verification inputs refused: {exc}"
     try:
@@ -824,7 +835,7 @@ async def _verify_cache_runtime(state: Mapping[str, Any], symphony_name: str, sv
             error=str(exc),
         )
         return None, f"clean verify could not run: {exc}"
-    outcome = await _verify_outcome(proc, name, symphony_name, script, cache=ec)
+    outcome = await _verify_outcome(proc, name, symphony_name, script_input, cache=ec)
     if outcome[0] is not None:
         if not await _remove_verify_container(name):
             outcome = None, "clean verifier container removal was not confirmed"
@@ -837,7 +848,7 @@ async def _verify_cache_runtime(state: Mapping[str, Any], symphony_name: str, sv
 
 
 async def _verify_outcome(
-    proc: asyncio.subprocess.Process, name: str, symphony_name: str, script: str,
+    proc: asyncio.subprocess.Process, name: str, symphony_name: str, script: str | bytes,
     *, cache: EnvCacheState | None = None,
 ) -> tuple[bool | None, str]:
     """218 (review round 3): the verdict for a verify container that started.
@@ -847,7 +858,7 @@ async def _verify_outcome(
     """
     try:
         out_b, _ = await asyncio.wait_for(
-            proc.communicate(input=script.encode()), timeout=_VERIFY_TIMEOUT_S,
+            proc.communicate(input=script.encode() if isinstance(script, str) else script), timeout=_VERIFY_TIMEOUT_S,
         )
     except asyncio.CancelledError:
         # 218 (round 4): the daemon task was cancelled. The container must still be killed and removed.

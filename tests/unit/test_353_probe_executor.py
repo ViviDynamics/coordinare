@@ -11,6 +11,7 @@ import pytest
 
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 from tests.unit.test_353_environment_probes import plan
+from tests.unit.test_353_execution_source_pipeline import bundle_fixture
 
 
 def test_probe_container_has_no_network_writable_source_or_credentials(tmp_path):
@@ -25,10 +26,10 @@ def test_probe_container_has_no_network_writable_source_or_credentials(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_unsupported_platform_holds_before_execution():
+async def test_unsupported_platform_holds_before_execution(tmp_path):
     from coordinare.services.environment_probe_executor import execute_environment_probe
     with pytest.raises(EnvironmentDiscoveryError) as exc:
-        await execute_environment_probe(plan(), state={'probe_backend':'kubernetes'}, source_files={}, budget=AttemptBudget())
+        await execute_environment_probe(plan(), state={'probe_backend':'kubernetes'}, source_bundle=bundle_fixture(tmp_path), budget=AttemptBudget())
     assert exc.value.code == 'probe_isolation_unsupported'
 
 
@@ -47,10 +48,10 @@ def test_probe_supervisor_bounds_output_and_timeout():
 
 
 @pytest.mark.asyncio
-async def test_probe_source_drift_never_creates_container():
+async def test_probe_source_drift_never_creates_container(tmp_path):
     from coordinare.services.environment_probe_executor import execute_environment_probe
     with pytest.raises(EnvironmentDiscoveryError) as exc:
-        await execute_environment_probe(plan(), state={'probe_backend':'docker'}, source_files={}, budget=AttemptBudget())
+        await execute_environment_probe(plan(), state={'probe_backend':'docker'}, source_bundle=bundle_fixture(tmp_path), budget=AttemptBudget())
     assert exc.value.code == 'probe_source_identity'
 
 
@@ -68,7 +69,7 @@ def test_probe_supervisor_kills_descendants_holding_output():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('cleanup', [True, False])
-async def test_cancelled_late_create_is_drained_before_cleanup(monkeypatch, cleanup):
+async def test_cancelled_late_create_is_drained_before_cleanup(monkeypatch, cleanup, tmp_path):
     import hashlib
 
     from coordinare.services import environment_probe_executor as executor
@@ -90,7 +91,7 @@ async def test_cancelled_late_create_is_drained_before_cleanup(monkeypatch, clea
     monkeypatch.setattr(executor, '_docker', docker)
     monkeypatch.setattr(executor, '_remove', remove)
     task = asyncio.create_task(executor.execute_environment_probe(p, state={'probe_backend':'docker'},
-        source_files={PATH:SOURCE}, budget=AttemptBudget()))
+        source_bundle=bundle_fixture(tmp_path, {PATH:(SOURCE.encode(),"100644")}), budget=AttemptBudget()))
     await entered.wait()
     task.cancel()
     release.set()
@@ -100,7 +101,7 @@ async def test_cancelled_late_create_is_drained_before_cleanup(monkeypatch, clea
 
 
 @pytest.mark.asyncio
-async def test_failed_create_still_attempts_removal(monkeypatch):
+async def test_failed_create_still_attempts_removal(monkeypatch, tmp_path):
     import hashlib
 
     from coordinare.services import environment_probe_executor as executor
@@ -118,7 +119,7 @@ async def test_failed_create_still_attempts_removal(monkeypatch):
     monkeypatch.setattr(executor, '_docker', docker)
     monkeypatch.setattr(executor, '_remove', remove)
     with pytest.raises(TimeoutError):
-        await executor.execute_environment_probe(p, state={'probe_backend':'docker'}, source_files={PATH:SOURCE}, budget=AttemptBudget())
+        await executor.execute_environment_probe(p, state={'probe_backend':'docker'}, source_bundle=bundle_fixture(tmp_path, {PATH:(SOURCE.encode(),"100644")}), budget=AttemptBudget())
     assert len(removed) == 1
 
 
@@ -168,7 +169,7 @@ async def test_host_collection_is_bounded_before_report_decoding():
 
 
 @pytest.mark.asyncio
-async def test_cleanup_is_drained_when_its_wait_is_cancelled(monkeypatch):
+async def test_cleanup_is_drained_when_its_wait_is_cancelled(monkeypatch, tmp_path):
     import hashlib
 
     from coordinare.services import environment_probe_executor as executor
@@ -189,7 +190,7 @@ async def test_cleanup_is_drained_when_its_wait_is_cancelled(monkeypatch):
     monkeypatch.setattr(executor, '_docker', docker)
     monkeypatch.setattr(executor, '_remove', remove)
     task = asyncio.create_task(executor.execute_environment_probe(p, state={'probe_backend':'docker'},
-        source_files={PATH:SOURCE}, budget=AttemptBudget()))
+        source_bundle=bundle_fixture(tmp_path, {PATH:(SOURCE.encode(),"100644")}), budget=AttemptBudget()))
     await cleaning.wait()
     task.cancel()
     await asyncio.sleep(0)

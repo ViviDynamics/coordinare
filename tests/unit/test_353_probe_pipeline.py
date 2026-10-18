@@ -122,6 +122,11 @@ async def test_owned_probe_checkpoints_before_executor_and_redacts_evidence(tmp_
         data = report_data(plan)
         data['results'][0]['output'] = 'API_KEY=private-secret-value'
         return ProbeReport.model_validate(data)
+    async def prepare_source(*args, **kwargs):
+        from tests.unit.test_353_execution_source_pipeline import bundle_fixture
+        assert cache.environment_attempt['probe_owner'] == p.digest()
+        return bundle_fixture(tmp_path, {PATH:(SOURCE.encode(), '100644')})
+    monkeypatch.setattr(service, 'prepare_repository_source', prepare_source)
     monkeypatch.setattr(service, 'execute_environment_probe', execute)
     result = await service.run_owned_probe(p, context=service.ProbeServiceContext(cache, {}, fetch, budget, DiscoveryLimits()))
     assert 'private-secret-value' not in result.model_dump_json()
