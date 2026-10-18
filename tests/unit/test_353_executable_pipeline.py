@@ -27,18 +27,24 @@ def isolated_probe_io(monkeypatch):
 
 
 class PortableProposal(Proposal):
+    def __init__(self):
+        super().__init__()
+        self.review_history = []
+
     async def __call__(self, messages):
         reply = json.loads(await super().__call__(messages))
         context = json.loads(messages[1]['content'])
+        if 'manifest' in context and len(messages) == 2:
+            self.review_history.append(context.get('untrusted_execution_history', []))
         if 'manifest' in reply:
             data = reply['manifest']
             portable = 'untrusted_execution_feedback' in context
             data['install'][0]['argv'] = [sys.executable, '-c',
-                "import pathlib,sys;p=pathlib.Path(sys.argv[2]);pathlib.Path(sys.argv[1]).write_text(p.read_text() if sys.argv[3]=='portable' else str(p.resolve()))",
+                "import pathlib,sys;p=pathlib.Path(sys.argv[2]);out=pathlib.Path(sys.argv[1]);target=out.with_name('cached-guide') if sys.argv[3]=='portable' else p;target.write_text(p.read_text());out.write_text(str(target.resolve()))",
                 '{cache}/payload', '{repo}/guide', 'portable' if portable else 'nonportable']
             data['checks'][0]['argv'] = [sys.executable, '-c',
-                "import pathlib,sys;text=pathlib.Path(sys.argv[1]).read_text();assert (text if sys.argv[3]=='portable' else pathlib.Path(text).read_text())==sys.argv[2]",
-                '{cache}/payload', SOURCE, 'portable' if portable else 'nonportable']
+                "import pathlib,sys;text=pathlib.Path(sys.argv[1]).read_text();assert pathlib.Path(text).read_text()==sys.argv[2]",
+                '{cache}/payload', SOURCE]
         return json.dumps(reply)
 
 
@@ -70,7 +76,14 @@ async def test_failed_clean_execution_gets_new_installation_and_fresh_independen
     await publish(service, cache, state, capability, agent)
     repaired = accepted_environment(cache)
     assert repaired.digest() != original.digest()
+    assert repaired.checks == original.checks
     assert agent.review_starts == 2
+    assert agent.review_history[0] == []
+    historical = agent.review_history[1][0]
+    assert historical['manifest_digest'] == original.digest()
+    assert historical['manifest'] == original.model_dump(mode='json')
+    assert historical['results'][0]['status'] == 'fail'
+    assert 'output' not in historical['results'][0]
     assert cache.environment_attempt['execution_repairs'] == 1
     repo.mkdir()
     (repo/'guide').write_text(SOURCE)

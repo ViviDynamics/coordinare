@@ -72,6 +72,8 @@ class AttemptBudget:
     validation_codes: list[str] = field(default_factory=list)
     finding_ledger: FindingLedger | None = field(default=None, repr=False)
     coverage_manifest: EnvironmentManifest | None = field(default=None, repr=False)
+    executed_manifests: list[EnvironmentManifest] = field(default_factory=list, repr=False)
+    execution_review_evidence: list[dict[str, Any]] = field(default_factory=list, repr=False)
     checkpoint: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:

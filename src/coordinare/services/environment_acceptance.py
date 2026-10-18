@@ -12,6 +12,9 @@ from coordinare_service_inference.environment.models import (
     validate_current_coverage,
 )
 
+from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.environment_obligations import preserve_execution_obligations
+
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import Command
 
@@ -33,7 +36,11 @@ def accepted_environment(cache: EnvCacheState) -> EnvironmentManifest | None:
         manifest = EnvironmentManifest.model_validate(cache.environment_manifest)
         assessment = CoverageAssessment.model_validate(cache.environment_assessment)
         validate_current_coverage(manifest, assessment)
-    except (ValueError, TypeError):
+        if cache.environment_attempt is not None:
+            if not isinstance(cache.environment_attempt, dict):
+                return None
+            preserve_execution_obligations(manifest, cache.environment_attempt.get('rejected', []))
+    except (ValueError, TypeError, EnvironmentDiscoveryError):
         return None
     if (
         not manifest.inventory_digest
