@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Python 3.12+, Pydantic v2, asyncio, httpx, pathlib, hashlib, tarfile and existing Docker/Kubernetes adapters. No new runtime dependency or language-specific adapter.
 
-**Spec:** [execution-source-amendment.md](execution-source-amendment.md), approved by the user with “Excellent. Approved”. This plan is pending review. Preserve the existing native execution method: implement sequentially in this worktree; one fresh whole-diff adversarial review before merge.
+**Spec:** [execution-source-amendment.md](execution-source-amendment.md), approved by the user with “Excellent. Approved”. The user approved this plan with “Approve”. Preserve the existing native execution method: implement sequentially in this worktree; one fresh whole-diff adversarial review before merge.
 
 ## Global Constraints
 
