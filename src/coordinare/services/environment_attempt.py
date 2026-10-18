@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
     from coordinare_service_inference.environment.findings import FindingLedger
+    from coordinare_service_inference.environment.models import EnvironmentManifest
 
 
 MAX_ATTEMPT_SECONDS = 3600
@@ -69,6 +70,7 @@ class AttemptBudget:
     metadata_available: bool = False
     validation_codes: list[str] = field(default_factory=list)
     finding_ledger: FindingLedger | None = field(default=None, repr=False)
+    coverage_manifest: EnvironmentManifest | None = field(default=None, repr=False)
     checkpoint: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:

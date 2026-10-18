@@ -253,6 +253,10 @@ and 128 KiB including history. Existing context, call/read, deadline and categor
 repair limits still apply. Operator summaries show counts, finding IDs and
 categories; detailed source-bound findings remain private evidence.
 
+The journal also retains the latest validated candidate, so a restart cannot
+remove established required IDs, scopes or service lifecycle obligations. Revision
+charges and exhausted/held state are saved with their review transition.
+
 New readiness requires coverage assessment version 2 and attempt journal version 5.
 Older review records remain readable as historical evidence but do not establish
 current readiness. Pending legacy attempts need an explicit operator restart after

@@ -143,3 +143,13 @@ with 14 existing platform skips; performer checks passed 282 cases and workflow
 checks passed 26. These are protocol/fixture results, not real Elm readiness.
 Final-head CI, independent whole-diff review and a new pinned Elm-only simulation
 remain pending. No live-success claim or SC-004 completion is made.
+
+The fresh whole-branch review found two Important restart issues: a revision was
+checkpointed before its allowance was charged, and a resumed finding ledger lost
+prior required candidate obligations. Both were reproduced against the real
+journal with a simulated process death. The single fix pass now checkpoints the
+charge/hold with the review and retains the latest validated candidate before
+review. Rename/scope/required-status regressions reject weakened resumed checks.
+The affected suite passed 1003 tests with 14 existing platform skips and four
+existing structlog warnings. Strict typing passed for335daemon modules and the
+unchanged lint ratchet holds. Live Elm and final-head CI remain pending.
