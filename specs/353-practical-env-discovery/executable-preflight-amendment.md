@@ -250,3 +250,14 @@ fields, ambiguous mixtures, malformed values and duplicate keys remain rejected.
 All independent evidence binding and coverage/executable gates still apply. This
 prevents a valid coverage revision from spending an exhausted schema allowance merely
 because its outer wrapper was absent.
+
+The next Elm run held after 39.78 seconds: three model calls, no source reads and no
+probe execution. The request advertised both large schemas simultaneously, and
+correction feedback directed malformed discovery replies toward a manifest even
+before preflight. The same authorized correction now gives each stage its own
+system guidance: source tools first, a complete `ProbeEnvelope` after inspected
+evidence, then a complete `ManifestEnvelope` after actual validated observations.
+Source tools remain available throughout discovery. Feedback requests the current
+stage's envelope; complete schemas describe the outer wrapper as well as its body.
+The original conversation, evidence, deadlines and counters persist across stages.
+No malformed envelope is silently accepted or given additional repair allowance.

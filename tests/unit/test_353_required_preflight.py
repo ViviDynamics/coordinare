@@ -114,3 +114,41 @@ async def test_saved_probe_observation_cannot_bypass_current_target(change):
     with pytest.raises(EnvironmentDiscoveryError):
         await discover_and_review(symphony_name='suite', commit=COMMIT, paths=[PATH], fetch=fetch, chat=chat,
             capabilities=CAPABILITIES, budget=budget, require_preflight=True)
+
+
+@pytest.mark.asyncio
+async def test_each_stage_advertises_only_its_envelope_and_corrects_that_stage():
+    from coordinare.services.environment_probes import ProbeReport
+    budget = AttemptBudget()
+    steps = iter(('bad-source','read','bad-probe','probe','manifest','review'))
+    async def fetch(path):
+        return SOURCE
+    async def execute(plan):
+        return ProbeReport.model_validate(report_data(plan))
+    async def chat(messages):
+        step = next(steps)
+        system = messages[0]['content']
+        if step in {'bad-source','read'}:
+            assert 'Current phase: source_inspection' in system
+            assert 'ProbeEnvelope' not in system and 'ManifestEnvelope' not in system
+            if step=='bad-source':
+                return json.dumps({'probe':[], 'schema_version':1})
+            assert json.loads(messages[-1]['content'])['expected_envelope']=='source_tool'
+            return json.dumps({'tool':'read_file','path':PATH})
+        if step in {'bad-probe','probe'}:
+            assert 'Current phase: capability_preflight' in system
+            assert 'ProbeEnvelope' in system and 'ManifestEnvelope' not in system
+            if step=='bad-probe':
+                return json.dumps({'probe':{'schema_version':1,'commands':[],'citations':{},'questions':{}}})
+            assert json.loads(messages[-1]['content'])['expected_envelope']=='probe'
+            return json.dumps({'probe':request_data()})
+        if step=='manifest':
+            assert 'Current phase: manifest_construction' in system
+            assert 'ManifestEnvelope' in system and 'ProbeEnvelope' not in system
+            return json.dumps({'manifest':candidate()})
+        assert 'manifest' in json.loads(messages[1]['content'])
+        return json.dumps(assessment(candidate())['assessment'])
+    manifest, review = await discover_and_review(symphony_name='suite', commit=COMMIT, paths=[PATH],
+        fetch=fetch, chat=chat, capabilities=CAPABILITIES, budget=budget, probe_executor=execute, require_preflight=True)
+    assert review.manifest_digest==manifest.digest()
+    assert budget.schema_repairs==2 and budget.probe_batches==1

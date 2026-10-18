@@ -107,3 +107,5 @@ The complete-evidence amendment retest also held for all 29 default repositories
 - [x] T055 Require actual capability preflight in production/harness before accepting a manifest; no budget renewal or readiness waiver.
 - [x] T056 Normalize only unambiguous schema-valid bare review objects; retain citation/provenance validation and reject extra fields.
 - [ ] T057 Run focused/preflight checks, CI, and one fresh pinned Elm-only 3600-second profile; preserve prior failed evidence and explicit scope approvals.
+
+- [x] T058 Correct stage-specific source/probe/manifest guidance and schema feedback after the 39.78-second hold; regression covers both malformed envelopes without increasing the two-correction limit.

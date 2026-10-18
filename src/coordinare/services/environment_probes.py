@@ -44,6 +44,10 @@ class ProbeRequest(ProbeBase):
         return self
 
 
+class ProbeEnvelope(ProbeBase):
+    probe: ProbeRequest
+
+
 class ProbePlan(ProbeBase):
     execution_id: str = Field(default_factory=lambda: uuid.uuid4().hex, pattern=r"^[0-9a-f]{32}$")
     request: ProbeRequest

@@ -56,6 +56,7 @@ class AttemptBudget:
     mandatory_inputs_delivered: int = 0
     inspected_bytes: int = 0
     context_bytes: int = 0
+    expected_envelope: Literal["source_tool", "probe", "manifest", "assessment"] = "manifest"
     stage: str = "inventory"
     outcome: str = "held"
     error_code: str | None = None
