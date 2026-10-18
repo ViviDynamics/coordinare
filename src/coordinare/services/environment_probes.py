@@ -58,8 +58,7 @@ class ProbePlan(ProbeBase):
     @model_validator(mode="after")
     def inspected_citations(self) -> Self:
         if any(path not in self.inputs for paths in self.request.citations.values() for path in paths):
-            message = "probe citations must be inspected source inputs"
-            raise ValueError(message)
+            raise PydanticCustomError("probe_citations_uninspected", "probe citations must be inspected source inputs")
         if any(len(value) != SHA256_LENGTH or any(c not in '0123456789abcdef' for c in value) for value in self.inputs.values()):
             message = "probe input hashes must be actual SHA-256 values"
             raise ValueError(message)
