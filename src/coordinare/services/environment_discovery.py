@@ -665,13 +665,15 @@ async def _checkpoint_finding_review(budget: AttemptBudget, assessment: Coverage
                                      assessment_data: dict[str, Any]) -> None:
     budget.finding_ledger = assessment.finding_ledger
     error = None
-    if assessment_data['capability_unavailable']:
-        error = EnvironmentDiscoveryError('required execution capability is unavailable', code='required_capability_unavailable')
-    elif assessment.verdict == 'revise':
+    if assessment.verdict == 'revise':
+        # A requested revision may resolve a capability objection within the
+        # existing budget. The finding remains open until fresh adjudication.
         try:
             budget.reserve_repair('coverage')
         except EnvironmentDiscoveryError as exc:
             error = exc
+    elif assessment_data['capability_unavailable']:
+        error = EnvironmentDiscoveryError('required execution capability is unavailable', code='required_capability_unavailable')
     elif assessment.verdict == 'indeterminate':
         error = EnvironmentDiscoveryError('independent coverage judgment is indeterminate', code='review_indeterminate')
     if error is not None:

@@ -72,3 +72,10 @@ citation problem. The reviewer repaired citations instead of the flag, exhaustin
 the existing schema correction allowance. The pinned source remained unchanged.
 This is a repair-diagnostic defect, not evidence that Elm installation completed or
 that its required services are impossible.
+
+The next `accurate-review-elm60m-high` run reached a valid independent rejection
+with four open findings, but terminated before either coverage revision because
+the capability flag overrode `revise`. It held after 1,326.00 seconds without
+installation. The correction routes explicit revision requests through the
+already approved bounded repair loop; it does not supply or validate a runtime.
+The small private VM experiment remains distinct from full Elm acceptance.
