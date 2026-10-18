@@ -1,5 +1,25 @@
 # Repository validation results
 
+## Latest Elm correction test: held before installation, 2026-10-18
+
+Code `41fc772259e925a36c6a6613ee20ca56f5cf0ff2` was tested against the same
+pinned Elm source with the approved low-effort model and 3,600-second profile.
+The actual attempt terminated after 650.6 seconds with `attempt_schema_limit`,
+not a timeout. Eight calls completed; the original two schema repairs and one
+coverage revision were consumed. Complete-declaration recovery worked, and
+independent review raised four blocking findings. The next declaration mapped
+a required Rails requirement to an optional runtime check, which admission
+correctly rejected. No installer or clean consumer ran; readiness is false.
+
+The review still excused client-only coverage for documented service needs.
+More protocol corrections have therefore not established reliable whole-project
+coverage. The proposed [coverage-first amendment](coverage-first-amendment.md)
+records the architectural correction and awaits written-spec approval; it is not
+implemented or evidence of readiness. Raw evidence is retained under private
+`complete-correction-elm60m-low/elm/`. The source snapshot is unchanged, and
+owned image references, registry container and registry volume were independently
+confirmed absent in `cleanup-verified.json`. The broader matrix remains stopped.
+
 ## Elm — execution passed; coverage acceptance invalidated, 2026-10-18
 
 A subsequent independent source audit rejected the model's coverage judgment.
