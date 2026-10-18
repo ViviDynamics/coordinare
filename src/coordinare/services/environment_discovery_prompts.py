@@ -69,6 +69,8 @@ class DiscoveryPrompts:
                 'one cited probe envelope for uncertain base-image prerequisites. Source files must be read through '
                 'source tools, not probe commands. Probes have no network, secrets or installed cache, and source '
                 'is read-only. Do not install anything. Missing tools are valid observations, never readiness. '
+                'Every command must have required=true, scope=[], depends_on=[], and a timeout of at most 30 seconds. '
+                'Use unique IDs and exactly those IDs as keys in both citations and questions. '
                 'Do not submit a manifest before actual probe results. Return exactly the complete envelope '
                 'matching this schema: ' + json.dumps(ProbeEnvelope.model_json_schema()))
         else:
@@ -84,7 +86,9 @@ def correction_instruction(envelope: str) -> str:
         "source_tool": 'Return a source tool request, for example {"tool":"read_file","path":"exact listed path"}. '
             'Inspect repository evidence before proposing probes or a manifest. ',
         "probe": 'Return exactly {"probe":{...}} matching ProbeEnvelope, with commands, citations and questions '
-            'inside the probe object. Do not add root schema_version or return a list or manifest. ',
+            'inside the probe object. Each command requires required=true, scope=[], depends_on=[], and timeout_seconds<=30. '
+            'Citations and questions must each contain exactly the unique command IDs; citations must be nonempty '
+            'and questions nonblank, at most 512 characters. Do not add root schema_version or return a list or manifest. ',
         "manifest": 'Return exactly {"manifest":{...}} matching the manifest envelope, never a bare proposal. ',
         "assessment": 'Return exactly {"assessment":{...}} matching the review envelope. ',
     }[envelope]

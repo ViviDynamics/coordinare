@@ -109,3 +109,5 @@ The complete-evidence amendment retest also held for all 29 default repositories
 - [ ] T057 Run focused/preflight checks, CI, and one fresh pinned Elm-only 3600-second profile; preserve prior failed evidence and explicit scope approvals.
 
 - [x] T058 Correct stage-specific source/probe/manifest guidance and schema feedback after the 39.78-second hold; regression covers both malformed envelopes without increasing the two-correction limit.
+
+- [x] T059 Express existing probe restrictions in field schemas and return safe typed correction codes after the 167.5-second Elm hold; four regressions observed red before correction.

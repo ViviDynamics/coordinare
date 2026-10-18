@@ -150,9 +150,20 @@ class Command(StrictModel):
 
 
 class ProbeCommand(Command):
-    """The same vocabulary with the actual capability-probe timeout bound."""
+    """The command vocabulary restricted to independent required observations."""
 
     timeout_seconds: float = Field(default=30.0, gt=0, le=30)
+    required: bool = Field(default=True, json_schema_extra={"const": True},
+        description="Must be true even when the observed prerequisite may be absent.")
+    scope: list[str] = Field(default_factory=list, max_length=0, description="Must be empty; probes are not scoped readiness checks.")
+    depends_on: list[str] = Field(default_factory=list, max_length=0, description="Must be empty; each observation is independent.")
+
+    @field_validator("required")
+    @classmethod
+    def observation_required(cls, value: bool) -> bool:
+        if not value:
+            raise PydanticCustomError("probe_required_true", "every requested observation must run; required must be true")
+        return value
 
 
 class Requirement(StrictModel):

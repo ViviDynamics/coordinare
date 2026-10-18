@@ -261,3 +261,11 @@ Source tools remain available throughout discovery. Feedback requests the curren
 stage's envelope; complete schemas describe the outer wrapper as well as its body.
 The original conversation, evidence, deadlines and counters persist across stages.
 No malformed envelope is silently accepted or given additional repair allowance.
+
+The stage-specific Elm run then inspected eight files and proposed probes, but held
+after 167.5 seconds on constraints absent from the advertised schema. Probe commands
+now advertise the existing `required=true`, empty scope and empty dependency rules
+as field constraints. The validator continues to reject optional, scoped and dependent
+observations. Citation/question maps explicitly require exactly the command IDs; safe
+typed error codes distinguish mismatched maps, missing questions and optional commands
+without echoing untrusted values. No correction limit or readiness rule changes.
