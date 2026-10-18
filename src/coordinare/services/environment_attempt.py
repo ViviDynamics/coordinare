@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from coordinare_service_inference.environment.findings import FindingLedger
+
     from collections.abc import Awaitable, Callable, Mapping
 
 
@@ -64,6 +66,7 @@ class AttemptBudget:
     finish_reasons: dict[str, int] = field(default_factory=dict)
     metadata_available: bool = False
     validation_codes: list[str] = field(default_factory=list)
+    finding_ledger: FindingLedger | None = field(default=None, repr=False)
     checkpoint: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
