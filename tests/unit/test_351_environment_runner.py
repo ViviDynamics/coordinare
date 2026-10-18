@@ -572,3 +572,20 @@ atexit.register(finalization_signal)
     report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
     assert report.passed
     assert report.results[0].exit_code == 0
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux pidfd child-watcher adapter')
+@pytest.mark.asyncio
+@pytest.mark.parametrize('exit_code', [0, 7])
+async def test_teardown_preserves_exit_before_child_watcher_delivery(exit_code):
+    import asyncio
+
+    from coordinare_service_inference.environment.runner import _terminate
+
+    process = await asyncio.create_subprocess_exec(sys.executable, '-c', f'raise SystemExit({exit_code})')
+    # Wait for kernel completion without reaping or yielding to the pidfd callback.
+    # Popen.send_signal() must not steal that pending status from asyncio.
+    os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+    assert process.returncode is None
+    await _terminate(process)
+    assert process.returncode == exit_code
