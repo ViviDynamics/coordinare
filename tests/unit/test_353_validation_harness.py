@@ -400,3 +400,51 @@ def test_candidate_cleanup_releases_owned_registry_storage(tmp_path, monkeypatch
     with images.candidate_image('base@sha256:'+'b'*64, tmp_path/'image'):
         assert 'owned_registry_volume' in storage
     assert storage == {'unrelated_volume'}, 'registry removal leaked its anonymous upload storage'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('removal_confirmed', [True,False])
+async def test_owned_cleanup_handles_readonly_directories_without_following_links(tmp_path,monkeypatch,removal_confirmed):
+    import asyncio
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from scripts import validate_environment_repositories as harness
+    monkeypatch.chdir(tmp_path)
+    cache=SimpleNamespace(cache_dir=Path('case/cache'))
+    target=Path('case/attempt')
+    outside=tmp_path/'outside'
+    outside.mkdir()
+    (outside/'preserved').write_text('untouched')
+    outside.chmod(0o555)
+    roots=[cache.cache_dir,target/'installer-source']
+    for root in roots:
+        nested=root/'readonly'/'nested'
+        nested.mkdir(parents=True)
+        (nested/'artifact').write_text('owned')
+        (root/'outside-link').symlink_to(outside,target_is_directory=True)
+        nested.chmod(0o555)
+        nested.parent.chmod(0o555)
+    real_create=asyncio.create_subprocess_exec
+    removed=[]
+    async def create(*args,**kwargs):
+        mount=args[args.index('-v')+1]
+        owned=Path(mount.rsplit(':/cleanup',1)[0]).resolve()
+        assert owned in [root.resolve() for root in roots]
+        program=args[-1].replace("'/cleanup'",repr(str(owned)))
+        return await real_create(sys.executable,'-c',program,**kwargs)
+    async def remove(name):
+        removed.append(name)
+        return removal_confirmed
+    monkeypatch.setattr(harness.asyncio,'create_subprocess_exec',create)
+    monkeypatch.setattr(harness,'_remove_container',remove)
+    assert await harness._cleanup_case(target,cache,'fixture-image') is removal_confirmed
+    assert (outside/'preserved').read_text()=='untouched'
+    assert outside.stat().st_mode & 0o777 == 0o555
+    outside.chmod(0o755)
+    if removal_confirmed:
+        assert all(not root.exists() for root in roots)
+        assert len(removed)==2
+    else:
+        assert len(removed)==1
