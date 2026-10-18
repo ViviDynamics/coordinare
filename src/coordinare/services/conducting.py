@@ -291,7 +291,7 @@ class OpenAiApiBackend:
         # 131: every send is recorded on the conductor call that is open, if any.
         self.calls = calls if calls is not None else NULL_CALL_LOG
         self._endpoint_name = endpoint_name
-        if structured_transport not in {"json_schema", "tool_call", "json_text"}:
+        if structured_transport not in {"json_schema", "tool_call", "json_object"}:
             message = "unsupported structured transport"
             raise ValueError(message)
         self._structured_transport = structured_transport
@@ -332,8 +332,8 @@ class OpenAiApiBackend:
         return parameters
 
     def _response_parameters(self, schema: dict[str, Any] | None, json_mode: bool) -> dict[str, Any]:
-        if schema is not None and self._structured_transport == "json_text":
-            return {}
+        if schema is not None and self._structured_transport == "json_object":
+            return {"response_format": {"type": "json_object"}}
         if schema is not None and self._structured_transport == "tool_call":
             return {"tools": functions(schema), "tool_choice": "required", "parallel_tool_calls": False}
         if schema is not None:
@@ -442,7 +442,7 @@ class OpenAiApiBackend:
 
         canonical_schema = response_schema
         function_mode = self._structured_transport == "tool_call"
-        text_mode = self._structured_transport == "json_text"
+        text_mode = self._structured_transport == "json_object"
         instruction = ("Transport: return exactly one canonical JSON object in the logical phase envelope described above. "
             "No native function calls, prose, markdown, or response wrapper. All local validation, source evidence, "
             "independent review and required execution rules remain mandatory.") if text_mode else (INSTRUCTION if function_mode else WIRE_INSTRUCTION)

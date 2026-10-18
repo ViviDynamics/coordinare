@@ -745,7 +745,7 @@ def main() -> int:
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
     parser.add_argument("--max-tokens", type=int, default=32768)
     parser.add_argument("--effort")
-    parser.add_argument("--structured-transport", choices=["json_schema", "tool_call", "json_text"], default="json_schema")
+    parser.add_argument("--structured-transport", choices=["json_schema", "tool_call", "json_object"], default="json_schema")
     parser.add_argument("--phase-timeout", type=float, default=120)
     parser.add_argument("--attempt-timeout", type=float, default=600)
     parser.add_argument("--max-schema-repairs", type=int, choices=range(3), default=2)
