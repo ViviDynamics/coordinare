@@ -7,6 +7,8 @@ import contextlib
 import hashlib
 import json
 import re
+import shutil
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -20,6 +22,7 @@ from coordinare_service_inference.cache_key import (
     forced_regen_cache_key,
     parse_prior_manifest,
 )
+from coordinare_service_inference.environment.execution_source import ExecutionSourceError
 from coordinare_service_inference.manual_override import SERVICES_SUBDIR
 
 from coordinare.lib.redaction import redact_state_value
@@ -72,9 +75,20 @@ from coordinare.services.environment_repair import (
     hold_uncertain_execution,
     journal_for,
     prepare_repair,
+    release_execution_source,
     repair_context,
+    reserve_execution_source,
     save_attempt,
 )
+from coordinare.services.environment_source_provider import (
+    checkpoint_source_ownership,
+    ensure_execution_source,
+)
+from coordinare.services.environment_source_provider import (
+    source_refusal as _source_refusal,
+)
+from coordinare.services.environment_source_transport import execution_input
+from coordinare.services.environment_verification import verification_environment
 from coordinare.services.kubernetes_provenance import parse_summary, validate_summary
 from coordinare.services.kubernetes_verifier import (
     VerifierConfigurationError,
@@ -757,13 +771,7 @@ async def _verify_cache_clean(
 
 async def _verify_cache_runtime(state: Mapping[str, Any], symphony_name: str, svc: Any,
                                 performer_mounts: Sequence[Path]) -> tuple[bool | None, str]:
-    import tempfile
 
-    from coordinare.services.environment_repair import (
-        release_execution_source,
-        reserve_execution_source,
-    )
-    from coordinare.services.environment_source_provider import checkpoint_source_ownership
 
     cache = state['env_cache'][symphony_name]
     with tempfile.TemporaryDirectory(prefix='coordinare-verify-source-') as temporary:
@@ -773,7 +781,6 @@ async def _verify_cache_runtime(state: Mapping[str, Any], symphony_name: str, sv
             return await _verify_cache_runtime_with_source(state, symphony_name, svc, performer_mounts, Path(temporary))
         finally:
             # The context exits after finally; remove before releasing durable ownership.
-            import shutil
             shutil.rmtree(temporary)
             release_execution_source(cache, identity=cache.environment_execution_source)
             await checkpoint_source_ownership(state)
@@ -823,13 +830,9 @@ async def _verify_cache_runtime_with_source(
         "--entrypoint", "/usr/local/bin/python", str(image),
         "-I", "-m", "coordinare_service_inference.environment.execution_source_stdin",
     ]
-    from coordinare.services.environment_source_provider import ensure_execution_source
-    from coordinare.services.environment_source_transport import execution_input
-    from coordinare.services.environment_verification import verification_environment
 
     try:
         immutable_verifier_image(image)
-        import time
 
         bundle = await ensure_execution_source(state, symphony_name, ec,
             destination=source_root/'payload', deadline=time.monotonic()+_VERIFY_TIMEOUT_S)
@@ -2392,7 +2395,6 @@ class EnvCacheService:
         Discovery and independent review are mandatory. Any incomplete evidence
         holds bootstrap; no parser or agent-written script can supply readiness.
         """
-        from coordinare_service_inference.environment.execution_source import ExecutionSourceError
         from coordinare_service_inference.environment.render import render_activate, render_verify
 
         from coordinare.services.environment_capabilities import EnvironmentCapabilityError
@@ -2442,12 +2444,7 @@ class EnvCacheService:
             await self._checkpoint_environment_attempt(cache_state, budget)
 
         budget.checkpoint = checkpoint
-        import tempfile
 
-        from coordinare.services.environment_repair import (
-            release_execution_source,
-            reserve_execution_source,
-        )
 
         source_temporary = tempfile.TemporaryDirectory(prefix='coordinare-discovery-source-')
         reserve_execution_source(cache_state, source_temporary.name)
@@ -2470,11 +2467,11 @@ class EnvCacheService:
                 await budget.flush()
                 prepare_source = getattr(github_service, 'prepare_execution_source', None)
                 if prepare_source is None:
-                    raise ValueError('complete execution source provider unavailable')
+                    _source_refusal('complete execution source provider unavailable', code='execution_source_unavailable')
                 source_bundle = await prepare_source(github_org, repo, commit=commit,
                     destination=Path(source_temporary.name)/'payload', deadline=budget.deadline)
                 if source_bundle.identity.source_commit != commit:
-                    raise ValueError('complete execution source commit differs')
+                    _source_refusal('complete execution source commit differs')
                 cache_state.environment_execution_source = source_bundle.identity.model_dump(mode='json')
                 budget.stage = "inventory"
                 paths = await github_service.get_repository_paths(

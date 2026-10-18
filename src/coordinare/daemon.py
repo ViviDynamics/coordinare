@@ -3,10 +3,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import shutil
 import signal
+import tempfile
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from pathlib import Path
+from pathlib import Path as _Path
 from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
@@ -91,7 +95,17 @@ from coordinare.services.env_cache import (
     daemon_sees_performer_cache,
 )
 from coordinare.services.env_provenance import DEFAULT_LIMITS, ProvenanceTransientError
-from coordinare.services.environment_repair import remaining_seconds
+from coordinare.services.environment_repair import (
+    hold_uncertain_execution,
+    release_execution_source,
+    remaining_seconds,
+    reserve_execution_source,
+    restore_attempt_generation,
+)
+from coordinare.services.environment_source_provider import (
+    checkpoint_source_ownership,
+    ensure_execution_source,
+)
 from coordinare.services.http_performer_service import DispatchStoppingError, HTTPPerformerService
 from coordinare.services.kubernetes_provenance import parse_summary
 from coordinare.services.kubernetes_verifier import (
@@ -149,7 +163,6 @@ from coordinare.state_store import (
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    from pathlib import Path
 
     from coordinare.dashboard import DashboardStore
     from coordinare.models.dependency import DependencyGraph
@@ -917,7 +930,6 @@ def _reopen_attempt_logs(
     """
     if attempt_log is None:
         return
-    from pathlib import Path as _Path
 
     for _card_id, _sess in restored_sessions.items():
         _aid = _sess.get("last_attempt_id")
@@ -1057,7 +1069,6 @@ def _rehydrate_reviewed_environment(live: EnvCacheState, persisted: EnvCacheStat
     live.environment_attempt_archive = persisted.environment_attempt_archive
     live.environment_attempt = persisted.environment_attempt
     if live.environment_attempt is not None:
-        from coordinare.services.environment_repair import restore_attempt_generation
 
         try:
             restore_attempt_generation(live, interrupted=True)
@@ -4429,19 +4440,7 @@ class CoordinareDaemon:
         if not capabilities_match(ec, capabilities):
             raise VerifierConfigurationError("environment execution capabilities changed; rediscovery required")
         credentials = await verification_credentials(self._state, symphony_name, ec, self._performer_mounts())
-        import shutil
-        import tempfile
-        import time
-        from pathlib import Path
 
-        from coordinare.services.environment_repair import (
-            release_execution_source,
-            reserve_execution_source,
-        )
-        from coordinare.services.environment_source_provider import (
-            checkpoint_source_ownership,
-            ensure_execution_source,
-        )
         from coordinare.services.kubernetes_verifier import VERIFIER_DEADLINE_S
 
         workspace = Path(tempfile.mkdtemp(prefix='coordinare-verifier-source-'))
@@ -4492,14 +4491,9 @@ class CoordinareDaemon:
             return False, str(exc), True
         finally:
             if spec is not None and spec.execution_source_workspace is not None:
-                import shutil
 
                 if spec.execution_source_workspace.exists():
                     shutil.rmtree(spec.execution_source_workspace)
-                from coordinare.services.environment_repair import release_execution_source
-                from coordinare.services.environment_source_provider import (
-                    checkpoint_source_ownership,
-                )
 
                 release_execution_source(ec, identity=ec.environment_execution_source)
                 await checkpoint_source_ownership(self._state)
@@ -5479,14 +5473,12 @@ class CoordinareDaemon:
             async with asyncio.timeout(remaining_seconds(cache)):
                 return cast("dict[str, Any]", await svc.dispatch_card(payload, **options))
         except asyncio.CancelledError:
-            from coordinare.services.environment_repair import hold_uncertain_execution
 
             hold_uncertain_execution(cache)
             raise
         except Exception:
             # The dispatch adapter owns cancellation cleanup, including a late create.
             # No terminal evidence/confirmed cleanup means no repair or readiness.
-            from coordinare.services.environment_repair import hold_uncertain_execution
 
             hold_uncertain_execution(cache)
             return {"status": "error", "reason": "environment dispatch deadline or context refused"}

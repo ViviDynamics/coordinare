@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from coordinare.services.environment_discovery import DiscoveryLimits
 
 PRE_PROBE_JOURNAL_VERSION = 2
+PRE_SOURCE_JOURNAL_VERSION = 3
 JOURNAL_MAX_BYTES = 4 * 1024 * 1024
 MAX_ARCHIVED_ATTEMPTS = 3
 REPORT_MAX_BYTES = 256 * 1024
@@ -99,7 +100,7 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
         if data.get("status") != "ready":
             _refuse("legacy environment run requires explicit restart after confirmed cleanup", code="legacy_attempt_requires_restart")
         data = {**data, "version": 3}
-    if isinstance(data, dict) and data.get('version') == 3:
+    if isinstance(data, dict) and data.get('version') == PRE_SOURCE_JOURNAL_VERSION:
         if data.get('status') != 'ready':
             _refuse('legacy source environment run requires explicit restart after confirmed cleanup', code='legacy_attempt_requires_restart')
         data = {**data, 'version':4}

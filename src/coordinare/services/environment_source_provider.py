@@ -11,7 +11,8 @@ import shutil
 import tarfile
 import time
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, Protocol
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol
 from urllib.parse import quote
 
 import httpx
@@ -35,6 +36,8 @@ from coordinare_service_inference.environment.execution_source import (
     validate_execution_bundle,
 )
 
+from coordinare.services.environment_acceptance import accepted_environment
+
 if TYPE_CHECKING:
     from collections.abc import Buffer, Mapping
     from pathlib import Path
@@ -43,6 +46,9 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 MAX_FALLBACK_BLOBS = 256
+MAX_REDIRECTS = 3
+MAX_LINK_BYTES = 4096
+GIT_SHA1_HEX_LENGTH = 40
 
 
 _SOURCE_HTTP_ACTIVE: ContextVar[bool] = ContextVar("execution_source_http_active", default=False)
@@ -63,6 +69,30 @@ class _SourceRequestRedaction(logging.Filter):
 _SOURCE_REQUEST_REDACTION = _SourceRequestRedaction()
 
 
+@dataclass(frozen=True)
+class GitHubSourceRequest:
+    api_base: str
+    token: str = field(repr=False)
+    owner: str
+    repo: str
+    commit: str
+
+
+@dataclass(frozen=True)
+class RepositorySourceRequest:
+    name: str
+    commit: str
+    review_inputs: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class _DownloadContext:
+    client: httpx.AsyncClient
+    token: str = field(repr=False)
+    api_origin: str
+    deadline: float
+
+
 class SourceProvider(Protocol):
     async def prepare_execution_source(
         self,
@@ -75,28 +105,32 @@ class SourceProvider(Protocol):
     ) -> ExecutionSourceBundle: ...
 
 
+def source_refusal(message: str, *, code: str = 'execution_source_invalid') -> NoReturn:
+    """Typed daemon failure boundary; shared package annotations may be external."""
+    raise ExecutionSourceError(message, code=code) from None
+
+
 def check_deadline(deadline: float) -> None:
     if time.monotonic() >= deadline:
-        raise TimeoutError("execution source acquisition deadline exceeded")
+        message = "execution source acquisition deadline exceeded"
+        raise TimeoutError(message)
 
 
 async def _download(
-    client: httpx.AsyncClient,
-    url: str,
-    destination: Path,
-    *,
-    token: str,
-    api_origin: str,
-    limit: int,
-    deadline: float,
-    accept: str,
+    context: _DownloadContext, url: str, destination: Path, *, limit: int, accept: str,
 ) -> None:
+    client, token, api_origin, deadline = (
+        context.client,
+        context.token,
+        context.api_origin,
+        context.deadline,
+    )
     trusted = httpx.URL(api_origin)
-    for redirect in range(4):
+    for redirect in range(MAX_REDIRECTS + 1):
         check_deadline(deadline)
         target = httpx.URL(url)
         if target.scheme != "https" or target.username or target.password:
-            raise ExecutionSourceError("execution source download URL refused")
+            source_refusal("execution source download URL refused")
         same_origin = (target.scheme, target.host, target.port) == (
             trusted.scheme,
             trusted.host,
@@ -107,8 +141,8 @@ async def _download(
             headers["Authorization"] = "Bearer " + token
         async with client.stream("GET", url, headers=headers) as response:
             if response.status_code in {301, 302, 303, 307, 308}:
-                if redirect == 3 or "location" not in response.headers:
-                    raise ExecutionSourceError("execution source redirect bound exceeded")
+                if redirect == MAX_REDIRECTS or "location" not in response.headers:
+                    source_refusal("execution source redirect bound exceeded")
                 url = str(response.url.join(response.headers["location"]))
                 continue
             response.raise_for_status()
@@ -118,10 +152,10 @@ async def _download(
                     check_deadline(deadline)
                     total += len(chunk)
                     if total > limit:
-                        raise ExecutionSourceError("execution source download byte bound exceeded")
+                        source_refusal("execution source download byte bound exceeded")
                     output.write(chunk)
             return
-    raise ExecutionSourceError("execution source redirect invalid")
+    source_refusal("execution source redirect invalid")
 
 
 class _BoundedOutput(io.BufferedIOBase):
@@ -132,7 +166,7 @@ class _BoundedOutput(io.BufferedIOBase):
     def write(self, data: Buffer) -> int:
         self.count += memoryview(data).nbytes
         if self.count > MAX_ARCHIVE_BYTES:
-            raise ExecutionSourceError("execution source bundle exceeds compressed bound")
+            source_refusal("execution source bundle exceeds compressed bound")
         return int(self.output.write(data))
 
 
@@ -156,7 +190,7 @@ def write_execution_bundle(
         len(metadata) > MAX_METADATA_BYTES
         or len(metadata) + identity.expanded_bytes > MAX_EXPANDED_BYTES
     ):
-        raise ExecutionSourceError("execution source metadata exceeds byte bound")
+        source_refusal("execution source metadata exceeds byte bound")
     with (
         destination.open("xb") as output,
         tarfile.open(
@@ -173,8 +207,8 @@ def write_execution_bundle(
             info = tarfile.TarInfo("files/" + entry.path)
             info.mode = 0o755 if entry.mode == "100755" else 0o644
             if entry.mode == "120000":
-                if entry.size > 4096:
-                    raise ExecutionSourceError("execution source symlink exceeds path bound")
+                if entry.size > MAX_LINK_BYTES:
+                    source_refusal("execution source symlink exceeds path bound")
                 info.type = tarfile.SYMTYPE
                 info.linkname = (objects / entry.object_id).read_bytes().decode("utf-8")
                 archive.addfile(info)
@@ -196,6 +230,46 @@ def write_execution_bundle(
     )
 
 
+def _write_archive_blob(
+    archive: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    entry: SourceEntry,
+    objects: Path,
+    deadline: float,
+) -> None:
+    digest = hashlib.new("sha1" if len(entry.object_id) == GIT_SHA1_HEX_LENGTH else "sha256")
+    digest.update(b"blob " + str(entry.size).encode() + b"\0")
+    target = objects / entry.object_id
+    # Duplicate blobs may occur at multiple paths; verify each archive entry.
+    with target.open("wb") as output:
+        if entry.mode == "120000":
+            if (
+                not member.issym()
+                or member.size != 0
+                or len(member.linkname.encode()) != entry.size
+            ):
+                source_refusal("execution source symlink identity differs")
+            raw = member.linkname.encode()
+            digest.update(raw)
+            output.write(raw)
+        else:
+            if (
+                not member.isfile()
+                or member.size != entry.size
+                or bool(member.mode & 0o111) != (entry.mode == "100755")
+            ):
+                source_refusal("execution source archive file mode/size differs")
+            stream = archive.extractfile(member)
+            if stream is None:
+                source_refusal("execution source archive file missing")
+            while chunk := stream.read(CHUNK_BYTES):
+                check_deadline(deadline)
+                digest.update(chunk)
+                output.write(chunk)
+    if digest.hexdigest() != entry.object_id:
+        source_refusal("execution source archive content differs from pinned tree")
+
+
 def _normalize_archive(
     archive_path: Path,
     entries: list[SourceEntry],
@@ -210,130 +284,108 @@ def _normalize_archive(
         check_deadline(deadline)
         count += 1
         if count > MAX_ENTRIES * 2 + 1:
-            raise ExecutionSourceError("execution source archive entry bound exceeded")
+            source_refusal("execution source archive entry bound exceeded")
         components = member.name.rstrip("/").split("/", 1)
         checked_path(components[0])
         if root is None:
             root = components[0]
         if root != components[0]:
-            raise ExecutionSourceError("execution source archive has multiple roots")
+            source_refusal("execution source archive has multiple roots")
         if len(components) == 1:
             if not member.isdir():
-                raise ExecutionSourceError("execution source archive root is not directory")
+                source_refusal("execution source archive root is not directory")
             continue
         name = checked_path(components[1])
         if member.isdir():
             if not any(p.startswith(name + "/") for p in declared):
-                raise ExecutionSourceError("execution source archive has unexpected directory")
+                source_refusal("execution source archive has unexpected directory")
             continue
         entry = declared.get(name)
         if entry is None or name in seen:
-            raise ExecutionSourceError("execution source archive has unexpected or duplicate file")
+            source_refusal("execution source archive has unexpected or duplicate file")
         seen.add(name)
-        digest = hashlib.new("sha1" if len(entry.object_id) == 40 else "sha256")
-        digest.update(b"blob " + str(entry.size).encode() + b"\0")
-        target = objects / entry.object_id
-        # Duplicate blobs may occur at multiple paths; verify each archive entry.
-        with target.open("wb") as output:
-            if entry.mode == "120000":
-                if (
-                    not member.issym()
-                    or member.size != 0
-                    or len(member.linkname.encode()) != entry.size
-                ):
-                    raise ExecutionSourceError("execution source symlink identity differs")
-                raw = member.linkname.encode()
-                digest.update(raw)
-                output.write(raw)
-            else:
-                if (
-                    not member.isfile()
-                    or member.size != entry.size
-                    or bool(member.mode & 0o111) != (entry.mode == "100755")
-                ):
-                    raise ExecutionSourceError("execution source archive file mode/size differs")
-                stream = archive.extractfile(member)
-                if stream is None:
-                    raise ExecutionSourceError("execution source archive file missing")
-                while chunk := stream.read(CHUNK_BYTES):
-                    check_deadline(deadline)
-                    digest.update(chunk)
-                    output.write(chunk)
-        if digest.hexdigest() != entry.object_id:
-            raise ExecutionSourceError("execution source archive content differs from pinned tree")
+        _write_archive_blob(archive, member, entry, objects, deadline)
     return seen
 
 
+def _create_destination(destination: Path) -> None:
+    destination.mkdir(mode=0o700, parents=True, exist_ok=False)
+
+
+def _tree_entries(tree_path: Path, commit: str) -> list[SourceEntry]:
+    with tree_path.open("rb") as stream:
+        tree = json.load(stream)
+    if (
+        not isinstance(tree, dict)
+        or tree.get("truncated") is not False
+        or not isinstance(tree.get("tree"), list)
+        or len(tree["tree"]) > MAX_ENTRIES * 2
+    ):
+        source_refusal("execution source tree is incomplete or oversized")
+    entries = []
+    all_paths: set[str] = set()
+    for item in tree["tree"]:
+        if not isinstance(item, dict):
+            source_refusal("execution source tree entry invalid")
+        path = checked_path(item.get("path", ""))
+        if path in all_paths:
+            source_refusal("execution source tree has duplicate entries")
+        all_paths.add(path)
+        if item.get("type") == "tree" and item.get("mode") == "040000":
+            continue
+        if item.get("type") != "blob":
+            source_refusal(
+                "execution source submodule or tree entry unsupported",
+                code="execution_source_unsupported",
+            )
+        entries.append(
+            SourceEntry(
+                path=path,
+                mode=item.get("mode"),
+                object_id=item.get("sha"),
+                size=item.get("size"),
+            ),
+        )
+    source_identity(commit, entries)
+    return entries
+
+
 async def _acquire_github_source(
-    api_base: str,
-    token: str,
-    owner: str,
-    repo: str,
-    *,
-    commit: str,
-    destination: Path,
-    deadline: float,
+    request: GitHubSourceRequest, *, destination: Path, deadline: float,
 ) -> ExecutionSourceBundle:
+    api_base, token, owner, repo, commit = (
+        request.api_base,
+        request.token,
+        request.owner,
+        request.repo,
+        request.commit,
+    )
     immutable_object(commit)
     check_deadline(deadline)
     if not token.strip() or not owner or not repo:
-        raise ExecutionSourceError("execution source requires repository authentication and identity")
-    destination.mkdir(mode=0o700, parents=True, exist_ok=False)
+        source_refusal("execution source requires repository authentication and identity")
+    _create_destination(destination)
     started = time.monotonic()
     try:
         async with asyncio.timeout_at(deadline):
             base = f"{api_base.rstrip('/')}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
             async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+                context = _DownloadContext(client, token, api_base, deadline)
                 tree_path = destination / "tree.json"
                 await _download(
-                    client,
+                    context,
                     f"{base}/git/trees/{commit}?recursive=1",
                     tree_path,
-                    token=token,
-                    api_origin=api_base,
                     limit=MAX_METADATA_BYTES,
-                    deadline=deadline,
                     accept="application/vnd.github+json",
                 )
-                tree = json.loads(tree_path.read_bytes())
-                if (
-                    not isinstance(tree, dict)
-                    or tree.get("truncated") is not False
-                    or not isinstance(tree.get("tree"), list)
-                    or len(tree["tree"]) > MAX_ENTRIES * 2
-                ):
-                    raise ExecutionSourceError("execution source tree is incomplete or oversized")
-                entries = []
-                all_paths: set[str] = set()
-                for item in tree["tree"]:
-                    if not isinstance(item, dict):
-                        raise ExecutionSourceError("execution source tree entry invalid")
-                    path = checked_path(item.get("path", ""))
-                    if path in all_paths:
-                        raise ExecutionSourceError("execution source tree has duplicate entries")
-                    all_paths.add(path)
-                    if item.get("type") == "tree" and item.get("mode") == "040000":
-                        continue
-                    if item.get("type") != "blob":
-                        raise ExecutionSourceError("execution source submodule or tree entry unsupported", code="execution_source_unsupported")
-                    entries.append(
-                        SourceEntry(
-                            path=path,
-                            mode=item.get("mode"),
-                            object_id=item.get("sha"),
-                            size=item.get("size"),
-                        ),
-                    )
-                source_identity(commit, entries)
+                entries = _tree_entries(tree_path, commit)
                 archive_path = destination / "provider.tgz"
                 await _download(
-                    client,
+                    context,
                     f"{base}/tarball/{commit}",
                     archive_path,
-                    token=token,
-                    api_origin=api_base,
                     limit=MAX_ARCHIVE_BYTES,
-                    deadline=deadline,
                     accept="application/vnd.github+json",
                 )
                 objects = destination / "objects"
@@ -341,7 +393,7 @@ async def _acquire_github_source(
                 seen = _normalize_archive(archive_path, entries, objects, deadline)
                 missing = [e for e in entries if e.path not in seen]
                 if len(missing) > MAX_FALLBACK_BLOBS:
-                    raise ExecutionSourceError("execution source missing blob completion bound exceeded")
+                    source_refusal("execution source missing blob completion bound exceeded")
                 semaphore = asyncio.Semaphore(8)
                 # Git tree paths can share an object. Download missing objects once.
                 unique = {e.object_id: e for e in missing if not (objects / e.object_id).exists()}
@@ -349,13 +401,10 @@ async def _acquire_github_source(
                 async def complete(entry: SourceEntry) -> None:
                     async with semaphore:
                         await _download(
-                            client,
+                            context,
                             f"{base}/git/blobs/{entry.object_id}",
                             objects / entry.object_id,
-                            token=token,
-                            api_origin=api_base,
                             limit=min(entry.size, MAX_BLOB_BYTES),
-                            deadline=deadline,
                             accept="application/vnd.github.raw+json",
                         )
 
@@ -389,14 +438,13 @@ async def _acquire_github_source(
 
 async def prepare_repository_source(
     state: Mapping[str, Any],
-    name: str,
+    request: RepositorySourceRequest,
     *,
-    commit: str,
-    review_inputs: Mapping[str, str],
     destination: Path,
     deadline: float,
 ) -> ExecutionSourceBundle:
     """Resolve an actual provider for a parent-owned commit and review hash set."""
+    name, commit, review_inputs = request.name, request.commit, request.review_inputs
     config = state.get("coordinare_config")
     global_config = getattr(config, "global_config", None) or state.get("config")
     symphony = (state.get("symphony_configs") or {}).get(name)
@@ -406,7 +454,7 @@ async def prepare_repository_source(
     github = (state.get("symphony_github_services") or {}).get(name) or state.get("github_service")
     provider = getattr(github, "prepare_execution_source", None)
     if effective is None or provider is None:
-        raise ExecutionSourceError(
+        source_refusal(
             "execution source provider unavailable; review files cannot substitute for a checkout",
         )
     bundle = await provider(
@@ -422,7 +470,7 @@ async def prepare_repository_source(
         review_inputs=review_inputs,
     )
     if bundle.identity.source_commit != commit:
-        raise ExecutionSourceError("execution source commit differs from accepted manifest")
+        source_refusal("execution source commit differs from accepted manifest")
     return bundle
 
 
@@ -434,22 +482,19 @@ async def ensure_execution_source(
     destination: Path,
     deadline: float,
 ) -> ExecutionSourceBundle:
-    from coordinare.services.environment_acceptance import accepted_environment
 
     manifest = accepted_environment(cache)
     if manifest is None:
-        raise ExecutionSourceError("execution source requires independently accepted manifest")
+        source_refusal("execution source requires independently accepted manifest")
     bundle = await prepare_repository_source(
         state,
-        name,
-        commit=manifest.source_commit,
-        review_inputs=manifest.inputs,
+        RepositorySourceRequest(name, manifest.source_commit, manifest.inputs),
         destination=destination,
         deadline=deadline,
     )
     previous = cache.environment_execution_source
     if previous is not None and ExecutionSourceIdentity.model_validate(previous) != bundle.identity:
-        raise ExecutionSourceError("execution source differs from accepted bootstrap source")
+        source_refusal("execution source differs from accepted bootstrap source")
     cache.environment_execution_source = bundle.identity.model_dump(mode="json")
     return bundle
 
@@ -469,14 +514,7 @@ async def checkpoint_source_ownership(state: Mapping[str, Any]) -> None:
 
 
 async def acquire_github_source(
-    api_base: str,
-    token: str,
-    owner: str,
-    repo: str,
-    *,
-    commit: str,
-    destination: Path,
-    deadline: float,
+    request: GitHubSourceRequest, *, destination: Path, deadline: float,
 ) -> ExecutionSourceBundle:
     logger_http = logging.getLogger("httpx")
     if _SOURCE_REQUEST_REDACTION not in logger_http.filters:
@@ -484,9 +522,11 @@ async def acquire_github_source(
     context_token = _SOURCE_HTTP_ACTIVE.set(True)
     try:
         return await _acquire_github_source(
-            api_base, token, owner, repo, commit=commit, destination=destination, deadline=deadline,
+            request,
+            destination=destination,
+            deadline=deadline,
         )
     except httpx.HTTPError:
-        raise ExecutionSourceError("execution source provider request unavailable") from None
+        source_refusal("execution source provider request unavailable")
     finally:
         _SOURCE_HTTP_ACTIVE.reset(context_token)

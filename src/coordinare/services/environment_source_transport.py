@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 from typing import TYPE_CHECKING, Any
 
 from coordinare_service_inference.environment.execution_source import (
+    CHUNK_BYTES,
     MAX_ARCHIVE_BYTES,
     canonical,
     validate_execution_bundle,
+)
+from coordinare_service_inference.environment.execution_source import (
+    source_refusal as _refuse,
 )
 
 if TYPE_CHECKING:
@@ -33,7 +38,7 @@ def execution_header(
     )
     script_bytes = script.encode()
     if not 0 < bundle.payload_bytes <= MAX_ARCHIVE_BYTES or len(script_bytes) > MAX_SCRIPT_BYTES:
-        raise ValueError("execution source transport exceeds byte bound")
+        _refuse("execution source transport exceeds byte bound")
     data = {
         "schema_version": 1,
         "payload_bytes": bundle.payload_bytes,
@@ -44,7 +49,7 @@ def execution_header(
         "review_inputs": dict(review_inputs),
     }
     if len(canonical(data)) > MAX_HEADER_BYTES:
-        raise ValueError("execution source header exceeds byte bound")
+        _refuse("execution source header exceeds byte bound")
     return data
 
 
@@ -58,17 +63,16 @@ def execution_input(
     with bundle.payload_path.open("rb") as stream:
         raw = stream.read(MAX_ARCHIVE_BYTES + 1)
     if len(raw) != bundle.payload_bytes or hashlib.sha256(raw).hexdigest() != bundle.payload_sha256:
-        raise ValueError("execution source transport bytes differ")
+        _refuse("execution source transport bytes differ")
     return b"".join((canonical(header), b"\n", raw, script.encode()))
 
 
 def projected_source_groups(
-    bundle: ExecutionSourceBundle, *, review_inputs: Mapping[str, str],
+    bundle: ExecutionSourceBundle,
+    *,
+    review_inputs: Mapping[str, str],
 ) -> list[dict[str, str]]:
     """Split source bytes and compact identity metadata into bounded Secret groups."""
-    import base64
-
-    from coordinare_service_inference.environment.execution_source import CHUNK_BYTES
 
     header = execution_header(bundle, "", review_inputs=review_inputs)
     count = (bundle.payload_bytes + CHUNK_BYTES - 1) // CHUNK_BYTES
@@ -90,5 +94,5 @@ def projected_source_groups(
             index += 1
             digest.update(chunk)
         if index != count or digest.hexdigest() != bundle.payload_sha256:
-            raise ValueError("execution source bytes changed during projection")
+            _refuse("execution source bytes changed during projection")
     return groups

@@ -1,6 +1,9 @@
 """Trusted dispatch contracts; installer output is never a verification report."""
 from __future__ import annotations
 
+from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
+from coordinare_service_inference.environment.execution_source_checkout import checkout_identity
+
 import json
 import tempfile
 from pathlib import Path
@@ -75,8 +78,6 @@ async def execute_contract(score: Score, stand: Stand, *, install: bool = False)
     from coordinare_service_inference.environment.runner import run_manifest
 
     manifest = accepted_manifest(score)
-    from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
-    from coordinare_service_inference.environment.execution_source_checkout import checkout_identity
 
     try:
         expected_source = ExecutionSourceIdentity.model_validate(score.environment_execution_source)

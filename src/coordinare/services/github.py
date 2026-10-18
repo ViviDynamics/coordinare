@@ -3,8 +3,16 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import inspect
+import posixpath
 import re
 from typing import TYPE_CHECKING, Any, ClassVar
+
+from coordinare_service_inference.environment.models import source_path
+
+from coordinare.services.environment_source_provider import (
+    GitHubSourceRequest,
+    acquire_github_source,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -2547,11 +2555,10 @@ class GitHubService(CardIdentityMap):
         self, owner: str, repo: str, *, commit: str, destination: Path, deadline: float,
     ) -> ExecutionSourceBundle:
         """Read a complete pinned source tree through APIs, without a daemon clone."""
-        from coordinare.services.environment_source_provider import acquire_github_source
 
         return await acquire_github_source(
-            self._rest_api_base(), await self._current_token(), owner, repo,
-            commit=commit, destination=destination, deadline=deadline,
+            GitHubSourceRequest(self._rest_api_base(), await self._current_token(), owner, repo, commit),
+            destination=destination, deadline=deadline,
         )
 
     async def get_repository_paths(
@@ -2618,9 +2625,7 @@ class GitHubService(CardIdentityMap):
     async def get_file_content(
         self, owner: str, repo: str, path: str, ref: str = "HEAD",
     ) -> str | None:
-        import posixpath
 
-        from coordinare_service_inference.environment.models import source_path
 
         inventory = getattr(self, '_execution_source_link_inventory', None)
         links = inventory[3] if inventory is not None and inventory[:3] == (owner, repo, ref) else frozenset()

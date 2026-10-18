@@ -8,7 +8,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from coordinare_service_inference.environment.execution_source import validate_execution_bundle
+from coordinare_service_inference.environment.execution_source import (
+    source_refusal,
+    validate_execution_bundle,
+)
 from coordinare_service_inference.environment.execution_source_restore import (
     restore_execution_bundle,
 )
@@ -150,11 +153,12 @@ async def execute_environment_probe(
     try:
         validate_execution_bundle(source_bundle.payload_path, expected=source_bundle.identity, review_inputs=plan.inputs)
         if plan.execution_source_digest is not None and plan.execution_source_digest != source_bundle.identity.digest():
-            raise ValueError('probe complete execution source differs')
+            source_refusal('probe complete execution source differs')
         if source_bundle.identity.source_commit != plan.source_commit:
-            raise ValueError('execution source commit differs')
+            source_refusal('execution source commit differs')
     except ValueError as exc:
-        raise EnvironmentDiscoveryError('probe source identity changed', code='probe_source_identity') from exc
+        message = 'probe source identity changed'
+        raise EnvironmentDiscoveryError(message, code='probe_source_identity') from exc
     budget.check()
     name = "coordinare-probe-" + plan.digest()[:24]
     if name in _ACTIVE_PROBES:

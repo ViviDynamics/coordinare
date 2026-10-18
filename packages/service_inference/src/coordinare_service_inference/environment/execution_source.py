@@ -10,7 +10,7 @@ import posixpath
 import re
 import tarfile
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NoReturn
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -31,6 +31,10 @@ class ExecutionSourceError(ValueError):
     def __init__(self, message: str, *, code: str = 'execution_source_invalid') -> None:
         self.code = code
         super().__init__(message)
+
+
+def source_refusal(message: str, *, code: str = 'execution_source_invalid') -> NoReturn:
+    raise ExecutionSourceError(message, code=code) from None
 
 
 def checked_path(path: str) -> str:

@@ -93,11 +93,9 @@ async def prepare(
         lambda **kw: original(transport=httpx.MockTransport(answer), **kw),
     )
     result = await module.acquire_github_source(
-        "https://api.github.com",
-        "private-test-token",
-        "owner",
-        "project",
-        commit=COMMIT,
+        module.GitHubSourceRequest(
+            "https://api.github.com", "private-test-token", "owner", "project", COMMIT,
+        ),
         destination=tmp_path / "owned",
         deadline=time.monotonic() + 10,
     )
@@ -175,21 +173,13 @@ async def test_expired_acquisition_and_mutable_commit_never_fetch(tmp_path):
     module = api()
     with pytest.raises(ValueError):
         await module.acquire_github_source(
-            "https://api.github.com",
-            "t",
-            "o",
-            "r",
-            commit="main",
+            module.GitHubSourceRequest("https://api.github.com", "t", "o", "r", "main"),
             destination=tmp_path / "owned",
             deadline=time.monotonic() + 10,
         )
     with pytest.raises(TimeoutError):
         await module.acquire_github_source(
-            "https://api.github.com",
-            "t",
-            "o",
-            "r",
-            commit=COMMIT,
+            module.GitHubSourceRequest("https://api.github.com", "t", "o", "r", COMMIT),
             destination=tmp_path / "owned",
             deadline=time.monotonic() - 1,
         )
@@ -235,11 +225,18 @@ async def test_github_service_exposes_production_provider(tmp_path, monkeypatch)
     fake = SimpleNamespace(_current_token=token, _rest_api_base=lambda: "https://api.github.com")
     captured = {}
 
-    async def acquire(base, auth, owner, repo, **kwargs):
-        captured.update(base=base, auth=auth, owner=owner, repo=repo, **kwargs)
+    async def acquire(request, **kwargs):
+        captured.update(
+            base=request.api_base,
+            auth=request.token,
+            owner=request.owner,
+            repo=request.repo,
+            commit=request.commit,
+            **kwargs,
+        )
         return "bundle"
 
-    monkeypatch.setattr(api(), "acquire_github_source", acquire)
+    monkeypatch.setattr("coordinare.services.github.acquire_github_source", acquire)
     assert hasattr(GitHubService, "prepare_execution_source")
     result = await GitHubService.prepare_execution_source(
         fake,
@@ -272,11 +269,7 @@ async def test_cancelled_acquisition_removes_owned_temporary_source(tmp_path, mo
     )
     task = asyncio.create_task(
         module.acquire_github_source(
-            "https://api.github.com",
-            "t",
-            "o",
-            "r",
-            commit=COMMIT,
+            module.GitHubSourceRequest("https://api.github.com", "t", "o", "r", COMMIT),
             destination=tmp_path / "owned",
             deadline=time.monotonic() + 30,
         ),
@@ -303,7 +296,8 @@ async def test_private_archive_signature_not_in_http_request_logs(tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_github_review_reads_resolve_pinned_in_tree_links_like_snapshot(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     from types import SimpleNamespace
 
@@ -341,7 +335,9 @@ async def test_github_review_reads_resolve_pinned_in_tree_links_like_snapshot(
 
     original = httpx.AsyncClient
     monkeypatch.setattr(
-        httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(answer), **kw),
+        httpx,
+        "AsyncClient",
+        lambda **kw: original(transport=httpx.MockTransport(answer), **kw),
     )
     await GitHubService.get_repository_paths(fake, "owner", "repo", ref=COMMIT)
     assert (
