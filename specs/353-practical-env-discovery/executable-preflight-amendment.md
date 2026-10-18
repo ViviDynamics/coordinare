@@ -299,3 +299,14 @@ after redaction. The output bound and original-report digest remain unchanged;
 failed/unrun statuses are preserved. A deterministic verbose-output regression and
 a read-only replay of Elm's exact report verify that the terminal error reaches
 repair without increasing its authority, size or budget.
+
+The following Elm attempt successfully cleaned the failed generation and entered
+execution repair. Its fresh reviewer identified real linter/Node version conflicts,
+but combined `assessment` with a separate `tool: null` field after the existing two
+schema corrections had been spent on invalid source reads/citations. It held after
+641.6 seconds, with no timeout or clean verification. Review guidance now advertises
+the complete closed `AssessmentEnvelope` and explicitly requires choosing one source
+tool or one assessment, without extra keys even when null. Mixed replies remain
+invalid; there is no normalization, budget increase or judgment waiver. The nested
+assessment fields remain required, and a fresh bounded Elm-only test evaluates this
+protocol correction while preserving the failed profile and original counters.

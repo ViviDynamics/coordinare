@@ -119,3 +119,5 @@ The complete-evidence amendment retest also held for all 29 default repositories
 - [x] T062 Repair harness cleanup of owned read-only directories without following symlinks; preserve rejection when cleanup-container removal is unconfirmed, and verify actual Elm leftovers before retesting.
 
 - [x] T063 Retain the redacted terminal output tail within the unchanged repair excerpt bound; preserve statuses and original-report digest, verified against Elm's actual linker failure.
+
+- [x] T064 Advertise the complete closed assessment envelope and explicitly prohibit mixed/null tool fields; retain rejection of mixed replies and all nested required assessment fields.

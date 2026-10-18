@@ -38,6 +38,7 @@ from coordinare.services.environment_attempt import (
 from coordinare.services.environment_discovery_prompts import (
     SOURCE_TOOLS,
     DiscoveryPrompts,
+    assessment_envelope_schema,
     correction_instruction,
     legacy_discovery_system,
 )
@@ -646,8 +647,10 @@ async def _discover_attempt(
                     'indeterminate for insufficient evidence. Acceptance requires a cited rationale; '
                     'sources must be paths you personally read. Bind your assessment to the provided manifest digest '
                     'and source commit supplied by the daemon. Return only verdict, rationale and sources, without any provenance fields, '
-                    'inside {"assessment":...} matching this schema: '
-                ) + _json(_CoverageProposal.model_json_schema())},
+                    'inside {"assessment":...}. Choose one source tool request or one assessment envelope. '
+                    'Never combine an assessment with a tool field, even null. '
+                    'Do not include an extra top-level key. Return the complete envelope matching this schema: '
+                ) + _json(assessment_envelope_schema())},
                 {"role": "user", "content": _json({**identity,
                     "manifest": manifest.model_dump(mode="json"), "manifest_digest": manifest.digest(),
                     "mandatory_evidence": mandatory_evidence, "probe_evidence": budget.probe_reports,
