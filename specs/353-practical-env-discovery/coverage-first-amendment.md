@@ -76,11 +76,11 @@ An optional probe or version-only check cannot satisfy an operational criterion.
 The final fresh reviewer evaluates that semantic mapping and performs a fresh
 omissions review against the source, including evidence discovered during construction.
 
-Use focused construction units keyed by obligation IDs rather than repeatedly
-regenerating the entire contract. Each unit uses the existing bounded response
-transport and validation. The daemon composes units and checks global ID uniqueness,
-dependencies, activation and cross-unit service lifecycle. No unit executes project
-commands before the final manifest receives independent coverage approval.
+Initially use one construction response against the compact reviewed contract.
+Validate global ID uniqueness, dependencies, activation and service lifecycle.
+Do not add construction fan-out without evidence it improves admission within the
+same budget: extra calls and cross-unit reconciliation can make reliability worse.
+No project command executes before final independent manifest coverage approval.
 
 Construction may resolve an absent tool through installation or existing declared
 platform facilities. If a required capability cannot be supplied, the result is an
@@ -101,7 +101,7 @@ unknown or inconsistent execution evidence. Teardown failure prevents acceptance
 ## Repair, provenance and compatibility
 
 All stages share the original absolute attempt deadline, call/read/output limits
-and two schema, two coverage and two execution repair caps. Focused units do not
+and two schema, two coverage and two execution repair caps. Added stages do not
 receive fresh allowances. Restart restores consumption; it never starts a new
 budget. Report the actual stage and stable reason for every hold.
 
@@ -139,7 +139,7 @@ rationale is trusted as an instruction or emitted as an unsanitized diagnostic.
 5. A small synthetic project passes review, installation and every required clean
    check. Changed source inventory, contract, image or platform invalidates its saved
    result. A failed or unrun check, required service or teardown always holds.
-6. Multiple construction units, malformed replies, review revisions and execution
+6. Scope/construction stages, malformed replies, review revisions and execution
    repairs consume one original budget. Cancellation/restart retains counters,
    deadline and owned resource cleanup, with no leaked credentials or runtime resources.
 7. Retest pinned Elm first with the approved model/effort and 60-minute profile.
@@ -148,6 +148,12 @@ rationale is trusted as an instruction or emitted as an unsanitized diagnostic.
    matrix. A capability hold is an accurate failure, not completion of the user goal.
 
 ## Delivery gate
+
+The independent planning review identified a separate runtime prerequisite. See
+[the private-service runtime design](private-service-runtime-amendment.md) and
+[the combined fix plan](elm-bootstrap-fix-plan.md). Scope-first construction alone
+cannot establish Elm readiness. Both designs remain proposed; the user's request
+to plan with a subagent authorizes this planning work, not product implementation.
 
 This is an architectural amendment, not an approved implementation plan. After
 written-spec approval, write and review the implementation plan, run repository
