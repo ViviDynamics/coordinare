@@ -9,6 +9,8 @@ from performer import main
 from performer.models import Score, Stand
 from performer.workflows.bootstrap_environment import BootstrapEnvironment
 
+from .source_contract_fixture import bind_checkout_contract
+
 
 def test_bootstrap_admission_rejects_missing_review(tmp_path):
     payload = SimpleNamespace(role="env_bootstrap", env_cache_path=str(tmp_path), metadata={}, env_provenance=None, bootstrap_scripts=None)
@@ -45,8 +47,9 @@ def contract_score(tmp_path, *, failed=False):
     review = {"inventory_digest": "d" * 64, "capabilities_digest": "c" * 64, "schema_version": 1, "manifest_digest": manifest.digest(), "source_commit": "a" * 40,
               "verdict": "accept", "rationale": "Inspected setup instructions", "sources": ["tools.plan"], "inputs": dict(manifest.inputs), "policy_version": "351-v1"}
     return Score(title="bootstrap", repo_url="https://github.com/a/b", branch="main", role="env_bootstrap",
-                 env_cache_path=str(tmp_path), environment_manifest=manifest.model_dump(),
-                 environment_assessment=review, environment_manifest_digest=manifest.digest())
+                 env_cache_path=str(tmp_path),
+                 **bind_checkout_contract({'environment_assessment':review,
+                     'environment_manifest':manifest.model_dump(), 'environment_manifest_digest':manifest.digest()}, tmp_path))
 
 
 @pytest.mark.parametrize("mutation", ["digest", "commit", "verdict", "source"])
@@ -233,8 +236,8 @@ async def test_bootstrap_checkout_is_pinned_to_reviewed_commit(tmp_path, monkeyp
     monkeypatch.setattr(workspace.tempfile, "mkdtemp", temporary)
     stand = await workspace.clone_repository(score)
     try:
-        assert ["git", "fetch", "origin", "a" * 40] in commands
-        assert ["git", "checkout", "--detach", "a" * 40] in commands
+        assert ["git", "fetch", "origin", score.environment_manifest["source_commit"]] in commands
+        assert ["git", "checkout", "--detach", score.environment_manifest["source_commit"]] in commands
         assert not any("push" in command for command in commands)
     finally:
         await close_environment(stand)
@@ -411,3 +414,20 @@ def test_consumer_rejects_mutable_source_commit(tmp_path):
     score.environment_assessment["manifest_digest"] = digest
     with pytest.raises(ValueError):
         accepted_manifest(score)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mutation', ['missing', 'tree', 'tracked_contents'])
+async def test_installer_requires_actual_complete_source_before_commands(tmp_path, mutation):
+    from performer.environment_contract import execute_contract
+
+    score = contract_score(tmp_path)
+    if mutation == 'missing':
+        score.environment_execution_source = None
+    elif mutation == 'tree':
+        score.environment_execution_source['tree_digest'] = '0'*64
+    else:
+        (tmp_path/'tools.plan').write_text('changed after review')
+    with pytest.raises(ValueError):
+        await execute_contract(score, Stand(path=tmp_path, branch='main'), install=True)
+    assert not (tmp_path/'installed').exists()
