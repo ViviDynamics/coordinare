@@ -12,6 +12,7 @@ from coordinare_service_inference.environment.models import (
     ProbeCommand,  # noqa: TC002 - pydantic resolves field types at runtime
 )
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic_core import PydanticCustomError
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 
@@ -27,20 +28,17 @@ class ProbeBase(BaseModel):
 class ProbeRequest(ProbeBase):
     schema_version: Literal[1]
     commands: list[ProbeCommand] = Field(min_length=1, max_length=16)
-    citations: dict[str, list[str]]
-    questions: dict[str, str]
+    citations: dict[str, list[str]] = Field(description="Exactly one key per commands[].id, each with nonempty inspected-source paths.")
+    questions: dict[str, str] = Field(description="Exactly one key per commands[].id, each with a nonblank question of 1 to 512 characters.")
 
     @model_validator(mode="after")
     def valid_commands(self) -> Self:
         ids = {command.id for command in self.commands}
         if len(ids) != len(self.commands) or set(self.citations) != ids or set(self.questions) != ids:
-            message = "probe IDs, citations and questions must match uniquely"
-            raise ValueError(message)
+            raise PydanticCustomError("probe_id_maps", "commands must have unique IDs; citations and questions must each contain exactly those keys")
         for command in self.commands:
-            if (not command.required or command.scope or command.depends_on or command.timeout_seconds > MAX_PROBE_SECONDS
-                    or not self.citations[command.id] or not 1 <= len(self.questions[command.id].strip()) <= MAX_QUESTION_CHARS):
-                message = "probe requires bounded independent commands and cited questions"
-                raise ValueError(message)
+            if not self.citations[command.id] or not 1 <= len(self.questions[command.id].strip()) <= MAX_QUESTION_CHARS:
+                raise PydanticCustomError("probe_cited_question", "each command requires nonempty citations and a nonblank question of 1 to 512 characters")
         return self
 
 

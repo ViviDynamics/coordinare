@@ -156,6 +156,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             "missing", "extra_forbidden", "string_type", "list_type", "dict_type", "bool_type",
             "literal_error", "int_type", "string_pattern_mismatch", "too_short", "too_long",
             "requirement_check_reference", "clean_dependency_install_only",
+            "probe_id_maps", "probe_cited_question", "probe_required_true",
         } else "invalid_contract_value"
         result.append({"location": location, "code": code})
     return result

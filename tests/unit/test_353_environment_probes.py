@@ -218,3 +218,30 @@ async def test_operator_request_reconciles_exact_probe_before_reset(tmp_path, mo
             await request_env_bootstrap_reset({}, 'suite', cache, 'test', activity)
         assert cache.environment_attempt['probe_owner'] == p.digest()
     assert reconciled == [p.digest()]
+
+
+def test_probe_schema_expresses_existing_unscoped_required_independent_rules():
+    from coordinare.services.environment_probes import ProbeEnvelope
+    schema = ProbeEnvelope.model_json_schema()
+    command = schema['$defs']['ProbeCommand']['properties']
+    assert command['required']['const'] is True
+    assert command['scope']['maxItems'] == command['depends_on']['maxItems'] == 0
+
+
+@pytest.mark.parametrize('mutation,code', [('missing_question','probe_id_maps'), ('empty_question','probe_cited_question'),
+    ('optional','probe_required_true')])
+def test_probe_feedback_names_rejected_constraint_without_source_values(mutation,code):
+    from coordinare.services.environment_discovery import _validation_feedback
+    from coordinare.services.environment_probes import ProbeRequest
+    data = request_data()
+    if mutation == 'missing_question':
+        data['questions'] = {}
+    elif mutation == 'empty_question':
+        data['questions']['tool'] = ' '
+    else:
+        data['commands'][0]['required'] = False
+    with pytest.raises(ValidationError) as caught:
+        ProbeRequest.model_validate(data)
+    feedback = _validation_feedback(caught.value)
+    assert any(error['code'] == code for error in feedback)
+    assert 'unfamiliar-tool' not in str(feedback)
