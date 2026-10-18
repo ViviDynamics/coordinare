@@ -4,7 +4,12 @@ import asyncio
 import fnmatch
 import inspect
 import re
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
 from urllib.parse import quote
 
 import aiohttp
@@ -2537,6 +2542,17 @@ class GitHubService(CardIdentityMap):
         if not isinstance(nodes, list):
             return []
         return [n for n in nodes if isinstance(n, dict)]
+
+    async def prepare_execution_source(
+        self, owner: str, repo: str, *, commit: str, destination: Path, deadline: float,
+    ) -> ExecutionSourceBundle:
+        """Read a complete pinned source tree through APIs, without a daemon clone."""
+        from coordinare.services.environment_source_provider import acquire_github_source
+
+        return await acquire_github_source(
+            self._rest_api_base(), await self._current_token(), owner, repo,
+            commit=commit, destination=destination, deadline=deadline,
+        )
 
     async def get_repository_paths(
         self, owner: str, repo: str, *, ref: str, max_entries: int = 100_000,
