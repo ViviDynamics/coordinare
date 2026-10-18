@@ -69,3 +69,33 @@ The amendment's fresh independent full-diff review found three Important issues:
 One Minor review finding remains deferred: on review-context overflow, diagnostics can show zero or the previous measured byte count and omit the configured cap. The context admission guard still refuses the oversized request. Provider input-token capacity is unavailable through the current backend, so the explicit byte cap is not a guarantee of provider context fit; provider failures hold without being misclassified as schema corrections. Actual Kubernetes deployment cleanup and live daemon/outer-loop operation were not established by this field matrix.
 
 **SC-004 remains unmet.** Sample and Elm must both pass mandatory independent coverage and every required clean-consumer check before merge. PR #354 and issue #353 remain open; this report records completed test attempts, not a successful bootstrap.
+
+
+## Complete execution-source correction
+
+The Elm profile on `01315ab6` ended held after 1,200.472 seconds. Its final
+installation passed; seven of nine clean checks passed. The build and scaffold
+checks failed because the verifier had copied review files rather than the full
+repository. This was not a timeout. The original profile and rejected generations
+remain unchanged.
+
+The approved source amendment and implementation plan separate bounded model
+review evidence from complete binary execution source. The focused regression
+suite covers unreviewed source directories, binary bytes, executable permissions,
+safe symlinks, content/commit drift, archive/transport limits, cancelled acquisition,
+source ownership, preserved budgets, current-generation result attribution and
+ordinary-name consumer activation. Docker and Kubernetes use the same validator.
+
+A source-only test of pinned Elm commit
+`bc224a78db6f669d56863599d653f14e7605de0b` restored 6,616 tracked files totaling
+77,426,246 bytes, including the missing `control-plane` directory. Restored source
+matched the pinned checkout's canonical identity in 8.366 seconds. Independently
+fetching the real GitHub tree/archive produced the same source digest in 9.202
+seconds; the normalized binary transport was 29,661,409 bytes. Source digest:
+`6ba372143332703eb4275ae39e01b166c30428960d94b636c1f74652bc4a042d`.
+These source-only tests ran no repository commands and do not establish readiness.
+
+The new full Elm bootstrap simulation, final-head CI and whole-diff review are
+pending. SC-004 and other live-success tasks stay unchecked; other repositories
+remain paused until Elm's independently reviewed installation, usable activation
+and every required clean check actually pass.

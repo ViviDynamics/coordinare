@@ -83,7 +83,7 @@ def test_explicit_operator_reset_archives_discovery_hold_and_starts_fresh(tmp_pa
     assert dispatch_refusal(cache,cache.bootstrap_commit_sha) is None
     budget = begin_attempt(cache,DiscoveryLimits(),outer_seconds=600)
     assert budget.repairs == 0
-    assert cache.environment_attempt['version'] == 3
+    assert cache.environment_attempt['version'] == 4
 
 
 def test_operator_reset_never_clears_uncertain_execution_or_consumes_reset_cooldown(tmp_path):

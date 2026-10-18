@@ -34,7 +34,9 @@ from tests.unit.env_mount_stub import mount_config
 
 
 @pytest.fixture(autouse=True)
-def _accepted_source_fixture(monkeypatch):
+def _accepted_source_fixture(monkeypatch, tmp_path):
+    from tests.unit.env_manifest_fixture import patch_clean_source_transport
+    patch_clean_source_transport(monkeypatch, tmp_path)
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",
@@ -61,7 +63,8 @@ def _run_argv(fake: Any) -> tuple[str, ...]:
 class _FakeDocker:
     """Stands in for ``asyncio.create_subprocess_exec`` for the docker calls."""
 
-    def __init__(self, *, run_locally: bool, rc: int = 0, manifest=None) -> None:
+    def __init__(self, *, run_locally: bool, rc: int = 0, manifest=None, execution_source=None) -> None:
+        self.execution_source = execution_source
         self.run_locally = run_locally
         self.rc = rc
         self.manifest = manifest or _state(Path("/fixture-unused")).environment_manifest
@@ -84,12 +87,13 @@ class _FakeDockerProc:
         return self.returncode
 
     async def communicate(self, **kwargs: Any) -> tuple[bytes, None]:
-        data = kwargs.get("input")
+        from tests.unit.env_manifest_fixture import decode_test_execution_frame
+        data = decode_test_execution_frame(kwargs.get("input"))
         if data is not None:
             self._owner.stdin_seen.append(data)
         if not self._owner.run_locally:
             self.returncode = self._owner.rc
-            return verification_output(self._owner.manifest) if self._owner.rc == 0 else b"", None
+            return verification_output(self._owner.manifest, execution_source=self._owner.execution_source) if self._owner.rc == 0 else b"", None
         proc = await _REAL_EXEC(
             "sh", "-s",
             stdin=asyncio.subprocess.PIPE,
@@ -166,7 +170,7 @@ async def test_rewritten_verify_sh_that_exits_zero_does_not_pass(
     assert [data for data in fake.stdin_seen if data is not None] == [RENDERED_VERIFY.encode()]
     assert all("verify.sh" not in arg for call in fake.calls for arg in call)
     assert "-i" in _run_argv(fake)
-    assert "-s" in _run_argv(fake)
+    assert _run_argv(fake)[-1] == "coordinare_service_inference.environment.execution_source_stdin"
 
 
 @pytest.mark.asyncio
@@ -187,7 +191,7 @@ async def test_clean_verify_pipes_the_daemon_script_read_only(
     assert [data for data in fake.stdin_seen if data is not None] == [RENDERED_VERIFY.encode()]
     argv = _run_argv(fake)
     assert f"{cache}:/devenv/sym-abc:ro" in argv
-    assert argv[-1] == "-s"
+    assert argv[-1] == "coordinare_service_inference.environment.execution_source_stdin"
 
 
 @pytest.mark.asyncio
@@ -423,6 +427,22 @@ async def test_honest_bootstrap_passes_end_to_end(
     manifest = EnvironmentManifest.model_validate(state.environment_manifest)
     assessment = CoverageAssessment.model_validate(state.environment_assessment)
     github.get_repository_paths = AsyncMock(return_value=list(files))
+    import hashlib
+
+    from coordinare_service_inference.environment.execution_source import (
+        ExecutionSourceBundle,
+        ExecutionSourceIdentity,
+    )
+
+    from tests.unit.test_353_execution_source import bundle_file
+    async def prepare_source(owner, repo, *, commit, destination, deadline):
+        destination.mkdir(parents=True)
+        payload, identity = bundle_file(destination, {p:(text.encode(), '100644') for p,text in files.items()}, commit=commit)
+        return ExecutionSourceBundle(ExecutionSourceIdentity.model_validate(identity), payload,
+            hashlib.sha256(payload.read_bytes()).hexdigest(),payload.stat().st_size)
+    github.prepare_execution_source = prepare_source
+    from tests.unit.env_manifest_fixture import patch_clean_source_transport
+    patch_clean_source_transport(monkeypatch, tmp_path, files=files)
     monkeypatch.setattr("coordinare.services.environment_discovery.discover_and_review",
                         AsyncMock(return_value=(manifest, assessment)))
 
@@ -447,11 +467,13 @@ async def test_honest_bootstrap_passes_end_to_end(
     _honest_toolchain(cache)
 
     # 3. Completion: the daemon's clean verify passes and the floor holds.
-    fake = _FakeDocker(run_locally=False, rc=0, manifest=state.environment_manifest)
+    fake = _FakeDocker(run_locally=False, rc=0, manifest=state.environment_manifest,
+        execution_source=ExecutionSourceIdentity.model_validate(state.environment_execution_source))
     _install_fake(monkeypatch, fake)
     daemon = CoordinareDaemon(AsyncMock(), max_cycles=1, sleep_func=AsyncMock())
     daemon._state["coordinare_config"] = mount_config(performer_image="trusted/global@sha256:" + "a" * 64)
     daemon._state["env_cache"] = _ctx(state)["env_cache"]
+    daemon._state["snapshot_checkpoint_fn"] = AsyncMock()
     ok, err, _infra = await daemon._verify_bootstrap_in_clean_context("sym", SVC, "job-1")
     assert (ok, err, _infra) == (True, None, False)
     assert [data for data in fake.stdin_seen if data is not None] == [state.rendered_verify_sh.encode()]

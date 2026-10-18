@@ -10,9 +10,14 @@ from coordinare_service_inference.environment.models import (
 
 
 def fixture_execution_source(commit='a'*40):
-    """Compact identity for test transports that stand in for checked external I/O."""
-    from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
-    return ExecutionSourceIdentity(source_commit=commit,tree_digest='1'*64,file_count=1,expanded_bytes=8)
+    """Actual baseline tree identity for fake external verifier transports."""
+    from coordinare_service_inference.environment.execution_source import (
+        SourceEntry,
+        source_identity,
+    )
+    entry=SourceEntry(path='tools.plan', mode='100644', size=8,
+        object_id=hashlib.sha1(b'blob 8\0baseline').hexdigest())
+    return source_identity(commit,[entry])
 
 
 def reviewed_metadata(*, capabilities=None, checks=None, install=None, services=None, activation=None, source_commit="a" * 40,
@@ -101,3 +106,61 @@ def review_proposal(assessment):
     daemon_fields = {'schema_version', 'policy_version', 'symphony_name', 'source_commit', 'inputs',
                      'inventory_digest', 'capabilities_digest', 'manifest_digest'}
     return {key: value for key, value in assessment.items() if key not in daemon_fields}
+
+
+def decode_test_execution_frame(data):
+    """Translate trusted binary stdin at fake Docker I/O, validating both frames.
+
+    Legacy verifier tests inspect/execute the daemon script. Full source restore
+    itself is exercised through the real shared CLI in execution-source tests.
+    """
+    import json
+
+    if data is None:
+        return None
+    try:
+        raw, body = data.split(b"\n", 1)
+        header = json.loads(raw)
+    except (ValueError, TypeError):
+        return data
+    if not isinstance(header, dict) or "payload_bytes" not in header:
+        return data
+    payload, script = body[: header["payload_bytes"]], body[header["payload_bytes"] :]
+    assert (
+        len(payload) == header["payload_bytes"]
+        and hashlib.sha256(payload).hexdigest() == header["payload_sha256"]
+    )
+    assert (
+        len(script) == header["script_bytes"]
+        and hashlib.sha256(script).hexdigest() == header["script_sha256"]
+    )
+    return script
+
+
+def patch_clean_source_transport(monkeypatch, tmp_path, *, files=None):
+    """Stub source provider I/O with a real validated binary bundle."""
+    from coordinare_service_inference.environment.execution_source import (
+        ExecutionSourceBundle,
+        ExecutionSourceIdentity,
+    )
+
+    from tests.unit.test_353_execution_source import bundle_file
+
+    async def source(state, name, cache, *, destination, deadline):
+        destination.mkdir(parents=True)
+        contents = (
+            {p: (text.encode(), "100644") for p, text in files.items()}
+            if files is not None
+            else {"tools.plan": (b"baseline", "100644")}
+        )
+        path, identity = bundle_file(destination, contents, commit=cache.bootstrap_commit_sha)
+        return ExecutionSourceBundle(
+            ExecutionSourceIdentity.model_validate(identity),
+            path,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+            path.stat().st_size,
+        )
+
+    monkeypatch.setattr(
+        "coordinare.services.environment_source_provider.ensure_execution_source", source,
+    )

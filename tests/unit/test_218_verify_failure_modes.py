@@ -27,7 +27,9 @@ from tests.unit.env_mount_stub import mount_config
 
 
 @pytest.fixture(autouse=True)
-def _accepted_source_fixture(monkeypatch):
+def _accepted_source_fixture(monkeypatch, tmp_path):
+    from tests.unit.env_manifest_fixture import patch_clean_source_transport
+    patch_clean_source_transport(monkeypatch, tmp_path)
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",

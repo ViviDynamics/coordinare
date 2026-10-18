@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from coordinare_service_inference.environment.execution_source import (
     MAX_METADATA_BYTES,
+    ExecutionSourceError,
     SourceEntry,
     immutable_object,
     source_identity,
@@ -40,7 +41,7 @@ async def prepare_snapshot_source(
         metadata, name = record.split(b"\t", 1)
         mode, kind, oid, size = metadata.decode("ascii").split()
         if kind != "blob":
-            raise ValueError("snapshot source submodules unsupported")
+            raise ExecutionSourceError("snapshot source submodules unsupported", code="execution_source_unsupported")
         entries.append(
             SourceEntry(path=name.decode("utf-8"), mode=mode, object_id=oid, size=int(size)),
         )

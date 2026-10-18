@@ -81,6 +81,7 @@ def _accept(cache_state: EnvCacheState, *, nonempty: bool = False) -> EnvCacheSt
                                  "source": "tools.plan", "checks": ["baseline"], "required": True}]
         data["empty_reason"] = None
     manifest = EnvironmentManifest.model_validate(data)
+    cache_state.environment_execution_source = metadata["environment_execution_source"]
     cache_state.environment_manifest = manifest.model_dump()
     cache_state.environment_assessment = {**metadata["environment_assessment"], "manifest_digest": manifest.digest()}
     cache_state.environment_verification = json.loads(verification_output(cache_state.environment_manifest))
@@ -110,7 +111,30 @@ def _accepted_discovery(monkeypatch):
             "manifest_digest": manifest.digest()})
         return manifest, assessment
 
+    from unittest.mock import Mock
+
+    from coordinare_service_inference.environment.execution_source import (
+        ExecutionSourceBundle,
+        ExecutionSourceIdentity,
+    )
+
+    from coordinare.services.env_cache import EnvCacheService
     from coordinare.services.environment_discovery import discover_and_review as real_discovery
+    from tests.unit.test_353_execution_source import bundle_file
+
+    original_build = EnvCacheService._build_manifest_artifacts
+    async def build_with_source(self, **kwargs):
+        github = kwargs['github_service']
+        provider = getattr(github, 'prepare_execution_source', None)
+        if provider is None or isinstance(provider, Mock):
+            async def source(owner, repo, *, commit, destination, deadline):
+                destination.mkdir(parents=True)
+                payload, identity = bundle_file(destination, {'tools.plan':(b'baseline','100644')}, commit=commit)
+                return ExecutionSourceBundle(ExecutionSourceIdentity.model_validate(identity), payload,
+                    hashlib.sha256(payload.read_bytes()).hexdigest(), payload.stat().st_size)
+            github.prepare_execution_source = source
+        return await original_build(self, **kwargs)
+    monkeypatch.setattr(EnvCacheService, '_build_manifest_artifacts', build_with_source)
 
     async def inspect_image(image):
         return image, "linux/x86_64"

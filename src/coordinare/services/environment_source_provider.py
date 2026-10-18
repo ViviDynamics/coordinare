@@ -24,6 +24,7 @@ from coordinare_service_inference.environment.execution_source import (
     MAX_EXPANDED_BYTES,
     MAX_METADATA_BYTES,
     ExecutionSourceBundle,
+    ExecutionSourceError,
     ExecutionSourceIdentity,
     SourceEntry,
     bundle_members,
@@ -95,7 +96,7 @@ async def _download(
         check_deadline(deadline)
         target = httpx.URL(url)
         if target.scheme != "https" or target.username or target.password:
-            raise ValueError("execution source download URL refused")
+            raise ExecutionSourceError("execution source download URL refused")
         same_origin = (target.scheme, target.host, target.port) == (
             trusted.scheme,
             trusted.host,
@@ -107,7 +108,7 @@ async def _download(
         async with client.stream("GET", url, headers=headers) as response:
             if response.status_code in {301, 302, 303, 307, 308}:
                 if redirect == 3 or "location" not in response.headers:
-                    raise ValueError("execution source redirect bound exceeded")
+                    raise ExecutionSourceError("execution source redirect bound exceeded")
                 url = str(response.url.join(response.headers["location"]))
                 continue
             response.raise_for_status()
@@ -117,10 +118,10 @@ async def _download(
                     check_deadline(deadline)
                     total += len(chunk)
                     if total > limit:
-                        raise ValueError("execution source download byte bound exceeded")
+                        raise ExecutionSourceError("execution source download byte bound exceeded")
                     output.write(chunk)
             return
-    raise ValueError("execution source redirect invalid")
+    raise ExecutionSourceError("execution source redirect invalid")
 
 
 class _BoundedOutput(io.BufferedIOBase):
@@ -131,7 +132,7 @@ class _BoundedOutput(io.BufferedIOBase):
     def write(self, data: Buffer) -> int:
         self.count += memoryview(data).nbytes
         if self.count > MAX_ARCHIVE_BYTES:
-            raise ValueError("execution source bundle exceeds compressed bound")
+            raise ExecutionSourceError("execution source bundle exceeds compressed bound")
         return int(self.output.write(data))
 
 
@@ -155,7 +156,7 @@ def write_execution_bundle(
         len(metadata) > MAX_METADATA_BYTES
         or len(metadata) + identity.expanded_bytes > MAX_EXPANDED_BYTES
     ):
-        raise ValueError("execution source metadata exceeds byte bound")
+        raise ExecutionSourceError("execution source metadata exceeds byte bound")
     with (
         destination.open("xb") as output,
         tarfile.open(
@@ -173,7 +174,7 @@ def write_execution_bundle(
             info.mode = 0o755 if entry.mode == "100755" else 0o644
             if entry.mode == "120000":
                 if entry.size > 4096:
-                    raise ValueError("execution source symlink exceeds path bound")
+                    raise ExecutionSourceError("execution source symlink exceeds path bound")
                 info.type = tarfile.SYMTYPE
                 info.linkname = (objects / entry.object_id).read_bytes().decode("utf-8")
                 archive.addfile(info)
@@ -209,25 +210,25 @@ def _normalize_archive(
         check_deadline(deadline)
         count += 1
         if count > MAX_ENTRIES * 2 + 1:
-            raise ValueError("execution source archive entry bound exceeded")
+            raise ExecutionSourceError("execution source archive entry bound exceeded")
         components = member.name.rstrip("/").split("/", 1)
         checked_path(components[0])
         if root is None:
             root = components[0]
         if root != components[0]:
-            raise ValueError("execution source archive has multiple roots")
+            raise ExecutionSourceError("execution source archive has multiple roots")
         if len(components) == 1:
             if not member.isdir():
-                raise ValueError("execution source archive root is not directory")
+                raise ExecutionSourceError("execution source archive root is not directory")
             continue
         name = checked_path(components[1])
         if member.isdir():
             if not any(p.startswith(name + "/") for p in declared):
-                raise ValueError("execution source archive has unexpected directory")
+                raise ExecutionSourceError("execution source archive has unexpected directory")
             continue
         entry = declared.get(name)
         if entry is None or name in seen:
-            raise ValueError("execution source archive has unexpected or duplicate file")
+            raise ExecutionSourceError("execution source archive has unexpected or duplicate file")
         seen.add(name)
         digest = hashlib.new("sha1" if len(entry.object_id) == 40 else "sha256")
         digest.update(b"blob " + str(entry.size).encode() + b"\0")
@@ -240,7 +241,7 @@ def _normalize_archive(
                     or member.size != 0
                     or len(member.linkname.encode()) != entry.size
                 ):
-                    raise ValueError("execution source symlink identity differs")
+                    raise ExecutionSourceError("execution source symlink identity differs")
                 raw = member.linkname.encode()
                 digest.update(raw)
                 output.write(raw)
@@ -250,16 +251,16 @@ def _normalize_archive(
                     or member.size != entry.size
                     or bool(member.mode & 0o111) != (entry.mode == "100755")
                 ):
-                    raise ValueError("execution source archive file mode/size differs")
+                    raise ExecutionSourceError("execution source archive file mode/size differs")
                 stream = archive.extractfile(member)
                 if stream is None:
-                    raise ValueError("execution source archive file missing")
+                    raise ExecutionSourceError("execution source archive file missing")
                 while chunk := stream.read(CHUNK_BYTES):
                     check_deadline(deadline)
                     digest.update(chunk)
                     output.write(chunk)
         if digest.hexdigest() != entry.object_id:
-            raise ValueError("execution source archive content differs from pinned tree")
+            raise ExecutionSourceError("execution source archive content differs from pinned tree")
     return seen
 
 
@@ -276,7 +277,7 @@ async def _acquire_github_source(
     immutable_object(commit)
     check_deadline(deadline)
     if not token.strip() or not owner or not repo:
-        raise ValueError("execution source requires repository authentication and identity")
+        raise ExecutionSourceError("execution source requires repository authentication and identity")
     destination.mkdir(mode=0o700, parents=True, exist_ok=False)
     started = time.monotonic()
     try:
@@ -301,20 +302,20 @@ async def _acquire_github_source(
                     or not isinstance(tree.get("tree"), list)
                     or len(tree["tree"]) > MAX_ENTRIES * 2
                 ):
-                    raise ValueError("execution source tree is incomplete or oversized")
+                    raise ExecutionSourceError("execution source tree is incomplete or oversized")
                 entries = []
                 all_paths: set[str] = set()
                 for item in tree["tree"]:
                     if not isinstance(item, dict):
-                        raise ValueError("execution source tree entry invalid")
+                        raise ExecutionSourceError("execution source tree entry invalid")
                     path = checked_path(item.get("path", ""))
                     if path in all_paths:
-                        raise ValueError("execution source tree has duplicate entries")
+                        raise ExecutionSourceError("execution source tree has duplicate entries")
                     all_paths.add(path)
                     if item.get("type") == "tree" and item.get("mode") == "040000":
                         continue
                     if item.get("type") != "blob":
-                        raise ValueError("execution source submodule or tree entry unsupported")
+                        raise ExecutionSourceError("execution source submodule or tree entry unsupported", code="execution_source_unsupported")
                     entries.append(
                         SourceEntry(
                             path=path,
@@ -340,7 +341,7 @@ async def _acquire_github_source(
                 seen = _normalize_archive(archive_path, entries, objects, deadline)
                 missing = [e for e in entries if e.path not in seen]
                 if len(missing) > MAX_FALLBACK_BLOBS:
-                    raise ValueError("execution source missing blob completion bound exceeded")
+                    raise ExecutionSourceError("execution source missing blob completion bound exceeded")
                 semaphore = asyncio.Semaphore(8)
                 # Git tree paths can share an object. Download missing objects once.
                 unique = {e.object_id: e for e in missing if not (objects / e.object_id).exists()}
@@ -405,7 +406,7 @@ async def prepare_repository_source(
     github = (state.get("symphony_github_services") or {}).get(name) or state.get("github_service")
     provider = getattr(github, "prepare_execution_source", None)
     if effective is None or provider is None:
-        raise ValueError(
+        raise ExecutionSourceError(
             "execution source provider unavailable; review files cannot substitute for a checkout",
         )
     bundle = await provider(
@@ -421,7 +422,7 @@ async def prepare_repository_source(
         review_inputs=review_inputs,
     )
     if bundle.identity.source_commit != commit:
-        raise ValueError("execution source commit differs from accepted manifest")
+        raise ExecutionSourceError("execution source commit differs from accepted manifest")
     return bundle
 
 
@@ -437,7 +438,7 @@ async def ensure_execution_source(
 
     manifest = accepted_environment(cache)
     if manifest is None:
-        raise ValueError("execution source requires independently accepted manifest")
+        raise ExecutionSourceError("execution source requires independently accepted manifest")
     bundle = await prepare_repository_source(
         state,
         name,
@@ -448,7 +449,7 @@ async def ensure_execution_source(
     )
     previous = cache.environment_execution_source
     if previous is not None and ExecutionSourceIdentity.model_validate(previous) != bundle.identity:
-        raise ValueError("execution source differs from accepted bootstrap source")
+        raise ExecutionSourceError("execution source differs from accepted bootstrap source")
     cache.environment_execution_source = bundle.identity.model_dump(mode="json")
     return bundle
 
@@ -486,6 +487,6 @@ async def acquire_github_source(
             api_base, token, owner, repo, commit=commit, destination=destination, deadline=deadline,
         )
     except httpx.HTTPError:
-        raise ValueError("execution source provider request unavailable") from None
+        raise ExecutionSourceError("execution source provider request unavailable") from None
     finally:
         _SOURCE_HTTP_ACTIVE.reset(context_token)

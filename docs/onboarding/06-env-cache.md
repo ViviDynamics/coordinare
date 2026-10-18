@@ -208,3 +208,31 @@ Production bootstrap requires completed capability preflight before it can accep
 a manifest. A premature manifest gets one stage reminder; repeatedly skipping
 preflight holds without renewing any budget. A repaired attempt may reuse prior
 complete base-image observations only while source/image/platform identities match.
+
+
+### Complete source for execution
+
+Model review inputs are bounded evidence, not a checkout. Bootstrap probes and
+clean verification use a separate complete repository tree at the accepted
+immutable commit. The provider verifies binary contents, Git blob identities and
+file modes; the shared restorer preserves executable files and safe relative
+symlinks. The installer checks its actual initial checkout against the same source
+identity. Clean verification restores fresh pinned source and uses the cache read
+only, with networking disabled. Installer source mutations do not become clean
+consumer inputs.
+
+Execution source is bounded separately: 128 MiB compressed transport, 512 MiB
+expanded contents including metadata, 64 MiB per blob, 100,000 entries, 256 missing
+blob completions and eight concurrent provider reads. Chunks remain 64 KiB and
+Kubernetes objects remain below their existing byte ceiling. Source acquisition
+uses existing deadlines, with no additional model calls or renewed repair quota.
+The daemon reads repository APIs and never clones or executes project commands.
+
+Missing/corrupt source and unsupported submodule/LFS hydration hold readiness;
+review-only files cannot substitute for a complete checkout. Source identity is
+recorded alongside manifest, image and platform identity. Journal version 4 keeps
+source ownership and prior consumption: interrupted source work requires confirmed
+cleanup. Pending older journals require explicit restart after cleanup, and older
+cache evidence needs normal rebuild/reverification. No old passing flag is promoted
+into source-complete evidence. Activation must make installed tools usable through
+normal project command names, not only absolute paths in version checks.
