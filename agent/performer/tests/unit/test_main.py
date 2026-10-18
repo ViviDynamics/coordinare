@@ -297,6 +297,9 @@ class TestHandleStatus:
 
 
 def _reviewed_bootstrap_perf(tmp_path, metadata):
+    from ..source_contract_fixture import bind_checkout_contract
+    if metadata.get("environment_manifest"):
+        metadata = bind_checkout_contract(metadata, tmp_path)
     perf = _make_perf(session_id="sid")
     perf.role = "env_bootstrap"
     perf.score.role = "env_bootstrap"
