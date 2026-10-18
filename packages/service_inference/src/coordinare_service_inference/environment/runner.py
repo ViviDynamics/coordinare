@@ -160,6 +160,65 @@ def _expand(value: str, roots: dict[str, str], env: dict[str, str]) -> str:
     return _VALUE_REFERENCE.sub(reference, value)
 
 
+def _command_values(command: Command, roots: dict[str, str], env: dict[str, str]) -> tuple[dict[str, str], list[str], str]:
+    child_env = dict(env)
+    for key in environment_order(command.env):
+        child_env[key] = _expand(command.env[key], roots, child_env)
+    return child_env, [_expand(arg, roots, child_env) for arg in command.argv], _expand(command.cwd, roots, child_env)
+
+
+def _bound_outputs(results: dict[str, CheckResult]) -> None:
+    budget = ATTEMPT_OUTPUT_LIMIT
+    for result in results.values():
+        output = result.output.encode()
+        if len(output) > budget:
+            result.output = output[:budget].decode(errors="ignore")
+            result.output_truncated = True
+        budget -= len(result.output.encode())
+
+
+def _template_preflight(manifest: EnvironmentManifest, roots: dict[str, str], *, install: bool,
+                        scope: str, secret_names: Sequence[str]) -> VerificationReport | None:
+    """Validate against the target environment before any project command has effects."""
+    commands = [*(manifest.install if install else []), *manifest.checks]
+    service_required: dict[str, bool] = {}
+    for service in manifest.services:
+        if scope and service.start.scope and scope not in service.start.scope:
+            continue
+        lifecycle = [*([service.init] if service.init else []), service.start, service.health, service.stop]
+        commands.extend(lifecycle)
+        service_required.update((command.id, service.required) for command in lifecycle)
+    digest = manifest.digest()
+    results = {command.id: CheckResult(id=command.id, required=service_required.get(command.id, command.required),
+        status="not_run", output="template preflight did not pass", manifest_digest=digest, context=scope)
+        for command in commands if not scope or not command.scope or scope in command.scope}
+    try:
+        env = manifest_environment(manifest, **roots, secret_names=secret_names)
+    except ValueError:
+        # Avoid including environment values in diagnostics from failed activation.
+        results["activation"] = CheckResult(id="activation", required=True, status="fail",
+            output="activation template expansion failed; use {cache}, {repo}, {scratch} for roots and provide every ${NAME} runtime environment reference",
+            manifest_digest=digest, context=scope)
+    else:
+        for command in commands:
+            if command.id not in results:
+                continue
+            try:
+                _command_values(command, roots, env)
+            except ValueError:
+                if not results[command.id].required:
+                    continue
+                results[command.id].status = "fail"
+                results[command.id].output = (
+                    "unresolved environment reference in command template; use {cache}, {repo}, {scratch} for execution roots. "
+                    "${NAME} requires a runtime environment variable; use $name for shell-local variables assigned inside the command."
+                )
+    if any(result.required and result.status == "fail" for result in results.values()):
+        _bound_outputs(results)
+        return VerificationReport(manifest_digest=digest, scope=scope, results=list(results.values()))
+    return None
+
+
 def manifest_environment(
     manifest: EnvironmentManifest,
     *,
@@ -294,13 +353,10 @@ async def _execute(
     known_secrets = frozenset(_secret_values(env)) | redactions
     retained_limit = OUTPUT_LIMIT * 2 + max((len(value.encode()) for value in known_secrets), default=0)
     try:
-        for key in environment_order(command.env):
-            child_env[key] = _expand(command.env[key], roots, child_env)
+        child_env, argv, cwd = _command_values(command, roots, child_env)
         retained_limit = max(retained_limit, OUTPUT_LIMIT * 2 + max(
             (len(value.encode()) for value in _secret_values(child_env)), default=0,
         ))
-        argv = [_expand(arg, roots, child_env) for arg in command.argv]
-        cwd = _expand(command.cwd, roots, child_env)
         arguments = argv
         child_policy = child_env
         inherited_fds: tuple[int, ...] = ()
@@ -622,6 +678,10 @@ async def run_manifest(
 ) -> VerificationReport:
     roots = {"cache": str(cache), "repo": str(repo), "scratch": str(scratch)}
     redactions = _runtime_secret_values(secret_names)
+    preflight = _template_preflight(manifest, roots, install=install, scope=scope, secret_names=secret_names)
+    if preflight is not None:
+        preflight.execution_source_digest = execution_source_digest
+        return preflight
     env = manifest_environment(manifest, **roots, secret_names=secret_names)
     results: dict[str, CheckResult] = {}
     digest = manifest.digest()
@@ -670,13 +730,7 @@ async def run_manifest(
             manifest_digest=digest,
             context=scope,
         )
-    budget = ATTEMPT_OUTPUT_LIMIT
-    for result in results.values():
-        output = result.output.encode()
-        if len(output) > budget:
-            result.output = output[:budget].decode(errors="ignore")
-            result.output_truncated = True
-        budget -= len(result.output.encode())
+    _bound_outputs(results)
     order = {
         command.id: index for index, command in enumerate([*manifest.install, *manifest.checks])
     }

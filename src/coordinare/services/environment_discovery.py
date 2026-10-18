@@ -111,12 +111,16 @@ def _valid_path(path: Any) -> bool:
     )
 
 
+class _DuplicateJsonKeyError(ValueError):
+    """Ambiguous model output must never select either duplicate value."""
+
+
 def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
             message = "duplicate JSON key"
-            raise ValueError(message)
+            raise _DuplicateJsonKeyError(message)
         result[key] = value
     return result
 
@@ -131,6 +135,9 @@ def _decode_reply(raw: str, name: str, limits: DiscoveryLimits) -> dict[str, Any
         raise EnvironmentDiscoveryError(message)
     try:
         reply = json.loads(raw, object_pairs_hook=_object)
+    except _DuplicateJsonKeyError:
+        message = f"{name} returned duplicate JSON keys"
+        raise EnvironmentDiscoveryError(message, code="duplicate_json_key") from None
     except (ValueError, RecursionError):
         message = f"{name} returned malformed JSON"
         raise EnvironmentDiscoveryError(message, code="invalid_json_envelope") from None
@@ -177,8 +184,8 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
 
 
 def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget) -> None:
-    budget.reserve_repair("schema")
     budget.validation_codes.extend(error["code"] for error in errors)
+    budget.reserve_repair("schema")
     messages.extend([{"role": "assistant", "content": raw},
                      {"role": "user", "content": _json({"validation_errors": errors,
                         "expected_envelope": budget.expected_envelope,
@@ -269,9 +276,10 @@ async def _phase(
                 try:
                     reply = _normalize_review(_decode_reply(raw, inspection.name, inspection.limits), inspection.name)
                 except EnvironmentDiscoveryError as exc:
-                    if exc.code != "invalid_json_envelope":
+                    if exc.code not in {"invalid_json_envelope", "duplicate_json_key"}:
                         raise
-                    _repair(messages, raw, [{"location": [], "code": "invalid_json_envelope"}], budget)
+                    _repair(messages, raw, [{"location": [], "code": exc.code,
+                        "guidance": "Return one JSON object with unique keys at every level; assessment must occur exactly once and contain an object, never a boolean."}], budget)
                     continue
                 if set(reply) == {"probe"} and inspection.name == "discovery":
                     await _probe_reply(reply["probe"], raw, messages, inspection, budget)
