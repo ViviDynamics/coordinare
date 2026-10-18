@@ -1,6 +1,6 @@
 # Optional private service runtime
 
-Issue #353 / PR #354. Status: proposed for design review, not implemented.
+Issue #353 / PR #354. Status: approved with the combined fix plan; runtime integration proof in progress.
 
 ## Purpose and evidence
 
@@ -118,6 +118,6 @@ required deterministic installer/clean check and service lifecycle result remain
 mandatory. Source additions/deletions and inspected evidence retain provenance.
 No generated manifest is edited by an operator to make Elm pass.
 
-This proposed design and [the combined plan](elm-bootstrap-fix-plan.md) require
-review before implementation. No claim is made that the candidate already supports
+The user approved this design and [the combined plan](elm-bootstrap-fix-plan.md)
+with "Yes" after the independent planning review. No claim is made that the candidate already supports
 Elm or that it will fit the authorized 60-minute execution profile.

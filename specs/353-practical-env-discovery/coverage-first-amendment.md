@@ -1,6 +1,6 @@
 # Coverage before executable manifest construction
 
-Issue: #353. PR: #354. Status: proposed, awaiting written-spec approval.
+Issue: #353. PR: #354. Status: approved with the combined fix plan following independent planning review.
 
 ## Problem demonstrated by the tests
 
@@ -152,11 +152,10 @@ rationale is trusted as an instruction or emitted as an unsanitized diagnostic.
 The independent planning review identified a separate runtime prerequisite. See
 [the private-service runtime design](private-service-runtime-amendment.md) and
 [the combined fix plan](elm-bootstrap-fix-plan.md). Scope-first construction alone
-cannot establish Elm readiness. Both designs remain proposed; the user's request
-to plan with a subagent authorizes this planning work, not product implementation.
+cannot establish Elm readiness. The user subsequently approved the presented
+designs and combined plan with "Yes"; implementation is native with independent review.
 
-This is an architectural amendment, not an approved implementation plan. After
-written-spec approval, write and review the implementation plan, run repository
-analysis, then implement with meaningful failing tests and full-diff adversarial
+This architectural amendment is implemented through the approved combined plan.
+Run repository analysis, then implement with meaningful failing tests and full-diff adversarial
 review. Do not merge PR #354 or mark the goal complete until the existing real
 repository acceptance requirements are satisfied.
