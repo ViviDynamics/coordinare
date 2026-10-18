@@ -444,6 +444,8 @@ class ConductingConfig(BaseModel):
     # OPENAI_API_KEY; set to e.g. "LITELLM_MASTER_KEY" when pointing base_url at
     # a proxy that uses a different env var.
     api_key_env: str | None = None
+    # Explicit provider capability; local environment validation is unchanged.
+    structured_transport: Literal["json_schema", "tool_call"] = "json_schema"
 
     @field_validator("temperature")
     @classmethod

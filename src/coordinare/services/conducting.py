@@ -17,6 +17,12 @@ from coordinare.services.conductor_calls import (
     ModelRequest,
     split_messages,
 )
+from coordinare.services.environment_function_wire import (
+    INSTRUCTION,
+    decode_function,
+    functions,
+    load_unique,
+)
 
 if TYPE_CHECKING:
     from coordinare.config import ProjectConfiguration
@@ -274,6 +280,7 @@ class OpenAiApiBackend:
         effort: str | None = None,
         calls: ConductorCallLog | None = None,
         endpoint_name: str = "openai_api",
+        structured_transport: str = "json_schema",
     ) -> None:
         self._api_key = api_key or ""
         self._model = model
@@ -284,6 +291,10 @@ class OpenAiApiBackend:
         # 131: every send is recorded on the conductor call that is open, if any.
         self.calls = calls if calls is not None else NULL_CALL_LOG
         self._endpoint_name = endpoint_name
+        if structured_transport not in {"json_schema", "tool_call"}:
+            message = "unsupported structured transport"
+            raise ValueError(message)
+        self._structured_transport = structured_transport
 
     # Transient-error retry budget. Three attempts total at 0.5s / 1.5s
     # backoff — enough to ride out a LiteLLM/proxy hiccup or a brief 429
@@ -300,6 +311,7 @@ class OpenAiApiBackend:
         parameters = self._request_parameters(json_mode)
         if response_schema is not None:
             parameters["response_schema"] = response_schema
+            parameters["structured_transport"] = self._structured_transport
         request = ModelRequest(
             model=self._model,
             endpoint=self._endpoint_name,
@@ -318,6 +330,14 @@ class OpenAiApiBackend:
         if self._temperature is not None:
             parameters["temperature"] = self._temperature
         return parameters
+
+    def _response_parameters(self, schema: dict[str, Any] | None, json_mode: bool) -> dict[str, Any]:
+        if schema is not None and self._structured_transport == "tool_call":
+            return {"tools": functions(schema), "tool_choice": "required", "parallel_tool_calls": False}
+        if schema is not None:
+            return {"response_format": {"type": "json_schema", "json_schema": {
+                "name": "coordinare_environment_response", "strict": True, "schema": schema}}}
+        return {"response_format": {"type": "json_object"}} if json_mode else {}
 
     async def _post_chat(self, messages: list[dict[str, str]], json_mode: bool, *, response_schema: dict[str, Any] | None = None) -> ModelReply:
         """The HTTP send with its retries. Failures come back as ``error``, never raised."""
@@ -339,11 +359,7 @@ class OpenAiApiBackend:
             payload["max_tokens"] = self._max_tokens
             if self._temperature is not None:
                 payload["temperature"] = self._temperature
-        if response_schema is not None:
-            payload["response_format"] = {"type": "json_schema", "json_schema": {
-                "name": "coordinare_environment_response", "strict": True, "schema": response_schema}}
-        elif json_mode:
-            payload["response_format"] = {"type": "json_object"}
+        payload.update(self._response_parameters(response_schema, json_mode))
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -371,7 +387,10 @@ class OpenAiApiBackend:
                         await asyncio.sleep(self._RETRY_DELAYS_S[attempt])
                         continue
                 resp.raise_for_status()
-                data = resp.json()
+                try:
+                    data = load_unique(resp.text) if response_schema is not None and self._structured_transport == "tool_call" else resp.json()
+                except (ValueError, RecursionError):
+                    last_error = "invalid provider JSON"
                 break
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = type(exc).__name__
@@ -392,7 +411,8 @@ class OpenAiApiBackend:
             log.error("openai_api_http_error", error=last_error or "retries_exhausted")
             return ModelReply(error=last_error or "retries_exhausted")
         try:
-            text = str(data["choices"][0]["message"]["content"] or "")
+            message = data["choices"][0]["message"]
+            text = json.dumps(message) if response_schema is not None and self._structured_transport == "tool_call" else str(message["content"] or "")
         except (KeyError, IndexError, TypeError):
             log.warning("openai_api_unexpected_response", keys=list(data.keys()) if isinstance(data, dict) else None)
             return ModelReply(error="unexpected response")
@@ -419,19 +439,21 @@ class OpenAiApiBackend:
         )
 
         canonical_schema = response_schema
+        function_mode = self._structured_transport == "tool_call"
+        instruction = INSTRUCTION if function_mode else WIRE_INSTRUCTION
         if canonical_schema is not None:
             messages = [dict(message) for message in messages]
             if messages and messages[0]["role"] == "system":
-                messages[0]["content"] += "\n\n" + WIRE_INSTRUCTION
+                messages[0]["content"] += "\n\n" + instruction
             else:
-                messages.insert(0, {"role": "system", "content": WIRE_INSTRUCTION})
-            response_schema = wire_schema(canonical_schema)
+                messages.insert(0, {"role": "system", "content": instruction})
+            response_schema = canonical_schema if function_mode else wire_schema(canonical_schema)
         reply = await self._chat_reply(messages, json_mode=True, response_schema=response_schema)
         text = reply.text
         error_code = "provider_request_failed" if reply.error else None
         if canonical_schema is not None and not error_code:
             try:
-                text = decode_wire(text, canonical_schema)
+                text = decode_function(text, canonical_schema) if function_mode else decode_wire(text, canonical_schema)
             except (ValueError, TypeError, RecursionError, KeyError):
                 text, error_code = "", "provider_response_invalid"
         return DiscoveryChatReply(text=text, usage=reply.usage, finish_reason=reply.finish_reason, error_code=error_code,
@@ -709,6 +731,7 @@ def build_conducting_backend(
                 temperature=a.temperature,
                 base_url=a.base_url,
                 effort=a.effort,
+                structured_transport=a.structured_transport,
                 calls=calls,
             )
         case "claude_cli":
