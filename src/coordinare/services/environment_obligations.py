@@ -33,4 +33,3 @@ def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentMan
                                                or (before.required and not after.required)):
                         message = "required service obligation changed"
                         raise EnvironmentDiscoveryError(message, code="obligation_removed")
-
