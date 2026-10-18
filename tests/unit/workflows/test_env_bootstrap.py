@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import asyncio
-import subprocess
 from unittest.mock import AsyncMock
 
 import pytest
+from agent.performer.tests.source_contract_fixture import bind_checkout_contract
 from performer.backends.base import BackendStatus
 from performer.models import Score, Stand
 from performer.workflows.adapter import build_production_toolkit
@@ -19,9 +19,6 @@ from tests.unit.env_manifest_fixture import reviewed_metadata
 def setup(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=t@example.org",
-                    "commit", "--allow-empty", "-qm", "fixture"], cwd=repo, check=True)
     cache = tmp_path / "cache"
     cache.mkdir()
     (cache / "activate.sh").write_text("true\n")
@@ -31,9 +28,9 @@ def setup(tmp_path, monkeypatch):
                   role="env_bootstrap", workflow="env_bootstrap", backend="codex",
                   env_cache_path=str(cache), verify_provided=True, activate_provided=True,
                   coordinare_manages_services=False, persona_instructions="Install the required tool")
-    metadata = reviewed_metadata(checks=[{"id": "tool", "argv": ["python3", "-c",
+    metadata = bind_checkout_contract(reviewed_metadata(checks=[{"id": "tool", "argv": ["python3", "-c",
         "from pathlib import Path; import os, sys; ready=Path(os.environ[\"DEVENV\"] + \"/installed\").exists(); print(\"PASS tool\" if ready else \"FAIL missing tool\"); sys.exit(0 if ready else 1)"]}],
-        activation={"env": {"DEVENV": "{cache}"}})
+        activation={"env": {"DEVENV": "{cache}"}}), repo)
     for key, value in metadata.items():
         setattr(score, key, value)
     score.workflow_env = {"ENV_BOOTSTRAP_MAX_REPAIRS": "2"}
@@ -109,11 +106,11 @@ async def test_readiness_precedes_verification_and_respects_mode(setup, monkeypa
     stand, score, cache, inference = setup
     score.coordinare_manages_services = managed
     order = cache / "order"
-    metadata = reviewed_metadata(
+    metadata = bind_checkout_contract(reviewed_metadata(
         services=[{"id": "custom", "start": {"id": "start", "argv": ["true"]},
                    "health": {"id": "health", "argv": ["bash", "-c", f"echo readiness >> '{order}'"]},
                    "stop": {"id": "stop", "argv": ["true"]}}],
-        checks=[{"id": "verify", "argv": ["bash", "-c", f"echo verify >> '{order}'"]}])
+        checks=[{"id": "verify", "argv": ["bash", "-c", f"echo verify >> '{order}'"]}]), stand.path)
     for key, value in metadata.items():
         setattr(score, key, value)
     harness = Harness(cache, "install")
@@ -209,9 +206,9 @@ async def test_accepted_contract_never_invokes_legacy_inference(setup):
 
 async def test_readiness_failure_is_repaired_before_verify(setup, monkeypatch):
     stand, score, cache, _ = setup
-    metadata = reviewed_metadata(services=[{"id": "database", "start": {"id": "start", "argv": ["true"]},
+    metadata = bind_checkout_contract(reviewed_metadata(services=[{"id": "database", "start": {"id": "start", "argv": ["true"]},
         "health": {"id": "health", "argv": ["bash", "-c", f"test -f '{cache / 'installed'}'"]},
-        "stop": {"id": "stop", "argv": ["true"]}}])
+        "stop": {"id": "stop", "argv": ["true"]}}]), stand.path)
     for key, value in metadata.items():
         setattr(score, key, value)
     harness = Harness(cache, "install")
@@ -337,7 +334,7 @@ async def test_cancelled_service_gate_cannot_write_after_timeout(setup, phase):
 
 async def test_verifier_cannot_rewrite_activation_and_report_success(setup):
     stand, score, cache, _ = setup
-    metadata = reviewed_metadata(checks=[{"id": "mutating", "argv": ["bash", "-c", f"echo changed > '{cache / 'activate.sh'}'"]}])
+    metadata = bind_checkout_contract(reviewed_metadata(checks=[{"id": "mutating", "argv": ["bash", "-c", f"echo changed > '{cache / 'activate.sh'}'"]}]), stand.path)
     for key, value in metadata.items():
         setattr(score, key, value)
     harness = Harness(cache, "install")
