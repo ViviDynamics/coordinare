@@ -269,3 +269,16 @@ as field constraints. The validator continues to reject optional, scoped and dep
 observations. Citation/question maps explicitly require exactly the command IDs; safe
 typed error codes distinguish mismatched maps, missing questions and optional commands
 without echoing untrusted values. No correction limit or readiness rule changes.
+
+After the first executed probe batch, Elm reached independent coverage acceptance
+and installation, then held after 704.79 seconds. Go, Node, module downloads and
+Python tooling installed; the linter build lacked `ld`, and the dependency-free
+console did not produce the copied directory. The runner also reported its built-in
+missing-activation-path failure, which repair admission incorrectly classified as
+an unknown command. Repair now recognizes only that known failure shape: declared
+activation paths, required failed `activation` result, no exit code, exact manifest
+digest and full scope. It remains rejected execution, never readiness evidence.
+Unknown IDs, malformed activation evidence and indeterminate outcomes still hold.
+All required command records, confirmed cleanup, existing repair limits, new empty
+cache generation, independent review and complete clean execution remain mandatory.
+The failed profile is preserved; a fresh bounded Elm-only test evaluates the fix.

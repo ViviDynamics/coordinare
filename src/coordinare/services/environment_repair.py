@@ -29,6 +29,8 @@ from coordinare.services.environment_attempt import (
 from coordinare.services.environment_probes import ProbePlan, ProbeReport, validate_probe_report
 
 if TYPE_CHECKING:
+    from coordinare_service_inference.environment.models import CheckResult
+
     from coordinare.models.env_cache import EnvCacheState
     from coordinare.services.environment_discovery import DiscoveryLimits
 
@@ -264,6 +266,13 @@ def finish_probe(cache: EnvCacheState, report: ProbeReport) -> None:
     _publish(cache, journal)
 
 
+def _activation_failure(result: CheckResult, manifest: EnvironmentManifest) -> bool:
+    """Recognize only the runner's bound missing-activation failure, never success."""
+    return (bool(manifest.activation.path) and result.id == "activation" and result.required
+        and result.status == "fail" and result.exit_code is None
+        and result.manifest_digest == manifest.digest() and result.context == "")
+
+
 def _rejected_evidence(cache: EnvCacheState, data: dict[str, Any]) -> dict[str, Any]:
     manifest = accepted_environment(cache)
     if manifest is None:
@@ -278,7 +287,8 @@ def _rejected_evidence(cache: EnvCacheState, data: dict[str, Any]) -> dict[str, 
     known = {command.id for command in [*manifest.install, *manifest.checks]}
     known.update(command.id for service in manifest.services
                  for command in (service.init, service.start, service.health, service.stop) if command is not None)
-    if any(result.id not in known or result.status == 'indeterminate' for result in report.results):
+    if any((result.id not in known and not _activation_failure(result, manifest))
+           or result.status == 'indeterminate' for result in report.results):
         _refuse('execution repair evidence is unknown or indeterminate')
     original_digest = hashlib.sha256(report.model_dump_json().encode()).hexdigest()
     for result in report.results:
