@@ -445,7 +445,7 @@ class ConductingConfig(BaseModel):
     # a proxy that uses a different env var.
     api_key_env: str | None = None
     # Explicit provider capability; local environment validation is unchanged.
-    structured_transport: Literal["json_schema", "tool_call"] = "json_schema"
+    structured_transport: Literal["json_schema", "tool_call", "json_text"] = "json_schema"
 
     @field_validator("temperature")
     @classmethod

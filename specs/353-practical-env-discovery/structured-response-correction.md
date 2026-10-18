@@ -40,3 +40,10 @@ Live tests on the same endpoint passed source, probe, manifest and assessment ro
 ## Inspected probe citation feedback
 
 The native-function Elm run correctly rejected probe citations to files that had not been read, but feedback collapsed that specific failure to `invalid_contract_value`. Preserve the trusted `probe_citations_uninspected` validation code and supply only the already inspected source paths with generic source-navigation guidance. Do not echo untrusted rejected citation values, read files implicitly, alter citation admission, or increase/reset the shared repair allowance.
+
+
+## Canonical JSON without provider grammar
+
+Forced native function decoding also exposed upstream grammar-state errors and produced an invalid `schema_version: "1 Wireless"` during the exact citation-repair replay. In an explicit diagnostic with provider grammar absent, the same conversation returned canonical JSON satisfying the entire probe plan, including all 14 command citations bound to nine actual inspected input hashes. The superseded full native-function run was stopped; all owned resources were independently confirmed absent and Elm's snapshot remained unchanged.
+
+Add explicit `structured_transport: json_text` for endpoints whose constrained decoders are unreliable. Environment schema calls send no `response_format` or native tools, retain the canonical schema in request provenance, and request the existing canonical phase envelope directly. Local strict JSON parsing, duplicate detection, source-bound Pydantic validation, bounded feedback, fresh independent review and every required clean execution result remain mandatory. Malformed declarations use the existing shared repair quota. Ordinary conductor JSON mode is unchanged; no transport is selected or retried automatically after failure. This is a provider protocol adapter, with no project language, framework, filename or dependency rules.

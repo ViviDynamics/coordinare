@@ -12,7 +12,10 @@ seam for discovery and coverage review. Configure a model supporting strict JSON
 responses (the default), or explicitly select native function calls with
 `conducting.structured_transport: tool_call`, and supply its credentials to the daemon.
 Function mode requires exactly one advertised call per response; local manifest and
-coverage validation remain mandatory. Unsupported transports hold without automatic fallback. There is no separate
+coverage validation remain mandatory. For endpoints with broken constrained decoding,
+`structured_transport: json_text` requests canonical JSON without provider grammar or
+native tools. The same local validation and bounded repairs apply; malformed output
+cannot establish readiness. Unsupported transports hold without automatic fallback. There is no separate
 reviewer model-role configuration: the reviewer receives a fresh conversation using
 the same configured chat callable.
 
@@ -25,7 +28,7 @@ conducting:
   model: "<your JSON-capable model>"
   api_key_env: OPENAI_API_KEY
   max_tokens: 32768
-  structured_transport: json_schema  # or tool_call for native function-capable endpoints
+  structured_transport: json_schema  # tool_call or json_text are explicit compatibility choices
   # base_url: "https://your-compatible-endpoint/v1"
 
 env_cache:
