@@ -22,6 +22,7 @@ from .findings import (
 )
 
 MAX_DOCUMENT_BYTES = 256 * 1024
+EXECUTION_PATH_PATTERN = r"^(?:/|\{(?:cache|repo|scratch)\}|\$\{[A-Za-z_][A-Za-z0-9_]*\})(?:[^\x00-\x1f\x7f\\]*)$"
 
 
 def execution_path(value: str) -> str:
@@ -82,7 +83,8 @@ class ExecutionCapabilities(StrictModel):
 class Command(StrictModel):
     id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
     argv: list[str] = Field(min_length=1)
-    cwd: str = "{repo}"
+    cwd: str = Field(default="{repo}", description="Execution directory, normally {repo}; absolute or declared root required.",
+                     json_schema_extra={"pattern": EXECUTION_PATH_PATTERN})
     env: dict[str, str] = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)
     timeout_seconds: float = Field(default=180.0, gt=0, le=3600)
@@ -147,7 +149,7 @@ class Requirement(StrictModel):
 
 
 class Activation(StrictModel):
-    path: list[str] = Field(default_factory=list)
+    path: list[str] = Field(default_factory=list, json_schema_extra={"items": {"type": "string", "pattern": EXECUTION_PATH_PATTERN}})
     env: dict[str, str] = Field(default_factory=dict)
 
     @field_validator('path')
