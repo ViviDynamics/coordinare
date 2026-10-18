@@ -1793,6 +1793,7 @@ def test_restore_env_cache_overlays_readme_sha_onto_live_entry() -> None:
                 environment_manifest=reviewed.environment_manifest,
                 environment_assessment=reviewed.environment_assessment,
                 environment_verification=reviewed.environment_verification,
+                environment_execution_source=reviewed.environment_execution_source,
                 last_bootstrap_at=t_boot,
                 last_bootstrap_succeeded=True,
                 cache_dir_ready=True,
