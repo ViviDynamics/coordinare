@@ -618,6 +618,7 @@ async def run_manifest(
     install: bool = False,
     scope: str = "",
     secret_names: Sequence[str] = (),
+    execution_source_digest: str | None = None,
 ) -> VerificationReport:
     roots = {"cache": str(cache), "repo": str(repo), "scratch": str(scratch)}
     redactions = _runtime_secret_values(secret_names)
@@ -680,6 +681,7 @@ async def run_manifest(
         command.id: index for index, command in enumerate([*manifest.install, *manifest.checks])
     }
     return VerificationReport(
+        execution_source_digest=execution_source_digest,
         manifest_digest=digest,
         scope=scope,
         results=sorted(results.values(), key=lambda r: order.get(r.id, -1)),
@@ -715,6 +717,7 @@ def main() -> None:
     parser.add_argument("--scope", default="")
     parser.add_argument("--install", action="store_true")
     args = parser.parse_args()
+    execution_source_digest = os.environ.pop("COORDINARE_ENV_EXECUTION_SOURCE_DIGEST", None)
     secret_names: list[str] = []
     try:
         encoded_secrets = _secret_payload()
@@ -746,7 +749,7 @@ def main() -> None:
             cache=args.cache,
             repo=args.repo,
             scratch=args.scratch,
-            scope=args.scope,
+            scope=args.scope, execution_source_digest=execution_source_digest,
             install=args.install,
             secret_names=secret_names,
         ),

@@ -193,3 +193,11 @@ These are nested members of the registered `environment_manifest` and
 Legacy null identity members parse for migration but cannot authorize readiness.
 Actual capability descriptions stay daemon-side; dispatch carries their digest through
 the accepted manifest. Existing manifest digest covers both extensions.
+
+### Complete execution source (353)
+
+| Field | Type | Required | Set by | Used by |
+|-------|------|----------|--------|---------|
+| `environment_execution_source` | compact version1 identity object | for reviewed environment dispatch | daemon validated pinned provider source | performer installer checkout preflight; source-bound execution reports |
+
+Includes source_commit, tree_digest, file_count and expanded_bytes. Contains no source bytes, paths to temporary artifacts, credentials or full entry inventory. Missing legacy identity requires normal rebuild/reverification, never relabeling old evidence.

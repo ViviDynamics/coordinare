@@ -149,6 +149,8 @@ async def execute_environment_probe(
         raise EnvironmentDiscoveryError(message, code="probe_isolation_unsupported")
     try:
         validate_execution_bundle(source_bundle.payload_path, expected=source_bundle.identity, review_inputs=plan.inputs)
+        if plan.execution_source_digest is not None and plan.execution_source_digest != source_bundle.identity.digest():
+            raise ValueError('probe complete execution source differs')
         if source_bundle.identity.source_commit != plan.source_commit:
             raise ValueError('execution source commit differs')
     except ValueError as exc:
@@ -177,5 +179,5 @@ async def execute_environment_probe(
                     for command in plan.request.commands]
     finally:
         _ACTIVE_PROBES.discard(name)
-    return ProbeReport(schema_version=1, plan_digest=plan.digest(), source_commit=plan.source_commit,
+    return ProbeReport(execution_source_digest=plan.execution_source_digest, schema_version=1, plan_digest=plan.digest(), source_commit=plan.source_commit,
         image_ref=plan.capabilities.image_ref, platform=plan.capabilities.platform, results=results, cleanup_confirmed=True)

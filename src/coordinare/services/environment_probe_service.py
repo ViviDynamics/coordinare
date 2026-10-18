@@ -20,6 +20,8 @@ from coordinare.services.environment_source_provider import prepare_repository_s
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
+
     from coordinare.models.env_cache import EnvCacheState
     from coordinare.services.environment_attempt import AttemptBudget
     from coordinare.services.environment_discovery import DiscoveryLimits, Fetch
@@ -32,6 +34,7 @@ class ProbeServiceContext:
     fetch: Fetch
     budget: AttemptBudget
     limits: DiscoveryLimits
+    source_bundle: ExecutionSourceBundle | None = None
 
 
 async def run_owned_probe(plan: ProbePlan, *, context: ProbeServiceContext) -> ProbeReport:
@@ -53,14 +56,10 @@ async def run_owned_probe(plan: ProbePlan, *, context: ProbeServiceContext) -> P
         await prepare_mandatory_evidence(inspection, plan.inputs, phase="probe")
         budget.stage = "probe_execution"
         with tempfile.TemporaryDirectory(prefix="coordinare-probe-source-") as temporary:
-            bundle = await prepare_repository_source(
-                state,
-                cache.symphony_name,
-                commit=plan.source_commit,
-                review_inputs=plan.inputs,
-                destination=Path(temporary) / "source",
-                deadline=deadline,
-            )
+            bundle = context.source_bundle
+            if bundle is None:
+                bundle = await prepare_repository_source(state, cache.symphony_name, commit=plan.source_commit,
+                    review_inputs=plan.inputs, destination=Path(temporary)/'source', deadline=deadline)
             report = await execute_environment_probe(
                 plan, state=state, source_bundle=bundle, budget=budget, deadline=deadline,
             )

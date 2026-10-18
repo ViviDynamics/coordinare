@@ -100,6 +100,7 @@ async def test_probe_sees_unreviewed_application_directory(tmp_path, monkeypatch
     p = plan().model_copy(
         update={
             "source_commit": COMMIT,
+            "execution_source_digest": bundle.identity.digest(),
             "inputs": {"Buildfile": hashlib.sha256(FILES["Buildfile"][0]).hexdigest()},
         },
     )
@@ -268,3 +269,232 @@ async def test_binary_source_secrets_and_local_artifact_cleaned(tmp_path, failed
     assert passed is (None if failed_create else True)
     assert not owned.exists()
     assert not core.secrets
+
+
+def test_readiness_rejects_missing_or_mismatched_execution_source(tmp_path):
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.environment_acceptance import execution_report
+    from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
+
+    cache = reviewed_cache(
+        EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=tmp_path / "cache"),
+    )
+    evidence = json.loads(verification_output(cache.environment_manifest))
+    evidence.pop("execution_source_digest", None)
+    with pytest.raises(ValueError, match="source"):
+        execution_report(json.dumps(evidence), cache)
+    bundle = bundle_fixture(tmp_path)
+    cache.environment_execution_source = bundle.identity.model_dump()
+    evidence["execution_source_digest"] = "0" * 64
+    with pytest.raises(ValueError, match="source"):
+        execution_report(json.dumps(evidence), cache)
+
+
+def test_complete_execution_source_is_bound_into_readiness(tmp_path):
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.environment_acceptance import execution_report
+    from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
+
+    cache = reviewed_cache(
+        EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=tmp_path / "cache"),
+    )
+    bundle = bundle_fixture(tmp_path)
+    cache.environment_execution_source = bundle.identity.model_dump()
+    evidence = json.loads(verification_output(cache.environment_manifest))
+    evidence["execution_source_digest"] = bundle.identity.digest()
+    assert execution_report(json.dumps(evidence), cache).passed
+
+
+@pytest.mark.asyncio
+async def test_installer_checkout_identity_checks_actual_files_not_only_git_objects(tmp_path):
+    import importlib
+
+    assert (
+        importlib.util.find_spec(
+            "coordinare_service_inference.environment.execution_source_checkout",
+        )
+        is not None
+    )
+    module = importlib.import_module(
+        "coordinare_service_inference.environment.execution_source_checkout",
+    )
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True,
+            capture_output=True,
+        ).stdout
+
+    git("init")
+    git("config", "user.name", "test")
+    git("config", "user.email", "test@example.com")
+    (repo / "source").write_bytes(b"original")
+    git("add", "source")
+    git("commit", "-m", "fixture")
+    commit = git("rev-parse", "HEAD").decode().strip()
+    identity = await module.checkout_identity(
+        repo,
+        commit=commit,
+        review_inputs={"source": hashlib.sha256(b"original").hexdigest()},
+    )
+    assert identity.source_commit == commit
+    (repo / "source").write_bytes(b"modified")
+    with pytest.raises(ValueError, match="source"):
+        await module.checkout_identity(repo, commit=commit, review_inputs={})
+
+
+def test_old_pending_source_journal_requires_explicit_restart(tmp_path):
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_repair import begin_attempt, journal_for
+    from tests.unit.test_353_execution_repair import cache_fixture
+
+    cache = cache_fixture(tmp_path)
+    begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    cache.environment_attempt["version"] = 3
+    with pytest.raises(EnvironmentDiscoveryError, match="restart"):
+        journal_for(cache)
+
+
+def test_source_ownership_blocks_restart_and_does_not_renew_budget(tmp_path):
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_repair import begin_attempt, restart_environment_attempt
+    from tests.unit.test_353_execution_repair import cache_fixture
+
+    cache = cache_fixture(tmp_path)
+    begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    cache.environment_attempt["source_owner"] = str(tmp_path / "owned")
+    with pytest.raises(EnvironmentDiscoveryError, match="cleanup"):
+        restart_environment_attempt(cache)
+
+
+@pytest.mark.asyncio
+async def test_fresh_source_and_ordinary_tool_names_work_through_activation(tmp_path):
+    from coordinare_service_inference.environment.execution_source_restore import (
+        restore_execution_bundle,
+    )
+    from coordinare_service_inference.environment.models import EnvironmentManifest
+    from coordinare_service_inference.environment.runner import run_manifest
+
+    from tests.unit.env_manifest_fixture import reviewed_metadata
+
+    bundle = bundle_fixture(tmp_path)
+    installer = tmp_path / "installer"
+    consumer = tmp_path / "consumer"
+    restore_execution_bundle(
+        bundle.payload_path,
+        installer,
+        expected=bundle.identity,
+        review_inputs={},
+    )
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    program = "import pathlib,sys;p=pathlib.Path(sys.argv[1]);p.mkdir();f=p/'fixture-consumer-tool';f.write_text('#!/bin/sh\\nprintf ready');f.chmod(0o700)"
+    manifest = EnvironmentManifest.model_validate(
+        reviewed_metadata(
+            inputs={"Buildfile": hashlib.sha256(FILES["Buildfile"][0]).hexdigest()},
+            install=[{"id": "tool", "argv": [sys.executable, "-c", program, "{cache}/bin"]}],
+            activation={"path": ["{cache}/bin"]},
+            checks=[
+                {
+                    "id": "usable",
+                    "argv": [
+                        "/bin/bash",
+                        "-c",
+                        'test "$(fixture-consumer-tool)" = ready && test "$(cat src/main)" = app',
+                    ],
+                },
+            ],
+        )["environment_manifest"],
+    )
+    assert (
+        await run_manifest(manifest, cache=cache, repo=installer, scratch=scratch, install=True)
+    ).passed
+    (installer / "src/main").write_text("installer-only mutation")
+    restore_execution_bundle(
+        bundle.payload_path,
+        consumer,
+        expected=bundle.identity,
+        review_inputs={},
+    )
+    assert (await run_manifest(manifest, cache=cache, repo=consumer, scratch=scratch)).passed
+
+
+@pytest.mark.asyncio
+async def test_independent_review_receives_activation_usability_requirement():
+    from coordinare.services.environment_discovery import discover_and_review
+    from tests.unit.test_353_discovery_repair import (
+        CAPABILITIES,
+        PATH,
+        SOURCE,
+        assessment,
+        candidate,
+    )
+
+    async def fetch(path):
+        return SOURCE
+
+    reviewed = []
+
+    async def chat(messages):
+        context = json.loads(messages[1]["content"])
+        if "manifest" in context:
+            assert "ordinary downstream project commands" in messages[0]["content"]
+            reviewed.append(True)
+            return json.dumps(assessment(candidate()))
+        if len(messages) == 2:
+            return json.dumps({"tool": "read_file", "path": PATH})
+        return json.dumps({"manifest": candidate()})
+
+    await discover_and_review(
+        symphony_name="suite",
+        commit=COMMIT,
+        paths=[PATH],
+        fetch=fetch,
+        chat=chat,
+        capabilities=CAPABILITIES,
+    )
+    assert reviewed == [True]
+
+
+@pytest.mark.asyncio
+async def test_failed_source_checkpoint_never_acquires_or_executes(tmp_path):
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.env_cache import _verify_cache_runtime
+    from tests.unit.env_manifest_fixture import reviewed_cache
+
+    cache = reviewed_cache(
+        EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=tmp_path / "cache"),
+    )
+
+    async def failed_checkpoint():
+        raise RuntimeError("checkpoint unavailable")
+
+    state = {"env_cache": {"sym": cache}, "snapshot_checkpoint_fn": failed_checkpoint}
+    with pytest.raises(RuntimeError, match="checkpoint"):
+        await _verify_cache_runtime(state, "sym", None, ())
+    assert cache.environment_source_owner is None
+    assert not cache.cache_dir_ready
+
+
+@pytest.mark.parametrize("owner_location", ["cache", "journal"])
+def test_interrupted_source_ownership_cannot_reuse_saved_readiness(tmp_path, owner_location):
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.environment_acceptance import saved_execution_accepted
+    from tests.unit.env_manifest_fixture import reviewed_cache
+
+    cache = reviewed_cache(
+        EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=tmp_path / "cache"),
+    )
+    assert saved_execution_accepted(cache)
+    if owner_location == "cache":
+        cache.environment_source_owner = str(tmp_path / "owned")
+    else:
+        cache.environment_attempt = {"source_owner": str(tmp_path / "owned")}
+    assert not saved_execution_accepted(cache)

@@ -335,6 +335,7 @@ class CheckResult(StrictModel):
 
 
 class VerificationReport(StrictModel):
+    execution_source_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     platform: str = Field(default_factory=lambda: runtime_platform.system().lower() + "/" + runtime_platform.machine().lower())
     manifest_digest: str
     scope: str = ""

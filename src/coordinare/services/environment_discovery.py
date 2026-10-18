@@ -312,6 +312,7 @@ class _DiscoveryOptionKeywords(TypedDict):
     execution_feedback: NotRequired[dict[str, Any] | None]
     probe_executor: NotRequired[ProbeExecutor | None]
     require_preflight: NotRequired[bool]
+    execution_source_digest: NotRequired[str | None]
 
 
 @dataclass(frozen=True)
@@ -325,6 +326,7 @@ class _DiscoveryOptions:
     execution_feedback: dict[str, Any] | None = None
     probe_executor: ProbeExecutor | None = None
     require_preflight: bool = False
+    execution_source_digest: str | None = None
 
 
 def _checked_inventory(paths: Sequence[str], bounds: DiscoveryLimits) -> list[str]:
@@ -549,6 +551,7 @@ def _probe_handler(discovery: _Inspection, options: _DiscoveryOptions, commit: s
             raise EnvironmentDiscoveryError(message, code="probe_executor_unavailable")
         request = ProbeRequest.model_validate(data)
         plan = ProbePlan(request=request, source_commit=commit, inventory_digest=discovery.inventory_digest,
+            execution_source_digest=options.execution_source_digest,
             inputs=dict(discovery.inputs), capabilities=cast("ExecutionCapabilities", options.capabilities))
         budget.reserve_probe_batch()
         await budget.flush()
@@ -635,6 +638,7 @@ async def _discover_attempt(
                 messages=[
                 {"role": "system", "content": tools + (
                     'Independently review coverage of the candidate against the repository snapshot. '
+                    'Reject incomplete activation: installed tools must be usable by ordinary downstream project commands, not just absolute-path checks. '
                     'You have no discoverer conversation. The daemon independently fetched every manifest input '
                     'and supplied its exact content in mandatory_evidence. Examine all supplied inputs and cited requirements, '
                     'inspect additional relevant files for omissions, and identify conflicting source constraints. '

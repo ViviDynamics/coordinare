@@ -47,6 +47,7 @@ class ProbeEnvelope(ProbeBase):
 
 
 class ProbePlan(ProbeBase):
+    execution_source_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     execution_id: str = Field(default_factory=lambda: uuid.uuid4().hex, pattern=r"^[0-9a-f]{32}$")
     request: ProbeRequest
     source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
@@ -84,6 +85,7 @@ class ProbeCommandResult(ProbeBase):
 
 
 class ProbeReport(ProbeBase):
+    execution_source_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     schema_version: Literal[1]
     plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_commit: str
@@ -107,6 +109,8 @@ def validate_saved_probe_reports(reports: list[dict[str, Any]], source_commit: s
         if report.plan is None:
             message = "saved capability observations lack the executed plan; restart after confirmed cleanup"
             raise EnvironmentDiscoveryError(message, code="probe_plan_missing")
+        if not report.execution_source_digest:
+            raise EnvironmentDiscoveryError("saved preflight lacks complete execution source; restart after cleanup", code="probe_source_identity")
         validate_probe_report(report.plan, report)
     if any(report.source_commit != source_commit or report.image_ref != capabilities.image_ref
            or report.platform != capabilities.platform or not report.cleanup_confirmed
@@ -116,7 +120,7 @@ def validate_saved_probe_reports(reports: list[dict[str, Any]], source_commit: s
 
 
 def validate_probe_report(plan: ProbePlan, report: ProbeReport) -> None:
-    if (report.plan_digest != plan.digest() or (report.plan is not None and report.plan.digest() != plan.digest())
+    if (report.execution_source_digest != plan.execution_source_digest or report.plan_digest != plan.digest() or (report.plan is not None and report.plan.digest() != plan.digest())
             or report.source_commit != plan.source_commit
             or report.image_ref != plan.capabilities.image_ref or report.platform != plan.capabilities.platform
             or [result.id for result in report.results] != [command.id for command in plan.request.commands]

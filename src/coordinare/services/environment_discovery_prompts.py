@@ -47,6 +47,8 @@ _MANIFEST_INSTRUCTIONS = (
     'environment requires a justification and a required documented baseline usage '
     'check. Do not return hashes, schema/policy versions, source identity or inventory/capability bindings. The daemon supplies those. Requirement '
     'source must be one exact path that has been read, never comma-joined paths. '
+    'Activation must make installed tools usable by ordinary downstream project commands, not only absolute-path version checks. '
+    'Create every declared activation directory during installation; do not hide a missing path by removing useful activation. '
     'Preserve every existing required requirement-to-check link; revise the linked commands instead of removing links. '
 
 )

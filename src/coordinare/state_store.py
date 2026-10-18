@@ -694,6 +694,8 @@ class EnvCacheStateSnapshot(BaseModel):
     environment_attempt: dict[str, Any] | None = None
     environment_attempt_archive: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
     environment_capabilities: dict[str, Any] | None = None
+    environment_source_owner: str | None = None
+    environment_execution_source: dict[str, Any] | None = None
     environment_manifest: dict[str, Any] | None = None
     environment_assessment: dict[str, Any] | None = None
     environment_verification: dict[str, Any] | None = None

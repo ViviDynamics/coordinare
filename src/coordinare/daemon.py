@@ -733,6 +733,8 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             environment_attempt=get("environment_attempt"),
             environment_attempt_archive=get("environment_attempt_archive") or [],
             environment_capabilities=get("environment_capabilities"),
+            environment_source_owner=get("environment_source_owner"),
+            environment_execution_source=get("environment_execution_source"),
             environment_manifest=get("environment_manifest"),
             environment_assessment=get("environment_assessment"),
             environment_verification=get("environment_verification"),
@@ -1064,6 +1066,8 @@ def _rehydrate_reviewed_environment(live: EnvCacheState, persisted: EnvCacheStat
             live.last_bootstrap_succeeded = False
             live.last_bootstrap_error = "environment repair generation could not be restored; rebuild required"
             return False
+    live.environment_source_owner = persisted.environment_source_owner
+    live.environment_execution_source = persisted.environment_execution_source
     live.environment_capabilities = persisted.environment_capabilities
     live.environment_manifest = persisted.environment_manifest
     live.environment_assessment = persisted.environment_assessment
@@ -4430,15 +4434,26 @@ class CoordinareDaemon:
         import time
         from pathlib import Path
 
-        from coordinare.services.environment_source_provider import ensure_execution_source
+        from coordinare.services.environment_repair import (
+            release_execution_source,
+            reserve_execution_source,
+        )
+        from coordinare.services.environment_source_provider import (
+            checkpoint_source_ownership,
+            ensure_execution_source,
+        )
         from coordinare.services.kubernetes_verifier import VERIFIER_DEADLINE_S
 
         workspace = Path(tempfile.mkdtemp(prefix='coordinare-verifier-source-'))
+        reserve_execution_source(ec, str(workspace))
         try:
+            await checkpoint_source_ownership(self._state)
             bundle = await ensure_execution_source(self._state, symphony_name, ec,
                 destination=workspace/'payload', deadline=time.monotonic()+VERIFIER_DEADLINE_S)
         except BaseException:
             shutil.rmtree(workspace)
+            release_execution_source(ec, identity=ec.environment_execution_source)
+            await checkpoint_source_ownership(self._state)
             raise
         return VerifierSpec(
             image=configured_verifier_image(config), cache_claim="", cache_subpath=ec.sanitised_name,
@@ -4467,6 +4482,7 @@ class CoordinareDaemon:
         limits = cache_service._provenance_limits() if cache_service is not None else DEFAULT_LIMITS
         bootstrap_sha = ec.bootstrap_commit_sha
         bootstrap_activate = ec.rendered_activate_sh
+        spec = None
         try:
             spec = await self._prepare_clean_verifier(symphony_name, svc, ec, limits)
             ok, detail = await svc._runtime.run_verifier(slug=ec.sanitised_name, spec=spec)
@@ -4474,6 +4490,19 @@ class CoordinareDaemon:
             return self._verifier_configuration_refusal(ec, str(exc))
         except RuntimeError as exc:
             return False, str(exc), True
+        finally:
+            if spec is not None and spec.execution_source_workspace is not None:
+                import shutil
+
+                if spec.execution_source_workspace.exists():
+                    shutil.rmtree(spec.execution_source_workspace)
+                from coordinare.services.environment_repair import release_execution_source
+                from coordinare.services.environment_source_provider import (
+                    checkpoint_source_ownership,
+                )
+
+                release_execution_source(ec, identity=ec.environment_execution_source)
+                await checkpoint_source_ownership(self._state)
         logger.info(
             "env_cache.clean_room_verify",
             symphony=symphony_name,

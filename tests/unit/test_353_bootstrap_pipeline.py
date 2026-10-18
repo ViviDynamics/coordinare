@@ -48,6 +48,18 @@ class Repository:
         self.head = COMMIT
         self.paths = ["guide"]
 
+    async def prepare_execution_source(self, owner, repo, *, commit, destination, deadline):
+        from coordinare_service_inference.environment.execution_source import (
+            ExecutionSourceBundle,
+            ExecutionSourceIdentity,
+        )
+
+        from tests.unit.test_353_execution_source import bundle_file
+        destination.mkdir(parents=True)
+        path, identity = bundle_file(destination, {p:(SOURCE.encode(),'100644') for p in self.paths}, commit=commit)
+        return ExecutionSourceBundle(ExecutionSourceIdentity.model_validate(identity),path,
+            hashlib.sha256(path.read_bytes()).hexdigest(),path.stat().st_size)
+
     async def get_branch_head_sha(self, branch):
         return self.head
 
@@ -114,7 +126,7 @@ async def publish(service, cache, state, capability, proposal):
 async def probe_transport(plan, **kwargs):
     """Stub only disposable-runtime I/O; retain source reads, reservations and validators."""
     from coordinare.services.environment_probes import ProbeReport
-    return ProbeReport(schema_version=1, plan_digest=plan.digest(), source_commit=plan.source_commit,
+    return ProbeReport(execution_source_digest=plan.execution_source_digest, schema_version=1, plan_digest=plan.digest(), source_commit=plan.source_commit,
         image_ref=plan.capabilities.image_ref, platform=plan.capabilities.platform,
         results=[{'id':command.id,'status':'completed','exit_code':0,'output':'fixture runtime present','truncated':False}
             for command in plan.request.commands], cleanup_confirmed=True)
@@ -138,9 +150,13 @@ async def local_clean_transport(monkeypatch, capability, cache):
             return self.process.returncode
 
         async def communicate(self, input=None):
-            script = input.replace(b"/usr/local/bin/python", sys.executable.encode())
+            header, body = input.split(b'\n', 1)
+            data = json.loads(header)
+            archive, script = body[:data['payload_bytes']], body[data['payload_bytes']:]
+            script = script.replace(b'/usr/local/bin/python', sys.executable.encode())
             script = script.replace(capability.cache_mount_path.encode(), str(cache.cache_dir).encode())
-            return await self.process.communicate(input=script)
+            data['script_bytes'], data['script_sha256'] = len(script), hashlib.sha256(script).hexdigest()
+            return await self.process.communicate(input=json.dumps(data).encode()+b'\n'+archive+script)
 
         def kill(self):
             self.process.kill()
@@ -153,7 +169,8 @@ async def local_clean_transport(monkeypatch, capability, cache):
             return await original(*args, **kwargs)
         assert args[args.index("--network") + 1] == "none"
         assert args[args.index("-v") + 1].endswith(":ro")
-        return LocalProcess(await original("bash", "-s", **kwargs))
+        return LocalProcess(await original(sys.executable, "-I", "-m",
+            "coordinare_service_inference.environment.execution_source_stdin", **kwargs))
 
     async def inspected(image):
         return capability.image_ref, capability.platform
