@@ -8,9 +8,17 @@ import platform as runtime_platform
 import re
 from graphlib import CycleError, TopologicalSorter
 from itertools import pairwise
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from pydantic_core import PydanticCustomError
 
 from .evidence_safety import reject_literal_credentials, reject_nested_credentials, source_path
@@ -20,6 +28,7 @@ from .findings import (
     FindingProposal,
     validate_finding_ledger,
 )
+from .runtime import RuntimePolicy  # noqa: TC001 - pydantic resolves this field at runtime
 
 MAX_DOCUMENT_BYTES = 256 * 1024
 EXECUTION_PATH_PATTERN = r"^(?:/|\{(?:cache|repo|scratch)\}|\$\{[A-Za-z_][A-Za-z0-9_]*\})(?:[^\x00-\x1f\x7f\\]*)$"
@@ -62,12 +71,32 @@ class StrictModel(BaseModel):
 class ExecutionCapabilities(StrictModel):
     """Actual target identity and generic installer/consumer constraints."""
 
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
+    runtime: RuntimePolicy | None = None
     image_ref: str = Field(pattern=r"^[^\s@]+@sha256:[0-9a-f]{64}$")
     platform: str = Field(pattern=r"^[a-z0-9_]+/[a-z0-9_]+$")
     cache_mount_path: str
     install_network: Literal["enabled", "disabled"]
     verify_network: Literal["disabled"]
+
+    @model_validator(mode="after")
+    def runtime_binding(self) -> Self:
+        if self.schema_version == 1 and self.runtime is not None:
+            raise ValueError("native capability version cannot declare a private runtime")
+        if self.schema_version == 2:
+            if self.runtime is None:
+                raise ValueError("private runtime capability requires explicit runtime policy")
+            identity = self.runtime.identity
+            if (identity.carrier_image, identity.carrier_platform) != (self.image_ref, self.platform):
+                raise ValueError("runtime carrier identity differs from capability target")
+        return self
+
+    @model_serializer(mode="wrap")
+    def serialize_native_compatibly(self, handler: Any) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if self.schema_version == 1:
+            data.pop("runtime", None)
+        return data
 
     @field_validator("cache_mount_path")
     @classmethod

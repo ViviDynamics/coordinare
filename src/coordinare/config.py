@@ -13,6 +13,9 @@ from urllib.parse import urlparse
 
 import structlog
 import yaml
+from coordinare_service_inference.environment.runtime import (
+    RuntimePolicy,  # noqa: TC002 - pydantic resolves this field at runtime
+)
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -1093,6 +1096,7 @@ class EnvCacheConfig(BaseModel):
     """
 
     inference: ServiceInferenceConfig = Field(default_factory=ServiceInferenceConfig)
+    private_service_runtime: RuntimePolicy | None = None
 
     # 116: master switch for the coordinare-managed stateful-service subsystem
     # (091→115: deb-fetch persona, rendered services-{start,health,stop}.sh, the

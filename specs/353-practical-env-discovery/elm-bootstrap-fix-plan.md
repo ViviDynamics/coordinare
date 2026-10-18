@@ -60,9 +60,9 @@ Paths below rooted at `packages/service_inference/src/coordinare_service_inferen
 
 **Interfaces:** Define versioned `RuntimeIdentity` (carrier image/platform, configured platform guest-base digest/platform, emulator/config digest), `RuntimeEndpoint` (ID plus explicit guest/outer-loopback ports) and `RuntimeSpec` (identity, endpoints and measured resource ceilings). All use canonical digests. `RuntimeArtifactReceipt` binds installed runtime-state hashes to the accepted manifest/source/runtime identities after clean installer shutdown. This avoids making a manifest depend on hashes of its own future installation outputs. `ExecutionCapabilities` gains an explicit optional runtime contract in a new version; legacy native execution retains its meaning. Models never supply trusted identity hashes.
 
-- [ ] Write identity tests that reject unknown versions, mutable/missing guest hashes, carrier/guest platform confusion, endpoint collisions/unsafe binds and unbounded resource declarations. Assert any identity/config change invalidates cache/report reuse; do not alias guest platform to outer platform.
-- [ ] Run `.venv/bin/pytest -q tests/unit/test_353_runtime_identity.py` and observe red. Implement the models and capability/journal migration, binding resolved actual artifacts rather than model claims.
-- [ ] Rerun the identity tests plus existing capability/journal regressions. Expected: native legacy records remain readable; runtime-required records lacking identity hold. Commit.
+- [x] Write identity tests that reject unknown versions, mutable/missing guest hashes, carrier/guest platform confusion, endpoint collisions/unsafe binds and unbounded resource declarations. Assert any identity/config change invalidates cache/report reuse; do not alias guest platform to outer platform.
+- [x] Run `.venv/bin/pytest -q tests/unit/test_353_runtime_identity.py` and observe red. Implement the models and capability/journal migration, binding resolved actual artifacts rather than model claims.
+- [x] Rerun the identity tests plus existing capability/journal regressions. Expected: native legacy records remain readable; runtime-required records lacking identity hold. Commit.
 
 ### Task 3: Supply the runtime to both verification and ordinary consumers
 
