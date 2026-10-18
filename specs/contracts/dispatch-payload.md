@@ -176,6 +176,20 @@ When adding a new field to the dispatch payload:
 | `environment_manifest` | object or null | Daemon-owned accepted requirements and executable actions. |
 | `environment_assessment` | object or null | Independent coverage acceptance bound to the manifest. |
 | `environment_manifest_digest` | string | Canonical identity shared by installer and consumer. |
-| `environment_verification_image` | string or null | Required immutable image identity for cache consumers. |
-| `environment_verification_platform` | string or null | Required verified OS/architecture, matched to the performer status. |
+| `environment_verification_image` | string or null | Expected immutable installer target for bootstrap; clean-verified identity for consumers. |
+| `environment_verification_platform` | string or null | Expected installer OS/architecture for bootstrap; verified consumer platform, matched to runtime status. |
 | `environment_secret_names` | string array | Names for output redaction; values use the secret channel. |
+
+### Reviewed environment identity extensions (353)
+
+These are nested members of the registered `environment_manifest` and
+`environment_assessment` objects, not additional top-level Score fields.
+
+| Field | Type | Required | Set by | Used by |
+|-------|------|----------|--------|---------|
+| `capabilities_digest` | string or null | yes for new acceptance | daemon discovery/review | daemon reuse/dispatch, performer contract validation |
+| `inventory_digest` | string or null | yes for new acceptance | daemon inventory/review | daemon inventory invalidation, performer contract validation |
+
+Legacy null identity members parse for migration but cannot authorize readiness.
+Actual capability descriptions stay daemon-side; dispatch carries their digest through
+the accepted manifest. Existing manifest digest covers both extensions.

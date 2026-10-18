@@ -21,6 +21,7 @@ from coordinare.services.conductor_calls import (
 if TYPE_CHECKING:
     from coordinare.config import ProjectConfiguration
     from coordinare.services.claude import ClaudeService
+    from coordinare.services.environment_attempt import DiscoveryChatReply
 
 log = structlog.get_logger(__name__)
 
@@ -291,6 +292,9 @@ class OpenAiApiBackend:
     _RETRY_DELAYS_S: tuple[float, ...] = (0.5, 1.5)
 
     async def _chat(self, messages: list[dict[str, str]], json_mode: bool) -> str:
+        return (await self._chat_reply(messages, json_mode)).text
+
+    async def _chat_reply(self, messages: list[dict[str, str]], json_mode: bool) -> ModelReply:
         """The reply text of one chat call ('' on any failure), recorded on the open call (131)."""
         system, user = split_messages(messages)
         request = ModelRequest(
@@ -300,8 +304,7 @@ class OpenAiApiBackend:
             prompt=user,
             parameters=self._request_parameters(json_mode),
         )
-        reply = await self.calls.invoke(request, lambda: self._post_chat(messages, json_mode))
-        return reply.text
+        return await self.calls.invoke(request, lambda: self._post_chat(messages, json_mode))
 
     def _request_parameters(self, json_mode: bool) -> dict[str, Any]:
         parameters: dict[str, Any] = {"max_tokens": self._max_tokens, "json_mode": json_mode}
@@ -390,12 +393,21 @@ class OpenAiApiBackend:
             text=text,
             model=model if isinstance(model, str) else None,
             usage=_openai_usage(data),
+            finish_reason=data["choices"][0].get("finish_reason") if isinstance(data["choices"][0].get("finish_reason"), str) else None,
         )
 
     async def chat_json(self, messages: list[dict[str, str]]) -> str:
         """Public JSON-mode chat for ad-hoc coordinare prompts (e.g. 077 env
         manifest README pass). Returns the assistant text ('' on any failure)."""
         return await self._chat(messages, json_mode=True)
+
+    async def chat_json_with_metadata(self, messages: list[dict[str, str]]) -> DiscoveryChatReply:
+        """Keep diagnostics tied to this request without changing string-only callers."""
+        from coordinare.services.environment_attempt import DiscoveryChatReply
+
+        reply = await self._chat_reply(messages, json_mode=True)
+        return DiscoveryChatReply(text=reply.text, usage=reply.usage, finish_reason=reply.finish_reason,
+            error_code="provider_request_failed" if reply.error else None)
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
         prompt = _build_assess_prompt(card)

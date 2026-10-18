@@ -91,6 +91,7 @@ from coordinare.services.env_cache import (
     daemon_sees_performer_cache,
 )
 from coordinare.services.env_provenance import DEFAULT_LIMITS, ProvenanceTransientError
+from coordinare.services.environment_repair import remaining_seconds
 from coordinare.services.http_performer_service import DispatchStoppingError, HTTPPerformerService
 from coordinare.services.kubernetes_provenance import parse_summary
 from coordinare.services.kubernetes_verifier import (
@@ -729,6 +730,9 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             last_bootstrap_succeeded=get("last_bootstrap_succeeded"),
             cache_dir_ready=bool(get("cache_dir_ready") or False),
             # 218: the daemon-rendered scripts the verification and activate gate use.
+            environment_attempt=get("environment_attempt"),
+            environment_attempt_archive=get("environment_attempt_archive") or [],
+            environment_capabilities=get("environment_capabilities"),
             environment_manifest=get("environment_manifest"),
             environment_assessment=get("environment_assessment"),
             environment_verification=get("environment_verification"),
@@ -1025,6 +1029,50 @@ def _synthesize_v1_session(
     }
 
 
+def _bootstrap_execution_evidence(cache: EnvCacheState | None, status: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(cache, EnvCacheState) or cache.environment_attempt is None:
+        return None
+    evidence = cache.environment_verification
+    if evidence is None:
+        parent = status.get("report")
+        evidence = parent.get("environment_verification") if isinstance(parent, dict) else None
+    if isinstance(evidence, dict) and 'image_ref' not in evidence and cache.environment_capabilities:
+        evidence = {**evidence, 'image_ref': cache.environment_capabilities['image_ref']}
+    return evidence if isinstance(evidence, dict) else None
+
+
+def _bootstrap_attempt_seconds(cache: EnvCacheState | None, maximum: float) -> float:
+    if not isinstance(cache, EnvCacheState) or cache.environment_attempt is None:
+        return maximum
+    try:
+        return min(maximum, remaining_seconds(cache))
+    except (ValueError, RuntimeError):
+        return 0
+
+
+def _rehydrate_reviewed_environment(live: EnvCacheState, persisted: EnvCacheStateSnapshot) -> bool:
+    """Restore reviewed metadata only after validating its cache generation."""
+    live.environment_attempt_archive = persisted.environment_attempt_archive
+    live.environment_attempt = persisted.environment_attempt
+    if live.environment_attempt is not None:
+        from coordinare.services.environment_repair import restore_attempt_generation
+
+        try:
+            restore_attempt_generation(live, interrupted=True)
+        except (ValueError, RuntimeError):
+            live.cache_dir_ready = False
+            live.last_bootstrap_succeeded = False
+            live.last_bootstrap_error = "environment repair generation could not be restored; rebuild required"
+            return False
+    live.environment_capabilities = persisted.environment_capabilities
+    live.environment_manifest = persisted.environment_manifest
+    live.environment_assessment = persisted.environment_assessment
+    live.environment_verification = persisted.environment_verification
+    live.rendered_verify_sh = persisted.rendered_verify_sh
+    live.rendered_activate_sh = persisted.rendered_activate_sh
+    return True
+
+
 def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> None:
     """073 Fix 3: rehydrate env_cache readme_sha + bookkeeping onto the
     live EnvCacheState entries that EnvCacheService.initialise() already
@@ -1053,11 +1101,8 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             live.last_bootstrap_error = redact_state_value(persisted.last_bootstrap_error)
             live.cache_dir_ready = persisted.cache_dir_ready
             # 218: restore the daemon-rendered scripts; the cache copies are never read back.
-            live.environment_manifest = persisted.environment_manifest
-            live.environment_assessment = persisted.environment_assessment
-            live.environment_verification = persisted.environment_verification
-            live.rendered_verify_sh = persisted.rendered_verify_sh
-            live.rendered_activate_sh = persisted.rendered_activate_sh
+            if not _rehydrate_reviewed_environment(live, persisted):
+                continue
             live.infra_failures = persisted.infra_failures
             live.last_infra_failure_at = persisted.last_infra_failure_at
             # 234: the frozen-provenance digest, re-checked against the manifest file before any use.
@@ -2680,6 +2725,7 @@ class CoordinareDaemon:
         # the success to the NEXT stage transition and a restart in that
         # window would rewind it.
         self._state["snapshot_save_fn"] = self._flush_snapshot
+        self._state["snapshot_checkpoint_fn"] = self._checkpoint_snapshot
 
     @property
     def running(self) -> bool:
@@ -2728,6 +2774,13 @@ class CoordinareDaemon:
             session_stages,
             _recovery_signature(self._state) if not sessions else (),
         )
+
+    async def _checkpoint_snapshot(self) -> None:
+        """Required durable reservations fail closed instead of using best-effort flush."""
+        if self._state_store is None:
+            message = "environment attempt state store is unavailable"
+            raise RuntimeError(message)
+        await self._state_store.save(self._build_snapshot())
 
     async def _flush_snapshot(self) -> None:
         """088 (US5): save the snapshot NOW, bypassing the lifecycle-signature
@@ -4055,7 +4108,7 @@ class CoordinareDaemon:
                 effort=cc.effort,
                 calls=self._state.get("conductor_calls"),
             )
-            chat = backend.chat_json
+            chat = backend.chat_json_with_metadata
         self._manifest_llm_chat = chat
         return chat
 
@@ -4114,9 +4167,12 @@ class CoordinareDaemon:
             _cfg = _cfg.global_config
         _budget_s = int(getattr(_cfg, "bootstrap_max_seconds", 0) or 0)
         _idle_timeout_s = int(getattr(_cfg, "bootstrap_idle_timeout_seconds", 0) or 0)
-        _wall_clock_s = (
+        _wall_clock_s: float = (
             _budget_s if _budget_s > 0
             else _BOOTSTRAP_POLL_MAX_ATTEMPTS * _BOOTSTRAP_POLL_INTERVAL_SECONDS
+        )
+        _wall_clock_s = _bootstrap_attempt_seconds(
+            (self._state.get("env_cache") or {}).get(symphony_name), _wall_clock_s,
         )
         deadline = monotonic() + _wall_clock_s
         poll = _BootstrapPollState(last_progress_at=monotonic())
@@ -4205,7 +4261,7 @@ class CoordinareDaemon:
         job_id: str,
         symphony_name: str,
         env_cache_svc: Any,
-        wall_clock_s: int,
+        wall_clock_s: float,
     ) -> bool:
         """270: the wall clock ran out. Stop the job through its runtime, then record
         the attempt as failed. The stop is attempted whatever the performer reports:
@@ -4234,6 +4290,20 @@ class CoordinareDaemon:
             env_cache_svc.on_bootstrap_complete(symphony_name, False, self._state, error=reason)
 
     async def _verify_bootstrap_in_clean_context(
+        self, symphony_name: str, svc: Any, job_id: str, env_verify_basis: str | None = None,
+    ) -> tuple[bool, str | None, bool]:
+        """Bound clean execution by the original journal deadline, including repairs."""
+        cache = (self._state.get("env_cache") or {}).get(symphony_name)
+        if not isinstance(cache, EnvCacheState) or cache.environment_attempt is None:
+            return await self._verify_bootstrap_context(symphony_name, svc, job_id, env_verify_basis)
+
+        try:
+            async with asyncio.timeout(remaining_seconds(cache)):
+                return await self._verify_bootstrap_context(symphony_name, svc, job_id, env_verify_basis)
+        except (TimeoutError, RuntimeError, ValueError):
+            return False, "environment bootstrap deadline or execution context is unavailable", True
+
+    async def _verify_bootstrap_context(
         self, symphony_name: str, svc: Any, job_id: str, env_verify_basis: str | None = None,
     ) -> tuple[bool, str | None, bool]:
         """077 authoritative clean-context verify: re-run the daemon-rendered verify.sh in a
@@ -4331,7 +4401,8 @@ class CoordinareDaemon:
             immutable_verifier_image,
         )
 
-        if accepted_environment(ec) is None:
+        contract = accepted_environment(ec)
+        if contract is None:
             message = "no independently accepted environment contract; rebuild the cache"
             raise VerifierConfigurationError(message)
         config = self._state.get("coordinare_config")
@@ -4354,15 +4425,23 @@ class CoordinareDaemon:
         if files is None:
             message = "env verification could not resolve the symphony repository for the clean-room verifier"
             raise RuntimeError(message)
+        from coordinare.services.environment_capabilities import (
+            capabilities_match,
+            resolve_execution_capabilities,
+        )
         from coordinare.services.environment_verification import verification_credentials
 
+        capabilities = await resolve_execution_capabilities(self._state, symphony_name)
+        if not capabilities_match(ec, capabilities):
+            raise VerifierConfigurationError("environment execution capabilities changed; rediscovery required")
         credentials = await verification_credentials(self._state, symphony_name, ec, self._performer_mounts())
         return VerifierSpec(
             image=configured_verifier_image(config), cache_claim="", cache_subpath=ec.sanitised_name,
             mount_path=f"{getattr(svc, 'devenv_root', '/devenv')}/{ec.sanitised_name}",
             verify_text=str(ec.rendered_verify_sh),
             transient_credentials=credentials,
-            project_files=files, max_entries=limits.max_entries, max_bytes=limits.max_bytes,
+            project_files=files, source_inputs=contract.inputs,
+            platform=capabilities.platform, max_entries=limits.max_entries, max_bytes=limits.max_bytes,
         )
 
     async def _verify_bootstrap_on_kubernetes(
@@ -4398,21 +4477,24 @@ class CoordinareDaemon:
             bootstrap_verify_basis=env_verify_basis,
         )
         record_verification(self._state, symphony_name, ok, detail)
-        if ok is not True:
+        if ok is None:
             return self._clean_room_verdict(ok, detail)
         from coordinare.services.environment_acceptance import execution_report
 
         try:
             report = execution_report(detail, ec)
         except ValueError as exc:
-            return False, str(exc), False
-        if report.passed and ec.environment_verification is not None:
+            return False, f"clean-room verifier: {exc}", False
+        if report.platform != spec.platform:
+            ec.environment_verification = None
+            return False, "clean verification platform differs from accepted capabilities", False
+        if ec.environment_verification is not None:
             ec.environment_verification["image_ref"] = spec.image
         walk_spec = replace(spec, verify_text="", project_files={}, transient_credentials="", walk_only=True,
                             activate_text=bootstrap_activate)
         return (
             await self._verify_bootstrap_claim(svc, ec, walk_spec, bootstrap_sha, limits)
-            if report.passed else (False, "required environment checks did not pass", False)
+            if ok is True and report.passed else (False, "required environment checks did not pass", False)
         )
 
     async def _verify_bootstrap_claim(
@@ -4619,7 +4701,10 @@ class CoordinareDaemon:
         # 218 (review): the verify reads the cache, so it runs only after the bootstrap container has
         # exited or been removed. A container that is still running fails the bootstrap (not counted).
         infra = False
-        if ok and not await self._quiesce_bootstrap_container(svc, container_id, symphony_name):
+        cache = (self._state.get("env_cache") or {}).get(symphony_name)
+        reviewed_attempt = isinstance(cache, EnvCacheState) and cache.environment_attempt is not None
+        stopped = await self._quiesce_bootstrap_container(svc, container_id, symphony_name) if ok or reviewed_attempt else False
+        if (ok or reviewed_attempt) and not stopped:
             ok, infra = False, True
             _boot_err = "bootstrap container could not be confirmed stopped; verification was not run"
         if ok:
@@ -4631,6 +4716,10 @@ class CoordinareDaemon:
         # cache is refused at dispatch. A refusal (a bound, a link out of the cache) fails the bootstrap.
         if ok:
             ok, _boot_err = await env_cache_svc.freeze_provenance(symphony_name, self._state)
+        recorder = getattr(env_cache_svc, "record_bootstrap_execution", None)
+        if reviewed_attempt and not ok and callable(recorder):
+            recorder(symphony_name, self._state, _bootstrap_execution_evidence(cache, status_result),
+                cleanup_confirmed=stopped and not infra)
         if infra:
             env_cache_svc.on_bootstrap_complete(
                 symphony_name, ok, self._state, error=_boot_err, infra_failure=True,
@@ -5345,6 +5434,28 @@ class CoordinareDaemon:
             + (f" ({model})" if model else "") + ".",
         )
 
+    async def _dispatch_bootstrap_with_deadline(
+        self, svc: Any, name: str, payload: dict[str, Any], options: dict[str, Any],
+    ) -> dict[str, Any]:
+        cache = (self._state.get("env_cache") or {}).get(name)
+        if not isinstance(cache, EnvCacheState) or cache.environment_attempt is None:
+            return cast("dict[str, Any]", await svc.dispatch_card(payload, **options))
+        try:
+            async with asyncio.timeout(remaining_seconds(cache)):
+                return cast("dict[str, Any]", await svc.dispatch_card(payload, **options))
+        except asyncio.CancelledError:
+            from coordinare.services.environment_repair import hold_uncertain_execution
+
+            hold_uncertain_execution(cache)
+            raise
+        except Exception:
+            # The dispatch adapter owns cancellation cleanup, including a late create.
+            # No terminal evidence/confirmed cleanup means no repair or readiness.
+            from coordinare.services.environment_repair import hold_uncertain_execution
+
+            hold_uncertain_execution(cache)
+            return {"status": "error", "reason": "environment dispatch deadline or context refused"}
+
     async def _finish_bootstrap_dispatch(
         self,
         svc: Any,
@@ -5358,7 +5469,7 @@ class CoordinareDaemon:
         success, else surface the rich dispatch status/reason and mark
         bootstrap complete-with-error."""
         try:
-            result = await svc.dispatch_card(dispatch_dict, **dispatch_kw)
+            result = await self._dispatch_bootstrap_with_deadline(svc, symphony_name, dispatch_dict, dispatch_kw)
         except DispatchStoppingError:
             # The optimistic marker and open history entry precede dispatch.
             # No job started, so leave the retry budget and prior result intact.

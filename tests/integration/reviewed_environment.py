@@ -14,7 +14,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from coordinare_service_inference.environment.models import CoverageAssessment, EnvironmentManifest
+from coordinare_service_inference.environment.models import (
+    CoverageAssessment,
+    EnvironmentManifest,
+    ExecutionCapabilities,
+)
 from coordinare_service_inference.environment.render import render_activate, render_verify
 
 from coordinare.models.env_cache import EnvCacheState
@@ -92,8 +96,22 @@ def run_image_tests(arguments: list[str]) -> int:
         return result.returncode
 
 
+def _image_capabilities(name: str) -> ExecutionCapabilities | None:
+    image = os.environ.get("COORDINARE_E2E_PERFORMER_IMAGE", "")
+    if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", image):
+        return None  # Collection without the opt-in image launcher must do no Docker work.
+    info = json.loads(_docker("image", "inspect", image))[0]
+    architecture = info["Architecture"]
+    machine = {"amd64": "x86_64", "arm64": "aarch64"}.get(architecture, architecture)
+    return ExecutionCapabilities(schema_version=1, image_ref=image, platform=f"{info['Os']}/{machine}",
+        cache_mount_path=f"/devenv/{name}", install_network="enabled", verify_network="disabled")
+
+
 def manifest_for(name: str, *, files: dict[str, str], checks: list[dict], activation: dict | None = None) -> EnvironmentManifest:
+    capabilities = _image_capabilities(name)
+    inventory_digest = hashlib.sha256(json.dumps(sorted(files), ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
     return EnvironmentManifest.model_validate({
+        "capabilities_digest": capabilities.digest() if capabilities else None, "inventory_digest": inventory_digest,
         "schema_version": 1, "symphony_name": name, "source_commit": "a" * 40,
         "inputs": {path: hashlib.sha256(text.encode()).hexdigest() for path, text in files.items()},
         "requirements": [{"id": "environment", "description": "Pinned source environment constraint",
@@ -105,11 +123,15 @@ def manifest_for(name: str, *, files: dict[str, str], checks: list[dict], activa
 
 def accepted_state(cache: Path, manifest: EnvironmentManifest, files: dict[str, str]) -> dict:
     """Use real frozen snapshot reads and trusted rendering, with no verifier seam patched."""
+    capabilities = _image_capabilities(manifest.symphony_name)
+    if capabilities is None or manifest.capabilities_digest != capabilities.digest():
+        pytest.fail("real-image fixtures require pinning before collection; run python -m tests.integration.reviewed_environment")
     activation = render_activate(manifest, cache_mount_path=f"/devenv/{manifest.symphony_name}")
     verification = render_verify(manifest, cache_mount_path=f"/devenv/{manifest.symphony_name}")
     (cache / "activate.sh").write_text(activation)
     (cache / "verify.sh").write_text(verification)
     assessment = CoverageAssessment(schema_version=1, manifest_digest=manifest.digest(),
+        capabilities_digest=manifest.capabilities_digest, inventory_digest=manifest.inventory_digest,
         source_commit=manifest.source_commit, symphony_name=manifest.symphony_name,
         verdict="accept", rationale="Independently inspected the exact fixture source snapshot",
         sources=list(files), inputs=dict(manifest.inputs), policy_version="351-v1")
@@ -126,7 +148,8 @@ def accepted_state(cache: Path, manifest: EnvironmentManifest, files: dict[str, 
         return content
 
     return {"env_cache": {manifest.symphony_name: state},
-            "config": SimpleNamespace(github_org="fixture", project_name="repository"),
+            "config": SimpleNamespace(github_org="fixture", project_name="repository", agent_transport="docker",
+                performer_image=capabilities.image_ref, performer_endpoints=[]),
             "github_service": SimpleNamespace(get_file_content=fetch)}
 
 

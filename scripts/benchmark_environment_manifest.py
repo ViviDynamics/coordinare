@@ -17,9 +17,6 @@ import sys
 import time
 from pathlib import Path
 
-from coordinare.models.env_cache import EnvCacheState
-from coordinare.services.environment_acceptance import execution_report
-
 from coordinare_service_inference.environment.models import (
     MAX_DOCUMENT_BYTES,
     CoverageAssessment,
@@ -28,11 +25,14 @@ from coordinare_service_inference.environment.models import (
 )
 from coordinare_service_inference.environment.render import render_verify
 
+from coordinare.models.env_cache import EnvCacheState
+from coordinare.services.environment_acceptance import execution_report
+
 
 def fixture(count: int = 1000) -> tuple[dict, dict, dict]:
     """Compact records still include every requirement and its own required check."""
     data = {
-        "schema_version": 1, "symphony_name": "benchmark", "source_commit": "a" * 40,
+        "inventory_digest": "d" * 64, "capabilities_digest": "c" * 64, "schema_version": 1, "symphony_name": "benchmark", "source_commit": "a" * 40,
         "inputs": {"x": hashlib.sha256(b"benchmark requirements").hexdigest()},
         "requirements": [{"id": f"r{i}", "description": "x", "source": "x", "checks": [f"c{i}"]}
                          for i in range(count)],
@@ -42,7 +42,7 @@ def fixture(count: int = 1000) -> tuple[dict, dict, dict]:
     manifest = EnvironmentManifest.model_validate(data)
     digest = manifest.digest()
     assessment = {
-        "schema_version": 1, "symphony_name": "benchmark", "source_commit": manifest.source_commit,
+        "inventory_digest": "d" * 64, "capabilities_digest": "c" * 64, "schema_version": 1, "symphony_name": "benchmark", "source_commit": manifest.source_commit,
         "manifest_digest": digest, "verdict": "accept", "rationale": "Benchmark fixture",
         "sources": ["x"], "inputs": data["inputs"], "policy_version": "351-v1",
     }

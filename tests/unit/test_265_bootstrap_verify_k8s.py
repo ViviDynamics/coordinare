@@ -32,7 +32,11 @@ from coordinare.services.env_cache import (
 )
 from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.kubernetes_verifier import VerifierConfigurationError
-from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
+from tests.unit.env_manifest_fixture import (
+    record_verified_cache_fixture,
+    reviewed_cache,
+    verification_output,
+)
 
 RENDERED_VERIFY = "#!/bin/bash\necho 'FAIL: ruby 3.4.2 not runnable' >&2\nexit 1\n"
 RENDERED_ACTIVATE = "# AUTHORITATIVE activate.sh (daemon-rendered)\n"
@@ -211,6 +215,7 @@ def _k8s_daemon(
         agent_transport=transport, global_config=SimpleNamespace(
             performer_endpoints=[], performer_log_dir=None, env_cache_root=state_dir,
             performer_image="trusted/global@sha256:" + "a" * 64,
+            kubernetes_verifier_platform="linux/x86_64",
             env_cache=SimpleNamespace(kubernetes_verifier_network_isolated=True)),
     )
     daemon._state["github_service"] = github
@@ -264,7 +269,7 @@ async def test_the_bootstrap_self_report_never_decides_on_kubernetes(tmp_path: P
     assert ok is False
     assert infra is False
     assert "clean-room verifier" in (err or "")
-    assert "ruby 3.4.2 not runnable" in (err or "")
+    assert "required execution evidence is malformed or missing" in (err or "")
 
 
 @pytest.mark.asyncio
@@ -351,6 +356,7 @@ async def test_kubernetes_success_is_not_downgraded_by_the_daemon_seed_directory
     }
 
     reviewed_cache(ec, source_commit="f" * 40)
+    record_verified_cache_fixture(ec)
     service.on_bootstrap_complete("sym", True, state)
 
     assert ec.last_bootstrap_succeeded is True
@@ -389,3 +395,18 @@ async def test_docker_transport_still_runs_the_clean_verify(
 
     clean.assert_awaited_once()
     assert (ok, err, infra) == (True, None, False)
+
+
+@pytest.mark.asyncio
+async def test_failed_kubernetes_report_retains_actual_identity_without_provenance_walk(tmp_path):
+    runtime = _FakeRuntime((False, ""))
+    daemon, svc = _k8s_daemon(tmp_path, runtime=runtime, github=_FakeGitHub({}))
+    cache = daemon._state["env_cache"]["sym"]
+    report = json.loads(runtime.execution_log)
+    report["results"][0].update(status="fail", exit_code=2)
+    runtime.verdict = False, json.dumps(report)
+    ok, _reason, infra = await daemon._verify_bootstrap_in_clean_context("sym", svc, "job")
+    assert ok is False and infra is False
+    assert len(runtime.calls) == 1
+    assert cache.environment_verification["results"][0]["status"] == "fail"
+    assert cache.environment_verification["image_ref"] == runtime.calls[0]["spec"].image

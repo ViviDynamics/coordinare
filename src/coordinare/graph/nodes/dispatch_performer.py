@@ -2327,6 +2327,18 @@ async def _prepare_env_dispatch(state: CoordinareState, service: Any, card_id: s
             card_context["environment_manifest"] = _ec_state_for_sym.environment_manifest
             card_context["environment_assessment"] = _ec_state_for_sym.environment_assessment
             card_context["environment_manifest_digest"] = (_ec_state_for_sym.environment_assessment or {}).get("manifest_digest")
+            if _is_bootstrap_dispatch:
+
+                try:
+                    from coordinare.services.environment_capabilities import installer_capabilities
+
+                    target = installer_capabilities(_ec_state_for_sym)
+                except ValueError:
+                    _ec_state_for_sym.last_bootstrap_error = "installer target identity is missing or differs; rediscovery required"
+                    _release_slot_on_error()
+                    return _extra_volumes, state
+                card_context["environment_verification_image"] = target.image_ref
+                card_context["environment_verification_platform"] = target.platform
             if provenance is not None:
                 card_context["env_provenance"] = provenance
                 card_context["environment_verification_image"] = (_ec_state_for_sym.environment_verification or {}).get("image_ref")
@@ -2510,6 +2522,8 @@ async def _env_readiness_gate(state: CoordinareState, service: Any, card_id: str
         #     same env_cache_not_current hold (re-bootstrap is triggered by the
         #     bootstrap-completion path / budget machinery — single hold point).
         #   None  (verification could not run) ⇒ hold until execution is confirmed.
+        # The shared verifier checks cache integrity before resolving current
+        # capabilities; keep one admission path for both runtime transports.
         _readiness_passed, _readiness_detail = await verify_env_cache_clean(
             state, _symphony_name_for_ec, service, performer_mounts=_performer_mounts(state),
         )

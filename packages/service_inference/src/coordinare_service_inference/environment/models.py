@@ -12,6 +12,7 @@ from pathlib import PurePosixPath
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 MAX_DOCUMENT_BYTES = 256 * 1024
 
@@ -63,6 +64,27 @@ def environment_order(values: dict[str, str]) -> list[str]:
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class ExecutionCapabilities(StrictModel):
+    """Actual target identity and generic installer/consumer constraints."""
+
+    schema_version: Literal[1]
+    image_ref: str = Field(pattern=r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+    platform: str = Field(pattern=r"^[a-z0-9_]+/[a-z0-9_]+$")
+    cache_mount_path: str
+    install_network: Literal["enabled", "disabled"]
+    verify_network: Literal["disabled"]
+
+    @field_validator("cache_mount_path")
+    @classmethod
+    def valid_cache_mount(cls, value: str) -> str:
+        if not value.startswith("/"):
+            raise ValueError("cache mount must be absolute")
+        return execution_path(value)
+
+    def digest(self) -> str:
+        return hashlib.sha256(json.dumps(self.model_dump(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def reject_literal_credentials(value: str) -> None:
@@ -127,11 +149,28 @@ class Command(StrictModel):
         return value
 
 
+class ProbeCommand(Command):
+    """The command vocabulary restricted to independent required observations."""
+
+    timeout_seconds: float = Field(default=30.0, gt=0, le=30)
+    required: bool = Field(default=True, json_schema_extra={"const": True},
+        description="Must be true even when the observed prerequisite may be absent.")
+    scope: list[str] = Field(default_factory=list, max_length=0, description="Must be empty; probes are not scoped readiness checks.")
+    depends_on: list[str] = Field(default_factory=list, max_length=0, description="Must be empty; each observation is independent.")
+
+    @field_validator("required")
+    @classmethod
+    def observation_required(cls, value: bool) -> bool:
+        if not value:
+            raise PydanticCustomError("probe_required_true", "every requested observation must run; required must be true")
+        return value
+
+
 class Requirement(StrictModel):
     id: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    source: str
-    checks: list[str] = Field(min_length=1)
+    source: str = Field(description="One exact repository file path already read and present in inputs; never comma-joined paths.")
+    checks: list[str] = Field(min_length=1, description="IDs from checks[].id of required executable checks, never command strings or install-only IDs.")
     required: bool = True
     _source = field_validator("source")(source_path)
 
@@ -171,6 +210,8 @@ class EnvironmentManifest(StrictModel):
     symphony_name: str = Field(min_length=1)
     source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     inputs: dict[str, str]
+    inventory_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    capabilities_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     requirements: list[Requirement]
     install: list[Command]
     checks: list[Command] = Field(min_length=1)
@@ -203,7 +244,7 @@ class EnvironmentManifest(StrictModel):
         install_ids = {command.id for command in self.install}
         for command in commands[len(self.install) :]:
             if install_ids.intersection(command.depends_on):
-                raise ValueError("clean execution cannot depend on install-only evidence")
+                raise PydanticCustomError("clean_dependency_install_only", "clean execution cannot depend on install-only evidence")
         graph = {command.id: list(command.depends_on) for command in commands}
         for service in self.services:
             stages = [command for command in [service.init, service.start, service.health] if command]
@@ -244,7 +285,7 @@ class EnvironmentManifest(StrictModel):
                 if check_id not in checks or (
                     requirement.required and not checks[check_id].required
                 ):
-                    raise ValueError("requirement must reference required executable checks")
+                    raise PydanticCustomError("requirement_check_reference", "requirement must reference required executable checks")
         if not self.requirements and not (self.empty_reason and self.empty_reason.strip()):
             raise ValueError("empty environment requires justification")
         return self
@@ -259,6 +300,8 @@ class EnvironmentManifest(StrictModel):
 
 
 class CoverageAssessment(StrictModel):
+    inventory_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    capabilities_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     schema_version: Literal[1]
     manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
@@ -302,3 +345,22 @@ class VerificationReport(StrictModel):
     def passed(self) -> bool:
         required = [result for result in self.results if result.required]
         return bool(required) and all(result.status == "pass" for result in required)
+
+
+class EnvironmentManifestProposal(StrictModel):
+    """Model-owned behavior only; immutable provenance is assembled by the daemon."""
+
+    requirements: list[Requirement]
+    install: list[Command]
+    checks: list[Command] = Field(min_length=1)
+    activation: Activation
+    services: list[Service]
+    empty_reason: str | None
+
+
+class CoverageAssessmentProposal(StrictModel):
+    """A judgment about the exact manifest supplied in this isolated conversation."""
+
+    verdict: Literal["accept", "revise", "indeterminate"]
+    rationale: str = Field(min_length=1)
+    sources: list[str] = Field(min_length=1)

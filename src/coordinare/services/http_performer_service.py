@@ -531,9 +531,20 @@ class HTTPPerformerService:
             if self._stop_event is not None and self._stop_event.is_set():
                 logger.info("http_performer.dispatch_stopped", performer_id=self._config.id)
                 raise DispatchStoppingError
-            return await self._dispatch_card_locked(
-                card_context, workspace_info, extra_volumes, run_inputs,
-            )
+            owner: dict[str, Any] = {"session_id": str(uuid.uuid4())}
+            try:
+                return await self._dispatch_card_locked(
+                    card_context, workspace_info, extra_volumes, run_inputs, owner,
+                )
+            except asyncio.CancelledError:
+                job = owner.get("job")
+                if job is not None:
+                    self._active_jobs.setdefault(owner["session_id"], job)
+                confirmed = await self.stop_session_confirmed(owner["session_id"])
+                if not confirmed:
+                    logger.warning("http_performer.cancelled_dispatch_cleanup_unconfirmed",
+                        session_id=owner["session_id"])
+                raise
 
     async def _require_provenance_capability(
         self, payload: JobInitPayload, ready_status: PerformerStatus | None,
@@ -559,30 +570,29 @@ class HTTPPerformerService:
             if getattr(status, "environment_manifest_version", 0) < 1:
                 message = "performer image too old for reviewed environment manifests (#351); roll out daemon and performer together"
                 raise ValueError(message)
-            if payload.role != "env_bootstrap":
-                verified_image = payload.metadata.get("environment_verification_image")
-                if not isinstance(verified_image, str) or not verified_image:
-                    message = "consumer requires immutable clean verified image identity; rebuild the environment"
+            verified_image = payload.metadata.get("environment_verification_image")
+            if not isinstance(verified_image, str) or not verified_image:
+                message = "consumer requires immutable clean verified image identity; rebuild the environment"
+                raise ValueError(message)
+            if verified_image is not None:
+                from coordinare.services.environment_acceptance import immutable_verifier_image
+
+                image = immutable_verifier_image(str(self._config.image))
+                if image != verified_image:
+                    message = "consumer image differs from the clean verified image; rebuild the environment"
                     raise ValueError(message)
-                if verified_image is not None:
-                    from coordinare.services.environment_acceptance import immutable_verifier_image
+                verified_platform = payload.metadata.get("environment_verification_platform")
+                advertised = "environment_platform" in getattr(status, "model_fields_set", {"environment_platform"})
+                actual_platform = getattr(status, "environment_platform", "") if advertised else ""
+                if not verified_platform or not actual_platform or actual_platform != verified_platform:
+                    message = "consumer runtime platform differs from the clean verified platform; rebuild the environment"
+                    if verified_platform and actual_platform:
+                        from coordinare.services.environment_acceptance import (
+                            EnvironmentIdentityMismatchError,
+                        )
 
-                    image = immutable_verifier_image(str(self._config.image))
-                    if image != verified_image:
-                        message = "consumer image differs from the clean verified image; rebuild the environment"
-                        raise ValueError(message)
-                    verified_platform = payload.metadata.get("environment_verification_platform")
-                    advertised = "environment_platform" in getattr(status, "model_fields_set", {"environment_platform"})
-                    actual_platform = getattr(status, "environment_platform", "") if advertised else ""
-                    if not verified_platform or not actual_platform or actual_platform != verified_platform:
-                        message = "consumer runtime platform differs from the clean verified platform; rebuild the environment"
-                        if verified_platform and actual_platform:
-                            from coordinare.services.environment_acceptance import (
-                                EnvironmentIdentityMismatchError,
-                            )
-
-                            raise EnvironmentIdentityMismatchError(message)
-                        raise ValueError(message)
+                        raise EnvironmentIdentityMismatchError(message)
+                    raise ValueError(message)
         if payload.role == "env_bootstrap":
             return  # the cache writer has capability/isolation gates but no frozen payload
         if payload.env_provenance is None:
@@ -604,6 +614,7 @@ class HTTPPerformerService:
         workspace_info: WorkspaceInfo | None = None,
         extra_volumes: list[VolumeMount] | None = None,
         run_inputs: dict[str, Any] | None = None,
+        owner: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         ephemeral_job: _EphemeralJob | None = None
         ready_status: PerformerStatus | None = None
@@ -615,7 +626,8 @@ class HTTPPerformerService:
         # running container to its persisted session.  Distinct from the
         # job-runner's ``response.job_id`` (which is used as the
         # ``/jobs/<id>/...`` URL component for HTTP calls).
-        session_id = str(uuid.uuid4())
+        owner = owner if owner is not None else {"session_id": str(uuid.uuid4())}
+        session_id = str(owner["session_id"])
 
         # Resolve the effective config: if extra_volumes are provided, create a
         # shallow copy with the updated volumes list (containerized performers only).
@@ -663,9 +675,11 @@ class HTTPPerformerService:
                 start_kwargs: dict[str, Any] = {"extra_labels": extra_labels}
                 if _runtime_accepts_backend(self._runtime):
                     start_kwargs["backend"] = backend
-                started = await self._runtime.start_ephemeral(
+                # Settle a started create request before cancellation checks label absence;
+                # cancellation must not race a Pod/container that is created late.
+                started = await self._run_teardown(self._runtime.start_ephemeral(
                     effective_config, **start_kwargs,
-                )
+                ))
                 SYSTEM_HEALTH.record_performer_start(type(self._runtime).__name__, ok=True)
             except performer_lifecycle.LifecycleError as exc:
                 # 151: the class name only; the message can carry runtime detail.
@@ -701,6 +715,7 @@ class HTTPPerformerService:
                 client=ep_client,
                 run_id=session_id,
             )
+            owner["job"] = ephemeral_job
             try:
                 ready_status = await performer_lifecycle.wait_ready(
                     started.endpoint,

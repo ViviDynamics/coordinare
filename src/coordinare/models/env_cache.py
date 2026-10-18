@@ -24,6 +24,9 @@ class EnvCacheState(BaseModel):
     readme_sha: str | None = None
     bootstrap_in_flight: bool = False
     manifest_items: list[dict[str, Any]] = Field(default_factory=list)
+    environment_attempt: dict[str, Any] | None = None
+    environment_attempt_archive: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
+    environment_capabilities: dict[str, Any] | None = None
     environment_manifest: dict[str, Any] | None = None
     environment_assessment: dict[str, Any] | None = None
     environment_verification: dict[str, Any] | None = None
@@ -190,6 +193,8 @@ class BootstrapJobPayload(BaseModel):
     environment_assessment: dict[str, Any] | None = None
     environment_verification: dict[str, Any] | None = None
     environment_manifest_digest: str | None = None
+    environment_verification_image: str | None = None
+    environment_verification_platform: str | None = None
     dependency_checklist: str | None = Field(
         default=None,
         description=(

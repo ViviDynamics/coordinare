@@ -12,10 +12,12 @@ This module is pure: it builds the Pod manifest and the in-pod setup. Running th
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import uuid
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Any
 
 from coordinare_service_inference.cache_provenance import (
@@ -25,7 +27,11 @@ from coordinare_service_inference.cache_provenance import (
     MAX_SCRIPT_BYTES,
     RESULT_SENTINEL,
 )
-from coordinare_service_inference.environment.models import source_path
+from coordinare_service_inference.environment.source_payload import (
+    SOURCE_DOCUMENT_MAX_BYTES,
+    decode_sources,
+    encode_sources,
+)
 
 # The container name, and the label that marks a verifier pod for the operator and the orphan sweep.
 VERIFIER_CONTAINER = "verifier"
@@ -48,17 +54,17 @@ VERIFIER_REMOVAL_TIMEOUT_S = 10
 VERIFY_TEXT_MAX_BYTES = MAX_SCRIPT_BYTES
 # Below the API/etcd object limit, including JSON and base64 expansion.
 VERIFIER_POD_MAX_BYTES = 900 * 1024
+SOURCE_CHUNKS_PER_SECRET = 4
 # Claim files must be world readable and directories world traversable (o+rX).
 VERIFIER_UID = 10001
 VERIFIER_GID = 10001
 VERIFIER_HOME = "/tmp"
 _SCRATCH_VOLUME = "verifier-scratch"
-# The project files the Rails smoke and the bundle need, fetched at the bootstrap's SHA. A path that is not listed is not
-# passed in, so the verifier sees only what the commit declares.
+# Legacy compatibility export; current verification uses every accepted manifest input.
 PROJECT_FILE_PATHS: tuple[str, ...] = ("Gemfile", "Gemfile.lock", ".ruby-version", ".tool-versions")
 # Bound serialized project JSON, including paths and escaping, before base64 expansion.
-# Together with the verify text this leaves over 200 KiB for pod metadata and setup.
-PROJECT_FILES_MAX_BYTES = 256 * 1024
+# Source documents travel in bounded immutable Secret chunks, outside the Pod environment.
+PROJECT_FILES_MAX_BYTES = SOURCE_DOCUMENT_MAX_BYTES
 # Linux limits each argument/environment string to 128 KiB, independently
 # of ARG_MAX. Keep payload chunks comfortably below that per-string limit.
 VERIFIER_ENV_CHUNK_BYTES = 64 * 1024
@@ -87,17 +93,11 @@ SETUP_PY = READ_PAYLOAD_PY + r'''
 import base64, json, os, re, shlex, sys
 d = sys.argv[1]
 devenv = os.environ["DEVENV"]
-files = json.loads(base64.b64decode(read_payload("PROJECT_FILES_B64")).decode("utf-8"))
-repo = os.path.join(d, "repo")
-os.makedirs(repo, mode=0o700)
-for rel, text in files.items():
-    parts = rel.split("/")
-    if not rel or rel.startswith("/") or any(p in ("", ".", "..") for p in parts):
-        sys.exit("refused project path: " + repr(rel))
-    target = os.path.join(repo, rel)
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    with open(target, "w", encoding="utf-8") as fh:
-        fh.write(text)
+repo = os.environ.get("SOURCE_REPO") or os.path.join(d, "repo")
+if not os.environ.get("SOURCE_REPO"):
+    os.makedirs(repo, mode=0o700)
+if not os.path.isdir(repo):
+    sys.exit("verified source directory is missing")
 verify = os.path.join(d, "verify.sh")
 with open(verify, "w", encoding="utf-8") as fh:
     fh.write(base64.b64decode(read_payload("VERIFY_B64")).decode("utf-8"))
@@ -183,12 +183,7 @@ def check_project_files(files: dict[str, str]) -> None:
 
     Raises ``ValueError`` with the reason.
     """
-    for rel in files:
-        source_path(rel)
-    total = len(json.dumps(files, ensure_ascii=False).encode("utf-8"))
-    if total > PROJECT_FILES_MAX_BYTES:
-        msg = f"project files total {total} bytes, over the {PROJECT_FILES_MAX_BYTES} byte bound"
-        raise ValueError(msg)
+    encode_sources(files)
 
 
 def _payload_environment(name: str, value: str) -> dict[str, str]:
@@ -220,7 +215,9 @@ class VerifierSpec:
     cache_subpath: str
     mount_path: str
     verify_text: str
-    project_files: dict[str, str]
+    project_files: dict[str, str] = field(repr=False)
+    source_inputs: dict[str, str] | None = None
+    platform: str | None = None
     activate_text: str | None = None
     walk_only: bool = False
     max_entries: int = DEFAULT_MAX_ENTRIES
@@ -244,6 +241,10 @@ def _validate_verifier_image(image: Any) -> str:
     return image
 
 
+VERIFIER_SOURCE_REPO = str(PurePosixPath(VERIFIER_HOME) / "coordinare-source-repo")
+_PLATFORM_PARTS = 2
+
+
 def build_verifier_pod_manifest(
     spec: VerifierSpec, *, name: str, namespace: str, image_pull_secrets: tuple[str, ...] = (), owner: str | None = None,
 ) -> dict[str, Any]:
@@ -264,7 +265,7 @@ def build_verifier_pod_manifest(
         "DEVENV": mount_path,
         "HOME": VERIFIER_HOME,
         "VERIFY_B64": base64.b64encode(verify_bytes).decode("ascii"),
-        "PROJECT_FILES_B64": base64.b64encode(json.dumps(spec.project_files, ensure_ascii=False).encode("utf-8")).decode("ascii"),
+        "BASH_ENV": "", "ENV": "", "_DEVENV_SOURCED": "1", "_DEVENV_SKIP_SERVICES": "1",
         "SETUP_PY": SETUP_PY,
         "WALK_SETUP_PY": WALK_SETUP_PY,
         "WALK_ONLY": "1" if spec.walk_only else "0",
@@ -275,7 +276,7 @@ def build_verifier_pod_manifest(
                                         "max_entries": spec.max_entries,
                                         "max_bytes": spec.max_bytes}) if spec.walk_only and spec.activate_text is not None else "",
     }
-    for payload_name in ("PROJECT_FILES_B64", "VERIFY_B64", "PROVENANCE_CONFIG"):
+    for payload_name in ("VERIFY_B64", "PROVENANCE_CONFIG"):
         env.update(_payload_environment(payload_name, env[payload_name]))
     manifest: dict[str, Any] = {
         "apiVersion": "v1",
@@ -324,6 +325,15 @@ def build_verifier_pod_manifest(
         },
     }
 
+    if spec.platform:
+        parts = spec.platform.split("/")
+        if len(parts) != _PLATFORM_PARTS or parts[0] != "linux" or parts[1] not in {"x86_64", "aarch64"}:
+            message = "unsupported verifier platform"
+            raise ValueError(message)
+        manifest["spec"]["nodeSelector"] = {"kubernetes.io/os": "linux", "kubernetes.io/arch":
+            {"x86_64": "amd64", "aarch64": "arm64"}[parts[1]]}
+    if spec.project_files and not spec.walk_only:
+        _mount_source_payload(manifest, spec, name=name, image=image)
     if spec.transient_credentials:
         if spec.walk_only:
             message = 'provenance walker must not receive credentials'
@@ -342,6 +352,44 @@ def build_verifier_pod_manifest(
         message = f"verifier pod exceeds the {VERIFIER_POD_MAX_BYTES} byte bound"
         raise ValueError(message)
     return manifest
+
+
+def source_secret_name(name: str, index: int) -> str:
+    """Opaque bounded resource names independent of source paths or contents."""
+    return "coordinare-source-" + hashlib.sha256(name.encode()).hexdigest()[:20] + f"-{index:02}"
+
+
+def build_verifier_source_secrets(
+    spec: VerifierSpec, *, name: str, namespace: str, owner: str | None, pod_uid: str,
+) -> list[dict[str, Any]]:
+    """Build immutable, Pod-owned source payloads outside Pod command/env data."""
+    if not spec.project_files or spec.walk_only:
+        return []
+    if not pod_uid or spec.source_inputs is None:
+        message = "source payload requires Pod and accepted input identities"
+        raise ValueError(message)
+    payload = encode_sources(spec.project_files)
+    decode_sources(payload, expected_inputs=spec.source_inputs)
+    labels = {"app.kubernetes.io/managed-by": "coordinare", VERIFIER_ROLE_LABEL: "env-verifier-source"}
+    if owner:
+        labels[OWNER_LABEL] = owner
+    metadata = {"sha256": payload.sha256, "size_bytes": payload.size_bytes,
+                "count": len(payload.chunks), "inputs": spec.source_inputs}
+    secrets = []
+    for start in range(0, len(payload.chunks), SOURCE_CHUNKS_PER_SECRET):
+        data = {f"chunk-{index:04}": base64.b64encode(payload.chunks[index]).decode("ascii")
+                for index in range(start, min(start + SOURCE_CHUNKS_PER_SECRET, len(payload.chunks)))}
+        if start == 0:
+            data["metadata.json"] = base64.b64encode(json.dumps(metadata, ensure_ascii=False, separators=(",", ":")).encode()).decode("ascii")
+        secret = {"apiVersion": "v1", "kind": "Secret", "type": "Opaque", "immutable": True,
+                  "metadata": {"name": source_secret_name(name, start // SOURCE_CHUNKS_PER_SECRET), "namespace": namespace,
+                    "labels": dict(labels), "ownerReferences": [{"apiVersion": "v1", "kind": "Pod", "name": name,
+                    "uid": pod_uid, "controller": False, "blockOwnerDeletion": False}]}, "data": data}
+        if len(json.dumps(secret).encode()) > VERIFIER_POD_MAX_BYTES:
+            message = "source Secret exceeds API object byte bound"
+            raise ValueError(message)
+        secrets.append(secret)
+    return secrets
 
 
 def build_verifier_credentials_secret(
@@ -374,3 +422,27 @@ __all__ = [
     "check_project_files",
     "verifier_pod_name",
 ]
+
+
+def _mount_source_payload(manifest: dict[str, Any], spec: VerifierSpec, *, name: str, image: str) -> None:
+    payload = encode_sources(spec.project_files)
+    if spec.source_inputs is None:
+        message = "accepted source input identities are required"
+        raise ValueError(message)
+    decode_sources(payload, expected_inputs=spec.source_inputs)
+    count = (len(payload.chunks) + SOURCE_CHUNKS_PER_SECRET - 1) // SOURCE_CHUNKS_PER_SECRET
+    manifest["metadata"]["annotations"] = {"coordinare.vividynamics.com/source-secrets": str(count)}
+    manifest["spec"]["securityContext"]["fsGroup"] = VERIFIER_GID
+    manifest["spec"]["volumes"].append({"name": "source-payload", "projected": {
+        "defaultMode": 0o440, "sources": [{"secret": {"name": source_secret_name(name, index)}} for index in range(count)]}})
+    manifest["spec"]["initContainers"] = [{
+        "name": "source-setup", "image": image,
+        "command": ["python3", "-I", "-m", "coordinare_service_inference.environment.source_payload",
+                    "/run/coordinare-source", VERIFIER_SOURCE_REPO],
+        "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]},
+                            "readOnlyRootFilesystem": True},
+        "volumeMounts": [{"name": "source-payload", "mountPath": "/run/coordinare-source", "readOnly": True},
+                         {"name": _SCRATCH_VOLUME, "mountPath": VERIFIER_HOME}],
+        "resources": {"limits": {"cpu": VERIFIER_CPU_LIMIT, "memory": VERIFIER_MEMORY_LIMIT}},
+    }]
+    manifest["spec"]["containers"][0]["env"].append({"name": "SOURCE_REPO", "value": VERIFIER_SOURCE_REPO})

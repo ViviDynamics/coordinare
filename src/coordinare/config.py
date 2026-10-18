@@ -1107,6 +1107,26 @@ class EnvCacheConfig(BaseModel):
     manifest_max_source_bytes: int = Field(default=4 * 1024 * 1024, ge=1, le=16 * 1024 * 1024)
     manifest_max_inventory_entries: int = Field(default=100_000, ge=1, le=1_000_000)
     manifest_phase_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
+    manifest_attempt_timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
+    manifest_max_model_calls: int = Field(default=128, ge=1, le=4096)
+    manifest_max_total_reads: int = Field(default=512, ge=1, le=8192)
+    manifest_max_review_context_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)
+    manifest_max_repairs: int | None = Field(default=None, ge=0, le=2, exclude=True)
+    manifest_max_schema_repairs: int = Field(default=2, ge=0, le=2)
+    manifest_max_coverage_revisions: int = Field(default=2, ge=0, le=2)
+    manifest_max_execution_repairs: int = Field(default=2, ge=0, le=2)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_repair_limit(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or data.get("manifest_max_repairs") is None:
+            return data
+        fields = ("manifest_max_schema_repairs", "manifest_max_coverage_revisions", "manifest_max_execution_repairs")
+        if any(name in data for name in fields):
+            message = "cannot combine legacy and category manifest repair limits"
+            raise ValueError(message)
+        return {**data, **dict.fromkeys(fields, data["manifest_max_repairs"])}
+
 
 
     # 234: the bounds on one frozen env cache. A cache over either is refused at freeze (or at a later check),
@@ -1393,6 +1413,7 @@ class ProjectConfiguration(BaseSettings):
     kubernetes_cache_claim: str | None = None
     kubernetes_image_pull_secrets: list[str] = Field(default_factory=list)
     # 265: daemon-owned verifier image. Reviewed cache consumers must use this image too.
+    kubernetes_verifier_platform: str | None = Field(default=None, pattern=r"^linux/(x86_64|aarch64)$")
     kubernetes_verifier_image: str | None = Field(
         default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$",
     )

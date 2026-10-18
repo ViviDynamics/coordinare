@@ -65,6 +65,16 @@ from coordinare.services.environment_acceptance import (
     immutable_verifier_image,
     saved_execution_accepted,
 )
+from coordinare.services.environment_repair import (
+    begin_attempt,
+    dispatch_refusal,
+    finish_attempt,
+    hold_uncertain_execution,
+    journal_for,
+    prepare_repair,
+    repair_context,
+    save_attempt,
+)
 from coordinare.services.kubernetes_provenance import parse_summary, validate_summary
 from coordinare.services.kubernetes_verifier import (
     VerifierConfigurationError,
@@ -87,12 +97,13 @@ from coordinare.services.test_env_loader import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Mapping, Sequence
+    from collections.abc import AsyncIterator, Callable, Coroutine, Mapping, Sequence
     from typing import Protocol
 
     from coordinare_service_inference.schema import ServicesManifest
 
-    from coordinare.services.env_manifest_llm import ChatJson
+    from coordinare.services.environment_discovery import ChatJson
+    from coordinare.services.environment_probes import ProbePlan, ProbeReport
 
     class _GitHubFileReader(Protocol):
         async def get_file_content(self, org: str, repo: str, path: str, *, ref: str = "HEAD") -> str | None: ...
@@ -322,10 +333,26 @@ def _mount_for(
     return state.cache_dir, f"{container_devenv_root}/{state.sanitised_name}"
 
 
+async def _resolve_bootstrap_commit(github: _GitHubService, config: Any, cache: EnvCacheState) -> bool:
+    cache.bootstrap_commit_sha = None
+    commit = await github.get_branch_head_sha(str(getattr(config, "base_branch", None) or "main"))
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40,64}", commit) is None:
+        message = "could not resolve the bootstrap repository commit"
+        raise ProvenanceTransientError(message)
+    cache.bootstrap_commit_sha = commit
+    refusal = dispatch_refusal(cache, commit)
+    if refusal is not None:
+        cache.last_bootstrap_error = redact_state_value(refusal)
+        cache.cache_dir_ready = False
+        return False
+    return True
+
+
 def _clear_reviewed_environment(cache: EnvCacheState) -> None:
     """Drop every readiness artifact before producing a replacement contract."""
     cache.rendered_verify_sh = None
     cache.rendered_activate_sh = None
+    cache.environment_capabilities = None
     cache.environment_manifest = None
     cache.environment_assessment = None
     cache.environment_verification = None
@@ -641,7 +668,20 @@ async def verify_env_cache_clean(
     if not daemon_sees_performer_cache(state):
         ec = (state.get("env_cache") or {}).get(symphony_name)
         ready = isinstance(ec, EnvCacheState) and kubernetes_cache_verified(ec)
-        return ready, "kubernetes readiness requires verifier success and frozen provenance"
+        if ready and isinstance(ec, EnvCacheState):
+            from coordinare.services.environment_capabilities import (
+                capabilities_match,
+                resolve_execution_capabilities,
+            )
+
+            try:
+                capabilities = await resolve_execution_capabilities(state, symphony_name)
+                ready = (capabilities_match(ec, capabilities)
+                         and (ec.environment_verification or {}).get("image_ref") == capabilities.image_ref
+                         and (ec.environment_verification or {}).get("platform") == capabilities.platform)
+            except (ValueError, OSError, RuntimeError):
+                ready = False
+        return ready, "kubernetes readiness requires current capabilities, verifier success and frozen provenance"
     return await _verify_cache_clean(state, symphony_name, svc, performer_mounts=performer_mounts)
 
 
@@ -677,19 +717,18 @@ async def _verify_cache_clean(
     daemon method and the dispatch-time readiness gate (093) share one source of
     truth with no drift. Emits observability with NAMES/PATHS only.
     """
-    from coordinare.services.http_performer_service import HTTPPerformerService
 
     ec = (state.get("env_cache") or {}).get(symphony_name)
     if not isinstance(ec, EnvCacheState):
         return None, "no env-cache state for symphony"
     ec.environment_verification = None
-    cache_dir = Path(ec.cache_dir)
     # 218: the script that decides success is the one the DAEMON rendered, kept in daemon
     # memory and the snapshot. The copy in the cache is never executed. Every refusal here is
     # False, not None: None is degraded and would let a performer-caused refusal pass.
     script = ec.rendered_verify_sh
     refusal = None
-    if accepted_environment(ec) is None:
+    contract = accepted_environment(ec)
+    if contract is None:
         refusal = "no independently accepted environment contract; rebuild the cache"
     elif script is None:
         refusal = "no daemon-rendered verify.sh on record for this cache"
@@ -708,10 +747,32 @@ async def _verify_cache_clean(
             detail="the docker daemon did not answer; the clean verify was not run",
         )
         return None, "the docker daemon is not reachable; the clean verify was not run"
+    return await _verify_cache_runtime(state, symphony_name, svc, performer_mounts)
+
+
+async def _verify_cache_runtime(state: Mapping[str, Any], symphony_name: str, svc: Any,
+                                performer_mounts: Sequence[Path]) -> tuple[bool | None, str]:
+    ec = state["env_cache"][symphony_name]
+    contract = accepted_environment(ec)
+    script = str(ec.rendered_verify_sh)
+    from coordinare.services.http_performer_service import HTTPPerformerService
+
+    cache_dir = Path(ec.cache_dir)
+    from coordinare.services.environment_capabilities import (
+        capabilities_match,
+        resolve_execution_capabilities,
+    )
+
+    try:
+        capabilities = await resolve_execution_capabilities(state, symphony_name)
+    except (ValueError, OSError, RuntimeError):
+        return False, "clean verification runtime capabilities are unavailable"
+    if not capabilities_match(ec, capabilities):
+        return False, "clean verification runtime capabilities changed; rebuild the cache"
     devenv_root = (
         svc.devenv_root if isinstance(svc, HTTPPerformerService) else DEFAULT_DEVENV_ROOT
     )
-    image = getattr(getattr(svc, "_config", None), "image", None) or "coordinare-performer:full"
+    image = capabilities.image_ref
     # Mount at the SAME container path the bootstrap used, since activate.sh /
     # verify.sh hardcode that absolute DEVEENV path.
     container_path = f"{devenv_root}/{ec.sanitised_name}"
@@ -742,7 +803,7 @@ async def _verify_cache_clean(
         immutable_verifier_image(image)
         files = await verification_sources(state, symphony_name, ec)
         credentials = await verification_environment(state, symphony_name, ec, performer_mounts)
-        script = source_setup(files) + credentials + script
+        script = source_setup(files, expected_inputs=contract.inputs if contract is not None else {}) + credentials + script
     except (ValueError, OSError, RuntimeError) as exc:
         return False, f"clean verification inputs refused: {exc}"
     try:
@@ -760,10 +821,13 @@ async def _verify_cache_clean(
         )
         return None, f"clean verify could not run: {exc}"
     outcome = await _verify_outcome(proc, name, symphony_name, script, cache=ec)
-    if outcome[0] is True:
+    if outcome[0] is not None:
         if not await _remove_verify_container(name):
             outcome = None, "clean verifier container removal was not confirmed"
         elif ec.environment_verification is not None:
+            if ec.environment_verification.get("platform") != capabilities.platform:
+                ec.environment_verification = None
+                return False, "clean verification platform differs from accepted capabilities"
             ec.environment_verification["image_ref"] = image
     return outcome
 
@@ -1450,12 +1514,8 @@ class EnvCacheService:
         llm_chat: ChatJson | None = None,
     ) -> None:
         repo = eff_config.project_name or symphony_name
-        cache_state.bootstrap_commit_sha = None
-        commit = await github_service.get_branch_head_sha(str(getattr(eff_config, "base_branch", None) or "main"))
-        if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40,64}", commit) is None:
-            message = "could not resolve the bootstrap repository commit"
-            raise ProvenanceTransientError(message)
-        cache_state.bootstrap_commit_sha = commit
+        if not await _resolve_bootstrap_commit(github_service, eff_config, cache_state):
+            return
         env_spec_contents: dict[str, str] = {}
         for spec_file in symphony_config.env_spec_files:
             try:
@@ -1472,6 +1532,7 @@ class EnvCacheService:
                 )
                 return
 
+        self.prepare_bootstrap_generation(cache_state)
         cache_mount_path = f"{container_devenv_root}/{cache_state.sanitised_name}"
 
         # Service declarations are evidence for the reviewed generic lifecycle.
@@ -1511,6 +1572,10 @@ class EnvCacheService:
                 declared_services=declared_services,
                 cache_state=cache_state,
             )
+
+            from coordinare.services.environment_capabilities import installer_capabilities
+
+            target_capabilities = installer_capabilities(cache_state)
         except (RuntimeError, ValueError, OSError) as exc:
             cache_state.readme_sha = current_sha
             cache_state.bootstrap_budget_sha = current_sha
@@ -1522,86 +1587,108 @@ class EnvCacheService:
             return
 
 
-        # 092: load the symphony's configured test-environment so the bootstrap
-        # performer's start-phase dry-run (which runs INSIDE this performer) sees
-        # the secret-like vars and clears the unset-secret gate (e.g. the website
-        # symphony's POSTGRESQL_PASSWORD). A configured-but-missing file is a clear
-        # coordinare-side error, not a silent empty dict — abort dispatch so the
-        # operator fixes config instead of getting a confusing QA failure later.
-        try:
-            test_env_vars = await self._load_test_env_vars(
+        async with self._bootstrap_execution_window(cache_state):
+            # 092: load the symphony's configured test-environment so the bootstrap
+            # performer's start-phase dry-run (which runs INSIDE this performer) sees
+            # the secret-like vars and clears the unset-secret gate (e.g. the website
+            # symphony's POSTGRESQL_PASSWORD). A configured-but-missing file is a clear
+            # coordinare-side error, not a silent empty dict — abort dispatch so the
+            # operator fixes config instead of getting a confusing QA failure later.
+            try:
+                test_env_vars = await self._load_test_env_vars(
+                    symphony_name=symphony_name,
+                    symphony_config=symphony_config,
+                    github_org=eff_config.github_org,
+                    repo=repo,
+                    github_service=github_service,
+                    fallback_source=cache_state.test_env_source,
+                )
+            except TestEnvFileError as exc:
+                # The error message carries only the resolved path + field, never values.
+                logger.error(
+                    "env_cache.test_env_load_failed",
+                    symphony=symphony_name,
+                    error=str(exc),
+                )
+                return
+
+            payload = BootstrapJobPayload(
                 symphony_name=symphony_name,
-                symphony_config=symphony_config,
-                github_org=eff_config.github_org,
-                repo=repo,
-                github_service=github_service,
-                fallback_source=cache_state.test_env_source,
+                symphony_org=eff_config.github_org,
+                symphony_repo=repo,
+                env_spec_files=symphony_config.env_spec_files,
+                env_spec_contents=env_spec_contents,
+                cache_mount_path=cache_mount_path,
+                # 077: feed the prior attempt's verification failure back to the agent
+                # so it fixes the specific gap (e.g. a pinned Ruby version) on retry.
+                last_failure=cache_state.last_bootstrap_error,
+                environment_manifest=cache_state.environment_manifest,
+                environment_assessment=cache_state.environment_assessment,
+                environment_manifest_digest=(cache_state.environment_assessment["manifest_digest"]
+                                             if cache_state.environment_assessment is not None else None),
+                environment_verification_image=target_capabilities.image_ref,
+                environment_verification_platform=target_capabilities.platform,
+                dependency_checklist=dependency_checklist,
+                verify_provided=verify_provided,
+                activate_provided=activate_provided,
+                declared_services=declared_services,
+                test_env_vars=test_env_vars,
+                coordinare_manages_services=manages_services,
+                # 265: the daemon's rendered scripts ride the dispatch. The bootstrap pod cannot read the daemon's cache.
+                rendered_verify_sh=cache_state.rendered_verify_sh,
+                rendered_activate_sh=cache_state.rendered_activate_sh,
             )
-        except TestEnvFileError as exc:
-            # The error message carries only the resolved path + field, never values.
-            logger.error(
-                "env_cache.test_env_load_failed",
+
+            # Mark in-flight BEFORE dispatching. dispatch_fn may fail SYNCHRONOUSLY
+            # (e.g. a readiness timeout inside dispatch_card) and call
+            # on_bootstrap_complete(False) itself — which clears bootstrap_in_flight.
+            # If we set bootstrap_in_flight=True AFTER dispatch_fn returns, we clobber
+            # that reset and wedge in_flight=True forever with no container and no poll
+            # task: a stale-in-flight deadlock that blocks every consumer AND the
+            # auto-retry (its `if bootstrap_in_flight: return` guard). Setting it first
+            # lets the in-handler reset stick; the async-success path leaves it True
+            # until the poll task fires completion.
+            cache_state.bootstrap_budget_sha = cache_state.forced_manifest_sha if cache_state.bootstrap_forced else current_sha
+            cache_state.readme_sha = current_sha
+            cache_state.bootstrap_in_flight = True
+            logger.info(
+                "env_cache.bootstrap_dispatched",
                 symphony=symphony_name,
-                error=str(exc),
+                performer_id=symphony_config.env_bootstrap_performer_id,
+                new_sha=current_sha,
             )
-            return
+            try:
+                await dispatch_fn(symphony_config.env_bootstrap_performer_id, payload)
+            except Exception as exc:
+                logger.warning(
+                    "env_cache.dispatch_failed",
+                    symphony=symphony_name,
+                    error=str(exc),
+                )
+                # Roll back the optimistic in-flight state so the next cycle retries
+                # instead of wedging on a dispatch that never produced a job.
+                cache_state.bootstrap_in_flight = False
+                cache_state.readme_sha = None
+                return
 
-        payload = BootstrapJobPayload(
-            symphony_name=symphony_name,
-            symphony_org=eff_config.github_org,
-            symphony_repo=repo,
-            env_spec_files=symphony_config.env_spec_files,
-            env_spec_contents=env_spec_contents,
-            cache_mount_path=cache_mount_path,
-            # 077: feed the prior attempt's verification failure back to the agent
-            # so it fixes the specific gap (e.g. a pinned Ruby version) on retry.
-            last_failure=cache_state.last_bootstrap_error,
-            environment_manifest=cache_state.environment_manifest,
-            environment_assessment=cache_state.environment_assessment,
-            environment_manifest_digest=(cache_state.environment_assessment["manifest_digest"]
-                                         if cache_state.environment_assessment is not None else None),
-            dependency_checklist=dependency_checklist,
-            verify_provided=verify_provided,
-            activate_provided=activate_provided,
-            declared_services=declared_services,
-            test_env_vars=test_env_vars,
-            coordinare_manages_services=manages_services,
-            # 265: the daemon's rendered scripts ride the dispatch. The bootstrap pod cannot read the daemon's cache.
-            rendered_verify_sh=cache_state.rendered_verify_sh,
-            rendered_activate_sh=cache_state.rendered_activate_sh,
-        )
-
-        # Mark in-flight BEFORE dispatching. dispatch_fn may fail SYNCHRONOUSLY
-        # (e.g. a readiness timeout inside dispatch_card) and call
-        # on_bootstrap_complete(False) itself — which clears bootstrap_in_flight.
-        # If we set bootstrap_in_flight=True AFTER dispatch_fn returns, we clobber
-        # that reset and wedge in_flight=True forever with no container and no poll
-        # task: a stale-in-flight deadlock that blocks every consumer AND the
-        # auto-retry (its `if bootstrap_in_flight: return` guard). Setting it first
-        # lets the in-handler reset stick; the async-success path leaves it True
-        # until the poll task fires completion.
-        cache_state.bootstrap_budget_sha = cache_state.forced_manifest_sha if cache_state.bootstrap_forced else current_sha
-        cache_state.readme_sha = current_sha
-        cache_state.bootstrap_in_flight = True
-        logger.info(
-            "env_cache.bootstrap_dispatched",
-            symphony=symphony_name,
-            performer_id=symphony_config.env_bootstrap_performer_id,
-            new_sha=current_sha,
-        )
+    @contextlib.asynccontextmanager
+    async def _bootstrap_execution_window(self, cache: EnvCacheState) -> AsyncIterator[None]:
+        """Preparation and dispatch share the same expiry as discovery and polling."""
+        deadline = max(0.0, journal_for(cache).expires_at - time.time())
         try:
-            await dispatch_fn(symphony_config.env_bootstrap_performer_id, payload)
-        except Exception as exc:
-            logger.warning(
-                "env_cache.dispatch_failed",
-                symphony=symphony_name,
-                error=str(exc),
-            )
-            # Roll back the optimistic in-flight state so the next cycle retries
-            # instead of wedging on a dispatch that never produced a job.
-            cache_state.bootstrap_in_flight = False
-            cache_state.readme_sha = None
-            return
+            async with asyncio.timeout(deadline):
+                yield
+        except asyncio.CancelledError:
+            hold_uncertain_execution(cache)
+            raise
+        except TimeoutError:
+            state = dict(self._kubernetes_state) or {"env_cache": {cache.symphony_name: cache}}
+            self.record_bootstrap_execution(cache.symphony_name, state, None, cleanup_confirmed=False)
+            self.on_bootstrap_complete(cache.symphony_name, False, state,
+                error="environment bootstrap preparation or dispatch deadline exceeded")
+        except Exception:
+            hold_uncertain_execution(cache)
+            raise
 
     async def _current_manifest_sha(
         self, symphony_name: str, symphony_config: Any, github_service: Any,
@@ -2212,7 +2299,7 @@ class EnvCacheService:
             logger.info(
                 "env_cache.declared_services_unparseable",
                 symphony=symphony_name,
-                error=str(exc),
+                error_type=type(exc).__name__,
             )
             return []
         services = [svc.model_dump() for svc in manifest.services]
@@ -2224,6 +2311,29 @@ class EnvCacheService:
                 kinds=sorted({svc.get("kind", "generic") for svc in services}),
             )
         return services
+
+    def prepare_bootstrap_generation(self, cache_state: EnvCacheState) -> None:
+        """Prepare rejected execution's fresh generation before computing mount paths."""
+        if cache_state.environment_attempt is None:
+            return
+
+        journal = journal_for(cache_state)
+        if journal.source_commit == cache_state.bootstrap_commit_sha and journal.status == "repair_pending":
+            prepare_repair(cache_state)
+
+    async def _checkpoint_environment_attempt(self, cache_state: EnvCacheState, budget: Any) -> None:
+        """Await durable reservations; a failed state write prevents external work."""
+
+        save_attempt(cache_state, budget)
+        save = self._kubernetes_state.get("snapshot_checkpoint_fn") or self._kubernetes_state.get("snapshot_save_fn")
+        if callable(save):
+            try:
+                await save()
+            except Exception:
+                message = "environment run checkpoint could not be persisted"
+                from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+
+                raise EnvironmentDiscoveryError(message, code="attempt_persistence") from None
 
     async def _build_manifest_artifacts(
         self,
@@ -2240,6 +2350,7 @@ class EnvCacheService:
         llm_chat: ChatJson | None,
         declared_services: list[dict[str, Any]] | None = None,
         cache_state: EnvCacheState | None = None,
+        capabilities: Any = None,
     ) -> tuple[str | None, bool, bool]:
         """Derive the manifest, write an authoritative verify.sh AND activate.sh
         into the cache, and return ``(dependency_checklist, verify_provided,
@@ -2250,6 +2361,7 @@ class EnvCacheService:
         """
         from coordinare_service_inference.environment.render import render_activate, render_verify
 
+        from coordinare.services.environment_capabilities import EnvironmentCapabilityError
         from coordinare.services.environment_discovery import (
             DiscoveryLimits,
             EnvironmentDiscoveryError,
@@ -2259,6 +2371,7 @@ class EnvCacheService:
         if cache_state is None or not cache_state.bootstrap_commit_sha:
             message = "environment discovery requires an immutable source commit"
             raise EnvironmentDiscoveryError(message)
+        cache_state.environment_capabilities = None
         cache_state.environment_manifest = None
         cache_state.environment_assessment = None
         cache_state.environment_verification = None
@@ -2267,7 +2380,6 @@ class EnvCacheService:
         cache_state.cache_dir_ready = False
         cache_state.last_bootstrap_succeeded = None
         commit = cache_state.bootstrap_commit_sha
-
         async def fetch(path: str) -> str | None:
             return await _bootstrap_file_content(github_service, github_org, repo, path, commit)
 
@@ -2278,17 +2390,76 @@ class EnvCacheService:
             max_source_bytes=getattr(cfg, "manifest_max_source_bytes", 4 * 1024 * 1024),
             max_inventory_entries=getattr(cfg, "manifest_max_inventory_entries", 100_000),
             phase_timeout_seconds=getattr(cfg, "manifest_phase_timeout_seconds", 120.0),
+            attempt_timeout_seconds=getattr(cfg, "manifest_attempt_timeout_seconds", 600.0),
+            max_model_calls=getattr(cfg, "manifest_max_model_calls", 128),
+            max_total_reads=getattr(cfg, "manifest_max_total_reads", 512),
+            max_review_context_bytes=getattr(cfg, "manifest_max_review_context_bytes", 1024 * 1024),
+            max_schema_repairs=getattr(cfg, "manifest_max_schema_repairs", 2),
+            max_coverage_revisions=getattr(cfg, "manifest_max_coverage_revisions", 2),
+            max_execution_repairs=getattr(cfg, "manifest_max_execution_repairs", 2),
         )
-        outer_budget = getattr(cfg, "bootstrap_max_seconds", 3600)
-        deadline = min(limits.phase_timeout_seconds * 2, outer_budget) if outer_budget > 0 else limits.phase_timeout_seconds * 2
-        async with asyncio.timeout(deadline):
-            paths = await github_service.get_repository_paths(
-                github_org, repo, ref=commit, max_entries=limits.max_inventory_entries,
-            )
-            manifest, assessment = await discover_and_review(
-                symphony_name=symphony_name, commit=commit, paths=paths,
-                fetch=fetch, chat=llm_chat, declared_services=declared_services, limits=limits,
-            )
+        outer_budget = getattr(cfg, "bootstrap_max_seconds",
+            getattr(self._coordinare_config.global_config, "bootstrap_max_seconds", 3600))
+
+        budget = begin_attempt(cache_state, limits, outer_seconds=outer_budget)
+        previous, feedback = repair_context(cache_state)
+
+        async def checkpoint() -> None:
+            await self._checkpoint_environment_attempt(cache_state, budget)
+
+        budget.checkpoint = checkpoint
+        try:
+            async with asyncio.timeout_at(budget.deadline):
+                budget.stage = "capabilities"
+                if capabilities is None:
+                    from coordinare.services.environment_capabilities import (
+                        resolve_execution_capabilities,
+                    )
+
+                    capability_state = dict(self._kubernetes_state)
+                    capability_state.setdefault("coordinare_config", self._coordinare_config)
+                    capability_state.setdefault("env_cache", {symphony_name: cache_state})
+                    capabilities = await resolve_execution_capabilities(capability_state, symphony_name)
+                from coordinare.services.environment_capabilities import require_cache_mount
+
+                require_cache_mount(capabilities, cache_mount_path)
+                budget.stage = "inventory"
+                paths = await github_service.get_repository_paths(
+                    github_org, repo, ref=commit, max_entries=limits.max_inventory_entries,
+                )
+                from coordinare.services.environment_probe_service import (
+                    ProbeServiceContext,
+                    run_owned_probe,
+                )
+
+                probe_state = {**self._kubernetes_state,
+                    "probe_backend": "docker" if daemon_sees_performer_cache(self._kubernetes_state) else "kubernetes"}
+
+                async def probe_executor(plan: ProbePlan) -> ProbeReport:
+                    return await run_owned_probe(plan, context=ProbeServiceContext(cache_state, probe_state, fetch, budget, limits))
+
+                manifest, assessment = await discover_and_review(
+                    symphony_name=symphony_name, commit=commit, paths=paths,
+                    fetch=fetch, chat=llm_chat, capabilities=capabilities, declared_services=declared_services,
+                    limits=limits, budget=budget, previous_manifest=previous, execution_feedback=feedback, probe_executor=probe_executor, require_preflight=True,
+                )
+        except TimeoutError:
+            budget.error_code = "attempt_deadline"
+            message = "environment discovery budget deadline exceeded"
+            raise EnvironmentDiscoveryError(message, code="attempt_deadline") from None
+        except EnvironmentDiscoveryError as exc:
+            budget.error_code = exc.code
+            raise
+        except EnvironmentCapabilityError as exc:
+            budget.error_code = exc.code
+            raise EnvironmentDiscoveryError(str(exc), code=exc.code) from None
+        except (ValueError, OSError, RuntimeError):
+            budget.error_code = "capability_unavailable" if budget.stage == "capabilities" else "inventory_unavailable"
+            message = "environment runtime or source inventory is unavailable"
+            raise EnvironmentDiscoveryError(message, code=budget.error_code) from None
+        finally:
+            save_attempt(cache_state, budget)
+            logger.info("env_cache.manifest_attempt", symphony=symphony_name, **budget.summary())
         activation = render_activate(manifest, cache_mount_path=cache_mount_path)
         verification = render_verify(manifest, cache_mount_path=cache_mount_path)
         mounts = _env_cache_mounts(cache_dir, performer_mounts)
@@ -2306,11 +2477,14 @@ class EnvCacheService:
             raise
         # Publication occurs only after the complete, independently accepted contract
         # and all informational cache copies have been written successfully.
+        cache_state.environment_capabilities = capabilities.model_dump(mode="json")
         cache_state.environment_manifest = manifest.model_dump(mode="json")
         cache_state.environment_assessment = assessment.model_dump(mode="json")
         cache_state.manifest_items = [requirement.model_dump(mode="json") for requirement in manifest.requirements]
         cache_state.rendered_activate_sh = activation
         cache_state.rendered_verify_sh = verification
+        save_attempt(cache_state, budget, executing=True)
+        await self._checkpoint_environment_attempt(cache_state, budget)
         logger.info("env_cache.manifest_accepted", symphony=symphony_name,
                     digest=manifest.digest(), requirements=len(manifest.requirements))
         return "ACCEPTED ENVIRONMENT CONTRACT\n" + manifest.model_dump_json(indent=2), True, True
@@ -2583,6 +2757,15 @@ class EnvCacheService:
         )
         self._flush_bootstrap_snapshot(state, symphony_name)
 
+    def record_bootstrap_execution(
+        self, symphony_name: str, state: dict[str, Any], evidence: dict[str, Any] | None,
+        *, cleanup_confirmed: bool,
+    ) -> None:
+        """Admit rejected execution separately from publishing bootstrap completion."""
+        cache = (state.get("env_cache") or {}).get(symphony_name)
+        if cache is not None and cache.environment_attempt is not None:
+            finish_attempt(cache, False, evidence, cleanup_confirmed=cleanup_confirmed)
+
     def on_bootstrap_complete(
         self,
         symphony_name: str,
@@ -2608,42 +2791,17 @@ class EnvCacheService:
         cache_state.bootstrap_in_flight = False
         cache_state.last_bootstrap_at = datetime.now(UTC)
 
-        # 092: a bootstrap that reports success but leaves the mount holding only
-        # the three coordinare-seeded files installed the toolchain in the wrong
-        # place (the agent treated the absolute cache_mount_path as cwd-relative
-        # and built under <cwd>/devenv/<name> instead). The real mount is empty,
-        # so consumers would get no toolchain. Downgrade to failure LOUDLY here
-        # rather than letting cache_dir_ready flip True on an empty cache; the
-        # failure flows through the normal attempt-counter/exhaust path below.
-        accepted_contract = accepted_environment(cache_state)
-        if success and accepted_contract is None:
-            success = False
-            error = "no independently accepted environment manifest; rebuild the cache"
-        refusal_error = self._cache_refusal_error(symphony_name, cache_state) if success else None
-        if success and refusal_error is not None:
-            # 219 review: a refused cache dir is not "wrong location". Say what was refused.
-            success = False
-            error = refusal_error
-        elif (success and not (accepted_contract is not None and accepted_contract.empty_reason)
-              and daemon_sees_performer_cache(state) and not _cache_dir_is_populated(
-            cache_state.cache_dir, performer_mounts=self._performer_mounts(),
-        )):
-            # 265 (review B3): on Kubernetes the daemon's cache_dir is the seed directory, so this check would always
-            # downgrade a real success. The clean-room verifier pod has already checked the claim.
-            success = False
-            error = (
-                "env-cache mount contains only coordinare-seeded files "
-                "(activate.sh, manifest.json, verify.sh) after a reported-"
-                "successful bootstrap — the toolchain was installed in the "
-                f"wrong location; the absolute mount {cache_state.cache_dir} is "
-                "empty. The bootstrap agent likely treated the absolute "
-                "cache_mount_path as a cwd-relative path. Cache rejected."
-            )
-            logger.error(
-                "env_cache.bootstrap_mount_empty",
-                symphony=symphony_name,
-                cache_dir=str(cache_state.cache_dir),
-            )
+        # A transport's boolean cannot waive independent review, executable
+        # evidence or frozen provenance. The accepted generic contract decides
+        # installed layout; a verified flat file is as valid as a directory.
+        refusal_error = self._completion_refusal(symphony_name, cache_state) if success else None
+        if refusal_error is not None:
+            success, error = False, refusal_error
+
+        try:
+            finish_attempt(cache_state, success, None, cleanup_confirmed=False)
+        except (ValueError, RuntimeError):
+            success, error = False, "environment run deadline or evidence refused completion"
 
         cache_state.last_bootstrap_succeeded = success
         if not success:
@@ -2710,6 +2868,15 @@ class EnvCacheService:
                 )
 
         self._flush_bootstrap_snapshot(state, symphony_name)
+
+    def _completion_refusal(self, symphony_name: str, cache_state: EnvCacheState) -> str | None:
+        if accepted_environment(cache_state) is None:
+            return "no independently accepted environment manifest; rebuild the cache"
+        if not saved_execution_accepted(cache_state):
+            return "required clean consumer execution is missing or failed; rebuild the cache"
+        if cache_state.provenance_digest is None:
+            return "frozen environment provenance is missing; rebuild the cache"
+        return self._cache_refusal_error(symphony_name, cache_state)
 
     def _flush_bootstrap_snapshot(self, state: dict[str, Any], symphony_name: str) -> None:
         """Save completion without waiting for a later lifecycle transition."""

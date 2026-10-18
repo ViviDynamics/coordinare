@@ -1,0 +1,161 @@
+"""Trusted environment attempt failures, shared resource budgets and safe diagnostics."""
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Mapping
+
+
+MAX_ATTEMPT_SECONDS = 3600
+MAX_REPAIRS = 2
+MAX_PROBE_BATCHES = 2
+RepairKind = Literal["schema", "coverage", "execution"]
+REPAIR_COUNTERS = {"schema": "schema_repairs", "coverage": "coverage_revisions", "execution": "execution_repairs"}
+
+
+class EnvironmentDiscoveryError(RuntimeError):
+    """Discovery cannot establish an accepted, evidence-bound environment."""
+
+    def __init__(self, message: str, *, code: str = "environment_discovery_held") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class DiscoveryChatReply:
+    text: str
+    usage: Mapping[str, int] | None = None
+    finish_reason: str | None = None
+    error_code: str | None = None
+
+
+@dataclass
+class AttemptBudget:
+    """One monotonic budget across inspection, malformed proposals and fresh reviews."""
+
+    timeout_seconds: float = 600
+    max_calls: int = 128
+    max_reads: int = 512
+    max_schema_repairs: int = 2
+    max_coverage_revisions: int = 2
+    max_execution_repairs: int = 2
+    started: float = field(default_factory=time.monotonic)
+    calls: int = 0
+    calls_completed: int = 0
+    reads: int = 0
+    probe_batches: int = 0
+    probe_reports: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    schema_repairs: int = 0
+    coverage_revisions: int = 0
+    execution_repairs: int = 0
+    review_context_bytes: int = 0
+    mandatory_inputs_required: int = 0
+    mandatory_inputs_delivered: int = 0
+    inspected_bytes: int = 0
+    context_bytes: int = 0
+    expected_envelope: Literal["source_tool", "probe", "manifest", "assessment"] = "manifest"
+    stage: str = "inventory"
+    outcome: str = "held"
+    error_code: str | None = None
+    usage: dict[str, int] = field(default_factory=dict)
+    finish_reasons: dict[str, int] = field(default_factory=dict)
+    metadata_available: bool = False
+    validation_codes: list[str] = field(default_factory=list)
+    checkpoint: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if (not 0 < self.timeout_seconds <= MAX_ATTEMPT_SECONDS or self.max_calls < 1 or self.max_reads < 1
+                or any(not 0 <= getattr(self, "max_" + counter) <= MAX_REPAIRS for counter in REPAIR_COUNTERS.values())):
+            message = "environment discovery budget limits are invalid"
+            raise ValueError(message)
+
+    @property
+    def deadline(self) -> float:
+        return self.started + self.timeout_seconds
+
+    def check(self) -> None:
+        if time.monotonic() >= self.deadline:
+            message = "environment discovery budget deadline exceeded"
+            raise EnvironmentDiscoveryError(message, code="attempt_deadline")
+
+    def reserve_call(self) -> None:
+        self.check()
+        if self.calls >= self.max_calls:
+            message = "environment discovery budget model call limit exceeded"
+            raise EnvironmentDiscoveryError(message, code="attempt_call_limit")
+        self.calls += 1
+
+    def reserve_probe_batch(self) -> None:
+        self.check()
+        if self.probe_batches >= MAX_PROBE_BATCHES:
+            message = "environment probe batch limit exceeded"
+            raise EnvironmentDiscoveryError(message, code="attempt_probe_limit")
+        self.probe_batches += 1
+
+    def reserve_reads(self, count: int) -> None:
+        self.check()
+        if type(count) is not int or count < 1 or self.reads + count > self.max_reads:
+            message = "environment discovery budget file read limit exceeded"
+            raise EnvironmentDiscoveryError(message, code="attempt_read_limit")
+        self.reads += count
+
+    @property
+    def repairs(self) -> int:
+        """Aggregate diagnostics only; authorization uses category-specific counters."""
+        return self.schema_repairs + self.coverage_revisions + self.execution_repairs
+
+    def reserve_repair(self, kind: RepairKind) -> None:
+        self.check()
+        counter = REPAIR_COUNTERS[kind]
+        if getattr(self, counter) >= getattr(self, "max_" + counter):
+            message = f"environment discovery {kind} repair limit exceeded"
+            raise EnvironmentDiscoveryError(message, code=f"attempt_{kind}_limit")
+        if kind == "schema":
+            self.schema_repairs += 1
+        elif kind == "coverage":
+            self.coverage_revisions += 1
+        else:
+            self.execution_repairs += 1
+
+    async def flush(self) -> None:
+        """Persist reservations before calling a model, source reader or executor."""
+        self.check()
+        if self.checkpoint is not None:
+            await self.checkpoint()
+        self.check()
+
+    def record_reply(self, reply: str | DiscoveryChatReply) -> str:
+        self.calls_completed += 1
+        if isinstance(reply, str):
+            return reply
+        if not isinstance(reply, DiscoveryChatReply):
+            message = "model reply has unsupported metadata"
+            raise EnvironmentDiscoveryError(message, code="model_reply_invalid")
+        if reply.error_code is not None:
+            message = "environment model provider rejected or failed the request"
+            raise EnvironmentDiscoveryError(message, code="provider_request_failed")
+        self.metadata_available |= reply.usage is not None or reply.finish_reason is not None
+        for key, value in (reply.usage or {}).items():
+            if (key in {"input", "output", "input_tokens", "output_tokens", "cache_read", "cache_write"}
+                    and type(value) is int and 0 <= value <= 10**12):
+                self.usage[key] = self.usage.get(key, 0) + value
+        if reply.finish_reason in {"stop", "length", "tool_calls", "content_filter", "function_call"}:
+            self.finish_reasons[reply.finish_reason] = self.finish_reasons.get(reply.finish_reason, 0) + 1
+        return reply.text
+
+    def summary(self) -> dict[str, Any]:
+        """Only trusted stages/codes, counters and allowlisted provider metadata escape."""
+        return {"stage": self.stage, "outcome": self.outcome, "error_code": self.error_code,
+                "elapsed_seconds": round(time.monotonic() - self.started, 3),
+                "probe_batches": self.probe_batches, "max_probe_batches": MAX_PROBE_BATCHES, "calls": self.calls, "calls_completed": self.calls_completed, "reads": self.reads,
+                "repairs": self.repairs, **{name: getattr(self, name) for counter in REPAIR_COUNTERS.values()
+                    for name in (counter, "max_" + counter)}, "inspected_bytes": self.inspected_bytes,
+                "context_bytes": self.context_bytes, "review_context_bytes": self.review_context_bytes,
+                "mandatory_inputs_required": self.mandatory_inputs_required,
+                "mandatory_inputs_delivered": self.mandatory_inputs_delivered,
+                "remaining_seconds": round(max(0, self.deadline - time.monotonic()), 3), "usage": dict(self.usage),
+                "finish_reasons": dict(self.finish_reasons), "metadata_available": self.metadata_available,
+                "validation_codes": list(self.validation_codes)}

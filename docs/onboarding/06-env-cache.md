@@ -87,10 +87,14 @@ A manual trigger while paused returns 409. Resume the symphony before retrying.
 Idle bootstrap reaping defaults to 1800 seconds; an unmatched tool call has a
 separate 2700-second bound. The outer bootstrap wall clock defaults to 3600 seconds.
 These existing job limits also constrain bounded workflows. Discovery and review
-have their own shorter phase budgets, described in the operator guide.
+have a shared 600-second attempt budget plus 120-second phase budgets, at most
+two repair rounds, 128 total model calls and 512 total reads by default. Directory
+pages and batched reads bound model context. See the operator guide for configuration.
 
 State schema 40 persists the reviewed manifest and assessment. Older snapshots
-load without an accepted pair and require reconstruction before consumer dispatch.
+load without usable capability/inventory bindings and require reconstruction before
+consumer dispatch. A completion success flag cannot waive missing/failed clean
+execution or frozen provenance, and verified installations may use any layout.
 Existing cache bytes are retained while replacement evidence is obtained; old
 success flags or scripts do not count as acceptance. Upgrade daemon, performer and
 trusted verifier images together. Before retrying, pin the clean verifier image by
@@ -165,3 +169,42 @@ have been validated.
 | Limits and cache configuration | `EnvCacheConfig` in `src/coordinare/config.py` |
 
 Next: **[07: Roadmap](07-roadmap.md)**.
+
+
+Reviewed environment discovery delivers every manifest input to a fresh independent
+reviewer before requesting coverage judgment. Schema corrections, coverage revisions
+and executable repairs each have separate durable limits (default two), under one
+unchanged aggregate deadline. Missing or oversized evidence holds; successful clean
+execution of every required check remains mandatory. See the
+[operator guide](../operators/reviewed-environment-manifest.md#complete-reviewer-evidence-and-correction-limits)
+for configuration and legacy-attempt migration.
+
+### Capability probes and installation assertions
+
+Discovery can request bounded, repository-cited capability probes in the pinned
+consumer image before constructing a manifest. Probes have no network, runtime
+secrets, host sockets, writable source or writable cache. Each logical attempt
+permits two batches of at most 16 commands, with 30 seconds per command and 120
+seconds per batch, subject to its original remaining deadline. Output is bounded
+at 16 KiB per command; incomplete or truncated observations hold. An absent tool
+is evidence for installation planning, not a passing required check.
+
+The Docker adapter supplies this isolation. Other adapters hold when they cannot
+establish the same restrictions; a Kubernetes deployment never falls back to the
+local Docker daemon. Pending older attempt journals require an explicit operator
+restart after confirmed cleanup. Existing accepted frozen contracts remain readable.
+
+Repair automatically receives every previous input with independently verified
+hashes. Independent coverage review still fetches its own evidence. Required
+installation assertions use ordinary install commands and dependency edges to
+establish outputs before dependent actions. Every required clean-consumer check
+and service action remains mandatory, regardless of probes or reviewer approval.
+
+The private validation harness requires separate scope approval for each exact
+probe plan and accepted manifest digest. Timeout defaults remain unchanged;
+longer validation profiles are explicit experiments and never renew a live attempt.
+
+Production bootstrap requires completed capability preflight before it can accept
+a manifest. A premature manifest gets one stage reminder; repeatedly skipping
+preflight holds without renewing any budget. A repaired attempt may reuse prior
+complete base-image observations only while source/image/platform identities match.

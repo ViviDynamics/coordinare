@@ -34,7 +34,9 @@ def _accepted_verification_sources(monkeypatch):
     """Probe/cancellation tests supply accepted source independently of GitHub I/O."""
     monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",
         AsyncMock(return_value={"tools.plan": "baseline"}))
-    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files: "")
+    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files, **kwargs: "")
+    monkeypatch.setattr("coordinare.services.environment_capabilities._docker_identity",
+        AsyncMock(return_value=("trusted/global@sha256:" + "a" * 64, "linux/x86_64")))
 
 
 class _Hung:
@@ -99,7 +101,7 @@ def _state(tmp_path: Path, verify: str = "#!/bin/sh\nexit 0\n") -> dict[str, Any
         rendered_verify_sh=verify, rendered_activate_sh="ACT=1\n",
     )
     reviewed_cache(state)
-    return {"env_cache": {"sym": state}}
+    return {"env_cache": {"sym": state}, "config": SimpleNamespace(performer_image="trusted/global@sha256:" + "a" * 64)}
 
 
 def _run_argv(fake: _Fake) -> tuple[str, ...]:

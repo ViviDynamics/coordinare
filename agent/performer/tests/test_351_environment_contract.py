@@ -34,6 +34,7 @@ def contract_score(tmp_path, *, failed=False):
     from coordinare_service_inference.environment.models import EnvironmentManifest
 
     manifest = EnvironmentManifest.model_validate({
+        "inventory_digest": "d" * 64, "capabilities_digest": "c" * 64,
         "schema_version": 1, "symphony_name": "example", "source_commit": "a" * 40,
         "inputs": {"tools.plan": "a" * 64}, "requirements": [],
         "install": [{"id": "install", "argv": ["python3", "-c", "from pathlib import Path; Path('installed').touch(); Path('alien/bin').mkdir(parents=True, exist_ok=True)"]}],
@@ -41,7 +42,7 @@ def contract_score(tmp_path, *, failed=False):
         "activation": {"path": ["{cache}/alien/bin"], "env": {"ALIEN_HOME": "{cache}/alien"}},
         "services": [], "empty_reason": "Baseline image suffices", "policy_version": "351-v1",
     })
-    review = {"schema_version": 1, "manifest_digest": manifest.digest(), "source_commit": "a" * 40,
+    review = {"inventory_digest": "d" * 64, "capabilities_digest": "c" * 64, "schema_version": 1, "manifest_digest": manifest.digest(), "source_commit": "a" * 40,
               "verdict": "accept", "rationale": "Inspected setup instructions", "sources": ["tools.plan"], "inputs": dict(manifest.inputs), "policy_version": "351-v1"}
     return Score(title="bootstrap", repo_url="https://github.com/a/b", branch="main", role="env_bootstrap",
                  env_cache_path=str(tmp_path), environment_manifest=manifest.model_dump(),
