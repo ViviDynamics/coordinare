@@ -364,3 +364,16 @@ def test_malformed_or_unknown_activation_evidence_still_holds(tmp_path, mutation
     assert not record_execution_failure(cache,report,cleanup_confirmed=True,now=101)
     assert cache.environment_attempt['status']=='held'
     assert cache.environment_attempt['execution_repairs']==0
+
+
+def test_bounded_repair_excerpt_retains_terminal_error_after_verbose_progress(tmp_path):
+    cache=cache_fixture(tmp_path)
+    started(cache)
+    report=failed_report(cache)
+    report['results'][0]['output']='progress: dependency download\n'*100+'API_KEY=private-secret-value\nterminal action failure\n'
+    assert record_execution_failure(cache,report,cleanup_confirmed=True,now=101)
+    result=cache.environment_attempt['rejected'][0]['report']['results'][0]
+    assert result['output'].endswith('terminal action failure\n')
+    assert len(result['output'])<=512 and result['output_truncated']
+    assert 'private-secret-value' not in result['output']
+    assert result['status']=='fail' and not cache.cache_dir_ready
