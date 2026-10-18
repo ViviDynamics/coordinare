@@ -74,7 +74,9 @@ async def test_cancelled_late_create_is_drained_before_cleanup(monkeypatch, clea
 
     from coordinare.services import environment_probe_executor as executor
     from tests.unit.test_353_discovery_repair import PATH, SOURCE
-    p = plan().model_copy(update={'inputs':{PATH:hashlib.sha256(SOURCE.encode()).hexdigest()}})
+    bundle = bundle_fixture(tmp_path, {PATH:(SOURCE.encode(), '100644')})
+    p = plan().model_copy(update={'inputs':{PATH:hashlib.sha256(SOURCE.encode()).hexdigest()},
+        'execution_source_digest':bundle.identity.digest()})
     entered, release = asyncio.Event(), asyncio.Event()
     order = []
     async def identity(image):
@@ -91,7 +93,7 @@ async def test_cancelled_late_create_is_drained_before_cleanup(monkeypatch, clea
     monkeypatch.setattr(executor, '_docker', docker)
     monkeypatch.setattr(executor, '_remove', remove)
     task = asyncio.create_task(executor.execute_environment_probe(p, state={'probe_backend':'docker'},
-        source_bundle=bundle_fixture(tmp_path, {PATH:(SOURCE.encode(),"100644")}), budget=AttemptBudget()))
+        source_bundle=bundle, budget=AttemptBudget()))
     await entered.wait()
     task.cancel()
     release.set()
@@ -106,7 +108,9 @@ async def test_failed_create_still_attempts_removal(monkeypatch, tmp_path):
 
     from coordinare.services import environment_probe_executor as executor
     from tests.unit.test_353_discovery_repair import PATH, SOURCE
-    p = plan().model_copy(update={'inputs':{PATH:hashlib.sha256(SOURCE.encode()).hexdigest()}})
+    bundle = bundle_fixture(tmp_path, {PATH:(SOURCE.encode(), '100644')})
+    p = plan().model_copy(update={'inputs':{PATH:hashlib.sha256(SOURCE.encode()).hexdigest()},
+        'execution_source_digest':bundle.identity.digest()})
     removed = []
     async def identity(image):
         return image, p.capabilities.platform
@@ -119,7 +123,7 @@ async def test_failed_create_still_attempts_removal(monkeypatch, tmp_path):
     monkeypatch.setattr(executor, '_docker', docker)
     monkeypatch.setattr(executor, '_remove', remove)
     with pytest.raises(TimeoutError):
-        await executor.execute_environment_probe(p, state={'probe_backend':'docker'}, source_bundle=bundle_fixture(tmp_path, {PATH:(SOURCE.encode(),"100644")}), budget=AttemptBudget())
+        await executor.execute_environment_probe(p, state={'probe_backend':'docker'}, source_bundle=bundle, budget=AttemptBudget())
     assert len(removed) == 1
 
 
@@ -174,7 +178,9 @@ async def test_cleanup_is_drained_when_its_wait_is_cancelled(monkeypatch, tmp_pa
 
     from coordinare.services import environment_probe_executor as executor
     from tests.unit.test_353_discovery_repair import PATH, SOURCE
-    p = plan().model_copy(update={'inputs':{PATH:hashlib.sha256(SOURCE.encode()).hexdigest()}})
+    bundle = bundle_fixture(tmp_path, {PATH:(SOURCE.encode(), '100644')})
+    p = plan().model_copy(update={'inputs':{PATH:hashlib.sha256(SOURCE.encode()).hexdigest()},
+        'execution_source_digest':bundle.identity.digest()})
     cleaning, release = asyncio.Event(), asyncio.Event()
     removed = []
     async def identity(image):
@@ -190,7 +196,7 @@ async def test_cleanup_is_drained_when_its_wait_is_cancelled(monkeypatch, tmp_pa
     monkeypatch.setattr(executor, '_docker', docker)
     monkeypatch.setattr(executor, '_remove', remove)
     task = asyncio.create_task(executor.execute_environment_probe(p, state={'probe_backend':'docker'},
-        source_bundle=bundle_fixture(tmp_path, {PATH:(SOURCE.encode(),"100644")}), budget=AttemptBudget()))
+        source_bundle=bundle, budget=AttemptBudget()))
     await cleaning.wait()
     task.cancel()
     await asyncio.sleep(0)

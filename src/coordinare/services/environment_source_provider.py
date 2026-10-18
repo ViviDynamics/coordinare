@@ -22,6 +22,7 @@ from coordinare_service_inference.environment.execution_source import (
     MAX_EXPANDED_BYTES,
     MAX_METADATA_BYTES,
     ExecutionSourceBundle,
+    ExecutionSourceIdentity,
     SourceEntry,
     bundle_members,
     canonical,
@@ -379,5 +380,20 @@ async def ensure_execution_source(
     manifest = accepted_environment(cache)
     if manifest is None:
         raise ValueError('execution source requires independently accepted manifest')
-    return await prepare_repository_source(state, name, commit=manifest.source_commit,
+    bundle = await prepare_repository_source(state, name, commit=manifest.source_commit,
         review_inputs=manifest.inputs, destination=destination, deadline=deadline)
+    previous = cache.environment_execution_source
+    if previous is not None and ExecutionSourceIdentity.model_validate(previous) != bundle.identity:
+        raise ValueError('execution source differs from accepted bootstrap source')
+    cache.environment_execution_source = bundle.identity.model_dump(mode='json')
+    return bundle
+
+
+async def checkpoint_source_ownership(state: Mapping[str, Any]) -> None:
+    """A failed persistence callback prevents source acquisition/execution."""
+    service = state.get('env_cache_service')
+    backing = getattr(service, '_kubernetes_state', {})
+    save = (state.get('snapshot_checkpoint_fn') or state.get('snapshot_save_fn') or
+            backing.get('snapshot_checkpoint_fn') or backing.get('snapshot_save_fn'))
+    if callable(save):
+        await save()

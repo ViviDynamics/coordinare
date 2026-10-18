@@ -9,6 +9,12 @@ from coordinare_service_inference.environment.models import (
 )
 
 
+def fixture_execution_source(commit='a'*40):
+    """Compact identity for test transports that stand in for checked external I/O."""
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
+    return ExecutionSourceIdentity(source_commit=commit,tree_digest='1'*64,file_count=1,expanded_bytes=8)
+
+
 def reviewed_metadata(*, capabilities=None, checks=None, install=None, services=None, activation=None, source_commit="a" * 40,
                       symphony_name="sym", inputs=None, empty_reason="Image baseline is sufficient"):
     manifest = EnvironmentManifest.model_validate({
@@ -20,7 +26,8 @@ def reviewed_metadata(*, capabilities=None, checks=None, install=None, services=
         "activation": activation or {}, "services": services or [],
         "empty_reason": empty_reason, "policy_version": "351-v1",
     })
-    return {"environment_manifest": manifest.model_dump(), "environment_manifest_digest": manifest.digest(),
+    return {"environment_execution_source":fixture_execution_source(source_commit).model_dump(),
+            "environment_manifest": manifest.model_dump(), "environment_manifest_digest": manifest.digest(),
             "environment_assessment": {"inventory_digest": "d" * 64, "capabilities_digest": capabilities.digest() if capabilities else "c" * 64, "schema_version": 1, "manifest_digest": manifest.digest(),
                 "source_commit": source_commit, "verdict": "accept", "rationale": "Read source requirements",
                 "sources": list(manifest.inputs), "inputs": dict(manifest.inputs), "policy_version": "351-v1"}}
@@ -36,6 +43,7 @@ def reviewed_cache(cache, *, files=None, capabilities=None, source_commit="a" * 
             install_network="enabled", verify_network="disabled")
     cache.environment_capabilities = capabilities.model_dump()
     metadata = reviewed_metadata(inputs=inputs, capabilities=capabilities, source_commit=source_commit, symphony_name=cache.symphony_name)
+    cache.environment_execution_source = metadata["environment_execution_source"]
     cache.environment_manifest = metadata["environment_manifest"]
     cache.environment_assessment = metadata["environment_assessment"]
     cache.bootstrap_commit_sha = source_commit
@@ -46,7 +54,7 @@ def reviewed_cache(cache, *, files=None, capabilities=None, source_commit="a" * 
     return cache
 
 
-def verification_output(manifest=None):
+def verification_output(manifest=None, *, execution_source=None):
     """Fake container's parent-collected clean-run JSON, bound to its accepted contract."""
     from coordinare_service_inference.environment.models import CheckResult, VerificationReport
 
@@ -56,7 +64,8 @@ def verification_output(manifest=None):
         commands.extend([service.start, service.health, service.stop])
         if service.init:
             commands.append(service.init)
-    report = VerificationReport(platform="linux/x86_64", manifest_digest=accepted.digest(), results=[
+    report = VerificationReport(platform="linux/x86_64", manifest_digest=accepted.digest(),
+        execution_source_digest=(execution_source or fixture_execution_source(accepted.source_commit)).digest(), results=[
         CheckResult(id=command.id, status="pass", required=command.required, exit_code=0,
                     manifest_digest=accepted.digest()) for command in commands])
     return (report.model_dump_json() + "\n").encode()
@@ -71,7 +80,11 @@ def record_verified_cache_fixture(cache):
     """
     import json
 
-    cache.environment_verification = json.loads(verification_output(cache.environment_manifest))
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
+    if cache.environment_execution_source is None:
+        cache.environment_execution_source=fixture_execution_source(cache.bootstrap_commit_sha).model_dump()
+    cache.environment_verification = json.loads(verification_output(cache.environment_manifest,
+        execution_source=ExecutionSourceIdentity.model_validate(cache.environment_execution_source)))
     cache.environment_verification["image_ref"] = "trusted/global@sha256:" + "a" * 64
     cache.provenance_digest = cache.provenance_digest or "f" * 64
 

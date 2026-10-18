@@ -136,6 +136,14 @@ def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True) -
     if report.manifest_digest != manifest.digest():
         message = "required execution evidence has the wrong manifest identity"
         raise ValueError(message)
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
+
+    try:
+        source = ExecutionSourceIdentity.model_validate(cache.environment_execution_source)
+    except ValueError as exc:
+        raise ValueError('required execution source identity is missing; rebuild the cache') from exc
+    if source.source_commit != manifest.source_commit or report.execution_source_digest != source.digest():
+        raise ValueError('required execution source identity differs')
     _validate_execution_results(report, manifest)
     if publish:
         cache.environment_verification = report.model_dump(mode="json")
@@ -144,6 +152,8 @@ def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True) -
 
 def saved_execution_accepted(cache: EnvCacheState) -> bool:
     """Persisted flags cannot claim readiness without complete bound execution evidence."""
+    if cache.environment_source_owner is not None or (cache.environment_attempt or {}).get("source_owner") is not None:
+        return False
     evidence = cache.environment_verification
     if not isinstance(evidence, dict):
         return False

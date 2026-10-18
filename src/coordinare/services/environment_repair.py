@@ -46,7 +46,9 @@ class RepairJournal(BaseModel):
     """Daemon-owned state; a pending repair survives snapshot roundtrips."""
 
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
-    version: Literal[3] = 3
+    version: Literal[4] = 4
+    source_owner: str | None = None
+    execution_source: dict[str, Any] | None = None
     probe_batches: int = Field(default=0, ge=0, le=2)
     probe_reports: list[dict[str, Any]] = Field(default_factory=list, max_length=2)
     probe_owner: str | None = None
@@ -97,6 +99,10 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
         if data.get("status") != "ready":
             _refuse("legacy environment run requires explicit restart after confirmed cleanup", code="legacy_attempt_requires_restart")
         data = {**data, "version": 3}
+    if isinstance(data, dict) and data.get('version') == 3:
+        if data.get('status') != 'ready':
+            _refuse('legacy source environment run requires explicit restart after confirmed cleanup', code='legacy_attempt_requires_restart')
+        data = {**data, 'version':4}
     try:
         if len(json.dumps(cache.environment_attempt).encode()) > JOURNAL_MAX_BYTES:
             _refuse('environment repair journal exceeds its bound')
@@ -119,9 +125,11 @@ def hold_uncertain_execution(cache: EnvCacheState) -> None:
 def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool = False) -> None:
     """Explicit operator action, preserving bounded old proof in a new empty sibling."""
     data = cache.environment_attempt
+    if cache.environment_source_owner is not None:
+        _refuse("source cleanup must be reconciled before restart", code="cleanup_unconfirmed")
     if data is None:
         return
-    if not isinstance(data, dict) or data.get("version") not in (1, 2, 3):
+    if not isinstance(data, dict) or data.get("version") not in (1, 2, 3, 4):
         _refuse("unknown environment journal cannot be reset without reconciliation")
     normalized = dict(data)
     if normalized["version"] == 1:
@@ -129,14 +137,14 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
         normalized["version"] = 2
         for counter in ("schema_repairs", "coverage_revisions", "execution_repairs"):
             normalized[counter], normalized["max_" + counter] = used, maximum
-    normalized["version"] = 3
+    normalized["version"] = 4
     try:
         parsed = RepairJournal.model_validate(normalized)
     except ValidationError:
         _refuse("malformed environment journal requires reconciliation before reset")
     if not 0 < parsed.expires_at - parsed.started_at <= MAX_ATTEMPT_SECONDS:
         _refuse("invalid environment deadline requires reconciliation before reset")
-    uncertain = (data.get("probe_owner") is not None or data.get("probe_plan") is not None
+    uncertain = (data.get("source_owner") is not None or data.get("probe_owner") is not None or data.get("probe_plan") is not None
         or data.get("status") == "executing" or data.get("last_error") == "cleanup_unconfirmed"
         or (data.get("target") is not None and data.get("status") not in {"ready", "repair_pending"}))
     if cache.bootstrap_in_flight or (uncertain and cleanup_confirmed is not True):
@@ -154,6 +162,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
     cache.environment_attempt = None
     cache.environment_manifest = cache.environment_assessment = cache.environment_verification = None
     cache.environment_capabilities = None
+    cache.environment_execution_source = None
     cache.rendered_activate_sh = cache.rendered_verify_sh = None
     cache.cache_dir_ready = False
     cache.provenance_digest = None
@@ -194,8 +203,10 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
                   now: float | None = None) -> AttemptBudget:
     """Resume an existing finite budget; a new source gets a separate logical attempt."""
     now = time.time() if now is None else now
+    if cache.environment_source_owner is not None:
+        _refuse("execution source requires confirmed cleanup", code="cleanup_unconfirmed")
     previous = journal_for(cache) if cache.environment_attempt is not None else None
-    if previous is not None and (previous.last_error == "cleanup_unconfirmed" or previous.status == "executing" or previous.probe_owner is not None):
+    if previous is not None and (previous.last_error == "cleanup_unconfirmed" or previous.status == "executing" or previous.probe_owner is not None or previous.source_owner is not None):
         _refuse("environment repair requires confirmed cleanup of interrupted execution")
     seconds = min(limits.attempt_timeout_seconds, outer_seconds if outer_seconds > 0 else MAX_ATTEMPT_SECONDS,
                   MAX_ATTEMPT_SECONDS)
@@ -277,7 +288,7 @@ def _rejected_evidence(cache: EnvCacheState, data: dict[str, Any]) -> dict[str, 
     manifest = accepted_environment(cache)
     if manifest is None:
         _refuse('execution repair requires independent acceptance')
-    report = execution_report(json.dumps({key: data[key] for key in ('platform', 'manifest_digest', 'scope', 'results')
+    report = execution_report(json.dumps({key: data[key] for key in ('platform', 'manifest_digest', 'execution_source_digest', 'scope', 'results')
                                           if key in data}), cache, publish=False)
     target = ExecutionCapabilities.model_validate(cache.environment_capabilities)
     if report.platform != target.platform or (data.get('image_ref') is not None and data['image_ref'] != target.image_ref):
@@ -454,3 +465,34 @@ def dispatch_refusal(cache: EnvCacheState, commit: str) -> str | None:
             or journal.last_error == "cleanup_unconfirmed" or (journal.status == "held" and journal.source_commit == commit)):
         return "environment attempt is held; confirmed cleanup and a valid repair budget are required"
     return None
+
+
+def reserve_execution_source(cache: EnvCacheState, owner: str) -> None:
+    """Persist temporary source ownership before acquisition can create content."""
+    if cache.environment_source_owner is not None:
+        _refuse('execution source ownership requires confirmed cleanup', code='cleanup_unconfirmed')
+    if cache.environment_attempt is not None:
+        journal = journal_for(cache)
+        if journal.source_owner is not None:
+            _refuse('execution source ownership requires confirmed cleanup', code='cleanup_unconfirmed')
+        journal.source_owner = owner
+        _publish(cache, journal)
+    cache.environment_source_owner = owner
+
+
+def release_execution_source(cache: EnvCacheState, *, identity: dict[str, Any] | None = None) -> None:
+    """Release only after the caller removed its owned temporary source directory."""
+    owner = cache.environment_source_owner
+    if owner is not None and (Path(owner).exists() or Path(owner).is_symlink()):
+        _refuse('execution source cleanup unconfirmed', code='cleanup_unconfirmed')
+    if cache.environment_attempt is not None:
+        journal = journal_for(cache)
+        if journal.source_owner is not None and (Path(journal.source_owner).exists() or Path(journal.source_owner).is_symlink()):
+            _refuse('execution source cleanup unconfirmed', code='cleanup_unconfirmed')
+        if identity is not None:
+            if journal.execution_source is not None and journal.execution_source != identity:
+                _refuse('execution source changed within the pinned attempt', code='execution_source_identity')
+            journal.execution_source = identity
+        journal.source_owner = None
+        _publish(cache, journal)
+    cache.environment_source_owner = None

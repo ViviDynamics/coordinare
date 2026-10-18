@@ -76,16 +76,37 @@ def setup(tmp_path: Path, results: list[tuple[bool | None, str]]) -> tuple[Any, 
     capability = ExecutionCapabilities(schema_version=1, image_ref=cfg.global_config.performer_image,
         platform="linux/x86_64", cache_mount_path="/devenv/sym-abc", install_network="enabled", verify_network="disabled")
     reviewed_cache(ec, capabilities=capability, source_commit="e" * 40)
+    import hashlib
+
+    from coordinare_service_inference.environment.execution_source import (
+        ExecutionSourceBundle,
+        ExecutionSourceIdentity,
+        SourceEntry,
+        source_identity,
+    )
+
+    from tests.unit.test_353_execution_source import bundle_file, entries_for
+
+    files = {'tools.plan':(b'baseline','100644')}
+    identity = source_identity('e'*40,[SourceEntry.model_validate(e) for e in entries_for(files)])
+    ec.environment_execution_source = identity.model_dump()
+    async def prepare_source(owner, repo, *, commit, destination, deadline):
+        destination.mkdir(parents=True)
+        payload, descriptor = bundle_file(destination, files, commit=commit)
+        return ExecutionSourceBundle(ExecutionSourceIdentity.model_validate(descriptor),payload,
+            hashlib.sha256(payload.read_bytes()).hexdigest(),payload.stat().st_size)
     if results:
-        runtime.results.insert(0, (True, verification_output(ec.environment_manifest).decode()))
+        runtime.results.insert(0, (True, verification_output(ec.environment_manifest,execution_source=identity).decode()))
     performer = SimpleNamespace(_runtime=runtime, _config=SimpleNamespace(image="performer:full"), devenv_root="/devenv")
     sym_cfg = SimpleNamespace(env_bootstrap_performer_id="bootstrap", effective_config=lambda _: SimpleNamespace(
         github_org="org", project_name="repo"))
     state = {"coordinare_config": cfg, "env_cache": {"sym": ec}, "env_cache_service": service,
              "performer_services_by_id": {"bootstrap": performer}, "symphony_configs": {"sym": sym_cfg},
-             "github_service": SimpleNamespace(get_file_content=AsyncMock(return_value="baseline"))}
+             "github_service": SimpleNamespace(get_file_content=AsyncMock(return_value="baseline"),
+                                                prepare_execution_source=prepare_source)}
     daemon = CoordinareDaemon(AsyncMock(), max_cycles=1, sleep_func=AsyncMock())
     daemon._state.update(state)
+    daemon._state["snapshot_checkpoint_fn"] = AsyncMock()
     return service, ec, state, daemon, performer, runtime
 
 

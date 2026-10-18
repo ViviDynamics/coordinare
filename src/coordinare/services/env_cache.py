@@ -357,6 +357,7 @@ def _clear_reviewed_environment(cache: EnvCacheState) -> None:
     cache.rendered_verify_sh = None
     cache.rendered_activate_sh = None
     cache.environment_capabilities = None
+    cache.environment_execution_source = None
     cache.environment_manifest = None
     cache.environment_assessment = None
     cache.environment_verification = None
@@ -758,8 +759,24 @@ async def _verify_cache_runtime(state: Mapping[str, Any], symphony_name: str, sv
                                 performer_mounts: Sequence[Path]) -> tuple[bool | None, str]:
     import tempfile
 
+    from coordinare.services.environment_repair import (
+        release_execution_source,
+        reserve_execution_source,
+    )
+    from coordinare.services.environment_source_provider import checkpoint_source_ownership
+
+    cache = state['env_cache'][symphony_name]
     with tempfile.TemporaryDirectory(prefix='coordinare-verify-source-') as temporary:
-        return await _verify_cache_runtime_with_source(state, symphony_name, svc, performer_mounts, Path(temporary))
+        reserve_execution_source(cache, temporary)
+        try:
+            await checkpoint_source_ownership(state)
+            return await _verify_cache_runtime_with_source(state, symphony_name, svc, performer_mounts, Path(temporary))
+        finally:
+            # The context exits after finally; remove before releasing durable ownership.
+            import shutil
+            shutil.rmtree(temporary)
+            release_execution_source(cache, identity=cache.environment_execution_source)
+            await checkpoint_source_ownership(state)
 
 
 async def _verify_cache_runtime_with_source(
@@ -2423,6 +2440,15 @@ class EnvCacheService:
             await self._checkpoint_environment_attempt(cache_state, budget)
 
         budget.checkpoint = checkpoint
+        import tempfile
+
+        from coordinare.services.environment_repair import (
+            release_execution_source,
+            reserve_execution_source,
+        )
+
+        source_temporary = tempfile.TemporaryDirectory(prefix='coordinare-discovery-source-')
+        reserve_execution_source(cache_state, source_temporary.name)
         try:
             async with asyncio.timeout_at(budget.deadline):
                 budget.stage = "capabilities"
@@ -2438,6 +2464,16 @@ class EnvCacheService:
                 from coordinare.services.environment_capabilities import require_cache_mount
 
                 require_cache_mount(capabilities, cache_mount_path)
+                budget.stage = 'execution_source'
+                await budget.flush()
+                prepare_source = getattr(github_service, 'prepare_execution_source', None)
+                if prepare_source is None:
+                    raise ValueError('complete execution source provider unavailable')
+                source_bundle = await prepare_source(github_org, repo, commit=commit,
+                    destination=Path(source_temporary.name)/'payload', deadline=budget.deadline)
+                if source_bundle.identity.source_commit != commit:
+                    raise ValueError('complete execution source commit differs')
+                cache_state.environment_execution_source = source_bundle.identity.model_dump(mode='json')
                 budget.stage = "inventory"
                 paths = await github_service.get_repository_paths(
                     github_org, repo, ref=commit, max_entries=limits.max_inventory_entries,
@@ -2451,12 +2487,13 @@ class EnvCacheService:
                     "probe_backend": "docker" if daemon_sees_performer_cache(self._kubernetes_state) else "kubernetes"}
 
                 async def probe_executor(plan: ProbePlan) -> ProbeReport:
-                    return await run_owned_probe(plan, context=ProbeServiceContext(cache_state, probe_state, fetch, budget, limits))
+                    return await run_owned_probe(plan, context=ProbeServiceContext(cache_state, probe_state, fetch, budget, limits, source_bundle))
 
                 manifest, assessment = await discover_and_review(
                     symphony_name=symphony_name, commit=commit, paths=paths,
                     fetch=fetch, chat=llm_chat, capabilities=capabilities, declared_services=declared_services,
                     limits=limits, budget=budget, previous_manifest=previous, execution_feedback=feedback, probe_executor=probe_executor, require_preflight=True,
+                    execution_source_digest=source_bundle.identity.digest(),
                 )
         except TimeoutError:
             budget.error_code = "attempt_deadline"
@@ -2473,6 +2510,8 @@ class EnvCacheService:
             message = "environment runtime or source inventory is unavailable"
             raise EnvironmentDiscoveryError(message, code=budget.error_code) from None
         finally:
+            source_temporary.cleanup()
+            release_execution_source(cache_state, identity=cache_state.environment_execution_source)
             save_attempt(cache_state, budget)
             logger.info("env_cache.manifest_attempt", symphony=symphony_name, **budget.summary())
         activation = render_activate(manifest, cache_mount_path=cache_mount_path)

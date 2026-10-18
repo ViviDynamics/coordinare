@@ -75,11 +75,25 @@ async def execute_contract(score: Score, stand: Stand, *, install: bool = False)
     from coordinare_service_inference.environment.runner import run_manifest
 
     manifest = accepted_manifest(score)
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
+    from coordinare_service_inference.environment.execution_source_checkout import checkout_identity
+
+    try:
+        expected_source = ExecutionSourceIdentity.model_validate(score.environment_execution_source)
+    except ValueError:
+        _refuse_contract('complete execution source identity missing; rebuild the cache')
+    if expected_source.source_commit != manifest.source_commit:
+        _refuse_contract('complete execution source commit differs')
+    if install:
+        actual_source = await checkout_identity(stand.path, commit=manifest.source_commit, review_inputs=manifest.inputs)
+        if actual_source != expected_source:
+            _refuse_contract('installer checkout differs from accepted complete source')
     with tempfile.TemporaryDirectory(prefix="coordinare-environment-") as scratch:
         report = await run_manifest(
             manifest, cache=Path(score.env_cache_path), repo=stand.path,
             scratch=Path(scratch), install=install, scope="" if score.role == "env_bootstrap" else score.role,
             secret_names=score.environment_secret_names,
+            execution_source_digest=expected_source.digest(),
         )
     failures = [f"{item.id}: {item.status}" for item in report.results if item.status != "pass"]
     return {

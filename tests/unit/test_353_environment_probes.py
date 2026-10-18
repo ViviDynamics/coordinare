@@ -17,13 +17,13 @@ def request_data():
 
 def plan():
     from coordinare.services.environment_probes import ProbePlan, ProbeRequest
-    return ProbePlan(request=ProbeRequest.model_validate(request_data()), source_commit=COMMIT,
+    return ProbePlan(execution_source_digest="1"*64, request=ProbeRequest.model_validate(request_data()), source_commit=COMMIT,
         inventory_digest='b'*64, inputs={PATH:'c'*64}, capabilities=CAPABILITIES)
 
 
 def report_data(p=None):
     p = p or plan()
-    return {'schema_version':1, 'plan':p.model_dump(mode='json'), 'plan_digest':p.digest(), 'source_commit':COMMIT,
+    return {'schema_version':1, 'execution_source_digest':p.execution_source_digest, 'plan':p.model_dump(mode='json'), 'plan_digest':p.digest(), 'source_commit':COMMIT,
         'image_ref':CAPABILITIES.image_ref, 'platform':CAPABILITIES.platform,
         'results':[{'id':'tool', 'status':'completed', 'exit_code':127, 'output':'not found', 'truncated':False}],
         'cleanup_confirmed':True}

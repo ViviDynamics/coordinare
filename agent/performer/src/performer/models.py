@@ -369,6 +369,7 @@ class Score(BaseModel):
     # 234: the daemon-frozen env-cache steps. Declared here or extra="ignore" drops them in transit.
     env_provenance: dict[str, Any] | None = None
     # 351: accepted contract travels outside the installer-writable cache.
+    environment_execution_source: dict[str, Any] | None = None
     environment_manifest: dict[str, Any] | None = None
     environment_assessment: dict[str, Any] | None = None
     environment_manifest_digest: str = ""

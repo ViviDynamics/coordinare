@@ -474,4 +474,3 @@ def _mount_source_payload(manifest: dict[str, Any], spec: VerifierSpec, *, name:
     if spec.execution_source is not None:
         manifest['spec']['containers'][0]['env'].append({'name':'COORDINARE_ENV_EXECUTION_SOURCE_DIGEST',
             'value':spec.execution_source.identity.digest()})
-
