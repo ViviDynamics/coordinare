@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from coordinare_service_inference.environment.findings import FindingResponse
 from coordinare_service_inference.environment.models import (
     CoverageAssessmentProposal,
     EnvironmentManifestProposal,
@@ -49,12 +50,15 @@ _MANIFEST_INSTRUCTIONS = (
     'source must be one exact path that has been read, never comma-joined paths. '
     'Activation must make installed tools usable by ordinary downstream project commands, not only absolute-path version checks. '
     'Create every declared activation directory during installation; do not hide a missing path by removing useful activation. '
+    'The project environment scope is fixed by pinned development/test evidence, never by image convenience. '
+    'Include finding_responses for every open finding ID: rationale, sources and affected_ids. '
+    'Resolve missing capabilities or provide source-backed explanations; no new privileges or verification networking. '
     'Preserve every existing required requirement-to-check link; revise the linked commands instead of removing links. '
 
 )
 
 _MANIFEST_ENVELOPE = create_model(
-    "ManifestEnvelope", manifest=(EnvironmentManifestProposal, ...),
+    "ManifestEnvelope", manifest=(EnvironmentManifestProposal, ...), finding_responses=(list[FindingResponse], ...),
     __config__=ConfigDict(extra="forbid", strict=True),
 )
 
@@ -114,4 +118,4 @@ def legacy_discovery_system() -> str:
     """Retain optional-probe guidance for direct low-level callers."""
     return (SOURCE_TOOLS + 'You may return {"probe":...} matching ' +
         json.dumps(ProbeRequest.model_json_schema()) + _MANIFEST_INSTRUCTIONS +
-        'Return {"manifest":...} matching this schema: ' + json.dumps(EnvironmentManifestProposal.model_json_schema()))
+        'Return {"manifest":...,"finding_responses":[]} matching this schema: ' + json.dumps(_MANIFEST_ENVELOPE.model_json_schema()))

@@ -16,6 +16,7 @@ from tests.unit.test_353_discovery_repair import (
     Replies,
     assessment,
     candidate,
+    finding_responses,
     run,
 )
 
@@ -33,7 +34,7 @@ async def test_invalid_citations_correct_then_revision_gets_fresh_review():
     revised = copy.deepcopy(original)
     revised['checks'][0]['argv'].append('--strict')
     replies = Replies([{'tool':'read_file', 'path':PATH}, {'manifest':original},
-        invalid_review(), assessment(original, 'revise'), {'manifest':revised}, assessment(revised)])
+        invalid_review(), assessment(original, 'revise'), {'manifest':revised, 'finding_responses':finding_responses()}, assessment(revised, retained=True)])
     budget = AttemptBudget()
     manifest, review = await run(replies, budget=budget)
     assert manifest.digest() == review.manifest_digest

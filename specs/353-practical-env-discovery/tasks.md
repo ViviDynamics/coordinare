@@ -141,7 +141,7 @@ Spec: execution-source-amendment.md; plan: execution-source-plan.md. User approv
 Spec: persistent-review-findings-amendment.md; plan: persistent-review-findings-plan.md. Both user-approved.
 
 - [x] T073 Shared structured findings and versioned coverage contracts (task1).
-- [ ] T074 Durable findings, checkpoints and legacy restart policy (task2).
+- [x] T074 Durable findings, checkpoints and legacy restart policy (task2).
 - [ ] T075 Discovery responses and complete independent adjudication (task3).
 - [ ] T076 Current-policy consumer/performer validation and fixture migration (task4).
 - [ ] T077 Diagnostics, full verification/review and Elm-first60m simulation (task5).

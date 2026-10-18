@@ -1,0 +1,80 @@
+"""Daemon-owned transitions for independently adjudicated coverage findings."""
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from coordinare_service_inference.environment.findings import (
+    FindingLedger,
+    FindingRecord,
+    FindingReview,
+)
+from pydantic import ValidationError
+
+from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from coordinare_service_inference.environment.findings import FindingResponse
+    from coordinare_service_inference.environment.models import (
+        CoverageAssessmentProposal,
+        EnvironmentManifest,
+    )
+
+
+def _ids(manifest: EnvironmentManifest) -> set[str]:
+    ids = {item.id for group in ('requirements', 'checks', 'install', 'services') for item in getattr(manifest, group)}
+    for service in manifest.services:
+        ids.update(command.id for command in (service.init, service.start, service.health, service.stop) if command is not None)
+    return ids
+
+
+def validate_finding_responses(responses: list[FindingResponse], *, ledger: FindingLedger,
+                               inspected: Mapping[str, str], manifest: EnvironmentManifest) -> None:
+    ids = [response.finding_id for response in responses]
+    if (len(set(ids)) != len(ids) or not set(ledger.open_ids()) <= set(ids)
+            or not set(ids) <= {record.id for record in ledger.records}
+            or any(not set(response.sources) <= inspected.keys() or not set(response.affected_ids) <= _ids(manifest)
+                   for response in responses)):
+        raise EnvironmentDiscoveryError('finding responses must address every open objection with read evidence',
+                                        code='review_findings_invalid')
+
+
+def apply_finding_review(ledger: FindingLedger, *, manifest: EnvironmentManifest,
+                         proposal: CoverageAssessmentProposal, reviewer_inputs: Mapping[str, str]) -> FindingLedger:
+    """Produce a new checked ledger; never mutate history during model correction."""
+    if ledger.source_commit != manifest.source_commit:
+        raise EnvironmentDiscoveryError('finding source identity changed', code='source_identity')
+    for finding in proposal.findings:
+        if not set(finding.sources) <= reviewer_inputs.keys():
+            raise EnvironmentDiscoveryError('finding cites unread evidence', code='review_citations_invalid')
+        if not set(finding.affected_ids) <= _ids(manifest):
+            raise EnvironmentDiscoveryError('finding refers to unknown manifest obligation', code='review_findings_invalid')
+    for decision in proposal.decisions:
+        if not set(decision.sources) <= reviewer_inputs.keys():
+            raise EnvironmentDiscoveryError('decision cites unread evidence', code='review_citations_invalid')
+    records = [*ledger.records]
+    added_ids = []
+    for finding in proposal.findings:
+        fid = f'F{len(records)+1:04}'
+        added_ids.append(fid)
+        records.append(FindingRecord(id=fid, proposal=finding, manifest_digest=manifest.digest(),
+            source_commit=manifest.source_commit, inputs={path: reviewer_inputs[path] for path in finding.sources}))
+    try:
+        result = FindingLedger(source_commit=ledger.source_commit, records=records,
+            reviews=[*ledger.reviews, FindingReview(sequence=len(ledger.reviews)+1,
+                manifest_digest=manifest.digest(), inputs=dict(reviewer_inputs), decisions=proposal.decisions,
+                added_ids=added_ids)])
+    except ValidationError as exc:
+        # Growth beyond trusted aggregate bounds is terminal; malformed model
+        # decisions remain correctable within the existing schema allowance.
+        if len(records) > 32 or any('128 KiB' in str(error.get('msg', '')) for error in exc.errors()):
+            raise EnvironmentDiscoveryError('finding ledger limit exceeded', code='review_findings_limit') from None
+        raise EnvironmentDiscoveryError('finding adjudication is incomplete or invalid', code='review_findings_invalid') from None
+    if (proposal.verdict == 'accept' and result.open_ids()) or (proposal.verdict == 'revise' and not result.open_ids()):
+        raise EnvironmentDiscoveryError('verdict contradicts explicit finding decisions', code='review_findings_invalid')
+    categories = {record.id: record.proposal.category for record in result.records}
+    if proposal.capability_unavailable and (proposal.verdict == 'accept'
+            or not any(categories[fid] == 'capability' for fid in result.open_ids())):
+        raise EnvironmentDiscoveryError('unavailable capability lacks an open cited finding', code='review_findings_invalid')
+    return result
