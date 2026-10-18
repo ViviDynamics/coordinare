@@ -124,3 +124,40 @@ async def test_large_inventory_is_not_repeated_in_model_prompt():
     assert "paths" not in initial
     assert "file-099997" not in json.dumps(initial)
     assert len(json.dumps(initial["root_directory"]).encode()) <= 32 * 1024
+
+
+@pytest.mark.asyncio
+async def test_exact_elm_navigation_trace_preserves_valid_batch_evidence():
+    paths = ['Makefile', 'control-plane/go.mod', 'console/package.json',
+             'scripts/ci/validate_foundation_scaffold.sh', 'sdks/python/pyproject.toml',
+             'integration-tests/go.mod']
+    inspection = SourceInspection(paths, fetch, DiscoveryLimits())
+    for root in ('.', '.', ''):
+        assert await inspection.tool_result({'tool': 'list_files', 'path': root, 'cursor': 0}) == inspection.list_directory()
+    await inspection.tool_result({'tool': 'read_file', 'path': 'Makefile'})
+    batch = [*paths[1:4], 'runtime-wrapper-vllm/requirements.txt', *paths[4:]]
+    result = await inspection.tool_result({'tool': 'read_files', 'paths': batch})
+    assert [item['path'] for item in result['files']] == paths[1:]
+    assert result['errors'] == [{'index': 3, 'code': 'source_path_not_found'}]
+    assert set(inspection.inputs) == set(paths)
+    assert inspection.reads == 6
+    with pytest.raises(EnvironmentDiscoveryError, match='invalid source batch'):
+        await inspection.read_files(batch)
+
+
+@pytest.mark.asyncio
+async def test_navigation_errors_are_bounded_and_do_not_fetch_unknown_sources():
+    inspection = SourceInspection(['known'], fetch, DiscoveryLimits(max_reads=1))
+    for request in ({'tool': 'list_files', 'path': '../private'},
+                    {'tool': 'list_files', 'cursor': True},
+                    {'tool': 'read_file', 'path': '/private/token'},
+                    {'tool': 'read_files', 'paths': ['unknown']}):
+        result = await inspection.tool_result(request)
+        assert result['errors']
+        assert 'private' not in json.dumps(result)
+        assert len(json.dumps(result)) < 512
+    assert inspection.reads == 0
+    assert inspection.inputs == {}
+    await inspection.tool_result({'tool': 'read_file', 'path': 'known'})
+    with pytest.raises(EnvironmentDiscoveryError, match='read limit'):
+        await inspection.tool_result({'tool': 'read_file', 'path': 'known'})

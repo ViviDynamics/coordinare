@@ -120,12 +120,34 @@ class SourceInspection:
     async def read(self, path: Any) -> dict[str, str]:
         return (await self.read_files([path]))["files"][0]
 
+    async def _navigation_reads(self, paths: Any, *, single: bool = False) -> dict[str, Any]:
+        """Recover missing model-selected paths; internal evidence reads remain strict."""
+        if (not isinstance(paths, list) or not 1 <= len(paths) <= MAX_BATCH_FILES
+                or any(not isinstance(path, str) for path in paths) or len(set(paths)) != len(paths)):
+            message = "source batch must contain one to eight distinct string paths"
+            raise EnvironmentDiscoveryError(message, code="invalid_tool_arguments")
+        valid = [path for path in paths if path in self.inventory]
+        errors = [{"index": index, "code": "source_path_not_found"}
+                  for index, path in enumerate(paths) if path not in self.inventory]
+        result: dict[str, Any] = await self.read_files(valid) if valid else {"files": []}
+        if not errors:
+            return result["files"][0] if single else result
+        result.update(errors=errors, guidance="Use list_files to select exact repository paths; root path is empty or '.'.")
+        return result
+
     async def tool_result(self, reply: dict[str, Any]) -> dict[str, Any]:
         if reply.get("tool") == "list_files" and set(reply) <= {"tool", "path", "cursor"}:
-            return self.list_directory(reply.get("path", ""), reply.get("cursor", 0))
+            path = reply.get("path", "")
+            try:
+                return self.list_directory("" if path == "." else path, reply.get("cursor", 0))
+            except EnvironmentDiscoveryError as exc:
+                if exc.code != "invalid_tool_arguments":
+                    raise
+                return {"errors": [{"code": "invalid_directory_or_cursor"}],
+                        "guidance": "Use a listed directory path (root: empty or '.'); start at cursor 0, then use next_cursor."}
         if set(reply) == {"tool", "paths"} and reply.get("tool") == "read_files":
-            return await self.read_files(reply["paths"])
+            return await self._navigation_reads(reply["paths"])
         if set(reply) == {"tool", "path"} and reply.get("tool") == "read_file":
-            return await self.read(reply["path"])
+            return await self._navigation_reads([reply["path"]], single=True)
         message = f"{self.name} returned an unsupported tool or envelope"
         raise EnvironmentDiscoveryError(message, code="unsupported_envelope")

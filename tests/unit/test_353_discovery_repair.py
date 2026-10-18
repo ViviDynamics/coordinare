@@ -260,7 +260,7 @@ async def test_schema_limit_is_independent_of_coverage_revision():
     {"tool": "list_files", "path": "absent", "cursor": 0},
     {"tool": "list_files", "path": "", "cursor": "next"},
 ])
-async def test_invalid_navigation_can_repair_without_fabricated_source(tool):
+async def test_invalid_navigation_does_not_spend_schema_repairs(tool):
     valid = candidate()
     replies = Replies([tool, {"tool": "read_file", "path": PATH}, {"manifest": valid},
         {"tool": "read_file", "path": PATH}, assessment(valid)])
@@ -268,10 +268,10 @@ async def test_invalid_navigation_can_repair_without_fabricated_source(tool):
     manifest, review = await run(replies, diagnostics=events.append)
     assert manifest.inputs == full_candidate()["inputs"]
     assert review.verdict == "accept"
-    assert events[-1]["repairs"] == 1
+    assert events[-1]["repairs"] == 0
     assert events[-1]["reads"] == 3
     feedback = json.loads(replies.messages[1][-1]["content"])
-    assert feedback["validation_errors"][0]["code"] == "invalid_tool_arguments"
+    assert feedback["tool_result"]["errors"]
 
 
 @pytest.mark.asyncio
@@ -381,3 +381,26 @@ async def test_provider_error_is_not_retried_as_malformed_json(monkeypatch):
     assert exc.value.code == 'provider_request_failed'
     assert events[-1]['calls'] == 1
     assert events[-1]['schema_repairs'] == 0
+
+
+@pytest.mark.asyncio
+async def test_navigation_recovery_survives_exhausted_schema_allowance():
+    valid = candidate()
+    replies = Replies([{}, {}, {'tool': 'list_files', 'path': '.'},
+        {'tool': 'read_files', 'paths': ['missing', PATH]}, {'manifest': valid},
+        {'tool': 'read_file', 'path': PATH}, assessment(valid)])
+    events = []
+    manifest, review = await run(replies, diagnostics=events.append)
+    assert review.manifest_digest == manifest.digest()
+    assert events[-1]['schema_repairs'] == 2
+    assert 'missing' not in manifest.inputs
+
+
+@pytest.mark.asyncio
+async def test_repeated_navigation_errors_still_exhaust_aggregate_calls():
+    replies = Replies([{'tool': 'read_file', 'path': 'absent'}] * 3)
+    budget = AttemptBudget(timeout_seconds=600, max_calls=2, max_reads=2, max_schema_repairs=2)
+    with pytest.raises(EnvironmentDiscoveryError, match='call limit'):
+        await run(replies, budget=budget)
+    assert budget.schema_repairs == 0
+    assert len(replies.messages) == 2
