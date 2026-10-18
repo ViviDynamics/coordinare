@@ -1,0 +1,54 @@
+"""Bounded binary source framing for isolated execution, never exec/env payloads."""
+
+from __future__ import annotations
+
+import hashlib
+from typing import TYPE_CHECKING, Any
+
+from coordinare_service_inference.environment.execution_source import (
+    MAX_ARCHIVE_BYTES,
+    canonical,
+    validate_execution_bundle,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
+
+MAX_HEADER_BYTES = 1024 * 1024
+MAX_SCRIPT_BYTES = 1024 * 1024
+
+
+def execution_header(
+    bundle: ExecutionSourceBundle, script: str, *, review_inputs: Mapping[str, str],
+) -> dict[str, Any]:
+    validate_execution_bundle(
+        bundle.payload_path, expected=bundle.identity, review_inputs=review_inputs,
+    )
+    script_bytes = script.encode()
+    if not 0 < bundle.payload_bytes <= MAX_ARCHIVE_BYTES or len(script_bytes) > MAX_SCRIPT_BYTES:
+        raise ValueError("execution source transport exceeds byte bound")
+    data = {
+        "schema_version": 1,
+        "payload_bytes": bundle.payload_bytes,
+        "payload_sha256": bundle.payload_sha256,
+        "script_bytes": len(script_bytes),
+        "script_sha256": hashlib.sha256(script_bytes).hexdigest(),
+        "identity": bundle.identity.model_dump(),
+        "review_inputs": dict(review_inputs),
+    }
+    if len(canonical(data)) > MAX_HEADER_BYTES:
+        raise ValueError("execution source header exceeds byte bound")
+    return data
+
+
+def execution_input(
+    bundle: ExecutionSourceBundle, script: str, *, review_inputs: Mapping[str, str],
+) -> bytes:
+    header = execution_header(bundle, script, review_inputs=review_inputs)
+    with bundle.payload_path.open("rb") as stream:
+        raw = stream.read(MAX_ARCHIVE_BYTES + 1)
+    if len(raw) != bundle.payload_bytes or hashlib.sha256(raw).hexdigest() != bundle.payload_sha256:
+        raise ValueError("execution source transport bytes differ")
+    return b"".join((canonical(header), b"\n", raw, script.encode()))

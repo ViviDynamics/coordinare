@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from coordinare_service_inference.environment.source_payload import materialize_sources
+from coordinare_service_inference.environment.execution_source import validate_execution_bundle
+from coordinare_service_inference.environment.execution_source_restore import (
+    restore_execution_bundle,
+)
 
 from coordinare.services import environment_probe_runtime
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
@@ -18,6 +20,8 @@ from coordinare.services.environment_probes import ProbeCommandResult, ProbePlan
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
 
 
 MAX_WIRE_REPORT_BYTES = 300000
@@ -138,21 +142,23 @@ async def _command_container(plan: ProbePlan, roots: tuple[Path, Path], command:
 
 
 async def execute_environment_probe(
-    plan: ProbePlan, *, state: Mapping[str, Any], source_files: Mapping[str, str], budget: AttemptBudget,
+    plan: ProbePlan, *, state: Mapping[str, Any], source_bundle: ExecutionSourceBundle, budget: AttemptBudget, deadline: float | None = None,
 ) -> ProbeReport:
     if state.get("probe_backend") != "docker":
         message = "probe runtime cannot establish required isolation"
         raise EnvironmentDiscoveryError(message, code="probe_isolation_unsupported")
-    actual = {path:hashlib.sha256(text.encode()).hexdigest() for path, text in source_files.items()}
-    if actual != plan.inputs:
-        message = "probe source identity changed"
-        raise EnvironmentDiscoveryError(message, code="probe_source_identity")
+    try:
+        validate_execution_bundle(source_bundle.payload_path, expected=source_bundle.identity, review_inputs=plan.inputs)
+        if source_bundle.identity.source_commit != plan.source_commit:
+            raise ValueError('execution source commit differs')
+    except ValueError as exc:
+        raise EnvironmentDiscoveryError('probe source identity changed', code='probe_source_identity') from exc
     budget.check()
     name = "coordinare-probe-" + plan.digest()[:24]
     if name in _ACTIVE_PROBES:
         message = "probe executor already owns this resource"
         raise EnvironmentDiscoveryError(message, code="probe_reservation_invalid")
-    deadline = min(budget.deadline, time.monotonic()+120)
+    deadline = min(budget.deadline, deadline if deadline is not None else time.monotonic()+120)
     _ACTIVE_PROBES.add(name)
     try:
         async with asyncio.timeout_at(deadline):
@@ -162,7 +168,8 @@ async def execute_environment_probe(
                 raise EnvironmentDiscoveryError(message, code="probe_target_identity")
             with tempfile.TemporaryDirectory(prefix="coordinare-probe-") as temporary:
                 root = Path(temporary)
-                materialize_sources(source_files, root/"repo")
+                restore_execution_bundle(source_bundle.payload_path, root/"repo",
+                    expected=source_bundle.identity, review_inputs=plan.inputs)
                 (root/"cache").mkdir()
                 # Independent commands get separate containers: removal kills even
                 # escaped sessions before another command can run.
