@@ -310,3 +310,22 @@ tool or one assessment, without extra keys even when null. Mixed replies remain
 invalid; there is no normalization, budget increase or judgment waiver. The nested
 assessment fields remain required, and a fresh bounded Elm-only test evaluates this
 protocol correction while preserving the failed profile and original counters.
+
+The subsequent Elm run held after 709.24 seconds when a coverage repair removed
+an existing requirement-to-check link. That invariant remains mandatory. Evidence
+inspection identified an additional gap: fresh review received probe result IDs and
+a plan digest, but not the commands/questions/citations in the executed plan. The
+Python probe had successfully imported PyYAML; its version-only output could not
+communicate that to an isolated reviewer. Parent-validated reports now retain the
+full executed plan after exact source/image/platform/digest/result validation, both
+in the durable journal and fresh review/repair evidence. A conflicting embedded
+plan is rejected; the parent never adopts model-supplied command authority.
+
+Completed historical probe reports without the executed plan hold before fresh
+review and require an explicit restart after confirmed cleanup; missing provenance
+is not guessed. Already-ready frozen caches remain governed by their existing
+manifest/clean-execution gates. Source/context/journal bounds, probe quotas and the
+original deadline do not increase. Repair feedback explicitly lists the required
+coverage links, and command definitions may be revised while those links remain.
+The obligation-removal guard and independent review/clean-execution gates do not
+change. The failed profile and its original counters are preserved.

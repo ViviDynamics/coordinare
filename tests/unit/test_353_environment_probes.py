@@ -23,7 +23,7 @@ def plan():
 
 def report_data(p=None):
     p = p or plan()
-    return {'schema_version':1, 'plan_digest':p.digest(), 'source_commit':COMMIT,
+    return {'schema_version':1, 'plan':p.model_dump(mode='json'), 'plan_digest':p.digest(), 'source_commit':COMMIT,
         'image_ref':CAPABILITIES.image_ref, 'platform':CAPABILITIES.platform,
         'results':[{'id':'tool', 'status':'completed', 'exit_code':127, 'output':'not found', 'truncated':False}],
         'cleanup_confirmed':True}
@@ -123,7 +123,10 @@ def test_probe_ownership_refuses_overlap_and_retains_report(tmp_path):
         reserve_probe(cache, p)
     with pytest.raises(EnvironmentDiscoveryError):
         begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
-    finish_probe(cache, ProbeReport.model_validate(report_data(p)))
+    data = report_data(p)
+    data.pop('plan', None)
+    finish_probe(cache, ProbeReport.model_validate(data))
+    assert cache.environment_attempt['probe_reports'][0]['plan'] == p.model_dump(mode='json')
     assert cache.environment_attempt['probe_owner'] is None
     assert len(cache.environment_attempt['probe_reports']) == 1
     assert begin_attempt(cache, DiscoveryLimits(), outer_seconds=600).probe_batches == 1
@@ -245,3 +248,23 @@ def test_probe_feedback_names_rejected_constraint_without_source_values(mutation
     feedback = _validation_feedback(caught.value)
     assert any(error['code'] == code for error in feedback)
     assert 'unfamiliar-tool' not in str(feedback)
+
+
+def test_saved_probe_without_executed_plan_holds_before_fresh_review():
+    from coordinare.services.environment_probes import validate_saved_probe_reports
+    data=report_data()
+    data.pop('plan',None)
+    with pytest.raises(EnvironmentDiscoveryError) as caught:
+        validate_saved_probe_reports([data],COMMIT,CAPABILITIES)
+    assert caught.value.code=='probe_plan_missing'
+
+
+def test_report_cannot_substitute_a_different_executed_plan():
+    from coordinare.services.environment_probes import ProbeReport, validate_probe_report
+    expected=plan()
+    data=report_data(expected)
+    data['plan']=expected.model_dump(mode='json')
+    data['plan']['request']['commands'][0]['argv']=['different-observation']
+    with pytest.raises(EnvironmentDiscoveryError) as caught:
+        validate_probe_report(expected,ProbeReport.model_validate(data))
+    assert caught.value.code=='probe_report_invalid'
