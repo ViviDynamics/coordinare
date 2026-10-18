@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 import structlog
+from coordinare_service_inference.environment.execution_source import ExecutionSourceError
 from pydantic import ValidationError
 
 from coordinare.config import CoordinareConfiguration, SymphonyConfig
@@ -4485,9 +4486,13 @@ class CoordinareDaemon:
         try:
             spec = await self._prepare_clean_verifier(symphony_name, svc, ec, limits)
             ok, detail = await svc._runtime.run_verifier(slug=ec.sanitised_name, spec=spec)
+        except ExecutionSourceError as exc:
+            if exc.code == "execution_source_unavailable":
+                return False, str(exc), True
+            return self._verifier_configuration_refusal(ec, str(exc))
         except (VerifierConfigurationError, ValueError) as exc:
             return self._verifier_configuration_refusal(ec, str(exc))
-        except RuntimeError as exc:
+        except (OSError, RuntimeError) as exc:
             return False, str(exc), True
         finally:
             if spec is not None and spec.execution_source_workspace is not None:
@@ -4520,7 +4525,7 @@ class CoordinareDaemon:
         if ec.environment_verification is not None:
             ec.environment_verification["image_ref"] = spec.image
         walk_spec = replace(spec, verify_text="", project_files={}, transient_credentials="", walk_only=True,
-                            activate_text=bootstrap_activate)
+                            activate_text=bootstrap_activate, execution_source=None, execution_source_workspace=None)
         return (
             await self._verify_bootstrap_claim(svc, ec, walk_spec, bootstrap_sha, limits)
             if ok is True and report.passed else (False, "required environment checks did not pass", False)

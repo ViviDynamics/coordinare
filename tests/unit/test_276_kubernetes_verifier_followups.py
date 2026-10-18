@@ -25,7 +25,7 @@ from coordinare.services.kubernetes_verifier import (
     VERIFY_TEXT_MAX_BYTES,
     VerifierSpec,
 )
-from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
+from tests.unit.env_manifest_fixture import verification_output
 from tests.unit.test_265_k8s_verifier import (
     CLAIM,
     MOUNT,
@@ -100,7 +100,7 @@ async def test_invalid_pod_inputs_raise_configuration_refusals_without_creation(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("refusal", ["image", "missing_image", "verify_size", "project_size", "encoding"])
-async def test_configuration_refusals_stop_bootstrap_retries(tmp_path: Path, refusal: str) -> None:
+async def test_configuration_refusals_stop_bootstrap_retries(tmp_path: Path, refusal: str, monkeypatch: pytest.MonkeyPatch) -> None:
     service, ec, state, daemon, performer, _runtime = setup(tmp_path, [])
     core = _FakeCoreV1(["Succeeded"])
     performer._runtime = KubernetesRuntime(namespace=NAMESPACE, cache_claim=CLAIM, core_v1=core)
@@ -113,9 +113,11 @@ async def test_configuration_refusals_stop_bootstrap_retries(tmp_path: Path, ref
     elif refusal == "verify_size":
         ec.rendered_verify_sh = "x" * (VERIFY_TEXT_MAX_BYTES + 1)
     elif refusal == "project_size":
-        text = "x" * PROJECT_FILES_MAX_BYTES
-        reviewed_cache(ec, files={"tools.plan": text}, source_commit=ec.bootstrap_commit_sha)
-        state["github_service"].get_file_content.return_value = text
+        # Complete binary source uses its own bounds, independent of text evidence.
+        from coordinare_service_inference.environment import execution_source
+        monkeypatch.setattr(execution_source, "MAX_BLOB_BYTES", 7)
+        expected = "tree identity or file layout"
+        # The actual baseline source blob is 8 bytes; shared validation must refuse it.
     else:
         ec.rendered_verify_sh = "\ud800"
         expected = "encode"

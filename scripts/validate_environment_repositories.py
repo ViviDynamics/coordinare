@@ -22,8 +22,9 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+from coordinare_service_inference.environment.execution_source import read_source_reference
 from scripts import environment_validation_cleanup
 from scripts.environment_validation_image import candidate_image, verify_image_code
 
@@ -184,24 +185,19 @@ class Snapshot:
         if ref != self.commit:
             raise ValueError("snapshot identity differs")
         source_path(path)
-        current = path
-        seen = set()
-        for _ in range(8):
-            if current in seen or current not in self.modes:
+
+        async def fetch(current: str) -> str | None:
+            if current not in self.modes:
                 return None
-            seen.add(current)
             raw = await self.git("show", ref + ":" + current, max_bytes=256 * 1024)
             try:
-                content = raw.decode("utf-8")
+                return raw.decode("utf-8")
             except UnicodeError:
                 return None
-            if self.modes[current] != "120000":
-                return content
-            import posixpath
 
-            current = posixpath.normpath(posixpath.join(posixpath.dirname(current), content))
-            source_path(current)
-        return None
+        return cast("str | None", await read_source_reference(
+            path, {name for name, mode in self.modes.items() if mode == "120000"}, fetch,
+        ))
 
 
 def new_profile_directory(path: Path) -> None:

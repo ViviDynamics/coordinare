@@ -11,7 +11,10 @@ import structlog
 
 from coordinare.services.environment_probe_executor import confirm_probe_cleanup
 from coordinare.services.environment_probes import ProbePlan
-from coordinare.services.environment_repair import restart_environment_attempt
+from coordinare.services.environment_repair import (
+    execution_source_cleanup_confirmed,
+    restart_environment_attempt,
+)
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -51,6 +54,13 @@ async def request_env_bootstrap_reset(
     """Confirm owned runtime cleanup before the shared atomic operator reset."""
     cleanup_confirmed = False
     journal = cache_state.environment_attempt
+    has_source = cache_state.environment_source_owner is not None or (
+        isinstance(journal, dict) and journal.get("source_owner") is not None
+    )
+    if has_source:
+        cleanup_confirmed = execution_source_cleanup_confirmed(cache_state)
+        if not cleanup_confirmed:
+            return _reset_breaker(state, symphony, cache_state, _ResetRequest(actor, activity_log, False))
     if isinstance(journal, dict) and (journal.get("probe_owner") is not None or journal.get("probe_plan") is not None):
         try:
             plan = ProbePlan.model_validate(journal.get("probe_plan"))

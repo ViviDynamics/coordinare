@@ -801,7 +801,7 @@ class KubernetesRuntime:
         try:
             return await self._run_verifier_with_source(slug=slug, spec=spec, poll_interval_s=poll_interval_s)
         finally:
-            if spec.execution_source_workspace is not None:
+            if not spec.walk_only and spec.execution_source_workspace is not None:
                 shutil.rmtree(spec.execution_source_workspace)
 
     async def _run_verifier_with_source(

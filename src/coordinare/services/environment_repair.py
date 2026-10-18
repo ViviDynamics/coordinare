@@ -123,12 +123,34 @@ def hold_uncertain_execution(cache: EnvCacheState) -> None:
     _publish(cache, journal)
 
 
+def execution_source_cleanup_confirmed(cache: EnvCacheState) -> bool:
+    """Reconcile recorded local ownership by absence, never delete a persisted path."""
+    data = cache.environment_attempt
+    journal_owner = data.get("source_owner") if isinstance(data, dict) else None
+    for owner in (cache.environment_source_owner, journal_owner):
+        if owner is None:
+            continue
+        if not isinstance(owner, str) or not Path(owner).is_absolute():
+            return False
+        try:
+            Path(owner).lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return False
+        return False
+    return True
+
+
 def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool = False) -> None:
     """Explicit operator action, preserving bounded old proof in a new empty sibling."""
     data = cache.environment_attempt
-    if cache.environment_source_owner is not None:
+    if (cache.environment_source_owner is not None or (isinstance(data, dict) and data.get("source_owner") is not None)) and (
+        cleanup_confirmed is not True or not execution_source_cleanup_confirmed(cache)
+    ):
         _refuse("source cleanup must be reconciled before restart", code="cleanup_unconfirmed")
     if data is None:
+        cache.environment_source_owner = None
         return
     if not isinstance(data, dict) or data.get("version") not in (1, 2, 3, 4):
         _refuse("unknown environment journal cannot be reset without reconciliation")
@@ -164,6 +186,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
     cache.environment_manifest = cache.environment_assessment = cache.environment_verification = None
     cache.environment_capabilities = None
     cache.environment_execution_source = None
+    cache.environment_source_owner = None
     cache.rendered_activate_sh = cache.rendered_verify_sh = None
     cache.cache_dir_ready = False
     cache.provenance_digest = None

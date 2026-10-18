@@ -345,3 +345,32 @@ async def test_github_review_reads_resolve_pinned_in_tree_links_like_snapshot(
         == "required tool"
     )
     assert seen == [COMMIT + ":link", COMMIT + ":docs/guide"]
+
+
+@pytest.mark.asyncio
+async def test_provider_http_outage_has_distinct_transient_code(tmp_path, monkeypatch):
+    module = api()
+    async def unavailable(*args, **kwargs):
+        request = httpx.Request('GET', 'https://api.github.com/repos/o/r/git/trees/'+COMMIT)
+        response = httpx.Response(503, request=request)
+        raise httpx.HTTPStatusError('unavailable', request=request, response=response)
+    monkeypatch.setattr(module, '_acquire_github_source', unavailable)
+    with pytest.raises(module.ExecutionSourceError) as failure:
+        await module.acquire_github_source(module.GitHubSourceRequest(
+            api_base='https://api.github.com', token='private-test-token', owner='o', repo='r', commit=COMMIT),
+            destination=tmp_path/'owned', deadline=time.monotonic()+5)
+    assert failure.value.code == 'execution_source_unavailable'
+
+
+@pytest.mark.asyncio
+async def test_review_read_resolves_intermediate_links_before_parent_steps():
+    from types import SimpleNamespace
+
+    from coordinare.services.github import GitHubService
+    values = {'a':'deep/link/../escape', 'deep/link':'../x', 'escape':'actual contents', 'deep/escape':'wrong contents'}
+    async def query(document, variables):
+        value = values.get(variables['expression'].split(':', 1)[1])
+        return {'repository': {'object': {'text':value}}}
+    fake = SimpleNamespace(_guarded_execute=query,
+        _execution_source_link_inventory=('o','r',COMMIT,frozenset({'a','deep/link'})))
+    assert await GitHubService.get_file_content(fake, 'o', 'r', 'a', ref=COMMIT) == 'actual contents'

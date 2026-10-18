@@ -3,11 +3,10 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import inspect
-import posixpath
 import re
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from coordinare_service_inference.environment.models import source_path
+from coordinare_service_inference.environment.execution_source import read_source_reference
 
 from coordinare.services.environment_source_provider import (
     GitHubSourceRequest,
@@ -2629,23 +2628,16 @@ class GitHubService(CardIdentityMap):
 
         inventory = getattr(self, '_execution_source_link_inventory', None)
         links = inventory[3] if inventory is not None and inventory[:3] == (owner, repo, ref) else frozenset()
-        current = path
-        seen: set[str] = set()
-        for _ in range(8):
-            if current in seen:
-                return None
-            seen.add(current)
+        async def fetch(current: str) -> str | None:
             result = await self._guarded_execute(
                 GET_FILE_CONTENT_QUERY,
                 {'owner':owner, 'repo':repo, 'expression':f'{ref}:{current}'},
             )
             obj = result.get('repository', {}).get('object')
             content = obj.get('text') if isinstance(obj, dict) else None
-            if current not in links or not isinstance(content, str):
-                return content
-            current = posixpath.normpath(posixpath.join(posixpath.dirname(current), content))
-            source_path(current)
-        return None
+            return content if isinstance(content, str) else None
+
+        return cast("str | None", await read_source_reference(path, links, fetch))
 
     async def get_file_blob_sha(
         self, owner: str, repo: str, path: str, ref: str = "HEAD",
