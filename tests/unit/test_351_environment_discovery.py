@@ -58,6 +58,7 @@ class ScriptedChat:
             return json.dumps({"manifest": {**manifest_proposal(self.manifest), **self.extra_manifest}})
         return json.dumps({"assessment": {
             **({"manifest_digest": self.digest} if self.digest else {}),
+            "findings": [], "decisions": [], "capability_unavailable": False,
             "verdict": self.verdict, "rationale": "Evidence covers documented constraints", "sources": self.sources,
         }})
 
@@ -226,6 +227,7 @@ def test_persisted_review_rationale_contains_only_daemon_generated_text():
     manifest = EnvironmentManifest.model_validate(ScriptedChat().manifest)
     sensitive = 'repository credential must never be persisted: private-value'
     assessment = _validated_assessment({
+        'findings': [], 'decisions': [], 'capability_unavailable': False,
         'verdict': 'accept',
         'rationale': sensitive, 'sources': [PATH],
     }, {PATH: manifest.inputs[PATH]}, manifest)

@@ -20,6 +20,7 @@ from tests.unit.test_353_discovery_repair import (
     SOURCE,
     assessment,
     candidate,
+    finding_responses,
 )
 
 
@@ -98,14 +99,14 @@ async def test_revised_candidate_prefetches_expanded_input_set():
                 if len(review_starts) == 1:
                     return json.dumps({'tool':'read_file', 'path':'additional'})
             verdict = 'revise' if len(review_starts) == 1 else 'accept'
-            result = assessment(candidate(), verdict)
+            result = assessment(candidate(), verdict, retained=len(review_starts) > 1)
             result['assessment']['sources'] = [PATH, 'additional']
             return json.dumps(result)
         if len(messages) == 2:
             return json.dumps({'tool':'read_file', 'path':PATH})
         if 'coverage_revision' in json.loads(messages[-1]['content']):
             return json.dumps({'tool':'read_file', 'path':'additional'})
-        return json.dumps({'manifest':candidate()})
+        return json.dumps({'manifest':candidate(), 'finding_responses': finding_responses() if review_starts else []})
     _, review = await discover_and_review(symphony_name='suite', commit=COMMIT, paths=list(files),
         capabilities=CAPABILITIES, fetch=fetch, chat=chat)
     assert review_starts == [{PATH}, {PATH, 'additional'}]
@@ -176,7 +177,7 @@ async def test_elm_sequence_schema_then_two_coverage_revisions():
         if 'manifest' in context:
             assert {item['path'] for item in context['mandatory_evidence']} == {PATH}
             review_count += 1
-            result = assessment(candidate(), 'revise' if review_count <= 2 else 'accept')
+            result = assessment(candidate(), 'revise' if review_count <= 2 else 'accept', retained=review_count > 1)
             result['assessment']['rationale'] = ('Missing required lanes' if review_count == 1 else
                 'Conflicting pinned versions and no usability check' if review_count == 2 else 'Complete executable coverage')
             return json.dumps(result)
@@ -186,7 +187,7 @@ async def test_elm_sequence_schema_then_two_coverage_revisions():
         value = candidate()
         if step == 'schema_invalid':
             value['activation']['env'] = {'UNSAFE': '${UNSAFE}:suffix'}
-        return json.dumps({'manifest':value})
+        return json.dumps({'manifest':value, 'finding_responses': finding_responses() if review_count else []})
     _, review = await discover_and_review(symphony_name='suite', commit=COMMIT, paths=[PATH],
         capabilities=CAPABILITIES, fetch=fetch, chat=chat, budget=budget)
     assert review.verdict == 'accept'

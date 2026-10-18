@@ -41,9 +41,18 @@ class Replies:
         return json.dumps(value)
 
 
-def assessment(manifest, verdict="accept"):
+def finding_responses():
+    return [{'finding_id': 'F0001', 'rationale': 'Resolved using source', 'sources': [PATH], 'affected_ids': []}]
+
+
+def assessment(manifest, verdict="accept", *, retained=False):
     return {"assessment": {"verdict": verdict,
-        "rationale": "Review source for required executable coverage", "sources": [PATH]}}
+        "rationale": "Review source for required executable coverage", "sources": [PATH],
+        'capability_unavailable': False,
+        'findings': ([{'category': 'coverage', 'issue': 'Required executable coverage is incomplete',
+                      'sources': [PATH], 'affected_ids': []}] if verdict == 'revise' and not retained else []),
+        'decisions': ([{'finding_id': 'F0001', 'status': 'resolved' if verdict == 'accept' else 'open',
+                       'rationale': 'Independent source decision', 'sources': [PATH], 'duplicate_of': None}] if retained else [])}}
 
 
 async def run(chat, **kwargs):
@@ -88,8 +97,8 @@ async def test_revision_requires_new_independent_conversation_and_digest():
     revised = copy.deepcopy(original)
     revised["checks"][0]["argv"].append("--strict")
     replies = Replies([{"tool": "read_file", "path": PATH}, {"manifest": original},
-        {"tool": "read_file", "path": PATH}, assessment(original, "revise"), {"manifest": revised},
-        {"tool": "read_file", "path": PATH}, assessment(revised)])
+        {"tool": "read_file", "path": PATH}, assessment(original, "revise"), {"manifest": revised, "finding_responses": finding_responses()},
+        {"tool": "read_file", "path": PATH}, assessment(revised, retained=True)])
     manifest, review = await run(replies)
     assert manifest.digest() == review.manifest_digest != EnvironmentManifest.model_validate(full_candidate()).digest()
     revision_feedback = json.loads(replies.messages[4][-1]["content"])
@@ -307,6 +316,8 @@ async def test_missing_declaration_fields_are_required_in_proposal_schema_and_re
     if phase == "review":
         assert "assessment" in schema["required"] and schema["additionalProperties"] is False
         schema = schema["$defs"]["CoverageAssessmentProposal"]
+    else:
+        schema = schema["$defs"]["EnvironmentManifestProposal"]
     assert missing in schema["required"]
     assert not {"inventory_digest", "capabilities_digest", "source_commit", "inputs"} & set(schema["properties"])
     assert events[-1]["repairs"] == 1

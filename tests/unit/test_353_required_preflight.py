@@ -14,6 +14,7 @@ from tests.unit.test_353_discovery_repair import (
     SOURCE,
     assessment,
     candidate,
+    finding_responses,
 )
 from tests.unit.test_353_environment_probes import report_data, request_data
 
@@ -29,10 +30,10 @@ async def test_bare_valid_review_can_revise_after_schema_budget_is_exhausted():
         context = json.loads(messages[1]['content'])
         if 'manifest' in context:
             reviews += 1
-            return json.dumps(assessment(candidate(), 'revise' if reviews == 1 else 'accept')['assessment'])
+            return json.dumps(assessment(candidate(), 'revise' if reviews == 1 else 'accept', retained=reviews > 1)['assessment'])
         if len(messages) == 2:
             return json.dumps({'tool':'read_file', 'path':PATH})
-        return json.dumps({'manifest':candidate()})
+        return json.dumps({'manifest':candidate(), 'finding_responses':finding_responses() if reviews else []})
     _, review = await discover_and_review(symphony_name='suite', commit=COMMIT, paths=[PATH], fetch=fetch,
         chat=chat, capabilities=CAPABILITIES, budget=budget)
     assert review.verdict == 'accept'
