@@ -52,6 +52,11 @@ def fixture(count: int = 1000) -> tuple[dict, dict, dict]:
         {"id": f"c{i}", "status": "pass", "required": True, "exit_code": 0, "manifest_digest": digest}
         for i in range(count)
     ]}
+    from coordinare_service_inference.environment.findings import FindingLedger, FindingReview
+    ledger = FindingLedger(source_commit=manifest.source_commit, reviews=[FindingReview(sequence=1,
+        manifest_digest=manifest.digest(), inputs=dict(manifest.inputs), decisions=[], added_ids=[])])
+    assessment.update(schema_version=2, policy_version='353-findings-v1',
+        finding_ledger=ledger.model_dump(), finding_ledger_digest=ledger.digest())
     return data, assessment, report
 
 

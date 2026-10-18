@@ -9,8 +9,8 @@ from coordinare_service_inference.environment.models import (
     CoverageAssessment,
     EnvironmentManifest,
     VerificationReport,
+    validate_current_coverage,
 )
-from pydantic import ValidationError
 
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import Command
@@ -32,7 +32,8 @@ def accepted_environment(cache: EnvCacheState) -> EnvironmentManifest | None:
     try:
         manifest = EnvironmentManifest.model_validate(cache.environment_manifest)
         assessment = CoverageAssessment.model_validate(cache.environment_assessment)
-    except (ValidationError, TypeError):
+        validate_current_coverage(manifest, assessment)
+    except (ValueError, TypeError):
         return None
     if (
         not manifest.inventory_digest

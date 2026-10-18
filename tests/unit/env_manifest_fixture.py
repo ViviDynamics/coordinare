@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 
+from agent.performer.tests.source_contract_fixture import current_review_fixture
 from coordinare_service_inference.environment.models import (
     EnvironmentManifest,
     ExecutionCapabilities,
@@ -37,9 +38,9 @@ def reviewed_metadata(*, capabilities=None, checks=None, install=None, services=
     })
     return {"environment_execution_source":fixture_execution_source(source_commit).model_dump(),
             "environment_manifest": manifest.model_dump(), "environment_manifest_digest": manifest.digest(),
-            "environment_assessment": {"inventory_digest": "d" * 64, "capabilities_digest": capabilities.digest() if capabilities else "c" * 64, "schema_version": 1, "manifest_digest": manifest.digest(),
+            "environment_assessment": current_review_fixture(manifest, {"inventory_digest": "d" * 64, "capabilities_digest": capabilities.digest() if capabilities else "c" * 64, "schema_version": 1, "manifest_digest": manifest.digest(),
                 "source_commit": source_commit, "verdict": "accept", "rationale": "Read source requirements",
-                "sources": list(manifest.inputs), "inputs": dict(manifest.inputs), "policy_version": "351-v1"}}
+                "sources": list(manifest.inputs), "inputs": dict(manifest.inputs), "policy_version": "351-v1"})}
 
 
 def reviewed_cache(cache, *, files=None, capabilities=None, source_commit="a" * 40):
@@ -109,8 +110,9 @@ def manifest_proposal(manifest):
 def review_proposal(assessment):
     """Convert a full persisted assessment fixture to its model-owned judgment."""
     daemon_fields = {'schema_version', 'policy_version', 'symphony_name', 'source_commit', 'inputs',
-                     'inventory_digest', 'capabilities_digest', 'manifest_digest'}
-    return {key: value for key, value in assessment.items() if key not in daemon_fields}
+                     'inventory_digest', 'capabilities_digest', 'manifest_digest', 'finding_ledger', 'finding_ledger_digest'}
+    return {'findings': [], 'decisions': [], 'capability_unavailable': False,
+            **{key: value for key, value in assessment.items() if key not in daemon_fields}}
 
 
 def decode_test_execution_frame(data):

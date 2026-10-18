@@ -132,6 +132,8 @@ def accepted_state(cache: Path, manifest: EnvironmentManifest, files: dict[str, 
     verification = render_verify(manifest, cache_mount_path=f"/devenv/{manifest.symphony_name}")
     (cache / "activate.sh").write_text(activation)
     (cache / "verify.sh").write_text(verification)
+    from agent.performer.tests.source_contract_fixture import current_review_fixture
+
     assessment = CoverageAssessment(schema_version=1, manifest_digest=manifest.digest(),
         capabilities_digest=manifest.capabilities_digest, inventory_digest=manifest.inventory_digest,
         source_commit=manifest.source_commit, symphony_name=manifest.symphony_name,
@@ -144,7 +146,7 @@ def accepted_state(cache: Path, manifest: EnvironmentManifest, files: dict[str, 
     identity = source_identity(manifest.source_commit, entries)
     state = EnvCacheState(symphony_name=manifest.symphony_name, sanitised_name=manifest.symphony_name,
         cache_dir=cache, bootstrap_commit_sha=manifest.source_commit,
-        environment_manifest=manifest.model_dump(), environment_assessment=assessment.model_dump(),
+        environment_manifest=manifest.model_dump(), environment_assessment=current_review_fixture(manifest, assessment.model_dump()),
         environment_execution_source=identity.model_dump(),
         rendered_activate_sh=activation, rendered_verify_sh=verification)
 

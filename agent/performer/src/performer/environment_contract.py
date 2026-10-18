@@ -46,7 +46,7 @@ def accepted_manifest(metadata: Any) -> EnvironmentManifest:
         _refuse_contract("reviewed environment manifest and assessment are required")
     if any(len(json.dumps(item, ensure_ascii=False).encode()) > 256 * 1024 for item in (raw, assessment)):
         _refuse_contract("environment contract exceeds size limit")
-    from coordinare_service_inference.environment.models import CoverageAssessment, EnvironmentManifest
+    from coordinare_service_inference.environment.models import CoverageAssessment, EnvironmentManifest, validate_current_coverage
 
     try:
         manifest = EnvironmentManifest.model_validate(raw)
@@ -70,6 +70,10 @@ def accepted_manifest(metadata: Any) -> EnvironmentManifest:
         _refuse_contract("environment review cites uninspected sources")
     if not {item.source for item in manifest.requirements}.issubset(review.inputs):
         _refuse_contract("environment review lacks requirement sources")
+    try:
+        validate_current_coverage(manifest, review)
+    except ValueError:
+        _refuse_contract('current independent coverage findings require refresh')
     return manifest
 
 

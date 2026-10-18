@@ -9,7 +9,7 @@ from performer import main
 from performer.models import Score, Stand
 from performer.workflows.bootstrap_environment import BootstrapEnvironment
 
-from .source_contract_fixture import bind_checkout_contract
+from .source_contract_fixture import bind_checkout_contract, current_review_fixture
 
 
 def test_bootstrap_admission_rejects_missing_review(tmp_path):
@@ -50,6 +50,30 @@ def contract_score(tmp_path, *, failed=False):
                  env_cache_path=str(tmp_path),
                  **bind_checkout_contract({'environment_assessment':review,
                      'environment_manifest':manifest.model_dump(), 'environment_manifest_digest':manifest.digest()}, tmp_path))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mutation', ['legacy', 'missing', 'digest', 'unreviewed'])
+async def test_performer_rejects_invalid_findings_before_install_commands(tmp_path, mutation):
+    from performer.environment_contract import execute_contract
+
+    score = contract_score(tmp_path)
+    review = score.environment_assessment
+    if mutation == 'legacy':
+        review.update(schema_version=1, policy_version='351-v1')
+        review.pop('finding_ledger')
+        review.pop('finding_ledger_digest')
+    elif mutation == 'missing':
+        review.pop('finding_ledger')
+    elif mutation == 'digest':
+        review['finding_ledger_digest'] = 'f' * 64
+    else:
+        from coordinare_service_inference.environment.findings import FindingLedger
+        ledger = FindingLedger(source_commit=score.environment_manifest['source_commit'])
+        review.update(finding_ledger=ledger.model_dump(), finding_ledger_digest=ledger.digest())
+    with pytest.raises(ValueError):
+        await execute_contract(score, Stand(path=tmp_path, branch='main'), install=True)
+    assert not (tmp_path / 'installed').exists()
 
 
 @pytest.mark.parametrize("mutation", ["digest", "commit", "verdict", "source"])
@@ -144,6 +168,7 @@ async def test_frozen_artifacts_cannot_be_modified_by_install(tmp_path):
     manifest = EnvironmentManifest.model_validate(score.environment_manifest)
     score.environment_manifest_digest = manifest.digest()
     score.environment_assessment["manifest_digest"] = manifest.digest()
+    score.environment_assessment = current_review_fixture(manifest, score.environment_assessment)
     score.verify_provided = True
     (tmp_path / "verify.sh").write_text("trusted")
     environment = BootstrapEnvironment(Stand(path=tmp_path, branch="main"), score)
@@ -213,7 +238,7 @@ def test_review_requires_independent_input_identity_ledger(tmp_path):
 
     score = contract_score(tmp_path)
     score.environment_assessment.pop("inputs")
-    with pytest.raises(ValueError, match="source identities"):
+    with pytest.raises(ValueError, match="source identities|review schema"):
         accepted_manifest(score)
 
 
@@ -302,6 +327,7 @@ async def test_consumer_holds_declared_service_until_job_cleanup(tmp_path):
     manifest = EnvironmentManifest.model_validate(score.environment_manifest)
     score.environment_manifest_digest = manifest.digest()
     score.environment_assessment["manifest_digest"] = manifest.digest()
+    score.environment_assessment = current_review_fixture(manifest, score.environment_assessment)
     stand = Stand(path=tmp_path, branch="main")
     await prepare_environment(score, stand)
     try:
@@ -335,6 +361,7 @@ async def test_required_scoped_failure_cannot_hide_behind_baseline(tmp_path, rol
     manifest = EnvironmentManifest.model_validate(score.environment_manifest)
     score.environment_manifest_digest = manifest.digest()
     score.environment_assessment["manifest_digest"] = manifest.digest()
+    score.environment_assessment = current_review_fixture(manifest, score.environment_assessment)
     (tmp_path / "alien/bin").mkdir(parents=True)
     result = await execute_contract(score, Stand(path=tmp_path, branch="main"))
     assert result["passed"] is False
@@ -373,6 +400,7 @@ async def test_known_dispatch_secret_names_redact_unfamiliar_credentials(tmp_pat
     manifest = EnvironmentManifest.model_validate(score.environment_manifest)
     score.environment_manifest_digest = manifest.digest()
     score.environment_assessment["manifest_digest"] = manifest.digest()
+    score.environment_assessment = current_review_fixture(manifest, score.environment_assessment)
     score = Score.model_validate({**score.model_dump(), "environment_secret_names": ["FIXTURE_DSN"]})
     monkeypatch.setenv("FIXTURE_DSN", "opaque-sensitive-connection-value")
     (tmp_path / "alien/bin").mkdir(parents=True)

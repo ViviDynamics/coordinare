@@ -36,7 +36,7 @@ class Agent:
         if len(messages) == 2:
             return json.dumps({'tool': 'read_file', 'path': PATH})
         if 'manifest' in context:
-            return json.dumps({'assessment': {'verdict': 'accept', 'rationale': 'Required checks cover cited evidence', 'sources': [PATH]}})
+            return json.dumps({'assessment': {'findings': [], 'decisions': [], 'capability_unavailable': False, 'verdict': 'accept', 'rationale': 'Required checks cover cited evidence', 'sources': [PATH]}})
         value = declarations(candidate())
         if self.provenance:
             self.provenance = False
