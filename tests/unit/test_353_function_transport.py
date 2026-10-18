@@ -106,3 +106,40 @@ async def test_duplicate_provider_message_keys_are_rejected_before_json_collapse
         [{'role': 'user', 'content': 'Read source'}], response_schema=response_schema('source_tool'))
     assert reply.error_code is not None
     assert not reply.text
+
+
+@pytest.mark.asyncio
+async def test_explicit_json_text_avoids_provider_grammar_and_preserves_logical_contract(monkeypatch):
+    requests = []
+    raw = '{"tool":"read_files","paths":["Makefile"]}'
+    def answer(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={'choices': [{'message': {'content':raw}, 'finish_reason':'stop'}]})
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(answer), **kw))
+    backend = OpenAiApiBackend(api_key='fixture', structured_transport='json_text')
+    reply = await backend.chat_json_with_metadata([{'role':'system','content':'Logical phase schema.'}],response_schema=response_schema('source_tool'))
+    assert reply.text == raw
+    assert reply.wire_text == raw
+    assert reply.error_code is None
+    assert 'response_format' not in requests[0]
+    assert 'tools' not in requests[0]
+    assert requests[0]['messages'][0]['content'].startswith('Logical phase schema.')
+    # Transport choice applies only to environment schema calls.
+    await backend.chat_json_with_metadata([{'role':'user','content':'legacy'}])
+    assert requests[1]['response_format'] == {'type':'json_object'}
+
+
+@pytest.mark.asyncio
+async def test_json_text_failure_never_retries_as_another_transport(monkeypatch):
+    requests = []
+    def answer(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(400, json={'error':'unsupported'})
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx,'AsyncClient',lambda **kw:original(transport=httpx.MockTransport(answer),**kw))
+    reply=await OpenAiApiBackend(api_key='fixture',structured_transport='json_text').chat_json_with_metadata(
+        [{'role':'user','content':'read evidence'}],response_schema=response_schema('source_tool'))
+    assert reply.error_code == 'provider_request_failed'
+    assert len(requests) == 1
+    assert 'response_format' not in requests[0]

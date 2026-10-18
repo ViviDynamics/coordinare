@@ -291,7 +291,7 @@ class OpenAiApiBackend:
         # 131: every send is recorded on the conductor call that is open, if any.
         self.calls = calls if calls is not None else NULL_CALL_LOG
         self._endpoint_name = endpoint_name
-        if structured_transport not in {"json_schema", "tool_call"}:
+        if structured_transport not in {"json_schema", "tool_call", "json_text"}:
             message = "unsupported structured transport"
             raise ValueError(message)
         self._structured_transport = structured_transport
@@ -332,6 +332,8 @@ class OpenAiApiBackend:
         return parameters
 
     def _response_parameters(self, schema: dict[str, Any] | None, json_mode: bool) -> dict[str, Any]:
+        if schema is not None and self._structured_transport == "json_text":
+            return {}
         if schema is not None and self._structured_transport == "tool_call":
             return {"tools": functions(schema), "tool_choice": "required", "parallel_tool_calls": False}
         if schema is not None:
@@ -388,7 +390,7 @@ class OpenAiApiBackend:
                         continue
                 resp.raise_for_status()
                 try:
-                    data = load_unique(resp.text) if response_schema is not None and self._structured_transport == "tool_call" else resp.json()
+                    data = load_unique(resp.text) if response_schema is not None else resp.json()
                 except (ValueError, RecursionError):
                     last_error = "invalid provider JSON"
                 break
@@ -440,18 +442,21 @@ class OpenAiApiBackend:
 
         canonical_schema = response_schema
         function_mode = self._structured_transport == "tool_call"
-        instruction = INSTRUCTION if function_mode else WIRE_INSTRUCTION
+        text_mode = self._structured_transport == "json_text"
+        instruction = ("Transport: return exactly one canonical JSON object in the logical phase envelope described above. "
+            "No native function calls, prose, markdown, or response wrapper. All local validation, source evidence, "
+            "independent review and required execution rules remain mandatory.") if text_mode else (INSTRUCTION if function_mode else WIRE_INSTRUCTION)
         if canonical_schema is not None:
             messages = [dict(message) for message in messages]
             if messages and messages[0]["role"] == "system":
                 messages[0]["content"] += "\n\n" + instruction
             else:
                 messages.insert(0, {"role": "system", "content": instruction})
-            response_schema = canonical_schema if function_mode else wire_schema(canonical_schema)
+            response_schema = canonical_schema if function_mode or text_mode else wire_schema(canonical_schema)
         reply = await self._chat_reply(messages, json_mode=True, response_schema=response_schema)
         text = reply.text
         error_code = "provider_request_failed" if reply.error else None
-        if canonical_schema is not None and not error_code:
+        if canonical_schema is not None and not error_code and not text_mode:
             try:
                 text = decode_function(text, canonical_schema) if function_mode else decode_wire(text, canonical_schema)
             except (ValueError, TypeError, RecursionError, KeyError):
