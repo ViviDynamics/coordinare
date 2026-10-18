@@ -39,6 +39,7 @@ from kubernetes.client.rest import ApiException
 from coordinare.env_placeholders import drop_unset_placeholders
 from coordinare.services import performer_lifecycle
 from coordinare.services.kubernetes_verifier import (
+    MAX_VERIFIER_SOURCE_SECRETS,
     OWNER_LABEL,
     VERIFIER_CONTAINER,
     VERIFIER_DEADLINE_S,
@@ -250,9 +251,6 @@ def classify_pod_failure(reason: str, *, message: str = "") -> performer_lifecyc
     if message:
         detail = f"{detail}: {message}"
     return performer_lifecycle.ContainerStartError(detail)
-
-
-_MAX_SOURCE_SECRETS = 64
 
 
 def build_pod_manifest(
@@ -1146,7 +1144,7 @@ class KubernetesRuntime:
                 count = int(annotations.get("coordinare.vividynamics.com/source-secrets", "0"))
             except (TypeError, ValueError):
                 continue
-            if not 0 <= count <= _MAX_SOURCE_SECRETS:
+            if not 0 <= count <= MAX_VERIFIER_SOURCE_SECRETS:
                 continue
             source_names = []
             for index in range(count):

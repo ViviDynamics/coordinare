@@ -160,6 +160,95 @@ async def test_restart_reconciles_only_owned_source_secrets(foreign):
 
 
 @pytest.mark.asyncio
+async def test_restart_cleans_large_admitted_execution_source(tmp_path):
+    import hashlib
+    import os
+    from dataclasses import replace
+
+    from coordinare.services.kubernetes_verifier import (
+        build_verifier_pod_manifest,
+        build_verifier_source_secrets,
+    )
+    from tests.unit.test_353_execution_source_pipeline import bundle_fixture
+
+    source = b'build asset.bin\n'
+    bundle = bundle_fixture(tmp_path, {'Buildfile': (source, '100644'),
+                                      'asset.bin': (os.urandom(32 * 1024 * 1024), '100644')})
+    spec = replace(source_spec(), project_files={}, execution_source=bundle,
+                   source_inputs={'Buildfile': hashlib.sha256(source).hexdigest()})
+    pod = build_verifier_pod_manifest(spec, name='restored', namespace='ns', owner='owner')
+    secrets = build_verifier_source_secrets(spec, name='restored', namespace='ns', owner='owner', pod_uid='old-uid')
+    assert len(secrets) > 64
+    assert int(pod['metadata']['annotations']['coordinare.vividynamics.com/source-secrets']) == len(secrets)
+    core = SourceCore()
+    core.secrets = {secret['metadata']['name']: secret for secret in secrets}
+    metadata = SimpleNamespace(**pod['metadata'], uid='old-uid')
+    core.list_namespaced_pod = lambda **kwargs: SimpleNamespace(items=[SimpleNamespace(metadata=metadata)])
+    runtime = KubernetesRuntime(namespace='ns', cache_claim='claim', core_v1=core, owner='owner')
+    removed_pods = []
+
+    async def remove(name):
+        removed_pods.append(name)
+        return True
+
+    runtime._remove_verifier = remove
+    assert await runtime.sweep_orphaned_verifiers() == ['restored']
+    assert removed_pods == ['restored']
+    assert not core.secrets and len(core.deleted) == len(secrets)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('count', 'foreign'), [(257, False), (257, True), (258, False)])
+async def test_restart_large_source_bound_keeps_complete_ownership_checks(count, foreign):
+    import copy
+
+    from coordinare.services.kubernetes_verifier import (
+        build_verifier_source_secrets,
+        source_secret_name,
+    )
+
+    core = SourceCore()
+    template = build_verifier_source_secrets(source_spec(), name='restored', namespace='ns',
+                                             owner='owner', pod_uid='old-uid')[0]['metadata']
+    for index in range(count):
+        name = source_secret_name('restored', index)
+        metadata = copy.deepcopy(template)
+        metadata['name'] = name
+        if foreign and index == count - 1:
+            metadata['ownerReferences'][0]['uid'] = 'other-pod'
+        core.secrets[name] = {'metadata': metadata}
+    metadata = SimpleNamespace(name='restored', uid='old-uid',
+        annotations={'coordinare.vividynamics.com/source-secrets': str(count)},
+        labels={'app.kubernetes.io/managed-by': 'coordinare', 'coordinare.role': 'env-verifier',
+                'coordinare.vividynamics.com/owner': 'owner'})
+    core.list_namespaced_pod = lambda **kwargs: SimpleNamespace(items=[SimpleNamespace(metadata=metadata)])
+    reads, removed_pods = [], []
+    original_read = core.read_namespaced_secret
+
+    def read(**kwargs):
+        reads.append(kwargs['name'])
+        return original_read(**kwargs)
+
+    core.read_namespaced_secret = read
+    runtime = KubernetesRuntime(namespace='ns', cache_claim='claim', core_v1=core, owner='owner')
+    source_names = set(core.secrets)
+
+    async def remove(name):
+        assert set(reads) == source_names
+        assert set(core.secrets) == source_names
+        removed_pods.append(name)
+        return True
+
+    runtime._remove_verifier = remove
+    permitted = count == 257 and not foreign
+    assert await runtime.sweep_orphaned_verifiers() == (['restored'] if permitted else [])
+    assert set(reads) == (source_names if count == 257 else set())
+    assert removed_pods == (['restored'] if permitted else [])
+    assert len(core.deleted) == (257 if permitted else 0)
+    assert bool(core.secrets) is not permitted
+
+
+@pytest.mark.asyncio
 async def test_conflicting_source_secret_is_never_deleted():
     core = SourceCore()
 
