@@ -4122,6 +4122,7 @@ class CoordinareDaemon:
                 temperature=cc.temperature,
                 base_url=cc.base_url,
                 effort=cc.effort,
+                structured_transport=cc.structured_transport,
                 calls=self._state.get("conductor_calls"),
             )
             chat = backend.chat_json_with_metadata

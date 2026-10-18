@@ -56,6 +56,7 @@ class Profile:
     model: str
     base_url: str
     api_key_env: str = "OPENAI_API_KEY"
+    structured_transport: str = "json_schema"
     max_tokens: int = 32768
     effort: str | None = None
     phase_timeout: float = 120
@@ -574,6 +575,7 @@ async def validate_repository(
             base_url=profile.base_url,
             max_tokens=profile.max_tokens,
             effort=profile.effort,
+            structured_transport=profile.structured_transport,
         )
         chat = backend.chat_json_with_metadata
 
@@ -743,6 +745,7 @@ def main() -> int:
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
     parser.add_argument("--max-tokens", type=int, default=32768)
     parser.add_argument("--effort")
+    parser.add_argument("--structured-transport", choices=["json_schema", "tool_call"], default="json_schema")
     parser.add_argument("--phase-timeout", type=float, default=120)
     parser.add_argument("--attempt-timeout", type=float, default=600)
     parser.add_argument("--max-schema-repairs", type=int, choices=range(3), default=2)
@@ -761,6 +764,7 @@ def main() -> int:
         api_key_env=args.api_key_env,
         max_tokens=args.max_tokens,
         effort=args.effort,
+        structured_transport=args.structured_transport,
         phase_timeout=args.phase_timeout,
         attempt_timeout=args.attempt_timeout,
         execute=args.execute,

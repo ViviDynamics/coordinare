@@ -8,8 +8,11 @@ agent's approval cannot waive execution evidence.
 ## Configure the discovery and review model
 
 This implementation uses the existing conducting brain's `openai_api` JSON-chat
-seam for discovery and coverage review. Configure a model that supports JSON-object
-chat responses and supply its credentials to the daemon. There is no separate
+seam for discovery and coverage review. Configure a model supporting strict JSON Schema
+responses (the default), or explicitly select native function calls with
+`conducting.structured_transport: tool_call`, and supply its credentials to the daemon.
+Function mode requires exactly one advertised call per response; local manifest and
+coverage validation remain mandatory. Unsupported transports hold without automatic fallback. There is no separate
 reviewer model-role configuration: the reviewer receives a fresh conversation using
 the same configured chat callable.
 
@@ -22,6 +25,7 @@ conducting:
   model: "<your JSON-capable model>"
   api_key_env: OPENAI_API_KEY
   max_tokens: 32768
+  structured_transport: json_schema  # or tool_call for native function-capable endpoints
   # base_url: "https://your-compatible-endpoint/v1"
 
 env_cache:
