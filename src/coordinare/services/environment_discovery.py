@@ -70,7 +70,12 @@ from coordinare.services.environment_probes import (
     bind_probe_report,
     validate_saved_probe_reports,
 )
-from coordinare.services.environment_proposal_patch import PATCH_INSTRUCTION, apply_patch
+from coordinare.services.environment_proposal_patch import (
+    MAX_CHANGES,
+    MAX_PATH_DEPTH,
+    PATCH_INSTRUCTION,
+    apply_patch,
+)
 from coordinare.services.environment_response_schema import invoke_chat, response_schema
 from coordinare.services.kubernetes_verifier import check_project_files
 
@@ -278,6 +283,7 @@ def _validate_phase_declaration(inspection: _Inspection, reply: dict[str, Any],
 
 def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
                  messages: list[dict[str, str]], budget: AttemptBudget) -> dict[str, Any] | None:
+    reply = None
     try:
         reply = _normalize_review(_decode_reply(raw, inspection.name, inspection.limits), inspection.name)
         if reply.get('tool') == 'repair_proposal':
@@ -285,9 +291,23 @@ def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
     except EnvironmentDiscoveryError as exc:
         if exc.code not in {'invalid_json_envelope', 'duplicate_json_key', 'invalid_proposal_patch'}:
             raise
-        _repair(messages, raw, [{"location": [], "code": exc.code,
-            "guidance": "Return one JSON object with unique keys at every level; assessment must occur exactly once and contain an object, never a boolean."}],
-            budget, can_patch=base is not None)
+        error: dict[str, Any] = {"location": [], "code": exc.code,
+            "guidance": "Return one JSON object with unique keys at every level; assessment must occur exactly once and contain an object, never a boolean."}
+        can_patch = base is not None
+        if exc.code == 'invalid_proposal_patch':
+            error.update(max_changes=MAX_CHANGES, max_path_depth=MAX_PATH_DEPTH,
+                guidance=(f'Use 1 to {MAX_CHANGES} correction records, existing parent paths of depth at most {MAX_PATH_DEPTH}, '
+                    'and unique valid JSON replacement values. A complete base declaration is required. '
+                    'For more affected fields, replace their common existing array or object once with its complete corrected value, '
+                    'preserving every unrelated record and required obligation. For large nested replacements, return the complete corrected '
+                    'declaration in the expected envelope instead of encoding it inside value_json. '
+                    'Do not split an invalid declaration across partial batches. Each correction is fully validated atomically.'))
+            if reply is not None and isinstance(reply.get('changes'), list) and len(reply['changes']) > MAX_CHANGES:
+                error['location'] = ['changes']
+                error['guidance'] = ('Too many correction records. Return the complete corrected declaration in the expected envelope, '
+                    'not another patch or a partial batch. Preserve every unrelated record and required obligation.')
+                can_patch = False
+        _repair(messages, raw, [error], budget, can_patch=can_patch)
         return None
     else:
         return reply

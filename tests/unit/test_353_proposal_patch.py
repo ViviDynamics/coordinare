@@ -237,3 +237,90 @@ async def test_invalid_corrections_consume_original_shared_schema_allowance():
     assert caught.value.code == "attempt_schema_limit"
     assert budget.schema_repairs == 2
     assert len(replies.messages) == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("complete_declaration", [False, True])
+async def test_overfull_field_patch_reports_limits_and_can_replace_common_array(complete_declaration):
+    from tests.unit.test_351_environment_discovery import PATH
+
+    valid = candidate()
+    valid["install"] = [{"id": "install-dev", "argv": ["true"]}]
+    valid["checks"] = [
+        {"id": f"version-{index}", "argv": ["zog", "--version"], "required": True}
+        for index in range(22)
+    ]
+    valid["requirements"][0]["checks"] = [check["id"] for check in valid["checks"]]
+    invalid = copy.deepcopy(valid)
+    for check in invalid["checks"]:
+        check["depends_on"] = ["install-dev"]
+    overfull = {"tool": "repair_proposal", "changes": [
+        {"path": ["manifest", "checks", index, "depends_on"], "value_json": "[]"}
+        for index in range(22)
+    ]}
+    correction = {"manifest": valid} if complete_declaration else {
+        "tool": "repair_proposal", "changes": [
+            {"path": ["manifest", "checks"], "value_json": json.dumps(valid["checks"])},
+        ],
+    }
+    replies = Replies([
+        {"tool": "read_file", "path": PATH}, {"manifest": invalid}, overfull,
+        correction,
+        {"tool": "read_file", "path": PATH}, assessment(valid),
+    ])
+    budget = AttemptBudget()
+    manifest, review = await run(replies, budget=budget)
+    error = json.loads(replies.messages[3][-1]["content"])["validation_errors"][0]
+    assert error["code"] == "invalid_proposal_patch"
+    assert error["location"] == ["changes"]
+    assert error["max_changes"] == 16
+    assert error["max_path_depth"] == 8
+    assert budget.schema_repairs == 2
+    assert len(manifest.checks) == 22
+    assert [check.id for check in manifest.checks] == valid["requirements"][0]["checks"]
+    assert all(check.argv == ["zog", "--version"] and not check.depends_on and check.required
+               for check in manifest.checks)
+    assert review.manifest_digest == manifest.digest()
+
+
+@pytest.mark.parametrize("phase", ["manifest", "assessment"])
+def test_repair_schemas_offer_complete_declarations_to_both_structured_transports(phase):
+    import jsonschema
+
+    from coordinare.services.environment_discovery_prompts import (
+        _ASSESSMENT_ENVELOPE,
+        _MANIFEST_ENVELOPE,
+    )
+    from coordinare.services.environment_function_wire import decode_function, functions
+    from coordinare.services.environment_response_schema import response_schema
+    from coordinare.services.environment_structured_wire import decode_wire, wire_schema
+
+    logical = (_MANIFEST_ENVELOPE.model_validate({"manifest": candidate(), "finding_responses": []})
+               if phase == "manifest" else _ASSESSMENT_ENVELOPE.model_validate(assessment(candidate()))).model_dump(mode="json")
+    schema = response_schema(phase, allow_patch=True)
+    jsonschema.validate(logical, schema)
+    declarations = {item["function"]["name"]: item["function"] for item in functions(schema)}
+    name = f"submit_environment_{phase}"
+    assert {"repair_proposal", "read_files", name} <= declarations.keys()
+    arguments = ({**logical["manifest"], "finding_responses": logical["finding_responses"]}
+                 if phase == "manifest" else logical["assessment"])
+    jsonschema.validate(arguments, declarations[name]["parameters"])
+    message = {"content": None, "tool_calls": [{"type": "function", "function": {
+        "name": name, "arguments": json.dumps(arguments),
+    }}]}
+    assert json.loads(decode_function(json.dumps(message), schema)) == logical
+
+    encoded = copy.deepcopy(logical)
+    if phase == "manifest":
+        encoded["manifest"]["activation"]["env"] = []
+        for command in encoded["manifest"]["checks"]:
+            command["env"] = []
+    wire = {"response": encoded}
+    jsonschema.validate(wire, wire_schema(schema))
+    assert json.loads(decode_wire(json.dumps(wire), schema)) == logical
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**logical, "tool": "repair_proposal", "changes": []}, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"tool": "repair_proposal", "changes": [
+            {"path": [phase], "value_json": "{}"} for _ in range(17)
+        ]}, schema)

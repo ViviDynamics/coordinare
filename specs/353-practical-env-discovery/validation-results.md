@@ -206,8 +206,8 @@ catalog, execution permission or automatic scope selector.
 
 A fresh read-only replay against the exact rejected candidate, same pinned sources
 and same GLM model now rejects the CLI-only disclaimer and identifies additional
-omitted project areas. Its initial response still needed protocol corrections;
-that raw semantic result alone is not an admitted assessment or bootstrap success.
+omitted project areas. After two existing schema corrections, that replay produced a valid `revise`
+assessment with four blocking findings. It is not bootstrap success.
 The replay and all historical artifacts remain separate from executable validation.
 No project commands or approvals are produced by this diagnostic.
 
@@ -215,3 +215,82 @@ All 57 focused discovery/findings/preflight regressions passed. An independent
 adversarial review of the correction passed 93 focused tests and found no critical
 or important issues. Elm acceptance and the remaining repository runs are still
 outstanding; broader repository execution remains paused.
+
+
+## Actionable feedback for bounded proposal corrections
+
+The live `trusted-scope-elm60m-high` comparison produced a broader candidate
+with 19 requirements, 13 installation actions and 22 checks, but no services.
+It explicitly retained a required service-runtime gap. The candidate first failed
+structural admission because clean checks depended on install-only commands;
+coverage review had not started. Its next response attempted 22 field corrections,
+exceeding the existing limit of 16 correction records. The guard rejected that
+response correctly, but returned unrelated duplicate-JSON/assessment guidance.
+Both schema correction slots were consumed before the next response.
+
+Invalid correction feedback now reports the trusted record and path-depth bounds,
+and identifies an overfull `changes` array. Instructions explain how one complete
+replacement of a common existing parent array can correct more fields while
+preserving every unrelated record and obligation. The limit remains 16 records
+and depth eight; replacements still undergo atomic full admission, required-ID
+and execution-obligation preservation, and independent coverage review. There is
+no partial-patch admission or additional repair allowance.
+
+A failing-then-passing regression reproduces 22 required check definitions with
+install-only dependencies, an overfull correction, and a valid common-array
+replacement through fresh review. It verifies all required checks and command
+definitions survive and exactly both original schema corrections are consumed.
+All 59 focused patch/discovery/preflight tests passed; strict typechecking passed
+for 339 source files. Independent adversarial review passed 95 focused cases and
+found no critical or important issues. These are protocol tests, not an Elm
+installation or clean-consumer result.
+
+The high-effort run ended after 2,788.21 seconds with `attempt_schema_limit`,
+811.87 seconds remaining, seven completed calls, two schema corrections and no
+coverage or execution revisions. Its final response corrected only 16 of the 22
+checks, leaving six invalid dependencies. Coverage review, installation and clean
+verification never ran. An upstream HTTP 500 was retried by the existing bounded
+client before that final response. The source snapshot remained unchanged; owned
+image, registry and volume absence were verified. No restart or new feedback was
+injected into that attempt.
+
+The exact low-effort, read-only correction replay independently verified 24 source
+hashes but held on malformed nested replacement JSON. Allowing a complete
+corrected declaration was already supported by the local phase parser; however,
+the instructions prohibited it and structured repair schemas exposed only patch
+and source actions. Independent review reproduced that schema mismatch before
+push. A second permissive-fallback replay still produced a malformed patch.
+Neither diagnostic executed project commands, issued approvals or established
+coverage; their failed raw replies remain separate from executable validation.
+
+For an overfull patch, trusted feedback now asks explicitly for the complete
+corrected declaration rather than another partial patch. General repair guidance
+permits the same existing declaration format for large nested replacements, and
+manifest instructions include the required `finding_responses` field. Both native
+function and strict-wire repair schemas now retain the current phase's complete
+declaration alongside bounded patches. No new response type, provider downgrade,
+execution permission or repair allowance is introduced.
+
+The transport regression failed for both manifest and assessment repair schemas
+before the fix. It now verifies full-declaration schema admission, native function
+publication and roundtrip, strict-wire roundtrip, mixed-response rejection and
+continued rejection of 17-record patches. Both common-array and full-declaration
+recovery preserve all 22 required synthetic checks and consume exactly the two
+original schema corrections. All 123 focused protocol/obligation tests passed,
+and independent adversarial review confirmed the transport finding resolved with
+no further important findings.
+
+The final bounded, read-only low-effort replay passed structural admission after
+the explicit complete-declaration request. It independently verified 24 source
+hashes, preserved all 22 checks (21 required and one already optional), retained
+every command field except the invalid install-only dependencies, and consumed
+exactly both original schema corrections. Only one new live correction response
+was requested after replaying the two saved replies. No coverage review, project
+command or approval ran. The candidate's service-runtime omission remains;
+structural correction does not establish environment readiness.
+
+A fresh full Elm run will test the corrected pipeline with the same model, the
+approved low effort and 60-minute budget, optional platform tools and unchanged
+repair caps. This varies both the corrected implementation and effort relative
+to the retained high-effort result, so it cannot isolate an effort-only effect.
+Broader repository runs remain paused and Elm readiness is unproven.
