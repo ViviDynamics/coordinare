@@ -9,6 +9,7 @@ from coordinare.services.environment_discovery_prompts import (
     assessment_envelope_schema,
 )
 from coordinare.services.environment_probes import ProbeEnvelope
+from coordinare.services.environment_proposal_patch import PATCH_SCHEMA
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
     from coordinare.services.environment_attempt import DiscoveryChatReply
 
 
-def response_schema(phase: str) -> dict[str, Any]:
+def response_schema(phase: str, *, allow_patch: bool = False) -> dict[str, Any]:
     tools = [
         {'type': 'object', 'additionalProperties': False, 'required': ['tool', 'path'],
          'properties': {'tool': {'const': 'read_file'}, 'path': {'type': 'string'}}},
@@ -25,6 +26,8 @@ def response_schema(phase: str) -> dict[str, Any]:
         {'type': 'object', 'additionalProperties': False, 'required': ['tool', 'path', 'cursor'],
          'properties': {'tool': {'const': 'list_files'}, 'path': {'type': 'string'}, 'cursor': {'type': 'integer', 'minimum': 0}}},
     ]
+    if allow_patch:
+        return {"type": "object", "anyOf": [*tools, PATCH_SCHEMA]}
     final: dict[str, Callable[[], dict[str, Any]]] = {'probe': ProbeEnvelope.model_json_schema, 'manifest': _MANIFEST_ENVELOPE.model_json_schema,
              'assessment': assessment_envelope_schema}
     if phase == 'source_tool':

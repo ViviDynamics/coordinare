@@ -143,3 +143,33 @@ async def test_json_object_failure_never_retries_as_another_transport(monkeypatc
     assert reply.error_code == 'provider_request_failed'
     assert len(requests) == 1
     assert requests[0]['response_format'] == {'type':'json_object'}
+
+
+@pytest.mark.asyncio
+async def test_native_correction_function_preserves_declared_action(monkeypatch):
+    raw = message(
+        "repair_proposal", '{"changes":[{"path":["finding_responses"],"value_json":"[]"}]}',
+    )
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kw: original(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200, json={"choices": [{"message": raw, "finish_reason": "tool_calls"}]},
+                ),
+            ),
+            **kw,
+        ),
+    )
+    backend = OpenAiApiBackend(api_key="fixture", structured_transport="tool_call")
+    reply = await backend.chat_json_with_metadata(
+        [{"role": "user", "content": "Correct proposal"}],
+        response_schema=response_schema("manifest", allow_patch=True),
+    )
+    assert json.loads(reply.text) == {
+        "tool": "repair_proposal",
+        "changes": [{"path": ["finding_responses"], "value_json": "[]"}],
+    }
+    assert reply.error_code is None
