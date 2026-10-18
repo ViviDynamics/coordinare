@@ -6,6 +6,7 @@ The model receives read-only JSON tools; it never executes commands here.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import time
@@ -65,6 +66,7 @@ from coordinare.services.environment_probes import (
     bind_probe_report,
     validate_saved_probe_reports,
 )
+from coordinare.services.environment_proposal_patch import PATCH_INSTRUCTION, apply_patch
 from coordinare.services.environment_response_schema import invoke_chat, response_schema
 from coordinare.services.kubernetes_verifier import check_project_files
 
@@ -184,13 +186,13 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
     return result
 
 
-def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget) -> None:
+def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *, can_patch: bool = False) -> None:
     budget.validation_codes.extend(error["code"] for error in errors)
     budget.reserve_repair("schema")
     messages.extend([{"role": "assistant", "content": raw},
                      {"role": "user", "content": _json({"validation_errors": errors,
                         "expected_envelope": budget.expected_envelope,
-                        "instruction": correction_instruction(budget.expected_envelope) +
+                        "instruction": (PATCH_INSTRUCTION if can_patch else correction_instruction(budget.expected_envelope)) +
                         "Preserve every required obligation and inspected input. "
                         "Never rename or remove existing required requirement/check/service IDs; revise their definitions in place. "
                         "Use list_files for directories and read_files only for exact file paths from listings. "
@@ -247,11 +249,13 @@ def _preflight_pending(inspection: _Inspection, budget: AttemptBudget, messages:
     return True
 
 
-def _admit_phase_context(inspection: _Inspection, budget: AttemptBudget, messages: list[dict[str, str]]) -> None:
+def _admit_phase_context(inspection: _Inspection, budget: AttemptBudget, messages: list[dict[str, str]], *, can_patch: bool = False) -> None:
     budget.expected_envelope = "assessment" if inspection.name == "review" else "manifest"
     if inspection.require_preflight:
         inspection.stage_prompts = inspection.stage_prompts or DiscoveryPrompts()
-        inspection.stage_prompts.update(messages, budget, inspection.inputs)
+        inspection.stage_prompts.update(messages, budget, inspection.inputs, repairing=can_patch)
+    if can_patch and PATCH_INSTRUCTION not in messages[0]["content"]:
+        messages[0] = {**messages[0], "content": messages[0]["content"] + "\n\n" + PATCH_INSTRUCTION}
     if inspection.name == "review":
         budget.review_context_bytes = _check_review_context(messages, inspection.limits)
     elif "previous_manifest" in json.loads(messages[1]["content"]):
@@ -268,26 +272,68 @@ def _validate_phase_declaration(inspection: _Inspection, reply: dict[str, Any],
     validate(reply[final])
 
 
+def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
+                 messages: list[dict[str, str]], budget: AttemptBudget) -> dict[str, Any] | None:
+    try:
+        reply = _normalize_review(_decode_reply(raw, inspection.name, inspection.limits), inspection.name)
+        if reply.get('tool') == 'repair_proposal':
+            reply = apply_patch(base, reply, max_bytes=inspection.limits.max_output_bytes)
+    except EnvironmentDiscoveryError as exc:
+        if exc.code not in {'invalid_json_envelope', 'duplicate_json_key', 'invalid_proposal_patch'}:
+            raise
+        _repair(messages, raw, [{"location": [], "code": exc.code,
+            "guidance": "Return one JSON object with unique keys at every level; assessment must occur exactly once and contain an object, never a boolean."}],
+            budget, can_patch=base is not None)
+        return None
+    else:
+        return reply
+
+
+def _declaration_feedback(exc: EnvironmentDiscoveryError, inspection: _Inspection, budget: AttemptBudget) -> list[dict[str, Any]]:
+    if exc.code not in {"review_citations_invalid", "review_findings_invalid", "finding_response_ids_invalid"}:
+        raise exc
+    if exc.code == 'finding_response_ids_invalid':
+        ledger = cast('FindingLedger', budget.finding_ledger)
+        return [{"location": ["finding_responses"], "code": exc.code,
+            "allowed_ids": [record.id for record in ledger.records], "required_ids": ledger.open_ids(),
+            "guidance": "Respond only to daemon-assigned coverage findings; probe observations are not finding IDs. Use [] when allowed_ids is empty."}]
+    return [{"location": ["sources"], "code": exc.code, "allowed_sources": sorted(inspection.inputs)}]
+
+
+def _admit_declaration(inspection: _Inspection, reply: dict[str, Any], validate: Callable[[dict[str, Any]], Any],
+                       raw: str, messages: list[dict[str, str]]) -> bool:
+    budget = inspection.budget
+    if budget is None:
+        message = "declaration budget is unavailable"
+        raise EnvironmentDiscoveryError(message, code="attempt_budget_identity")
+    try:
+        _validate_phase_declaration(inspection, reply, validate)
+    except ValidationError as exc:
+        errors = _validation_feedback(exc)
+    except EnvironmentDiscoveryError as exc:
+        errors = _declaration_feedback(exc, inspection, budget)
+    else:
+        return True
+    _repair(messages, raw, errors, budget, can_patch=True)
+    return False
+
+
 async def _phase(
     *, inspection: _Inspection, messages: list[dict[str, str]], chat: ChatJson,
     budget: AttemptBudget, validate: Callable[[dict[str, Any]], Any],
 ) -> tuple[dict[str, Any], dict[str, str]]:
     budget.stage = inspection.name
+    repair_base: dict[str, Any] | None = None
     try:
         async with asyncio.timeout(min(inspection.limits.phase_timeout_seconds, max(0, budget.deadline - time.monotonic()))):
             for _ in range(inspection.limits.max_model_calls):
                 budget.reserve_call()
                 await budget.flush()
                 budget.context_bytes += sum(len(message["content"].encode()) for message in messages)
-                _admit_phase_context(inspection, budget, messages)
-                raw = budget.record_reply(await invoke_chat(chat, messages, schema=response_schema(budget.expected_envelope)))
-                try:
-                    reply = _normalize_review(_decode_reply(raw, inspection.name, inspection.limits), inspection.name)
-                except EnvironmentDiscoveryError as exc:
-                    if exc.code not in {"invalid_json_envelope", "duplicate_json_key"}:
-                        raise
-                    _repair(messages, raw, [{"location": [], "code": exc.code,
-                        "guidance": "Return one JSON object with unique keys at every level; assessment must occur exactly once and contain an object, never a boolean."}], budget)
+                _admit_phase_context(inspection, budget, messages, can_patch=repair_base is not None)
+                raw = budget.record_reply(await invoke_chat(chat, messages, schema=response_schema(budget.expected_envelope, allow_patch=repair_base is not None)))
+                reply = _phase_reply(raw, inspection, repair_base, messages, budget)
+                if reply is None:
                     continue
                 if set(reply) == {"probe"} and inspection.name == "discovery":
                     await _probe_reply(reply["probe"], raw, messages, inspection, budget)
@@ -297,18 +343,10 @@ async def _phase(
                 if set(reply) in final_keys and isinstance(reply[final], dict):
                     if _preflight_pending(inspection, budget, messages, raw):
                         continue
-                    try:
-                        _validate_phase_declaration(inspection, reply, validate)
-                    except ValidationError as exc:
-                        _repair(messages, raw, _validation_feedback(exc), budget)
-                        continue
-                    except EnvironmentDiscoveryError as exc:
-                        if exc.code not in {"review_citations_invalid", "review_findings_invalid"}:
-                            raise
-                        _repair(messages, raw, [{"location": ["sources"], "code": exc.code,
-                            "allowed_sources": sorted(inspection.inputs)}], budget)
-                        continue
-                    return reply[final], inspection.inputs
+                    repair_base = copy.deepcopy(reply)
+                    if _admit_declaration(inspection, reply, validate, raw, messages):
+                        return reply[final], inspection.inputs
+                    continue
                 try:
                     result = await inspection.tool_result(reply)
                 except EnvironmentDiscoveryError as exc:

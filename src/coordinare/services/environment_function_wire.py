@@ -98,7 +98,7 @@ def decode_function(raw: str, schema: dict[str, Any]) -> str:
     if not isinstance(arguments, dict):
         error = 'object arguments required'
         raise TypeError(error)
-    if kind in {'read_file', 'read_files', 'list_files'}:
+    if kind in {'read_file', 'read_files', 'list_files', 'repair_proposal'}:
         if 'tool' in arguments:
             message = 'reserved action selector'
             raise ValueError(message)

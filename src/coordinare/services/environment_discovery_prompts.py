@@ -12,6 +12,7 @@ from coordinare_service_inference.environment.models import (
 from pydantic import ConfigDict, create_model
 
 from coordinare.services.environment_probes import ProbeEnvelope, ProbeRequest
+from coordinare.services.environment_proposal_patch import PATCH_INSTRUCTION, PATCH_SCHEMA
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -80,7 +81,7 @@ def assessment_envelope_schema() -> dict[str, object]:
 class DiscoveryPrompts:
     """Keep source tools available while advertising only the current declaration."""
 
-    def update(self, messages: list[dict[str, str]], budget: AttemptBudget, inputs: Mapping[str, str]) -> None:
+    def update(self, messages: list[dict[str, str]], budget: AttemptBudget, inputs: Mapping[str, str], *, repairing: bool = False) -> None:
         if not inputs:
             budget.expected_envelope = "source_tool"
             guidance = ('Current phase: source_inspection. Inspect repository evidence using the source tools. '
@@ -99,9 +100,13 @@ class DiscoveryPrompts:
                 'matching this schema: ' + json.dumps(ProbeEnvelope.model_json_schema()))
         else:
             budget.expected_envelope = "manifest"
-            guidance = ('Current phase: manifest_construction. ' + _MANIFEST_INSTRUCTIONS +
-                'Return exactly the complete envelope matching this schema: ' +
-                json.dumps(_MANIFEST_ENVELOPE.model_json_schema()))
+            ledger = budget.finding_ledger
+            known_ids = [record.id for record in ledger.records] if ledger else []
+            finding_rule = ('Only respond to these daemon-assigned coverage finding IDs: ' + json.dumps(known_ids) +
+                '. Probe observations are not coverage findings. ' + ('finding_responses MUST be [] because no finding IDs exist. ' if not known_ids else ''))
+            guidance = ('Current phase: manifest_construction. ' + finding_rule + _MANIFEST_INSTRUCTIONS +
+                (PATCH_INSTRUCTION + json.dumps(PATCH_SCHEMA) if repairing else
+                 'Return exactly the complete envelope matching this schema: ' + json.dumps(_MANIFEST_ENVELOPE.model_json_schema())))
         messages[0] = {"role": "system", "content": SOURCE_TOOLS + guidance}
 
 

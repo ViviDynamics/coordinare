@@ -41,11 +41,11 @@ def validate_finding_responses(responses: list[FindingResponse], *, ledger: Find
                                inspected: Mapping[str, str], manifest: EnvironmentManifest) -> None:
     ids = [response.finding_id for response in responses]
     if (len(set(ids)) != len(ids) or not set(ledger.open_ids()) <= set(ids)
-            or not set(ids) <= {record.id for record in ledger.records}
-            or any(not set(response.sources) <= inspected.keys() or not set(response.affected_ids) <= _ids(manifest)
-                   for response in responses)):
-        refuse_finding('finding responses must address every open objection with read evidence',
-                                        code='review_findings_invalid')
+            or not set(ids) <= {record.id for record in ledger.records}):
+        refuse_finding('finding response IDs must match established objections', code='finding_response_ids_invalid')
+    if any(not set(response.sources) <= inspected.keys() or not set(response.affected_ids) <= _ids(manifest)
+           for response in responses):
+        refuse_finding('finding responses must address every open objection with read evidence', code='review_findings_invalid')
 
 
 def apply_finding_review(ledger: FindingLedger, *, manifest: EnvironmentManifest,
