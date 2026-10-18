@@ -27,10 +27,16 @@ from coordinare_service_inference.cache_provenance import (
     MAX_SCRIPT_BYTES,
     RESULT_SENTINEL,
 )
+from coordinare_service_inference.environment.execution_source import CHUNK_BYTES
 from coordinare_service_inference.environment.source_payload import (
     SOURCE_DOCUMENT_MAX_BYTES,
     decode_sources,
     encode_sources,
+)
+
+from coordinare.services.environment_source_transport import (
+    execution_header,
+    projected_source_groups,
 )
 
 if TYPE_CHECKING:
@@ -376,7 +382,6 @@ def build_verifier_source_secrets(
         message = "source payload requires Pod and accepted input identities"
         raise ValueError(message)
     if spec.execution_source is not None:
-        from coordinare.services.environment_source_transport import projected_source_groups
 
         groups = projected_source_groups(spec.execution_source, review_inputs=spec.source_inputs)
     else:
@@ -441,11 +446,10 @@ __all__ = [
 
 def _mount_source_payload(manifest: dict[str, Any], spec: VerifierSpec, *, name: str, image: str) -> None:
     if spec.source_inputs is None:
-        raise ValueError('accepted source input identities are required')
+        message = 'accepted source input identities are required'
+        raise ValueError(message)
     if spec.execution_source is not None:
-        from coordinare_service_inference.environment.execution_source import CHUNK_BYTES
 
-        from coordinare.services.environment_source_transport import execution_header
 
         execution_header(spec.execution_source, '', review_inputs=spec.source_inputs)
         chunks = (spec.execution_source.payload_bytes+CHUNK_BYTES-1)//CHUNK_BYTES

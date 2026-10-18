@@ -141,9 +141,11 @@ def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True) -
     try:
         source = ExecutionSourceIdentity.model_validate(cache.environment_execution_source)
     except ValueError as exc:
-        raise ValueError('required execution source identity is missing; rebuild the cache') from exc
+        message = 'required execution source identity is missing; rebuild the cache'
+        raise ValueError(message) from exc
     if source.source_commit != manifest.source_commit or report.execution_source_digest != source.digest():
-        raise ValueError('required execution source identity differs')
+        message = 'required execution source identity differs'
+        raise ValueError(message)
     _validate_execution_results(report, manifest)
     if publish:
         cache.environment_verification = report.model_dump(mode="json")

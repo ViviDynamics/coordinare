@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import shutil
 import time
 from dataclasses import dataclass, field, replace
 from http import HTTPStatus
@@ -796,7 +797,6 @@ class KubernetesRuntime:
     async def run_verifier(
         self, *, slug: str, spec: VerifierSpec, poll_interval_s: float = VERIFIER_POLL_INTERVAL_S,
     ) -> tuple[bool | None, str]:
-        import shutil
 
         try:
             return await self._run_verifier_with_source(slug=slug, spec=spec, poll_interval_s=poll_interval_s)

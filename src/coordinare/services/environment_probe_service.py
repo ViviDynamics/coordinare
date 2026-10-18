@@ -15,7 +15,10 @@ from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_probe_executor import execute_environment_probe
 from coordinare.services.environment_probes import ProbePlan, ProbeReport, validate_probe_report
 from coordinare.services.environment_repair import finish_probe, reserve_probe
-from coordinare.services.environment_source_provider import prepare_repository_source
+from coordinare.services.environment_source_provider import (
+    RepositorySourceRequest,
+    prepare_repository_source,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -58,8 +61,8 @@ async def run_owned_probe(plan: ProbePlan, *, context: ProbeServiceContext) -> P
         with tempfile.TemporaryDirectory(prefix="coordinare-probe-source-") as temporary:
             bundle = context.source_bundle
             if bundle is None:
-                bundle = await prepare_repository_source(state, cache.symphony_name, commit=plan.source_commit,
-                    review_inputs=plan.inputs, destination=Path(temporary)/'source', deadline=deadline)
+                bundle = await prepare_repository_source(state, RepositorySourceRequest(cache.symphony_name,plan.source_commit,plan.inputs),
+                    destination=Path(temporary)/'source', deadline=deadline)
             report = await execute_environment_probe(
                 plan, state=state, source_bundle=bundle, budget=budget, deadline=deadline,
             )

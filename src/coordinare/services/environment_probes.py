@@ -110,7 +110,8 @@ def validate_saved_probe_reports(reports: list[dict[str, Any]], source_commit: s
             message = "saved capability observations lack the executed plan; restart after confirmed cleanup"
             raise EnvironmentDiscoveryError(message, code="probe_plan_missing")
         if not report.execution_source_digest:
-            raise EnvironmentDiscoveryError("saved preflight lacks complete execution source; restart after cleanup", code="probe_source_identity")
+            message = "saved preflight lacks complete execution source; restart after cleanup"
+            raise EnvironmentDiscoveryError(message, code="probe_source_identity")
         validate_probe_report(report.plan, report)
     if any(report.source_commit != source_commit or report.image_ref != capabilities.image_ref
            or report.platform != capabilities.platform or not report.cleanup_confirmed
