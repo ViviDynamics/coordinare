@@ -44,6 +44,8 @@ from coordinare.services.environment_attempt import DiscoveryChatReply, Environm
 from coordinare.services.environment_repair import journal_for, remaining_seconds
 
 if TYPE_CHECKING:
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
+
     from coordinare.services.environment_discovery import ChatJson
     from coordinare.services.environment_probes import ProbePlan
 
@@ -100,6 +102,8 @@ class Snapshot:
         output = bytearray()
         try:
             async with asyncio.timeout(30):
+                if proc.stdout is None:
+                    raise ValueError("snapshot Git output unavailable")
                 while True:
                     chunk = await proc.stdout.read(min(65536, max_bytes + 1 - len(output)))
                     if not chunk:
@@ -121,14 +125,42 @@ class Snapshot:
                 await proc.wait()
 
     async def verify(self) -> None:
-        if not re.fullmatch(r"[0-9a-f]{40,64}", self.commit):
+        if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", self.commit):
             raise ValueError("snapshot requires an immutable commit")
         if (await self.git("rev-parse", "HEAD")).decode().strip() != self.commit:
             raise ValueError("snapshot checkout differs from selected commit")
         if await self.git("status", "--porcelain=v1", "--untracked-files=all"):
             raise ValueError("snapshot contains local modifications")
 
-    async def get_repository_paths(self, org, repo, *, ref, max_entries):
+    async def prepare_execution_source(
+        self, owner: str, repo: str, *, commit: str, destination: Path, deadline: float,
+    ) -> ExecutionSourceBundle:
+        from scripts.environment_validation_source import prepare_snapshot_source
+
+        if owner != self.org or repo != self.name:
+            raise ValueError('snapshot repository identity differs')
+        return await prepare_snapshot_source(self, commit=commit, destination=destination, deadline=deadline)
+
+    async def get_branch_head_sha(self, branch_name: str = 'main') -> str:
+        return self.commit
+
+    async def get_file_blob_sha(self, org: str, repo: str, path: str, *, ref: str | None = None) -> str | None:
+        from coordinare_service_inference.environment.models import source_path
+
+        source_path(path)
+        if org != self.org or repo != self.name or (ref is not None and ref != self.commit):
+            raise ValueError('snapshot object identity differs')
+        raw = await self.git('--literal-pathspecs', 'ls-tree', '-z', self.commit, '--', path)
+        records = [record for record in raw.split(b'\0') if record]
+        if len(records) != 1:
+            return None
+        metadata, name = records[0].split(b'\t', 1)
+        _mode, kind, oid = metadata.decode('ascii').split()
+        return oid if name.decode() == path and kind == 'blob' else None
+
+    async def get_repository_paths(
+        self, owner: str, repo: str, *, ref: str, max_entries: int = 100_000,
+    ) -> list[str]:
         if ref != self.commit:
             raise ValueError("snapshot identity differs")
         entries = (await self.git("ls-tree", "-rz", "--full-tree", ref)).split(b"\0")
@@ -144,9 +176,11 @@ class Snapshot:
             raise EnvironmentDiscoveryError("snapshot inventory entry limit exceeded")
         return sorted(self.modes)
 
-    async def get_file_content(self, org, repo, path, *, ref):
+    async def get_file_content(self, org: str, repo: str, path: str, *, ref: str = "HEAD") -> str | None:
         from coordinare_service_inference.environment.models import source_path
 
+        if ref == 'HEAD':
+            ref = self.commit
         if ref != self.commit:
             raise ValueError("snapshot identity differs")
         source_path(path)
@@ -323,8 +357,7 @@ async def _install(
         image,
         "-I",
         "-m",
-        "coordinare_service_inference.environment.runner",
-        "--manifest-stdin",
+        "coordinare_service_inference.environment.execution_source_install",
         "--cache",
         "/devenv/" + cache.sanitised_name,
         "--repo",
@@ -338,7 +371,8 @@ async def _install(
     )
     try:
         output, _ = await asyncio.wait_for(
-            process.communicate(manifest.canonical_json().encode()), timeout,
+            process.communicate(json.dumps({"manifest":manifest.model_dump(mode="json"),
+                "execution_source":cache.environment_execution_source}, ensure_ascii=False).encode()), timeout,
         )
         assert process.returncode is not None
         return process.returncode, output
@@ -356,17 +390,21 @@ async def _install(
 async def execute_accepted(
     snapshot: Snapshot,
     service: EnvCacheService,
-    state: dict,
+    state: dict[str, Any],
     *,
     image: str,
     target: Path,
     profile: Profile,
-    result: dict,
+    result: dict[str, Any],
 ) -> None:
     cache = state["env_cache"][snapshot.name]
     manifest = accepted_environment(cache)
     if manifest is None:
         raise ValueError("independent acceptance is required before execution")
+    for key in ('installer_evidence', 'clean_evidence', 'clean_consumer_detail'):
+        result.pop(key, None)
+    result.update(stage='execution_scope', installer_ran=False, installer_passed=False,
+        clean_consumer_ran=False, clean_consumer_passed=None, ready_at_validation=False)
     marker = target / "execution-approved.json"
     remaining = remaining_seconds(cache) if cache.environment_attempt is not None else profile.approval_timeout
     deadline = time.monotonic() + min(profile.approval_timeout, remaining)
@@ -380,7 +418,11 @@ async def execute_accepted(
             return
         await asyncio.sleep(1)
     await snapshot.verify()
-    result.update(stage="installer", installer_ran=True)
+    result.pop("installer_evidence", None)
+    result.pop("clean_evidence", None)
+    result.pop("clean_consumer_detail", None)
+    result.pop("clean_consumer_passed", None)
+    result.update(stage="installer", installer_ran=True, installer_passed=False, clean_consumer_ran=False)
     code, output = await _install(snapshot, cache, image, target, profile.installer_timeout)
     (target / "installer-output.json").write_bytes(output)
     report = execution_report(output.decode(), cache, publish=False)
@@ -389,6 +431,9 @@ async def execute_accepted(
         and report.passed
         and report.platform == cache.environment_capabilities["platform"]
     )
+    evidence = {**report.model_dump(mode='json'), 'image_ref':image}
+    result['installer_evidence'] = evidence
+    result['execution_source'] = cache.environment_execution_source
     if not result["installer_passed"]:
         evidence = {**report.model_dump(mode="json"), "image_ref": image}
         result.update(status="held", reason_code="installer_failed", installer_evidence=evidence)
@@ -466,7 +511,7 @@ async def _cleanup_case(target: Path, cache: EnvCacheState, image: str) -> bool:
 
 async def validate_repository(
     snapshot: Snapshot, *, image: str, output: Path, profile: Profile, chat: ChatJson | None = None,
-) -> dict:
+) -> dict[str, Any]:
     new_profile_directory(output)
     started = time.monotonic()
     cache = EnvCacheState(
@@ -536,12 +581,15 @@ async def validate_repository(
         )
         chat = backend.chat_json_with_metadata
 
-    async def recorded(messages):
+    selected_chat = chat
+    async def recorded(messages: list[dict[str, str]]) -> str | DiscoveryChatReply:
         nonlocal calls, review_starts
         calls += 1
         reviewing = "manifest" in json.loads(messages[1]["content"])
         review_starts += int(reviewing and len(messages) == 2)
-        response = await chat(messages)
+        if selected_chat is None:
+            raise ValueError("validation chat unavailable")
+        response = await selected_chat(messages)
         text = response.text if isinstance(response, DiscoveryChatReply) else response
         if profile.save_transcripts:
             _write(
@@ -565,7 +613,7 @@ async def validate_repository(
         )
         return response
 
-    async def persist_attempt():
+    async def persist_attempt() -> None:
         _write(output / "environment-attempt.json", cache.environment_attempt)
         for index, report in enumerate((cache.environment_attempt or {}).get("probe_reports", [])):
             _write(output / f"probe-{index:03}" / "probe-report.json", report)
@@ -600,11 +648,13 @@ async def validate_repository(
             )
             for name, data in (("accepted-manifest.json", cache.environment_manifest),
                                ("accepted-assessment.json", cache.environment_assessment),
-                               ("execution-capabilities.json", cache.environment_capabilities)):
+                               ("execution-capabilities.json", cache.environment_capabilities),
+                               ("execution-source.json", cache.environment_execution_source)):
                 _write(attempt_target / name, data)
                 _write(output / name, data)
             result.update(status="accepted_not_executed", stage="coverage",
-                manifest_digest=accepted_environment(cache).digest(), generation=generation)
+                manifest_digest=(cache.environment_assessment or {})["manifest_digest"], generation=generation,
+                execution_source=cache.environment_execution_source)
             _write(attempt_target / "discovery-result.json", result)
             _write(output / "discovery-result.json", result)
             _event(repository=snapshot.name, stage="coverage", status="accepted",
@@ -660,7 +710,7 @@ async def validate_repository(
     return result
 
 
-async def _batch(args, image: str, profile: Profile) -> list[dict]:
+async def _batch(args: argparse.Namespace, image: str, profile: Profile) -> list[dict[str, Any]]:
     results = []
     if len(set(args.repositories)) != len(args.repositories):
         raise ValueError("duplicate repository selections")

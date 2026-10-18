@@ -11,7 +11,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import coordinare_service_inference.environment as environment_package
 
@@ -40,7 +40,7 @@ def package_hashes() -> dict[str, str]:
     }
 
 
-def verify_image_code(image: str) -> dict:
+def verify_image_code(image: str) -> dict[str, Any]:
     """Confirm current shared code really exists in the immutable execution image."""
     if not _IMAGE.fullmatch(image):
         raise ValueError("validation image must use an immutable repository digest")

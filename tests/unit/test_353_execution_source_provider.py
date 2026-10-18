@@ -286,3 +286,66 @@ async def test_cancelled_acquisition_removes_owned_temporary_source(tmp_path, mo
     with pytest.raises(asyncio.CancelledError):
         await task
     assert not (tmp_path / "owned").exists()
+
+
+@pytest.mark.asyncio
+async def test_private_archive_signature_not_in_http_request_logs(tmp_path, monkeypatch, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="httpx")
+    await prepare(
+        tmp_path,
+        monkeypatch,
+        redirect="https://downloads.example/source.tgz?token=private-signature",
+    )
+    assert "private-signature" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_github_review_reads_resolve_pinned_in_tree_links_like_snapshot(
+    tmp_path, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from coordinare.services.github import GitHubService
+
+    async def token():
+        return "test"
+
+    seen = []
+
+    async def query(document, variables):
+        seen.append(variables["expression"])
+        text = {"link": "docs/guide", "docs/guide": "required tool"}[
+            variables["expression"].split(":", 1)[1]
+        ]
+        return {"repository": {"object": {"text": text}}}
+
+    fake = SimpleNamespace(
+        _current_token=token,
+        _rest_api_base=lambda: "https://api.github.com",
+        _guarded_execute=query,
+    )
+
+    def answer(request):
+        return httpx.Response(
+            200,
+            json={
+                "truncated": False,
+                "tree": [
+                    {"path": "link", "type": "blob", "mode": "120000"},
+                    {"path": "docs/guide", "type": "blob", "mode": "100644"},
+                ],
+            },
+        )
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(answer), **kw),
+    )
+    await GitHubService.get_repository_paths(fake, "owner", "repo", ref=COMMIT)
+    assert (
+        await GitHubService.get_file_content(fake, "owner", "repo", "link", ref=COMMIT)
+        == "required tool"
+    )
+    assert seen == [COMMIT + ":link", COMMIT + ":docs/guide"]

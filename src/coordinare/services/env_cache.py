@@ -1654,6 +1654,7 @@ class EnvCacheService:
                 # 077: feed the prior attempt's verification failure back to the agent
                 # so it fixes the specific gap (e.g. a pinned Ruby version) on retry.
                 last_failure=cache_state.last_bootstrap_error,
+                environment_execution_source=cache_state.environment_execution_source,
                 environment_manifest=cache_state.environment_manifest,
                 environment_assessment=cache_state.environment_assessment,
                 environment_manifest_digest=(cache_state.environment_assessment["manifest_digest"]

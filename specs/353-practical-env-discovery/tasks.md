@@ -133,5 +133,5 @@ Spec: execution-source-amendment.md; plan: execution-source-plan.md. User approv
 - [x] T068 Full source for Docker probes and clean verification (task3).
 - [x] T069 Kubernetes binary source transport parity and cleanup (task4).
 - [x] T070 Source provenance/migration, restart ownership and usable activation (task5).
-- [ ] T071 Pinned snapshot source adapter and current-generation installer reports (task6).
+- [x] T071 Pinned snapshot source adapter and current-generation installer reports (task6).
 - [ ] T072 Focused tests, CI, final adversarial review and Elm-only60m simulation (task7). No live-success claim until actual required clean checks and usable activation pass.

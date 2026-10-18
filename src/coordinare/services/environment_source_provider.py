@@ -6,9 +6,11 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
 import shutil
 import tarfile
 import time
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import quote
 
@@ -42,9 +44,33 @@ logger = structlog.get_logger(__name__)
 MAX_FALLBACK_BLOBS = 256
 
 
+_SOURCE_HTTP_ACTIVE: ContextVar[bool] = ContextVar("execution_source_http_active", default=False)
+
+
+class _SourceRequestRedaction(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if _SOURCE_HTTP_ACTIVE.get() and isinstance(record.args, tuple):
+            record.args = tuple(
+                str(value.copy_with(query=None, fragment=None))
+                if isinstance(value, httpx.URL)
+                else value
+                for value in record.args
+            )
+        return True
+
+
+_SOURCE_REQUEST_REDACTION = _SourceRequestRedaction()
+
+
 class SourceProvider(Protocol):
     async def prepare_execution_source(
-        self, owner: str, repo: str, *, commit: str, destination: Path, deadline: float,
+        self,
+        owner: str,
+        repo: str,
+        *,
+        commit: str,
+        destination: Path,
+        deadline: float,
     ) -> ExecutionSourceBundle: ...
 
 
@@ -110,7 +136,12 @@ class _BoundedOutput(io.BufferedIOBase):
 
 
 def write_execution_bundle(
-    commit: str, entries: list[SourceEntry], objects: Path, destination: Path, *, deadline: float,
+    commit: str,
+    entries: list[SourceEntry],
+    objects: Path,
+    destination: Path,
+    *,
+    deadline: float,
 ) -> ExecutionSourceBundle:
     """Normalize checked blob objects into a provider-independent binary bundle."""
     identity = source_identity(commit, entries)
@@ -125,9 +156,14 @@ def write_execution_bundle(
         or len(metadata) + identity.expanded_bytes > MAX_EXPANDED_BYTES
     ):
         raise ValueError("execution source metadata exceeds byte bound")
-    with destination.open("xb") as output, tarfile.open(
-        fileobj=_BoundedOutput(output), mode="w|gz", format=tarfile.PAX_FORMAT,
-    ) as archive:
+    with (
+        destination.open("xb") as output,
+        tarfile.open(
+            fileobj=_BoundedOutput(output),
+            mode="w|gz",
+            format=tarfile.PAX_FORMAT,
+        ) as archive,
+    ):
         info = tarfile.TarInfo("metadata.json")
         info.size = len(metadata)
         archive.addfile(info, io.BytesIO(metadata))
@@ -152,12 +188,18 @@ def write_execution_bundle(
             check_deadline(deadline)
             digest.update(chunk)
     return ExecutionSourceBundle(
-        identity, destination, digest.hexdigest(), destination.stat().st_size,
+        identity,
+        destination,
+        digest.hexdigest(),
+        destination.stat().st_size,
     )
 
 
 def _normalize_archive(
-    archive_path: Path, entries: list[SourceEntry], objects: Path, deadline: float,
+    archive_path: Path,
+    entries: list[SourceEntry],
+    objects: Path,
+    deadline: float,
 ) -> set[str]:
     declared = {e.path: e for e in entries}
     seen: set[str] = set()
@@ -221,7 +263,7 @@ def _normalize_archive(
     return seen
 
 
-async def acquire_github_source(
+async def _acquire_github_source(
     api_base: str,
     token: str,
     owner: str,
@@ -320,7 +362,11 @@ async def acquire_github_source(
                     for entry in unique.values():
                         group.create_task(complete(entry))
             bundle = write_execution_bundle(
-                commit, entries, objects, destination / "source.tgz", deadline=deadline,
+                commit,
+                entries,
+                objects,
+                destination / "source.tgz",
+                deadline=deadline,
             )
             archive_path.unlink()
             tree_path.unlink()
@@ -341,8 +387,13 @@ async def acquire_github_source(
 
 
 async def prepare_repository_source(
-    state: Mapping[str, Any], name: str, *, commit: str, review_inputs: Mapping[str, str],
-    destination: Path, deadline: float,
+    state: Mapping[str, Any],
+    name: str,
+    *,
+    commit: str,
+    review_inputs: Mapping[str, str],
+    destination: Path,
+    deadline: float,
 ) -> ExecutionSourceBundle:
     """Resolve an actual provider for a parent-owned commit and review hash set."""
     config = state.get("coordinare_config")
@@ -365,7 +416,9 @@ async def prepare_repository_source(
         deadline=deadline,
     )
     validate_execution_bundle(
-        bundle.payload_path, expected=bundle.identity, review_inputs=review_inputs,
+        bundle.payload_path,
+        expected=bundle.identity,
+        review_inputs=review_inputs,
     )
     if bundle.identity.source_commit != commit:
         raise ValueError("execution source commit differs from accepted manifest")
@@ -373,27 +426,66 @@ async def prepare_repository_source(
 
 
 async def ensure_execution_source(
-    state: Mapping[str, Any], name: str, cache: EnvCacheState, *, destination: Path, deadline: float,
+    state: Mapping[str, Any],
+    name: str,
+    cache: EnvCacheState,
+    *,
+    destination: Path,
+    deadline: float,
 ) -> ExecutionSourceBundle:
     from coordinare.services.environment_acceptance import accepted_environment
 
     manifest = accepted_environment(cache)
     if manifest is None:
-        raise ValueError('execution source requires independently accepted manifest')
-    bundle = await prepare_repository_source(state, name, commit=manifest.source_commit,
-        review_inputs=manifest.inputs, destination=destination, deadline=deadline)
+        raise ValueError("execution source requires independently accepted manifest")
+    bundle = await prepare_repository_source(
+        state,
+        name,
+        commit=manifest.source_commit,
+        review_inputs=manifest.inputs,
+        destination=destination,
+        deadline=deadline,
+    )
     previous = cache.environment_execution_source
     if previous is not None and ExecutionSourceIdentity.model_validate(previous) != bundle.identity:
-        raise ValueError('execution source differs from accepted bootstrap source')
-    cache.environment_execution_source = bundle.identity.model_dump(mode='json')
+        raise ValueError("execution source differs from accepted bootstrap source")
+    cache.environment_execution_source = bundle.identity.model_dump(mode="json")
     return bundle
 
 
 async def checkpoint_source_ownership(state: Mapping[str, Any]) -> None:
     """A failed persistence callback prevents source acquisition/execution."""
-    service = state.get('env_cache_service')
-    backing = getattr(service, '_kubernetes_state', {})
-    save = (state.get('snapshot_checkpoint_fn') or state.get('snapshot_save_fn') or
-            backing.get('snapshot_checkpoint_fn') or backing.get('snapshot_save_fn'))
+    service = state.get("env_cache_service")
+    backing = getattr(service, "_kubernetes_state", {})
+    save = (
+        state.get("snapshot_checkpoint_fn")
+        or state.get("snapshot_save_fn")
+        or backing.get("snapshot_checkpoint_fn")
+        or backing.get("snapshot_save_fn")
+    )
     if callable(save):
         await save()
+
+
+async def acquire_github_source(
+    api_base: str,
+    token: str,
+    owner: str,
+    repo: str,
+    *,
+    commit: str,
+    destination: Path,
+    deadline: float,
+) -> ExecutionSourceBundle:
+    logger_http = logging.getLogger("httpx")
+    if _SOURCE_REQUEST_REDACTION not in logger_http.filters:
+        logger_http.addFilter(_SOURCE_REQUEST_REDACTION)
+    context_token = _SOURCE_HTTP_ACTIVE.set(True)
+    try:
+        return await _acquire_github_source(
+            api_base, token, owner, repo, commit=commit, destination=destination, deadline=deadline,
+        )
+    except httpx.HTTPError:
+        raise ValueError("execution source provider request unavailable") from None
+    finally:
+        _SOURCE_HTTP_ACTIVE.reset(context_token)

@@ -348,7 +348,11 @@ async def test_harness_archives_rejected_attempt_and_requires_new_scope(tmp_path
         paths.append(cache.cache_dir)
         assert not (target/'execution-approved.json').exists()
         if len(paths) == 1:
-            report = json.loads(verification_output(cache.environment_manifest))
+            from coordinare_service_inference.environment.execution_source import (
+                ExecutionSourceIdentity,
+            )
+            report = json.loads(verification_output(cache.environment_manifest,
+                execution_source=ExecutionSourceIdentity.model_validate(cache.environment_execution_source)))
             report.update(platform='linux/x86_64', image_ref=image)
             report['results'][0].update(status='fail', exit_code=2)
             service.record_bootstrap_execution(snapshot.name, state, report, cleanup_confirmed=confirmed)
@@ -448,3 +452,193 @@ async def test_owned_cleanup_handles_readonly_directories_without_following_link
         assert len(removed)==2
     else:
         assert len(removed)==1
+
+
+@pytest.mark.asyncio
+async def test_snapshot_bundle_ignores_mutable_checkout_and_preserves_modes(tmp_path):
+    import hashlib
+    import subprocess
+    import time
+
+    from coordinare_service_inference.environment.execution_source_restore import (
+        restore_execution_bundle,
+    )
+    from scripts.validate_environment_repositories import Snapshot
+
+    repo = tmp_path / "snapshot"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], capture_output=True, check=True,
+        ).stdout
+
+    git("init")
+    git("config", "user.name", "test")
+    git("config", "user.email", "test@example.com")
+    (repo / "asset").write_bytes(b"\x00\xff")
+    (repo / "tool").write_text("#!/bin/sh\nexit 0\n")
+    (repo / "tool").chmod(0o700)
+    (repo / "link").symlink_to("asset")
+    git("add", ".")
+    git("commit", "-m", "fixture")
+    commit = git("rev-parse", "HEAD").decode().strip()
+    (repo / "asset").write_bytes(b"changed")
+    snapshot = Snapshot(repo, commit, "fixture", "suite")
+    assert hasattr(snapshot, "prepare_execution_source")
+    assert await snapshot.get_branch_head_sha() == commit
+    assert await snapshot.get_file_blob_sha('fixture','suite','asset') == hashlib.sha1(b'blob 2\0\x00\xff').hexdigest()
+    assert await snapshot.get_file_blob_sha('fixture','suite','missing') is None
+    bundle = await snapshot.prepare_execution_source(
+        "fixture",
+        "suite",
+        commit=commit,
+        destination=tmp_path / "owned",
+        deadline=time.monotonic() + 30,
+    )
+    restore_execution_bundle(
+        bundle.payload_path, tmp_path / "restored", expected=bundle.identity, review_inputs={},
+    )
+    assert (tmp_path / "restored/asset").read_bytes() == b"\x00\xff"
+    assert (tmp_path / "restored/link").is_symlink()
+    assert (tmp_path / "restored/tool").stat().st_mode & 0o100
+    assert bundle.payload_sha256 == hashlib.sha256(bundle.payload_path.read_bytes()).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_current_installer_report_replaces_previous_failed_generation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from scripts.validate_environment_repositories import execute_accepted
+
+    from coordinare.services.environment_acceptance import accepted_environment
+    from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
+    from tests.unit.test_353_bootstrap_pipeline import setup
+
+    service, cache, state, capabilities = setup(tmp_path)
+    reviewed_cache(cache, capabilities=capabilities)
+    target = tmp_path / "case"
+    target.mkdir()
+    snapshot = SimpleNamespace(name="suite", commit=cache.bootstrap_commit_sha)
+
+    async def verify():
+        pass
+
+    snapshot.verify = verify
+    (target / "execution-approved.json").write_text(
+        json.dumps(
+            {
+                "scope": "environment_validation",
+                "approved": True,
+                "manifest_digest": accepted_environment(cache).digest(),
+                "source_commit": snapshot.commit,
+                "image_ref": capabilities.image_ref,
+            },
+        ),
+    )
+
+    async def installer(*args):
+        report = json.loads(verification_output(cache.environment_manifest))
+        report["platform"] = capabilities.platform
+        return 0, json.dumps(report).encode()
+
+    async def clean(*args, **kwargs):
+        return False, "actual check failed"
+
+    monkeypatch.setattr("scripts.validate_environment_repositories._install", installer)
+    monkeypatch.setattr("scripts.validate_environment_repositories.verify_env_cache_clean", clean)
+    result = {
+        "installer_evidence": {"manifest_digest": "old-failed-digest"},
+        "clean_evidence": {"manifest_digest": "old-clean"},
+    }
+    await execute_accepted(
+        snapshot,
+        service,
+        state,
+        image=capabilities.image_ref,
+        target=target,
+        profile=Profile(model="fixture", base_url="http://localhost:1"),
+        result=result,
+    )
+    assert result["installer_passed"] is True
+    assert result["installer_evidence"]["manifest_digest"] == accepted_environment(cache).digest()
+    assert result["installer_evidence"]["passed"] is True
+    assert (
+        result["clean_evidence"] is None
+        or result["clean_evidence"]["manifest_digest"] != "old-clean"
+    )
+
+
+@pytest.mark.asyncio
+async def test_real_installer_entrypoint_checks_source_before_install_actions(tmp_path):
+    import importlib.util
+    import subprocess
+    import sys
+
+    from coordinare_service_inference.environment.execution_source_checkout import checkout_identity
+
+    from tests.unit.env_manifest_fixture import reviewed_metadata
+
+    assert (
+        importlib.util.find_spec(
+            "coordinare_service_inference.environment.execution_source_install",
+        )
+        is not None
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], capture_output=True, check=True,
+        ).stdout
+
+    git("init")
+    git("config", "user.name", "test")
+    git("config", "user.email", "test@example.com")
+    (repo / "guide").write_text("baseline")
+    git("add", ".")
+    git("commit", "-m", "fixture")
+    commit = git("rev-parse", "HEAD").decode().strip()
+    identity = await checkout_identity(repo, commit=commit, review_inputs={})
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    marker = cache / "installed"
+    metadata = reviewed_metadata(
+        source_commit=commit,
+        inputs={"guide": __import__("hashlib").sha256(b"baseline").hexdigest()},
+        install=[
+            {
+                "id": "install",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    'import pathlib,sys;pathlib.Path(sys.argv[1]).write_text("installed")',
+                    "{cache}/installed",
+                ],
+            },
+        ],
+    )
+    payload = json.dumps(
+        {"manifest": metadata["environment_manifest"], "execution_source": identity.model_dump()},
+    ).encode()
+    args = [
+        sys.executable,
+        "-I",
+        "-m",
+        "coordinare_service_inference.environment.execution_source_install",
+        "--repo",
+        str(repo),
+        "--cache",
+        str(cache),
+        "--scratch",
+        str(tmp_path),
+    ]
+    (repo / "guide").write_text("modified")
+    failed = subprocess.run(args, input=payload, capture_output=True)
+    assert failed.returncode != 0 and not marker.exists()
+    (repo / "guide").write_text("baseline")
+    passed = subprocess.run(args, input=payload, capture_output=True)
+    assert passed.returncode == 0, passed.stderr.decode()
+    assert marker.read_text() == "installed"
+    assert json.loads(passed.stdout)["execution_source_digest"] == identity.digest()

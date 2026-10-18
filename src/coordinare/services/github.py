@@ -2592,6 +2592,7 @@ class GitHubService(CardIdentityMap):
             message = "repository inventory is invalid or exceeds limit"
             raise GitHubError(message)
         paths: set[str] = set()
+        links: set[str] = set()
         for entry in entries:
             if not isinstance(entry, dict) or entry.get("type") not in {"blob", "tree"}:
                 message = "repository inventory contains unsupported entry"
@@ -2609,19 +2610,36 @@ class GitHubService(CardIdentityMap):
                     message = "repository inventory contains duplicate path"
                     raise GitHubError(message)
                 paths.add(path)
+                if entry.get("mode") == "120000":
+                    links.add(path)
+        self._execution_source_link_inventory = (owner, repo, ref, frozenset(links))
         return sorted(paths)
 
     async def get_file_content(
         self, owner: str, repo: str, path: str, ref: str = "HEAD",
     ) -> str | None:
-        expression = f"{ref}:{path}"
-        result = await self._guarded_execute(
-            GET_FILE_CONTENT_QUERY,
-            {"owner": owner, "repo": repo, "expression": expression},
-        )
-        obj = result.get("repository", {}).get("object")
-        if isinstance(obj, dict):
-            return obj.get("text")
+        import posixpath
+
+        from coordinare_service_inference.environment.models import source_path
+
+        inventory = getattr(self, '_execution_source_link_inventory', None)
+        links = inventory[3] if inventory is not None and inventory[:3] == (owner, repo, ref) else frozenset()
+        current = path
+        seen: set[str] = set()
+        for _ in range(8):
+            if current in seen:
+                return None
+            seen.add(current)
+            result = await self._guarded_execute(
+                GET_FILE_CONTENT_QUERY,
+                {'owner':owner, 'repo':repo, 'expression':f'{ref}:{current}'},
+            )
+            obj = result.get('repository', {}).get('object')
+            content = obj.get('text') if isinstance(obj, dict) else None
+            if current not in links or not isinstance(content, str):
+                return content
+            current = posixpath.normpath(posixpath.join(posixpath.dirname(current), content))
+            source_path(current)
         return None
 
     async def get_file_blob_sha(
