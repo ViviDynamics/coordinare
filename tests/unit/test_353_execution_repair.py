@@ -246,7 +246,7 @@ def test_category_counters_survive_restart(tmp_path):
     save_attempt(cache, budget)
     resumed = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=120)
     assert (resumed.schema_repairs, resumed.coverage_revisions, resumed.execution_repairs) == (1, 2, 0)
-    assert cache.environment_attempt['version'] == 4
+    assert cache.environment_attempt['version'] == 5
     assert cache.environment_attempt['expires_at'] == 700
 
 
@@ -276,7 +276,7 @@ def test_legacy_pending_requires_explicit_restart(tmp_path, status):
     assert cache.environment_attempt == legacy
 
 
-def test_legacy_ready_generation_can_restore_without_resuming_its_budget(tmp_path):
+def test_legacy_ready_generation_requires_findings_policy_refresh(tmp_path):
     cache = cache_fixture(tmp_path)
     begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
     legacy = {k:v for k,v in cache.environment_attempt.items() if k not in {
@@ -284,11 +284,12 @@ def test_legacy_ready_generation_can_restore_without_resuming_its_budget(tmp_pat
         'max_schema_repairs', 'max_coverage_revisions', 'max_execution_repairs'}}
     legacy.update(version=1, repairs=1, max_repairs=2, status='ready')
     cache.environment_attempt = legacy
-    restore_attempt_generation(cache, interrupted=True)
+    with pytest.raises(EnvironmentDiscoveryError, match='legacy'):
+        restore_attempt_generation(cache, interrupted=True)
     assert cache.environment_attempt == legacy
 
 
-@pytest.mark.parametrize('version', [5, '2', None])
+@pytest.mark.parametrize('version', [6, '2', None])
 def test_unknown_journal_version_holds(tmp_path, version):
     cache = cache_fixture(tmp_path)
     begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)

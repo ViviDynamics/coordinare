@@ -40,4 +40,3 @@ def reject_nested_credentials(value: object) -> None:
     elif isinstance(value, list):
         for item in value:
             reject_nested_credentials(item)
-

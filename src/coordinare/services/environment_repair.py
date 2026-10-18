@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
+from coordinare_service_inference.environment.findings import FindingLedger
 from coordinare_service_inference.environment.models import (
     EnvironmentManifest,
     ExecutionCapabilities,
@@ -47,7 +48,8 @@ class RepairJournal(BaseModel):
     """Daemon-owned state; a pending repair survives snapshot roundtrips."""
 
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
-    version: Literal[4] = 4
+    version: Literal[5] = 5
+    finding_ledger: FindingLedger | None = None
     source_owner: str | None = None
     execution_source: dict[str, Any] | None = None
     probe_batches: int = Field(default=0, ge=0, le=2)
@@ -86,24 +88,8 @@ def _refuse(message: str, *, code: str = 'execution_repair_held') -> NoReturn:
 def journal_for(cache: EnvCacheState) -> RepairJournal:
     """Parse only bounded, supported journal state, never repair unknown snapshots."""
     data = cache.environment_attempt
-    if isinstance(data, dict) and data.get("version") == 1:
-        if data.get("status") != "ready":
-            _refuse("legacy environment run requires explicit restart after confirmed cleanup", code="legacy_attempt_requires_restart")
-        # Only frozen generation metadata can be read from the old journal. No
-        # pending legacy work can obtain renewed category allowances.
-        data = dict(data)
-        consumed, maximum = data.pop("repairs", None), data.pop("max_repairs", None)
-        data["version"] = 2
-        for name in ("schema_repairs", "coverage_revisions", "execution_repairs"):
-            data[name], data["max_" + name] = consumed, maximum
-    if isinstance(data, dict) and data.get("version") == PRE_PROBE_JOURNAL_VERSION:
-        if data.get("status") != "ready":
-            _refuse("legacy environment run requires explicit restart after confirmed cleanup", code="legacy_attempt_requires_restart")
-        data = {**data, "version": 3}
-    if isinstance(data, dict) and data.get('version') == PRE_SOURCE_JOURNAL_VERSION:
-        if data.get('status') != 'ready':
-            _refuse('legacy source environment run requires explicit restart after confirmed cleanup', code='legacy_attempt_requires_restart')
-        data = {**data, 'version':4}
+    if isinstance(data, dict) and type(data.get('version')) is int and data['version'] in (1, 2, 3, 4):
+        _refuse('legacy environment review requires explicit restart after confirmed cleanup', code='legacy_attempt_requires_restart')
     try:
         if len(json.dumps(cache.environment_attempt).encode()) > JOURNAL_MAX_BYTES:
             _refuse('environment repair journal exceeds its bound')
@@ -112,6 +98,8 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
         _refuse('environment repair journal is invalid')
     if not 0 < journal.expires_at - journal.started_at <= MAX_ATTEMPT_SECONDS:
         _refuse('environment repair deadline is invalid')
+    if journal.finding_ledger is not None and journal.finding_ledger.source_commit != journal.source_commit:
+        _refuse('finding ledger source differs from attempt', code='source_identity')
     return journal
 
 
@@ -152,7 +140,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
     if data is None:
         cache.environment_source_owner = None
         return
-    if not isinstance(data, dict) or data.get("version") not in (1, 2, 3, 4):
+    if not isinstance(data, dict) or data.get("version") not in (1, 2, 3, 4, 5):
         _refuse("unknown environment journal cannot be reset without reconciliation")
     normalized = dict(data)
     if normalized["version"] == 1:
@@ -160,7 +148,8 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
         normalized["version"] = 2
         for counter in ("schema_repairs", "coverage_revisions", "execution_repairs"):
             normalized[counter], normalized["max_" + counter] = used, maximum
-    normalized["version"] = 4
+    normalized["version"] = 5
+    normalized.setdefault("finding_ledger", None)
     try:
         parsed = RepairJournal.model_validate(normalized)
     except ValidationError:
@@ -211,6 +200,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
         started=time.monotonic()-(now-journal.started_at), max_calls=journal.max_calls,
         max_reads=journal.max_reads, max_schema_repairs=journal.max_schema_repairs,
         max_coverage_revisions=journal.max_coverage_revisions, max_execution_repairs=journal.max_execution_repairs)
+    budget.finding_ledger = journal.finding_ledger.model_copy(deep=True) if journal.finding_ledger is not None else None
     budget.calls, budget.reads = journal.calls, journal.reads
     budget.probe_batches = journal.probe_batches
     budget.probe_reports = list(journal.probe_reports)
@@ -259,6 +249,19 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
 def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool = False) -> None:
     """Save consumed reservations before external work; never move the original expiry."""
     journal = journal_for(cache)
+    previous, current = journal.finding_ledger, budget.finding_ledger
+    if previous is not None and (current is None
+            or current.records[:len(previous.records)] != previous.records
+            or current.reviews[:len(previous.reviews)] != previous.reviews):
+        _refuse('finding ledger history cannot be removed or replaced', code='review_findings_invalid')
+    if current is not None:
+        try:
+            current = FindingLedger.model_validate(current.model_dump(mode='json'))
+        except ValidationError:
+            _refuse('finding ledger checkpoint is invalid', code='review_findings_invalid')
+        if current.source_commit != journal.source_commit:
+            _refuse('finding source changed during attempt', code='source_identity')
+    journal.finding_ledger = current
     journal.diagnostics = budget.summary()
     journal.probe_batches = max(journal.probe_batches, budget.probe_batches)
     journal.calls = max(journal.calls, budget.calls)
