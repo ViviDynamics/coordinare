@@ -52,7 +52,7 @@ def _collector(root: Path) -> TranscriptCollector:
 def _config(backend: str, **extra: Any) -> Any:
     conducting = SimpleNamespace(
         backend=backend, model=MODEL, max_tokens=64, temperature=None, api_key_env=KEY_ENV,
-        base_url=None, executable=None, effort=None,
+        base_url=None, executable=None, effort=None, structured_transport="json_schema",
     )
     for key, value in extra.items():
         setattr(conducting, key, value)
