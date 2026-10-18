@@ -318,6 +318,8 @@ def _bind_bootstrap_contract(metadata, **changes):
     metadata["environment_manifest"] = manifest.model_dump()
     metadata["environment_manifest_digest"] = manifest.digest()
     metadata["environment_assessment"]["manifest_digest"] = manifest.digest()
+    from ..source_contract_fixture import current_review_fixture
+    metadata["environment_assessment"] = current_review_fixture(manifest, metadata["environment_assessment"])
     return metadata
 
 

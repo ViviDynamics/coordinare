@@ -11,6 +11,16 @@ from coordinare_service_inference.environment.execution_source import SourceEntr
 from coordinare_service_inference.environment.models import EnvironmentManifest
 
 
+def current_review_fixture(manifest: EnvironmentManifest, assessment: dict) -> dict:
+    """Synthetic accepted protocol evidence, never used by live validation."""
+    from coordinare_service_inference.environment.findings import FindingLedger, FindingReview
+
+    ledger = FindingLedger(source_commit=manifest.source_commit, reviews=[FindingReview(sequence=1,
+        manifest_digest=manifest.digest(), inputs=dict(assessment['inputs']), decisions=[], added_ids=[])])
+    return {**assessment, 'schema_version': 2, 'policy_version': '353-findings-v1',
+            'finding_ledger': ledger.model_dump(mode='json'), 'finding_ledger_digest': ledger.digest()}
+
+
 def bind_checkout_contract(metadata: dict, root: Path) -> dict:
     """Keep real checkout preflight enabled while replacing external fixture setup."""
     values = copy.deepcopy(metadata)
@@ -36,4 +46,5 @@ def bind_checkout_contract(metadata: dict, root: Path) -> dict:
     values.update(environment_manifest=manifest.model_dump(), environment_manifest_digest=manifest.digest(),
         environment_execution_source=source.model_dump())
     values['environment_assessment'].update(source_commit=commit, manifest_digest=manifest.digest(), inputs=dict(manifest.inputs))
+    values['environment_assessment'] = current_review_fixture(manifest, values['environment_assessment'])
     return values

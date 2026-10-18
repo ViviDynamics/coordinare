@@ -165,7 +165,8 @@ def reviewed_environment_metadata():
         "checks": [{"id": "baseline", "argv": ["true"]}], "activation": {},
         "services": [], "empty_reason": "Image baseline suffices", "policy_version": "351-v1",
     })
+    from .source_contract_fixture import current_review_fixture
     return {"environment_manifest": manifest.model_dump(), "environment_manifest_digest": manifest.digest(),
-            "environment_assessment": {"inventory_digest": "d" * 64, "capabilities_digest": "c" * 64, "schema_version": 1, "manifest_digest": manifest.digest(),
+            "environment_assessment": current_review_fixture(manifest, {"inventory_digest": "d" * 64, "capabilities_digest": "c" * 64, "schema_version": 1, "manifest_digest": manifest.digest(),
                 "source_commit": "a" * 40, "verdict": "accept", "rationale": "Inspected source",
-                "sources": ["tools.plan"], "inputs": dict(manifest.inputs), "policy_version": "351-v1"}}
+                "sources": ["tools.plan"], "inputs": dict(manifest.inputs), "policy_version": "351-v1"})}

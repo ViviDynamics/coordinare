@@ -40,6 +40,8 @@ def test_capability_change_holds_saved_cache(field, value):
 
     cache.environment_assessment["manifest_digest"] = EnvironmentManifest.model_validate(cache.environment_manifest).digest()
     cache.environment_assessment["capabilities_digest"] = current.digest()
+    from agent.performer.tests.source_contract_fixture import current_review_fixture
+    cache.environment_assessment = current_review_fixture(EnvironmentManifest.model_validate(cache.environment_manifest), cache.environment_assessment)
     assert capabilities_match(cache, current)
     assert not capabilities_match(cache, current.model_copy(update={field: value}))
 

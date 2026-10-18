@@ -351,3 +351,20 @@ class CoverageAssessmentProposal(StrictModel):
     verdict: Literal["accept", "revise", "indeterminate"]
     rationale: str = Field(min_length=1)
     sources: list[str] = Field(min_length=1)
+
+
+def validate_current_coverage(manifest: EnvironmentManifest, assessment: CoverageAssessment) -> None:
+    """One policy gate shared by installer admission and persisted readiness."""
+    review = CoverageAssessment.model_validate(assessment.model_dump(mode='json'))
+    if (review.schema_version != 2 or review.policy_version != '353-findings-v1'
+            or review.verdict != 'accept' or review.manifest_digest != manifest.digest()
+            or review.source_commit != manifest.source_commit
+            or (review.symphony_name and review.symphony_name != manifest.symphony_name)
+            or not manifest.inventory_digest or review.inventory_digest != manifest.inventory_digest
+            or not manifest.capabilities_digest or review.capabilities_digest != manifest.capabilities_digest
+            or not review.inputs or any(review.inputs.get(path) != digest for path, digest in manifest.inputs.items())
+            or any(path not in review.inputs for path in review.sources)
+            or review.finding_ledger is None or review.finding_ledger_digest != review.finding_ledger.digest()):
+        raise ValueError('current independent coverage findings require refresh')
+    validate_finding_ledger(review.finding_ledger, manifest_digest=manifest.digest(),
+                            source_commit=manifest.source_commit, inputs=review.inputs)

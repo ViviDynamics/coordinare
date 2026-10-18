@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from coordinare_service_inference.environment.findings import FindingLedger
-
     from collections.abc import Awaitable, Callable, Mapping
+
+    from coordinare_service_inference.environment.findings import FindingLedger
 
 
 MAX_ATTEMPT_SECONDS = 3600
