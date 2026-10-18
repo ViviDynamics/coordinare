@@ -123,3 +123,15 @@ The complete-evidence amendment retest also held for all 29 default repositories
 - [x] T064 Advertise the complete closed assessment envelope and explicitly prohibit mixed/null tool fields; retain rejection of mixed replies and all nested required assessment fields.
 
 - [x] T065 Retain the parent-validated executed probe plan in durable and fresh-context evidence, reject missing/substituted saved provenance, and explicitly communicate required coverage links without relaxing the obligation guard.
+
+## Approved complete execution-source correction
+
+Spec: execution-source-amendment.md; plan: execution-source-plan.md. User approved both.
+
+- [ ] T066 Verified binary bundle identity and safe full-tree restoration (plan task1).
+- [ ] T067 Complete pinned provider acquisition and bounded archive/blob reads (task2).
+- [ ] T068 Full source for Docker probes and clean verification (task3).
+- [ ] T069 Kubernetes binary source transport parity and cleanup (task4).
+- [ ] T070 Source provenance/migration, restart ownership and usable activation (task5).
+- [ ] T071 Pinned snapshot source adapter and current-generation installer reports (task6).
+- [ ] T072 Focused tests, CI, final adversarial review and Elm-only60m simulation (task7). No live-success claim until actual required clean checks and usable activation pass.
