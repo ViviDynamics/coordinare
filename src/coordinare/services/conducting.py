@@ -412,10 +412,30 @@ class OpenAiApiBackend:
     async def chat_json_with_metadata(self, messages: list[dict[str, str]], *, response_schema: dict[str, Any] | None = None) -> DiscoveryChatReply:
         """Keep diagnostics tied to this request without changing string-only callers."""
         from coordinare.services.environment_attempt import DiscoveryChatReply
+        from coordinare.services.environment_structured_wire import (
+            WIRE_INSTRUCTION,
+            decode_wire,
+            wire_schema,
+        )
 
+        canonical_schema = response_schema
+        if canonical_schema is not None:
+            messages = [dict(message) for message in messages]
+            if messages and messages[0]["role"] == "system":
+                messages[0]["content"] += "\n\n" + WIRE_INSTRUCTION
+            else:
+                messages.insert(0, {"role": "system", "content": WIRE_INSTRUCTION})
+            response_schema = wire_schema(canonical_schema)
         reply = await self._chat_reply(messages, json_mode=True, response_schema=response_schema)
-        return DiscoveryChatReply(text=reply.text, usage=reply.usage, finish_reason=reply.finish_reason,
-            error_code="provider_request_failed" if reply.error else None)
+        text = reply.text
+        error_code = "provider_request_failed" if reply.error else None
+        if canonical_schema is not None and not error_code:
+            try:
+                text = decode_wire(text, canonical_schema)
+            except (ValueError, TypeError, RecursionError, KeyError):
+                text, error_code = "", "provider_response_invalid"
+        return DiscoveryChatReply(text=text, usage=reply.usage, finish_reason=reply.finish_reason, error_code=error_code,
+            wire_text=reply.text if canonical_schema is not None else None)
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
         prompt = _build_assess_prompt(card)

@@ -35,6 +35,7 @@ class DiscoveryChatReply:
     usage: Mapping[str, int] | None = None
     finish_reason: str | None = None
     error_code: str | None = None
+    wire_text: str | None = None
 
 
 @dataclass

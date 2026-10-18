@@ -595,6 +595,7 @@ async def validate_repository(
                 {
                     "messages": messages,
                     "response_schema": response_schema,
+                    "wire_response": response.wire_text if isinstance(response, DiscoveryChatReply) else None,
                     "response": text,
                     "usage": dict(response.usage or {})
                     if isinstance(response, DiscoveryChatReply)
