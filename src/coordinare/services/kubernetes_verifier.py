@@ -18,7 +18,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from coordinare_service_inference.cache_provenance import (
     DEFAULT_MAX_BYTES,
@@ -32,6 +32,11 @@ from coordinare_service_inference.environment.source_payload import (
     decode_sources,
     encode_sources,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
 
 # The container name, and the label that marks a verifier pod for the operator and the orphan sweep.
 VERIFIER_CONTAINER = "verifier"
@@ -217,6 +222,8 @@ class VerifierSpec:
     verify_text: str
     project_files: dict[str, str] = field(repr=False)
     source_inputs: dict[str, str] | None = None
+    execution_source: ExecutionSourceBundle | None = field(default=None, repr=False)
+    execution_source_workspace: Path | None = field(default=None, repr=False)
     platform: str | None = None
     activate_text: str | None = None
     walk_only: bool = False
@@ -332,7 +339,7 @@ def build_verifier_pod_manifest(
             raise ValueError(message)
         manifest["spec"]["nodeSelector"] = {"kubernetes.io/os": "linux", "kubernetes.io/arch":
             {"x86_64": "amd64", "aarch64": "arm64"}[parts[1]]}
-    if spec.project_files and not spec.walk_only:
+    if (spec.execution_source is not None or spec.project_files) and not spec.walk_only:
         _mount_source_payload(manifest, spec, name=name, image=image)
     if spec.transient_credentials:
         if spec.walk_only:
@@ -363,26 +370,34 @@ def build_verifier_source_secrets(
     spec: VerifierSpec, *, name: str, namespace: str, owner: str | None, pod_uid: str,
 ) -> list[dict[str, Any]]:
     """Build immutable, Pod-owned source payloads outside Pod command/env data."""
-    if not spec.project_files or spec.walk_only:
+    if spec.walk_only or (spec.execution_source is None and not spec.project_files):
         return []
     if not pod_uid or spec.source_inputs is None:
         message = "source payload requires Pod and accepted input identities"
         raise ValueError(message)
-    payload = encode_sources(spec.project_files)
-    decode_sources(payload, expected_inputs=spec.source_inputs)
+    if spec.execution_source is not None:
+        from coordinare.services.environment_source_transport import projected_source_groups
+
+        groups = projected_source_groups(spec.execution_source, review_inputs=spec.source_inputs)
+    else:
+        payload = encode_sources(spec.project_files)
+        decode_sources(payload, expected_inputs=spec.source_inputs)
+        metadata = {'sha256':payload.sha256, 'size_bytes':payload.size_bytes,
+                    'count':len(payload.chunks), 'inputs':spec.source_inputs}
+        groups = []
+        for start in range(0, len(payload.chunks), SOURCE_CHUNKS_PER_SECRET):
+            data = {f'chunk-{index:04}':base64.b64encode(payload.chunks[index]).decode('ascii')
+                for index in range(start, min(start+SOURCE_CHUNKS_PER_SECRET,len(payload.chunks)))}
+            if start == 0:
+                data['metadata.json'] = base64.b64encode(json.dumps(metadata,ensure_ascii=False,separators=(',',':')).encode()).decode('ascii')
+            groups.append(data)
     labels = {"app.kubernetes.io/managed-by": "coordinare", VERIFIER_ROLE_LABEL: "env-verifier-source"}
     if owner:
         labels[OWNER_LABEL] = owner
-    metadata = {"sha256": payload.sha256, "size_bytes": payload.size_bytes,
-                "count": len(payload.chunks), "inputs": spec.source_inputs}
     secrets = []
-    for start in range(0, len(payload.chunks), SOURCE_CHUNKS_PER_SECRET):
-        data = {f"chunk-{index:04}": base64.b64encode(payload.chunks[index]).decode("ascii")
-                for index in range(start, min(start + SOURCE_CHUNKS_PER_SECRET, len(payload.chunks)))}
-        if start == 0:
-            data["metadata.json"] = base64.b64encode(json.dumps(metadata, ensure_ascii=False, separators=(",", ":")).encode()).decode("ascii")
+    for index, data in enumerate(groups):
         secret = {"apiVersion": "v1", "kind": "Secret", "type": "Opaque", "immutable": True,
-                  "metadata": {"name": source_secret_name(name, start // SOURCE_CHUNKS_PER_SECRET), "namespace": namespace,
+                  "metadata": {"name": source_secret_name(name, index), "namespace": namespace,
                     "labels": dict(labels), "ownerReferences": [{"apiVersion": "v1", "kind": "Pod", "name": name,
                     "uid": pod_uid, "controller": False, "blockOwnerDeletion": False}]}, "data": data}
         if len(json.dumps(secret).encode()) > VERIFIER_POD_MAX_BYTES:
@@ -425,19 +440,29 @@ __all__ = [
 
 
 def _mount_source_payload(manifest: dict[str, Any], spec: VerifierSpec, *, name: str, image: str) -> None:
-    payload = encode_sources(spec.project_files)
     if spec.source_inputs is None:
-        message = "accepted source input identities are required"
-        raise ValueError(message)
-    decode_sources(payload, expected_inputs=spec.source_inputs)
-    count = (len(payload.chunks) + SOURCE_CHUNKS_PER_SECRET - 1) // SOURCE_CHUNKS_PER_SECRET
+        raise ValueError('accepted source input identities are required')
+    if spec.execution_source is not None:
+        from coordinare_service_inference.environment.execution_source import CHUNK_BYTES
+
+        from coordinare.services.environment_source_transport import execution_header
+
+        execution_header(spec.execution_source, '', review_inputs=spec.source_inputs)
+        chunks = (spec.execution_source.payload_bytes+CHUNK_BYTES-1)//CHUNK_BYTES
+        count = 1+(chunks+SOURCE_CHUNKS_PER_SECRET-1)//SOURCE_CHUNKS_PER_SECRET
+        module = 'coordinare_service_inference.environment.execution_source_restore'
+    else:
+        payload = encode_sources(spec.project_files)
+        decode_sources(payload, expected_inputs=spec.source_inputs)
+        count = (len(payload.chunks)+SOURCE_CHUNKS_PER_SECRET-1)//SOURCE_CHUNKS_PER_SECRET
+        module = 'coordinare_service_inference.environment.source_payload'
     manifest["metadata"]["annotations"] = {"coordinare.vividynamics.com/source-secrets": str(count)}
     manifest["spec"]["securityContext"]["fsGroup"] = VERIFIER_GID
     manifest["spec"]["volumes"].append({"name": "source-payload", "projected": {
         "defaultMode": 0o440, "sources": [{"secret": {"name": source_secret_name(name, index)}} for index in range(count)]}})
     manifest["spec"]["initContainers"] = [{
         "name": "source-setup", "image": image,
-        "command": ["python3", "-I", "-m", "coordinare_service_inference.environment.source_payload",
+        "command": ["python3", "-I", "-m", module,
                     "/run/coordinare-source", VERIFIER_SOURCE_REPO],
         "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]},
                             "readOnlyRootFilesystem": True},
@@ -446,3 +471,7 @@ def _mount_source_payload(manifest: dict[str, Any], spec: VerifierSpec, *, name:
         "resources": {"limits": {"cpu": VERIFIER_CPU_LIMIT, "memory": VERIFIER_MEMORY_LIMIT}},
     }]
     manifest["spec"]["containers"][0]["env"].append({"name": "SOURCE_REPO", "value": VERIFIER_SOURCE_REPO})
+    if spec.execution_source is not None:
+        manifest['spec']['containers'][0]['env'].append({'name':'COORDINARE_ENV_EXECUTION_SOURCE_DIGEST',
+            'value':spec.execution_source.identity.digest()})
+

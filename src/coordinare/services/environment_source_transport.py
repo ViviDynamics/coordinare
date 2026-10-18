@@ -21,10 +21,15 @@ MAX_SCRIPT_BYTES = 1024 * 1024
 
 
 def execution_header(
-    bundle: ExecutionSourceBundle, script: str, *, review_inputs: Mapping[str, str],
+    bundle: ExecutionSourceBundle,
+    script: str,
+    *,
+    review_inputs: Mapping[str, str],
 ) -> dict[str, Any]:
     validate_execution_bundle(
-        bundle.payload_path, expected=bundle.identity, review_inputs=review_inputs,
+        bundle.payload_path,
+        expected=bundle.identity,
+        review_inputs=review_inputs,
     )
     script_bytes = script.encode()
     if not 0 < bundle.payload_bytes <= MAX_ARCHIVE_BYTES or len(script_bytes) > MAX_SCRIPT_BYTES:
@@ -44,7 +49,10 @@ def execution_header(
 
 
 def execution_input(
-    bundle: ExecutionSourceBundle, script: str, *, review_inputs: Mapping[str, str],
+    bundle: ExecutionSourceBundle,
+    script: str,
+    *,
+    review_inputs: Mapping[str, str],
 ) -> bytes:
     header = execution_header(bundle, script, review_inputs=review_inputs)
     with bundle.payload_path.open("rb") as stream:
@@ -52,3 +60,35 @@ def execution_input(
     if len(raw) != bundle.payload_bytes or hashlib.sha256(raw).hexdigest() != bundle.payload_sha256:
         raise ValueError("execution source transport bytes differ")
     return b"".join((canonical(header), b"\n", raw, script.encode()))
+
+
+def projected_source_groups(
+    bundle: ExecutionSourceBundle, *, review_inputs: Mapping[str, str],
+) -> list[dict[str, str]]:
+    """Split source bytes and compact identity metadata into bounded Secret groups."""
+    import base64
+
+    from coordinare_service_inference.environment.execution_source import CHUNK_BYTES
+
+    header = execution_header(bundle, "", review_inputs=review_inputs)
+    count = (bundle.payload_bytes + CHUNK_BYTES - 1) // CHUNK_BYTES
+    metadata = {
+        "sha256": bundle.payload_sha256,
+        "size_bytes": bundle.payload_bytes,
+        "count": count,
+        "identity": header["identity"],
+        "review_inputs": dict(review_inputs),
+    }
+    groups = [{"transport.json": base64.b64encode(canonical(metadata)).decode("ascii")}]
+    digest = hashlib.sha256()
+    with bundle.payload_path.open("rb") as stream:
+        index = 0
+        while chunk := stream.read(CHUNK_BYTES):
+            if index % 8 == 0:
+                groups.append({})
+            groups[-1][f"chunk-{index:04}"] = base64.b64encode(chunk).decode("ascii")
+            index += 1
+            digest.update(chunk)
+        if index != count or digest.hexdigest() != bundle.payload_sha256:
+            raise ValueError("execution source bytes changed during projection")
+    return groups
