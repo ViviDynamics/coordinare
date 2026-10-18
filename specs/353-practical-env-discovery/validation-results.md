@@ -135,3 +135,35 @@ retained coverage finding. Source navigation guidance also explicitly requires
 following referenced development instructions and distinguishes missing tools from
 unproven or impossible capabilities. A read-only replay tests the model's response
 before another full Elm execution.
+
+The subsequent `accurate-review-elm60m-high` profile held in review after 1,326.00
+seconds, with no installation or clean execution. It read the referenced test
+instructions and the reviewer retained four blocking findings: console coverage,
+other omitted development lanes, a pinned linter version, and container-service
+capability. One schema correction removed unsupported envelope fields. No coverage
+revision was attempted: the capability flag incorrectly took precedence over the
+reviewer's explicit `revise` verdict. The snapshot remained unchanged; owned image,
+registry and volume absence were verified. Raw results are retained separately.
+
+The control-flow correction gives `revise` the existing bounded coverage-repair
+path, including capability objections. This implements the approved persistent
+findings amendment's revision semantics. It does not accept the manifest or close
+the capability finding. An indeterminate capability judgment still holds
+immediately, trusted runtime-configuration failures remain terminal, and exhausted
+coverage allowance still holds. A new independent reviewer must explicitly
+adjudicate every retained finding before any installation is admitted.
+
+Four failing-then-passing regressions cover independent capability resolution and
+unchanged coverage limits of zero, one and two. Replaying the exact live assessment
+with its 15 independently verified source hashes now reserves one coverage
+revision and preserves all four open findings. This transition replay executes no
+model or project commands and is not bootstrap acceptance evidence. Independent
+review found no important issues and passed 78 focused regressions.
+
+Preflight guidance now asks for bounded discovery of available command names as
+well as expected prerequisites, so unfamiliar execution mechanisms can be found
+without a built-in platform or technology catalog. An inventory remains a hint,
+not service-usability evidence. The existing two-batch, command, output and time
+bounds are unchanged. A read-only inventory of the retained diagnostic image
+returned 817 names in 7,842 bytes, including its software-guest executable; this
+is not a probe result or readiness proof for a new Elm attempt.

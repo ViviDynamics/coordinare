@@ -69,6 +69,40 @@ async def test_unavailable_required_service_holds_without_privilege_changes():
 
 
 @pytest.mark.asyncio
+async def test_capability_revision_requires_independent_resolution_before_acceptance():
+    budget = AttemptBudget()
+    replies = Replies([{'tool': 'read_file', 'path': PATH}, {'manifest': candidate()},
+        review(verdict='revise', findings=[finding()], unavailable=True),
+        {'manifest': candidate(), 'finding_responses': [response()]},
+        review(),  # An overall accept still cannot erase the capability finding.
+        review(decisions=[decision()])])
+    _, assessment = await run(replies, budget=budget)
+    assert budget.coverage_revisions == 1 and budget.schema_repairs == 1
+    assert assessment.finding_ledger.records[0].proposal.category == 'capability'
+    assert assessment.finding_ledger.open_ids() == []
+    context = json.loads(replies.messages[3][-1]['content'])
+    assert context['coverage_revision']['finding_ledger']['records'][0]['id'] == 'F0001'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('limit', [0, 1, 2])
+async def test_unresolved_capability_revisions_exhaust_original_coverage_budget(limit):
+    values = [{'tool': 'read_file', 'path': PATH}, {'manifest': candidate()},
+              review(verdict='revise', findings=[finding()], unavailable=True)]
+    for _ in range(limit):
+        values.extend([{'manifest': candidate(), 'finding_responses': [response()]},
+                       review(verdict='revise', decisions=[decision('open')], unavailable=True)])
+    replies = Replies(values)
+    budget = AttemptBudget(max_coverage_revisions=limit)
+    with pytest.raises(EnvironmentDiscoveryError) as exc:
+        await run(replies, budget=budget)
+    assert exc.value.code == 'attempt_coverage_limit'
+    assert budget.coverage_revisions == limit
+    assert budget.finding_ledger.open_ids() == ['F0001']
+    assert len(replies.messages) == 3 + 2 * limit
+
+
+@pytest.mark.asyncio
 async def test_capability_flag_correction_identifies_actual_error_and_preserves_objection():
     budget = AttemptBudget()
     async def chat(messages):
