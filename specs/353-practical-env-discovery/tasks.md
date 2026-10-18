@@ -121,3 +121,5 @@ The complete-evidence amendment retest also held for all 29 default repositories
 - [x] T063 Retain the redacted terminal output tail within the unchanged repair excerpt bound; preserve statuses and original-report digest, verified against Elm's actual linker failure.
 
 - [x] T064 Advertise the complete closed assessment envelope and explicitly prohibit mixed/null tool fields; retain rejection of mixed replies and all nested required assessment fields.
+
+- [x] T065 Retain the parent-validated executed probe plan in durable and fresh-context evidence, reject missing/substituted saved provenance, and explicitly communicate required coverage links without relaxing the obligation guard.

@@ -91,6 +91,7 @@ class ProbeReport(ProbeBase):
     platform: str
     results: list[ProbeCommandResult] = Field(min_length=1, max_length=16)
     cleanup_confirmed: bool
+    plan: ProbePlan | None = None
 
 
 ProbeExecutor = Callable[[ProbePlan], Awaitable[ProbeReport]]
@@ -102,6 +103,11 @@ def validate_saved_probe_reports(reports: list[dict[str, Any]], source_commit: s
     except ValidationError:
         message = "saved capability preflight evidence is malformed"
         raise EnvironmentDiscoveryError(message, code="probe_report_invalid") from None
+    for report in parsed:
+        if report.plan is None:
+            message = "saved capability observations lack the executed plan; restart after confirmed cleanup"
+            raise EnvironmentDiscoveryError(message, code="probe_plan_missing")
+        validate_probe_report(report.plan, report)
     if any(report.source_commit != source_commit or report.image_ref != capabilities.image_ref
            or report.platform != capabilities.platform or not report.cleanup_confirmed
            or any(item.status != "completed" or item.truncated for item in report.results) for report in parsed):
@@ -110,7 +116,8 @@ def validate_saved_probe_reports(reports: list[dict[str, Any]], source_commit: s
 
 
 def validate_probe_report(plan: ProbePlan, report: ProbeReport) -> None:
-    if (report.plan_digest != plan.digest() or report.source_commit != plan.source_commit
+    if (report.plan_digest != plan.digest() or (report.plan is not None and report.plan.digest() != plan.digest())
+            or report.source_commit != plan.source_commit
             or report.image_ref != plan.capabilities.image_ref or report.platform != plan.capabilities.platform
             or [result.id for result in report.results] != [command.id for command in plan.request.commands]
             or not report.cleanup_confirmed):
@@ -119,3 +126,9 @@ def validate_probe_report(plan: ProbePlan, report: ProbeReport) -> None:
     if any(result.status != "completed" or result.truncated for result in report.results):
         message = "probe execution is incomplete or output was truncated"
         raise EnvironmentDiscoveryError(message, code="probe_observation_incomplete")
+
+
+def bind_probe_report(plan: ProbePlan, report: ProbeReport) -> ProbeReport:
+    """Attach the parent-owned executed plan after checking all reported evidence."""
+    validate_probe_report(plan, report)
+    return report.model_copy(update={"plan": plan.model_copy(deep=True)})

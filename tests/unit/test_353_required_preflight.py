@@ -185,3 +185,31 @@ async def test_null_tool_with_wrapped_review_remains_invalid():
             capabilities=CAPABILITIES,budget=budget)
     assert caught.value.code=='attempt_schema_limit'
     assert budget.schema_repairs==budget.coverage_revisions==0
+
+
+@pytest.mark.asyncio
+async def test_fresh_review_receives_parent_bound_executed_probe_plan():
+    from coordinare.services.environment_probes import ProbeReport
+    executed=[]
+    async def fetch(path):
+        return SOURCE
+    async def execute(plan):
+        executed.append(plan)
+        data=report_data(plan)
+        data.pop('plan',None)
+        return ProbeReport.model_validate(data)
+    async def chat(messages):
+        context=json.loads(messages[1]['content'])
+        if 'manifest' in context:
+            evidence=context['probe_evidence'][0]
+            assert evidence.get('plan')==executed[0].model_dump(mode='json')
+            assert evidence['plan_digest']==executed[0].digest()
+            return json.dumps(assessment(candidate()))
+        if len(messages)==2:
+            return json.dumps({'tool':'read_file','path':PATH})
+        if not executed:
+            return json.dumps({'probe':request_data()})
+        return json.dumps({'manifest':candidate()})
+    _,review=await discover_and_review(symphony_name='suite',commit=COMMIT,paths=[PATH],fetch=fetch,chat=chat,
+        capabilities=CAPABILITIES,probe_executor=execute,require_preflight=True)
+    assert review.verdict=='accept'

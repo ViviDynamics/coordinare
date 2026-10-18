@@ -26,7 +26,7 @@ from coordinare.services.environment_attempt import (
     AttemptBudget,
     EnvironmentDiscoveryError,
 )
-from coordinare.services.environment_probes import ProbePlan, ProbeReport, validate_probe_report
+from coordinare.services.environment_probes import ProbePlan, ProbeReport, bind_probe_report
 
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import CheckResult
@@ -259,8 +259,8 @@ def finish_probe(cache: EnvCacheState, report: ProbeReport) -> None:
     if journal.probe_plan is None or journal.probe_owner != report.plan_digest:
         _refuse("environment probe ownership mismatch", code="probe_report_invalid")
     plan = ProbePlan.model_validate(journal.probe_plan)
-    validate_probe_report(plan, report)
-    journal.probe_reports.append(report.model_dump(mode="json"))
+    bound = bind_probe_report(plan, report)
+    journal.probe_reports.append(bound.model_dump(mode="json"))
     journal.probe_owner = None
     journal.probe_plan = None
     _publish(cache, journal)
