@@ -185,6 +185,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
     cache.cache_dir, cache.sanitised_name = new_path, name
     cache.environment_attempt = None
     cache.environment_manifest = cache.environment_assessment = cache.environment_verification = None
+    cache.environment_runtime_artifacts = None
     cache.environment_capabilities = None
     cache.environment_execution_source = None
     cache.environment_source_owner = None
@@ -459,6 +460,7 @@ def prepare_repair(cache: EnvCacheState) -> tuple[EnvironmentManifest, dict[str,
         cache.sanitised_name = journal.base_slug
     restore_attempt_generation(cache)
     cache.environment_manifest = cache.environment_assessment = cache.environment_verification = None
+    cache.environment_runtime_artifacts = None
     cache.rendered_activate_sh = cache.rendered_verify_sh = None
     cache.provenance_digest = None
     cache.cache_dir_ready = False

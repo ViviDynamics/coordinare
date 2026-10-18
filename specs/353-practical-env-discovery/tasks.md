@@ -154,7 +154,7 @@ planning subagent. Execution is native with independent review. Specs:
 `elm-bootstrap-fix-plan.md`. Earlier incomplete acceptance tasks remain open.
 
 - [x] T078 Integrated runtime feasibility, policy/resource/cleanup proof (task1).
-- [ ] T079 Runtime identity and durable artifact contracts (task2).
+- [x] T079 Runtime identity and durable artifact contracts (task2).
 - [ ] T080 Verifier and ordinary consumer runtime lifecycle integration (task3).
 - [ ] T081 Independently reviewed source scope (task4).
 - [ ] T082 Complete executable mapping and bounded correction (task5).

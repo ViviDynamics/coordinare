@@ -371,6 +371,7 @@ def _clear_reviewed_environment(cache: EnvCacheState) -> None:
     cache.rendered_verify_sh = None
     cache.rendered_activate_sh = None
     cache.environment_capabilities = None
+    cache.environment_runtime_artifacts = None
     cache.environment_execution_source = None
     cache.environment_manifest = None
     cache.environment_assessment = None
@@ -2408,6 +2409,7 @@ class EnvCacheService:
             message = "environment discovery requires an immutable source commit"
             raise EnvironmentDiscoveryError(message)
         cache_state.environment_capabilities = None
+        cache_state.environment_runtime_artifacts = None
         cache_state.environment_manifest = None
         cache_state.environment_assessment = None
         cache_state.environment_verification = None

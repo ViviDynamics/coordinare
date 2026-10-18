@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from coordinare_service_inference.environment.models import ExecutionCapabilities
+from coordinare_service_inference.environment.runtime import RuntimeIdentity, RuntimePolicy
 
 from coordinare.services.environment_acceptance import (
     accepted_environment,
@@ -56,6 +58,57 @@ async def _docker_identity(image: str) -> tuple[str, str]:
         return pinned, f"{os_name}/{machine}"
 
 
+async def _remove_runtime_inspector(name: str) -> None:
+    async def command(*args: str) -> tuple[int, bytes]:
+        proc = await asyncio.create_subprocess_exec("docker", *args,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+        return proc.returncode or 0, stderr
+
+    try:
+        await command("rm", "--force", name)
+        code, detail = await command("container", "inspect", name)
+        if code == 0 or b"No such" not in detail:
+            raise EnvironmentCapabilityError("private runtime inspection cleanup is unconfirmed")
+    except (OSError, TimeoutError) as exc:
+        raise EnvironmentCapabilityError("private runtime inspection cleanup is unconfirmed") from exc
+
+
+async def _inspect_runtime_bundle(image: str) -> dict[str, str]:
+    """Hash the immutable carrier's platform bundle with no project or network."""
+    name = "coordinare-runtime-inspect-" + uuid.uuid4().hex
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "run", "--name", name, "--rm", "--network", "none", "--cap-drop", "ALL",
+            "--label", "coordinare.runtime.inspection=true",
+            "--security-opt", "no-new-privileges", "--memory", "128m", "--memory-swap", "128m",
+            "--cpus", "1", "--pids-limit", "32", "--read-only", "--entrypoint", "python",
+            image, "-m", "coordinare_service_inference.environment.runtime_bundle",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode != 0 or len(stdout) > 16 * 1024:
+            raise EnvironmentCapabilityError("private runtime bundle is unavailable")
+        try:
+            data = json.loads(stdout)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise EnvironmentCapabilityError("private runtime bundle identity is malformed") from exc
+        if not isinstance(data, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in data.items()):
+            raise EnvironmentCapabilityError("private runtime bundle identity is malformed")
+        return data
+    finally:
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        await _remove_runtime_inspector(name)
+
+
 async def resolve_execution_capabilities(state: Mapping[str, Any], symphony_name: str) -> ExecutionCapabilities:
     """Fail closed when the current target cannot supply an immutable identity."""
     config = state.get("coordinare_config")
@@ -74,6 +127,9 @@ async def resolve_execution_capabilities(state: Mapping[str, Any], symphony_name
         raise EnvironmentCapabilityError(message)
     if roots:
         root = roots.pop()
+    runtime = getattr(getattr(global_config, "env_cache", None), "private_service_runtime", None)
+    if runtime is not None and transport == "kubernetes":
+        raise EnvironmentCapabilityError("private service runtime is not supported on Kubernetes")
     if transport == "kubernetes":
         image = getattr(global_config, "kubernetes_verifier_image", None) or getattr(global_config, "performer_image", None)
         platform = getattr(global_config, "kubernetes_verifier_platform", None)
@@ -98,6 +154,18 @@ async def resolve_execution_capabilities(state: Mapping[str, Any], symphony_name
         image, platform = await _docker_identity(image)
     target = ExecutionCapabilities(schema_version=1, image_ref=image, platform=platform,
         cache_mount_path=f"{root}/{cache.sanitised_name}", install_network="enabled", verify_network="disabled")
+    if runtime is not None:
+        try:
+            policy = RuntimePolicy.model_validate(runtime)
+            actual = RuntimeIdentity.model_validate({
+                **await _inspect_runtime_bundle(target.image_ref), "schema_version": 1,
+                "carrier_image": target.image_ref, "carrier_platform": target.platform,
+            })
+            if actual != policy.identity:
+                raise ValueError("runtime bundle differs")
+            target = ExecutionCapabilities.model_validate({**target.model_dump(), "schema_version": 2, "runtime": policy})
+        except ValueError as exc:
+            raise EnvironmentCapabilityError("private runtime bundle identity differs from configured policy") from exc
     await _check_bootstrap_target(state, symphony_name, target)
     return target
 

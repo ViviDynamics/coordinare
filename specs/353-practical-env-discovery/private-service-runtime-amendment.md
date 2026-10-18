@@ -121,3 +121,29 @@ No generated manifest is edited by an operator to make Elm pass.
 The user approved this design and [the combined plan](elm-bootstrap-fix-plan.md)
 with "Yes" after the independent planning review. No claim is made that the candidate already supports
 Elm or that it will fit the authorized 60-minute execution profile.
+
+
+## Contract implementation detail
+
+The explicit operator setting is `env_cache.private_service_runtime`. Its
+`RuntimePolicy` binds carrier/guest identities, emulator/firmware/configuration
+hashes, resource ceilings and control limits before discovery. Models cannot
+supply those trusted identities. Capability schema 2 requires this policy and
+checks the carrier image/platform separately from the guest platform. Native
+schema 1 keeps its existing serialized form and digest.
+
+The immutable carrier supplies `/opt/coordinare-runtime/bundle.json`. A bounded,
+network-disabled, read-only inspection hashes the actual guest, emulator and
+firmware files; declared digests alone are insufficient. A mismatched or absent
+bundle holds. The inspector removes only its uniquely named container, including
+on cancellation, and requires confirmed absence. The optional configuration is
+explicitly refused on Kubernetes until its separate support proof exists.
+
+Project endpoint requests are compiled with the admitted policy into a
+`RuntimeSpec`. They cannot expose the guest control service, bind public
+interfaces, collide with control/listeners or exceed the endpoint budget.
+`RuntimeArtifactReceipt` binds nonempty sealed artifact hashes to that spec,
+manifest and complete source identities after installation. Receipts persist
+through snapshots and are discarded when clearing, repairing or restarting a
+cache generation. Parsing a receipt does not itself grant readiness; final
+execution and consumer gates must verify its binding and actual artifacts.
