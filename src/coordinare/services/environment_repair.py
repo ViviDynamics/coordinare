@@ -27,6 +27,7 @@ from coordinare.services.environment_attempt import (
     AttemptBudget,
     EnvironmentDiscoveryError,
 )
+from coordinare.services.environment_obligations import preserve_obligations
 from coordinare.services.environment_probes import ProbePlan, ProbeReport, bind_probe_report
 
 if TYPE_CHECKING:
@@ -50,6 +51,7 @@ class RepairJournal(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     version: Literal[5] = 5
     finding_ledger: FindingLedger | None = None
+    coverage_manifest: EnvironmentManifest | None = None
     source_owner: str | None = None
     execution_source: dict[str, Any] | None = None
     probe_batches: int = Field(default=0, ge=0, le=2)
@@ -100,6 +102,10 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
         _refuse('environment repair deadline is invalid')
     if journal.finding_ledger is not None and journal.finding_ledger.source_commit != journal.source_commit:
         _refuse('finding ledger source differs from attempt', code='source_identity')
+    if (journal.finding_ledger is not None and journal.finding_ledger.reviews and journal.coverage_manifest is None):
+        _refuse('coverage findings require their established candidate', code='review_findings_invalid')
+    if journal.coverage_manifest is not None and journal.coverage_manifest.source_commit != journal.source_commit:
+        _refuse('established candidate source differs', code='source_identity')
     return journal
 
 
@@ -201,6 +207,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
         max_reads=journal.max_reads, max_schema_repairs=journal.max_schema_repairs,
         max_coverage_revisions=journal.max_coverage_revisions, max_execution_repairs=journal.max_execution_repairs)
     budget.finding_ledger = journal.finding_ledger.model_copy(deep=True) if journal.finding_ledger is not None else None
+    budget.coverage_manifest = journal.coverage_manifest.model_copy(deep=True) if journal.coverage_manifest is not None else None
     budget.calls, budget.reads = journal.calls, journal.reads
     budget.probe_batches = journal.probe_batches
     budget.probe_reports = list(journal.probe_reports)
@@ -261,7 +268,21 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
             _refuse('finding ledger checkpoint is invalid', code='review_findings_invalid')
         if current.source_commit != journal.source_commit:
             _refuse('finding source changed during attempt', code='source_identity')
+    candidate = budget.coverage_manifest
+    if journal.coverage_manifest is not None:
+        if candidate is None:
+            _refuse('established candidate cannot be removed', code='obligation_removed')
+        preserve_obligations(candidate, journal.coverage_manifest)
+        if any(candidate.inputs.get(path) != digest for path, digest in journal.coverage_manifest.inputs.items()):
+            _refuse('established source evidence changed', code='source_identity')
+    if candidate is not None and candidate.source_commit != journal.source_commit:
+        _refuse('established candidate source changed', code='source_identity')
+    if current is not None and current.reviews and candidate is None:
+        _refuse('coverage findings require established candidate', code='review_findings_invalid')
+    journal.coverage_manifest = candidate
     journal.finding_ledger = current
+    if budget.error_code is not None:
+        journal.status, journal.last_error = 'held', budget.error_code
     journal.diagnostics = budget.summary()
     journal.probe_batches = max(journal.probe_batches, budget.probe_batches)
     journal.calls = max(journal.calls, budget.calls)

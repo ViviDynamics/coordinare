@@ -54,6 +54,9 @@ from coordinare.services.environment_findings import (
     validate_finding_responses,
 )
 from coordinare.services.environment_inspection import SourceInspection
+from coordinare.services.environment_obligations import (
+    preserve_obligations as _preserve_obligations,
+)
 from coordinare.services.environment_probes import (
     ProbeExecutor,
     ProbePlan,
@@ -333,6 +336,8 @@ async def _timed_review_evidence(reviewer: _Inspection, manifest: EnvironmentMan
 
 async def _prepare_reviewer(inventory: Sequence[str], fetch: Fetch, bounds: DiscoveryLimits,
                             budget: AttemptBudget, manifest: EnvironmentManifest) -> tuple[_Inspection, list[dict[str, str]]]:
+    budget.coverage_manifest = manifest
+    await budget.flush()
     reviewer = _Inspection('review', inventory, fetch, bounds, budget)
     return reviewer, await _timed_review_evidence(reviewer, manifest)
 
@@ -487,32 +492,6 @@ class _ObligationLedger:
                 self.lifecycle.setdefault(service_id, {}).update(current)
 
 
-def _preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentManifest) -> None:
-    """A fresh judgment can add coverage, never waive a previously required obligation."""
-    for group in ("requirements", "install", "checks", "services"):
-        current = {item.id: item for item in getattr(manifest, group) if item.required}
-        for old in getattr(previous, group):
-            if not old.required:
-                continue
-            new = current.get(old.id)
-            if new is None:
-                message = "required obligation removed during repair"
-                raise EnvironmentDiscoveryError(message, code="obligation_removed")
-            if group == "requirements" and not set(old.checks) <= set(new.checks):
-                message = "required obligation coverage removed"
-                raise EnvironmentDiscoveryError(message, code="obligation_removed")
-            if group in {"checks", "install"} and old.scope != new.scope:
-                message = "required obligation scope changed"
-                raise EnvironmentDiscoveryError(message, code="obligation_removed")
-            if group == "services":
-                for phase in ("init", "start", "health", "stop"):
-                    before, after = getattr(old, phase), getattr(new, phase)
-                    if before is not None and (after is None or before.id != after.id or before.scope != after.scope
-                                               or (before.required and not after.required)):
-                        message = "required service obligation changed"
-                        raise EnvironmentDiscoveryError(message, code="obligation_removed")
-
-
 async def discover_and_review(
     *, symphony_name: str, commit: str, paths: Sequence[str], fetch: Fetch,
     chat: ChatJson | None, **options: Unpack[_DiscoveryOptionKeywords],
@@ -566,7 +545,7 @@ async def discover_and_review(
 async def _initial_repair(
     messages: list[dict[str, str]], options: _DiscoveryOptions, discovery: _Inspection, commit: str,
 ) -> tuple[list[EnvironmentManifest], dict[str, set[str]]]:
-    previous = options.previous_manifest
+    previous = cast("AttemptBudget", options.budget).coverage_manifest or options.previous_manifest
     if previous is not None and (previous.source_commit != commit or previous.inventory_digest != discovery.inventory_digest):
         message = "repair source identity changed"
         raise EnvironmentDiscoveryError(message, code="source_identity")
@@ -623,9 +602,21 @@ async def _prepare_finding_context(discovery: _Inspection, budget: AttemptBudget
 async def _checkpoint_finding_review(budget: AttemptBudget, assessment: CoverageAssessment,
                                      assessment_data: dict[str, Any]) -> None:
     budget.finding_ledger = assessment.finding_ledger
-    await budget.flush()
+    error = None
     if assessment_data['capability_unavailable']:
-        refuse_finding('required execution capability is unavailable', code='required_capability_unavailable')
+        error = EnvironmentDiscoveryError('required execution capability is unavailable', code='required_capability_unavailable')
+    elif assessment.verdict == 'revise':
+        try:
+            budget.reserve_repair('coverage')
+        except EnvironmentDiscoveryError as exc:
+            error = exc
+    elif assessment.verdict == 'indeterminate':
+        error = EnvironmentDiscoveryError('independent coverage judgment is indeterminate', code='review_indeterminate')
+    if error is not None:
+        budget.error_code = error.code
+    await budget.flush()
+    if error is not None:
+        raise error
 
 
 async def _discover_attempt(
@@ -745,7 +736,6 @@ async def _discover_attempt(
             if assessment.verdict == "accept":
                 return manifest, assessment
             _require_revision(assessment)
-            budget.reserve_repair("coverage")
             _append_coverage_revision(messages, candidate, assessment, required_ids, obligation_ledger)
     except EnvironmentDiscoveryError:
         raise
