@@ -178,3 +178,40 @@ owned Secrets, a foreign UID at the final Secret, and an over-bound annotation t
 must perform no Secret reads. All 44 focused source/lifecycle tests passed; the
 reviewer independently verified the correction. These are unit/API-double results,
 not a live Kubernetes bootstrap claim. The active Docker Elm run continues unchanged.
+
+
+## Candidate disclaimers cannot redefine requested coverage
+
+The `repairable-capability-elm60m-high` profile at `14c58d09` reached pipeline
+acceptance after 1,581.11 seconds, nine completed calls, two schema corrections
+and one coverage revision. Its exact manifest digest was
+`40e7d1edf4a71f3b8a1db262b4aeda8bcace1b1cc51a78169f9f0711269d9d0a`.
+A separate source-first independent agent audit rejected that final artifact.
+Only three Go test checks had been added; installation and activation were
+unchanged and services remained empty. The candidate explicitly disclaimed
+service-backed readiness, and the pipeline reviewer treated that disclaimer as
+permission to omit part of the requested environment. It was not permission.
+The full environment still lacked required service operation and other documented
+dependency, version and usability coverage. Raw acceptance is retained alongside
+explicit coverage invalidation; no execution approval was issued.
+
+The correction makes scope ownership explicit in trusted discovery/review context:
+the whole documented development/test environment has no operator-authorized
+exclusions. Candidate descriptions and disclaimers cannot change that scope.
+Missing required capabilities remain blocking findings, and resolving known
+findings does not replace a fresh omissions review. Optional and deployment-only
+activities still require repository-based applicability judgments. This is the
+approved persistent-findings amendment's existing scope rule, not a new ecosystem
+catalog, execution permission or automatic scope selector.
+
+A fresh read-only replay against the exact rejected candidate, same pinned sources
+and same GLM model now rejects the CLI-only disclaimer and identifies additional
+omitted project areas. Its initial response still needed protocol corrections;
+that raw semantic result alone is not an admitted assessment or bootstrap success.
+The replay and all historical artifacts remain separate from executable validation.
+No project commands or approvals are produced by this diagnostic.
+
+All 57 focused discovery/findings/preflight regressions passed. An independent
+adversarial review of the correction passed 93 focused tests and found no critical
+or important issues. Elm acceptance and the remaining repository runs are still
+outstanding; broader repository execution remains paused.
