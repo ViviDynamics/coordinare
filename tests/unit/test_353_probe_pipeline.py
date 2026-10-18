@@ -152,3 +152,34 @@ async def test_probe_checkpoint_failure_prevents_runtime(tmp_path):
     budget.checkpoint = fail
     with pytest.raises(EnvironmentDiscoveryError, match='checkpoint'):
         await run_owned_probe(plan(), context=ProbeServiceContext(cache, {}, fetch, budget, DiscoveryLimits()))
+
+
+@pytest.mark.asyncio
+async def test_unread_probe_citation_feedback_identifies_rule_without_echoing_untrusted_value():
+    from types import SimpleNamespace
+
+    from coordinare.services.environment_discovery import _probe_reply
+    from coordinare.services.environment_probes import ProbePlan, ProbeRequest
+    from tests.unit.test_353_environment_probes import plan
+
+    valid = plan()
+    data = request_data()
+    data['citations']['tool'] = ['untrusted-secret-source']
+    executed = False
+    async def probe(request):
+        nonlocal executed
+        ProbePlan(**{**valid.model_dump(), 'request': ProbeRequest.model_validate(request)})
+        executed = True
+        raise AssertionError('unread citation must never execute')
+    messages = []
+    budget = AttemptBudget(expected_envelope='probe')
+    await _probe_reply(data, json.dumps({'probe':data}), messages,
+        SimpleNamespace(probe=probe, inputs={PATH:'c'*64}), budget)
+    feedback = json.loads(messages[-1]['content'])
+    error = feedback['validation_errors'][0]
+    assert error['code'] == 'probe_citations_uninspected'
+    assert error['allowed_sources'] == [PATH]
+    assert 'read_files' in error['guidance']
+    assert 'untrusted-secret-source' not in messages[-1]['content']
+    assert budget.schema_repairs == 1
+    assert not executed

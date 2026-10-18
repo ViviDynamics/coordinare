@@ -178,7 +178,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             "missing", "extra_forbidden", "string_type", "list_type", "dict_type", "bool_type",
             "literal_error", "int_type", "string_pattern_mismatch", "too_short", "too_long",
             "requirement_check_reference", "clean_dependency_install_only",
-            "probe_id_maps", "probe_cited_question", "probe_required_true",
+            "probe_id_maps", "probe_cited_question", "probe_required_true", "probe_citations_uninspected",
         } else "invalid_contract_value"
         result.append({"location": location, "code": code})
     return result
@@ -206,7 +206,14 @@ async def _probe_reply(data: dict[str, Any], raw: str, messages: list[dict[str, 
     try:
         report = await inspection.probe(data)
     except ValidationError as exc:
-        _repair(messages, raw, _validation_feedback(exc), budget)
+        errors = _validation_feedback(exc)
+        for error in errors:
+            if error['code'] == 'probe_citations_uninspected':
+                error.update(allowed_sources=sorted(inspection.inputs), guidance=(
+                    'Cite only exact source paths already read, listed in allowed_sources. '
+                    'Use list_files and read_files to inspect additional exact files before citing them; directories are not source files. '
+                    'Do not invent or substitute evidence.'))
+        _repair(messages, raw, errors, budget)
         return
     messages.extend([{"role":"assistant", "content":raw},
         {"role":"user", "content":_json({"probe_result":report.model_dump(mode="json"),

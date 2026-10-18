@@ -35,3 +35,8 @@ The full strict-response Elm request exposed an upstream vLLM/XGrammar FSM failu
 Function parameters expand local schema references so provider function parsers can see argument types. Manifest fields and finding responses are flat function arguments, then explicitly wrapped back into the existing canonical contract. Probe and assessment fields are similarly wrapped. Unknown argument fields remain present for local validation to reject. Native function decoding enforces one advertised action, object arguments, unique JSON keys before HTTP parsing loses them, bounded output, and no competing ordinary content. Provider tool strictness is disabled for this representation; full independent local Pydantic validation and source/review/execution gates remain mandatory. Raw provider messages and the canonical response remain separately recorded.
 
 Live tests on the same endpoint passed source, probe, manifest and assessment round trips, plus the exact previously failing Elm probe conversation. These tests authorize no project commands and grant no readiness. A fresh Elm simulation must still obtain independent coverage approval and pass installation plus every required clean-consumer check.
+
+
+## Inspected probe citation feedback
+
+The native-function Elm run correctly rejected probe citations to files that had not been read, but feedback collapsed that specific failure to `invalid_contract_value`. Preserve the trusted `probe_citations_uninspected` validation code and supply only the already inspected source paths with generic source-navigation guidance. Do not echo untrusted rejected citation values, read files implicitly, alter citation admission, or increase/reset the shared repair allowance.
