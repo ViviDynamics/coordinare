@@ -578,7 +578,11 @@ async def test_operator_reconciles_interrupted_source_only_after_actual_absence(
 def test_explicit_cleanup_confirmation_cannot_waive_present_source(tmp_path):
     from coordinare.services.environment_attempt import EnvironmentDiscoveryError
     from coordinare.services.environment_discovery import DiscoveryLimits
-    from coordinare.services.environment_repair import begin_attempt, reserve_execution_source, restart_environment_attempt
+    from coordinare.services.environment_repair import (
+        begin_attempt,
+        reserve_execution_source,
+        restart_environment_attempt,
+    )
     from tests.unit.test_353_execution_repair import cache_fixture
     cache = cache_fixture(tmp_path)
     begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
