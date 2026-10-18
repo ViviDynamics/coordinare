@@ -29,7 +29,9 @@ from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
 
 
 @pytest.fixture(autouse=True)
-def _accepted_source_fixture(monkeypatch):
+def _accepted_source_fixture(monkeypatch, tmp_path):
+    from tests.unit.env_manifest_fixture import patch_clean_source_transport
+    patch_clean_source_transport(monkeypatch, tmp_path)
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",
@@ -75,7 +77,8 @@ class _Proc:
         return self.returncode
 
     async def communicate(self, **kwargs: Any) -> tuple[bytes, None]:
-        data = kwargs.get("input")
+        from tests.unit.env_manifest_fixture import decode_test_execution_frame
+        data = decode_test_execution_frame(kwargs.get("input"))
         self._owner.stdin.append(data)
         if self._owner.on_run is not None:
             self._owner.on_run()
@@ -148,11 +151,12 @@ async def test_verify_container_disables_the_performer_profile(
     assert "ENV=" in env
     assert "_DEVENV_SOURCED=1" in env
     assert "_DEVENV_SKIP_SERVICES=1" in env
-    # Still the read-only cache mount, the bash entrypoint and stdin.
+    # The trusted interpreter validates the binary source frame before the daemon script.
     assert f"{cache}:{CACHE_PATH}:ro" in argv
-    assert argv[argv.index("--entrypoint") + 1] == "bash"
+    assert argv[argv.index("--entrypoint") + 1] == "/usr/local/bin/python"
+    assert argv[-1] == "coordinare_service_inference.environment.execution_source_stdin"
     assert "-i" in argv
-    assert argv[-1] == "-s"
+    assert argv[-1] == "coordinare_service_inference.environment.execution_source_stdin"
 
 
 @pytest.mark.asyncio

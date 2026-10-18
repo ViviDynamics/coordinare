@@ -90,7 +90,9 @@ def setup(tmp_path: Path, results: list[tuple[bool | None, str]]) -> tuple[Any, 
     files = {'tools.plan':(b'baseline','100644')}
     identity = source_identity('e'*40,[SourceEntry.model_validate(e) for e in entries_for(files)])
     ec.environment_execution_source = identity.model_dump()
+    source_commits = []
     async def prepare_source(owner, repo, *, commit, destination, deadline):
+        source_commits.append(commit)
         destination.mkdir(parents=True)
         payload, descriptor = bundle_file(destination, files, commit=commit)
         return ExecutionSourceBundle(ExecutionSourceIdentity.model_validate(descriptor),payload,
@@ -103,7 +105,7 @@ def setup(tmp_path: Path, results: list[tuple[bool | None, str]]) -> tuple[Any, 
     state = {"coordinare_config": cfg, "env_cache": {"sym": ec}, "env_cache_service": service,
              "performer_services_by_id": {"bootstrap": performer}, "symphony_configs": {"sym": sym_cfg},
              "github_service": SimpleNamespace(get_file_content=AsyncMock(return_value="baseline"),
-                                                prepare_execution_source=prepare_source)}
+                                                prepare_execution_source=prepare_source, source_commits=source_commits)}
     daemon = CoordinareDaemon(AsyncMock(), max_cycles=1, sleep_func=AsyncMock())
     daemon._state.update(state)
     daemon._state["snapshot_checkpoint_fn"] = AsyncMock()
@@ -272,7 +274,7 @@ async def test_project_files_use_a_real_commit_instead_of_the_cache_fingerprint(
     ec.bootstrap_commit_sha = "e" * 40
     github = state["github_service"]
     await freeze(service, state, daemon, performer)
-    assert {call.kwargs["ref"] for call in github.get_file_content.call_args_list} == {"e" * 40}
+    assert set(github.source_commits) == {"e" * 40}
 
 
 @pytest.mark.asyncio

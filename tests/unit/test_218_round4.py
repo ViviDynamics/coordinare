@@ -30,7 +30,9 @@ REAL_EXEC = asyncio.create_subprocess_exec
 
 
 @pytest.fixture(autouse=True)
-def _accepted_verification_sources(monkeypatch):
+def _accepted_verification_sources(monkeypatch, tmp_path):
+    from tests.unit.env_manifest_fixture import patch_clean_source_transport
+    patch_clean_source_transport(monkeypatch, tmp_path)
     """Probe/cancellation tests supply accepted source independently of GitHub I/O."""
     monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",
         AsyncMock(return_value={"tools.plan": "baseline"}))

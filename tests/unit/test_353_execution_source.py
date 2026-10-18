@@ -28,7 +28,8 @@ def entries_for(files, algorithm="sha1"):
             "mode": mode,
             "size": len(data),
             "object_id": hashlib.new(
-                algorithm, b"blob " + str(len(data)).encode() + b"\0" + data,
+                algorithm,
+                b"blob " + str(len(data)).encode() + b"\0" + data,
             ).hexdigest(),
         }
         for p, (data, mode) in sorted(files.items())
@@ -103,7 +104,10 @@ def test_complete_tree_preserves_unreviewed_binary_executable_and_link(tmp_path)
     review = {"Buildfile": hashlib.sha256(FILES["Buildfile"][0]).hexdigest()}
     assert api.validate_execution_bundle(path, expected=expected, review_inputs=review) == expected
     restore.restore_execution_bundle(
-        path, tmp_path / "repo", expected=expected, review_inputs=review,
+        path,
+        tmp_path / "repo",
+        expected=expected,
+        review_inputs=review,
     )
     assert (tmp_path / "repo/src/main").read_bytes() == b"app\n"
     assert (tmp_path / "repo/asset.bin").read_bytes() == b"\x00\xff\x80"
@@ -112,12 +116,16 @@ def test_complete_tree_preserves_unreviewed_binary_executable_and_link(tmp_path)
     assert (tmp_path / "repo/current").read_bytes() == b"app\n"
     with pytest.raises(ValueError):
         restore.restore_execution_bundle(
-            path, tmp_path / "repo", expected=expected, review_inputs=review,
+            path,
+            tmp_path / "repo",
+            expected=expected,
+            review_inputs=review,
         )
 
 
 @pytest.mark.parametrize(
-    "change", ["missing", "extra", "duplicate", "wrong_hash", "review", "identity"],
+    "change",
+    ["missing", "extra", "duplicate", "wrong_hash", "review", "identity"],
 )
 def test_incomplete_or_corrupt_source_refused(tmp_path, change):
     api = source_api()
@@ -130,7 +138,10 @@ def test_incomplete_or_corrupt_source_refused(tmp_path, change):
         info.size = 1
         extra = (info, b"x")
     path, identity = bundle_file(
-        tmp_path, entries=entries, extra=extra, omit="src/main" if change == "missing" else None,
+        tmp_path,
+        entries=entries,
+        extra=extra,
+        omit="src/main" if change == "missing" else None,
     )
     if change == "identity":
         identity["source_commit"] = "b" * 40
@@ -268,3 +279,28 @@ def test_projected_bundle_cli_validates_chunks_before_restoration(tmp_path):
     assert result.returncode != 0
     assert not (tmp_path / "bad").exists()
     assert api.validate_execution_bundle(path).digest()
+
+
+def test_source_bounds_have_source_specific_failure_code(tmp_path, monkeypatch):
+    api = source_api()
+    path, _ = bundle_file(tmp_path)
+    monkeypatch.setattr(api, "MAX_ARCHIVE_BYTES", 1)
+    with pytest.raises(ValueError) as failure:
+        api.validate_execution_bundle(path)
+    assert getattr(failure.value, "code", None) == "execution_source_limit"
+
+
+def test_unsupported_hydration_has_source_specific_failure_code(tmp_path):
+    api = source_api()
+    path, _ = bundle_file(
+        tmp_path,
+        {
+            "pointer": (
+                b"version https://git-lfs.github.com/spec/v1\noid sha256:000\nsize 10\n",
+                "100644",
+            ),
+        },
+    )
+    with pytest.raises(ValueError) as failure:
+        api.validate_execution_bundle(path)
+    assert getattr(failure.value, "code", None) == "execution_source_unsupported"

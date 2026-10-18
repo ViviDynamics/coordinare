@@ -133,7 +133,9 @@ async def test_daemon_only_repairs_failed_execution_after_confirmed_quiescence(t
 
     service, cache, state, capability = setup(tmp_path)
     await publish(service, cache, state, capability, Proposal())
-    report = json.loads(verification_output(cache.environment_manifest))
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
+    report = json.loads(verification_output(cache.environment_manifest,
+        execution_source=ExecutionSourceIdentity.model_validate(cache.environment_execution_source)))
     report['platform'] = capability.platform
     report['image_ref'] = IMAGE
     report['results'][0].update(status='fail', exit_code=2, output='required artifact unavailable')
@@ -196,7 +198,9 @@ async def test_real_daemon_checkpoint_propagates_disk_failure(tmp_path, monkeypa
     model = Proposal()
     with pytest.raises(RuntimeError, match='persisted'):
         await publish(service, cache, state, capability, model)
-    assert cache.environment_attempt['calls'] == 1
+    # Source ownership is persisted before model-call reservation or source I/O.
+    assert cache.environment_attempt['calls'] == 0
+    assert cache.environment_source_owner is None
     assert model.review_starts == 0
     assert cache.environment_manifest is None
 

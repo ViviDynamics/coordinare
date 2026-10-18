@@ -2392,6 +2392,7 @@ class EnvCacheService:
         Discovery and independent review are mandatory. Any incomplete evidence
         holds bootstrap; no parser or agent-written script can supply readiness.
         """
+        from coordinare_service_inference.environment.execution_source import ExecutionSourceError
         from coordinare_service_inference.environment.render import render_activate, render_verify
 
         from coordinare.services.environment_capabilities import EnvironmentCapabilityError
@@ -2503,6 +2504,9 @@ class EnvCacheService:
         except EnvironmentDiscoveryError as exc:
             budget.error_code = exc.code
             raise
+        except ExecutionSourceError as exc:
+            budget.error_code = exc.code
+            raise EnvironmentDiscoveryError(str(exc), code=exc.code) from None
         except EnvironmentCapabilityError as exc:
             budget.error_code = exc.code
             raise EnvironmentDiscoveryError(str(exc), code=exc.code) from None

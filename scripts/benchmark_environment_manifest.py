@@ -17,6 +17,7 @@ import sys
 import time
 from pathlib import Path
 
+from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
 from coordinare_service_inference.environment.models import (
     MAX_DOCUMENT_BYTES,
     CoverageAssessment,
@@ -46,7 +47,8 @@ def fixture(count: int = 1000) -> tuple[dict, dict, dict]:
         "manifest_digest": digest, "verdict": "accept", "rationale": "Benchmark fixture",
         "sources": ["x"], "inputs": data["inputs"], "policy_version": "351-v1",
     }
-    report = {"manifest_digest": digest, "platform": platform.system().lower() + "/" + platform.machine().lower(), "results": [
+    source = ExecutionSourceIdentity(source_commit=manifest.source_commit,tree_digest="1"*64,file_count=1,expanded_bytes=22)
+    report = {"execution_source_digest":source.digest(), "manifest_digest": digest, "platform": platform.system().lower() + "/" + platform.machine().lower(), "results": [
         {"id": f"c{i}", "status": "pass", "required": True, "exit_code": 0, "manifest_digest": digest}
         for i in range(count)
     ]}
@@ -65,6 +67,7 @@ def process(data: dict, assessment: dict, report_data: dict) -> None:
     cache = EnvCacheState(
         symphony_name=manifest.symphony_name, sanitised_name="benchmark", cache_dir=Path("/benchmark"),
         bootstrap_commit_sha=manifest.source_commit, environment_manifest=data, environment_assessment=assessment,
+        environment_execution_source=ExecutionSourceIdentity(source_commit=manifest.source_commit,tree_digest="1"*64,file_count=1,expanded_bytes=22).model_dump(),
     )
     assert execution_report(json.dumps(report_data), cache, publish=False).passed
 

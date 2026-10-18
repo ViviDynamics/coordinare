@@ -26,6 +26,13 @@ MAX_ENTRIES = 100_000
 CHUNK_BYTES = 64 * 1024
 
 
+class ExecutionSourceError(ValueError):
+    """Source admission failed; preserve a safe machine-readable reason."""
+    def __init__(self, message: str, *, code: str = 'execution_source_invalid') -> None:
+        self.code = code
+        super().__init__(message)
+
+
 def checked_path(path: str) -> str:
     if (
         not path
@@ -34,13 +41,13 @@ def checked_path(path: str) -> str:
         or any(p in {"", ".", "..", ".git"} for p in path.split("/"))
         or any(ord(c) < 32 or ord(c) == 127 for c in path)
     ):
-        raise ValueError("execution source path is invalid")
+        raise ExecutionSourceError("execution source path is invalid")
     return path
 
 
 def immutable_object(value: str) -> str:
     if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value):
-        raise ValueError("execution source requires immutable Git object identity")
+        raise ExecutionSourceError("execution source requires immutable Git object identity")
     return value
 
 
@@ -83,7 +90,7 @@ def source_identity(commit: str, entries: list[SourceEntry]) -> ExecutionSourceI
     immutable_object(commit)
     ordered = sorted(entries, key=lambda e: e.path)
     if len(ordered) > MAX_ENTRIES or len({e.path for e in ordered}) != len(ordered):
-        raise ValueError("execution source entry count or uniqueness is invalid")
+        raise ExecutionSourceError("execution source entry count or uniqueness is invalid")
     paths = {e.path for e in ordered}
     for entry in ordered:
         if (
@@ -94,10 +101,10 @@ def source_identity(commit: str, entries: list[SourceEntry]) -> ExecutionSourceI
                 for i in range(1, len(entry.path.split("/")))
             )
         ):
-            raise ValueError("execution source tree identity or file layout is invalid")
+            raise ExecutionSourceError("execution source tree identity or file layout is invalid")
     size = sum(e.size for e in ordered)
     if size > MAX_EXPANDED_BYTES:
-        raise ValueError("execution source exceeds expanded byte bound")
+        raise ExecutionSourceError("execution source exceeds expanded byte bound")
     return ExecutionSourceIdentity(
         source_commit=commit,
         tree_digest=hashlib.sha256(canonical([e.model_dump() for e in ordered])).hexdigest(),
@@ -110,7 +117,7 @@ def _unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError("execution source metadata contains duplicate keys")
+            raise ExecutionSourceError("execution source metadata contains duplicate keys")
         result[key] = value
     return result
 
@@ -126,13 +133,13 @@ class _BoundedReader(io.BufferedIOBase):
         data = self.stream.read(min(size if size is not None and size >= 0 else CHUNK_BYTES, ceiling - self.count + 1))
         self.count += len(data)
         if self.count > ceiling:
-            raise ValueError("execution source decompression exceeds byte bound")
+            raise ExecutionSourceError("execution source decompression exceeds byte bound")
         return data
 
 
 def bundle_members(path: Path) -> Iterator[tuple[tarfile.TarFile, tarfile.TarInfo]]:
     if path.is_symlink() or path.stat().st_size > MAX_ARCHIVE_BYTES:
-        raise ValueError("execution source archive exceeds byte bound")
+        raise ExecutionSourceError("execution source archive exceeds byte bound", code="execution_source_limit")
     try:
         with gzip.open(path, "rb") as compressed:
             reader = _BoundedReader(compressed)
@@ -142,7 +149,7 @@ def bundle_members(path: Path) -> Iterator[tuple[tarfile.TarFile, tarfile.TarInf
             while reader.read(CHUNK_BYTES):
                 pass
     except (OSError, EOFError, tarfile.TarError) as exc:
-        raise ValueError("execution source archive is malformed") from exc
+        raise ExecutionSourceError("execution source archive is malformed") from exc
 
 
 def resolved_source_path(
@@ -156,7 +163,7 @@ def resolved_source_path(
         candidate = "/".join([*resolved, part])
         if candidate in links:
             if candidate in visited or len(visited) >= 8:
-                raise ValueError("execution source symlink cycle or depth exceeded")
+                raise ExecutionSourceError("execution source symlink cycle or depth exceeded")
             visited.add(candidate)
             target = posixpath.normpath(
                 posixpath.join(posixpath.dirname(candidate), links[candidate]),
@@ -168,7 +175,7 @@ def resolved_source_path(
             resolved.append(part)
     result = "/".join(resolved)
     if result not in entries and not any(p.startswith(result + "/") for p in entries):
-        raise ValueError("execution source symlink target missing")
+        raise ExecutionSourceError("execution source symlink target missing")
     return result
 
 
@@ -190,19 +197,19 @@ def validate_execution_bundle(
                 or not member.isfile()
                 or not 0 < member.size <= MAX_METADATA_BYTES
             ):
-                raise ValueError("execution source metadata missing or oversized")
+                raise ExecutionSourceError("execution source metadata missing or oversized")
             stream = archive.extractfile(member)
             if stream is None:
-                raise ValueError("execution source metadata missing")
+                raise ExecutionSourceError("execution source metadata missing")
             data = json.loads(stream.read(MAX_METADATA_BYTES + 1), object_pairs_hook=_unique)
             if (
                 not isinstance(data, dict)
                 or set(data) != {"identity", "entries"}
                 or not isinstance(data["entries"], list)
             ):
-                raise ValueError("execution source metadata invalid")
+                raise ExecutionSourceError("execution source metadata invalid")
             if len(data["entries"]) > MAX_ENTRIES:
-                raise ValueError("execution source entry bound exceeded")
+                raise ExecutionSourceError("execution source entry bound exceeded")
             declared = ExecutionSourceIdentity.model_validate(data["identity"])
             ordered = [SourceEntry.model_validate(item) for item in data["entries"]]
             identity = source_identity(declared.source_commit, ordered)
@@ -211,15 +218,15 @@ def validate_execution_bundle(
                 or (expected is not None and identity != expected)
                 or member.size + identity.expanded_bytes > MAX_EXPANDED_BYTES
             ):
-                raise ValueError("execution source identity differs or exceeds bound")
+                raise ExecutionSourceError("execution source identity differs or exceeds bound")
             entries = {e.path: e for e in ordered}
             continue
         if not member.name.startswith("files/"):
-            raise ValueError("execution source contains unexpected member")
+            raise ExecutionSourceError("execution source contains unexpected member")
         name = checked_path(member.name[len("files/") :])
         entry = entries.get(name)
         if entry is None or name in seen:
-            raise ValueError("execution source contains extra or duplicate member")
+            raise ExecutionSourceError("execution source contains extra or duplicate member")
         seen.add(name)
         digest = hashlib.new("sha1" if len(entry.object_id) == 40 else "sha256")
         digest.update(b"blob " + str(entry.size).encode() + b"\0")
@@ -231,10 +238,10 @@ def validate_execution_bundle(
                 or member.linkname.startswith("/")
                 or "\\" in member.linkname
             ):
-                raise ValueError("execution source link invalid")
+                raise ExecutionSourceError("execution source link invalid")
             raw = member.linkname.encode("utf-8")
             if len(raw) != entry.size:
-                raise ValueError("execution source link size differs")
+                raise ExecutionSourceError("execution source link size differs")
             links[name] = member.linkname
             digest.update(raw)
             sha256.update(raw)
@@ -244,33 +251,33 @@ def validate_execution_bundle(
                 or member.size != entry.size
                 or bool(member.mode & 0o111) != (entry.mode == "100755")
             ):
-                raise ValueError("execution source file mode or size differs")
+                raise ExecutionSourceError("execution source file mode or size differs")
             stream = archive.extractfile(member)
             if stream is None:
-                raise ValueError("execution source file missing")
+                raise ExecutionSourceError("execution source file missing")
             consumed = 0
             while chunk := stream.read(CHUNK_BYTES):
                 if consumed == 0 and chunk.startswith(
                     b"version https://git-lfs.github.com/spec/v1\n",
                 ):
-                    raise ValueError("execution source LFS hydration unsupported")
+                    raise ExecutionSourceError("execution source LFS hydration unsupported", code="execution_source_unsupported")
                 consumed += len(chunk)
                 if consumed > entry.size:
-                    raise ValueError("execution source file exceeds byte bound")
+                    raise ExecutionSourceError("execution source file exceeds byte bound")
                 digest.update(chunk)
                 sha256.update(chunk)
             if consumed != entry.size:
-                raise ValueError("execution source file truncated")
+                raise ExecutionSourceError("execution source file truncated")
         if digest.hexdigest() != entry.object_id:
-            raise ValueError("execution source blob identity differs")
+            raise ExecutionSourceError("execution source blob identity differs")
         hashes[name] = sha256.hexdigest()
     if identity is None or seen != set(entries):
-        raise ValueError("execution source file set is incomplete")
+        raise ExecutionSourceError("execution source file set is incomplete")
     for link in links:
         resolved_source_path(link, entries, links)
     for name, expected_digest in (review_inputs or {}).items():
         checked_path(name)
         target = resolved_source_path(name, entries, links)
         if hashes.get(target) != expected_digest:
-            raise ValueError("execution source differs from reviewed inputs")
+            raise ExecutionSourceError("execution source differs from reviewed inputs")
     return identity

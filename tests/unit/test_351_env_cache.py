@@ -128,7 +128,7 @@ async def test_discovery_inventory_respects_outer_bootstrap_budget(tmp_path: Pat
     service = EnvCacheService(SimpleNamespace(global_config=SimpleNamespace(
         env_cache=SimpleNamespace(bootstrap_max_seconds=0.01))))
     cache = EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=tmp_path, bootstrap_commit_sha="a" * 40)
-    github = SimpleNamespace(get_repository_paths=stalled)
+    github = SimpleNamespace(get_repository_paths=stalled, prepare_execution_source=stalled)
     from coordinare.services.environment_discovery import EnvironmentDiscoveryError
 
     with pytest.raises(EnvironmentDiscoveryError, match="deadline"):
