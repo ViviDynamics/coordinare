@@ -498,3 +498,93 @@ def test_interrupted_source_ownership_cannot_reuse_saved_readiness(tmp_path, own
     else:
         cache.environment_attempt = {"source_owner": str(tmp_path / "owned")}
     assert not saved_execution_accepted(cache)
+
+
+def test_binary_source_mount_references_exact_created_secrets(tmp_path):
+    import os
+    from dataclasses import replace
+
+    from coordinare.services.kubernetes_verifier import (
+        build_verifier_pod_manifest,
+        build_verifier_source_secrets,
+    )
+    from tests.unit.test_353_source_transport import source_spec
+
+    bundle = bundle_fixture(tmp_path, {'data': (os.urandom(400_000), '100644')})
+    spec = replace(source_spec(), project_files={}, source_inputs={}, execution_source=bundle)
+    pod = build_verifier_pod_manifest(name='verify', namespace='ns', spec=spec)
+    secrets = build_verifier_source_secrets(name='verify', namespace='ns', spec=spec, pod_uid='uid', owner=None)
+    volume = next(v for v in pod['spec']['volumes'] if v['name'] == 'source-payload')
+    mounted = {s['secret']['name'] for s in volume['projected']['sources']}
+    assert mounted == {s['metadata']['name'] for s in secrets}
+
+
+@pytest.mark.asyncio
+async def test_real_runtime_verify_then_walk_cleans_source_once(tmp_path):
+    from dataclasses import replace
+
+    from coordinare.services.kubernetes_runtime import KubernetesRuntime
+    from tests.unit.test_353_payload_lifecycle import SourceCore
+    from tests.unit.test_353_source_transport import source_spec
+
+    core = SourceCore()
+    runtime = KubernetesRuntime(namespace='ns', cache_claim='claim', core_v1=core, owner='owner')
+    owned = tmp_path/'owned'
+    owned.mkdir()
+    bundle = bundle_fixture(owned)
+    spec = replace(source_spec(), project_files={}, source_inputs={}, execution_source=bundle,
+                   execution_source_workspace=owned)
+    async def finish(*args, **kwargs):
+        return True, 'verified'
+    async def remove(name):
+        return True
+    runtime._await_verifier = finish
+    runtime._remove_verifier = remove
+    assert (await runtime.run_verifier(slug='sym', spec=spec))[0] is True
+    assert not owned.exists()
+    walk = replace(spec, walk_only=True, verify_text='', project_files={}, activate_text='')
+    assert (await runtime.run_verifier(slug='sym', spec=walk))[0] is True
+    assert not core.secrets
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('resource_present', [False, True])
+async def test_operator_reconciles_interrupted_source_only_after_actual_absence(tmp_path, resource_present):
+    from coordinare.services.activity_log import ActivityLog
+    from coordinare.services.env_bootstrap_control import request_env_bootstrap_reset
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_repair import begin_attempt, reserve_execution_source
+    from tests.unit.test_353_execution_repair import cache_fixture
+
+    cache = cache_fixture(tmp_path)
+    begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    owned = tmp_path/'interrupted-source'
+    reserve_execution_source(cache, str(owned))
+    original = json.loads(json.dumps(cache.environment_attempt))
+    if resource_present:
+        owned.mkdir()
+        with pytest.raises(EnvironmentDiscoveryError, match='cleanup'):
+            await request_env_bootstrap_reset({}, 'sym', cache, 'operator', ActivityLog())
+        assert cache.environment_attempt == original
+        assert cache.environment_source_owner == str(owned)
+    else:
+        await request_env_bootstrap_reset({}, 'sym', cache, 'operator', ActivityLog())
+        assert cache.environment_attempt is None
+        assert cache.environment_source_owner is None
+        assert cache.environment_attempt_archive[-1] == original
+
+
+def test_explicit_cleanup_confirmation_cannot_waive_present_source(tmp_path):
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_repair import begin_attempt, reserve_execution_source, restart_environment_attempt
+    from tests.unit.test_353_execution_repair import cache_fixture
+    cache = cache_fixture(tmp_path)
+    begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    owned = tmp_path/'still-owned'
+    owned.mkdir()
+    reserve_execution_source(cache, str(owned))
+    with pytest.raises(EnvironmentDiscoveryError, match='cleanup'):
+        restart_environment_attempt(cache, cleanup_confirmed=True)
+    assert cache.environment_source_owner == str(owned)

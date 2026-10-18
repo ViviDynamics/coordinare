@@ -25,8 +25,10 @@ from tests.unit.env_mount_stub import mount_config
 
 
 @pytest.fixture(autouse=True)
-def _accepted_verification_sources(monkeypatch):
+def _accepted_verification_sources(monkeypatch, tmp_path):
     """These tests cover verifier outcomes and persistence, with pinned inputs supplied."""
+    from tests.unit.env_manifest_fixture import patch_clean_source_transport
+    patch_clean_source_transport(monkeypatch, tmp_path)
     monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",
         AsyncMock(return_value={"tools.plan": "baseline"}))
     monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files, **kwargs: "")
@@ -36,6 +38,7 @@ def _accepted_verification_sources(monkeypatch):
 
 def _daemon() -> CoordinareDaemon:
     daemon = CoordinareDaemon(AsyncMock(), max_cycles=1, sleep_func=AsyncMock())
+    daemon._state["snapshot_checkpoint_fn"] = AsyncMock()
     daemon._state["coordinare_config"] = mount_config(performer_image="trusted/global@sha256:" + "a" * 64)
     return daemon
 

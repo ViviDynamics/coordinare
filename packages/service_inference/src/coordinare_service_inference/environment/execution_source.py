@@ -6,7 +6,6 @@ import gzip
 import hashlib
 import io
 import json
-import posixpath
 import re
 import tarfile
 from dataclasses import dataclass
@@ -15,7 +14,7 @@ from typing import TYPE_CHECKING, Literal, NoReturn
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping
     from pathlib import Path
 
 MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
@@ -159,28 +158,72 @@ def bundle_members(path: Path) -> Iterator[tuple[tarfile.TarFile, tarfile.TarInf
 def resolved_source_path(
     path: str, entries: Mapping[str, SourceEntry], links: Mapping[str, str],
 ) -> str:
-    pending = path.split("/")
+    components = path.split("/")
     resolved: list[str] = []
     visited: set[str] = set()
-    while pending:
-        part = pending.pop(0)
+    while components:
+        part = components.pop(0)
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not resolved:
+                source_refusal("execution source symlink escapes owned root")
+            resolved.pop()
+            continue
         candidate = "/".join([*resolved, part])
         if candidate in links:
             if candidate in visited or len(visited) >= 8:
-                raise ExecutionSourceError("execution source symlink cycle or depth exceeded")
+                source_refusal("execution source symlink cycle or depth exceeded")
             visited.add(candidate)
-            target = posixpath.normpath(
-                posixpath.join(posixpath.dirname(candidate), links[candidate]),
-            )
-            checked_path(target)
-            pending = target.split("/") + pending
-            resolved = []
+            # Follow intermediate links before processing subsequent parent steps,
+            # just as the filesystem does. Lexical normalization is unsafe here.
+            target = links[candidate]
+            if target.startswith("/"):
+                source_refusal("execution source symlink escapes owned root")
+            components = target.split("/") + components
         else:
+            if components and (candidate in entries or not any(
+                name.startswith(candidate + "/") for name in entries
+            )):
+                source_refusal("execution source symlink traverses a missing or non-directory")
             resolved.append(part)
     result = "/".join(resolved)
     if result not in entries and not any(p.startswith(result + "/") for p in entries):
         raise ExecutionSourceError("execution source symlink target missing")
     return result
+
+
+async def read_source_reference(
+    path: str, links: Collection[str], fetch: Callable[[str], Awaitable[str | None]],
+) -> str | None:
+    """Read pinned text evidence with the same component ordering as source access."""
+    checked_path(path)
+    components = path.split("/")
+    resolved: list[str] = []
+    seen: set[str] = set()
+    while components:
+        part = components.pop(0)
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not resolved:
+                source_refusal("execution source symlink escapes owned root")
+            resolved.pop()
+            continue
+        current = "/".join([*resolved, part])
+        if current in links:
+            if current in seen or len(seen) >= 8:
+                return None
+            seen.add(current)
+            target = await fetch(current)
+            if target is None:
+                return None
+            if target.startswith("/") or "\\" in target:
+                source_refusal("execution source link invalid")
+            components = target.split("/") + components
+        else:
+            resolved.append(part)
+    return await fetch(checked_path("/".join(resolved)))
 
 
 def validate_execution_bundle(

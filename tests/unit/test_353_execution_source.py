@@ -304,3 +304,19 @@ def test_unsupported_hydration_has_source_specific_failure_code(tmp_path):
     with pytest.raises(ValueError) as failure:
         api.validate_execution_bundle(path)
     assert getattr(failure.value, "code", None) == "execution_source_unsupported"
+
+
+def test_intermediate_symlink_parent_steps_cannot_escape_owned_root(tmp_path):
+    api = source_api()
+    files = {
+        'deep/link': (b'../x', '120000'),
+        'x/leaf': (b'inside', '100644'),
+        'a': (b'deep/link/../../escape', '120000'),
+        'escape': (b'inside', '100644'),
+    }
+    (tmp_path/'escape').write_text('external secret')
+    path, _ = bundle_file(tmp_path, files)
+    with pytest.raises(ValueError, match=r'escape|outside|relative'):
+        api.validate_execution_bundle(path, review_inputs={
+            'a': hashlib.sha256(b'inside').hexdigest(),
+        })

@@ -527,6 +527,6 @@ async def acquire_github_source(
             deadline=deadline,
         )
     except httpx.HTTPError:
-        source_refusal("execution source provider request unavailable")
+        source_refusal("execution source provider request unavailable", code="execution_source_unavailable")
     finally:
         _SOURCE_HTTP_ACTIVE.reset(context_token)

@@ -9,15 +9,19 @@ from coordinare_service_inference.environment.models import (
 )
 
 
-def fixture_execution_source(commit='a'*40):
+def fixture_execution_source(commit='a'*40, *, files=None):
     """Actual baseline tree identity for fake external verifier transports."""
     from coordinare_service_inference.environment.execution_source import (
         SourceEntry,
         source_identity,
     )
-    entry=SourceEntry(path='tools.plan', mode='100644', size=8,
-        object_id=hashlib.sha1(b'blob 8\0baseline').hexdigest())
-    return source_identity(commit,[entry])
+    contents = files if files is not None else {'tools.plan': 'baseline'}
+    entries = []
+    for path, text in contents.items():
+        body = text.encode()
+        entries.append(SourceEntry(path=path, mode='100644', size=len(body),
+            object_id=hashlib.sha1(b'blob ' + str(len(body)).encode() + b'\0' + body).hexdigest()))
+    return source_identity(commit, entries)
 
 
 def reviewed_metadata(*, capabilities=None, checks=None, install=None, services=None, activation=None, source_commit="a" * 40,
@@ -48,13 +52,14 @@ def reviewed_cache(cache, *, files=None, capabilities=None, source_commit="a" * 
             install_network="enabled", verify_network="disabled")
     cache.environment_capabilities = capabilities.model_dump()
     metadata = reviewed_metadata(inputs=inputs, capabilities=capabilities, source_commit=source_commit, symphony_name=cache.symphony_name)
-    cache.environment_execution_source = metadata["environment_execution_source"]
+    cache.environment_execution_source = fixture_execution_source(source_commit, files=contents).model_dump()
     cache.environment_manifest = metadata["environment_manifest"]
     cache.environment_assessment = metadata["environment_assessment"]
     cache.bootstrap_commit_sha = source_commit
     import json
 
-    cache.environment_verification = json.loads(verification_output(cache.environment_manifest))
+    cache.environment_verification = json.loads(verification_output(cache.environment_manifest,
+        execution_source=fixture_execution_source(source_commit, files=contents)))
     cache.environment_verification["image_ref"] = "trusted/global@sha256:" + "a" * 64
     return cache
 
@@ -162,5 +167,5 @@ def patch_clean_source_transport(monkeypatch, tmp_path, *, files=None):
         )
 
     monkeypatch.setattr(
-        "coordinare.services.environment_source_provider.ensure_execution_source", source,
+        "coordinare.services.env_cache.ensure_execution_source", source,
     )

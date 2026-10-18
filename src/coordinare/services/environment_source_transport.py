@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
     from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
 
+EXECUTION_CHUNKS_PER_SECRET = 8
 MAX_HEADER_BYTES = 1024 * 1024
 MAX_SCRIPT_BYTES = 1024 * 1024
 
@@ -88,7 +89,7 @@ def projected_source_groups(
     with bundle.payload_path.open("rb") as stream:
         index = 0
         while chunk := stream.read(CHUNK_BYTES):
-            if index % 8 == 0:
+            if index % EXECUTION_CHUNKS_PER_SECRET == 0:
                 groups.append({})
             groups[-1][f"chunk-{index:04}"] = base64.b64encode(chunk).decode("ascii")
             index += 1

@@ -17,6 +17,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
 
 from coordinare.daemon import CoordinareDaemon
 from coordinare.models.env_cache import (
@@ -190,6 +191,24 @@ class _FakeGitHub:
         self.fail = fail
         self.refs: list[str] = []
 
+    async def prepare_execution_source(self, owner, repo, *, commit, destination, deadline):
+        import hashlib
+
+        from coordinare_service_inference.environment.execution_source import (
+            ExecutionSourceBundle,
+            ExecutionSourceIdentity,
+        )
+
+        from tests.unit.test_353_execution_source import bundle_file
+        if self.fail:
+            raise OSError("github down")
+        self.refs.append(commit)
+        destination.mkdir(parents=True)
+        files = {path: (text.encode(), '100644') for path, text in self.files.items()}
+        payload, identity = bundle_file(destination, files, commit=commit)
+        return ExecutionSourceBundle(ExecutionSourceIdentity.model_validate(identity), payload,
+            hashlib.sha256(payload.read_bytes()).hexdigest(), payload.stat().st_size)
+
     async def get_file_content(self, owner: str, repo: str, path: str, ref: str = "HEAD") -> str | None:
         if self.fail:
             raise OSError("github down")
@@ -218,12 +237,14 @@ def _k8s_daemon(
             kubernetes_verifier_platform="linux/x86_64",
             env_cache=SimpleNamespace(kubernetes_verifier_network_isolated=True)),
     )
+    daemon._state["snapshot_checkpoint_fn"] = AsyncMock()
     daemon._state["github_service"] = github
     if github is not None and not github.files:
         github.files["tools.plan"] = "baseline"
     ec = daemon._state["env_cache"]["sym"]
     reviewed_cache(ec, files=github.files if github is not None else None, source_commit="f" * 40)
-    runtime.execution_log = verification_output(ec.environment_manifest).decode()
+    runtime.execution_log = verification_output(ec.environment_manifest,
+        execution_source=ExecutionSourceIdentity.model_validate(ec.environment_execution_source)).decode()
     svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="coordinare-performer:full"), _runtime=runtime)
     return daemon, svc
 
@@ -250,7 +271,9 @@ async def test_kubernetes_completion_passes_only_on_the_clean_room_verdict(tmp_p
     assert call["spec"].mount_path == "/devenv/sym-abc"
     assert call["spec"].cache_subpath == "sym-abc"
     assert call["spec"].verify_text == RENDERED_VERIFY
-    assert call["spec"].project_files == {"Gemfile": "source 'x'\n", ".ruby-version": "3.4.2\n"}
+    assert call["spec"].project_files == {}
+    assert call["spec"].execution_source.identity.model_dump() == daemon._state["env_cache"]["sym"].environment_execution_source
+    assert call["spec"].source_inputs == daemon._state["env_cache"]["sym"].environment_manifest["inputs"]
     # The project files come from the bootstrap's commit, at its SHA.
     assert set(github.refs) == {"f" * 40}
 
@@ -410,3 +433,22 @@ async def test_failed_kubernetes_report_retains_actual_identity_without_provenan
     assert len(runtime.calls) == 1
     assert cache.environment_verification["results"][0]["status"] == "fail"
     assert cache.environment_verification["image_ref"] == runtime.calls[0]["spec"].image
+
+
+@pytest.mark.asyncio
+async def test_source_provider_http_outage_keeps_infrastructure_retry(tmp_path):
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceError
+
+    class UnavailableSource(_FakeGitHub):
+        async def prepare_execution_source(self, *args, **kwargs):
+            raise ExecutionSourceError('execution source provider request unavailable', code='execution_source_unavailable')
+
+    runtime = _FakeRuntime((True, 'PASSED'))
+    daemon, svc = _k8s_daemon(tmp_path, runtime=runtime, github=UnavailableSource({}))
+    ok, reason, infra = await daemon._verify_bootstrap_in_clean_context('sym', svc, 'job')
+    assert ok is False and infra is True
+    assert 'unavailable' in reason
+    assert runtime.calls == []
+    cache = daemon._state['env_cache']['sym']
+    assert not cache.bootstrap_exhausted
+    assert cache.environment_source_owner is None

@@ -35,6 +35,7 @@ from coordinare_service_inference.environment.source_payload import (
 )
 
 from coordinare.services.environment_source_transport import (
+    EXECUTION_CHUNKS_PER_SECRET,
     execution_header,
     projected_source_groups,
 )
@@ -453,7 +454,7 @@ def _mount_source_payload(manifest: dict[str, Any], spec: VerifierSpec, *, name:
 
         execution_header(spec.execution_source, '', review_inputs=spec.source_inputs)
         chunks = (spec.execution_source.payload_bytes+CHUNK_BYTES-1)//CHUNK_BYTES
-        count = 1+(chunks+SOURCE_CHUNKS_PER_SECRET-1)//SOURCE_CHUNKS_PER_SECRET
+        count = 1+(chunks+EXECUTION_CHUNKS_PER_SECRET-1)//EXECUTION_CHUNKS_PER_SECRET
         module = 'coordinare_service_inference.environment.execution_source_restore'
     else:
         payload = encode_sources(spec.project_files)
