@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from coordinare_service_inference.environment.findings import finding_summary
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
@@ -151,7 +153,7 @@ class AttemptBudget:
 
     def summary(self) -> dict[str, Any]:
         """Only trusted stages/codes, counters and allowlisted provider metadata escape."""
-        return {"stage": self.stage, "outcome": self.outcome, "error_code": self.error_code,
+        return {**finding_summary(self.finding_ledger), "stage": self.stage, "outcome": self.outcome, "error_code": self.error_code,
                 "elapsed_seconds": round(time.monotonic() - self.started, 3),
                 "probe_batches": self.probe_batches, "max_probe_batches": MAX_PROBE_BATCHES, "calls": self.calls, "calls_completed": self.calls_completed, "reads": self.reads,
                 "repairs": self.repairs, **{name: getattr(self, name) for counter in REPAIR_COUNTERS.values()

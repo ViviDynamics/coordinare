@@ -83,7 +83,9 @@ def _accept(cache_state: EnvCacheState, *, nonempty: bool = False) -> EnvCacheSt
     manifest = EnvironmentManifest.model_validate(data)
     cache_state.environment_execution_source = metadata["environment_execution_source"]
     cache_state.environment_manifest = manifest.model_dump()
-    cache_state.environment_assessment = {**metadata["environment_assessment"], "manifest_digest": manifest.digest()}
+    from agent.performer.tests.source_contract_fixture import current_review_fixture
+    cache_state.environment_assessment = current_review_fixture(manifest,
+        {**metadata["environment_assessment"], "manifest_digest": manifest.digest()})
     cache_state.environment_verification = json.loads(verification_output(cache_state.environment_manifest))
     cache_state.environment_verification["image_ref"] = "trusted/global@sha256:" + "a" * 64
     return cache_state
@@ -107,8 +109,9 @@ def _accepted_discovery(monkeypatch):
         metadata = reviewed_metadata(source_commit=kwargs["commit"], capabilities=kwargs["capabilities"])
         metadata["environment_manifest"]["symphony_name"] = kwargs["symphony_name"]
         manifest = EnvironmentManifest.model_validate(metadata["environment_manifest"])
-        assessment = CoverageAssessment.model_validate({**metadata["environment_assessment"],
-            "manifest_digest": manifest.digest()})
+        from agent.performer.tests.source_contract_fixture import current_review_fixture
+        assessment = CoverageAssessment.model_validate(current_review_fixture(manifest,
+            {**metadata["environment_assessment"], "manifest_digest": manifest.digest()}))
         return manifest, assessment
 
     from unittest.mock import Mock

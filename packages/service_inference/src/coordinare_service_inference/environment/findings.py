@@ -136,8 +136,8 @@ class FindingLedger(FindingEvidence):
                     raise ValueError('invalid duplicate finding resolution')
                 visited = {decision.finding_id}
                 while target is not None:
-                    if target in visited:
-                        raise ValueError('duplicate finding cycle')
+                    if target in visited or target not in decisions:
+                        raise ValueError('duplicate finding cycle or unknown target')
                     visited.add(target)
                     target = decisions[target].duplicate_of
             seen.update(added)
@@ -161,3 +161,14 @@ def validate_finding_ledger(ledger: FindingLedger, *, manifest_digest: str,
             or checked.reviews[-1].manifest_digest != manifest_digest
             or any(inputs.get(path) != digest for review in checked.reviews for path, digest in review.inputs.items())):
         raise ValueError('coverage findings lack complete current evidence and closure')
+
+
+def finding_summary(ledger: FindingLedger | None) -> dict[str, object]:
+    """Only validated identifiers and categories belong in operator summaries."""
+    categories: dict[str, int] = {}
+    for record in ledger.records if ledger is not None else []:
+        category = record.proposal.category
+        categories[category] = categories.get(category, 0) + 1
+    return {'finding_count': len(ledger.records) if ledger is not None else 0,
+            'open_finding_ids': ledger.open_ids() if ledger is not None else [],
+            'finding_categories': categories}

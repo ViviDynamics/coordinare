@@ -78,3 +78,21 @@ def apply_finding_review(ledger: FindingLedger, *, manifest: EnvironmentManifest
             or not any(categories[fid] == 'capability' for fid in result.open_ids())):
         raise EnvironmentDiscoveryError('unavailable capability lacks an open cited finding', code='review_findings_invalid')
     return result
+
+
+def coverage_summary(value: object) -> dict[str, object] | None:
+    """Public projections must never expose raw findings, inputs or model prose."""
+    from coordinare_service_inference.environment.findings import finding_summary
+    from coordinare_service_inference.environment.models import CoverageAssessment
+
+    try:
+        assessment = CoverageAssessment.model_validate(value)
+    except (ValueError, TypeError):
+        return None
+    current = assessment.schema_version == 2
+    return {'schema_version': assessment.schema_version, 'manifest_digest': assessment.manifest_digest,
+            'verdict': assessment.verdict if current else 'refresh_required',
+            'rationale': ('Independent coverage review accepted; source identities validated by daemon.'
+                          if current and assessment.verdict == 'accept' else
+                          'Coverage review requires attention; inspect private evidence.'),
+            **finding_summary(assessment.finding_ledger)}

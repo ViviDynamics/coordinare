@@ -126,3 +126,20 @@ execution pass; final-head CI and the next real Elm outcome remain pending.
 SC-004 and other live-success tasks stay unchecked. Other repositories remain
 paused until Elm's independently reviewed installation, usable activation and
 every required clean check actually pass.
+
+## Persistent review findings correction (2026-10-18)
+
+The `review-citations-elm60m-low` profile at `4e71edd2` held after 735.15 seconds
+with 2864.967 seconds remaining. Three valid independent reviews alternated over
+the unresolved consumer capability finding; two coverage revisions were exhausted.
+No installer or clean consumer ran. The pinned snapshot was unchanged and every
+owned source path, image/registry and volume was independently confirmed absent.
+
+The user approved the persistent-findings specification and implementation plan.
+New regressions establish explicit per-finding adjudication, independent evidence,
+source/candidate binding, durable ledger and budgets, legacy review invalidation,
+and refusal before installer commands. The affected root suite passed 607 cases
+with 14 existing platform skips; performer checks passed 282 cases and workflow
+checks passed 26. These are protocol/fixture results, not real Elm readiness.
+Final-head CI, independent whole-diff review and a new pinned Elm-only simulation
+remain pending. No live-success claim or SC-004 completion is made.

@@ -109,7 +109,19 @@ def test_duplicate_resolution_cannot_hide_an_open_survivor_or_cycle():
     first['status'] = 'open'
     with pytest.raises(ValueError):
         validate(data)
+
     first.update(status='resolved', duplicate_of='F0002')
+    with pytest.raises(ValueError):
+        validate(data)
+
+
+def test_duplicate_chain_to_unknown_finding_is_a_validation_error():
+    data = ledger_data()
+    data['records'].append(dict(data['records'][0], id='F0002'))
+    data['reviews'][0]['added_ids'].append('F0002')
+    first = data['reviews'][-1]['decisions'][0]
+    first['duplicate_of'] = 'F0002'
+    data['reviews'][-1]['decisions'].append(dict(first, finding_id='F0002', duplicate_of='F0099'))
     with pytest.raises(ValueError):
         validate(data)
 
