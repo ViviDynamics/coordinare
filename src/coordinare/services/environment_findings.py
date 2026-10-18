@@ -26,8 +26,17 @@ MAX_FINDINGS = 32
 CURRENT_REVIEW_VERSION = 2
 
 
-def refuse_finding(message: str, *, code: str = 'review_findings_invalid') -> NoReturn:
-    raise EnvironmentDiscoveryError(message, code=code) from None
+class FindingValidationError(EnvironmentDiscoveryError):
+    """Trusted diagnostic for correcting finding structure, never model prose."""
+
+    def __init__(self, message: str, *, code: str, location: tuple[str, ...]) -> None:
+        super().__init__(message, code=code)
+        self.location = location
+
+
+def refuse_finding(message: str, *, code: str = 'review_findings_invalid',
+                   location: tuple[str, ...] = ()) -> NoReturn:
+    raise FindingValidationError(message, code=code, location=location) from None
 
 
 def _ids(manifest: EnvironmentManifest) -> set[str]:
@@ -84,7 +93,9 @@ def apply_finding_review(ledger: FindingLedger, *, manifest: EnvironmentManifest
     categories = {record.id: record.proposal.category for record in result.records}
     if proposal.capability_unavailable and (proposal.verdict == 'accept'
             or not any(categories[fid] == 'capability' for fid in result.open_ids())):
-        refuse_finding('unavailable capability lacks an open cited finding', code='review_findings_invalid')
+        refuse_finding('capability_unavailable requires an open cited capability finding; '
+                       'set it false when capability impossibility is not established, preserving all blocking findings',
+                       location=('assessment', 'capability_unavailable'))
     return result
 
 
