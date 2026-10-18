@@ -4415,16 +4415,6 @@ class CoordinareDaemon:
             raise VerifierConfigurationError(message)
         immutable_verifier_image(configured_verifier_image(config))
         ec.verifier_provenance = None
-        try:
-            files = await self._fetch_project_files(symphony_name, ec.bootstrap_commit_sha)
-        except ValueError:
-            raise
-        except Exception as exc:
-            message = f"env verification could not resolve project files at the bootstrap SHA: {type(exc).__name__}"
-            raise RuntimeError(message) from exc
-        if files is None:
-            message = "env verification could not resolve the symphony repository for the clean-room verifier"
-            raise RuntimeError(message)
         from coordinare.services.environment_capabilities import (
             capabilities_match,
             resolve_execution_capabilities,
@@ -4435,12 +4425,28 @@ class CoordinareDaemon:
         if not capabilities_match(ec, capabilities):
             raise VerifierConfigurationError("environment execution capabilities changed; rediscovery required")
         credentials = await verification_credentials(self._state, symphony_name, ec, self._performer_mounts())
+        import shutil
+        import tempfile
+        import time
+        from pathlib import Path
+
+        from coordinare.services.environment_source_provider import ensure_execution_source
+        from coordinare.services.kubernetes_verifier import VERIFIER_DEADLINE_S
+
+        workspace = Path(tempfile.mkdtemp(prefix='coordinare-verifier-source-'))
+        try:
+            bundle = await ensure_execution_source(self._state, symphony_name, ec,
+                destination=workspace/'payload', deadline=time.monotonic()+VERIFIER_DEADLINE_S)
+        except BaseException:
+            shutil.rmtree(workspace)
+            raise
         return VerifierSpec(
             image=configured_verifier_image(config), cache_claim="", cache_subpath=ec.sanitised_name,
             mount_path=f"{getattr(svc, 'devenv_root', '/devenv')}/{ec.sanitised_name}",
             verify_text=str(ec.rendered_verify_sh),
             transient_credentials=credentials,
-            project_files=files, source_inputs=contract.inputs,
+            project_files={}, source_inputs=contract.inputs, execution_source=bundle,
+            execution_source_workspace=workspace,
             platform=capabilities.platform, max_entries=limits.max_entries, max_bytes=limits.max_bytes,
         )
 
