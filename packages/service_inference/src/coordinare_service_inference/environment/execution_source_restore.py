@@ -42,7 +42,7 @@ def restore_execution_bundle(
                     with suppress(FileExistsError):
                         os.mkdir(part, mode=0o700, dir_fd=directory_fd)
                     next_fd = os.open(
-                        part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd
+                        part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd,
                     )
                     os.close(directory_fd)
                     directory_fd = next_fd
@@ -127,7 +127,7 @@ def restore_projected_source(payload_directory: Path, destination: Path) -> None
         if total != size or digest.hexdigest() != data["sha256"]:
             raise ValueError("execution source transport identity differs")
         restore_execution_bundle(
-            bundle, destination, expected=identity, review_inputs=data["review_inputs"]
+            bundle, destination, expected=identity, review_inputs=data["review_inputs"],
         )
 
 

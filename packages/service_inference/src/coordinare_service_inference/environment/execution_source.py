@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import io
 import json
 import posixpath
 import re
@@ -14,9 +15,8 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
-    from pathlib import Path
     from collections.abc import Iterator, Mapping
-    from typing import BinaryIO
+    from pathlib import Path
 
 MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
 MAX_EXPANDED_BYTES = 512 * 1024 * 1024
@@ -115,15 +115,15 @@ def _unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-class _BoundedReader:
-    def __init__(self, stream: BinaryIO) -> None:
+class _BoundedReader(io.BufferedIOBase):
+    def __init__(self, stream: gzip.GzipFile) -> None:
         self.stream = stream
         self.count = 0
 
-    def read(self, size: int = -1) -> bytes:
+    def read(self, size: int | None = -1) -> bytes:
         # Bound tar padding/extension records too, not only declared file bytes.
         ceiling = MAX_EXPANDED_BYTES + MAX_ENTRIES * 2048 + 10240
-        data = self.stream.read(min(size if size >= 0 else CHUNK_BYTES, ceiling - self.count + 1))
+        data = self.stream.read(min(size if size is not None and size >= 0 else CHUNK_BYTES, ceiling - self.count + 1))
         self.count += len(data)
         if self.count > ceiling:
             raise ValueError("execution source decompression exceeds byte bound")
@@ -268,9 +268,9 @@ def validate_execution_bundle(
         raise ValueError("execution source file set is incomplete")
     for link in links:
         resolved_source_path(link, entries, links)
-    for name, digest in (review_inputs or {}).items():
+    for name, expected_digest in (review_inputs or {}).items():
         checked_path(name)
         target = resolved_source_path(name, entries, links)
-        if hashes.get(target) != digest:
+        if hashes.get(target) != expected_digest:
             raise ValueError("execution source differs from reviewed inputs")
     return identity

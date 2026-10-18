@@ -100,6 +100,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Coroutine, Mapping, Sequence
     from typing import Protocol
 
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
     from coordinare_service_inference.schema import ServicesManifest
 
     from coordinare.services.environment_discovery import ChatJson
@@ -109,6 +110,9 @@ if TYPE_CHECKING:
         async def get_file_content(self, org: str, repo: str, path: str, *, ref: str = "HEAD") -> str | None: ...
 
     class _GitHubService(_GitHubFileReader, Protocol):
+        async def prepare_execution_source(
+            self, owner: str, repo: str, *, commit: str, destination: Path, deadline: float,
+        ) -> ExecutionSourceBundle: ...
         async def get_file_blob_sha(self, org: str, repo: str, path: str) -> str | None: ...
         async def get_branch_head_sha(self, branch_name: str = "main") -> str | None: ...
         async def get_repository_paths(

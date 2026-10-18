@@ -128,8 +128,8 @@ The complete-evidence amendment retest also held for all 29 default repositories
 
 Spec: execution-source-amendment.md; plan: execution-source-plan.md. User approved both.
 
-- [ ] T066 Verified binary bundle identity and safe full-tree restoration (plan task1).
-- [ ] T067 Complete pinned provider acquisition and bounded archive/blob reads (task2).
+- [x] T066 Verified binary bundle identity and safe full-tree restoration (plan task1).
+- [x] T067 Complete pinned provider acquisition and bounded archive/blob reads (task2).
 - [ ] T068 Full source for Docker probes and clean verification (task3).
 - [ ] T069 Kubernetes binary source transport parity and cleanup (task4).
 - [ ] T070 Source provenance/migration, restart ownership and usable activation (task5).
