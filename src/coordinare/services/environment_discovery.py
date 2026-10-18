@@ -695,6 +695,8 @@ async def _discover_attempt(
     tools = SOURCE_TOOLS
     discovery = _Inspection("discovery", inventory, fetch, bounds, budget)
     identity = {"symphony_name": symphony_name, "source_commit": commit,
+                "requested_coverage_scope": {"environment": "whole documented development/test environment",
+                                             "operator_authorized_exclusions": []},
                 "root_directory": discovery.list_directory(),
                 "inventory_digest": hashlib.sha256(_json(inventory).encode()).hexdigest(),
                 "execution_capabilities": capabilities.model_dump(), "capabilities_digest": capabilities.digest(),
