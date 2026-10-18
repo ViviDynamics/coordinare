@@ -167,3 +167,14 @@ not service-usability evidence. The existing two-batch, command, output and time
 bounds are unchanged. A read-only inventory of the retained diagnostic image
 returned 817 names in 7,842 bytes, including its software-guest executable; this
 is not a probe result or readiness proof for a new Elm attempt.
+
+The subsequent full-diff adversarial review found a Kubernetes restart-cleanup
+bound mismatch: source transport admits up to 257 Secrets, but the orphan sweep
+skipped Pods above 64. A failing regression used a validated 32 MiB binary source
+bundle that the real builder split into 66 Secrets. The sweep limit now derives
+from the shared transport limits, including metadata and legacy evidence. The
+ownership checks still run before Pod or source deletion. Tests also exercise 257
+owned Secrets, a foreign UID at the final Secret, and an over-bound annotation that
+must perform no Secret reads. All 44 focused source/lifecycle tests passed; the
+reviewer independently verified the correction. These are unit/API-double results,
+not a live Kubernetes bootstrap claim. The active Docker Elm run continues unchanged.

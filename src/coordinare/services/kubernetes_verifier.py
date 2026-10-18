@@ -30,12 +30,14 @@ from coordinare_service_inference.cache_provenance import (
 from coordinare_service_inference.environment.execution_source import CHUNK_BYTES
 from coordinare_service_inference.environment.source_payload import (
     SOURCE_DOCUMENT_MAX_BYTES,
+    SOURCE_MAX_CHUNKS,
     decode_sources,
     encode_sources,
 )
 
 from coordinare.services.environment_source_transport import (
     EXECUTION_CHUNKS_PER_SECRET,
+    MAX_EXECUTION_SOURCE_SECRETS,
     execution_header,
     projected_source_groups,
 )
@@ -67,6 +69,10 @@ VERIFY_TEXT_MAX_BYTES = MAX_SCRIPT_BYTES
 # Below the API/etcd object limit, including JSON and base64 expansion.
 VERIFIER_POD_MAX_BYTES = 900 * 1024
 SOURCE_CHUNKS_PER_SECRET = 4
+MAX_VERIFIER_SOURCE_SECRETS = max(
+    MAX_EXECUTION_SOURCE_SECRETS,
+    (SOURCE_MAX_CHUNKS + SOURCE_CHUNKS_PER_SECRET - 1) // SOURCE_CHUNKS_PER_SECRET,
+)
 # Claim files must be world readable and directories world traversable (o+rX).
 VERIFIER_UID = 10001
 VERIFIER_GID = 10001
