@@ -1,6 +1,6 @@
 # Elm bootstrap completion implementation plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Do not implement until the proposed designs and this plan receive approval.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this approved plan task-by-task, with independent final review.
 
 **Goal:** Demonstrate complete source-backed Elm bootstrap and all required clean-consumer checks, then complete issue #353 through its existing shipping gates.
 
@@ -10,7 +10,7 @@
 
 **Spec:** [coverage-first-amendment.md](coverage-first-amendment.md), [private-service-runtime-amendment.md](private-service-runtime-amendment.md), and existing [spec.md](spec.md).
 
-**Status:** Proposed. User requested planning with a subagent; no product implementation authorized by this document. Independent planning review completed and retained privately at `.agents/state/353-elm-fix-subagent-plan.md`. Its two corrections are incorporated: runtime proof comes first, and construction initially remains one response rather than fan-out.
+**Status:** Approved by the user's "Yes" to the presented designs and plan. Native execution with independent review. Independent planning review is retained privately at `.agents/state/353-elm-fix-subagent-plan.md`. Its two corrections are incorporated: runtime proof comes first, and construction initially remains one response rather than fan-out.
 
 ## Global constraints
 
@@ -45,12 +45,12 @@ Paths below rooted at `packages/service_inference/src/coordinare_service_inferen
 
 **Interfaces:** A diagnostic fixture accepts an immutable carrier image, pinned guest inputs, fresh source/cache/scratch roots, explicit CPU/memory/cache/scratch/free-reserve ceilings and an absolute deadline. It refuses missing resource bounds and persists them before starting a build. It emits a bounded JSON result with identity, per-case exit status, isolation inspections, duration/resource measurements and owned cleanup. It cannot issue readiness or modify a generated Elm manifest. Enable real fixture execution with `COORDINARE_RUNTIME_INTEGRATION=1`; absence means unavailable evidence, never a passing runtime gate.
 
-- [ ] Write failing integration cases: ordinary Docker build/run and Compose multi-service health/down from real source; host-side client reaches service; repeat from relocated fresh source with cache RO and external network denied. Assert complete source hash/mode identity and offline build/image closure, not just version output.
-- [ ] Add negative cases: missing cached image/layer; guest-to-host/proxy/metadata egress; parent-path export; cache write from outer/guest; two consumers using identical project ports; cancellation during boot/build/health/stop. Every failure holds and owned cleanup is confirmed.
-- [ ] Measure backing-store free capacity before builds. Record explicit byte ceilings and a free-space reserve before the fixture runs. Stop on insufficient space; never prune unrelated resources. Current 57 GiB free is an observation, not a sizing promise.
-- [ ] Run the fixture and observe the missing integrated facility fail. Implement only the diagnostic guest/control/source-export experiment needed for these cases, using software TCG, identical source paths, strict SSH host verification and explicit loopback forwards. Restriction flags alone are insufficient: denial cases must actually execute.
-- [ ] Demonstrate required amd64 workloads on the actual arm64 carrier and measure nested-emulation requirements without deployment/hardware operations. Record cold/warm time, peak memory, cache/scratch growth and immutable before/after hashes.
-- [ ] Run `COORDINARE_RUNTIME_INTEGRATION=1 .venv/bin/pytest -q -m integration tests/integration/test_353_private_service_runtime.py` against the persisted bounded fixture configuration. Expected: every positive, denial, resource and cleanup case passes. A skipped fixture is not success. Commit the fixture/report.
+- [x] Write failing integration cases: ordinary Docker build/run and Compose multi-service health/down from real source; host-side client reaches service; repeat from relocated fresh source with cache RO and external network denied. Assert complete source hash/mode identity and offline build/image closure, not just version output.
+- [x] Add negative cases: missing cached image/layer; guest-to-host/proxy/metadata egress; parent-path export; cache write from outer/guest; two consumers using identical project ports; cancellation during boot/build/health/stop. Every failure holds and owned cleanup is confirmed.
+- [x] Measure backing-store free capacity before builds. Record explicit byte ceilings and a free-space reserve before the fixture runs. Stop on insufficient space; never prune unrelated resources. Current 57 GiB free is an observation, not a sizing promise.
+- [x] Run the fixture and observe the missing integrated facility fail. Implement only the diagnostic guest/control/source-export experiment needed for these cases, using software TCG, identical source paths, strict SSH host verification and explicit loopback forwards. Restriction flags alone are insufficient: denial cases must actually execute.
+- [x] Demonstrate required amd64 workloads on the actual arm64 carrier and measure nested-emulation requirements without deployment/hardware operations. Record cold/warm time, peak memory, cache/scratch growth and immutable before/after hashes.
+- [x] Run `COORDINARE_RUNTIME_INTEGRATION=1 .venv/bin/pytest -q -m integration tests/integration/test_353_private_service_runtime.py` against the persisted bounded fixture configuration. Expected: every positive, denial, resource and cleanup case passes. A skipped fixture is not success. Commit the fixture/report.
 
 **Stop gate:** If path sharing, access, offline closure, mixed architecture, policy enforcement or capacity fails, report the exact measurement and review the runtime design. Do not proceed to another full Elm model run or silently substitute a whole-performer VM.
 
@@ -130,6 +130,6 @@ with remaining budgets; do not restart automatically to conceal exhausted attemp
 
 This plan was self-reviewed for source coverage, ordinary consumer equivalence,
 artifact portability, identity, resource limits, no-waiver acceptance, cleanup and
-legacy/restart behavior. No implementation has started. Review the two proposed
-designs and plan before execution. The user requested a subagent for planning;
-implementation method has not yet been selected.
+legacy/restart behavior. The user approved the presented designs and plan with
+"Yes". Execution is native with independent final review. Task 1 starts with a
+diagnostic runtime integration proof; its result cannot substitute for Elm acceptance.

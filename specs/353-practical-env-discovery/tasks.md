@@ -145,3 +145,18 @@ Spec: persistent-review-findings-amendment.md; plan: persistent-review-findings-
 - [x] T075 Discovery responses and complete independent adjudication (task3).
 - [x] T076 Current-policy consumer/performer validation and fixture migration (task4).
 - [ ] T077 Diagnostics, full verification/review and Elm-first60m simulation (task5).
+
+## Approved Elm bootstrap completion plan
+
+User approved the presented designs and plan with "Yes" after requesting a fresh
+planning subagent. Execution is native with independent review. Specs:
+`coverage-first-amendment.md`, `private-service-runtime-amendment.md`; plan:
+`elm-bootstrap-fix-plan.md`. Earlier incomplete acceptance tasks remain open.
+
+- [x] T078 Integrated runtime feasibility, policy/resource/cleanup proof (task1).
+- [ ] T079 Runtime identity and durable artifact contracts (task2).
+- [ ] T080 Verifier and ordinary consumer runtime lifecycle integration (task3).
+- [ ] T081 Independently reviewed source scope (task4).
+- [ ] T082 Complete executable mapping and bounded correction (task5).
+- [ ] T083 Acceptance, provenance, legacy and restart invariants (task6).
+- [ ] T084 Elm complete bootstrap, then original repository validation and ship gates (task7).
