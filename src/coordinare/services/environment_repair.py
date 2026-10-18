@@ -292,7 +292,7 @@ def _rejected_evidence(cache: EnvCacheState, data: dict[str, Any]) -> dict[str, 
         _refuse('execution repair evidence is unknown or indeterminate')
     original_digest = hashlib.sha256(report.model_dump_json().encode()).hexdigest()
     for result in report.results:
-        result.output = redact_command_text(result.output)[:OUTPUT_MAX_CHARS]
+        result.output = redact_command_text(result.output)[-OUTPUT_MAX_CHARS:]
         result.output_truncated = True
     if len(report.model_dump_json().encode()) > REPORT_MAX_BYTES:
         _refuse('execution repair report exceeds its bound')

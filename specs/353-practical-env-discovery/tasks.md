@@ -117,3 +117,5 @@ The complete-evidence amendment retest also held for all 29 default repositories
 - [x] T061 Admit the runner's strictly bound activation failure as rejected repair evidence; retain unknown/indeterminate holds and all required unrun checks. Exact Elm report replay and nine regression cases verify the boundary.
 
 - [x] T062 Repair harness cleanup of owned read-only directories without following symlinks; preserve rejection when cleanup-container removal is unconfirmed, and verify actual Elm leftovers before retesting.
+
+- [x] T063 Retain the redacted terminal output tail within the unchanged repair excerpt bound; preserve statuses and original-report digest, verified against Elm's actual linker failure.

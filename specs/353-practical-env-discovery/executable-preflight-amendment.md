@@ -291,3 +291,11 @@ directories within its owned case root, without following symlinks, before remov
 contents. It still requires successful removal and confirmed cleanup-container
 termination before starting a new cache generation. Cleanup failure remains a hold;
 no platform, language or package-manager recipe is introduced.
+
+The same recorded failure showed another bounded-evidence defect: taking the first
+512 characters of the runner's captured output tail discarded the terminal error
+and kept download progress. Repair feedback now retains the final 512 characters
+after redaction. The output bound and original-report digest remain unchanged;
+failed/unrun statuses are preserved. A deterministic verbose-output regression and
+a read-only replay of Elm's exact report verify that the terminal error reaches
+repair without increasing its authority, size or budget.
