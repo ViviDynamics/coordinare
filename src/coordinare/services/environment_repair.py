@@ -27,7 +27,11 @@ from coordinare.services.environment_attempt import (
     AttemptBudget,
     EnvironmentDiscoveryError,
 )
-from coordinare.services.environment_obligations import preserve_obligations
+from coordinare.services.environment_obligations import (
+    executed_manifests,
+    preserve_execution_obligations,
+    preserve_obligations,
+)
 from coordinare.services.environment_probes import ProbePlan, ProbeReport, bind_probe_report
 
 if TYPE_CHECKING:
@@ -106,6 +110,8 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
         _refuse('coverage findings require their established candidate', code='review_findings_invalid')
     if journal.coverage_manifest is not None and journal.coverage_manifest.source_commit != journal.source_commit:
         _refuse('established candidate source differs', code='source_identity')
+    if journal.coverage_manifest is not None:
+        preserve_execution_obligations(journal.coverage_manifest, journal.rejected)
     return journal
 
 
@@ -208,6 +214,11 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
         max_coverage_revisions=journal.max_coverage_revisions, max_execution_repairs=journal.max_execution_repairs)
     budget.finding_ledger = journal.finding_ledger.model_copy(deep=True) if journal.finding_ledger is not None else None
     budget.coverage_manifest = journal.coverage_manifest.model_copy(deep=True) if journal.coverage_manifest is not None else None
+    budget.executed_manifests = executed_manifests(journal.rejected, source_commit=journal.source_commit)
+    budget.execution_review_evidence = [{"manifest_digest": entry["manifest_digest"],
+        "manifest": entry["manifest"], "results": [{key: result.get(key) for key in
+        ("id", "status", "required", "exit_code", "duration_seconds")} for result in entry["report"]["results"]]}
+        for entry in journal.rejected]
     budget.calls, budget.reads = journal.calls, journal.reads
     budget.probe_batches = journal.probe_batches
     budget.probe_reports = list(journal.probe_reports)
@@ -253,6 +264,19 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
     return budget
 
 
+def _validate_established_candidate(journal: RepairJournal, candidate: EnvironmentManifest | None) -> None:
+    if journal.coverage_manifest is not None:
+        if candidate is None:
+            _refuse('established candidate cannot be removed', code='obligation_removed')
+        preserve_obligations(candidate, journal.coverage_manifest)
+        if any(candidate.inputs.get(path) != digest for path, digest in journal.coverage_manifest.inputs.items()):
+            _refuse('established source evidence changed', code='source_identity')
+    if candidate is not None and candidate.source_commit != journal.source_commit:
+        _refuse('established candidate source changed', code='source_identity')
+    if candidate is not None:
+        preserve_execution_obligations(candidate, journal.rejected)
+
+
 def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool = False) -> None:
     """Save consumed reservations before external work; never move the original expiry."""
     journal = journal_for(cache)
@@ -269,14 +293,7 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
         if current.source_commit != journal.source_commit:
             _refuse('finding source changed during attempt', code='source_identity')
     candidate = budget.coverage_manifest
-    if journal.coverage_manifest is not None:
-        if candidate is None:
-            _refuse('established candidate cannot be removed', code='obligation_removed')
-        preserve_obligations(candidate, journal.coverage_manifest)
-        if any(candidate.inputs.get(path) != digest for path, digest in journal.coverage_manifest.inputs.items()):
-            _refuse('established source evidence changed', code='source_identity')
-    if candidate is not None and candidate.source_commit != journal.source_commit:
-        _refuse('established candidate source changed', code='source_identity')
+    _validate_established_candidate(journal, candidate)
     if current is not None and current.reviews and candidate is None:
         _refuse('coverage findings require established candidate', code='review_findings_invalid')
     journal.coverage_manifest = candidate

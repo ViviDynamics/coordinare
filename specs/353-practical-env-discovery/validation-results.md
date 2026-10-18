@@ -1,6 +1,14 @@
 # Repository validation results
 
-## Elm — passed, 2026-10-18
+## Elm — execution passed; coverage acceptance invalidated, 2026-10-18
+
+A subsequent independent source audit rejected the model's coverage judgment.
+The successful execution below remains valid evidence for the declared commands,
+but **does not establish readiness for the approved project environment**.
+Docker-backed prerequisites were excluded because the consumer lacked a daemon;
+required Node dependencies and promtool were omitted, and offline Go usability was
+not demonstrated across every promised module. The approved fixed scope cannot be
+reduced to match the available image. SC-004 remains unmet; do not merge this PR.
 
 Validated code: `bc3ed3cdd7c639df630f48fcc18112b05bb8f513`.
 Pinned repository: `ViviDynamics/elm` at
@@ -20,12 +28,15 @@ read-only. Installer and consumer evidence share this manifest digest:
 Both bind the same pinned source, immutable image and `linux/aarch64` platform.
 The execution source contains 6,616 tracked files, 77,426,246 bytes, with digest
 `6ba372143332703eb4275ae39e01b166c30428960d94b636c1f74652bc4a042d`.
-Provenance was frozen and readiness accepted. Every required result has exit code 0.
+The original run froze provenance and recorded readiness. That readiness decision
+is invalidated by the coverage audit above. Every declared required result has exit
+code 0; omitted source obligations still prevent acceptance.
 
 The optional Docker CLI installation and availability check failed. These failures
-remain in the evidence. The manifest declared daemon-backed Compose, browser and
-hardware lanes outside its environment scope before independent acceptance; no
-Docker daemon or deployment readiness is asserted.
+remain in the evidence. The manifest excluded daemon-backed lanes because the
+consumer lacked a daemon. Independent review initially accepted that exclusion
+incorrectly; the later audit rejects it. No Docker daemon or deployment readiness
+is asserted.
 
 The reviewer rejected an unpinned ShellCheck package installation. Discovery
 replaced it with the exact upstream release and the reviewer resolved that finding.
@@ -48,8 +59,62 @@ volumes and source staging were independently confirmed absent after completion;
 the pinned snapshot is unchanged. The live daemon and outer retry loop were not
 exercised by this harness.
 
+## Small sample — passed, 2026-10-18
+
+The same product code and profile validated `ViviDynamics/conductor-e2e-sample` at
+`64dbb0b613884a024691a8e3eb1724ea4a1fc787` in 263.24 seconds. Independent review
+accepted the manifest. Its six required checks passed in both installer and clean
+consumer: Python version assertion, pytest and Ruff availability, package import,
+the actual Ruff lint command, and the actual pytest suite. No installation was
+necessary because the base image supplied the tools. Provenance was frozen with
+manifest digest `da3592892c525f723611907dfe897ee48aa2621c0b52a5f0df1fd01d5269ace6`.
+The attempt used one schema repair and no coverage or execution revisions.
+
+Owned resource absence and the unchanged snapshot were verified separately.
+Private evidence is under
+`.agents/state/353-org-validation/targeted-repair-sample60m-low/`. This establishes
+the small-sample part of SC-004 for the explicitly labeled profile. Elm still lacks
+complete coverage; neither the earlier baseline nor universal readiness is claimed.
+
 ## Remaining validation
 
-The same code and profile are being tested against `conductor-e2e-sample`, followed
-by the other 27 repositories in the original 29-repository inventory. Their results
-are pending. This document does not claim the repository matrix or PR is complete.
+The broader run was stopped when the Elm coverage audit invalidated its
+prerequisite. Twenty-one repositories produced terminal results and six were not
+started. Four terminal results recorded successful declared checks; they do not
+substitute for the missing Elm acceptance or establish universal coverage. All 27
+pinned source snapshots remain unchanged. Owned image, registry, volume and source
+staging absence was independently verified after cancellation. Partial results
+remain under the two `targeted-repair-matrix30m-low-*` profiles; cleanup proof is
+`targeted-repair-matrix30m-shared-runtime/cleanup-verified.json`.
+
+A Nare repair exposed a separate no-waiver defect: after `pytest -q` failed, the
+model retained its required ID but added exclusions and a retry wrapper. Execution
+approval was withheld. The correction preserves every required check and service
+command definition after any project command executes, including unrun checks and
+all earlier rejected generations. Only check timeout increases are allowed;
+installation and activation remain repairable. Trusted preflight that stops every
+command before execution can still correct a declaration. Pins are derived from
+existing bounded rejected evidence and survive daemon snapshots and cached
+acceptance. Fresh reviewers receive the prior manifests and per-command outcomes,
+without output bodies, to assess whether installation or activation changes weaken
+the source obligation. Exact command identity alone cannot prove semantic coverage.
+
+The real Nare rewrite is rejected with `obligation_removed`; its original command
+remains admissible against the same execution evidence. Relevant local tests pass:
+716 passed, 14 existing platform skips. Strict type checking covers 339 modules;
+lint and the existing debt ratchet pass without new suppressions or baseline edits.
+The full regression suite will run in CI for the correction.
+
+## Actual runtime limitation
+
+Dependency caching, tool installation and ordinary subprocess services fit the
+existing generic manifest. Full Elm coverage additionally requires a usable
+container service. The existing Docker clean verifier has no daemon socket and
+uses `--network none`; Kubernetes drops capabilities and prohibits privilege
+escalation. A probe of the actual immutable base image under the Docker verifier's
+network isolation confirmed `unshare -Ur true` fails with `Operation not permitted`.
+A rootless nested-runtime recipe therefore has no demonstrated supported path on
+this target. Installing another CLI or extending the timeout cannot supply that
+kernel capability. No host socket, privileges, verification networking or narrowed
+project scope have been introduced. An isolated runtime solution must be established
+before another Elm readiness claim or a broader repository run.
