@@ -152,3 +152,36 @@ async def test_each_stage_advertises_only_its_envelope_and_corrects_that_stage()
         fetch=fetch, chat=chat, capabilities=CAPABILITIES, budget=budget, probe_executor=execute, require_preflight=True)
     assert review.manifest_digest==manifest.digest()
     assert budget.schema_repairs==2 and budget.probe_batches==1
+
+
+@pytest.mark.asyncio
+async def test_review_prompt_advertises_complete_closed_assessment_envelope():
+    async def fetch(path):
+        return SOURCE
+    async def chat(messages):
+        if 'manifest' in json.loads(messages[1]['content']):
+            system=messages[0]['content']
+            schema=json.loads(system.split('matching this schema: ',1)[1])
+            assert schema['title']=='AssessmentEnvelope'
+            assert list(schema['properties'])==['assessment'] and schema['additionalProperties'] is False
+            assert 'Never combine an assessment with a tool field, even null.' in system
+            return json.dumps(assessment(candidate()))
+        return json.dumps({'tool':'read_file','path':PATH}) if len(messages)==2 else json.dumps({'manifest':candidate()})
+    _,review=await discover_and_review(symphony_name='suite',commit=COMMIT,paths=[PATH],fetch=fetch,chat=chat,capabilities=CAPABILITIES)
+    assert review.verdict=='accept'
+
+
+@pytest.mark.asyncio
+async def test_null_tool_with_wrapped_review_remains_invalid():
+    budget=AttemptBudget(max_schema_repairs=0)
+    async def fetch(path):
+        return SOURCE
+    async def chat(messages):
+        if 'manifest' in json.loads(messages[1]['content']):
+            return json.dumps({**assessment(candidate(),'revise'),'tool':None})
+        return json.dumps({'tool':'read_file','path':PATH}) if len(messages)==2 else json.dumps({'manifest':candidate()})
+    with pytest.raises(EnvironmentDiscoveryError) as caught:
+        await discover_and_review(symphony_name='suite',commit=COMMIT,paths=[PATH],fetch=fetch,chat=chat,
+            capabilities=CAPABILITIES,budget=budget)
+    assert caught.value.code=='attempt_schema_limit'
+    assert budget.schema_repairs==budget.coverage_revisions==0

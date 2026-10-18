@@ -304,6 +304,9 @@ async def test_missing_declaration_fields_are_required_in_proposal_schema_and_re
     assert {error["code"] for error in errors} == {"missing"}
     prompt = replies.messages[schema_index][0]["content"]
     schema = json.loads(prompt.rsplit("matching this schema: ", 1)[1])
+    if phase == "review":
+        assert "assessment" in schema["required"] and schema["additionalProperties"] is False
+        schema = schema["$defs"]["CoverageAssessmentProposal"]
     assert missing in schema["required"]
     assert not {"inventory_digest", "capabilities_digest", "source_commit", "inputs"} & set(schema["properties"])
     assert events[-1]["repairs"] == 1

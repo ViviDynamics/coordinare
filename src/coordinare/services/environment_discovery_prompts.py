@@ -4,7 +4,10 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from coordinare_service_inference.environment.models import EnvironmentManifestProposal
+from coordinare_service_inference.environment.models import (
+    CoverageAssessmentProposal,
+    EnvironmentManifestProposal,
+)
 from pydantic import ConfigDict, create_model
 
 from coordinare.services.environment_probes import ProbeEnvelope, ProbeRequest
@@ -51,6 +54,16 @@ _MANIFEST_ENVELOPE = create_model(
     "ManifestEnvelope", manifest=(EnvironmentManifestProposal, ...),
     __config__=ConfigDict(extra="forbid", strict=True),
 )
+
+
+_ASSESSMENT_ENVELOPE = create_model(
+    "AssessmentEnvelope", assessment=(CoverageAssessmentProposal, ...),
+    __config__=ConfigDict(extra="forbid", strict=True),
+)
+
+
+def assessment_envelope_schema() -> dict[str, object]:
+    return _ASSESSMENT_ENVELOPE.model_json_schema()
 
 
 class DiscoveryPrompts:
