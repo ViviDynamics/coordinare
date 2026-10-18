@@ -294,16 +294,21 @@ class OpenAiApiBackend:
     async def _chat(self, messages: list[dict[str, str]], json_mode: bool) -> str:
         return (await self._chat_reply(messages, json_mode)).text
 
-    async def _chat_reply(self, messages: list[dict[str, str]], json_mode: bool) -> ModelReply:
+    async def _chat_reply(self, messages: list[dict[str, str]], json_mode: bool, *, response_schema: dict[str, Any] | None = None) -> ModelReply:
         """The reply text of one chat call ('' on any failure), recorded on the open call (131)."""
         system, user = split_messages(messages)
+        parameters = self._request_parameters(json_mode)
+        if response_schema is not None:
+            parameters["response_schema"] = response_schema
         request = ModelRequest(
             model=self._model,
             endpoint=self._endpoint_name,
             system=system,
             prompt=user,
-            parameters=self._request_parameters(json_mode),
+            parameters=parameters,
         )
+        if response_schema is not None:
+            return await self.calls.invoke(request, lambda: self._post_chat(messages, json_mode, response_schema=response_schema))
         return await self.calls.invoke(request, lambda: self._post_chat(messages, json_mode))
 
     def _request_parameters(self, json_mode: bool) -> dict[str, Any]:
@@ -314,7 +319,7 @@ class OpenAiApiBackend:
             parameters["temperature"] = self._temperature
         return parameters
 
-    async def _post_chat(self, messages: list[dict[str, str]], json_mode: bool) -> ModelReply:
+    async def _post_chat(self, messages: list[dict[str, str]], json_mode: bool, *, response_schema: dict[str, Any] | None = None) -> ModelReply:
         """The HTTP send with its retries. Failures come back as ``error``, never raised."""
         import httpx
         if not self._api_key:
@@ -334,7 +339,10 @@ class OpenAiApiBackend:
             payload["max_tokens"] = self._max_tokens
             if self._temperature is not None:
                 payload["temperature"] = self._temperature
-        if json_mode:
+        if response_schema is not None:
+            payload["response_format"] = {"type": "json_schema", "json_schema": {
+                "name": "coordinare_environment_response", "strict": True, "schema": response_schema}}
+        elif json_mode:
             payload["response_format"] = {"type": "json_object"}
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -401,11 +409,11 @@ class OpenAiApiBackend:
         manifest README pass). Returns the assistant text ('' on any failure)."""
         return await self._chat(messages, json_mode=True)
 
-    async def chat_json_with_metadata(self, messages: list[dict[str, str]]) -> DiscoveryChatReply:
+    async def chat_json_with_metadata(self, messages: list[dict[str, str]], *, response_schema: dict[str, Any] | None = None) -> DiscoveryChatReply:
         """Keep diagnostics tied to this request without changing string-only callers."""
         from coordinare.services.environment_attempt import DiscoveryChatReply
 
-        reply = await self._chat_reply(messages, json_mode=True)
+        reply = await self._chat_reply(messages, json_mode=True, response_schema=response_schema)
         return DiscoveryChatReply(text=reply.text, usage=reply.usage, finish_reason=reply.finish_reason,
             error_code="provider_request_failed" if reply.error else None)
 

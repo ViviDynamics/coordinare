@@ -65,6 +65,7 @@ from coordinare.services.environment_probes import (
     bind_probe_report,
     validate_saved_probe_reports,
 )
+from coordinare.services.environment_response_schema import invoke_chat, response_schema
 from coordinare.services.kubernetes_verifier import check_project_files
 
 Fetch = Callable[[str], Awaitable[str | None]]
@@ -272,7 +273,7 @@ async def _phase(
                 await budget.flush()
                 budget.context_bytes += sum(len(message["content"].encode()) for message in messages)
                 _admit_phase_context(inspection, budget, messages)
-                raw = budget.record_reply(await chat(messages))
+                raw = budget.record_reply(await invoke_chat(chat, messages, schema=response_schema(budget.expected_envelope)))
                 try:
                     reply = _normalize_review(_decode_reply(raw, inspection.name, inspection.limits), inspection.name)
                 except EnvironmentDiscoveryError as exc:
