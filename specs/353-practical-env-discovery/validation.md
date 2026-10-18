@@ -95,7 +95,34 @@ seconds; the normalized binary transport was 29,661,409 bytes. Source digest:
 `6ba372143332703eb4275ae39e01b166c30428960d94b636c1f74652bc4a042d`.
 These source-only tests ran no repository commands and do not establish readiness.
 
-The new full Elm bootstrap simulation, final-head CI and whole-diff review are
-pending. SC-004 and other live-success tasks stay unchecked; other repositories
-remain paused until Elm's independently reviewed installation, usable activation
-and every required clean check actually pass.
+The full Elm simulation on `4ec5d59a` completed held after 441.79 seconds,
+inside the approved 3,600-second phase/aggregate/provider/installer allowance.
+It used the same GLM-5.3 Flash model, low reasoning and 32,768 output-token limit.
+Eight capability probes ran against the complete source with matching identity
+and confirmed cleanup. The fresh reviewer received all 14 mandatory inputs and
+returned `revise`, identifying incomplete functional checks and a tool-version
+conflict. Its citations also included three non-file labels: `manifest.checks`,
+`manifest.requirements` and a probe-results label. Citation validation rejected
+that assessment before discovery could receive its revision feedback. Six model
+calls and one schema correction were consumed; both coverage revisions and one
+schema correction remained. No installer or clean consumer ran. This was not a
+timeout. Snapshot integrity and absence of the owned image references, registry,
+registry volume and recorded source directory were independently verified.
+
+Offline replay reproduced the exact citation failure: formal assessment-schema
+validation happened inside the correction loop, but file-citation binding happened
+after it. The user approved a narrow fix. Invalid citation references now use the
+existing schema correction allowance and require a new reviewer response. A
+valid revision reaches discovery and its next candidate receives fresh independent
+review. Source drift, missing evidence, budget exhaustion and every required
+execution check retain their guards. Six regression cases pass; an offline replay
+of the saved Elm response reaches valid `revise` using a diagnostic corrected
+reply, without model calls, commands, approvals or manifest acceptance.
+
+The source amendment's fresh full-diff review found one Critical containment bug
+and four Important Kubernetes/recovery/provider-error bugs. All five were
+reproduced and corrected. Actual Docker fixture installation and fresh consumer
+execution pass; final-head CI and the next real Elm outcome remain pending.
+SC-004 and other live-success tasks stay unchecked. Other repositories remain
+paused until Elm's independently reviewed installation, usable activation and
+every required clean check actually pass.

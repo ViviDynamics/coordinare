@@ -11,6 +11,7 @@ import json
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Any, NotRequired, TypedDict, Unpack, cast
 
 from coordinare_service_inference.environment.models import (
@@ -264,6 +265,12 @@ async def _phase(
                     except ValidationError as exc:
                         _repair(messages, raw, _validation_feedback(exc), budget)
                         continue
+                    except EnvironmentDiscoveryError as exc:
+                        if inspection.name != "review" or exc.code != "review_citations_invalid":
+                            raise
+                        _repair(messages, raw, [{"location": ["sources"], "code": exc.code,
+                            "allowed_sources": sorted(inspection.inputs)}], budget)
+                        continue
                     return reply[final], inspection.inputs
                 try:
                     result = await inspection.tool_result(reply)
@@ -367,7 +374,7 @@ def _validated_assessment(
         raise EnvironmentDiscoveryError(message)
     if any(path not in reviewer_reads for path in proposal.sources):
         message = "review sources must cite independently read evidence"
-        raise EnvironmentDiscoveryError(message)
+        raise EnvironmentDiscoveryError(message, code="review_citations_invalid")
     if require_accept and proposal.verdict != "accept":
         message = f"coverage review held: {proposal.verdict}"
         raise EnvironmentDiscoveryError(message)
@@ -634,7 +641,8 @@ async def _discover_attempt(
             reviewer = _Inspection("review", inventory, fetch, bounds, budget)
             mandatory_evidence = await _timed_review_evidence(reviewer, manifest)
             assessment_data, reviewer_reads = await _phase(
-                inspection=reviewer, chat=chat, budget=budget, validate=_CoverageProposal.model_validate,
+                inspection=reviewer, chat=chat, budget=budget,
+                validate=partial(_validated_assessment, reviewer_reads=reviewer.inputs, manifest=manifest, require_accept=False),
                 messages=[
                 {"role": "system", "content": tools + (
                     'Independently review coverage of the candidate against the repository snapshot. '
@@ -649,7 +657,9 @@ async def _discover_attempt(
                     'service lifecycle/activation needs are explicit. Reject required artifacts that exist only in '
                     'the disposable installer image or checkout. Return revise for omissions or conflicts, '
                     'indeterminate for insufficient evidence. Acceptance requires a cited rationale; '
-                    'sources must be paths you personally read. Bind your assessment to the provided manifest digest '
+                    'sources must contain only exact repository file paths from mandatory_evidence or successful read tools. '
+                    'Discuss manifest/check/probe references in rationale; never put those labels in sources. '
+                    'Bind your assessment to the provided manifest digest '
                     'and source commit supplied by the daemon. Return only verdict, rationale and sources, without any provenance fields, '
                     'inside {"assessment":...}. Choose one source tool request or one assessment envelope. '
                     'Never combine an assessment with a tool field, even null. '
