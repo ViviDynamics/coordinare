@@ -222,7 +222,9 @@ async def _terminate(process: asyncio.subprocess.Process) -> None:
     if sys.platform == 'linux' and process.returncode is None:
         # Give the command-local subreaper a chance to reap detached descendants.
         with contextlib.suppress(ProcessLookupError):
-            process.send_signal(signal.SIGTERM)
+            # Popen.send_signal() polls/reaps an already-exited child, racing
+            # asyncio's pidfd watcher and replacing its real exit status with 255.
+            os.kill(process.pid, signal.SIGTERM)
         try:
             await asyncio.wait_for(process.wait(), timeout=6)
             return

@@ -111,3 +111,5 @@ The complete-evidence amendment retest also held for all 29 default repositories
 - [x] T058 Correct stage-specific source/probe/manifest guidance and schema feedback after the 39.78-second hold; regression covers both malformed envelopes without increasing the two-correction limit.
 
 - [x] T059 Express existing probe restrictions in field schemas and return safe typed correction codes after the 167.5-second Elm hold; four regressions observed red before correction.
+
+- [x] T060 Correct Linux teardown signal delivery after CI reproduced the asyncio pidfd status race; deterministic regressions preserve both exit 0 and exit 7, with all 43 runner tests passing in Linux.
