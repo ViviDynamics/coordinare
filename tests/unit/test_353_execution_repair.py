@@ -310,3 +310,57 @@ def test_durable_diagnostics_keep_actual_stage_and_category_counts(tmp_path):
     assert summary['schema_repairs'] == 1
     assert summary['mandatory_inputs_required'] == summary['mandatory_inputs_delivered'] == 8
     assert summary['max_execution_repairs'] == 2
+
+
+def activation_failure_case(tmp_path):
+    from coordinare_service_inference.environment.models import ExecutionCapabilities
+
+    from tests.unit.env_manifest_fixture import reviewed_metadata
+    cache = cache_fixture(tmp_path)
+    metadata = reviewed_metadata(capabilities=ExecutionCapabilities.model_validate(cache.environment_capabilities),
+        symphony_name=cache.symphony_name, activation={'path':['{cache}/missing-bin']})
+    cache.environment_manifest = metadata['environment_manifest']
+    cache.environment_assessment = metadata['environment_assessment']
+    started(cache)
+    report = failed_report(cache)
+    report['results'][0].update(status='not_run', exit_code=None)
+    activation = {'id':'activation','status':'fail','required':True,'exit_code':None,
+        'manifest_digest':report['manifest_digest'],'context':'','output':'declared activation path missing'}
+    report['results'].append(activation)
+    return cache, report
+
+
+def test_known_activation_failure_admits_repair_without_waiving_unrun_checks(tmp_path):
+    cache, report = activation_failure_case(tmp_path)
+    assert record_execution_failure(cache, report, cleanup_confirmed=True, now=101)
+    assert cache.environment_attempt['status'] == 'repair_pending'
+    assert cache.environment_attempt['execution_repairs'] == 1
+    assert cache.environment_attempt['expires_at'] == 700
+    rejected = cache.environment_attempt['rejected'][0]['report']
+    assert not rejected['passed']
+    assert rejected['results'][0]['status'] == 'not_run'
+    assert rejected['results'][1]['status'] == 'fail'
+    assert not cache.cache_dir_ready
+
+
+@pytest.mark.parametrize('mutation',['unknown','optional','pass','indeterminate','exit','digest','scope','no_activation'])
+def test_malformed_or_unknown_activation_evidence_still_holds(tmp_path, mutation):
+    cache, report = activation_failure_case(tmp_path)
+    report['results'][0].update(status='fail',exit_code=2)
+    activation=report['results'][1]
+    if mutation == 'no_activation':
+        from coordinare_service_inference.environment.models import EnvironmentManifest
+        cache.environment_manifest['activation']={'path':[],'env':{}}
+        digest=EnvironmentManifest.model_validate(cache.environment_manifest).digest()
+        cache.environment_assessment['manifest_digest']=digest
+        report['manifest_digest']=digest
+        for result in report['results']:
+            result['manifest_digest']=digest
+    else:
+        key,value={'unknown':('id','unrecognized'), 'optional':('required',False), 'pass':('status','pass'),
+            'indeterminate':('status','indeterminate'),'exit':('exit_code',2),'digest':('manifest_digest','f'*64),
+            'scope':('context','qa')}[mutation]
+        activation[key]=value
+    assert not record_execution_failure(cache,report,cleanup_confirmed=True,now=101)
+    assert cache.environment_attempt['status']=='held'
+    assert cache.environment_attempt['execution_repairs']==0
