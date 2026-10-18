@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from coordinare_service_inference.environment.execution_source import SourceEntry, source_identity
 from coordinare_service_inference.environment.models import (
     CoverageAssessment,
     EnvironmentManifest,
@@ -22,6 +23,7 @@ from coordinare_service_inference.environment.models import (
 from coordinare_service_inference.environment.render import render_activate, render_verify
 
 from coordinare.models.env_cache import EnvCacheState
+from coordinare.services.environment_source_provider import write_execution_bundle
 
 
 def _docker(*args: str, timeout: int = 300) -> str:
@@ -135,9 +137,15 @@ def accepted_state(cache: Path, manifest: EnvironmentManifest, files: dict[str, 
         source_commit=manifest.source_commit, symphony_name=manifest.symphony_name,
         verdict="accept", rationale="Independently inspected the exact fixture source snapshot",
         sources=list(files), inputs=dict(manifest.inputs), policy_version="351-v1")
+    source_files = {path: text.encode() for path, text in files.items()}
+    entries = [SourceEntry(path=path, mode="100644", size=len(body),
+        object_id=hashlib.sha1(b"blob " + str(len(body)).encode() + b"\0" + body).hexdigest())
+        for path, body in source_files.items()]
+    identity = source_identity(manifest.source_commit, entries)
     state = EnvCacheState(symphony_name=manifest.symphony_name, sanitised_name=manifest.symphony_name,
         cache_dir=cache, bootstrap_commit_sha=manifest.source_commit,
         environment_manifest=manifest.model_dump(), environment_assessment=assessment.model_dump(),
+        environment_execution_source=identity.model_dump(),
         rendered_activate_sh=activation, rendered_verify_sh=verification)
 
     async def fetch(org, repo, path, *, ref):
@@ -147,10 +155,19 @@ def accepted_state(cache: Path, manifest: EnvironmentManifest, files: dict[str, 
             assert hashlib.sha256(content.encode()).hexdigest() == manifest.inputs[path]
         return content
 
+    async def prepare_source(org, repo, *, commit, destination, deadline):
+        assert org == "fixture" and repo == "repository" and commit == manifest.source_commit
+        destination.mkdir(parents=True)
+        objects = destination / "objects"
+        objects.mkdir()
+        for entry in entries:
+            (objects / entry.object_id).write_bytes(source_files[entry.path])
+        return write_execution_bundle(commit, entries, objects, destination / "source.tgz", deadline=deadline)
+
     return {"env_cache": {manifest.symphony_name: state},
             "config": SimpleNamespace(github_org="fixture", project_name="repository", agent_transport="docker",
                 performer_image=capabilities.image_ref, performer_endpoints=[]),
-            "github_service": SimpleNamespace(get_file_content=fetch)}
+            "github_service": SimpleNamespace(get_file_content=fetch, prepare_execution_source=prepare_source)}
 
 
 if __name__ == "__main__":
