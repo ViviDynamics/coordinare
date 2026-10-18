@@ -118,3 +118,20 @@ this target. Installing another CLI or extending the timeout cannot supply that
 kernel capability. No host socket, privileges, verification networking or narrowed
 project scope have been introduced. An isolated runtime solution must be established
 before another Elm readiness claim or a broader repository run.
+
+A subsequent [private-runtime experiment](runtime-feasibility.md) proved that a
+software-emulated guest can run a private Docker container and Compose workload
+inside the existing isolation boundary. Its fresh offline consumer passed in
+95.11 seconds with the guest base unchanged. This is feasibility evidence, not
+Elm acceptance. A separately labeled `vm-tools-elm60m-high` run tested
+normal agent-generated manifests with optional platform tools and high reasoning
+effort. No prepared guest or edited manifest was supplied; all gates remained active.
+That run held in review before installation after 1,261.65 seconds. A capability
+flag contradiction was misreported as a citation error, so citation corrections
+could not resolve it. The correction returns the actual trusted validation reason
+and field, preserving objections and the original correction allowance. A regression
+reproduces that failure and requires a subsequent independent resolution of the
+retained coverage finding. Source navigation guidance also explicitly requires
+following referenced development instructions and distinguishes missing tools from
+unproven or impossible capabilities. A read-only replay tests the model's response
+before another full Elm execution.

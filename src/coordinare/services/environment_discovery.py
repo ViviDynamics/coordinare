@@ -50,6 +50,7 @@ from coordinare.services.environment_evidence import (
     prepare_mandatory_evidence,
 )
 from coordinare.services.environment_findings import (
+    FindingValidationError,
     apply_finding_review,
     refuse_finding,
     validate_finding_responses,
@@ -300,6 +301,8 @@ def _declaration_feedback(exc: EnvironmentDiscoveryError, inspection: _Inspectio
         return [{"location": ["finding_responses"], "code": exc.code,
             "allowed_ids": [record.id for record in ledger.records], "required_ids": ledger.open_ids(),
             "guidance": "Respond only to daemon-assigned coverage findings; probe observations are not finding IDs. Use [] when allowed_ids is empty."}]
+    if exc.code == 'review_findings_invalid' and isinstance(exc, FindingValidationError):
+        return [{"location": list(exc.location), "code": exc.code, "guidance": str(exc)}]
     return [{"location": ["sources"], "code": exc.code, "allowed_sources": sorted(inspection.inputs)}]
 
 
@@ -767,6 +770,8 @@ async def _discover_attempt(
                     'Report new blocking findings with category, issue, sources and affected_ids; the daemon assigns IDs. '
                     'accept requires no open or new findings; revise requires an open or new finding. '
                     'Set capability_unavailable true only for an open/new cited capability that this consumer cannot supply. '
+                    'If impossibility is unproven, set capability_unavailable false and retain a blocking finding '
+                    'requiring discovery to obtain operational capability evidence; this does not accept coverage. '
                     'The requested project environment scope is fixed by pinned development/test evidence, not image convenience. '
                     'A false-positive or out-of-scope explanation needs independently cited reasoning and cannot weaken required obligations. '
                     'No new privileges, host sockets or verification network are available. A CLI version cannot prove service usability. '

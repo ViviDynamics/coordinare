@@ -69,6 +69,28 @@ async def test_unavailable_required_service_holds_without_privilege_changes():
 
 
 @pytest.mark.asyncio
+async def test_capability_flag_correction_identifies_actual_error_and_preserves_objection():
+    budget = AttemptBudget()
+    async def chat(messages):
+        if len(replies.messages) == 3:
+            error = json.loads(messages[-1]['content'])['validation_errors'][0]
+            assert error['location'] == ['assessment', 'capability_unavailable']
+            assert 'open cited capability finding' in error['guidance']
+            assert 'allowed_sources' not in error
+        return await replies(messages)
+    replies = Replies([{'tool': 'read_file', 'path': PATH}, {'manifest': candidate()},
+        review(verdict='revise', findings=[finding('coverage')], unavailable=True),
+        {'tool': 'repair_proposal', 'changes': [
+            {'path': ['assessment', 'capability_unavailable'], 'value_json': 'false'}]},
+        {'manifest': candidate(), 'finding_responses': [response()]},
+        review(decisions=[decision()])])
+    _, assessment = await run(chat, budget=budget)
+    assert budget.schema_repairs == 1 and budget.coverage_revisions == 1
+    assert assessment.finding_ledger.records[0].proposal.category == 'coverage'
+    assert len(assessment.finding_ledger.reviews) == 2
+
+
+@pytest.mark.asyncio
 async def test_changed_candidate_rechecks_closed_findings():
     import hashlib
 
