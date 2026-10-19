@@ -137,7 +137,7 @@ def test_real_performer_retains_and_releases_private_service_runtime(tmp_path):
         'environment_assessment': assessment, 'environment_execution_source': source.model_dump()}}))
     owned = []
     try:
-        for phase in ('installer', 'consumer'):
+        for phase in ('installer', 'consumer', 'live_consumer'):
             scratch = tmp_path / ('scratch-' + phase)
             scratch.mkdir(mode=0o700)
             name = 'coordinare-runtime-consumer-'+uuid.uuid4().hex[:12]
@@ -145,24 +145,43 @@ def test_real_performer_retains_and_releases_private_service_runtime(tmp_path):
             (tmp_path/'ownership.json').write_text(json.dumps({'containers': owned, 'readiness_evidence': False}))
             command = ['docker', 'run', '--name', name, '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                        '--memory', '4g', '--memory-swap', '4g', '--cpus', '2', '--pids-limit', '512',
-                       '--network', 'bridge' if phase == 'installer' else 'none',
+                       '--network', 'none' if phase == 'consumer' else 'bridge',
                        '--mount', f'type=bind,src={inputs},dst=/input,readonly',
                        '--mount', f'type=bind,src={fixture},dst=/fixture,readonly',
                        '--mount', f'type=bind,src={cache},dst=/cache'+('' if phase == 'installer' else ',readonly'),
                        '--mount', f'type=bind,src={evidence},dst=/evidence',
                        '--mount', f'type=bind,src={scratch},dst=/tmp',
                        '--mount', f'type=bind,src={inputs}/driver.py,dst=/driver.py,readonly',
-                       '--entrypoint', 'python', image, '/driver.py', phase]
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=max(1, expiry-time.time()))
-            (evidence/(phase+'.log')).write_text(completed.stdout+'\n'+completed.stderr)
-            assert completed.returncode == 0, completed.stderr[-4000:]
+                       '--mount', f'type=bind,src={repo_root}/tests/runtime_http_consumer_driver.py,dst=/http-driver.py,readonly',
+                       '--entrypoint', 'python', image]
+            if phase == 'live_consumer':
+                from tests.runtime_http_fixture import run_http_consumer
+
+                contract = json.loads((inputs/'metadata.json').read_text())['contract']
+                receipt = json.loads((evidence/'installer.json').read_text())['receipt']
+                http_evidence = run_http_consumer([*command, '/http-driver.py'], name=name,
+                    metadata=contract, receipt=receipt, expires_at=expiry)
+                (evidence/'http.json').write_text(json.dumps(http_evidence))
+            else:
+                completed = subprocess.run([*command, '/driver.py', phase], capture_output=True, text=True,
+                                           timeout=max(1, expiry-time.time()))
+                (evidence/(phase+'.log')).write_text(completed.stdout+'\n'+completed.stderr)
+                assert completed.returncode == 0, completed.stderr[-4000:]
         installer = json.loads((evidence/'installer.json').read_text())
         consumer = json.loads((evidence/'consumer.json').read_text())
+        live = json.loads((evidence/'live_consumer.json').read_text())
+        assert live['runtime_purpose'] == 'live_consumer' and live['clean_admission_refused_live_carrier']
+        assert live['manifest_digest'] == manifest.digest() and live['source_digest'] == source.digest()
+        assert live['cache_writes_denied'] and all(live['egress_denied'].values())
+        assert all(live['cleanup'].values())
         assert installer['manifest_digest'] == consumer['manifest_digest'] == manifest.digest()
         assert installer['source_digest'] == consumer['source_digest'] == source.digest()
         assert installer['source_root'] != consumer['source_root']
-        assert consumer['cache_writes_denied'] and consumer['binary_source_verified']
-        assert consumer['scratch_bind'] == 'scratch-through-runtime\n'
+        assert consumer['verification']['runtime_phase'] == 'consumer'
+        assert consumer['verification']['runtime_cleanup'] is True
+        assert all(item['status'] == 'pass' for item in consumer['verification']['results'])
+        assert live['cache_writes_denied'] and live['binary_source_verified']
+        assert live['scratch_bind'] == 'scratch-through-runtime\n'
         artifact = installer['receipt']['artifacts'][0]
         with (cache/artifact['path']).open('rb') as stream:
             assert hashlib.file_digest(stream, 'sha256').hexdigest() == artifact['sha256']

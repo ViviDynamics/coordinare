@@ -156,3 +156,27 @@ manifest and complete source identities after installation. Receipts persist
 through snapshots and are discarded when clearing, repairing or restarting a
 cache generation. Parsing a receipt does not itself grant readiness; final
 execution and consumer gates must verify its binding and actual artifacts.
+
+## Live performer purpose
+
+Ordinary live jobs retain the performer's existing carrier connection for daemon HTTP
+control and model traffic. The adapter selects `live_consumer` internally; a manifest
+cannot select this purpose. Both live and clean consumers require the same bound
+sealed receipt, immutable platform identity, read-only installation cache, fresh guest
+and overlay, resource limits and restricted guest networking. The default `consumer`
+and private preflight retain the offline outer-network admission gate. Unknown purposes
+are refused before admission, and a live consumer cannot start without its receipt.
+
+This separates the existing live control connection from clean verification; it adds
+no clean-consumer egress. A report for a live job remains `live_consumer` and cannot be
+accepted or persisted as the clean `consumer` verification report. The synthetic HTTP
+fixture uses the real performer routes and job runner with a fixed injected executor,
+not a model call, and asserts that the same bridged carrier is refused by default clean
+admission before exercising live tools. This is protocol evidence, never Elm coverage
+approval or readiness.
+
+The validation carrier overlays and independently hash-checks both the current shared
+environment package and the current performer package. A correct shared runner with
+an older performer is unavailable evidence. Missing or mismatched performer hashes
+refuse validation before project/model execution; retained earlier shared-only
+fixtures cannot establish current performer lifecycle behavior.

@@ -40,15 +40,27 @@ def package_hashes() -> dict[str, str]:
     }
 
 
+def performer_source() -> Path:
+    return Path(__file__).resolve().parents[1]/'agent'/'performer'/'src'/'performer'
+
+
+def performer_hashes() -> dict[str, str]:
+    root = performer_source()
+    return {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(root.rglob('*.py'))}
+
+
 def verify_image_code(image: str) -> dict[str, Any]:
-    """Confirm current shared code really exists in the immutable execution image."""
+    """Confirm current shared and performer code in the immutable execution image."""
     if not _IMAGE.fullmatch(image):
         raise ValueError("validation image must use an immutable repository digest")
     program = (
         "import hashlib,json,pathlib,platform;import coordinare_service_inference.environment as package;"
-        "root=pathlib.Path(package.__file__).parent;"
+        "import performer;root=pathlib.Path(package.__file__).parent;performer_root=pathlib.Path(performer.__file__).parent;"
         "print(json.dumps({'platform':platform.system().lower()+'/'+platform.machine().lower(),"
-        "'files':{str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.rglob('*.py'))}}))"
+        "'files':{str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.rglob('*.py'))},"
+        "'performer_files':{str(p.relative_to(performer_root)):hashlib.sha256(p.read_bytes()).hexdigest() "
+        "for p in sorted(performer_root.rglob('*.py'))}}))"
     )
     info = json.loads(
         _docker(
@@ -66,7 +78,10 @@ def verify_image_code(image: str) -> dict[str, Any]:
     )
     if info.get("files") != package_hashes():
         raise ValueError("validation image shared environment code differs from the checkout")
-    return {"image_ref": image, "platform": info["platform"], "files": info["files"]}
+    if info.get('performer_files') != performer_hashes():
+        raise ValueError('validation image performer code differs from the checkout')
+    return {"image_ref": image, "platform": info["platform"], "files": info["files"],
+            "performer_files": info['performer_files']}
 
 
 @contextlib.contextmanager
@@ -82,14 +97,17 @@ def candidate_image(base_image: str, output: Path, *, allow_local_image_id: bool
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
     source = Path(environment_package.__file__).parent
     shutil.copytree(source, output / "environment", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(performer_source(), output / 'performer', ignore=shutil.ignore_patterns('__pycache__'))
     program = (
-        "import pathlib,shutil;import coordinare_service_inference as package;"
-        "destination=pathlib.Path(package.__file__).parent/'environment';shutil.rmtree(destination,ignore_errors=True);"
-        "shutil.copytree('/tmp/coordinare-validation-environment',destination)"
+        "import pathlib,shutil\nimport coordinare_service_inference as package\nimport performer\n"
+        "for source,destination in [('/tmp/coordinare-validation-environment',pathlib.Path(package.__file__).parent/'environment'),"
+        "('/tmp/coordinare-validation-performer',pathlib.Path(performer.__file__).parent)]:\n"
+        " shutil.rmtree(destination,ignore_errors=True)\n shutil.copytree(source,destination)\n"
     )
     (output / "Dockerfile").write_text(
         "FROM " + base_image + "\n"
         'COPY ["environment/", "/tmp/coordinare-validation-environment/"]\n'
+        'COPY ["performer/", "/tmp/coordinare-validation-performer/"]\n'
         + "RUN "
         + json.dumps(["/usr/local/bin/python", "-I", "-c", program])
         + "\n",

@@ -44,7 +44,8 @@ async def open_score_runtime(score: Score, stand: Stand, manifest: EnvironmentMa
             _refuse('private runtime consumer requires bound artifact receipt')
         receipt.require_binding(manifest_digest=manifest.digest(), source_digest=source.digest(), runtime_digest=spec.digest())
     return await open_runtime(spec, artifacts=receipt, repo=stand.path, cache=Path(score.env_cache_path),
-        scratch=scratch, install=install, deadline=deadline, manifest_digest=manifest.digest(), source_digest=source.digest())
+        scratch=scratch, install=install, deadline=deadline, manifest_digest=manifest.digest(), source_digest=source.digest(),
+        purpose='installer' if install else 'live_consumer')
 
 
 async def close_score_runtime(lease: RuntimeLease) -> None:
