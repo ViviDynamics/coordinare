@@ -28,11 +28,11 @@ async def _observe_command(data: dict[str, Any], *, environment: dict[str, str],
             'seconds': max(0, deadline-time.monotonic())}).encode()
         if process.stdin is None or process.stdout is None:
             raise RuntimeError('preflight command pipes unavailable')
-        process.stdin.write(payload)
-        await process.stdin.drain()
-        process.stdin.close()
         output = bytearray()
         async with asyncio.timeout_at(deadline):
+            process.stdin.write(payload)
+            await process.stdin.drain()
+            process.stdin.close()
             while chunk := await process.stdout.read(8192):
                 output.extend(chunk)
                 if len(output) > 65536:
@@ -45,7 +45,13 @@ async def _observe_command(data: dict[str, Any], *, environment: dict[str, str],
     finally:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
-        await process.wait()
+        # A full paused stdout pipe can keep wait() pending after SIGKILL.
+        # Discard remaining bytes without growing the rejected report buffer.
+        async with asyncio.timeout(2):
+            if process.stdout is not None:
+                while await process.stdout.read(8192):
+                    pass
+            await process.wait()
 
 
 async def observe_private(data: dict[str, Any], *, repo: Path = Path('/repo'),
