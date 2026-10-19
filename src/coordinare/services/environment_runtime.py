@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
-from coordinare_service_inference.environment.runtime import RuntimeArtifactReceipt
+from coordinare_service_inference.environment.models import (
+    CoverageAssessment,
+    EnvironmentManifest,
+    validate_current_coverage,
+)
+from coordinare_service_inference.environment.runtime import RuntimeArtifactReceipt, RuntimePolicy
 
 from coordinare.services.environment_acceptance import (
     accepted_environment,
@@ -20,10 +25,6 @@ from coordinare.services.environment_runtime_evidence import require_runtime_tar
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from coordinare_service_inference.environment.models import (
-        EnvironmentManifest,
-    )
 
     from coordinare.models.env_cache import EnvCacheState
 
@@ -73,6 +74,19 @@ def verifier_deadline(cache: EnvCacheState, context: RuntimeVerifierContext | No
     if context is not None:
         _refuse('native manifest cannot use a private runtime verifier context')
     return None, time.monotonic()+default_timeout
+
+
+def launch_runtime_policy(metadata: dict[str, Any]) -> RuntimePolicy | None:
+    """Launch limits come only from the exact independently reviewed contract."""
+    raw = metadata.get('environment_manifest')
+    if not isinstance(raw, dict) or raw.get('runtime') is None:
+        return None
+    manifest = EnvironmentManifest.model_validate(raw)
+    review = CoverageAssessment.model_validate(metadata.get('environment_assessment'))
+    validate_current_coverage(manifest, review)
+    if metadata.get('environment_manifest_digest') != manifest.digest() or manifest.runtime is None:
+        _refuse('private runtime launch requires the exact reviewed manifest digest')
+    return manifest.runtime.policy
 
 
 def runtime_verifier_options(manifest: EnvironmentManifest, source_root: Path) -> list[str]:
