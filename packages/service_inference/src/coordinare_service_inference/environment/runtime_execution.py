@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import inspect
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .runtime_supervisor import open_runtime, seal_runtime
+from .runtime_supervisor import RuntimeScanStoppedError, open_runtime, seal_runtime
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -17,10 +20,37 @@ if TYPE_CHECKING:
     from .runtime_supervisor import RuntimeLease
 
 
+async def _settle[T](future: asyncio.Future[T]) -> T:
+    cancelled = False
+    while not future.done():
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:
+            break
+    result = future.result()
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
+async def _scan_bounds(lease: RuntimeLease) -> None:
+    stop = threading.Event()
+    kwargs = {"stop": stop} if "stop" in inspect.signature(lease.check_bounds).parameters else {}
+    worker = asyncio.create_task(asyncio.to_thread(lease.check_bounds, **kwargs))
+    try:
+        await asyncio.shield(worker)
+    finally:
+        stop.set()
+        with contextlib.suppress(RuntimeScanStoppedError):
+            await _settle(worker)
+
+
 async def run_guarded[T](lease: RuntimeLease, operation: Awaitable[T]) -> T:
     async def watch() -> None:
         while True:
-            await asyncio.to_thread(lease.check_bounds)
+            await _scan_bounds(lease)
             await asyncio.sleep(0.25)
 
     task = asyncio.ensure_future(operation)
@@ -37,7 +67,10 @@ async def run_guarded[T](lease: RuntimeLease, operation: Awaitable[T]) -> T:
         for pending in (task, watcher):
             if not pending.done():
                 pending.cancel()
-        await asyncio.gather(task, watcher, return_exceptions=True)
+        await _settle(asyncio.gather(task, watcher, return_exceptions=True))
+        failure = None if watcher.cancelled() else watcher.exception()
+        if failure is not None:
+            raise failure
 
 
 async def execute_with_runtime(
