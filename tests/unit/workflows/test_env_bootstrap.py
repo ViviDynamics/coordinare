@@ -308,28 +308,44 @@ async def test_cancelled_service_gate_cannot_write_after_timeout(setup, phase):
     services = cache / "services"
     services.mkdir()
     pid_path = cache / "pid"
+    child_ready = cache / "child-ready"
+    release = cache / "release-child"
     script = services / f"services-{phase}.sh"
     late = cache / "late"
-    script.write_text(f'#!/bin/bash\necho $$ > "{pid_path}"\n(sleep 0.2; touch "{late}") &\nexec sleep 60\n')
+    # The child cannot write until cancellation has drained. A timer here races
+    # the test runner: a loaded event loop may not cancel before it expires.
+    script.write_text(f'#!/bin/bash\necho $$ > "{pid_path}"\n'
+        f'(touch "{child_ready}"; while [ ! -f "{release}" ]; do sleep 0.01; done; touch "{late}") &\n'
+        'exec sleep 60\n')
     script.chmod(0o755)
     run = _start_env_cache_services if phase == "start" else _run_env_cache_health_check
     task = asyncio.create_task(run(str(cache), {}))
-    for _ in range(200):
-        if pid_path.exists():
-            break
-        await asyncio.sleep(0.005)
-    pid = int(pid_path.read_text())
+    pid = None
     try:
+        for _ in range(200):
+            if pid_path.exists() and child_ready.exists():
+                break
+            await asyncio.sleep(0.005)
+        assert child_ready.exists(), "service descendant did not reach its release gate"
+        pid = int(pid_path.read_text())
+        assert not late.exists()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)
+        release.touch()
         await asyncio.sleep(0.3)
         assert not late.exists()
     finally:
-        with suppress(ProcessLookupError):
-            os.kill(pid, signal.SIGKILL)
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if pid is None and pid_path.exists():
+            pid = int(pid_path.read_text())
+        if pid is not None:
+            with suppress(ProcessLookupError):
+                os.killpg(pid, signal.SIGKILL)
 
 
 async def test_verifier_cannot_rewrite_activation_and_report_success(setup):
