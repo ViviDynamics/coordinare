@@ -44,7 +44,8 @@ class Replies:
     async def __call__(self, messages, *, response_schema):
         self.messages.append(copy.deepcopy(messages))
         self.schemas.append(response_schema)
-        return json.dumps(next(self.values))
+        value = next(self.values)
+        return json.dumps(value(messages) if callable(value) else value)
 
 
 async def run(replies, *, budget=None, fetch=None, paths=None):
@@ -81,9 +82,7 @@ async def test_nested_operational_obligation_survives_candidate_convenience():
     replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()),
         {'tool': 'read_file', 'path': 'odd/nest'}, review('revise', findings=[finding], sources=list(SOURCES)),
         {'tool': 'read_file', 'path': 'odd/nest'},
-        {**proposal(criterion(), criterion('odd/nest', usability='Service accepts a request and persists a value')),
-         'finding_responses': [{'finding_id': 'F0001', 'rationale': 'Added source-backed operational obligation',
-                               'sources': ['odd/nest'], 'affected_ids': []}]},
+        revision(criterion('odd/nest', usability='Service accepts a request and persists a value'), sources=['odd/nest']),
         review(decisions=[{'finding_id': 'F0001', 'status': 'resolved', 'rationale': 'Required operation retained',
                            'sources': ['odd/nest'], 'duplicate_of': None}], sources=list(SOURCES))])
     budget = AttemptBudget()
@@ -287,3 +286,121 @@ def test_scope_rationale_feedback_reports_length_constraint_without_echoing_text
     errors = _validation_feedback(failure.value)
     assert errors == [{'location': ['scope_assessment', 'rationale'], 'code': 'string_too_long'}]
     assert 'private-evidence' not in json.dumps(errors)
+
+
+
+def revision(*add, reassess=None, sources=None, responses=None):
+    def build(messages):
+        from coordinare_service_inference.environment.scope import ScopeDefinition
+        context = json.loads(messages[1]['content'])
+        base = ScopeDefinition.model_validate(context['scope_definition'])
+        return {'scope_revision': {'base_digest': base.digest(), 'add': list(add), 'reassess': reassess or []},
+                'finding_responses': responses if responses is not None else [{'finding_id': 'F0001',
+                    'rationale': 'Source-backed response to the retained finding', 'sources': sources or ['guide'], 'affected_ids': []}]}
+    return build
+
+
+def objection():
+    return review('revise', findings=[{'category': 'coverage', 'issue': 'Documented coverage needs investigation',
+        'sources': ['guide'], 'affected_ids': []}])
+
+
+def closure():
+    return review(decisions=[{'finding_id': 'F0001', 'status': 'resolved', 'rationale': 'Source evidence resolves coverage',
+        'sources': ['guide'], 'duplicate_of': None}])
+
+
+@pytest.mark.asyncio
+async def test_empty_revision_defense_requires_fresh_whole_review():
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), objection(), revision(), closure()])
+    budget = AttemptBudget()
+    scope = await run(replies, budget=budget)
+    assert len(scope.definition.criteria) == 1 and scope.finding_ledger.open_ids() == []
+    assert len(scope.finding_ledger.reviews) == 2 and budget.coverage_revisions == 1
+    context = json.loads(replies.messages[-1][1]['content'])
+    assert context['finding_ledger']['records'][0]['id'] == 'F0001'
+    assert context['scope_definition'] == scope.definition.model_dump(mode='json')
+    assert len(replies.messages[-1]) == 2
+    assert budget.schema_repairs == 0
+    assert 'scope_revision' in replies.schemas[3]['anyOf'][-1]['properties']
+
+
+@pytest.mark.asyncio
+async def test_unknown_reassessment_uses_source_then_independent_review():
+    from coordinare_service_inference.environment.scope import ScopeCriterionProposal, criterion_id
+    old = criterion(applicability='unknown')
+    identifier = criterion_id(ScopeCriterionProposal.model_validate(old))
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(old), objection(),
+        revision(reassess=[{'criterion_id': identifier, 'criterion': criterion()}]), closure()])
+    scope = await run(replies)
+    assert scope.definition.criteria[0].applicability == 'required'
+    assert scope.definition.criteria[0].id != identifier
+    assert len(scope.finding_ledger.reviews) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case', ['missing', 'duplicate', 'unknown', 'stale_id', 'unread', 'full', 'stale_base', 'late_invalid', 'citation'])
+async def test_invalid_revision_cannot_publish_partial_definition_or_responses(case):
+    from coordinare_service_inference.environment.scope import ScopeCriterionProposal, criterion_id
+    old = criterion(applicability='unknown')
+    identifier = criterion_id(ScopeCriterionProposal.model_validate(old))
+    build = revision(criterion(usability='New operation'), reassess=[{'criterion_id': identifier, 'criterion': criterion()}])
+    def bad(messages):
+        value = build(messages)
+        response = value['finding_responses'][0]
+        if case == 'missing':
+            value['finding_responses'] = []
+        elif case == 'duplicate':
+            value['finding_responses'].append(dict(response))
+        elif case == 'unknown':
+            response['finding_id'] = 'F9999'
+        elif case == 'stale_id':
+            response['affected_ids'] = [identifier]
+        elif case == 'unread':
+            response['sources'] = ['odd/nest']
+        elif case == 'full':
+            value = proposal(criterion())
+        elif case == 'stale_base':
+            value['scope_revision']['base_digest'] = '0'*64
+        elif case == 'late_invalid':
+            value['scope_revision']['reassess'].append({'criterion_id': 'S'+'0'*16, 'criterion': criterion()})
+        elif case == 'citation':
+            value['scope_revision']['add'][0]['sources'] = ['odd/nest']
+        return value
+    budget = AttemptBudget(max_schema_repairs=0)
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(old), objection(), bad])
+    with pytest.raises(EnvironmentDiscoveryError) as failure:
+        await run(replies, budget=budget)
+    assert failure.value.code == 'attempt_schema_limit'
+    assert budget.scope_definition.criteria[0].id == identifier
+    assert len(budget.scope_definition.criteria) == 1 and budget.scope_responses == []
+    assert budget.scope_findings.open_ids() == ['F0001']
+    assert budget.calls == 4 and budget.coverage_revisions == 1
+
+
+@pytest.mark.asyncio
+async def test_revision_citation_feedback_is_precise_without_echoing_evidence():
+    def bad(messages):
+        return revision(criterion('odd/nest'))(messages)
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), objection(), bad, revision(), closure()])
+    budget = AttemptBudget()
+    await run(replies, budget=budget)
+    feedback = json.loads(replies.messages[4][-1]['content'])
+    assert feedback['validation_errors'] == [{'location': ['scope_revision', 'add', '0', 'sources', '0'], 'code': 'scope_citations_invalid'}]
+    assert feedback['expected_envelope'] == 'scope_revision'
+    assert 'odd/nest' not in json.dumps(feedback)
+    assert budget.schema_repairs == 1
+
+
+@pytest.mark.asyncio
+async def test_fresh_review_can_find_omission_beyond_revision():
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), objection(),
+        revision(criterion(usability='Added operation')), review('revise', findings=[{'category': 'coverage',
+        'issue': 'Another omitted operation', 'sources': ['guide'], 'affected_ids': []}],
+        decisions=[{'finding_id': 'F0001', 'status': 'resolved', 'rationale': 'First addressed', 'sources': ['guide'], 'duplicate_of': None}])])
+    budget = AttemptBudget(max_coverage_revisions=1)
+    with pytest.raises(EnvironmentDiscoveryError) as failure:
+        await run(replies, budget=budget)
+    assert failure.value.code == 'attempt_coverage_limit'
+    assert budget.scope_findings.open_ids() == ['F0002'] and budget.coverage_revisions == 1
+    assert len(budget.scope_definition.criteria) == 2
