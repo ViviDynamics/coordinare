@@ -586,7 +586,7 @@ class KubernetesRuntime:
             await self.stop(pod_name)
             raise
 
-        return StartedPerformer(handle=pod_name, endpoint=endpoint_for(pod_ip))
+        return StartedPerformer(handle=pod_name, endpoint=endpoint_for(pod_ip), image_ref=config.image)
 
     async def _predecessor_is_owned(self, pod_name: str) -> bool:
         try:
