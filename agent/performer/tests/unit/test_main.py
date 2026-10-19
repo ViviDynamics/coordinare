@@ -312,9 +312,9 @@ def _reviewed_bootstrap_perf(tmp_path, metadata):
 
 
 def _bind_bootstrap_contract(metadata, **changes):
-    from coordinare_service_inference.environment.models import EnvironmentManifest
+    from ..source_contract_fixture import current_manifest_fixture
 
-    manifest = EnvironmentManifest.model_validate({**metadata["environment_manifest"], **changes})
+    manifest = current_manifest_fixture({**metadata["environment_manifest"], **changes})
     metadata["environment_manifest"] = manifest.model_dump()
     metadata["environment_manifest_digest"] = manifest.digest()
     metadata["environment_assessment"]["manifest_digest"] = manifest.digest()

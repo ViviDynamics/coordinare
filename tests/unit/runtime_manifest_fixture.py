@@ -1,7 +1,10 @@
 """Synthetic private-runtime contracts for daemon transport tests only."""
 from __future__ import annotations
 
-from agent.performer.tests.source_contract_fixture import current_review_fixture
+from agent.performer.tests.source_contract_fixture import (
+    current_manifest_fixture,
+    current_review_fixture,
+)
 from coordinare_service_inference.environment.models import (
     EnvironmentManifest,
     ExecutionCapabilities,
@@ -17,7 +20,7 @@ def runtime_cache(tmp_path):
     policy = RuntimePolicy.model_validate(policy_data())
     capabilities = ExecutionCapabilities.model_validate({**native_data(), 'schema_version': 2, 'runtime': policy})
     metadata = reviewed_metadata(capabilities=capabilities, install=[{'id': 'install', 'argv': ['true']}], empty_reason='Synthetic protocol transport fixture')
-    manifest = EnvironmentManifest.model_validate({**metadata['environment_manifest'], 'schema_version': 2,
+    manifest = current_manifest_fixture({**metadata['environment_manifest'], 'schema_version': 2,
         'policy_version': '353-v2', 'runtime': RuntimeSpec(schema_version=1, policy=policy, endpoints=[]).model_dump()})
     assessment = current_review_fixture(manifest, {**metadata['environment_assessment'], 'manifest_digest': manifest.digest()})
     cache = EnvCacheState(symphony_name='sym', sanitised_name='sym', cache_dir=tmp_path)

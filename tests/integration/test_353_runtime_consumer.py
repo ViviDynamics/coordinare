@@ -62,7 +62,6 @@ def test_real_performer_retains_and_releases_private_service_runtime(tmp_path):
     )
     from coordinare_service_inference.environment.findings import FindingLedger, FindingReview
     from coordinare_service_inference.environment.models import (
-        EnvironmentManifest,
         ExecutionCapabilities,
     )
     from coordinare_service_inference.environment.runtime import RuntimePolicy, RuntimeSpec
@@ -104,7 +103,9 @@ def test_real_performer_retains_and_releases_private_service_runtime(tmp_path):
     capability = ExecutionCapabilities(schema_version=2, runtime=policy, image_ref=image, platform=platform,
         cache_mount_path='/cache', install_network='enabled', verify_network='disabled')
     base = 'busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e'
-    manifest = EnvironmentManifest.model_validate({'schema_version': 2, 'policy_version': '353-v2',
+    from agent.performer.tests.source_contract_fixture import current_manifest_fixture
+
+    manifest = current_manifest_fixture({'schema_version': 2, 'policy_version': '353-v2',
         'runtime': spec.model_dump(), 'source_commit': commit, 'symphony_name': 'synthetic-runtime',
         'inventory_digest': hashlib.sha256(json.dumps(sorted(item.path for item in entries)).encode()).hexdigest(),
         'capabilities_digest': capability.digest(),

@@ -147,6 +147,8 @@ def test_runtime_spec_is_in_manifest_digest_without_changing_native_serializatio
     from tests.unit.env_manifest_fixture import reviewed_metadata
 
     raw = reviewed_metadata()['environment_manifest']
+    raw = {key: value for key, value in raw.items() if key not in {'scope_contract', 'scope_contract_digest', 'criterion_checks', 'runtime'}}
+    raw.update(schema_version=1, policy_version='351-v1')
     native = EnvironmentManifest.model_validate(raw)
     assert 'runtime' not in native.model_dump()
     runtime = EnvironmentManifest.model_validate({**raw, 'schema_version': 2, 'policy_version': '353-v2',
@@ -168,7 +170,7 @@ async def test_live_runtime_environment_reaches_real_checks_without_global_mutat
     import sys
     from types import SimpleNamespace
 
-    from coordinare_service_inference.environment.models import EnvironmentManifest
+    from agent.performer.tests.source_contract_fixture import current_manifest_fixture
     from coordinare_service_inference.environment.runner import run_manifest
 
     from tests.unit.env_manifest_fixture import reviewed_metadata
@@ -178,7 +180,7 @@ async def test_live_runtime_environment_reaches_real_checks_without_global_mutat
     leased_scratch.mkdir()
     requested_scratch.mkdir()
     raw = reviewed_metadata()['environment_manifest']
-    manifest = EnvironmentManifest.model_validate({**raw, 'schema_version': 2, 'policy_version': '353-v2',
+    manifest = current_manifest_fixture({**raw, 'schema_version': 2, 'policy_version': '353-v2',
         'runtime': runtime_spec().model_dump(), 'install': [], 'requirements': [], 'empty_reason': 'synthetic runtime fixture',
         'activation': {'path': [], 'env': {}}, 'services': [],
         'checks': [{'id': 'runtime-env', 'argv': [sys.executable, '-c',
@@ -206,7 +208,7 @@ async def test_runtime_limit_failure_cancels_and_reaps_a_running_project_check(t
     import sys
     from types import SimpleNamespace
 
-    from coordinare_service_inference.environment.models import EnvironmentManifest
+    from agent.performer.tests.source_contract_fixture import current_manifest_fixture
     from coordinare_service_inference.environment.runner import run_manifest
     from coordinare_service_inference.environment.runtime_execution import run_guarded
 
@@ -216,7 +218,7 @@ async def test_runtime_limit_failure_cancels_and_reaps_a_running_project_check(t
     cache.mkdir()
     repo.mkdir()
     raw = reviewed_metadata()['environment_manifest']
-    manifest = EnvironmentManifest.model_validate({**raw, 'requirements': [], 'install': [], 'services': [],
+    manifest = current_manifest_fixture({**raw, 'requirements': [], 'install': [], 'services': [],
         'activation': {'path': [], 'env': {}}, 'checks': [{'id': 'writer', 'argv': [sys.executable, '-c',
         'import os,time;from pathlib import Path;Path("{repo}/pid").write_text(str(os.getpid()));Path("{cache}/data").write_bytes(b"x"*65536);time.sleep(60)']}]})
     def limits():

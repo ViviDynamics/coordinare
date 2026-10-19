@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from coordinare_service_inference.environment.models import (
     CoverageAssessment,
     EnvironmentManifest,
+    ExecutionCapabilities,
     VerificationReport,
     validate_current_coverage,
 )
@@ -148,6 +149,10 @@ def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True,
     if report.manifest_digest != manifest.digest():
         message = "required execution evidence has the wrong manifest identity"
         raise ValueError(message)
+    target = ExecutionCapabilities.model_validate(cache.environment_capabilities)
+    if target.digest() != manifest.capabilities_digest or report.platform != target.platform:
+        message = 'required execution runtime target differs from accepted capabilities'
+        raise ValueError(message)
     from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
 
     try:
@@ -175,7 +180,10 @@ def saved_execution_accepted(cache: EnvCacheState) -> bool:
         return False
     data = dict(evidence)
     try:
-        immutable_verifier_image(data.pop("image_ref", ""))
+        image = immutable_verifier_image(data.pop("image_ref", ""))
+        target = ExecutionCapabilities.model_validate(cache.environment_capabilities)
+        if image != target.image_ref:
+            return False
         return bool(execution_report(json.dumps(data), cache, publish=False).passed)
     except (ValueError, TypeError):
         return False

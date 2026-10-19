@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import hashlib
 
-from agent.performer.tests.source_contract_fixture import current_review_fixture
+from agent.performer.tests.source_contract_fixture import (
+    current_manifest_fixture,
+    current_review_fixture,
+)
 from coordinare_service_inference.environment.models import (
     EnvironmentManifest,
     ExecutionCapabilities,
@@ -27,7 +30,11 @@ def fixture_execution_source(commit='a'*40, *, files=None):
 
 def reviewed_metadata(*, capabilities=None, checks=None, install=None, services=None, activation=None, source_commit="a" * 40,
                       symphony_name="sym", inputs=None, empty_reason="Image baseline is sufficient"):
-    manifest = EnvironmentManifest.model_validate({
+    if capabilities is None:
+        capabilities = ExecutionCapabilities(schema_version=1, image_ref='trusted/global@sha256:'+'a'*64,
+            platform='linux/x86_64', cache_mount_path=f'/devenv/{symphony_name}',
+            install_network='enabled', verify_network='disabled')
+    manifest = current_manifest_fixture({
         "inventory_digest": "d" * 64, "capabilities_digest": capabilities.digest() if capabilities else "c" * 64,
         "schema_version": 1, "symphony_name": symphony_name, "source_commit": source_commit,
         "inputs": inputs if inputs is not None else {"tools.plan": hashlib.sha256(b"baseline").hexdigest()},
@@ -36,7 +43,8 @@ def reviewed_metadata(*, capabilities=None, checks=None, install=None, services=
         "activation": activation or {}, "services": services or [],
         "empty_reason": empty_reason, "policy_version": "351-v1",
     })
-    return {"environment_execution_source":fixture_execution_source(source_commit).model_dump(),
+    return {"environment_capabilities": capabilities.model_dump(),
+            "environment_execution_source":fixture_execution_source(source_commit).model_dump(),
             "environment_manifest": manifest.model_dump(), "environment_manifest_digest": manifest.digest(),
             "environment_assessment": current_review_fixture(manifest, {"inventory_digest": "d" * 64, "capabilities_digest": capabilities.digest() if capabilities else "c" * 64, "schema_version": 1, "manifest_digest": manifest.digest(),
                 "source_commit": source_commit, "verdict": "accept", "rationale": "Read source requirements",
@@ -103,7 +111,7 @@ def record_verified_cache_fixture(cache):
 def manifest_proposal(manifest):
     """Convert a full persisted fixture to model-owned declarations, retaining unknown extras."""
     daemon_fields = {'schema_version', 'policy_version', 'symphony_name', 'source_commit',
-                     'inputs', 'inventory_digest', 'capabilities_digest'}
+                     'inputs', 'inventory_digest', 'capabilities_digest', 'scope_contract', 'scope_contract_digest', 'runtime'}
     return {key: value for key, value in manifest.items() if key not in daemon_fields}
 
 

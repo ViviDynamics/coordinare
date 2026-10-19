@@ -1792,6 +1792,7 @@ def test_restore_env_cache_overlays_readme_sha_onto_live_entry() -> None:
                 bootstrap_commit_sha=reviewed.bootstrap_commit_sha,
                 environment_manifest=reviewed.environment_manifest,
                 environment_assessment=reviewed.environment_assessment,
+                environment_capabilities=reviewed.environment_capabilities,
                 environment_verification=reviewed.environment_verification,
                 environment_execution_source=reviewed.environment_execution_source,
                 last_bootstrap_at=t_boot,

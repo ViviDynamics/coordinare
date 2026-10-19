@@ -112,7 +112,9 @@ def _image_capabilities(name: str) -> ExecutionCapabilities | None:
 def manifest_for(name: str, *, files: dict[str, str], checks: list[dict], activation: dict | None = None) -> EnvironmentManifest:
     capabilities = _image_capabilities(name)
     inventory_digest = hashlib.sha256(json.dumps(sorted(files), ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-    return EnvironmentManifest.model_validate({
+    from agent.performer.tests.source_contract_fixture import current_manifest_fixture
+
+    return current_manifest_fixture({
         "capabilities_digest": capabilities.digest() if capabilities else None, "inventory_digest": inventory_digest,
         "schema_version": 1, "symphony_name": name, "source_commit": "a" * 40,
         "inputs": {path: hashlib.sha256(text.encode()).hexdigest() for path, text in files.items()},
@@ -147,7 +149,7 @@ def accepted_state(cache: Path, manifest: EnvironmentManifest, files: dict[str, 
     state = EnvCacheState(symphony_name=manifest.symphony_name, sanitised_name=manifest.symphony_name,
         cache_dir=cache, bootstrap_commit_sha=manifest.source_commit,
         environment_manifest=manifest.model_dump(), environment_assessment=current_review_fixture(manifest, assessment.model_dump()),
-        environment_execution_source=identity.model_dump(),
+        environment_execution_source=identity.model_dump(), environment_capabilities=capabilities.model_dump(),
         rendered_activate_sh=activation, rendered_verify_sh=verification)
 
     async def fetch(org, repo, path, *, ref):

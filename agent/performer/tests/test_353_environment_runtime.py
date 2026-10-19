@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
-from coordinare_service_inference.environment.models import EnvironmentManifest
 from coordinare_service_inference.environment.runtime import RuntimeArtifactReceipt, RuntimeSpec
 from coordinare_service_inference.environment.runtime_supervisor import RuntimeCleanupReport
 from performer import environment_runtime
@@ -31,7 +30,9 @@ def private_score(tmp_path):
                      'firmware_sha256': 'd'*64, 'configuration_sha256': 'e'*64},
         'resources': {'cpus': 2, 'memory_mib': 4096, 'cache_bytes': 8*1024**3,
                       'scratch_bytes': 16*1024**3, 'reserve_bytes': 16*1024**3, 'max_seconds': 1800}}})
-    manifest = EnvironmentManifest.model_validate({**score.environment_manifest, 'schema_version': 2,
+    from .source_contract_fixture import current_manifest_fixture
+
+    manifest = current_manifest_fixture({**score.environment_manifest, 'schema_version': 2,
         'policy_version': '353-v2', 'runtime': spec.model_dump(), 'install': [], 'services': [],
         'activation': {'path': [], 'env': {}}, 'checks': [{'id': 'check', 'argv': [sys.executable, '-c',
         'import os;assert os.environ["DOCKER_HOST"] == "ssh://private-fixture"']}]})

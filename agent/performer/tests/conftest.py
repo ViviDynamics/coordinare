@@ -156,9 +156,9 @@ def _docker_logs(container_id: str) -> str:
 @pytest.fixture
 def reviewed_environment_metadata():
     """Accepted source-bound pair for transport/provenance regression fixtures."""
-    from coordinare_service_inference.environment.models import EnvironmentManifest
+    from .source_contract_fixture import current_manifest_fixture
 
-    manifest = EnvironmentManifest.model_validate({
+    manifest = current_manifest_fixture({
         "inventory_digest": "d" * 64, "capabilities_digest": "c" * 64,
         "schema_version": 1, "symphony_name": "sym", "source_commit": "a" * 40,
         "inputs": {"tools.plan": "a" * 64}, "requirements": [], "install": [],
