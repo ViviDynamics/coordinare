@@ -26,7 +26,10 @@ from .runtime_guest import cloud_configuration, qemu_arguments
 from .runtime_io import RuntimeIOStoppedError as RuntimeScanStoppedError
 from .runtime_io import digest_file as _digest
 from .runtime_io import run_io, settle
+from .runtime_network import require_isolated_outer_network
 from .runtime_resources import require_runtime_resources
+
+RuntimePurpose = Literal['installer', 'consumer', 'live_consumer', 'preflight']
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -136,6 +139,7 @@ class RuntimeLease:
     clean_shutdown: bool = False
     cleanup: RuntimeCleanupReport | None = None
     close_task: asyncio.Task[RuntimeCleanupReport] | None = None
+    purpose: RuntimePurpose = 'consumer'
 
     @property
     def identity(self) -> RuntimeIdentity:
@@ -244,7 +248,7 @@ def _verify_receipt(spec: RuntimeSpec, receipt: RuntimeArtifactReceipt | None,
 
 
 def _admit(spec: RuntimeSpec, *, repo: Path, cache: Path, scratch: Path, readonly: bool,
-           deadline: float, stop: Event | None = None) -> RuntimeBundleInputs:
+           deadline: float, stop: Event | None = None, isolated: bool = True) -> RuntimeBundleInputs:
     actual = platform.system().lower() + '/' + platform.machine().lower()
     if actual != spec.policy.identity.carrier_platform or platform.system() != 'Linux':
         raise ValueError('private runtime carrier platform differs')
@@ -266,9 +270,8 @@ def _admit(spec: RuntimeSpec, *, repo: Path, cache: Path, scratch: Path, readonl
     if readonly:
         if not os.statvfs(cache).f_flag & os.ST_RDONLY:
             raise ValueError('private runtime consumer cache must be mounted read-only')
-        from .runtime_network import require_isolated_outer_network
-
-        require_isolated_outer_network()
+        if isolated:
+            require_isolated_outer_network()
     if shutil.disk_usage(scratch).free < spec.policy.resources.scratch_bytes + spec.policy.resources.reserve_bytes + (0 if readonly else spec.policy.resources.cache_bytes):
         raise ValueError('private runtime storage capacity unavailable')
     for port in [spec.policy.control_port, *(endpoint.outer_port for endpoint in spec.endpoints)]:
@@ -305,15 +308,17 @@ async def _prepare_control(lease: RuntimeLease, *, repo: Path) -> list[str]:
 async def open_runtime(spec: RuntimeSpec, *, artifacts: RuntimeArtifactReceipt | None,
                        repo: Path, cache: Path, scratch: Path, install: bool, deadline: float,
                        manifest_digest: str | None = None, source_digest: str | None = None,
-                       purpose: Literal['installer', 'consumer', 'preflight'] | None = None) -> RuntimeLease:
+                       purpose: RuntimePurpose | None = None) -> RuntimeLease:
     """Create only an owned guest after all source-independent admission checks."""
     deadline = min(deadline, time.monotonic()+spec.policy.resources.max_seconds)
     _remaining(deadline)
     purpose = purpose or ('installer' if install else 'consumer')
-    if (purpose == 'installer') != install or (purpose == 'preflight' and artifacts is not None):
+    if (purpose not in {'installer', 'consumer', 'live_consumer', 'preflight'}
+            or (purpose == 'installer') != install or (purpose == 'preflight' and artifacts is not None)):
         raise ValueError('private runtime purpose differs from artifact policy')
-    receipt = _verify_receipt(spec, artifacts, manifest_digest, source_digest) if purpose == 'consumer' else None
-    bundle = await run_io(partial(_admit, spec, repo=repo, cache=cache, scratch=scratch, readonly=not install),
+    receipt = _verify_receipt(spec, artifacts, manifest_digest, source_digest) if purpose in {'consumer', 'live_consumer'} else None
+    bundle = await run_io(partial(_admit, spec, repo=repo, cache=cache, scratch=scratch, readonly=not install,
+                                  isolated=purpose != 'live_consumer'),
                           deadline=deadline)
     initial = {Path(bundle.guest_image): spec.policy.identity.guest_base_sha256,
                Path(bundle.emulator).resolve(): spec.policy.identity.emulator_sha256,
@@ -328,7 +333,7 @@ async def open_runtime(spec: RuntimeSpec, *, artifacts: RuntimeArtifactReceipt |
     work = Path(tempfile.mkdtemp(prefix='coordinare-runtime-', dir=scratch.parent))
     lease = RuntimeLease(spec, bundle, uuid.uuid4().hex, work, cache, scratch,
                          deadline, install,
-                         manifest_digest, source_digest, {}, initial_artifacts=initial)
+                         manifest_digest, source_digest, {}, initial_artifacts=initial, purpose=purpose)
     lease.activation_env = {'DOCKER_HOST': f'ssh://root@127.0.0.1:{spec.policy.control_port}',
                             'DOCKER_CONFIG': str(work/'docker'), 'DOCKER_CONTEXT': '',
                             'COORDINARE_ENV_RUNTIME_BIN': str(work/'bin'),
