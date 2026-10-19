@@ -125,3 +125,59 @@ async def test_transport_instruction_follows_logical_schema_without_mutating_mes
     reply = await backend.chat_json_with_metadata(messages, response_schema=response_schema('source_tool'))
     assert reply.error_code is None
     assert messages == original_messages
+
+
+@pytest.mark.asyncio
+async def test_reviewed_scope_mapping_schema_requires_exact_ids_in_every_transport():
+    import copy
+
+    from coordinare_service_inference.environment.models import EnvironmentManifestProposal
+    from coordinare_service_inference.environment.scope import ScopeContract
+
+    from coordinare.services.environment_function_wire import decode_function, functions
+    from coordinare.services.environment_response_schema import response_schema
+    from coordinare.services.environment_structured_wire import decode_wire, wire_schema
+    from tests.unit.test_353_scope_mapping import mapped_manifest
+
+    data, identifier = await mapped_manifest()
+    scope = ScopeContract.model_validate(data['scope_contract'])
+    proposal = EnvironmentManifestProposal.model_validate({
+        key: value for key, value in data.items() if key in EnvironmentManifestProposal.model_fields
+    }).model_dump(mode='json')
+    logical = {'manifest': proposal, 'finding_responses': []}
+    schema = response_schema('manifest', scope_contract=scope, allow_patch=True)
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.validate(logical, schema)
+    for mapping in [None, {}, {identifier: []}, {identifier: ['operational'], 'invented': ['operational']}]:
+        malformed = copy.deepcopy(logical)
+        if mapping is None:
+            malformed['manifest'].pop('criterion_checks')
+        else:
+            malformed['manifest']['criterion_checks'] = mapping
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(malformed, schema)
+
+    declarations = {item['function']['name']: item['function'] for item in functions(schema)}
+    arguments = {**proposal, 'finding_responses': []}
+    parameters = declarations['submit_environment_manifest']['parameters']
+    jsonschema.validate(arguments, parameters)
+    missing = copy.deepcopy(arguments)
+    missing.pop('criterion_checks')
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing, parameters)
+    message = {'content': None, 'tool_calls': [{'type': 'function', 'function': {
+        'name': 'submit_environment_manifest', 'arguments': json.dumps(arguments),
+    }}]}
+    assert json.loads(decode_function(json.dumps(message), schema)) == logical
+
+    encoded = copy.deepcopy(logical)
+    encoded['manifest']['activation']['env'] = []
+    for check in encoded['manifest']['checks']:
+        check['env'] = []
+    wire = {'response': encoded}
+    jsonschema.validate(wire, wire_schema(schema))
+    assert json.loads(decode_wire(json.dumps(wire), schema)) == logical
+    # Binding one request must not alter schemas for unrelated/unscoped callers.
+    generic = response_schema('manifest')
+    assert 'criterion_checks' not in generic['$defs']['EnvironmentManifestProposal']['required']
+    assert response_schema('assessment', scope_contract=scope) == response_schema('assessment')

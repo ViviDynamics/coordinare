@@ -162,3 +162,26 @@ those trusted IDs. No decision, verdict, source citation or approval is filled i
 by the daemon. Saved malformed replies remain rejected and ledgers unchanged.
 Regression cases cover both one and eight retained findings. No budgets or
 readiness conditions change in this correction.
+
+
+### Executable-preflight follow-up: align the advertised mapping schema
+
+The fresh `decision-feedback-elm60m-low` run on `46a31cc7` completed six
+isolated read-only capability probes with confirmed cleanup. Independent source
+review accepted 19 criteria; executable manifest review was never reached.
+The run held after 1767.68 seconds with 1832.4 seconds remaining: a manifest
+omitted `criterion_checks`, and its correction supplied malformed nested JSON.
+The original two schema repairs were exhausted; no installer or clean consumer
+ran. The user-directed probe allowance was exercised without a batch timeout.
+
+Local acceptance already requires the exact required-criterion mapping, but the
+provider schema advertised that field as optional. Bind that existing requirement
+to each manifest request's reviewed scope: require the mapping and every required
+criterion ID, with nonempty check lists and no invented criterion keys. Continue
+using normal local admission, independent executable coverage review and every
+required clean check. Never fill a mapping, salvage invalid JSON, alter budgets,
+or change the source obligations. Unscoped legacy schemas and other phases keep
+their existing contracts. Verify the real production request boundary plus both
+structured transport representations, then preflight and CI before a fresh Elm
+attempt. This aligns representation with the approved contract; it does not
+establish that the model will comply or that Elm bootstraps successfully.
