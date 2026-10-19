@@ -325,3 +325,30 @@ def test_repair_schemas_offer_complete_declarations_to_both_structured_transport
         jsonschema.validate({"tool": "repair_proposal", "changes": [
             {"path": [phase], "value_json": "{}"} for _ in range(17)
         ]}, schema)
+
+
+@pytest.mark.asyncio
+async def test_repair_feedback_path_can_be_applied_directly_to_complete_declaration():
+    from tests.unit.test_351_environment_discovery import PATH
+
+    invalid = candidate()
+    invalid['checks'][0]['env'] = {'DATABASE_URL': 'postgresql://dev:fixture-placeholder@localhost/dev'}
+
+    class FeedbackRepair(Replies):
+        async def __call__(self, messages):
+            if len(self.messages) == 2:
+                feedback = json.loads(messages[-1]['content'])
+                error = feedback['validation_errors'][0]
+                path = error.get('correction_path', error['location'])
+                assert path == ['manifest', 'checks', 0, 'env']
+                self.messages.append(copy.deepcopy(messages))
+                return json.dumps({'tool': 'repair_proposal', 'changes': [
+                    {'path': path, 'value_json': '{}'}]})
+            return await super().__call__(messages)
+
+    replies = FeedbackRepair([{'tool': 'read_file', 'path': PATH}, {'manifest': invalid},
+        {'tool': 'read_file', 'path': PATH}, assessment(candidate())])
+    budget = AttemptBudget()
+    manifest, accepted = await run(replies, budget=budget)
+    assert manifest.checks[0].env == {}
+    assert accepted.manifest_digest == manifest.digest() and budget.schema_repairs == 1

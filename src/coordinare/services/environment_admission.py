@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 from coordinare.services.environment_discovery_prompts import correction_instruction
-from coordinare.services.environment_proposal_patch import PATCH_INSTRUCTION
+from coordinare.services.environment_proposal_patch import MAX_PATH_DEPTH, PATCH_INSTRUCTION
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -106,12 +106,21 @@ def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any
         for error in errors:
             if error['code'] == 'review_findings_invalid' and error['location'] == ['scope_assessment', 'decisions']:
                 error['required_decision_ids'] = [record.id for record in budget.scope_findings.records]
+    if can_patch and budget.expected_envelope in {'manifest', 'assessment'}:
+        for error in errors:
+            location = error['location']
+            if location and '*' not in location:
+                root = budget.expected_envelope
+                path = location if location[0] in {'manifest', 'finding_responses', 'assessment'} else [root, *location]
+                if len(path) <= MAX_PATH_DEPTH:
+                    error['correction_path'] = path
     budget.validation_codes.extend(error["code"] for error in errors)
     budget.reserve_repair("schema")
     messages.extend([{"role": "assistant", "content": raw},
                      {"role": "user", "content": _json({"validation_errors": errors,
                         "expected_envelope": budget.expected_envelope,
                         "instruction": (PATCH_INSTRUCTION if can_patch else correction_instruction(budget.expected_envelope)) +
+                        "When supplied, copy correction_path exactly into the patch path; location is a diagnostic field path. "
                         "Preserve every required obligation and inspected input. "
                         "Never rename or remove existing required requirement/check/service IDs; revise their definitions in place. "
                         "Use list_files for directories and read_files only for exact file paths from listings. " +
