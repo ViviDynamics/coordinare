@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Literal
 
 from .runtime import RuntimeArtifactReceipt, RuntimeIdentity, RuntimeSpec
 from .runtime_bundle import BUNDLE_PATH, RuntimeBundleInputs, inspect_bundle, read_bundle
+from .runtime_cleanup import remove_control_material, remove_owned_tree
 from .runtime_guest import cloud_configuration, qemu_arguments
 from .runtime_io import RuntimeIOStoppedError as RuntimeScanStoppedError
 from .runtime_io import digest_file as _digest
@@ -216,8 +217,15 @@ class RuntimeLease:
                     with contextlib.suppress(OSError, ValueError):
                         unchanged = await run_io(self._artifacts_unchanged, deadline=cleanup_deadline)
                 finally:
-                    with contextlib.suppress(OSError):
-                        shutil.rmtree(self.work_root)
+                    try:
+                        try:
+                            await run_io(partial(remove_owned_tree, self.work_root), deadline=cleanup_deadline)
+                        except (OSError, RuntimeError, ValueError):
+                            respected = False
+                    finally:
+                        remove_control_material(self.work_root)
+                        if time.monotonic() >= cleanup_deadline:
+                            respected = False
                     absent = True
                     for port in [self.spec.policy.control_port, *(endpoint.outer_port for endpoint in self.spec.endpoints)]:
                         with socket.socket() as listener:
