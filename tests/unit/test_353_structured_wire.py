@@ -147,3 +147,26 @@ def test_revision_rejects_full_scope_function_and_redacts_unknown_fields():
     instruction = correction_instruction('scope_revision')
     assert 'base_digest' in instruction and 'scope_revision' in instruction
     assert 'complete scope' in instruction and 'commands' in instruction
+
+
+@pytest.mark.parametrize(('raw', 'code'), [
+    ('{"scope":{"criteria":[]},"scope":"whole_documented_development_test_environment","finding_responses":[]}', 'duplicate_json_key'),
+    ('{"scope_revision":{"base_digest":"'+'a'*64+'","add":[],"reassess":[]},"finding_responses":[],"scope_definition":{}}', 'extra_forbidden'),
+])
+def test_saved_elm_failure_shapes_remain_held(raw, code):
+    from coordinare_service_inference.environment.scope_revision import ScopeRevisionEnvelope
+    from pydantic import ValidationError
+
+    from coordinare.services.environment_admission import _decode_reply, _validation_feedback
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+    from coordinare.services.environment_discovery import DiscoveryLimits
+
+    try:
+        data = _decode_reply(raw, 'scope_revision', DiscoveryLimits())
+        ScopeRevisionEnvelope.model_validate(data)
+    except EnvironmentDiscoveryError as exc:
+        assert exc.code == code
+    except ValidationError as exc:
+        assert code in [error['code'] for error in _validation_feedback(exc)]
+    else:
+        pytest.fail('Malformed saved Elm response must never become an accepted revision')
