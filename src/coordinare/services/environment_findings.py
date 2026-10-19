@@ -1,6 +1,7 @@
 """Daemon-owned transitions for independently adjudicated coverage findings."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, NoReturn
 
 from coordinare_service_inference.environment.findings import (
@@ -59,13 +60,27 @@ def validate_finding_responses(responses: list[FindingResponse], *, ledger: Find
 
 def apply_finding_review(ledger: FindingLedger, *, manifest: EnvironmentManifest,
                          proposal: CoverageAssessmentProposal, reviewer_inputs: Mapping[str, str]) -> FindingLedger:
+    return apply_evidence_review(ledger, subject=ReviewSubject(manifest.source_commit, manifest.digest(), _ids(manifest)),
+        proposal=proposal, reviewer_inputs=reviewer_inputs)
+
+
+@dataclass(frozen=True)
+class ReviewSubject:
+    source_commit: str
+    digest: str
+    obligation_ids: set[str]
+
+
+def apply_evidence_review(ledger: FindingLedger, *, subject: ReviewSubject, proposal: CoverageAssessmentProposal,
+                          reviewer_inputs: Mapping[str, str]) -> FindingLedger:
     """Produce a new checked ledger; never mutate history during model correction."""
-    if ledger.source_commit != manifest.source_commit:
+    source_commit, subject_digest, obligation_ids = subject.source_commit, subject.digest, subject.obligation_ids
+    if ledger.source_commit != source_commit:
         refuse_finding('finding source identity changed', code='source_identity')
     for finding in proposal.findings:
         if not set(finding.sources) <= reviewer_inputs.keys():
             refuse_finding('finding cites unread evidence', code='review_citations_invalid')
-        if not set(finding.affected_ids) <= _ids(manifest):
+        if not set(finding.affected_ids) <= obligation_ids:
             refuse_finding('finding refers to unknown manifest obligation', code='review_findings_invalid')
     for decision in proposal.decisions:
         if not set(decision.sources) <= reviewer_inputs.keys():
@@ -75,12 +90,12 @@ def apply_finding_review(ledger: FindingLedger, *, manifest: EnvironmentManifest
     for finding in proposal.findings:
         fid = f'F{len(records)+1:04}'
         added_ids.append(fid)
-        records.append(FindingRecord(id=fid, proposal=finding, manifest_digest=manifest.digest(),
-            source_commit=manifest.source_commit, inputs={path: reviewer_inputs[path] for path in finding.sources}))
+        records.append(FindingRecord(id=fid, proposal=finding, manifest_digest=subject_digest,
+            source_commit=source_commit, inputs={path: reviewer_inputs[path] for path in finding.sources}))
     try:
         result = FindingLedger(source_commit=ledger.source_commit, records=records,
             reviews=[*ledger.reviews, FindingReview(sequence=len(ledger.reviews)+1,
-                manifest_digest=manifest.digest(), inputs=dict(reviewer_inputs), decisions=proposal.decisions,
+                manifest_digest=subject_digest, inputs=dict(reviewer_inputs), decisions=proposal.decisions,
                 added_ids=added_ids)])
     except ValidationError as exc:
         # Growth beyond trusted aggregate bounds is terminal; malformed model

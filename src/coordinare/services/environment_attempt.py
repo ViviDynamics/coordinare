@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
     from coordinare_service_inference.environment.findings import FindingLedger
     from coordinare_service_inference.environment.models import EnvironmentManifest
+    from coordinare_service_inference.environment.scope import ScopeContract, ScopeDefinition
 
 
 MAX_ATTEMPT_SECONDS = 3600
@@ -62,7 +63,7 @@ class AttemptBudget:
     mandatory_inputs_delivered: int = 0
     inspected_bytes: int = 0
     context_bytes: int = 0
-    expected_envelope: Literal["source_tool", "probe", "manifest", "assessment"] = "manifest"
+    expected_envelope: Literal["source_tool", "probe", "manifest", "assessment", "scope", "scope_assessment"] = "manifest"
     stage: str = "inventory"
     outcome: str = "held"
     error_code: str | None = None
@@ -71,6 +72,11 @@ class AttemptBudget:
     metadata_available: bool = False
     validation_codes: list[str] = field(default_factory=list)
     finding_ledger: FindingLedger | None = field(default=None, repr=False)
+    scope_inputs: dict[str, str] = field(default_factory=dict, repr=False)
+    scope_responses: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    scope_definition: ScopeDefinition | None = field(default=None, repr=False)
+    scope_contract: ScopeContract | None = field(default=None, repr=False)
+    scope_findings: FindingLedger | None = field(default=None, repr=False)
     coverage_manifest: EnvironmentManifest | None = field(default=None, repr=False)
     executed_manifests: list[EnvironmentManifest] = field(default_factory=list, repr=False)
     execution_review_evidence: list[dict[str, Any]] = field(default_factory=list, repr=False)
@@ -158,7 +164,10 @@ class AttemptBudget:
 
     def summary(self) -> dict[str, Any]:
         """Only trusted stages/codes, counters and allowlisted provider metadata escape."""
-        return {**finding_summary(self.finding_ledger), "stage": self.stage, "outcome": self.outcome, "error_code": self.error_code,
+        return {**finding_summary(self.finding_ledger),
+                "scope_criterion_count": len(self.scope_definition.criteria) if self.scope_definition is not None else 0,
+                "scope_review_count": len(self.scope_findings.reviews) if self.scope_findings is not None else 0,
+                "scope_contract_digest": self.scope_contract.digest() if self.scope_contract is not None else None, "stage": self.stage, "outcome": self.outcome, "error_code": self.error_code,
                 "elapsed_seconds": round(time.monotonic() - self.started, 3),
                 "probe_batches": self.probe_batches, "max_probe_batches": MAX_PROBE_BATCHES, "calls": self.calls, "calls_completed": self.calls_completed, "reads": self.reads,
                 "repairs": self.repairs, **{name: getattr(self, name) for counter in REPAIR_COUNTERS.values()

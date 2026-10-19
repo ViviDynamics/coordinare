@@ -22,8 +22,10 @@ MAX_BATCH_FILES = 8
 class SourceInspection:
     """One independent phase's exact read ledger; no ecosystem-specific navigation."""
 
-    def __init__(self, paths: Sequence[str], fetch: Fetch, limits: DiscoveryLimits, budget: AttemptBudget | None = None) -> None:
+    def __init__(self, paths: Sequence[str], fetch: Fetch, limits: DiscoveryLimits, budget: AttemptBudget | None = None,
+                 *, retained_inputs: dict[str, str] | None = None) -> None:
         self.budget = budget
+        self.retained_inputs = retained_inputs
         self.name = "discovery"
         self.paths = sorted(paths)
         self.inventory = set(paths)
@@ -91,6 +93,11 @@ class SourceInspection:
         if path in self.inputs and self.inputs[path] != digest:
             message = f"{self.name} source snapshot changed during inspection"
             raise EnvironmentDiscoveryError(message)
+        if self.retained_inputs is not None:
+            if self.retained_inputs.get(path, digest) != digest:
+                message = 'retained source evidence changed'
+                raise EnvironmentDiscoveryError(message, code='source_identity')
+            self.retained_inputs[path] = digest
         self.inputs[path] = digest
         self.source_files[path] = content
         return {"path": path, "content": content, "sha256": digest}
@@ -116,6 +123,8 @@ class SourceInspection:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if self.retained_inputs is not None and self.budget is not None:
+                await self.budget.flush()
 
     async def read(self, path: Any) -> dict[str, str]:
         return (await self.read_files([path]))["files"][0]
