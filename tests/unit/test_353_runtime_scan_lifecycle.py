@@ -163,4 +163,5 @@ def test_unreadable_subtree_is_unknown_instead_of_zero(tmp_path, monkeypatch) ->
 
     monkeypatch.setattr(supervisor.os, 'scandir', denied_scan)
     with pytest.raises(PermissionError):
-        supervisor._allocated(tmp_path, deadline=time.monotonic()+1, stop=None, limit=1024)
+        supervisor._allocated(tmp_path, deadline=time.monotonic()+1, stop=None,
+                              limit=blocked.stat().st_blocks*512 + 1024)
