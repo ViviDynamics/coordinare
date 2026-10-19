@@ -69,7 +69,10 @@ def test_executed_required_definition_cannot_be_weakened(field, value):
     previous = contract()
     data = previous.model_dump()
     data["checks"][0][field] = value
-    changed = EnvironmentManifest.model_validate(data)
+    # Exercise the frozen-command guard directly even when schema admission
+    # would already reject requiredness/scope weakening.
+    changed = previous.model_copy(deep=True)
+    changed.checks[0] = changed.checks[0].model_copy(update={field: value})
     with pytest.raises(EnvironmentDiscoveryError) as exc:
         preserve_execution_obligations(changed, history(previous))
     assert exc.value.code == "obligation_removed"
@@ -240,7 +243,9 @@ async def test_discovery_rejects_waiver_before_fresh_review(tmp_path):
     from tests.unit.test_353_execution_repair import cache_fixture, failed_report, started
 
     cache = cache_fixture(tmp_path)
-    original = EnvironmentManifest.model_validate(
+    from agent.performer.tests.source_contract_fixture import current_manifest_fixture
+
+    original = current_manifest_fixture(
         {
             **cache.environment_manifest,
             "inventory_digest": hashlib.sha256(b'["tools.plan"]').hexdigest(),

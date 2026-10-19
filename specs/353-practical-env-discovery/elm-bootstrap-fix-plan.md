@@ -104,9 +104,9 @@ Paths below rooted at `packages/service_inference/src/coordinare_service_inferen
 
 **Interfaces:** Existing `execution_report`, `saved_execution_accepted`, `accepted_manifest` and dispatch gates validate the new manifest/scope/runtime versions and identities. Reuse the full binary execution-source provider/transport; inspected text is not sufficient execution source. Reports retain every required result and consistent exit code.
 
-- [ ] Write red tests for missing/failed/unrun/unknown checks or service actions, failed stop, wrong scope/runtime/image/platform/source and missing closure. Old accepted records lacking new scope/runtime policy cannot become ready through defaults.
-- [ ] Test roundtrip restart at scope review, runtime setup and project execution: same original deadline/counters; cleanup uncertainty holds. After execution, all existing required commands, including unrun ones, remain frozen across repairs.
-- [ ] Implement bindings/migration without unrelated refactors. Retain full-source identity, executable bits and admitted symlinks through guest exports. All model/runtime credential values use existing reference and redaction policy.
+- [x] Write red tests for missing/failed/unrun/unknown checks or service actions, failed stop, wrong scope/runtime/image/platform/source and missing closure. Old accepted records lacking new scope/runtime policy cannot become ready through defaults.
+- [x] Test roundtrip restart at scope review, runtime setup and project execution: same original deadline/counters; cleanup uncertainty holds. After execution, all existing required commands, including unrun ones, remain frozen across repairs.
+- [x] Implement bindings/migration without unrelated refactors. Retain full-source identity, executable bits and admitted symlinks through guest exports. All model/runtime credential values use existing reference and redaction policy.
 - [ ] Run `.venv/bin/pytest -q tests/unit/test_353_scope_runtime_acceptance.py agent/performer/tests/test_351_environment_contract.py` and the relevant existing provenance/repair/runner suites. Expected: every negative holds and complete synthetic installer/consumer identity roundtrip passes. Commit, preflight and obtain independent adversarial review before live Elm.
 
 ### Task 7: Prove Elm, then finish the requested repository validation and shipping

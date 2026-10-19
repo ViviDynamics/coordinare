@@ -149,7 +149,8 @@ def test_clean_report_requires_service_lifecycle_evidence(tmp_path: Path) -> Non
         "health": {"id": "health", "argv": ["true"]}, "stop": {"id": "stop", "argv": ["true"]}}])
     cache = EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=tmp_path,
         bootstrap_commit_sha="a" * 40, environment_manifest=metadata["environment_manifest"],
-        environment_assessment=metadata["environment_assessment"])
+        environment_assessment=metadata["environment_assessment"],
+        environment_capabilities=metadata["environment_capabilities"])
     digest = metadata["environment_manifest_digest"]
     report = {"manifest_digest": digest, "platform": "linux/arm64", "results": [{"id": "baseline", "status": "pass",
         "required": True, "exit_code": 0, "manifest_digest": digest}]}

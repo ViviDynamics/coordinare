@@ -9,7 +9,7 @@ from performer import main
 from performer.models import Score, Stand
 from performer.workflows.bootstrap_environment import BootstrapEnvironment
 
-from .source_contract_fixture import bind_checkout_contract, current_review_fixture
+from .source_contract_fixture import bind_checkout_contract, current_manifest_fixture, current_review_fixture
 
 
 def test_bootstrap_admission_rejects_missing_review(tmp_path):
@@ -161,11 +161,11 @@ async def test_consumer_activation_uses_manifest_without_ruby_inference(tmp_path
 
 @pytest.mark.asyncio
 async def test_frozen_artifacts_cannot_be_modified_by_install(tmp_path):
-    from coordinare_service_inference.environment.models import EnvironmentManifest
 
     score = contract_score(tmp_path)
     score.environment_manifest["install"][0]["argv"] = ["python3", "-c", "from pathlib import Path; Path('verify.sh').write_text('forged')"]
-    manifest = EnvironmentManifest.model_validate(score.environment_manifest)
+    manifest = current_manifest_fixture(score.environment_manifest)
+    score.environment_manifest = manifest.model_dump()
     score.environment_manifest_digest = manifest.digest()
     score.environment_assessment["manifest_digest"] = manifest.digest()
     score.environment_assessment = current_review_fixture(manifest, score.environment_assessment)
@@ -311,7 +311,6 @@ async def test_failed_consumer_preflight_removes_clone(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_consumer_holds_declared_service_until_job_cleanup(tmp_path):
-    from coordinare_service_inference.environment.models import EnvironmentManifest
 
     from performer.environment_contract import close_environment, prepare_environment
 
@@ -324,7 +323,8 @@ async def test_consumer_holds_declared_service_until_job_cleanup(tmp_path):
     score.environment_manifest["services"] = [{"id": "unfamiliar", "start": {"id": "start", "argv": ["touch", str(marker)]},
         "health": {"id": "health", "argv": ["test", "-f", str(marker)]},
         "stop": {"id": "stop", "argv": ["rm", "-f", str(marker)]}}]
-    manifest = EnvironmentManifest.model_validate(score.environment_manifest)
+    manifest = current_manifest_fixture(score.environment_manifest)
+    score.environment_manifest = manifest.model_dump()
     score.environment_manifest_digest = manifest.digest()
     score.environment_assessment["manifest_digest"] = manifest.digest()
     score.environment_assessment = current_review_fixture(manifest, score.environment_assessment)
@@ -349,7 +349,6 @@ def test_invalid_contract_error_does_not_expose_manifest_values(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["implementing", "env_bootstrap"])
 async def test_required_scoped_failure_cannot_hide_behind_baseline(tmp_path, role):
-    from coordinare_service_inference.environment.models import EnvironmentManifest
 
     from performer.environment_contract import execute_contract
 
@@ -358,7 +357,8 @@ async def test_required_scoped_failure_cannot_hide_behind_baseline(tmp_path, rol
     score.environment_manifest["checks"] = [
         {"id": "baseline", "argv": ["true"]},
         {"id": "scoped-failure", "argv": ["false"], "scope": ["implementing"]}]
-    manifest = EnvironmentManifest.model_validate(score.environment_manifest)
+    manifest = current_manifest_fixture(score.environment_manifest)
+    score.environment_manifest = manifest.model_dump()
     score.environment_manifest_digest = manifest.digest()
     score.environment_assessment["manifest_digest"] = manifest.digest()
     score.environment_assessment = current_review_fixture(manifest, score.environment_assessment)
@@ -391,13 +391,13 @@ async def test_cancelled_proxy_setup_closes_consumer_lifecycle(tmp_path, monkeyp
 
 @pytest.mark.asyncio
 async def test_known_dispatch_secret_names_redact_unfamiliar_credentials(tmp_path, monkeypatch):
-    from coordinare_service_inference.environment.models import EnvironmentManifest
 
     from performer.environment_contract import execute_contract
 
     score = contract_score(tmp_path)
     score.environment_manifest["checks"] = [{"id": "print", "argv": ["python3", "-c", "import os; print(os.environ['FIXTURE_DSN'])"]}]
-    manifest = EnvironmentManifest.model_validate(score.environment_manifest)
+    manifest = current_manifest_fixture(score.environment_manifest)
+    score.environment_manifest = manifest.model_dump()
     score.environment_manifest_digest = manifest.digest()
     score.environment_assessment["manifest_digest"] = manifest.digest()
     score.environment_assessment = current_review_fixture(manifest, score.environment_assessment)

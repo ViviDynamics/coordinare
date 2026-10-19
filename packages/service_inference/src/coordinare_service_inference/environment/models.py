@@ -435,6 +435,9 @@ class CoverageAssessmentProposal(StrictModel):
 
 def validate_current_coverage(manifest: EnvironmentManifest, assessment: CoverageAssessment) -> None:
     """One policy gate shared by installer admission and persisted readiness."""
+    manifest = EnvironmentManifest.model_validate(manifest.model_dump(mode='json'))
+    if manifest.schema_version != 3 or manifest.policy_version != '353-scope-v1':
+        raise ValueError('current independent source scope requires refresh')
     review = CoverageAssessment.model_validate(assessment.model_dump(mode='json'))
     if (review.schema_version != 2 or review.policy_version != '353-findings-v1'
             or review.verdict != 'accept' or review.manifest_digest != manifest.digest()

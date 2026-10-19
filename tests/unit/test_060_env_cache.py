@@ -74,6 +74,7 @@ def _accept(cache_state: EnvCacheState, *, nonempty: bool = False) -> EnvCacheSt
 
     cache_state.bootstrap_commit_sha = cache_state.bootstrap_commit_sha or _head("same_sha")
     metadata = reviewed_metadata(source_commit=cache_state.bootstrap_commit_sha)
+    cache_state.environment_capabilities = metadata["environment_capabilities"]
     data = metadata["environment_manifest"]
     data["symphony_name"] = cache_state.symphony_name
     if nonempty:
