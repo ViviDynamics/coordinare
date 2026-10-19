@@ -449,7 +449,7 @@ async def test_scope_review_wire_cannot_adjudicate_findings_before_daemon_assign
 
 
 @pytest.mark.asyncio
-async def test_retained_scope_review_wire_requires_only_current_open_finding_ids():
+async def test_retained_scope_review_wire_requires_daemon_assigned_finding_ids():
     import jsonschema
     replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), objection(), revision(), closure()])
     await run(replies)
@@ -483,3 +483,40 @@ async def test_reassessed_response_feedback_exposes_current_ids_without_acceptin
     assert '[]' in feedback['guidance']
     assert budget.schema_repairs == 1 and len(result.finding_ledger.reviews) == 2
     assert result.definition.criteria[0].id == new_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('omit_resolved', [False, True])
+async def test_scope_review_readjudicates_resolved_findings_after_another_revision(omit_resolved):
+    """A later candidate must allow fresh decisions on every retained objection."""
+    import jsonschema
+
+    first = objection()
+    first['scope_assessment']['findings'].append({
+        'category': 'coverage', 'issue': 'Second required operation missing',
+        'sources': ['guide'], 'affected_ids': []})
+    resolved = closure()['scope_assessment']['decisions'][0]
+    partial = review('revise', decisions=[resolved, {**resolved, 'finding_id': 'F0002', 'status': 'open'}])
+    responses = [{'finding_id': fid, 'rationale': 'Source evidence retained',
+                  'sources': ['guide'], 'affected_ids': []} for fid in ['F0001', 'F0002']]
+    final = review(decisions=[resolved, {**resolved, 'finding_id': 'F0002'}])
+
+    def final_review(messages):
+        context = json.loads(messages[1]['content'])
+        assert context['required_decision_ids'] == ['F0001', 'F0002']
+        return final
+
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), first,
+        revision(responses=responses), partial, revision(responses=responses),
+        *([review(decisions=[{**resolved, 'finding_id': 'F0002'}])] if omit_resolved else []), final_review])
+    budget = AttemptBudget()
+    scope = await run(replies, budget=budget)
+    jsonschema.validate(final, replies.schemas[-1])
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(review(decisions=[{**resolved, 'finding_id': 'F0002'}]), replies.schemas[-1])
+    assert scope.finding_ledger.open_ids() == []
+    assert len(scope.finding_ledger.reviews) == 3
+    assert budget.coverage_revisions == 2 and budget.schema_repairs == int(omit_resolved)
+    if omit_resolved:
+        feedback = json.loads(replies.messages[-1][-1]['content'])['validation_errors'][0]
+        assert feedback['required_decision_ids'] == ['F0001', 'F0002']

@@ -85,7 +85,7 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                 exposed = 'source_tool' if not inspection.inputs else envelope
                 budget.expected_envelope = ('source_tool' if not inspection.inputs else
                                             envelope)
-                decision_ids = (budget.scope_findings.open_ids()
+                decision_ids = ([record.id for record in budget.scope_findings.records]
                     if exposed == 'scope_assessment' and budget.scope_findings is not None else None)
                 schema = response_schema(exposed, scope_decision_ids=decision_ids)
                 messages[0] = {'role': 'system', 'content': base_system +
@@ -128,8 +128,8 @@ def _validate_review(data: dict[str, Any], *, reviewer: SourceInspection, defini
                      ledger: FindingLedger, commit: str) -> tuple[ScopeAssessmentProposal, FindingLedger]:
     assessment = ScopeAssessmentEnvelope.model_validate(data).scope_assessment
     decisions = [decision.finding_id for decision in assessment.decisions]
-    if len(decisions) != len(set(decisions)) or not set(ledger.open_ids()) <= set(decisions):
-        message = 'every open finding requires an explicit decision'
+    if len(decisions) != len(set(decisions)) or set(decisions) != {record.id for record in ledger.records}:
+        message = 'every retained finding requires an explicit decision'
         raise FindingValidationError(message,
             code='review_findings_invalid', location=('scope_assessment', 'decisions'))
     for index, path in enumerate(assessment.sources):
@@ -150,6 +150,7 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
         'Independently review source-defined scope, not an executable candidate. You have no author conversation. '
         'Follow development/test entry points and nested references; independently check omissions and conflicts. '
         'Supply exactly one decision for every required_decision_ids entry with cited evidence; '
+        'Reassess previously resolved findings against the current scope too. '
         'When required_decision_ids is empty, decisions MUST be []; the daemon assigns IDs to new findings only after this review. '
         'new findings do not replace decisions on retained findings. Use only the decisions array, never alternate decision fields. '
         'accept requires no open or new findings; '
@@ -190,7 +191,7 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
                 'scope_base_digest': definition.digest() if definition else None,
                 'scope_definition': definition.model_dump(mode='json') if definition else None,
                 'mandatory_evidence': evidence, 'finding_ledger': ledger.model_dump(mode='json'),
-                **({'required_decision_ids': ledger.open_ids()} if review else {}),
+                **({'required_decision_ids': [record.id for record in ledger.records]} if review else {}),
                 'finding_responses': responses or []}).decode()}]
 
 
