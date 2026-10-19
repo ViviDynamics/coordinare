@@ -228,13 +228,14 @@ async def test_discovery_rejects_waiver_before_fresh_review(tmp_path):
     from agent.performer.tests.source_contract_fixture import current_review_fixture
     from coordinare_service_inference.environment.models import ExecutionCapabilities
 
-    from coordinare.services.environment_discovery import DiscoveryLimits, discover_and_review
+    from coordinare.services.environment_discovery import DiscoveryLimits
     from coordinare.services.environment_repair import (
         begin_attempt,
         prepare_repair,
         record_execution_failure,
     )
     from tests.unit.env_manifest_fixture import manifest_proposal
+    from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
     from tests.unit.test_353_discovery_repair import Replies
     from tests.unit.test_353_execution_repair import cache_fixture, failed_report, started
 

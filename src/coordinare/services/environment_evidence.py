@@ -1,7 +1,9 @@
 """Complete independent mandatory evidence delivery with bounded conversations."""
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from typing import TYPE_CHECKING
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
@@ -12,7 +14,7 @@ if TYPE_CHECKING:
     from coordinare.services.environment_inspection import SourceInspection
 
 
-async def prepare_mandatory_evidence(
+async def _prepare_mandatory_evidence(
     inspection: SourceInspection, expected_inputs: Mapping[str, str], *, phase: str,
 ) -> list[dict[str, str]]:
     budget = inspection.budget
@@ -46,3 +48,20 @@ def check_evidence_context(messages: list[dict[str, str]], *, max_bytes: int, ph
         message = f"complete {phase} context exceeds configured byte limit"
         raise EnvironmentDiscoveryError(message, code=f"{phase}_context_limit")
     return measured
+
+
+async def prepare_mandatory_evidence(
+    inspection: SourceInspection, expected_inputs: Mapping[str, str], *, phase: str,
+) -> list[dict[str, str]]:
+    """Evidence preparation cannot outlive its existing phase or attempt bound."""
+    budget = inspection.budget
+    deadline = min(time.monotonic()+inspection.limits.phase_timeout_seconds,
+                   budget.deadline if budget is not None else float('inf'))
+    try:
+        async with asyncio.timeout_at(deadline):
+            return await _prepare_mandatory_evidence(inspection, expected_inputs, phase=phase)
+    except TimeoutError:
+        if budget is not None:
+            budget.check()
+        message = f'{phase} evidence preparation deadline exceeded'
+        raise EnvironmentDiscoveryError(message, code=f'{phase}_preparation_deadline') from None

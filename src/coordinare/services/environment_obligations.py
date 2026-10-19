@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from coordinare_service_inference.environment.models import EnvironmentManifest, VerificationReport
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.environment_scope import preserve_scope
 
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import Command
@@ -113,6 +114,15 @@ def preserve_execution_obligations(manifest: EnvironmentManifest, history: objec
 
 def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentManifest) -> None:
     """A fresh judgment can add coverage, never waive a previously required obligation."""
+    if previous.scope_contract is not None:
+        if manifest.scope_contract is None:
+            message = 'required source scope removed during repair'
+            raise EnvironmentDiscoveryError(message, code='obligation_removed')
+        preserve_scope(previous.scope_contract.definition, manifest.scope_contract.definition)
+    if any(not set(ids) <= set(manifest.criterion_checks.get(identifier, []))
+           for identifier, ids in previous.criterion_checks.items()):
+        message = 'required source criterion coverage removed during repair'
+        raise EnvironmentDiscoveryError(message, code='obligation_removed')
     for group in ("requirements", "install", "checks", "services"):
         current = {item.id: item for item in getattr(manifest, group) if item.required}
         for old in getattr(previous, group):

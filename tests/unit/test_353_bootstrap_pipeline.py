@@ -20,6 +20,7 @@ from coordinare.models.env_cache import EnvCacheState
 from coordinare.services.env_cache import EnvCacheService, verify_env_cache_clean
 from coordinare.services.environment_acceptance import accepted_environment
 from tests.unit.env_manifest_fixture import manifest_proposal, review_proposal, reviewed_cache
+from tests.unit.scope_chat_fixture import ScopeChatFixture
 
 IMAGE = "trusted/pipeline@sha256:" + "a" * 64
 SOURCE = "Install a persistent payload containing ready; verify its contents in a fresh consumer."
@@ -119,7 +120,7 @@ async def publish(service, cache, state, capability, proposal):
         patch.setattr('coordinare.services.environment_probe_service.execute_environment_probe', probe_transport)
         await service._build_manifest_artifacts(performer_mounts=(cache.cache_dir.parent,), symphony_name="suite",
             repo="suite", github_org="org", github_service=github, readme_contents={}, current_sha="fingerprint",
-            cache_dir=cache.cache_dir, cache_mount_path=capability.cache_mount_path, llm_chat=proposal,
+            cache_dir=cache.cache_dir, cache_mount_path=capability.cache_mount_path, llm_chat=ScopeChatFixture(proposal, 'guide'),
             cache_state=cache, capabilities=capability)
 
 
@@ -330,7 +331,7 @@ async def test_inventory_change_queues_a_new_bootstrap_with_no_old_approval(tmp_
     async def dispatch(performer_id, payload):
         dispatched.append(payload)
 
-    await service.check_and_trigger("suite", symphony, github, state, dispatch, llm_chat=Proposal())
+    await service.check_and_trigger("suite", symphony, github, state, dispatch, llm_chat=ScopeChatFixture(Proposal(), 'guide'))
     assert len(dispatched) == 1
     assert cache.bootstrap_in_flight
     assert not cache.cache_dir_ready

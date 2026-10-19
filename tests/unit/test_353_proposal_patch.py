@@ -313,6 +313,7 @@ def test_repair_schemas_offer_complete_declarations_to_both_structured_transport
     encoded = copy.deepcopy(logical)
     if phase == "manifest":
         encoded["manifest"]["activation"]["env"] = []
+        encoded["manifest"]["criterion_checks"] = []
         for command in encoded["manifest"]["checks"]:
             command["env"] = []
     wire = {"response": encoded}

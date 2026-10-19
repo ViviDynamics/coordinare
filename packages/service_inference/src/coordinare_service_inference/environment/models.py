@@ -28,7 +28,14 @@ from .findings import (
     FindingProposal,
     validate_finding_ledger,
 )
-from .runtime import RUNTIME_OWNED_ENV, RuntimeArtifactReceipt, RuntimePolicy, RuntimeSpec
+from .runtime import (
+    RUNTIME_OWNED_ENV,
+    RuntimeArtifactReceipt,
+    RuntimeEndpoint,
+    RuntimePolicy,
+    RuntimeSpec,
+)
+from .scope import ScopeContract, validate_scope_mapping
 
 MAX_DOCUMENT_BYTES = 256 * 1024
 EXECUTION_PATH_PATTERN = r"^(?:/|\{(?:cache|repo|scratch)\}|\$\{[A-Za-z_][A-Za-z0-9_]*\})(?:[^\x00-\x1f\x7f\\]*)$"
@@ -208,7 +215,10 @@ class Service(StrictModel):
 
 
 class EnvironmentManifest(StrictModel):
-    schema_version: Literal[1, 2]
+    schema_version: Literal[1, 2, 3]
+    scope_contract: ScopeContract | None = None
+    scope_contract_digest: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
+    criterion_checks: dict[str, list[str]] = Field(default_factory=dict)
     runtime: RuntimeSpec | None = None
     symphony_name: str = Field(min_length=1)
     source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
@@ -221,13 +231,16 @@ class EnvironmentManifest(StrictModel):
     activation: Activation
     services: list[Service]
     empty_reason: str | None
-    policy_version: Literal["351-v1", "353-v2"]
+    policy_version: Literal["351-v1", "353-v2", "353-scope-v1"]
 
     @model_serializer(mode="wrap")
     def serialize_native_compatibly(self, handler: Any) -> dict[str, Any]:
         data: dict[str, Any] = handler(self)
         if self.schema_version == 1:
             data.pop("runtime", None)
+        if self.schema_version < 3:
+            for key in ('scope_contract', 'scope_contract_digest', 'criterion_checks'):
+                data.pop(key, None)
         return data
 
     @model_validator(mode="after")
@@ -236,6 +249,12 @@ class EnvironmentManifest(StrictModel):
             raise ValueError("native manifest cannot declare private runtime")
         if self.schema_version == 2 and (self.runtime is None or self.policy_version != "353-v2"):
             raise ValueError("current manifest requires explicit runtime contract")
+        if self.schema_version < 3 and (self.scope_contract is not None or self.scope_contract_digest is not None or self.criterion_checks):
+            raise ValueError('legacy manifest cannot carry reviewed scope')
+        if self.schema_version == 3:
+            if self.policy_version != '353-scope-v1' or self.scope_contract is None:
+                raise ValueError('current manifest requires independently reviewed source scope')
+            validate_scope_mapping(self.scope_contract, self)
         reject_nested_credentials(self.model_dump())
         if len(self.model_dump_json().encode()) > MAX_DOCUMENT_BYTES:
             raise ValueError("manifest exceeds 256 KiB")
@@ -393,6 +412,8 @@ class VerificationReport(StrictModel):
 class EnvironmentManifestProposal(StrictModel):
     """Model-owned behavior only; immutable provenance is assembled by the daemon."""
 
+    runtime_endpoints: list[RuntimeEndpoint] = Field(default_factory=list, max_length=32)
+    criterion_checks: dict[str, list[str]] = Field(default_factory=dict)
     requirements: list[Requirement]
     install: list[Command]
     checks: list[Command] = Field(min_length=1)

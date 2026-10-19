@@ -8,11 +8,8 @@ import json
 import pytest
 
 from coordinare.services.environment_attempt import AttemptBudget
-from coordinare.services.environment_discovery import (
-    DiscoveryLimits,
-    EnvironmentDiscoveryError,
-    discover_and_review,
-)
+from coordinare.services.environment_discovery import DiscoveryLimits, EnvironmentDiscoveryError
+from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
 from tests.unit.test_353_discovery_repair import (
     CAPABILITIES,
     COMMIT,
@@ -44,7 +41,7 @@ async def test_reviewer_receives_all_mandatory_contents_before_first_call():
     manifest, review = await discover_and_review(symphony_name='suite', commit=COMMIT, paths=list(files),
         capabilities=CAPABILITIES, fetch=fetch, chat=chat)
     assert len(review_calls) == 1
-    assert all(fetched.count(path) == 2 for path in files)
+    assert {path: fetched.count(path) for path in files} == {path: (8 if path == PATH else 5) for path in files}
     assert review.inputs == manifest.inputs
 
 
@@ -61,7 +58,7 @@ async def test_review_preparation_failure_never_requests_judgment(failure):
     async def fetch(path):
         nonlocal reads
         reads += 1
-        if reads == 2:
+        if reads == 5:
             if failure == 'missing':
                 return None
             if failure == 'drift':
@@ -79,8 +76,8 @@ async def test_review_preparation_failure_never_requests_judgment(failure):
             capabilities=CAPABILITIES, fetch=fetch, chat=chat, limits=limits, budget=budget)
     assert judgments == 0
     assert exc.value.code == {'missing':'review_evidence_unavailable', 'drift':'review_evidence_drift',
-        'context':'review_context_limit', 'checkpoint':'attempt_checkpoint_failed'}[failure]
-    assert reads == (1 if failure == 'checkpoint' else 2)
+        'context':'scope_author_context_limit', 'checkpoint':'attempt_checkpoint_failed'}[failure]
+    assert reads == (0 if failure == 'context' else 4 if failure == 'checkpoint' else 5)
 
 
 @pytest.mark.asyncio
@@ -99,20 +96,20 @@ async def test_revised_candidate_prefetches_expanded_input_set():
                 if len(review_starts) == 1:
                     return json.dumps({'tool':'read_file', 'path':'additional'})
             verdict = 'revise' if len(review_starts) == 1 else 'accept'
-            result = assessment(candidate(), verdict, retained=len(review_starts) > 1)
+            result = assessment(candidate(), verdict, retained=bool(context['finding_ledger']['records']))
             result['assessment']['sources'] = [PATH, 'additional']
             return json.dumps(result)
         if len(messages) == 2:
             return json.dumps({'tool':'read_file', 'path':PATH})
         if 'coverage_revision' in json.loads(messages[-1]['content']):
             return json.dumps({'tool':'read_file', 'path':'additional'})
-        return json.dumps({'manifest':candidate(), 'finding_responses': finding_responses() if review_starts else []})
+        return json.dumps({'manifest':candidate(), 'finding_responses': finding_responses() if context['finding_ledger']['records'] else []})
     _, review = await discover_and_review(symphony_name='suite', commit=COMMIT, paths=list(files),
         capabilities=CAPABILITIES, fetch=fetch, chat=chat)
     assert review_starts == [{PATH}, {PATH, 'additional'}]
     assert set(review.inputs) == set(files)
-    assert fetched.count(PATH) == 3
-    assert fetched.count('additional') == 3
+    assert fetched.count(PATH) == 9
+    assert fetched.count('additional') == 5
 
 
 @pytest.mark.asyncio
@@ -132,9 +129,9 @@ async def test_additional_review_reads_cannot_bypass_context_cap():
         await discover_and_review(symphony_name='suite', commit=COMMIT, paths=[PATH, 'additional'],
             capabilities=CAPABILITIES, fetch=fetch, chat=chat, budget=budget,
             limits=DiscoveryLimits(max_review_context_bytes=100000, max_file_bytes=400000))
-    assert exc.value.code == 'review_context_limit'
+    assert exc.value.code == 'scope_author_context_limit'
     assert review_calls == 1
-    assert budget.mandatory_inputs_delivered == 1
+    assert budget.mandatory_inputs_delivered == 2
 
 
 @pytest.mark.asyncio
@@ -202,7 +199,7 @@ async def test_preparation_phase_deadline_is_not_reported_as_aggregate_expiry():
     async def fetch(path):
         nonlocal reads
         reads += 1
-        if reads > 1:
+        if reads > 4:
             await asyncio.Event().wait()
         return SOURCE
     async def chat(messages):

@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
+
+if TYPE_CHECKING:
+    from .models import EnvironmentManifest
 
 from .findings import (
     Commit,
@@ -136,3 +140,29 @@ class ScopeAssessmentProposal(FindingEvidence):
 
 class ScopeAssessmentEnvelope(FindingEvidence):
     scope_assessment: ScopeAssessmentProposal
+
+
+def validate_scope_mapping(scope: ScopeContract, manifest: EnvironmentManifest) -> None:
+    """Bind every required criterion to real, required consumer checks."""
+    checked = ScopeContract.model_validate(scope.model_dump(mode='json'))
+    if (manifest.scope_contract_digest != checked.digest()
+            or manifest.source_commit != checked.definition.source_commit
+            or manifest.inventory_digest != checked.definition.inventory_digest
+            or any(manifest.inputs.get(path) != digest for path, digest in checked.all_inputs.items())):
+        raise PydanticCustomError('scope_identity_mismatch', 'reviewed scope identity differs from manifest')
+    commands = [*manifest.install, *manifest.checks]
+    for service in manifest.services:
+        lifecycle = [c for c in (service.init, service.start, service.health, service.stop) if c is not None]
+        if service.required and any(not c.required for c in lifecycle):
+            raise PydanticCustomError('scope_required_service', 'required service lifecycle cannot be optional')
+        commands.extend(lifecycle)
+    identifiers = [*(c.id for c in checked.definition.criteria), *(r.id for r in manifest.requirements),
+                   *(s.id for s in manifest.services), *(c.id for c in commands)]
+    if len(identifiers) != len(set(identifiers)):
+        raise PydanticCustomError('scope_id_collision', 'scope, obligation, service and command IDs must be unambiguous')
+    required = {c.id for c in checked.definition.criteria if c.applicability == 'required'}
+    checks = {c.id: c for c in manifest.checks}
+    if set(manifest.criterion_checks) != required or any(
+            not ids or len(ids) != len(set(ids)) or any(identifier not in checks or not checks[identifier].required
+                or checks[identifier].scope for identifier in ids) for ids in manifest.criterion_checks.values()):
+        raise PydanticCustomError('scope_required_check_mapping', 'every required scope criterion needs required unscoped consumer checks')

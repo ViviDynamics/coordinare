@@ -7,7 +7,7 @@ import json
 import pytest
 
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
-from coordinare.services.environment_discovery import discover_and_review
+from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
 from tests.unit.test_353_discovery_repair import (
     CAPABILITIES,
     COMMIT,
@@ -79,7 +79,7 @@ async def test_correcting_citations_can_read_additional_pinned_evidence():
     valid = assessment(candidate())
     valid['assessment']['sources'].append('other/evidence')
     replies = Replies([{'tool':'read_file', 'path':PATH}, {'manifest':candidate()},
-        invalid_review('accept'), {'tool':'read_file', 'path':'other/evidence'}, valid])
+        invalid_review('accept'), {'tool':'read_file', 'path':'other/evidence'}, {'manifest': candidate()}, valid])
     budget = AttemptBudget()
     _, review = await run(replies, budget=budget)
     assert set(review.sources) == {PATH, 'other/evidence'}
@@ -93,7 +93,7 @@ async def test_source_drift_during_review_stays_terminal_without_correction():
     async def fetch(path):
         nonlocal reads
         reads += 1
-        return SOURCE if reads <= 2 else SOURCE + ' changed'
+        return SOURCE if reads <= 5 else SOURCE + ' changed'
     replies = Replies([{'tool':'read_file', 'path':PATH}, {'manifest':candidate()},
         {'tool':'read_file', 'path':PATH}, assessment(candidate())])
     budget = AttemptBudget()

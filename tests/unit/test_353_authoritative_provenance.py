@@ -8,7 +8,8 @@ import json
 import pytest
 from coordinare_service_inference.environment.models import EnvironmentManifest
 
-from coordinare.services.environment_discovery import EnvironmentDiscoveryError, discover_and_review
+from coordinare.services.environment_discovery import EnvironmentDiscoveryError
+from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
 from tests.unit.test_351_environment_discovery import (
     CAPABILITIES,
     COMMIT,
@@ -83,7 +84,7 @@ async def test_actual_source_drift_between_independent_reads_still_holds():
         nonlocal reads
         reads += 1
         return SOURCE if reads == 1 else SOURCE + 'changed'
-    with pytest.raises(EnvironmentDiscoveryError, match='review evidence hash changed'):
+    with pytest.raises(EnvironmentDiscoveryError, match='retained source evidence changed'):
         await discover_and_review(symphony_name='suite', commit=COMMIT, paths=[PATH, 'other/evidence'],
             capabilities=CAPABILITIES, fetch=changing, chat=agent)
 

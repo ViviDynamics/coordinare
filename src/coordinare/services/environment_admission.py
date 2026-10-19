@@ -70,7 +70,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
                       "source_commit", "symphony_name", "sources", "verdict", "rationale", "capabilities_digest", "inventory_digest",
                       "commands", "citations", "questions", "probe", "manifest", "assessment", "findings", "decisions",
                       "finding_responses", "finding_id", "issue", "category", "affected_ids", "duplicate_of", "status",
-                      "capability_unavailable", "criteria", "applicability", "usability", "runtime_needs", "scope_assessment"}
+                      "capability_unavailable", "criteria", "applicability", "usability", "runtime_needs", "scope_assessment", "criterion_checks", "runtime_endpoints"}
     result = []
     for error in exc.errors(include_url=False, include_input=False, include_context=False)[:16]:
         location = [part if (isinstance(part, str) and part in allowed_fields) or type(part) is int else "*"
@@ -81,12 +81,22 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             "literal_error", "int_type", "string_pattern_mismatch", "too_short", "too_long",
             "requirement_check_reference", "clean_dependency_install_only",
             "probe_id_maps", "probe_cited_question", "probe_required_true", "probe_citations_uninspected",
+            "scope_identity_mismatch", "scope_required_check_mapping", "scope_required_service", "scope_id_collision",
         } else "invalid_contract_value"
+        scope_locations = {'scope_required_check_mapping': 'criterion_checks', 'scope_identity_mismatch': 'scope_contract_digest',
+                           'scope_required_service': 'services', 'scope_id_collision': 'id'}
+        if code in scope_locations:
+            location = [scope_locations[code]]
         result.append({"location": location, "code": code})
     return result
 
 
 def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *, can_patch: bool = False) -> None:
+    if budget.scope_contract is not None:
+        required_ids = [c.id for c in budget.scope_contract.definition.criteria if c.applicability == 'required']
+        for error in errors:
+            if error['code'] == 'scope_required_check_mapping':
+                error['required_criterion_ids'] = required_ids
     budget.validation_codes.extend(error["code"] for error in errors)
     budget.reserve_repair("schema")
     messages.extend([{"role": "assistant", "content": raw},
@@ -97,7 +107,7 @@ def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any
                         "Never rename or remove existing required requirement/check/service IDs; revise their definitions in place. "
                         "Use list_files for directories and read_files only for exact file paths from listings. " +
                         ("Use required executable check IDs, not commands or install-only prerequisites. "
-                         if budget.expected_envelope not in {"scope", "scope_assessment"} else
+                         if budget.expected_envelope not in {"scope", "scope_assessment", "criterion_checks", "runtime_endpoints"} else
                          "Preserve source-defined scope; do not generate commands during source review. ") +
                         "Independent review and successful clean execution remain mandatory."})}])
 

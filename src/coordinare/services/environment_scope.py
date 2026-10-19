@@ -48,8 +48,8 @@ if TYPE_CHECKING:
 
 
 def _fail(code: str) -> NoReturn:
-    message = 'source-defined scope could not be independently admitted'
-    raise EnvironmentDiscoveryError(message, code=code)
+    message = f'source-defined scope held: {code}'
+    raise EnvironmentDiscoveryError(message, code=code) from None
 
 
 def preserve_scope(previous: ScopeDefinition, current: ScopeDefinition) -> None:
@@ -68,15 +68,21 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
     if budget is None:
         _fail('attempt_budget_identity')
     budget.stage = inspection.name
-    budget.expected_envelope = 'scope' if envelope == 'scope' else 'scope_assessment'
+    base_system = messages[0]['content']
     try:
         async with asyncio.timeout_at(min(budget.deadline, time.monotonic()+inspection.limits.phase_timeout_seconds)):
-            while True:
+            for _ in range(inspection.limits.max_model_calls):
+                exposed = 'source_tool' if not inspection.inputs else envelope
+                budget.expected_envelope = ('source_tool' if not inspection.inputs else
+                                            'scope' if envelope == 'scope' else 'scope_assessment')
+                schema = response_schema(exposed)
+                messages[0] = {'role': 'system', 'content': base_system +
+                    '\nReturn one complete envelope matching this schema: ' + canonical(schema).decode()}
                 budget.reserve_call()
                 await budget.flush()
                 size = check_evidence_context(messages, max_bytes=inspection.limits.max_review_context_bytes, phase=inspection.name)
                 budget.context_bytes += size
-                raw = budget.record_reply(await invoke_chat(chat, messages, schema=response_schema(envelope)))
+                raw = budget.record_reply(await invoke_chat(chat, messages, schema=schema))
                 try:
                     reply = _decode_reply(raw, inspection.name, inspection.limits)
                     if 'tool' in reply:
@@ -96,6 +102,7 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                         raise
                     errors = [{'location': [], 'code': exc.code}]
                 _repair(messages, raw, errors, budget)
+            _fail("scope_phase_call_limit")
     except TimeoutError:
         budget.check()
         _fail('scope_phase_deadline')
@@ -279,3 +286,12 @@ async def discover_scope(*, paths: Sequence[str], fetch: Fetch, chat: ChatJson, 
     except EnvironmentDiscoveryError as exc:
         budget.error_code = exc.code
         raise
+    except asyncio.CancelledError:
+        budget.error_code = 'attempt_cancelled'
+        raise
+    except (ValueError, TypeError):
+        budget.error_code = 'scope_contract_invalid'
+        _fail('scope_contract_invalid')
+    except Exception:
+        budget.error_code = 'scope_request_failed'
+        _fail('scope_request_failed')

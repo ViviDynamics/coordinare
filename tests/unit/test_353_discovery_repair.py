@@ -9,11 +9,8 @@ import pytest
 from coordinare_service_inference.environment.models import EnvironmentManifest
 
 from coordinare.services.environment_attempt import AttemptBudget, DiscoveryChatReply
-from coordinare.services.environment_discovery import (
-    DiscoveryLimits,
-    EnvironmentDiscoveryError,
-    discover_and_review,
-)
+from coordinare.services.environment_discovery import DiscoveryLimits, EnvironmentDiscoveryError
+from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
 from tests.unit.test_351_environment_discovery import (
     CAPABILITIES,
     COMMIT,
@@ -269,7 +266,7 @@ async def test_invalid_navigation_does_not_spend_schema_repairs(tool):
     assert manifest.inputs == full_candidate()["inputs"]
     assert review.verdict == "accept"
     assert events[-1]["repairs"] == 0
-    assert events[-1]["reads"] == 3
+    assert events[-1]["reads"] == 6
     feedback = json.loads(replies.messages[1][-1]["content"])
     assert feedback["tool_result"]["errors"]
 
@@ -379,7 +376,7 @@ async def test_provider_error_is_not_retried_as_malformed_json(monkeypatch):
     with pytest.raises(EnvironmentDiscoveryError) as exc:
         await run(backend.chat_json_with_metadata, diagnostics=events.append)
     assert exc.value.code == 'provider_request_failed'
-    assert events[-1]['calls'] == 1
+    assert events[-1]['calls'] == 4
     assert events[-1]['schema_repairs'] == 0
 
 
@@ -399,7 +396,7 @@ async def test_navigation_recovery_survives_exhausted_schema_allowance():
 @pytest.mark.asyncio
 async def test_repeated_navigation_errors_still_exhaust_aggregate_calls():
     replies = Replies([{'tool': 'read_file', 'path': 'absent'}] * 3)
-    budget = AttemptBudget(timeout_seconds=600, max_calls=2, max_reads=2, max_schema_repairs=2)
+    budget = AttemptBudget(timeout_seconds=600, max_calls=5, max_reads=5, max_schema_repairs=2)
     with pytest.raises(EnvironmentDiscoveryError, match='call limit'):
         await run(replies, budget=budget)
     assert budget.schema_repairs == 0

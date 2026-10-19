@@ -15,6 +15,8 @@ from scripts.validate_environment_repositories import (
     validate_repository,
 )
 
+from tests.unit.scope_chat_fixture import ScopeChatFixture
+
 
 def test_scope_refuses_deployment_command_without_operator_review(tmp_path):
     assert not execution_authorized(
@@ -362,7 +364,7 @@ async def test_harness_archives_rejected_attempt_and_requires_new_scope(tmp_path
     output = tmp_path/'profile'
     agent = Proposal()
     result = await validate_repository(Snapshot(source, commit, 'fixture', 'suite'), image=image,
-        output=output, profile=Profile(model='fixture', base_url='http://localhost:1', execute=True), chat=agent)
+        output=output, profile=Profile(model='fixture', base_url='http://localhost:1', execute=True), chat=ScopeChatFixture(agent, 'guide'))
     assert len(paths) == expected, result
     assert agent.review_starts == expected
     assert len(result['attempts']) == expected
