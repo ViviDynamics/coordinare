@@ -176,3 +176,42 @@ def test_runtime_failure_retains_bound_receipt_and_failed_evidence_for_repair(tm
     assert rejected['report']['runtime_artifacts'] == report['runtime_artifacts']
     assert rejected['report']['runtime_cleanup'] is True
     assert rejected['report']['results'][1]['status'] == 'fail'
+
+
+@pytest.mark.parametrize('mutation', ['none', 'cleanup', 'source', 'unknown', 'missing'])
+def test_failed_installer_without_success_receipt_is_bounded_repair_evidence(tmp_path, mutation):
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_repair import (
+        begin_attempt,
+        record_execution_failure,
+        save_attempt,
+    )
+    from tests.unit.runtime_manifest_fixture import runtime_cache, runtime_report
+
+    cache = runtime_cache(tmp_path / 'cache')
+    report = runtime_report(cache, phase='installer')
+    report['runtime_artifacts'] = None
+    report['results'][0].update(status='fail', exit_code=2)
+    report['results'][1].update(status='not_run', exit_code=None)
+    if mutation == 'cleanup':
+        report['runtime_cleanup'] = False
+    elif mutation == 'source':
+        report['execution_source_digest'] = '0' * 64
+    elif mutation == 'unknown':
+        report['results'][0]['id'] = 'invented'
+    elif mutation == 'missing':
+        report['results'].pop()
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600, now=100)
+    save_attempt(cache, budget, executing=True)
+    assert record_execution_failure(cache, report, cleanup_confirmed=True, now=101) is (mutation == 'none')
+    assert not cache.cache_dir_ready
+    journal = cache.environment_attempt
+    assert journal['expires_at'] == 700
+    assert journal['execution_repairs'] == (1 if mutation == 'none' else 0)
+    if mutation == 'none':
+        rejected = journal['rejected'][0]['report']
+        assert rejected['runtime_artifacts'] is None
+        assert [item['status'] for item in rejected['results']] == ['fail', 'not_run']
+        assert cache.environment_runtime_artifacts is None
+    else:
+        assert journal['status'] == 'held'

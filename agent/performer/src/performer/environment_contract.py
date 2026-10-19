@@ -117,11 +117,25 @@ async def execute_contract(score: Score, stand: Stand, *, install: bool = False)
             secret_names=score.environment_secret_names,
             execution_source_digest=expected_source.digest(), **runtime_kwargs,
         )
+    if not install and score.role == "env_bootstrap" and (stand.environment_installation_report is not None
+                                           or (lease is not None and lease.install)):
+        original = stand.environment_installation_report
+        if original is None:
+            _refuse_contract("original installer execution evidence is missing")
+        identities = ("manifest_digest", "execution_source_digest", "platform", "scope", "runtime_digest")
+        if any(getattr(original, key) != getattr(report, key) for key in identities):
+            _refuse_contract("original installer execution identity differs")
+        install_ids = {command.id for command in manifest.install}
+        retained = [item.model_copy(deep=True) for item in original.results if item.id in install_ids]
+        if {item.id for item in retained} != install_ids:
+            _refuse_contract("original installer execution evidence is incomplete")
+        report.results = retained + [item for item in report.results if item.id not in install_ids]
     if manifest.runtime is not None and lease is not None and lease.install and not install and report.passed:
 
         receipt = await seal_runtime(lease, manifest_digest=manifest.digest(), source_digest=expected_source.digest(), deadline=lease.deadline)
         report.runtime_artifacts = receipt
         score.environment_runtime_artifacts = receipt.model_dump(mode="json")
+    if manifest.runtime is not None and lease is not None and lease.install and (not report.passed or not install):
         monitor = getattr(stand, "environment_runtime_monitor", None)
         if monitor is not None:
             await monitor.stop()
@@ -130,6 +144,8 @@ async def execute_contract(score: Score, stand: Stand, *, install: bool = False)
         if not report.runtime_cleanup:
             _refuse_contract("private runtime teardown did not pass")
         stand.environment_runtime = None
+    if install:
+        stand.environment_installation_report = report.model_copy(deep=True)
     failures = [f"{item.id}: {item.status}" for item in report.results if item.status != "pass"]
     return {
         "passed": report.passed,
@@ -179,6 +195,7 @@ async def prepare_environment(score: Score, stand: Stand) -> None:
             results = await lifecycle.enter_async_context(
                 manifest_services(manifest, **roots, scope=score.role, secret_names=score.environment_secret_names, **runtime_kwargs),
             )
+            stand.environment_service_results = results
             _require_services_ready(results)
             from performer.workspace import _mark_services_healthy
 
@@ -191,6 +208,7 @@ async def prepare_environment(score: Score, stand: Stand) -> None:
 async def _close_lifecycle(stand: Stand, lifecycle: AsyncExitStack) -> None:
     try:
         await lifecycle.aclose()
+        _require_services_ready(stand.environment_service_results or [])
     finally:
         stand.environment_runtime = None
         stand.environment_runtime_monitor = None

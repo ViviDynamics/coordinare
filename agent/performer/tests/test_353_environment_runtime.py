@@ -109,3 +109,37 @@ def test_harness_prioritizes_owned_ssh_wrapper_without_changing_other_image_tool
         'PATH': str(runtime)+':'+str(cache), 'COORDINARE_ENV_RUNTIME_BIN': str(runtime)})
     assert subprocess.check_output(['/bin/sh', '-c', 'exec ssh'], env=env, text=True, timeout=5).strip() == 'owned-ssh'
     assert subprocess.check_output(['/bin/sh', '-c', 'exec node'], env=env, text=True, timeout=5).strip() == 'image-node'
+
+
+@pytest.mark.asyncio
+async def test_failed_installer_returns_actual_cleanup_without_success_receipt(tmp_path, monkeypatch):
+    from performer.environment_contract import execute_contract
+
+    score, old, source = private_score(tmp_path)
+    score.role = 'env_bootstrap'
+    score.environment_runtime_artifacts = None
+    from .source_contract_fixture import current_manifest_fixture
+
+    manifest = current_manifest_fixture({**old.model_dump(), 'install': [{'id': 'broken-install', 'argv': ['false']}],
+        'checks': [{'id': 'check', 'argv': ['true']}]})
+    score.environment_manifest = manifest.model_dump()
+    score.environment_manifest_digest = manifest.digest()
+    score.environment_assessment = current_review_fixture(manifest,
+        {**score.environment_assessment, 'manifest_digest': manifest.digest()})
+    closed = []
+    async def close(*, deadline):
+        closed.append(deadline)
+        return RuntimeCleanupReport(True, True, True, True, True)
+    lease = SimpleNamespace(spec=manifest.runtime, manifest_digest=manifest.digest(), source_digest=source.digest(),
+        install=True, installation_passed=False, deadline=time.monotonic()+10, scratch=tmp_path, close=close,
+        check_bounds=lambda: None, activation_env={'PATH': os.environ['PATH']})
+    stand = Stand(path=tmp_path, branch='main', environment_runtime=lease)
+    result = await execute_contract(score, stand, install=True)
+    assert not result['passed']
+    report = result['environment_verification']
+    assert report['runtime_phase'] == 'installer' and report['runtime_cleanup'] is True
+    assert report['runtime_artifacts'] is None
+    assert [item['status'] for item in report['results']] == ['fail', 'not_run']
+    assert len(closed) == 1
+    assert stand.environment_runtime is None
+    assert score.environment_runtime_artifacts is None

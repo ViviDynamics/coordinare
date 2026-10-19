@@ -458,7 +458,15 @@ async def execute_accepted(
     result.update(stage="installer", installer_ran=True, installer_passed=False, clean_consumer_ran=False)
     code, output = await _install(snapshot, cache, image, target, profile.installer_timeout)
     (target / "installer-output.json").write_bytes(output)
-    report = execution_report(output.decode(), cache, publish=False, runtime_phase='installer')
+    # Failed installer evidence cannot carry a sealed success receipt. Validate it
+    # for bounded repair before applying the successful installer admission gate.
+    raw = json.loads(output)
+    if code != 0 or any(item.get('required') and item.get('status') == 'fail' for item in raw.get('results', [])):
+        from coordinare.services.environment_acceptance import failed_installer_report
+
+        report = failed_installer_report(output.decode(), cache)
+    else:
+        report = execution_report(output.decode(), cache, publish=False, runtime_phase='installer')
     result["installer_passed"] = (
         code == 0
         and report.passed

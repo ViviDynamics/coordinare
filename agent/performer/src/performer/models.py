@@ -550,6 +550,8 @@ class Stand:
     cache_env: dict[str, str] = field(default_factory=dict)
     bootstrap_environment: Any = None
     environment_lifecycle: Any = None
+    environment_installation_report: Any = None
+    environment_service_results: Any = None
     environment_runtime: Any = None
     environment_cleanup_task: Any = None
     environment_runtime_monitor: Any = None
