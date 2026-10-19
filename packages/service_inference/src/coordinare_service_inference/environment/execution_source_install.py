@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
 from coordinare_service_inference.environment.execution_source_checkout import checkout_identity
 from coordinare_service_inference.environment.models import EnvironmentManifest
 from coordinare_service_inference.environment.runner import run_manifest
+from coordinare_service_inference.environment.runtime_cli import run_cli
 from coordinare_service_inference.environment.runtime_transport import consume_runtime_controls
+
+if TYPE_CHECKING:
+    from coordinare_service_inference.environment.models import VerificationReport
 
 
 def main() -> None:
@@ -32,13 +36,13 @@ def main() -> None:
     expected = ExecutionSourceIdentity.model_validate(data["execution_source"])
     runtime_deadline, runtime_artifacts = consume_runtime_controls(required=manifest.runtime is not None, install=True)
 
-    async def install() -> int:
+    async def install() -> VerificationReport:
         actual = await checkout_identity(
             Path(args.repo), commit=manifest.source_commit, review_inputs=manifest.inputs,
         )
         if actual != expected:
             raise ValueError("installer source differs from accepted pinned tree")
-        report = await run_manifest(
+        return await run_manifest(
             manifest,
             repo=args.repo,
             cache=args.cache,
@@ -47,10 +51,10 @@ def main() -> None:
             execution_source_digest=actual.digest(),
             runtime_deadline=runtime_deadline, runtime_artifacts=runtime_artifacts,
         )
-        sys.stdout.write(report.model_dump_json() + "\n")
-        return 0 if report.passed else 1
 
-    raise SystemExit(asyncio.run(install()))
+    report = run_cli(install())
+    sys.stdout.write(report.model_dump_json() + "\n")
+    raise SystemExit(0 if report.passed else 1)
 
 
 if __name__ == "__main__":

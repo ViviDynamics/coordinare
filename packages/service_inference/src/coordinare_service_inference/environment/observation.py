@@ -1,7 +1,6 @@
 """Bounded supervisor; the host removes the whole container after each command."""
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import os
@@ -15,6 +14,7 @@ from typing import Any
 from coordinare_service_inference.environment.models import environment_order
 from coordinare_service_inference.environment.runner import _expand
 
+from .runtime_cli import run_cli
 from .runtime_observation import observe_private
 
 
@@ -95,7 +95,7 @@ def execute(command: dict[str, Any], seconds: float, *, runtime_env: dict[str, s
 def main() -> None:
     data = json.load(sys.stdin)
     if data.get("runtime") is not None:
-        results = asyncio.run(observe_private(data))
+        results = run_cli(observe_private(data))
         sys.stdout.write(json.dumps(results)+"\n")
         return
     deadline = time.monotonic() + min(120, data["seconds"])
