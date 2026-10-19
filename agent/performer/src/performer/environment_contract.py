@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
 if TYPE_CHECKING:
-    from coordinare_service_inference.environment.models import EnvironmentManifest
+    from coordinare_service_inference.environment.models import EnvironmentManifest, VerificationReport
 
     from performer.models import Score, Stand
 
@@ -85,6 +85,34 @@ def accepted_manifest(metadata: Any) -> EnvironmentManifest:
     return manifest
 
 
+def _retain_installation_results(stand: Stand, manifest: EnvironmentManifest, report: VerificationReport) -> None:
+    """Carry actual install outcomes into final verification under the same identity."""
+    original = stand.environment_installation_report
+    if original is None:
+        _refuse_contract("original installer execution evidence is missing")
+    identities = ("manifest_digest", "execution_source_digest", "platform", "scope", "runtime_digest")
+    if any(getattr(original, key) != getattr(report, key) for key in identities):
+        _refuse_contract("original installer execution identity differs")
+    install_ids = {command.id for command in manifest.install}
+    retained = [item.model_copy(deep=True) for item in original.results if item.id in install_ids]
+    if {item.id for item in retained} != install_ids:
+        _refuse_contract("original installer execution evidence is incomplete")
+    report.results = retained + [item for item in report.results if item.id not in install_ids]
+
+
+async def _finish_installer_runtime(stand: Stand, report: VerificationReport) -> None:
+    """Stop monitoring and record actual guest teardown before returning evidence."""
+    lease = stand.environment_runtime
+    monitor = getattr(stand, "environment_runtime_monitor", None)
+    if monitor is not None:
+        await monitor.stop()
+    cleanup = await lease.close(deadline=lease.deadline)
+    report.runtime_cleanup = cleanup.confirmed and cleanup.clean_shutdown and cleanup.bounds_respected
+    if not report.runtime_cleanup:
+        _refuse_contract("private runtime teardown did not pass")
+    stand.environment_runtime = None
+
+
 async def execute_contract(score: Score, stand: Stand, *, install: bool = False) -> dict[str, Any]:
     """Run accepted commands in an isolated scratch directory and return parent-collected outcomes."""
     from coordinare_service_inference.environment.runner import run_manifest
@@ -119,31 +147,14 @@ async def execute_contract(score: Score, stand: Stand, *, install: bool = False)
         )
     if not install and score.role == "env_bootstrap" and (stand.environment_installation_report is not None
                                            or (lease is not None and lease.install)):
-        original = stand.environment_installation_report
-        if original is None:
-            _refuse_contract("original installer execution evidence is missing")
-        identities = ("manifest_digest", "execution_source_digest", "platform", "scope", "runtime_digest")
-        if any(getattr(original, key) != getattr(report, key) for key in identities):
-            _refuse_contract("original installer execution identity differs")
-        install_ids = {command.id for command in manifest.install}
-        retained = [item.model_copy(deep=True) for item in original.results if item.id in install_ids]
-        if {item.id for item in retained} != install_ids:
-            _refuse_contract("original installer execution evidence is incomplete")
-        report.results = retained + [item for item in report.results if item.id not in install_ids]
+        _retain_installation_results(stand, manifest, report)
     if manifest.runtime is not None and lease is not None and lease.install and not install and report.passed:
 
         receipt = await seal_runtime(lease, manifest_digest=manifest.digest(), source_digest=expected_source.digest(), deadline=lease.deadline)
         report.runtime_artifacts = receipt
         score.environment_runtime_artifacts = receipt.model_dump(mode="json")
     if manifest.runtime is not None and lease is not None and lease.install and (not report.passed or not install):
-        monitor = getattr(stand, "environment_runtime_monitor", None)
-        if monitor is not None:
-            await monitor.stop()
-        cleanup = await lease.close(deadline=lease.deadline)
-        report.runtime_cleanup = cleanup.confirmed and cleanup.clean_shutdown and cleanup.bounds_respected
-        if not report.runtime_cleanup:
-            _refuse_contract("private runtime teardown did not pass")
-        stand.environment_runtime = None
+        await _finish_installer_runtime(stand, report)
     if install:
         stand.environment_installation_report = report.model_copy(deep=True)
     failures = [f"{item.id}: {item.status}" for item in report.results if item.status != "pass"]

@@ -15,7 +15,10 @@ from coordinare_service_inference.environment.models import (
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_obligations import preserve_execution_obligations
-from coordinare.services.environment_runtime_evidence import validate_runtime_evidence
+from coordinare.services.environment_runtime_evidence import (
+    validate_failed_installer_runtime,
+    validate_runtime_evidence,
+)
 
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import Command
@@ -179,14 +182,7 @@ def _bound_execution_report(text: str, cache: EnvCacheState, *, publish: bool,
     if failed_installer:
         if not any(result.required and result.status == 'fail' for result in report.results):
             raise ValueError('failed installer evidence requires an actual required failure')
-        if manifest.runtime is not None:
-            from coordinare.services.environment_runtime_evidence import (
-                validate_failed_installer_runtime,
-            )
-
-            validate_failed_installer_runtime(report, manifest, cache)
-        else:
-            validate_runtime_evidence(report, manifest, cache, phase=runtime_phase)
+        validate_failed_installer_runtime(report, manifest, cache)
     else:
         validate_runtime_evidence(report, manifest, cache, phase=runtime_phase)
     if publish:

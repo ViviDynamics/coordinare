@@ -150,3 +150,43 @@ async def test_installer_refuses_image_drift_before_creating_any_process(tmp_pat
         await harness._install(SimpleNamespace(source=tmp_path, commit=cache.bootstrap_commit_sha), cache,
             'performer:latest', tmp_path, 900)
     spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_field_validation_records_failed_installer_before_success_receipt_gate(tmp_path, monkeypatch):
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_repair import (
+        begin_attempt,
+        record_execution_failure,
+        save_attempt,
+    )
+
+    cache = runtime_cache(tmp_path)
+    manifest = accepted_environment(cache)
+    report = runtime_report(cache, phase='installer')
+    report['runtime_artifacts'] = None
+    report['results'][0].update(status='fail', exit_code=2)
+    report['results'][1].update(status='not_run', exit_code=None)
+    snapshot = SimpleNamespace(name='sym', commit=manifest.source_commit, verify=AsyncMock())
+    image = cache.environment_capabilities['image_ref']
+    (tmp_path/'execution-approved.json').write_text(json.dumps({'scope': 'environment_validation',
+        'approved': True, 'manifest_digest': manifest.digest(), 'source_commit': snapshot.commit, 'image_ref': image}))
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    save_attempt(cache, budget, executing=True)
+    expires = cache.environment_attempt['expires_at']
+    monkeypatch.setattr(harness, '_install', AsyncMock(return_value=(1, json.dumps(report).encode())))
+    verifier = AsyncMock(side_effect=AssertionError('failed installer cannot launch a consumer'))
+    monkeypatch.setattr(harness, 'verify_env_cache_clean', verifier)
+    def record(name, state, evidence, *, cleanup_confirmed):
+        assert record_execution_failure(state['env_cache'][name], evidence, cleanup_confirmed=cleanup_confirmed)
+    service = Mock()
+    service.record_bootstrap_execution.side_effect = record
+    result = {}
+    await harness.execute_accepted(snapshot, service, {'env_cache': {'sym': cache}}, image=image,
+        target=tmp_path, profile=harness.Profile(model='fixture', base_url='http://localhost:1'), result=result)
+    verifier.assert_not_awaited()
+    assert result['reason_code'] == 'installer_failed' and not result['installer_passed']
+    assert cache.environment_attempt['execution_repairs'] == 1
+    assert cache.environment_attempt['expires_at'] == expires
+    assert cache.environment_attempt['rejected'][0]['report']['runtime_artifacts'] is None
+    assert not cache.cache_dir_ready
