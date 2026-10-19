@@ -157,3 +157,42 @@ def test_template_preflight_keeps_aggregate_output_bounded(monkeypatch):
                                  install=True, scope='', secret_names=())
     assert report is not None and not report.passed
     assert sum(len(result.output.encode()) for result in report.results) <= ATTEMPT_OUTPUT_LIMIT
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field,value', [
+    ('env', {'DATABASE_URL': 'postgresql://user:PRIVATE_SENTINEL@localhost/test'}),
+    ('env', {'ACCESS_PASSWORD': 'PRIVATE_SENTINEL'}),
+    ('argv', ['tool', '--url', 'postgresql://user:PRIVATE_SENTINEL@localhost/test']),
+])
+async def test_credential_repair_feedback_explains_runtime_reference_without_exposing_values(field, value):
+    import copy
+
+    from coordinare.services.environment_attempt import AttemptBudget
+
+    valid = candidate()
+    valid['checks'][0][field] = ({'DATABASE_URL': '${DATABASE_URL}'} if field == 'env'
+                                else ['tool', '--url', '${DATABASE_URL}'])
+    invalid = copy.deepcopy(valid)
+    invalid['checks'][0][field] = value
+    replies = Replies([{'tool': 'read_file', 'path': PATH}, {'manifest': invalid},
+                       {'manifest': valid}, {'tool': 'read_file', 'path': PATH}, assessment(valid)])
+    feedback = []
+    async def chat(messages):
+        for message in messages:
+            try:
+                content = json.loads(message['content'])
+            except ValueError:
+                continue
+            if isinstance(content, dict) and 'validation_errors' in content:
+                feedback.extend(content['validation_errors'])
+        return await replies(messages)
+    budget = AttemptBudget()
+    manifest, review = await run(chat, budget=budget)
+    error = next(item for item in feedback if item['location'] == ['checks', 0, field])
+    assert error['code'] == 'runtime_credential_reference'
+    assert '${NAME}' in error['guidance'] and 'argv' in error['guidance']
+    assert 'PRIVATE_SENTINEL' not in json.dumps(feedback)
+    assert budget.schema_repairs == 1
+    assert manifest.checks[0].model_dump()[field] == valid['checks'][0][field]
+    assert review.manifest_digest == manifest.digest()

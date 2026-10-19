@@ -181,3 +181,39 @@ async def test_reviewed_scope_mapping_schema_requires_exact_ids_in_every_transpo
     generic = response_schema('manifest')
     assert 'criterion_checks' not in generic['$defs']['EnvironmentManifestProposal']['required']
     assert response_schema('assessment', scope_contract=scope) == response_schema('assessment')
+
+
+@pytest.mark.asyncio
+async def test_canonical_json_http_request_delivers_the_current_scope_bound_schema(monkeypatch):
+    from coordinare_service_inference.environment.scope import ScopeContract
+
+    from coordinare.services.environment_response_schema import response_schema
+    from tests.unit.test_353_scope_mapping import mapped_manifest
+
+    data, identifier = await mapped_manifest()
+    scope = ScopeContract.model_validate(data['scope_contract'])
+    schema = response_schema('manifest', scope_contract=scope, allow_patch=True)
+    messages = [{'role': 'system', 'content': 'Earlier generic phase guidance.'},
+                {'role': 'user', 'content': 'Construct the complete declaration.'}]
+    original_messages = json.loads(json.dumps(messages))
+    requests = []
+    def answer(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={'choices': [{'message': {
+            'content': '{"tool":"read_file","path":"guide"}'}, 'finish_reason': 'stop'}]})
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: original(transport=httpx.MockTransport(answer), **kwargs))
+    backend = OpenAiApiBackend(api_key='fixture', base_url='https://fixture.invalid/v1', structured_transport='json_object')
+    reply = await backend.chat_json_with_metadata(messages, response_schema=schema)
+    assert reply.error_code is None
+    assert json.loads(reply.text) == {'tool': 'read_file', 'path': 'guide'}
+    payload = requests[0]
+    assert payload['response_format'] == {'type': 'json_object'}
+    system = payload['messages'][0]['content']
+    marker = 'Authoritative logical response schema for this request:\n'
+    assert marker in system
+    delivered = json.loads(system.split(marker, 1)[1])
+    assert delivered == schema
+    mapping = delivered['$defs']['EnvironmentManifestProposal']['properties']['criterion_checks']
+    assert mapping['required'] == [identifier]
+    assert messages == original_messages
