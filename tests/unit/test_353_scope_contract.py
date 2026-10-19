@@ -433,3 +433,53 @@ async def test_revision_reviewer_gets_exact_required_decision_ids_in_context_and
         'code': 'review_findings_invalid', 'required_decision_ids': identifiers}]
     assert scope.finding_ledger.open_ids() == [] and len(scope.finding_ledger.records) == count
     assert budget.schema_repairs == 1 and len(scope.finding_ledger.reviews) == 2
+
+
+@pytest.mark.asyncio
+async def test_scope_review_wire_cannot_adjudicate_findings_before_daemon_assigns_ids():
+    import jsonschema
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), review()])
+    await run(replies)
+    schema = replies.schemas[-1]
+    jsonschema.validate(objection(), schema)
+    invented = objection()
+    invented['scope_assessment']['decisions'] = closure()['scope_assessment']['decisions']
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(invented, schema)
+
+
+@pytest.mark.asyncio
+async def test_retained_scope_review_wire_requires_only_current_open_finding_ids():
+    import jsonschema
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), objection(), revision(), closure()])
+    await run(replies)
+    schema = replies.schemas[-1]
+    jsonschema.validate(closure(), schema)
+    for invalid in [review(), closure()]:
+        if invalid['scope_assessment']['decisions']:
+            invalid['scope_assessment']['decisions'][0]['finding_id'] = 'F9999'
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(invalid, schema)
+
+
+@pytest.mark.asyncio
+async def test_reassessed_response_feedback_exposes_current_ids_without_accepting_stale_ids():
+    from coordinare_service_inference.environment.scope import ScopeCriterionProposal, criterion_id
+    old = criterion(applicability='unknown')
+    old_id = criterion_id(ScopeCriterionProposal.model_validate(old))
+    new_id = criterion_id(ScopeCriterionProposal.model_validate(criterion()))
+    good = revision(reassess=[{'criterion_id': old_id, 'criterion': criterion()}])
+    def bad(messages):
+        value = good(messages)
+        value['finding_responses'][0]['affected_ids'] = [old_id]
+        return value
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(old), objection(), bad, good, closure()])
+    budget = AttemptBudget()
+    result = await run(replies, budget=budget)
+    feedback = json.loads(replies.messages[4][-1]['content'])['validation_errors'][0]
+    assert feedback['location'] == ['finding_responses', '0', 'affected_ids']
+    assert feedback['code'] == 'scope_response_ids_invalid'
+    assert new_id in feedback['guidance'] and old_id not in feedback['guidance']
+    assert '[]' in feedback['guidance']
+    assert budget.schema_repairs == 1 and len(result.finding_ledger.reviews) == 2
+    assert result.definition.criteria[0].id == new_id
