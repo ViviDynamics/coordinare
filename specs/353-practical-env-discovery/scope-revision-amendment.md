@@ -1,6 +1,6 @@
 # Bounded revisions of source-defined scope
 
-Issue #353 / PR #354. Status: proposed; written-design approval pending.
+Issue #353 / PR #354. Status: written design approved by the user on 2026-10-19; implementation-plan review pending.
 No implementation or additional model run is authorized by this document alone.
 
 ## Goal and observed failure
