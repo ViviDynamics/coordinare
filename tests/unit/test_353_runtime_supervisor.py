@@ -48,7 +48,7 @@ async def test_cleanup_distinguishes_closed_tcp_connections_from_live_listeners(
                                     guest_image='/base', emulator='/qemu', firmware='/firmware')
         lease = supervisor.RuntimeLease(spec, bundle, 'owned', work, tmp_path, tmp_path,
                                         time.monotonic()+30, False, '1'*64, '2'*64, {}, clean_shutdown=True)
-        monkeypatch.setattr(lease, 'check_bounds', lambda: None)
+        monkeypatch.setattr(lease, 'check_bounds', lambda **kwargs: None)
         report = await lease.close(deadline=lease.deadline)
         assert report.listeners_absent is not still_listening
     finally:
@@ -96,7 +96,7 @@ async def test_artifact_read_failure_still_removes_owned_control_keys(tmp_path, 
     lease = supervisor.RuntimeLease(runtime_spec(), bundle, 'owned', work, tmp_path, tmp_path,
                                     time.monotonic()+1, False, '1'*64, '2'*64, {},
                                     initial_artifacts={artifact: 'a'*64})
-    def unreadable(path):
+    def unreadable(path, **kwargs):
         raise OSError('artifact read unavailable')
     monkeypatch.setattr(supervisor, '_digest', unreadable)
     report = await lease.close(deadline=time.monotonic()+1)

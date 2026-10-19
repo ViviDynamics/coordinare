@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .runtime_io import settle as _settle
 from .runtime_supervisor import RuntimeScanStoppedError, open_runtime, seal_runtime
 
 if TYPE_CHECKING:
@@ -18,21 +19,6 @@ if TYPE_CHECKING:
     from .models import EnvironmentManifest, VerificationReport
     from .runtime import RuntimeArtifactReceipt
     from .runtime_supervisor import RuntimeLease
-
-
-async def _settle[T](future: asyncio.Future[T]) -> T:
-    cancelled = False
-    while not future.done():
-        try:
-            await asyncio.shield(future)
-        except asyncio.CancelledError:
-            cancelled = True
-        except Exception:
-            break
-    result = future.result()
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
 
 
 async def _scan_bounds(lease: RuntimeLease) -> None:
@@ -88,10 +74,10 @@ async def execute_with_runtime(
         if (runtime_lease.spec != spec or runtime_lease.manifest_digest != manifest.digest()
                 or runtime_lease.source_digest != execution_source_digest):
             raise ValueError('live private runtime identity differs from accepted manifest')
-        runtime_lease.check_bounds()
+        await _scan_bounds(runtime_lease)
         kwargs["scratch"] = str(runtime_lease.scratch)
         report = await run_guarded(runtime_lease, commands(manifest, **kwargs, runtime_env=runtime_lease.activation_env))
-        runtime_lease.check_bounds()
+        await _scan_bounds(runtime_lease)
         if install:
             runtime_lease.installation_passed = report.passed
         report.runtime_digest = spec.digest()
@@ -110,7 +96,7 @@ async def execute_with_runtime(
         receipt = runtime_artifacts
         try:
             report = await run_guarded(lease, commands(manifest, **kwargs, runtime_env=lease.activation_env))
-            lease.check_bounds()
+            await _scan_bounds(lease)
             if install and report.passed:
                 lease.installation_passed = True
                 receipt = await seal_runtime(lease, manifest_digest=manifest.digest(),

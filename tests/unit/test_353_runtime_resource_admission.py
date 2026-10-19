@@ -1,6 +1,7 @@
 """Kernel controls must match reviewed policy before a guest can start."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -10,17 +11,22 @@ from coordinare_service_inference.environment.runtime_bundle import RuntimeBundl
 from tests.unit.test_353_runtime_supervisor import runtime_spec
 
 
-@pytest.mark.parametrize('fault', [None, 'cpu', 'memory', 'swap', 'pids', 'privilege', 'bounding', 'gain', 'missing'])
+@pytest.mark.parametrize('fault', [None, 'cpu', 'memory', 'swap', 'pids', 'privilege', 'bounding', 'gain', 'missing', 'config'])
 def test_admission_refuses_unmeasured_or_different_kernel_controls(tmp_path, monkeypatch, fault):
     spec = runtime_spec()
     roots = [tmp_path/name for name in ('repo', 'cache', 'scratch')]
     for root in roots:
         root.mkdir(mode=0o700)
     bundle = tmp_path/'bundle.json'
-    bundle.write_text(RuntimeBundleInputs(schema_version=1, guest_platform='linux/x86_64',
-        guest_image='/base', emulator='/qemu', firmware='/firmware').model_dump_json())
+    contents = RuntimeBundleInputs(schema_version=1, guest_platform='linux/x86_64',
+        guest_image='/base', emulator='/qemu', firmware='/firmware')
+    bundle.write_text(contents.model_dump_json())
+    identity = spec.policy.identity.model_copy(update={'configuration_sha256': contents.digest()})
+    spec = spec.model_copy(update={'policy': spec.policy.model_copy(update={'identity': identity})})
+    if fault == 'config':
+        bundle.write_text(contents.model_copy(update={'guest_image': '/changed'}).model_dump_json())
     monkeypatch.setattr(supervisor, 'BUNDLE_PATH', bundle)
-    monkeypatch.setattr(supervisor, 'inspect_bundle', lambda: spec.policy.identity.model_dump(
+    monkeypatch.setattr(supervisor, 'inspect_bundle', lambda **kwargs: spec.policy.identity.model_dump(
         exclude={'schema_version', 'carrier_image', 'carrier_platform'}))
     monkeypatch.setattr(supervisor.platform, 'system', lambda: 'Linux')
     monkeypatch.setattr(supervisor.platform, 'machine', lambda: 'aarch64')
@@ -51,10 +57,10 @@ def test_admission_refuses_unmeasured_or_different_kernel_controls(tmp_path, mon
 
     monkeypatch.setattr(Path, 'read_text', kernel_read)
     if fault is None:
-        assert supervisor._admit(spec, repo=roots[0], cache=roots[1], scratch=roots[2], readonly=False).guest_image == '/base'
+        assert supervisor._admit(spec, repo=roots[0], cache=roots[1], scratch=roots[2], readonly=False, deadline=time.monotonic()+5).guest_image == '/base'
     else:
         with pytest.raises(ValueError, match='private runtime'):
-            supervisor._admit(spec, repo=roots[0], cache=roots[1], scratch=roots[2], readonly=False)
+            supervisor._admit(spec, repo=roots[0], cache=roots[1], scratch=roots[2], readonly=False, deadline=time.monotonic()+5)
 
 
 @pytest.mark.asyncio
