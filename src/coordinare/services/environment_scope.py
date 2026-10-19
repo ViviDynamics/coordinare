@@ -276,6 +276,25 @@ def _validate_revision(data: dict[str, Any], *, author: SourceInspection, commit
     return definition
 
 
+async def _author_definition(request: _Request, author: SourceInspection,
+                             messages: list[dict[str, str]]) -> ScopeDefinition:
+    budget = request.budget
+    if budget.scope_phase == 'review':
+        if budget.scope_definition is None:
+            _fail('scope_source_identity')
+        return budget.scope_definition
+    revising = budget.scope_phase == 'revision'
+    author.name = 'scope_revision' if revising else 'scope_author'
+    definition = await _phase(author, messages, chat=request.chat, envelope='scope_revision' if revising else 'scope',
+        validate=partial(_validate_revision if revising else _validate_author, author=author,
+                         commit=request.commit, budget=budget))
+    budget.scope_definition = definition
+    budget.scope_phase = 'review'
+    budget.scope_revision_base_digest = None
+    await budget.flush()
+    return definition
+
+
 async def _discover_scope(request: _Request) -> ScopeContract:
     paths, fetch, chat, commit, limits, budget = (request.paths, request.fetch, request.chat, request.commit, request.limits, request.budget)
     saved = budget.scope_contract
@@ -294,20 +313,7 @@ async def _discover_scope(request: _Request) -> ScopeContract:
 
     async with asyncio.timeout_at(budget.deadline):
         while True:
-            if budget.scope_phase != 'review':
-                revising = budget.scope_phase == 'revision'
-                author.name = 'scope_revision' if revising else 'scope_author'
-                definition = await _phase(author, messages, chat=chat, envelope='scope_revision' if revising else 'scope',
-                    validate=partial(_validate_revision if revising else _validate_author, author=author, commit=commit, budget=budget))
-                budget.scope_definition = definition
-                budget.scope_findings = ledger
-                budget.scope_phase = 'review'
-                budget.scope_revision_base_digest = None
-                await budget.flush()
-            else:
-                definition = budget.scope_definition
-                if definition is None:
-                    _fail('scope_source_identity')
+            definition = await _author_definition(request, author, messages)
             reviewer = SourceInspection(inventory, fetch, limits, budget, retained_inputs=budget.scope_inputs)
             reviewer.name = 'scope_review'
             expected = {**required_inputs, **definition.inputs}

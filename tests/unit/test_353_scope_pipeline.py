@@ -296,3 +296,78 @@ async def test_legacy_accepted_scope_migration_does_not_bypass_identity_validati
     with pytest.raises(EnvironmentDiscoveryError):
         begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600)
     assert cache.environment_attempt == before
+
+
+@pytest.mark.asyncio
+async def test_new_construction_source_reopens_fresh_review_with_durable_original_budget(tmp_path):
+    import hashlib
+
+    from coordinare.services.environment_construction import (
+        ReviewedConstruction,
+        ScopeReopenedError,
+    )
+    from tests.unit.test_353_discovery_repair import CAPABILITIES
+    from tests.unit.test_353_scope_contract import SOURCES
+
+    cache = cache_fixture(tmp_path)
+    cache.bootstrap_commit_sha = COMMIT
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    budget.checkpoint = lambda: checkpoint(cache, budget)
+    original = await run(Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), review()]), budget=budget)
+    expiry = cache.environment_attempt['expires_at']
+    async def fetch(path):
+        return SOURCES.get(path)
+    chats = Replies([review(sources=list(SOURCES))])
+    construction = ReviewedConstruction(('suite', COMMIT), list(SOURCES), fetch, chats, DiscoveryLimits(), budget, CAPABILITIES)
+    with pytest.raises(ScopeReopenedError):
+        await construction.observe_sources({'odd/nest': hashlib.sha256(SOURCES['odd/nest'].encode()).hexdigest()})
+    assert budget.scope_contract is not None and budget.scope_phase == 'accepted'
+    assert budget.scope_contract.digest() != original.digest()
+    assert budget.scope_contract.definition == original.definition
+    assert len(budget.scope_contract.finding_ledger.reviews) == 2
+    assert 'odd/nest' in budget.scope_contract.all_inputs
+    assert len(chats.messages) == 1 and 'Independently review source-defined scope' in chats.messages[0][0]['content']
+    assert cache.environment_attempt['coverage_revisions'] == 1 and budget.coverage_revisions == 1
+    assert cache.environment_attempt['expires_at'] == expiry
+    assert cache.environment_attempt['scope_contract'] == budget.scope_contract.model_dump(mode='json')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stage', ['manifest_author', 'manifest_review'])
+async def test_reopened_source_review_crash_retains_consumption_and_resumes_without_author(tmp_path, stage):
+    import hashlib
+
+    from coordinare.services.environment_construction import ReviewedConstruction
+    from tests.unit.test_353_discovery_repair import CAPABILITIES
+    from tests.unit.test_353_scope_contract import SOURCES
+
+    class Crash(BaseException):
+        pass
+    cache = cache_fixture(tmp_path)
+    cache.bootstrap_commit_sha = COMMIT
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    budget.checkpoint = lambda: checkpoint(cache, budget)
+    await run(Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), review()]), budget=budget)
+    expiry = cache.environment_attempt['expires_at']
+    async def fetch(path):
+        return SOURCES.get(path)
+    async def crash_checkpoint():
+        save_attempt(cache, budget)
+        if budget.scope_contract is None and budget.scope_phase == 'review':
+            raise Crash
+    budget.stage = stage
+    budget.checkpoint = crash_checkpoint
+    construction = ReviewedConstruction(('suite', COMMIT), list(SOURCES), fetch, Replies([]), DiscoveryLimits(), budget, CAPABILITIES)
+    with pytest.raises(Crash):
+        await construction.observe_sources({'odd/nest': hashlib.sha256(SOURCES['odd/nest'].encode()).hexdigest()})
+    assert cache.environment_attempt['coverage_revisions'] == 1
+    assert cache.environment_attempt['diagnostics']['stage'] == stage
+    resumed = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600)
+    resumed.checkpoint = lambda: checkpoint(cache, resumed)
+    replies = Replies([review(sources=list(SOURCES))])
+    construction.budget, construction.chat = resumed, replies
+    await construction.prepare()
+    assert len(replies.messages) == 1 and 'Independently review source-defined scope' in replies.messages[0][0]['content']
+    assert resumed.coverage_revisions == 1 and resumed.calls == 4
+    assert cache.environment_attempt['expires_at'] == expiry
+    assert 'odd/nest' in resumed.scope_contract.all_inputs

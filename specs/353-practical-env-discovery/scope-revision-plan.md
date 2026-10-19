@@ -10,7 +10,7 @@
 
 **Spec:** [Approved scope-revision amendment](scope-revision-amendment.md).
 
-**Status:** Written amendment approved by the user on 2026-10-19. This implementation plan awaits review. Preserve the previously selected **Native / inline** execution method.
+**Status:** Written amendment approved by the user on 2026-10-19. Implementation plan approved by the user on 2026-10-19. Preserve the previously selected **Native / inline** execution method.
 
 ## Global Constraints
 
@@ -61,11 +61,11 @@ Canonical `scope.py`, manifest mapping, executor and runtime admission formats r
 - `ScopeRevisionEnvelope(FindingEvidence)`: required `scope_revision: ScopeRevision`, `finding_responses: list[FindingResponse]` max32. No extra fields/defaulted envelope fields.
 - `apply_scope_revision(base: ScopeDefinition, revision: ScopeRevision, *, inspected_inputs: dict[str, str]) -> ScopeDefinition`. Pure; returns a newly validated complete definition or raises `PydanticCustomError` with trusted codes/locations; never mutates either argument.
 
-- [ ] Write parameterized tests with exact assertions: add one obligation => `len(result.criteria) == len(base.criteria)+1`, retained required objects equal their original `model_dump()`, `result.source_commit == base.source_commit`, `result.inventory_digest == base.inventory_digest`, and old input hashes remain equal. Unknown and not-applicable reassessments receive `criterion_id(replacement)`; unaffected order is retained and additions append.
-- [ ] Add rejection cases: stale digest, unknown/repeated target, required target, duplicate additions (including rationale-only differences), collision with retained/replacement IDs, 17 combined changes, 129 final criteria, >256 KiB final definition, missing/extra fields, unread citations, changed/missing retained hashes. For every case assert `base.model_dump() == before`; include valid first addition followed by invalid last reassessment. Exactly16 changes and empty arrays must pass when final bounds permit.
-- [ ] Run `.venv/bin/pytest tests/unit/test_353_scope_revision.py -q`; expect RED for missing revision API.
-- [ ] Implement models and pure merge. Preserve required full objects, recompute replacement/addition IDs using existing identity rules, keep source/inventory/requested-scope fields, and validate against the complete inspected-input map. Use `ScopeDefinition` validation for canonical final bounds.
-- [ ] Run the same command; expect all PASS. Commit only this task's two files as `feat: add bounded atomic source-scope revisions`.
+- [x] Write parameterized tests with exact assertions: add one obligation => `len(result.criteria) == len(base.criteria)+1`, retained required objects equal their original `model_dump()`, `result.source_commit == base.source_commit`, `result.inventory_digest == base.inventory_digest`, and old input hashes remain equal. Unknown and not-applicable reassessments receive `criterion_id(replacement)`; unaffected order is retained and additions append.
+- [x] Add rejection cases: stale digest, unknown/repeated target, required target, duplicate additions (including rationale-only differences), collision with retained/replacement IDs, 17 combined changes, 129 final criteria, >256 KiB final definition, missing/extra fields, unread citations, changed/missing retained hashes. For every case assert `base.model_dump() == before`; include valid first addition followed by invalid last reassessment. Exactly16 changes and empty arrays must pass when final bounds permit.
+- [x] Run `.venv/bin/pytest tests/unit/test_353_scope_revision.py -q`; expect RED for missing revision API.
+- [x] Implement models and pure merge. Preserve required full objects, recompute replacement/addition IDs using existing identity rules, keep source/inventory/requested-scope fields, and validate against the complete inspected-input map. Use `ScopeDefinition` validation for canonical final bounds.
+- [x] Run the same command; expect all PASS. Commit only this task's two files as `feat: add bounded atomic source-scope revisions`.
 
 ## Task 2: Phase-specific transport and correction contract
 
@@ -73,12 +73,12 @@ Canonical `scope.py`, manifest mapping, executor and runtime admission formats r
 
 **Interfaces:** Existing `response_schema(phase: str, *, allow_patch: bool = False) -> dict[str, Any]` gains `scope_revision`. Existing `functions(schema)` exposes `submit_environment_scope_revision`; `decode_function(raw, schema) -> str` reconstructs exactly the same canonical revision envelope. Existing `correction_instruction(envelope: str) -> str` gains explicit revision guidance. No provider-specific acceptance logic.
 
-- [ ] Write tests asserting canonical schema requires exactly `scope_revision` and `finding_responses`, nested required fields and `additionalProperties == False`; add/reassess arrays advertise max16 and local model validation enforces combined16. Initial `scope` schema remains unchanged.
-- [ ] Write native round-trip assertions: decoded envelope equals the canonical submitted object including `finding_responses`; wrong function name, duplicate keys, extra metadata and a complete `scope` submission in revision phase are rejected. Both transports feed the same local validator and produce equivalent held codes.
-- [ ] Add diagnostic assertions: a bad revision citation identifies `['scope_revision','add',0,'sources',0]`; an arbitrary extra key/value is redacted, never echoed. Correction guidance says `scope_revision`, exact retained base digest, no full declaration/no commands; schema allowance is unchanged.
-- [ ] Run `.venv/bin/pytest tests/unit/test_353_structured_wire.py tests/unit/test_353_scope_revision.py -q`; expect new cases RED.
-- [ ] Implement schema dispatch, native flatten/reconstruction alongside existing scope/manifest handling, trusted field allowlist and revision-specific correction guidance. Do not relax duplicate-key or strict object validation.
-- [ ] Repeat command; expect all PASS. Commit listed task files as `feat: expose strict scope revision transport`.
+- [x] Write tests asserting canonical schema requires exactly `scope_revision` and `finding_responses`, nested required fields and `additionalProperties == False`; add/reassess arrays advertise max16 and local model validation enforces combined16. Initial `scope` schema remains unchanged.
+- [x] Write native round-trip assertions: decoded envelope equals the canonical submitted object including `finding_responses`; wrong function name, duplicate keys, extra metadata and a complete `scope` submission in revision phase are rejected. Both transports feed the same local validator and produce equivalent held codes.
+- [x] Add diagnostic assertions: a bad revision citation identifies `['scope_revision','add',0,'sources',0]`; an arbitrary extra key/value is redacted, never echoed. Correction guidance says `scope_revision`, exact retained base digest, no full declaration/no commands; schema allowance is unchanged.
+- [x] Run `.venv/bin/pytest tests/unit/test_353_structured_wire.py tests/unit/test_353_scope_revision.py -q`; expect new cases RED.
+- [x] Implement schema dispatch, native flatten/reconstruction alongside existing scope/manifest handling, trusted field allowlist and revision-specific correction guidance. Do not relax duplicate-key or strict object validation.
+- [x] Repeat command; expect all PASS. Commit listed task files as `feat: expose strict scope revision transport`.
 
 ## Task 3: Revision authoring followed by complete independent review
 
@@ -86,12 +86,12 @@ Canonical `scope.py`, manifest mapping, executor and runtime admission formats r
 
 **Interfaces:** Extend `AttemptBudget.expected_envelope` literal with `scope_revision`. Add `_validate_revision(data: dict[str, Any], *, author: SourceInspection, commit: str, budget: AttemptBudget) -> ScopeDefinition`, consuming Task 1 API. Keep existing `_phase`, `_messages`, `_validate_author`, `preserve_scope` signatures. Factor `_validate_responses(responses: list[FindingResponse], *, ledger: FindingLedger, inputs: dict[str, str], definition: ScopeDefinition) -> list[dict[str, Any]]` for identical initial/revision finding checks.
 
-- [ ] Convert the existing nested-omission scenario to initial full scope, independent `F0001`, small revision, fresh independent resolution. Assert original required object exact, final two required criteria, `coverage_revisions == 1`, two review records, no open findings, and reviewer messages contain the entire canonical new definition but no author conversation.
-- [ ] Add source-backed unknown reassessment and empty-delta defense scenarios. Assert empty delta alone leaves `F0001` open until a fresh reviewer resolves it; unknown still holds on acceptance. Test newly discovered omission outside the delta creates another blocking finding.
-- [ ] Add missing/duplicate/unknown finding responses, stale replaced affected ID, unread response citations, complete-scope revision reply, stale base and malformed late-change cases. Assert saved responses/base unchanged on failure, no commands dispatched, original schema/coverage caps and absolute deadline still govern. Empty affected IDs are accepted as references pending daemon assignment; no IDs are fabricated.
-- [ ] Run `.venv/bin/pytest tests/unit/test_353_scope_contract.py tests/unit/test_353_scope_revision.py -q`; expect new cases RED.
-- [ ] Select initial versus revision envelope from retained protocol phase (Task 4 supplies persistence). Include retained definition digest in revision messages. Validate inspected citations and responses before publishing any change; run `preserve_scope` independently. Route `_phase` repair feedback to the exact exposed phase. Fresh reviewer always receives complete result plus retained ledger/responses/evidence. Keep every read/call charged to the original budget.
-- [ ] Repeat command; expect all PASS. Commit affected files as `feat: review complete scope after bounded revisions`.
+- [x] Convert the existing nested-omission scenario to initial full scope, independent `F0001`, small revision, fresh independent resolution. Assert original required object exact, final two required criteria, `coverage_revisions == 1`, two review records, no open findings, and reviewer messages contain the entire canonical new definition but no author conversation.
+- [x] Add source-backed unknown reassessment and empty-delta defense scenarios. Assert empty delta alone leaves `F0001` open until a fresh reviewer resolves it; unknown still holds on acceptance. Test newly discovered omission outside the delta creates another blocking finding.
+- [x] Add missing/duplicate/unknown finding responses, stale replaced affected ID, unread response citations, complete-scope revision reply, stale base and malformed late-change cases. Assert saved responses/base unchanged on failure, no commands dispatched, original schema/coverage caps and absolute deadline still govern. Empty affected IDs are accepted as references pending daemon assignment; no IDs are fabricated.
+- [x] Run `.venv/bin/pytest tests/unit/test_353_scope_contract.py tests/unit/test_353_scope_revision.py -q`; expect new cases RED.
+- [x] Select initial versus revision envelope from retained protocol phase (Task 4 supplies persistence). Include retained definition digest in revision messages. Validate inspected citations and responses before publishing any change; run `preserve_scope` independently. Route `_phase` repair feedback to the exact exposed phase. Fresh reviewer always receives complete result plus retained ledger/responses/evidence. Keep every read/call charged to the original budget.
+- [x] Repeat command; expect all PASS. Commit affected files as `feat: review complete scope after bounded revisions`.
 
 ## Task 4: Durable revision state and accurate held diagnostics
 
@@ -99,12 +99,12 @@ Canonical `scope.py`, manifest mapping, executor and runtime admission formats r
 
 **Interfaces:** Add matching budget/journal fields `scope_author_protocol: Literal[2] = 2`, `scope_phase: Literal['initial','revision','review','accepted'] = 'initial'`, `scope_revision_base_digest: str | None = None` (journal validates Digest when present). Advance `RepairJournal.version` to7. Keep `journal_for`, `_budget`, `save_attempt`, `begin_attempt` public signatures. `AttemptBudget.summary()` keeps existing manifest summary fields and adds prefixed source fields `scope_finding_count`, `scope_open_finding_ids` (via existing trusted finding-summary logic).
 
-- [ ] Write crash/resume tests at reserved revision call, post-valid-revision/pre-review and post-review/pre-next-author checkpoints. Assert persisted protocol2/version7, exact base digest when phase=`revision`, canonical definition/responses/ledger equality, unchanged `expires_at` and nondecreasing calls/reads/repair counters. Post-application phase=`review` must not reapply or request another author revision. Before-review flush must precede the next chat invocation.
-- [ ] Test mismatched phase/base, missing protocol and altered evidence reject. Version6 in-progress source work holds `legacy_attempt_requires_restart`, preserving raw journal unchanged. Version6 with a valid accepted canonical scope may be normalized to version7/phase accepted only after all existing identity/ledger/readiness checks; assert contract digest and expiry/counters identical. Versions1–5 retain their existing explicit-restart policy. Exercise explicit restart/archive path with original failed consumption retained; no automatic new allowance.
-- [ ] Test summary with source `F0001` and empty manifest ledger: `scope_finding_count == 1`, `scope_open_finding_ids == ['F0001']`, manifest count remains0, actual stage/counters/remaining time agree with budget; serialized diagnostics exclude issue/rationale/source content. Persisted held diagnostics retain these fields.
-- [ ] Run `.venv/bin/pytest tests/unit/test_353_scope_pipeline.py tests/unit/test_353_scope_revision.py -q`; expect new cases RED.
-- [ ] Implement checkpoint state transitions: initial author -> review; review revise -> revision with current digest; valid revision -> review with base cleared; accepted review -> accepted. Flush consumed work and complete state before each external call. Restore by phase, never infer pending protocol from model output. Implement bounded safe migration and distinct source diagnostics.
-- [ ] Repeat command; expect all PASS. Commit listed files as `fix: preserve scope revision state and held findings`.
+- [x] Write crash/resume tests at reserved revision call, post-valid-revision/pre-review and post-review/pre-next-author checkpoints. Assert persisted protocol2/version7, exact base digest when phase=`revision`, canonical definition/responses/ledger equality, unchanged `expires_at` and nondecreasing calls/reads/repair counters. Post-application phase=`review` must not reapply or request another author revision. Before-review flush must precede the next chat invocation.
+- [x] Test mismatched phase/base, missing protocol and altered evidence reject. Version6 in-progress source work holds `legacy_attempt_requires_restart`, preserving raw journal unchanged. Version6 with a valid accepted canonical scope may be normalized to version7/phase accepted only after all existing identity/ledger/readiness checks; assert contract digest and expiry/counters identical. Versions1–5 retain their existing explicit-restart policy. Exercise explicit restart/archive path with original failed consumption retained; no automatic new allowance.
+- [x] Test summary with source `F0001` and empty manifest ledger: `scope_finding_count == 1`, `scope_open_finding_ids == ['F0001']`, manifest count remains0, actual stage/counters/remaining time agree with budget; serialized diagnostics exclude issue/rationale/source content. Persisted held diagnostics retain these fields.
+- [x] Run `.venv/bin/pytest tests/unit/test_353_scope_pipeline.py tests/unit/test_353_scope_revision.py -q`; expect new cases RED.
+- [x] Implement checkpoint state transitions: initial author -> review; review revise -> revision with current digest; valid revision -> review with base cleared; accepted review -> accepted. Flush consumed work and complete state before each external call. Restore by phase, never infer pending protocol from model output. Implement bounded safe migration and distinct source diagnostics.
+- [x] Repeat command; expect all PASS. Commit listed files as `fix: preserve scope revision state and held findings`.
 
 ## Task 5: Verify the correction, publish, and rerun pinned Elm
 
@@ -122,4 +122,13 @@ Canonical `scope.py`, manifest mapping, executor and runtime admission formats r
 
 Spec coverage: protocol/bounds/atomicity -> Task1; wire/diagnostics -> Task2; whole fresh review/evidence/finding closure -> Task3; provenance/recovery/budgets/held reporting -> Task4; malformed replays/CI/genuine Elm -> Task5. All five Review Focus cases have explicit owning tests. Existing canonical scope/manifest/runtime interfaces stay unchanged; new shared signatures are defined before use. No additional runtime subsystem or model experiment is included.
 
-Written-plan approval is required before implementation. Preserve Native execution; after approval use executing-plans and record task evidence here. The latest actual Elm run remains held before installation; this document is not validation evidence.
+Written spec and plan approvals are recorded; Native execution is in progress. Tasks1–4 are implemented with RED-to-GREEN tests. Task5 remains pending required CI and genuine Elm execution. The latest actual Elm run remains held before installation; this document is not validation evidence.
+
+
+## Execution evidence (2026-10-19)
+
+- Tasks1–4: strict atomic models, matching canonical/native declarations, complete independent review and journal7/protocol2 recovery implemented. Tests covered16-change bounds, required retention, invalid response references, independent closure and source diagnostics.
+- Offline replay of the actual retained chat011/chat012 remains held; retained base unchanged, zero model/execution calls, no approval produced.
+- Fresh GPT-6-Astra whole-branch review independently ran224focused tests and found one Important integration regression: new executable-phase evidence cleared the scope contract without updating its persisted phase. A production-checkpoint regression failed before the fix. Reopening now enters review before flushing; additional author/reviewer interruption tests preserve coverage consumption, source hashes and expiry.
+- Local preflight initially rejected complexity-ratchet growth. Extracted the author-phase helper and named journal-version constants; the unchanged debt baseline now passes. No thresholds, suppressions or CI requirements changed.
+- Current-head preflight, required CI, immutable-image proof and fresh Elm acceptance must still be recorded. Earlier synthetic runtime fixture025 is retained as runtime evidence, not Elm acceptance.
