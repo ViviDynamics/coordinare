@@ -13,7 +13,12 @@ from coordinare.lib.redaction import redact_command_text
 from coordinare.services.environment_evidence import prepare_mandatory_evidence
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_probe_executor import execute_environment_probe
-from coordinare.services.environment_probes import ProbePlan, ProbeReport, validate_probe_report
+from coordinare.services.environment_probes import (
+    ProbePlan,
+    ProbeReport,
+    probe_batch_timeout,
+    validate_probe_report,
+)
 from coordinare.services.environment_repair import finish_probe, reserve_probe
 from coordinare.services.environment_source_provider import (
     RepositorySourceRequest,
@@ -53,7 +58,7 @@ async def run_owned_probe(plan: ProbePlan, *, context: ProbeServiceContext) -> P
     authorize = state.get("environment_probe_authorize")
     if authorize is not None:
         await authorize(plan)
-    deadline = min(budget.deadline, time.monotonic() + 120)
+    deadline = min(budget.deadline, time.monotonic() + probe_batch_timeout(plan))
     async with asyncio.timeout_at(deadline):
         inspection = SourceInspection(sorted(plan.inputs), fetch, limits, budget)
         await prepare_mandatory_evidence(inspection, plan.inputs, phase="probe")

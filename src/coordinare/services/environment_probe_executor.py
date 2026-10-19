@@ -19,7 +19,12 @@ from coordinare_service_inference.environment.execution_source_restore import (
 from coordinare.services import environment_probe_runtime
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 from coordinare.services.environment_capabilities import _docker_identity
-from coordinare.services.environment_probes import ProbeCommandResult, ProbePlan, ProbeReport
+from coordinare.services.environment_probes import (
+    ProbeCommandResult,
+    ProbePlan,
+    ProbeReport,
+    probe_batch_timeout,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -184,7 +189,8 @@ async def execute_environment_probe(
     if name in _ACTIVE_PROBES:
         message = "probe executor already owns this resource"
         raise EnvironmentDiscoveryError(message, code="probe_reservation_invalid")
-    deadline = min(budget.deadline, deadline if deadline is not None else time.monotonic()+120)
+    deadline = min(budget.deadline, time.monotonic()+probe_batch_timeout(plan),
+                   deadline if deadline is not None else budget.deadline)
     _ACTIVE_PROBES.add(name)
     try:
         async with asyncio.timeout_at(deadline):

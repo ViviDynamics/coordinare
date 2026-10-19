@@ -132,3 +132,16 @@ Written spec and plan approvals are recorded; Native execution is in progress. T
 - Fresh GPT-6-Astra whole-branch review independently ran224focused tests and found one Important integration regression: new executable-phase evidence cleared the scope contract without updating its persisted phase. A production-checkpoint regression failed before the fix. Reopening now enters review before flushing; additional author/reviewer interruption tests preserve coverage consumption, source hashes and expiry.
 - Local preflight initially rejected complexity-ratchet growth. Extracted the author-phase helper and named journal-version constants; the unchanged debt baseline now passes. No thresholds, suppressions or CI requirements changed.
 - Current-head preflight, required CI, immutable-image proof and fresh Elm acceptance must still be recorded. Earlier synthetic runtime fixture025 is retained as runtime evidence, not Elm acceptance.
+
+
+## User-directed probe timeout correction
+
+On 2026-10-19 the user instructed: “Increase the timeout.” The private-service
+probe batch allowance is now 1800 seconds (30 minutes), capped by the existing
+attempt expiry. This supersedes the prior 120-second batch allowance for fresh
+private guests. Outer-tool batches retain 120 seconds; individual command and
+guest bounds, isolation, mandatory review/checks and the overall 3600-second Elm
+attempt remain unchanged. New service/executor deadline regressions cover the
+larger batch, shorter remaining attempts, explicit tighter/looser deadlines, and
+eleven isolated 90-second observations sharing one absolute expiry. A fresh Elm
+run follows successful preflight and required CI; the exhausted run is retained.
