@@ -9,6 +9,8 @@ from pydantic_core import PydanticCustomError
 from .findings import Digest, FindingEvidence, FindingResponse
 from .scope import ScopeCriterion, ScopeCriterionProposal, ScopeDefinition, criterion_id
 
+MAX_SCOPE_REVISION_CHANGES = 16
+
 
 class ScopeReassessment(FindingEvidence):
     criterion_id: str = Field(pattern=r'^S[0-9a-f]{16}$')
@@ -17,12 +19,12 @@ class ScopeReassessment(FindingEvidence):
 
 class ScopeRevision(FindingEvidence):
     base_digest: Digest
-    add: list[ScopeCriterionProposal] = Field(max_length=16)
-    reassess: list[ScopeReassessment] = Field(max_length=16)
+    add: list[ScopeCriterionProposal] = Field(max_length=MAX_SCOPE_REVISION_CHANGES)
+    reassess: list[ScopeReassessment] = Field(max_length=MAX_SCOPE_REVISION_CHANGES)
 
     @model_validator(mode='after')
     def combined_bound(self) -> Self:
-        if len(self.add) + len(self.reassess) > 16:
+        if len(self.add) + len(self.reassess) > MAX_SCOPE_REVISION_CHANGES:
             raise PydanticCustomError('scope_revision_limit', 'scope revision exceeds 16 changes')
         return self
 

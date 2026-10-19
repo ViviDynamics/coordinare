@@ -53,6 +53,10 @@ FEEDBACK_MAX_BYTES = 16 * 1024
 OUTPUT_MAX_CHARS = 512
 
 
+PREVIOUS_SCOPE_JOURNAL_VERSION = 6
+CURRENT_JOURNAL_VERSION = 7
+
+
 class RepairJournal(BaseModel):
     """Daemon-owned state; a pending repair survives snapshot roundtrips."""
 
@@ -108,11 +112,11 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
     data = cache.environment_attempt
     if isinstance(data, dict) and type(data.get('version')) is int and data['version'] in (1, 2, 3, 4, 5):
         _refuse('legacy environment review requires explicit restart after confirmed cleanup', code='legacy_attempt_requires_restart')
-    if isinstance(data, dict) and data.get('version') == 6:
+    if isinstance(data, dict) and data.get('version') == PREVIOUS_SCOPE_JOURNAL_VERSION:
         if data.get('scope_contract') is None:
             _refuse('legacy source author protocol requires explicit restart', code='legacy_attempt_requires_restart')
         data = {**data, 'version': 7, 'scope_author_protocol': 2, 'scope_phase': 'accepted', 'scope_revision_base_digest': None}
-    if isinstance(data, dict) and data.get('version') == 7 and not {
+    if isinstance(data, dict) and data.get('version') == CURRENT_JOURNAL_VERSION and not {
             'scope_author_protocol', 'scope_phase', 'scope_revision_base_digest'} <= data.keys():
         _refuse('scope protocol checkpoint is incomplete', code='scope_protocol_invalid')
     try:

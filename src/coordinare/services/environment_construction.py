@@ -83,6 +83,8 @@ class ReviewedConstruction:
         self.budget.reserve_repair('coverage')
         self.retain_inputs(additional)
         self.budget.scope_contract = None
+        self.budget.scope_phase = "review"
+        self.budget.scope_revision_base_digest = None
         await self.budget.flush()
         await self.prepare()
         raise ScopeReopenedError
