@@ -235,3 +235,55 @@ async def test_scope_prompts_deliver_exact_schema_to_canonical_json_object_trans
     assert 'ScopeEnvelope' in replies.messages[1][0]['content']
     assert 'ScopeAssessmentEnvelope' in replies.messages[2][0]['content']
     assert '"finding_responses"' in replies.messages[1][0]['content']
+
+
+def test_scope_wire_schema_publishes_existing_rationale_bounds():
+    from coordinare_service_inference.environment.scope import (
+        ScopeAssessmentEnvelope,
+        ScopeEnvelope,
+    )
+
+    for envelope, definition in ((ScopeEnvelope, 'ScopeCriterionProposal'),
+                                 (ScopeAssessmentEnvelope, 'ScopeAssessmentProposal')):
+        schema = envelope.model_json_schema()['$defs'][definition]['properties']['rationale']
+        assert schema.get('maxLength') == 2048
+        assert schema.get('minLength') == 1
+        assert 'UTF-8' in schema.get('description', '')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase', ['author', 'reviewer'])
+async def test_unread_citation_correction_identifies_exact_element_without_echoing_source(phase):
+    bad_path = 'odd/private-candidate-description'
+    bad = proposal(criterion(bad_path)) if phase == 'author' else review(sources=[bad_path])
+    values = [{'tool': 'read_file', 'path': 'guide'}]
+    if phase == 'reviewer':
+        values.append(proposal(criterion()))
+    values.extend([bad, proposal(criterion()) if phase == 'author' else review()])
+    if phase == 'author':
+        values.append(review())
+    replies = Replies(values)
+    budget = AttemptBudget()
+    result = await run(replies, budget=budget)
+    correction = next(json.loads(m['content']) for call in replies.messages for m in call
+                      if m['role'] == 'user' and 'validation_errors' in json.loads(m['content']))
+    expected = (['scope', 'criteria', '0', 'sources', '0'] if phase == 'author'
+                else ['scope_assessment', 'sources', '0'])
+    assert correction['validation_errors'] == [{'code': 'scope_citations_invalid', 'location': expected}]
+    assert bad_path not in json.dumps(correction)
+    assert budget.schema_repairs == 1 and budget.coverage_revisions == 0
+    assert result.definition.criteria[0].sources == ['guide']
+
+
+def test_scope_rationale_feedback_reports_length_constraint_without_echoing_text():
+    from coordinare_service_inference.environment.scope import ScopeAssessmentEnvelope
+
+    from coordinare.services.environment_admission import _validation_feedback
+
+    value = review()
+    value['scope_assessment']['rationale'] = 'private-evidence-' * 200
+    with pytest.raises(ValidationError) as failure:
+        ScopeAssessmentEnvelope.model_validate(value)
+    errors = _validation_feedback(failure.value)
+    assert errors == [{'location': ['scope_assessment', 'rationale'], 'code': 'string_too_long'}]
+    assert 'private-evidence' not in json.dumps(errors)

@@ -78,7 +78,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
         kind = error["type"]
         code = kind if kind in {
             "missing", "extra_forbidden", "string_type", "list_type", "dict_type", "bool_type",
-            "literal_error", "int_type", "string_pattern_mismatch", "too_short", "too_long",
+            "literal_error", "int_type", "string_pattern_mismatch", "string_too_short", "string_too_long", "too_short", "too_long",
             "requirement_check_reference", "clean_dependency_install_only",
             "probe_id_maps", "probe_cited_question", "probe_required_true", "probe_citations_uninspected",
             "scope_identity_mismatch", "scope_required_check_mapping", "scope_required_service", "scope_id_collision",
