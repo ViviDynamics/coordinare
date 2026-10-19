@@ -103,6 +103,7 @@ from coordinare.services.environment_repair import (
     reserve_execution_source,
     restore_attempt_generation,
 )
+from coordinare.services.environment_runtime import admit_installer_runtime
 from coordinare.services.environment_source_provider import (
     checkpoint_source_ownership,
     ensure_execution_source,
@@ -4744,6 +4745,14 @@ class CoordinareDaemon:
         if (ok or reviewed_attempt) and not stopped:
             ok, infra = False, True
             _boot_err = "bootstrap container could not be confirmed stopped; verification was not run"
+        if ok and isinstance(cache, EnvCacheState):
+
+            parent = status_result.get('report')
+            try:
+                admit_installer_runtime(cache, parent.get('environment_verification') if isinstance(parent, dict) else None,
+                                        cleanup_confirmed=stopped)
+            except ValueError as exc:
+                ok, _boot_err = False, str(exc)
         if ok:
             ok, _boot_err, infra = await self._verify_bootstrap_in_clean_context(
                 symphony_name, svc, job_id,

@@ -1,6 +1,12 @@
 """Trusted dispatch contracts; installer output is never a verification report."""
 from __future__ import annotations
 
+from contextlib import AsyncExitStack
+from coordinare_service_inference.environment.runtime import RuntimeArtifactReceipt
+from coordinare_service_inference.environment.runtime_supervisor import seal_runtime
+
+from performer.environment_runtime import close_score_runtime, open_score_runtime, runtime_activation
+
 from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
 from coordinare_service_inference.environment.execution_source_checkout import checkout_identity
 
@@ -94,12 +100,31 @@ async def execute_contract(score: Score, stand: Stand, *, install: bool = False)
         if actual_source != expected_source:
             _refuse_contract('installer checkout differs from accepted complete source')
     with tempfile.TemporaryDirectory(prefix="coordinare-environment-") as scratch:
+        runtime_kwargs = {}
+        lease = getattr(stand, "environment_runtime", None)
+        if manifest.runtime is not None:
+
+            runtime_kwargs["runtime_lease"] = lease
+            if lease is None and not install:
+                runtime_kwargs["runtime_artifacts"] = RuntimeArtifactReceipt.model_validate(score.environment_runtime_artifacts)
+            if lease is not None and lease.install and not install and not lease.installation_passed:
+                _refuse_contract("required installer actions have not passed")
         report = await run_manifest(
             manifest, cache=Path(score.env_cache_path), repo=stand.path,
             scratch=Path(scratch), install=install, scope="" if score.role == "env_bootstrap" else score.role,
             secret_names=score.environment_secret_names,
-            execution_source_digest=expected_source.digest(),
+            execution_source_digest=expected_source.digest(), **runtime_kwargs,
         )
+    if manifest.runtime is not None and lease is not None and lease.install and not install and report.passed:
+
+        receipt = await seal_runtime(lease, manifest_digest=manifest.digest(), source_digest=expected_source.digest(), deadline=lease.deadline)
+        report.runtime_artifacts = receipt
+        score.environment_runtime_artifacts = receipt.model_dump(mode="json")
+        cleanup = await lease.close(deadline=lease.deadline)
+        report.runtime_cleanup = cleanup.confirmed and cleanup.clean_shutdown and cleanup.bounds_respected
+        if not report.runtime_cleanup:
+            _refuse_contract("private runtime teardown did not pass")
+        stand.environment_runtime = None
     failures = [f"{item.id}: {item.status}" for item in report.results if item.status != "pass"]
     return {
         "passed": report.passed,
@@ -111,7 +136,6 @@ async def execute_contract(score: Score, stand: Stand, *, install: bool = False)
 
 async def prepare_environment(score: Score, stand: Stand) -> None:
     """Activate declarative metadata and hold only explicitly declared services for this job."""
-    from contextlib import AsyncExitStack
 
     from coordinare_service_inference.environment.runner import manifest_environment, manifest_services
 
@@ -121,7 +145,14 @@ async def prepare_environment(score: Score, stand: Stand) -> None:
     try:
         scratch = lifecycle.enter_context(tempfile.TemporaryDirectory(prefix="coordinare-consumer-"))
         roots = {"cache": Path(score.env_cache_path), "repo": stand.path, "scratch": Path(scratch)}
-        stand.cache_env = manifest_environment(manifest, **roots, secret_names=score.environment_secret_names)
+        lease = None
+        if manifest.runtime is not None:
+
+            lease = await open_score_runtime(score, stand, manifest, Path(scratch))
+            stand.environment_runtime = lease
+            lifecycle.push_async_callback(close_score_runtime, lease)
+        runtime_kwargs = {"runtime_env": lease.activation_env} if lease is not None else {}
+        stand.cache_env = manifest_environment(manifest, **roots, secret_names=score.environment_secret_names, **runtime_kwargs)
         # Bootstrap actions create missing paths; verification runs after installation.
         if score.role != "env_bootstrap":
             result = await execute_contract(score, stand)
@@ -129,12 +160,16 @@ async def prepare_environment(score: Score, stand: Stand) -> None:
             from coordinare_service_inference.environment.render import render_activate
 
             activation = Path(scratch) / "activate.sh"
-            activation.write_text(render_activate(manifest, cache_mount_path=score.env_cache_path))
+            text = render_activate(manifest, cache_mount_path=score.env_cache_path)
+            if lease is not None:
+
+                text += runtime_activation(lease)
+            activation.write_text(text)
             activation.chmod(0o400)
             stand.cache_env.update({"BASH_ENV": str(activation), "COORDINARE_REPO_DIR": str(stand.path),
                                     "COORDINARE_SCRATCH_DIR": scratch})
             results = await lifecycle.enter_async_context(
-                manifest_services(manifest, **roots, scope=score.role, secret_names=score.environment_secret_names),
+                manifest_services(manifest, **roots, scope=score.role, secret_names=score.environment_secret_names, **runtime_kwargs),
             )
             _require_services_ready(results)
             from performer.workspace import _mark_services_healthy
@@ -148,5 +183,8 @@ async def prepare_environment(score: Score, stand: Stand) -> None:
 async def close_environment(stand: Stand) -> None:
     """Teardown declared services even after errors or cancellation."""
     lifecycle, stand.environment_lifecycle = getattr(stand, "environment_lifecycle", None), None
-    if lifecycle is not None:
-        await lifecycle.aclose()
+    try:
+        if lifecycle is not None:
+            await lifecycle.aclose()
+    finally:
+        stand.environment_runtime = None

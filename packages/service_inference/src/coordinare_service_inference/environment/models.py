@@ -28,7 +28,7 @@ from .findings import (
     FindingProposal,
     validate_finding_ledger,
 )
-from .runtime import RuntimePolicy  # noqa: TC001 - pydantic resolves this field at runtime
+from .runtime import RUNTIME_OWNED_ENV, RuntimeArtifactReceipt, RuntimePolicy, RuntimeSpec
 
 MAX_DOCUMENT_BYTES = 256 * 1024
 EXECUTION_PATH_PATTERN = r"^(?:/|\{(?:cache|repo|scratch)\}|\$\{[A-Za-z_][A-Za-z0-9_]*\})(?:[^\x00-\x1f\x7f\\]*)$"
@@ -208,7 +208,8 @@ class Service(StrictModel):
 
 
 class EnvironmentManifest(StrictModel):
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
+    runtime: RuntimeSpec | None = None
     symphony_name: str = Field(min_length=1)
     source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     inputs: dict[str, str]
@@ -220,10 +221,21 @@ class EnvironmentManifest(StrictModel):
     activation: Activation
     services: list[Service]
     empty_reason: str | None
-    policy_version: Literal["351-v1"]
+    policy_version: Literal["351-v1", "353-v2"]
+
+    @model_serializer(mode="wrap")
+    def serialize_native_compatibly(self, handler: Any) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if self.schema_version == 1:
+            data.pop("runtime", None)
+        return data
 
     @model_validator(mode="after")
     def validate_contract(self) -> Self:
+        if self.schema_version == 1 and (self.runtime is not None or self.policy_version != "351-v1"):
+            raise ValueError("native manifest cannot declare private runtime")
+        if self.schema_version == 2 and (self.runtime is None or self.policy_version != "353-v2"):
+            raise ValueError("current manifest requires explicit runtime contract")
         reject_nested_credentials(self.model_dump())
         if len(self.model_dump_json().encode()) > MAX_DOCUMENT_BYTES:
             raise ValueError("manifest exceeds 256 KiB")
@@ -236,6 +248,9 @@ class EnvironmentManifest(StrictModel):
             commands.extend([service.start, service.health, service.stop])
             if service.init:
                 commands.append(service.init)
+        if self.runtime is not None and any(RUNTIME_OWNED_ENV & variables.keys()
+                for variables in [self.activation.env, *(command.env for command in commands)]):
+            raise ValueError("private runtime control environment cannot be overridden")
         ids = [command.id for command in commands]
         if len(ids) != len(set(ids)) or len(commands) > 4096:
             raise ValueError("duplicate command IDs or excessive commands")
@@ -349,6 +364,19 @@ class CheckResult(StrictModel):
 
 
 class VerificationReport(StrictModel):
+    runtime_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    runtime_phase: Literal["installer", "consumer", "live_consumer"] | None = None
+    runtime_artifacts: RuntimeArtifactReceipt | None = None
+    runtime_cleanup: bool | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_native_compatibly(self, handler: Any) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if self.runtime_digest is None:
+            for key in ("runtime_digest", "runtime_phase", "runtime_artifacts", "runtime_cleanup"):
+                data.pop(key, None)
+        return data
+
     execution_source_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     platform: str = Field(default_factory=lambda: runtime_platform.system().lower() + "/" + runtime_platform.machine().lower())
     manifest_digest: str

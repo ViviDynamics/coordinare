@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from coordinare_service_inference.environment.source_payload import decode_sources, encode_sources
 
 from coordinare.services.environment_acceptance import accepted_environment
+from coordinare.services.environment_runtime import runtime_verifier_context
 from coordinare.services.kubernetes_verifier import check_project_files, credential_environment
 
 if TYPE_CHECKING:
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.environment_runtime import RuntimeVerifierContext
 
 
 async def verification_sources(state: Mapping[str, Any], name: str, cache: EnvCacheState) -> dict[str, str]:
@@ -74,13 +76,17 @@ def source_setup(files: dict[str, str], *, expected_inputs: Mapping[str, str]) -
 
 async def verification_environment(
     state: Mapping[str, Any], name: str, cache: EnvCacheState, performer_mounts: Sequence[Path],
+    *, runtime_context: RuntimeVerifierContext | None = None,
 ) -> str:
     """Export bounded encoded credentials for restoration after trusted startup."""
     encoded = await verification_credentials(state, name, cache, performer_mounts)
-    if not encoded:
-        return ""
+
+    context = runtime_context or runtime_verifier_context(cache)
+    environment = credential_environment(encoded) if encoded else {}
+    if context is not None:
+        environment.update(context.environment)
     return "".join("export " + key + "=" + shlex.quote(value) + "\n"
-                   for key, value in credential_environment(encoded).items())
+                   for key, value in environment.items())
 
 
 async def verification_credentials(

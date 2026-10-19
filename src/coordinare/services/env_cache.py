@@ -80,6 +80,15 @@ from coordinare.services.environment_repair import (
     reserve_execution_source,
     save_attempt,
 )
+from coordinare.services.environment_runtime import (
+    RuntimeVerifierInput,
+    RuntimeVerifierSource,
+    runtime_verifier_context,
+    runtime_verifier_options,
+    unpack_verifier_input,
+    unpack_verifier_source,
+    verifier_deadline,
+)
 from coordinare.services.environment_source_provider import (
     checkpoint_source_ownership,
     ensure_execution_source,
@@ -115,10 +124,12 @@ if TYPE_CHECKING:
     from typing import Protocol
 
     from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
+    from coordinare_service_inference.environment.models import ExecutionCapabilities
     from coordinare_service_inference.schema import ServicesManifest
 
     from coordinare.services.environment_discovery import ChatJson
     from coordinare.services.environment_probes import ProbePlan, ProbeReport
+    from coordinare.services.environment_runtime import RuntimeVerifierContext
 
     class _GitHubFileReader(Protocol):
         async def get_file_content(self, org: str, repo: str, path: str, *, ref: str = "HEAD") -> str | None: ...
@@ -741,6 +752,12 @@ async def _verify_cache_clean(
     ec = (state.get("env_cache") or {}).get(symphony_name)
     if not isinstance(ec, EnvCacheState):
         return None, "no env-cache state for symphony"
+
+    try:
+        runtime_context = runtime_verifier_context(ec)
+    except ValueError as exc:
+        ec.environment_verification = None
+        return False, str(exc)
     ec.environment_verification = None
     # 218: the script that decides success is the one the DAEMON rendered, kept in daemon
     # memory and the snapshot. The copy in the cache is never executed. Every refusal here is
@@ -767,18 +784,23 @@ async def _verify_cache_clean(
             detail="the docker daemon did not answer; the clean verify was not run",
         )
         return None, "the docker daemon is not reachable; the clean verify was not run"
+    if runtime_context is not None:
+        return await _verify_cache_runtime(state, symphony_name, svc, performer_mounts,
+                                           runtime_context=runtime_context)
     return await _verify_cache_runtime(state, symphony_name, svc, performer_mounts)
 
 
 async def _verify_cache_runtime(state: Mapping[str, Any], symphony_name: str, svc: Any,
-                                performer_mounts: Sequence[Path]) -> tuple[bool | None, str]:
-
-
+                                performer_mounts: Sequence[Path], *,
+                                runtime_context: RuntimeVerifierContext | None = None) -> tuple[bool | None, str]:
     cache = state['env_cache'][symphony_name]
     with tempfile.TemporaryDirectory(prefix='coordinare-verify-source-') as temporary:
         reserve_execution_source(cache, temporary)
         try:
             await checkpoint_source_ownership(state)
+            if runtime_context is not None:
+                return await _verify_cache_runtime_with_source(state, symphony_name, svc, performer_mounts,
+                                                               RuntimeVerifierSource(Path(temporary), runtime_context))
             return await _verify_cache_runtime_with_source(state, symphony_name, svc, performer_mounts, Path(temporary))
         finally:
             # The context exits after finally; remove before releasing durable ownership.
@@ -788,25 +810,23 @@ async def _verify_cache_runtime(state: Mapping[str, Any], symphony_name: str, sv
 
 
 async def _verify_cache_runtime_with_source(
-    state: Mapping[str, Any], symphony_name: str, svc: Any, performer_mounts: Sequence[Path], source_root: Path,
+    state: Mapping[str, Any], symphony_name: str, svc: Any, performer_mounts: Sequence[Path],
+    source: Path | RuntimeVerifierSource,
 ) -> tuple[bool | None, str]:
     ec = state["env_cache"][symphony_name]
     contract = accepted_environment(ec)
     script = str(ec.rendered_verify_sh)
+    source_root, runtime_context = unpack_verifier_source(source)
+    try:
+        runtime_context, deadline = verifier_deadline(ec, runtime_context, _VERIFY_TIMEOUT_S)
+    except ValueError as exc:
+        return False, str(exc)
     from coordinare.services.http_performer_service import HTTPPerformerService
 
     cache_dir = Path(ec.cache_dir)
-    from coordinare.services.environment_capabilities import (
-        capabilities_match,
-        resolve_execution_capabilities,
-    )
-
-    try:
-        capabilities = await resolve_execution_capabilities(state, symphony_name)
-    except (ValueError, OSError, RuntimeError):
-        return False, "clean verification runtime capabilities are unavailable"
-    if not capabilities_match(ec, capabilities):
-        return False, "clean verification runtime capabilities changed; rebuild the cache"
+    capabilities, refusal = await _clean_capabilities(state, symphony_name, ec)
+    if capabilities is None:
+        return False, refusal
     devenv_root = (
         svc.devenv_root if isinstance(svc, HTTPPerformerService) else DEFAULT_DEVENV_ROOT
     )
@@ -831,15 +851,24 @@ async def _verify_cache_runtime_with_source(
         "--entrypoint", "/usr/local/bin/python", str(image),
         "-I", "-m", "coordinare_service_inference.environment.execution_source_stdin",
     ]
+    if runtime_context is not None and contract is not None:
+
+        cmd[2:2] = runtime_verifier_options(contract, source_root)
 
     try:
         immutable_verifier_image(image)
 
         bundle = await ensure_execution_source(state, symphony_name, ec,
-            destination=source_root/'payload', deadline=time.monotonic()+_VERIFY_TIMEOUT_S)
-        credentials = await verification_environment(state, symphony_name, ec, performer_mounts)
+            destination=source_root/'payload', deadline=deadline)
+        if runtime_context is not None:
+            credentials = await verification_environment(state, symphony_name, ec, performer_mounts,
+                                                          runtime_context=runtime_context)
+        else:
+            credentials = await verification_environment(state, symphony_name, ec, performer_mounts)
         script_input = execution_input(bundle, credentials+script,
             review_inputs=contract.inputs if contract is not None else {})
+        if deadline <= time.monotonic():
+            return False, 'clean verification deadline exhausted while preparing inputs'
     except (ValueError, OSError, RuntimeError) as exc:
         return False, f"clean verification inputs refused: {exc}"
     try:
@@ -856,20 +885,43 @@ async def _verify_cache_runtime_with_source(
             error=str(exc),
         )
         return None, f"clean verify could not run: {exc}"
-    outcome = await _verify_outcome(proc, name, symphony_name, script_input, cache=ec)
-    if outcome[0] is not None:
-        if not await _remove_verify_container(name):
-            outcome = None, "clean verifier container removal was not confirmed"
-        elif ec.environment_verification is not None:
-            if ec.environment_verification.get("platform") != capabilities.platform:
-                ec.environment_verification = None
-                return False, "clean verification platform differs from accepted capabilities"
-            ec.environment_verification["image_ref"] = image
+    value = RuntimeVerifierInput(script_input, max(0, deadline-time.monotonic())) if runtime_context is not None else script_input
+    outcome = await _verify_outcome(proc, name, symphony_name, value, cache=ec)
+    return await _finish_clean_verification(ec, capabilities, outcome, name)
+
+
+async def _clean_capabilities(state: Mapping[str, Any], symphony_name: str,
+                             cache: EnvCacheState) -> tuple[ExecutionCapabilities | None, str]:
+    from coordinare.services.environment_capabilities import (
+        capabilities_match,
+        resolve_execution_capabilities,
+    )
+
+    try:
+        capabilities = await resolve_execution_capabilities(state, symphony_name)
+    except (ValueError, OSError, RuntimeError):
+        return None, 'clean verification runtime capabilities are unavailable'
+    if not capabilities_match(cache, capabilities):
+        return None, 'clean verification runtime capabilities changed; rebuild the cache'
+    return capabilities, ''
+
+
+async def _finish_clean_verification(cache: EnvCacheState, capabilities: ExecutionCapabilities,
+                                     outcome: tuple[bool | None, str], name: str) -> tuple[bool | None, str]:
+    if outcome[0] is None:
+        return outcome
+    if not await _remove_verify_container(name):
+        return None, 'clean verifier container removal was not confirmed'
+    if cache.environment_verification is not None:
+        if cache.environment_verification.get('platform') != capabilities.platform:
+            cache.environment_verification = None
+            return False, 'clean verification platform differs from accepted capabilities'
+        cache.environment_verification['image_ref'] = capabilities.image_ref
     return outcome
 
 
 async def _verify_outcome(
-    proc: asyncio.subprocess.Process, name: str, symphony_name: str, script: str | bytes,
+    proc: asyncio.subprocess.Process, name: str, symphony_name: str, script: str | bytes | RuntimeVerifierInput,
     *, cache: EnvCacheState | None = None,
 ) -> tuple[bool | None, str]:
     """218 (review round 3): the verdict for a verify container that started.
@@ -877,9 +929,10 @@ async def _verify_outcome(
     A run past the budget is a real failure, and its container is removed by name. An exit 125 means
     docker could not start the container, which is infrastructure. Any other exit is the verify's verdict.
     """
+    script, timeout = unpack_verifier_input(script, _VERIFY_TIMEOUT_S)
     try:
         out_b, _ = await asyncio.wait_for(
-            proc.communicate(input=script.encode() if isinstance(script, str) else script), timeout=_VERIFY_TIMEOUT_S,
+            proc.communicate(input=script.encode() if isinstance(script, str) else script), timeout=timeout,
         )
     except asyncio.CancelledError:
         # 218 (round 4): the daemon task was cancelled. The container must still be killed and removed.
@@ -895,7 +948,7 @@ async def _verify_outcome(
             removed=removed,
         )
         state_note = "removed" if removed else "NOT confirmed removed"
-        return False, f"clean verify timed out after {_VERIFY_TIMEOUT_S:.0f}s; its container was {state_note}"
+        return False, f"clean verify timed out after {timeout:.0f}s; its container was {state_note}"
     if proc.returncode == _DOCKER_RUN_START_FAILED:
         logger.warning(
             "env_cache.clean_verify_errored",
@@ -1659,6 +1712,7 @@ class EnvCacheService:
                 # so it fixes the specific gap (e.g. a pinned Ruby version) on retry.
                 last_failure=cache_state.last_bootstrap_error,
                 environment_execution_source=cache_state.environment_execution_source,
+                environment_attempt_expires_at=(cache_state.environment_attempt or {}).get("expires_at"),
                 environment_manifest=cache_state.environment_manifest,
                 environment_assessment=cache_state.environment_assessment,
                 environment_manifest_digest=(cache_state.environment_assessment["manifest_digest"]
