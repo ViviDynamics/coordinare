@@ -90,6 +90,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
         detail: dict[str, Any] = {"location": location, "code": code}
         if code == "runtime_credential_reference":
             detail["guidance"] = ("Use ${NAME} for a named credential supplied by the trusted runtime. "
+                "For a credential environment variable named K, its value must be exactly ${K}, not a reference to another name. "
                 "Never move literal credentials into argv, activation or another field. "
                 "Do not invent runtime credentials; unavailable required values must hold readiness.")
         result.append(detail)
