@@ -6,10 +6,12 @@ from coordinare_service_inference.environment.runtime import RuntimeArtifactRece
 from coordinare_service_inference.environment.runtime_supervisor import seal_runtime
 
 from performer.environment_runtime import close_score_runtime, open_score_runtime, runtime_activation
+from performer.environment_runtime_monitor import start_runtime_monitor
 
 from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
 from coordinare_service_inference.environment.execution_source_checkout import checkout_identity
 
+import asyncio
 import json
 import tempfile
 from pathlib import Path
@@ -120,6 +122,9 @@ async def execute_contract(score: Score, stand: Stand, *, install: bool = False)
         receipt = await seal_runtime(lease, manifest_digest=manifest.digest(), source_digest=expected_source.digest(), deadline=lease.deadline)
         report.runtime_artifacts = receipt
         score.environment_runtime_artifacts = receipt.model_dump(mode="json")
+        monitor = getattr(stand, "environment_runtime_monitor", None)
+        if monitor is not None:
+            await monitor.stop()
         cleanup = await lease.close(deadline=lease.deadline)
         report.runtime_cleanup = cleanup.confirmed and cleanup.clean_shutdown and cleanup.bounds_respected
         if not report.runtime_cleanup:
@@ -151,6 +156,9 @@ async def prepare_environment(score: Score, stand: Stand) -> None:
             lease = await open_score_runtime(score, stand, manifest, Path(scratch))
             stand.environment_runtime = lease
             lifecycle.push_async_callback(close_score_runtime, lease)
+            monitor = start_runtime_monitor(lease)
+            stand.environment_runtime_monitor = monitor
+            lifecycle.push_async_callback(monitor.stop)
         runtime_kwargs = {"runtime_env": lease.activation_env} if lease is not None else {}
         stand.cache_env = manifest_environment(manifest, **roots, secret_names=score.environment_secret_names, **runtime_kwargs)
         # Bootstrap actions create missing paths; verification runs after installation.
@@ -180,11 +188,32 @@ async def prepare_environment(score: Score, stand: Stand) -> None:
         raise
 
 
-async def close_environment(stand: Stand) -> None:
-    """Teardown declared services even after errors or cancellation."""
-    lifecycle, stand.environment_lifecycle = getattr(stand, "environment_lifecycle", None), None
+async def _close_lifecycle(stand: Stand, lifecycle: AsyncExitStack) -> None:
     try:
-        if lifecycle is not None:
-            await lifecycle.aclose()
+        await lifecycle.aclose()
     finally:
         stand.environment_runtime = None
+        stand.environment_runtime_monitor = None
+
+
+async def close_environment(stand: Stand) -> None:
+    """Drain owned teardown before reporting failure or repeated cancellation."""
+    task = getattr(stand, "environment_cleanup_task", None)
+    if task is None:
+        lifecycle, stand.environment_lifecycle = getattr(stand, "environment_lifecycle", None), None
+        if lifecycle is None:
+            stand.environment_runtime = None
+            return
+        task = asyncio.create_task(_close_lifecycle(stand, lifecycle))
+        stand.environment_cleanup_task = task
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:
+            break
+    task.result()
+    if cancelled:
+        raise asyncio.CancelledError

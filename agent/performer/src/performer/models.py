@@ -551,6 +551,8 @@ class Stand:
     bootstrap_environment: Any = None
     environment_lifecycle: Any = None
     environment_runtime: Any = None
+    environment_cleanup_task: Any = None
+    environment_runtime_monitor: Any = None
 
 
 # ---------------------------------------------------------------------------
