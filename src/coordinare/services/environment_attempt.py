@@ -63,7 +63,7 @@ class AttemptBudget:
     mandatory_inputs_delivered: int = 0
     inspected_bytes: int = 0
     context_bytes: int = 0
-    expected_envelope: Literal["source_tool", "probe", "manifest", "assessment", "scope", "scope_assessment"] = "manifest"
+    expected_envelope: Literal["source_tool", "probe", "manifest", "assessment", "scope", "scope_assessment", "scope_revision"] = "manifest"
     stage: str = "inventory"
     outcome: str = "held"
     error_code: str | None = None
@@ -74,6 +74,9 @@ class AttemptBudget:
     finding_ledger: FindingLedger | None = field(default=None, repr=False)
     scope_inputs: dict[str, str] = field(default_factory=dict, repr=False)
     scope_responses: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    scope_author_protocol: Literal[2] = 2
+    scope_phase: Literal["initial", "revision", "review", "accepted"] = "initial"
+    scope_revision_base_digest: str | None = None
     scope_definition: ScopeDefinition | None = field(default=None, repr=False)
     scope_contract: ScopeContract | None = field(default=None, repr=False)
     scope_findings: FindingLedger | None = field(default=None, repr=False)
