@@ -72,6 +72,34 @@ function buildFlowDef(phase) {
   return lines.join('\n');
 }
 
+// Optional diagram delivery begins after window.load so an unavailable CDN
+// cannot hold the operational dashboard's parser or load event open.
+var _workflowRenderer = null;
+function loadWorkflowRenderer() {
+  if (window.mermaid) return Promise.resolve(window.mermaid);
+  if (!_workflowRenderer) _workflowRenderer = new Promise(function (resolve, reject) {
+    function start() {
+      var script = document.createElement('script');
+      var timer = setTimeout(function () { finish(new Error('Workflow renderer timed out')); }, 5000);
+      function finish(error) {
+        clearTimeout(timer);
+        script.onload = script.onerror = null;
+        if (error) { script.remove(); reject(error); }
+        else resolve(window.mermaid);
+      }
+      script.onload = function () {
+        finish(window.mermaid ? null : new Error('Workflow renderer unavailable'));
+      };
+      script.onerror = function () { finish(new Error('Workflow renderer unavailable')); };
+      script.src = 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js';
+      document.head.appendChild(script);
+    }
+    if (document.readyState === 'complete') start();
+    else window.addEventListener('load', start, {once: true});
+  });
+  return _workflowRenderer;
+}
+
 var _renderSeq = 0;
 async function updateFlowChart(phase) {
   if (phase === _lastRenderedPhase) return;
@@ -79,6 +107,8 @@ async function updateFlowChart(phase) {
   var seq = ++_renderSeq;
   var def = buildFlowDef(phase);
   try {
+    var mermaid = await loadWorkflowRenderer();
+    if (seq !== _renderSeq) return;
     mermaid.initialize({startOnLoad: false, theme: 'base', themeVariables: {
       background: flowColor('bg-surface'), primaryColor: flowColor('bg-elevated'),
       primaryTextColor: flowColor('text-primary'), primaryBorderColor: flowColor('border-control'),
@@ -91,6 +121,9 @@ async function updateFlowChart(phase) {
       document.getElementById('flow-chart').innerHTML = result.svg;
     }
   } catch(e) {
+    if (seq === _renderSeq) {
+      document.getElementById('flow-chart').textContent = 'Workflow diagram unavailable. Reload to try again.';
+    }
     console.error('mermaid render failed', e);
   }
 }
