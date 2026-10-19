@@ -494,7 +494,16 @@ jobs:
         # $(...) would leave pytest with no paths, and it would run everything.
         run: |
           files=$(python scripts/ci_shard.py --shard ${{ matrix.shard }} --of 3 tests/e2e)
-          uv run --extra dev pytest --override-ini="addopts=" --override-ini="timeout_method=thread" --browser ${{ matrix.browser }} -v --junitxml=junit-e2e-${{ matrix.browser }}-${{ matrix.shard }}.xml $files
+          uv run --extra dev pytest --override-ini="addopts=" --override-ini="timeout_method=thread" --browser ${{ matrix.browser }} --tracing retain-on-failure -v --junitxml=junit-e2e-${{ matrix.browser }}-${{ matrix.shard }}.xml $files
+
+      - name: Upload failed browser traces
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: browser-traces-${{ matrix.browser }}-${{ matrix.shard }}
+          path: test-results/**/trace.zip
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: Upload test timings
         # 289: scripts/ci_durations.py turns these into tests/ci-durations.json to rebalance shards.
