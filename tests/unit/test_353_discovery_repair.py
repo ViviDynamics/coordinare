@@ -9,7 +9,7 @@ import pytest
 from coordinare_service_inference.environment.models import EnvironmentManifest
 
 from coordinare.services.environment_attempt import AttemptBudget, DiscoveryChatReply
-from coordinare.services.environment_discovery import DiscoveryLimits, EnvironmentDiscoveryError
+from coordinare.services.environment_discovery import EnvironmentDiscoveryError
 from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
 from tests.unit.test_351_environment_discovery import (
     CAPABILITIES,
@@ -150,18 +150,48 @@ async def test_secret_validation_values_not_logged():
 
 
 @pytest.mark.asyncio
-async def test_aggregate_deadline_cancels_backend_work():
+async def test_aggregate_deadline_cancels_backend_work(monkeypatch):
+    started = asyncio.Event()
     cancelled = asyncio.Event()
+    budget = AttemptBudget()
+    original_deadline = budget.deadline
+    aggregate_timer = None
+    timeout_at = asyncio.timeout_at
+
+    def capture_aggregate_timer(deadline):
+        nonlocal aggregate_timer
+        timer = timeout_at(deadline)
+        if deadline == original_deadline and aggregate_timer is None:
+            aggregate_timer = timer
+        return timer
+
+    monkeypatch.setattr(asyncio, 'timeout_at', capture_aggregate_timer)
 
     async def slow(messages):
         try:
+            started.set()
             await asyncio.Event().wait()
         finally:
             cancelled.set()
 
-    with pytest.raises(EnvironmentDiscoveryError, match="deadline"):
-        await run(slow, limits=DiscoveryLimits(attempt_timeout_seconds=0.02, phase_timeout_seconds=1))
-    assert cancelled.is_set()
+    operation = asyncio.create_task(run(slow, budget=budget))
+    entered = asyncio.create_task(started.wait())
+    try:
+        await asyncio.wait({operation, entered}, return_when=asyncio.FIRST_COMPLETED)
+        assert started.is_set(), 'discovery stopped before entering the backend'
+        assert aggregate_timer is not None
+        # Expire the real aggregate timeout only after there is work to cancel.
+        # Scope/schema setup speed under coverage must not choose the test path.
+        aggregate_timer.reschedule(asyncio.get_running_loop().time())
+        with pytest.raises(EnvironmentDiscoveryError) as failure:
+            await operation
+        assert failure.value.code == 'attempt_deadline'
+        assert cancelled.is_set()
+        assert budget.deadline == original_deadline
+    finally:
+        operation.cancel()
+        entered.cancel()
+        await asyncio.gather(operation, entered, return_exceptions=True)
 
 
 def test_aggregate_read_and_call_budgets_do_not_reset():
