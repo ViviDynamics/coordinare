@@ -1,6 +1,8 @@
 """Performer entrypoint — wire protocol message loop."""
 from __future__ import annotations
 
+from coordinare_service_inference.environment.runtime_cli import run_cli
+
 import asyncio
 import json as _json_module
 import shlex
@@ -2713,77 +2715,79 @@ async def run_loop() -> None:
 
     line_iter = iter_lines_chunked(reader, timeout=_watchdog_remaining)
 
-    while True:
-        try:
-            raw = await line_iter.__anext__()
-        except StopAsyncIteration:
-            break
-        except asyncio.TimeoutError:
-            log.warning("session watchdog fired — stopping backend",
-                        session_id=perf.session_id if perf else "")
-            await _watchdog_fired(perf, settings)
-            break
-        except Exception:  # pragma: no cover
-            break
+    try:
+        while True:
+            try:
+                raw = await line_iter.__anext__()
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                log.warning("session watchdog fired — stopping backend",
+                            session_id=perf.session_id if perf else "")
+                await _watchdog_fired(perf, settings)
+                break
+            except Exception:  # pragma: no cover
+                break
 
-        line = raw.decode(errors="replace").strip()
-        if not line:
-            continue
+            line = raw.decode(errors="replace").strip()
+            if not line:
+                continue
 
-        msg, invalid = _parse_message(line)
-        if invalid is not None:
-            _write_response(invalid)
-            continue
+            msg, invalid = _parse_message(line)
+            if invalid is not None:
+                _write_response(invalid)
+                continue
 
-        try:
-            if msg.action == "health":
-                resp = handle_health(settings)
+            try:
+                if msg.action == "health":
+                    resp = handle_health(settings)
 
-            elif msg.action == "dispatch":
-                # Note: no per-dispatch timeout here — AGENT_TIMEOUT is the
-                # end-to-end session budget enforced by the watchdog above.
-                # A separate clone/setup timeout lives inside _run_git().
-                resp, new_perf = await _dispatch_action(msg, settings, perf)
-                if new_perf is not None:
-                    perf = new_perf
+                elif msg.action == "dispatch":
+                    # Note: no per-dispatch timeout here — AGENT_TIMEOUT is the
+                    # end-to-end session budget enforced by the watchdog above.
+                    # A separate clone/setup timeout lives inside _run_git().
+                    resp, new_perf = await _dispatch_action(msg, settings, perf)
+                    if new_perf is not None:
+                        perf = new_perf
 
-            elif msg.action == "status":
-                resp = await _status_action(msg, settings, perf)
+                elif msg.action == "status":
+                    resp = await _status_action(msg, settings, perf)
 
-            elif msg.action == "relay_feedback":
-                resp = await handle_relay_feedback(msg, perf)
+                elif msg.action == "relay_feedback":
+                    resp = await handle_relay_feedback(msg, perf)
 
-            else:  # pragma: no cover — Literal[action] makes this unreachable
+                else:  # pragma: no cover — Literal[action] makes this unreachable
+                    resp = PerformerResponse(
+                        status="error",
+                        session_id=msg.session_id,
+                        reason=f"unknown action: {msg.action}",
+                    )
+
+            except Exception as exc:  # pragma: no cover
+                log.exception("unhandled error in run_loop")
                 resp = PerformerResponse(
                     status="error",
                     session_id=msg.session_id,
-                    reason=f"unknown action: {msg.action}",
+                    reason=f"internal error: {type(exc).__name__}: {exc}",
                 )
 
-        except Exception as exc:  # pragma: no cover
-            log.exception("unhandled error in run_loop")
-            resp = PerformerResponse(
-                status="error",
-                session_id=msg.session_id,
-                reason=f"internal error: {type(exc).__name__}: {exc}",
-            )
+            _write_response(resp)
 
-        _write_response(resp)
+            if _loop_should_exit(resp, msg, perf):
+                break
+    finally:
+        # Cleanup regardless of outcome
+        if perf is not None:
+            try:
+                await perf.backend.stop()
+            except Exception:  # pragma: no cover
+                pass
+            await _stop_orchestration_proxy(perf)
+            from performer.environment_contract import close_environment
 
-        if _loop_should_exit(resp, msg, perf):
-            break
+            await close_environment(perf.stand)
+            cleanup_stand(perf.stand)
 
-    # Cleanup regardless of outcome
-    if perf is not None:
-        try:
-            await perf.backend.stop()
-        except Exception:  # pragma: no cover
-            pass
-        await _stop_orchestration_proxy(perf)
-        from performer.environment_contract import close_environment
-
-        await close_environment(perf.stand)
-        cleanup_stand(perf.stand)
 
 
 def _parse_message(
@@ -3242,4 +3246,4 @@ def main() -> None:  # pragma: no cover
     if args.serve:
         _run_server(args.port)
         return
-    asyncio.run(run_loop())
+    run_cli(run_loop())

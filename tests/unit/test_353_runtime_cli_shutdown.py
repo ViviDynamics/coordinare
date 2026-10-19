@@ -17,7 +17,7 @@ from tests.unit.env_manifest_fixture import reviewed_metadata
 _PROGRAM = '''
 import asyncio, importlib, json, pathlib, sys
 name, directory, mode = sys.argv[1:]
-module = importlib.import_module('coordinare_service_inference.environment.' + name)
+module = importlib.import_module('performer.main' if name == 'performer' else 'coordinare_service_inference.environment.' + name)
 root = pathlib.Path(directory)
 async def work(*args, **kwargs):
     child = await asyncio.create_subprocess_exec(sys.executable, '-c', 'import time; time.sleep(60)',
@@ -39,7 +39,10 @@ async def work(*args, **kwargs):
         (root/'cleaned').write_text('reaped')
     from types import SimpleNamespace
     return SimpleNamespace(passed=True, model_dump_json=lambda: 'success')
-if name == 'observation':
+if name == 'performer':
+    module.run_loop = work
+    sys.argv = ['performer']
+elif name == 'observation':
     module.observe_private = work
     sys.argv = ['observation']
 else:
@@ -64,7 +67,7 @@ def _line(process: subprocess.Popen[str]) -> str:
     return process.stdout.readline().strip()
 
 
-@pytest.mark.parametrize('entrypoint', ['runner', 'execution_source_install', 'observation'])
+@pytest.mark.parametrize('entrypoint', ['runner', 'execution_source_install', 'observation', 'performer'])
 @pytest.mark.parametrize('mode', ['termination', 'repeat', 'swallow'])
 def test_termination_reaps_child_and_removes_keys_before_failing(tmp_path: Path, entrypoint: str, mode: str) -> None:
     metadata = reviewed_metadata()
