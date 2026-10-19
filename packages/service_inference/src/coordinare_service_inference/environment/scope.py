@@ -31,7 +31,7 @@ class ScopeCriterionProposal(FindingEvidence):
     description: str = Field(min_length=1, max_length=2048)
     sources: list[str] = Field(min_length=1, max_length=32)
     applicability: Literal['required', 'not_applicable', 'unknown']
-    rationale: str
+    rationale: str = Field(min_length=1, max_length=2048, description='Nonblank evidence summary, at most 2048 UTF-8 bytes.')
     usability: str = Field(min_length=1, max_length=2048)
     runtime_needs: list[str] = Field(max_length=32)
 
@@ -132,7 +132,7 @@ class ScopeContract(FindingEvidence):
 
 class ScopeAssessmentProposal(FindingEvidence):
     verdict: Literal['accept', 'revise', 'indeterminate']
-    rationale: str
+    rationale: str = Field(min_length=1, max_length=2048, description='Nonblank evidence summary, at most 2048 UTF-8 bytes.')
     sources: list[str]
     findings: list[FindingProposal] = Field(max_length=32)
     decisions: list[FindingDecisionProposal] = Field(max_length=32)
