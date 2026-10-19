@@ -31,7 +31,7 @@ def _declarations(schema: dict[str, Any]) -> dict[str, tuple[str, dict[str, Any]
             kind = next(key for key in properties if key != 'finding_responses')
             name = 'submit_environment_' + kind
             parameters = copy.deepcopy(definitions[properties[kind]['$ref'].removeprefix('#/$defs/')])
-            if kind == 'manifest':
+            if kind in {'manifest', 'scope'}:
                 parameters['properties']['finding_responses'] = copy.deepcopy(properties['finding_responses'])
                 parameters.setdefault('required', []).append('finding_responses')
         parameters['$defs'] = copy.deepcopy(definitions)
@@ -103,12 +103,12 @@ def decode_function(raw: str, schema: dict[str, Any]) -> str:
             message = 'reserved action selector'
             raise ValueError(message)
         canonical = {'tool': kind, **arguments}
-    elif kind == 'manifest':
+    elif kind in {'manifest', 'scope'}:
         if 'finding_responses' not in arguments:
             message = 'finding responses required'
             raise ValueError(message)
         findings = arguments.pop('finding_responses')
-        canonical = {'manifest': arguments, 'finding_responses': findings}
+        canonical = {kind: arguments, 'finding_responses': findings}
     else:
         canonical = {kind: arguments}
     return json.dumps(canonical)

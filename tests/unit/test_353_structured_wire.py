@@ -12,7 +12,7 @@ from coordinare.services.environment_response_schema import response_schema
 def test_every_phase_schema_uses_supported_strict_object_representation():
     from coordinare.services.environment_structured_wire import wire_schema
 
-    for phase in ['source_tool', 'probe', 'manifest', 'assessment']:
+    for phase in ['source_tool', 'probe', 'manifest', 'assessment', 'scope', 'scope_assessment']:
         schema = wire_schema(response_schema(phase))
         jsonschema.Draft202012Validator.check_schema(schema)
         assert schema['type'] == 'object' and 'anyOf' not in schema

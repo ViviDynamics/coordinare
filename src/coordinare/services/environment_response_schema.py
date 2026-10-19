@@ -4,6 +4,8 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING, Any
 
+from coordinare_service_inference.environment.scope import ScopeAssessmentEnvelope, ScopeEnvelope
+
 from coordinare.services.environment_discovery_prompts import (
     _MANIFEST_ENVELOPE,
     assessment_envelope_schema,
@@ -29,7 +31,8 @@ def response_schema(phase: str, *, allow_patch: bool = False) -> dict[str, Any]:
     if allow_patch:
         tools.append(PATCH_SCHEMA)
     final: dict[str, Callable[[], dict[str, Any]]] = {'probe': ProbeEnvelope.model_json_schema, 'manifest': _MANIFEST_ENVELOPE.model_json_schema,
-             'assessment': assessment_envelope_schema}
+             'assessment': assessment_envelope_schema, 'scope': ScopeEnvelope.model_json_schema,
+             'scope_assessment': ScopeAssessmentEnvelope.model_json_schema}
     if phase == 'source_tool':
         return {'type': 'object', 'anyOf': tools}
     declaration = final[phase]()

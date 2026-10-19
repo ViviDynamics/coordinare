@@ -31,6 +31,12 @@ from coordinare_service_inference.environment.models import (
 )
 from pydantic import TypeAdapter, ValidationError
 
+from coordinare.services.environment_admission import (
+    _checked_inventory,
+    _decode_reply,
+    _repair,
+    _validation_feedback,
+)
 from coordinare.services.environment_attempt import (
     MAX_ATTEMPT_SECONDS,
     MAX_REPAIRS,
@@ -42,7 +48,6 @@ from coordinare.services.environment_discovery_prompts import (
     SOURCE_TOOLS,
     DiscoveryPrompts,
     assessment_envelope_schema,
-    correction_instruction,
     legacy_discovery_system,
 )
 from coordinare.services.environment_evidence import (
@@ -83,7 +88,7 @@ Fetch = Callable[[str], Awaitable[str | None]]
 ChatJson = Callable[[list[dict[str, str]]], Awaitable[str | DiscoveryChatReply]]
 __all__ = ["DiscoveryLimits", "EnvironmentDiscoveryError", "discover_and_review"]
 
-_ASCII_CONTROL_BOUND = 32
+
 
 
 
@@ -115,48 +120,16 @@ class DiscoveryLimits:
             raise ValueError(message)
 
 
-def _valid_path(path: Any) -> bool:
-    return (
-        isinstance(path, str) and bool(path) and not path.startswith("/")
-        and "\\" not in path and all(part not in {"", ".", ".."} for part in path.split("/"))
-        and not any(ord(char) < _ASCII_CONTROL_BOUND for char in path)
-    )
 
 
-class _DuplicateJsonKeyError(ValueError):
-    """Ambiguous model output must never select either duplicate value."""
 
 
-def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            message = "duplicate JSON key"
-            raise _DuplicateJsonKeyError(message)
-        result[key] = value
-    return result
 
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
-def _decode_reply(raw: str, name: str, limits: DiscoveryLimits) -> dict[str, Any]:
-    if not isinstance(raw, str) or len(raw.encode("utf-8")) > limits.max_output_bytes:
-        message = f"{name} output limit exceeded"
-        raise EnvironmentDiscoveryError(message)
-    try:
-        reply = json.loads(raw, object_pairs_hook=_object)
-    except _DuplicateJsonKeyError:
-        message = f"{name} returned duplicate JSON keys"
-        raise EnvironmentDiscoveryError(message, code="duplicate_json_key") from None
-    except (ValueError, RecursionError):
-        message = f"{name} returned malformed JSON"
-        raise EnvironmentDiscoveryError(message, code="invalid_json_envelope") from None
-    if not isinstance(reply, dict):
-        message = f"{name} returned an invalid envelope"
-        raise EnvironmentDiscoveryError(message, code="invalid_json_envelope")
-    return reply
 
 
 class _Inspection(SourceInspection):
@@ -171,42 +144,8 @@ class _Inspection(SourceInspection):
         self.probe: Callable[[dict[str, Any]], Awaitable[ProbeReport]] | None = None
 
 
-def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
-    """Do not expose arbitrary keys, candidate values, validator context or prose."""
-    allowed_fields = {"requirements", "checks", "install", "services", "activation", "id", "source", "description",
-                      "depends_on", "required", "scope", "argv", "cwd", "env", "path", "timeout_seconds",
-                      "schema_version", "policy_version", "empty_reason", "inputs", "manifest_digest",
-                      "source_commit", "symphony_name", "sources", "verdict", "rationale", "capabilities_digest", "inventory_digest",
-                      "commands", "citations", "questions", "probe", "manifest", "assessment", "findings", "decisions",
-                      "finding_responses", "finding_id", "issue", "category", "affected_ids", "duplicate_of", "status",
-                      "capability_unavailable"}
-    result = []
-    for error in exc.errors(include_url=False, include_input=False, include_context=False)[:16]:
-        location = [part if (isinstance(part, str) and part in allowed_fields) or type(part) is int else "*"
-                    for part in error["loc"][:8]]
-        kind = error["type"]
-        code = kind if kind in {
-            "missing", "extra_forbidden", "string_type", "list_type", "dict_type", "bool_type",
-            "literal_error", "int_type", "string_pattern_mismatch", "too_short", "too_long",
-            "requirement_check_reference", "clean_dependency_install_only",
-            "probe_id_maps", "probe_cited_question", "probe_required_true", "probe_citations_uninspected",
-        } else "invalid_contract_value"
-        result.append({"location": location, "code": code})
-    return result
 
 
-def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *, can_patch: bool = False) -> None:
-    budget.validation_codes.extend(error["code"] for error in errors)
-    budget.reserve_repair("schema")
-    messages.extend([{"role": "assistant", "content": raw},
-                     {"role": "user", "content": _json({"validation_errors": errors,
-                        "expected_envelope": budget.expected_envelope,
-                        "instruction": (PATCH_INSTRUCTION if can_patch else correction_instruction(budget.expected_envelope)) +
-                        "Preserve every required obligation and inspected input. "
-                        "Never rename or remove existing required requirement/check/service IDs; revise their definitions in place. "
-                        "Use list_files for directories and read_files only for exact file paths from listings. "
-                        "Use required executable check IDs, not commands or install-only prerequisites. "
-                        "Independent review and successful clean execution remain mandatory."})}])
 
 
 async def _probe_reply(data: dict[str, Any], raw: str, messages: list[dict[str, str]], inspection: _Inspection,
@@ -232,7 +171,7 @@ async def _probe_reply(data: dict[str, Any], raw: str, messages: list[dict[str, 
 
 
 def _normalize_review(reply: dict[str, Any], name: str) -> dict[str, Any]:
-    if name == "review" and set(reply) == {"verdict", "rationale", "sources", "findings", "decisions", "capability_unavailable"}:
+    if name == "review" and set(reply) == {"verdict", "rationale", "sources", "findings", "decisions", "capability_unavailable", "criteria", "applicability", "usability", "runtime_needs", "scope_assessment"}:
         try:
             _CoverageProposal.model_validate(reply)
         except ValidationError:
@@ -453,18 +392,6 @@ class _DiscoveryOptions:
     execution_source_digest: str | None = None
 
 
-def _checked_inventory(paths: Sequence[str], bounds: DiscoveryLimits) -> list[str]:
-    if isinstance(paths, str) or len(paths) > bounds.max_inventory_entries:
-        message = "source inventory limit exceeded or invalid inventory"
-        raise EnvironmentDiscoveryError(message)
-    if any(not _valid_path(path) for path in paths) or len(set(paths)) != len(paths):
-        message = "source inventory contains invalid or duplicate paths"
-        raise EnvironmentDiscoveryError(message)
-    inventory = sorted(paths)
-    if len(_json(inventory).encode()) > bounds.max_source_bytes:
-        message = "source inventory byte limit exceeded"
-        raise EnvironmentDiscoveryError(message)
-    return inventory
 
 
 def _validated_manifest(
