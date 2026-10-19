@@ -123,6 +123,11 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
 def _validate_review(data: dict[str, Any], *, reviewer: SourceInspection, definition: ScopeDefinition,
                      ledger: FindingLedger, commit: str) -> tuple[ScopeAssessmentProposal, FindingLedger]:
     assessment = ScopeAssessmentEnvelope.model_validate(data).scope_assessment
+    decisions = [decision.finding_id for decision in assessment.decisions]
+    if len(decisions) != len(set(decisions)) or not set(ledger.open_ids()) <= set(decisions):
+        message = 'every open finding requires an explicit decision'
+        raise FindingValidationError(message,
+            code='review_findings_invalid', location=('scope_assessment', 'decisions'))
     for index, path in enumerate(assessment.sources):
         if path not in reviewer.inputs:
             _citation_error('scope_assessment', 'sources', str(index))
@@ -140,7 +145,9 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
     instructions = (
         'Independently review source-defined scope, not an executable candidate. You have no author conversation. '
         'Follow development/test entry points and nested references; independently check omissions and conflicts. '
-        'Decide every retained finding ID with cited evidence. accept requires no open or new findings; '
+        'Supply exactly one decision for every required_decision_ids entry with cited evidence; '
+        'new findings do not replace decisions on retained findings. Use only the decisions array, never alternate decision fields. '
+        'accept requires no open or new findings; '
         'revise requires a blocking finding. Unknown applicability or conflicting evidence must hold. '
         'An excluded activity needs source-backed applicability, never an image limitation or candidate disclaimer. '
         'Return scope_assessment with verdict, rationale, sources, findings, decisions. '
@@ -178,6 +185,7 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
                 'scope_base_digest': definition.digest() if definition else None,
                 'scope_definition': definition.model_dump(mode='json') if definition else None,
                 'mandatory_evidence': evidence, 'finding_ledger': ledger.model_dump(mode='json'),
+                **({'required_decision_ids': ledger.open_ids()} if review else {}),
                 'finding_responses': responses or []}).decode()}]
 
 

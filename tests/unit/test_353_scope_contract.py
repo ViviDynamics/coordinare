@@ -407,3 +407,29 @@ async def test_fresh_review_can_find_omission_beyond_revision():
     assert failure.value.code == 'attempt_coverage_limit'
     assert budget.scope_findings.open_ids() == ['F0002'] and budget.coverage_revisions == 1
     assert len(budget.scope_definition.criteria) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('count', [1, 8])
+async def test_revision_reviewer_gets_exact_required_decision_ids_in_context_and_feedback(count):
+    identifiers = [f'F{i+1:04}' for i in range(count)]
+    first = objection()
+    first['scope_assessment']['findings'] = [{**first['scope_assessment']['findings'][0], 'issue': f'Obligation {i} missing'} for i in range(count)]
+    responses = [
+        {'finding_id': fid, 'rationale': 'Source evidence defends the retained definition', 'sources': ['guide'], 'affected_ids': []} for fid in identifiers]
+    final = closure()
+    final['scope_assessment']['decisions'] = [{**final['scope_assessment']['decisions'][0], 'finding_id': fid} for fid in identifiers]
+    def incomplete(messages):
+        context = json.loads(messages[1]['content'])
+        assert context['required_decision_ids'] == identifiers
+        return review('revise', findings=[{'category': 'coverage', 'issue': 'Another uncovered operation',
+            'sources': ['guide'], 'affected_ids': []}])
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), first,
+        revision(responses=responses), incomplete, final])
+    budget = AttemptBudget()
+    scope = await run(replies, budget=budget)
+    feedback = json.loads(replies.messages[-1][-1]['content'])
+    assert feedback['validation_errors'] == [{'location': ['scope_assessment', 'decisions'],
+        'code': 'review_findings_invalid', 'required_decision_ids': identifiers}]
+    assert scope.finding_ledger.open_ids() == [] and len(scope.finding_ledger.records) == count
+    assert budget.schema_repairs == 1 and len(scope.finding_ledger.reviews) == 2

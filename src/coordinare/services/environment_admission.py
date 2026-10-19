@@ -97,6 +97,10 @@ def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any
         for error in errors:
             if error['code'] == 'scope_required_check_mapping':
                 error['required_criterion_ids'] = required_ids
+    if budget.expected_envelope == 'scope_assessment' and budget.scope_findings is not None:
+        for error in errors:
+            if error['code'] == 'review_findings_invalid' and error['location'] == ['scope_assessment', 'decisions']:
+                error['required_decision_ids'] = budget.scope_findings.open_ids()
     budget.validation_codes.extend(error["code"] for error in errors)
     budget.reserve_repair("schema")
     messages.extend([{"role": "assistant", "content": raw},
