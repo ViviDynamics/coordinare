@@ -185,3 +185,30 @@ their existing contracts. Verify the real production request boundary plus both
 structured transport representations, then preflight and CI before a fresh Elm
 attempt. This aligns representation with the approved contract; it does not
 establish that the model will comply or that Elm bootstraps successfully.
+
+
+### Canonical transport follow-up: deliver the actual schema and safe guard feedback
+
+The `mapping-schema-elm60m-low` run on `74587664` held after 1493.84 seconds,
+with 2106.245 seconds remaining. Source review accepted 22 criteria and all six
+outer-image observations completed. The initial source declaration repeated a
+citation; the later manifest contained literal credential URLs in seven check
+environments. Its correction repeated a JSON key. Original schema repair limits
+held; neither executable coverage review nor installer/clean execution ran.
+
+The previous schema correction missed the actual canonical HTTP boundary:
+`json_object` mode discarded schema metadata, while the prompt still contained
+the old generic schema. Deliver the exact current logical schema in the final
+canonical transport instruction, preserving json_object wire syntax and all
+local validation. A regression must inspect the real outbound HTTP payload,
+not only the injected chat callback or recorded request metadata.
+
+Credential validators keep rejecting the same literals. Give this known guard
+a trusted machine code and safe corrective guidance: use named runtime references,
+never move credentials into argv/activation/another field, and never invent
+missing runtime values. Do not echo candidate keys, values or exception context.
+Test both environment forms and command arguments through real discovery repair
+and independent assessment. Duplicate-key replies remain rejected unchanged.
+These corrections supply no links, credentials, coverage judgments or approvals,
+and do not guarantee model compliance. Preflight and exact-head CI precede the
+next fresh labeled Elm attempt with the approved model and original limits.

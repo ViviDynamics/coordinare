@@ -145,7 +145,7 @@ class Command(StrictModel):
                 re.search(r"token|secret|password|credential|api.?key", key, re.IGNORECASE)
                 and item != "${" + key + "}"
             ):
-                raise ValueError("secret variables must use named runtime references")
+                raise PydanticCustomError("runtime_credential_reference", "secret variables must use named runtime references")
         return value
 
     @field_validator("argv")

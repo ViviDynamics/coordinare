@@ -79,7 +79,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
         code = kind if kind in {
             "missing", "extra_forbidden", "string_type", "list_type", "dict_type", "bool_type",
             "literal_error", "int_type", "string_pattern_mismatch", "string_too_short", "string_too_long", "too_short", "too_long",
-            "requirement_check_reference", "clean_dependency_install_only",
+            "requirement_check_reference", "clean_dependency_install_only", "runtime_credential_reference",
             "probe_id_maps", "probe_cited_question", "probe_required_true", "probe_citations_uninspected",
             "scope_identity_mismatch", "scope_required_check_mapping", "scope_required_service", "scope_id_collision",
         } else "invalid_contract_value"
@@ -87,7 +87,12 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
                            'scope_required_service': 'services', 'scope_id_collision': 'id'}
         if code in scope_locations:
             location = [scope_locations[code]]
-        result.append({"location": location, "code": code})
+        detail: dict[str, Any] = {"location": location, "code": code}
+        if code == "runtime_credential_reference":
+            detail["guidance"] = ("Use ${NAME} for a named credential supplied by the trusted runtime. "
+                "Never move literal credentials into argv, activation or another field. "
+                "Do not invent runtime credentials; unavailable required values must hold readiness.")
+        result.append(detail)
     return result
 
 

@@ -447,6 +447,8 @@ class OpenAiApiBackend:
             "No native function calls, prose, markdown, or response wrapper. All local validation, source evidence, "
             "independent review and required execution rules remain mandatory.") if text_mode else (INSTRUCTION if function_mode else WIRE_INSTRUCTION)
         if canonical_schema is not None:
+            if text_mode:
+                instruction += "\n\nAuthoritative logical response schema for this request:\n" + json.dumps(canonical_schema)
             messages = [dict(message) for message in messages]
             if messages and messages[0]["role"] == "system":
                 messages[0]["content"] += "\n\n" + instruction

@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 from pathlib import PurePosixPath
 
+from pydantic_core import PydanticCustomError
+
 
 def source_path(value: str) -> str:
     path = PurePosixPath(value)
@@ -27,7 +29,7 @@ def reject_literal_credentials(value: str) -> None:
         return
     for match in re.finditer(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/@]+:([^\s/@]+)@", value):
         if not re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", match.group(1)):
-            raise ValueError("credentials must use a named runtime reference")
+            raise PydanticCustomError("runtime_credential_reference", "credentials must use a named runtime reference")
 
 
 def reject_nested_credentials(value: object) -> None:
