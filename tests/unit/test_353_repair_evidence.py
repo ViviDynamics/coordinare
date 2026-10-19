@@ -8,7 +8,8 @@ import json
 import pytest
 
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
-from coordinare.services.environment_discovery import DiscoveryLimits, discover_and_review
+from coordinare.services.environment_discovery import DiscoveryLimits
+from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
 from tests.unit.test_353_discovery_repair import (
     CAPABILITIES,
     COMMIT,
@@ -56,13 +57,13 @@ async def test_repair_receives_all_18_inputs_before_first_call():
     (manifest, review), fetched, calls = await repair_case()
     assert len(calls) == 2
     assert len(manifest.inputs) == len(review.inputs) == 18
-    assert len(fetched) == 36
-    assert all(fetched.count(path) == 2 for path in manifest.inputs)
+    assert len(fetched) == 90
+    assert all(fetched.count(path) == 5 for path in manifest.inputs)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('failure,code', [('missing', 'repair_evidence_unavailable'), ('drift', 'repair_evidence_drift'),
-    ('context', 'repair_context_limit'), ('reads', 'attempt_read_limit'), ('checkpoint', 'attempt_checkpoint_failed')])
+@pytest.mark.parametrize('failure,code', [('missing', 'scope_author_evidence_unavailable'), ('drift', 'source_identity'),
+    ('context', 'scope_author_context_limit'), ('reads', 'attempt_read_limit'), ('checkpoint', 'attempt_checkpoint_failed')])
 async def test_incomplete_repair_evidence_holds_before_model(failure, code):
     budget = AttemptBudget(max_reads=1 if failure == 'reads' else 512)
     async def checkpoint():

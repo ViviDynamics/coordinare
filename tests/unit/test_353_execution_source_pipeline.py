@@ -428,7 +428,7 @@ async def test_fresh_source_and_ordinary_tool_names_work_through_activation(tmp_
 
 @pytest.mark.asyncio
 async def test_independent_review_receives_activation_usability_requirement():
-    from coordinare.services.environment_discovery import discover_and_review
+    from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
     from tests.unit.test_353_discovery_repair import (
         CAPABILITIES,
         PATH,

@@ -12,12 +12,10 @@ from coordinare_service_inference.environment.models import (
     ExecutionCapabilities,
 )
 
-from coordinare.services.environment_discovery import (
-    DiscoveryLimits,
-    EnvironmentDiscoveryError,
-    discover_and_review,
-)
+from coordinare.services.environment_attempt import AttemptBudget
+from coordinare.services.environment_discovery import DiscoveryLimits, EnvironmentDiscoveryError
 from tests.unit.env_manifest_fixture import manifest_proposal
+from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
 
 SOURCE = "Use the unfamiliar zog tool: zog --version must report 7."
 PATH = "nested/how-to.zog"
@@ -120,25 +118,31 @@ async def test_review_receives_independently_fetched_evidence_without_model_read
 
     manifest, review = await discover_and_review(symphony_name="suite", commit=COMMIT,
         paths=[PATH, "other/evidence"], fetch=fetch, chat=no_review_reads, capabilities=CAPABILITIES)
-    assert fetched == [PATH, PATH]
+    assert fetched == [PATH]*5
     assert review.inputs == manifest.inputs
     assert review.verdict == "accept"
 
 
 @pytest.mark.asyncio
 async def test_review_can_inspect_additional_repository_evidence():
-    base = ScriptedChat()
-    count = 0
-
+    inspected = False
+    budget = AttemptBudget()
     async def chat(messages):
-        nonlocal count
-        count += 1
-        if count == 4:
-            return json.dumps({"tool": "read_file", "path": "other/evidence"})
-        return await base(messages)
-
-    _, assessment = await discover(chat)
+        nonlocal inspected
+        context = json.loads(messages[1]['content'])
+        if 'manifest' in context:
+            if not inspected:
+                inspected = True
+                return json.dumps({'tool': 'read_file', 'path': 'other/evidence'})
+            return json.dumps({'assessment': {'findings': [], 'decisions': [], 'capability_unavailable': False,
+                'verdict': 'accept', 'rationale': 'Independently inspected additional evidence', 'sources': [PATH, 'other/evidence']}})
+        if len(messages) == 2:
+            return json.dumps({'tool': 'read_file', 'path': PATH})
+        return json.dumps({'manifest': manifest_proposal(candidate())})
+    manifest, assessment = await discover(chat, budget=budget)
     assert assessment.verdict == "accept"
+    assert 'other/evidence' in manifest.scope_contract.all_inputs
+    assert budget.coverage_revisions == 1
 
 
 @pytest.mark.asyncio

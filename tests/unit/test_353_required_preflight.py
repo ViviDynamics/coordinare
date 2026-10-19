@@ -6,7 +6,7 @@ import json
 import pytest
 
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
-from coordinare.services.environment_discovery import discover_and_review
+from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
 from tests.unit.test_353_discovery_repair import (
     CAPABILITIES,
     COMMIT,
@@ -121,7 +121,7 @@ async def test_saved_probe_observation_cannot_bypass_current_target(change):
 async def test_each_stage_advertises_only_its_envelope_and_corrects_that_stage():
     from coordinare.services.environment_probes import ProbeReport
     budget = AttemptBudget()
-    steps = iter(('bad-source','read','bad-probe','probe','manifest','review'))
+    steps = iter(('bad-probe','probe','bad-manifest','manifest','review'))
     async def fetch(path):
         return SOURCE
     async def execute(plan):
@@ -129,13 +129,6 @@ async def test_each_stage_advertises_only_its_envelope_and_corrects_that_stage()
     async def chat(messages):
         step = next(steps)
         system = messages[0]['content']
-        if step in {'bad-source','read'}:
-            assert 'Current phase: source_inspection' in system
-            assert 'ProbeEnvelope' not in system and 'ManifestEnvelope' not in system
-            if step=='bad-source':
-                return json.dumps({'probe':[], 'schema_version':1})
-            assert json.loads(messages[-1]['content'])['expected_envelope']=='source_tool'
-            return json.dumps({'tool':'read_file','path':PATH})
         if step in {'bad-probe','probe'}:
             assert 'Current phase: capability_preflight' in system
             assert 'ProbeEnvelope' in system and 'ManifestEnvelope' not in system
@@ -143,9 +136,12 @@ async def test_each_stage_advertises_only_its_envelope_and_corrects_that_stage()
                 return json.dumps({'probe':{'schema_version':1,'commands':[],'citations':{},'questions':{}}})
             assert json.loads(messages[-1]['content'])['expected_envelope']=='probe'
             return json.dumps({'probe':request_data()})
-        if step=='manifest':
+        if step in {'bad-manifest', 'manifest'}:
             assert 'Current phase: manifest_construction' in system
-            assert 'ManifestEnvelope' in system and 'ProbeEnvelope' not in system
+            assert 'ProbeEnvelope' not in system
+            assert ('ManifestEnvelope' if step == 'bad-manifest' else 'repair_proposal') in system
+            if step == 'bad-manifest':
+                return json.dumps({'manifest': {}})
             return json.dumps({'manifest':candidate()})
         assert 'manifest' in json.loads(messages[1]['content'])
         return json.dumps(assessment(candidate())['assessment'])

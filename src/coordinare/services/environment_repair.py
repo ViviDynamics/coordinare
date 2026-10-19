@@ -161,13 +161,12 @@ def _save_scope_checkpoint(journal: RepairJournal, budget: AttemptBudget) -> Non
     if old is not None and (new is None or new.records[:len(old.records)] != old.records
                            or new.reviews[:len(old.reviews)] != old.reviews):
         _refuse('scope finding history cannot be replaced', code='review_findings_invalid')
-    for name, model in (('scope_definition', ScopeDefinition), ('scope_contract', ScopeContract), ('scope_findings', FindingLedger)):
-        value = getattr(budget, name)
-        try:
-            checked = model.model_validate(value.model_dump(mode='json')) if value is not None else None
-        except ValidationError:
-            _refuse('scope checkpoint is invalid', code='scope_source_identity')
-        setattr(journal, name, checked)
+    try:
+        journal.scope_definition = ScopeDefinition.model_validate(budget.scope_definition.model_dump(mode='json')) if budget.scope_definition is not None else None
+        journal.scope_contract = ScopeContract.model_validate(budget.scope_contract.model_dump(mode='json')) if budget.scope_contract is not None else None
+        journal.scope_findings = FindingLedger.model_validate(budget.scope_findings.model_dump(mode='json')) if budget.scope_findings is not None else None
+    except ValidationError:
+        _refuse('scope checkpoint is invalid', code='scope_source_identity')
     _validate_scope_checkpoint(journal)
 
 
@@ -271,9 +270,9 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
         max_coverage_revisions=journal.max_coverage_revisions, max_execution_repairs=journal.max_execution_repairs)
     budget.scope_inputs = dict(journal.scope_inputs)
     budget.scope_responses = [r.model_dump(mode="json") for r in journal.scope_responses]
-    for name in ("scope_definition", "scope_contract", "scope_findings"):
-        value = getattr(journal, name)
-        setattr(budget, name, value.model_copy(deep=True) if value is not None else None)
+    budget.scope_definition = journal.scope_definition.model_copy(deep=True) if journal.scope_definition is not None else None
+    budget.scope_contract = journal.scope_contract.model_copy(deep=True) if journal.scope_contract is not None else None
+    budget.scope_findings = journal.scope_findings.model_copy(deep=True) if journal.scope_findings is not None else None
     budget.finding_ledger = journal.finding_ledger.model_copy(deep=True) if journal.finding_ledger is not None else None
     budget.coverage_manifest = journal.coverage_manifest.model_copy(deep=True) if journal.coverage_manifest is not None else None
     budget.executed_manifests = executed_manifests(journal.rejected, source_commit=journal.source_commit)

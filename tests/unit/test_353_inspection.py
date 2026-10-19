@@ -94,7 +94,7 @@ def test_long_multibyte_names_respect_page_bytes():
 
 @pytest.mark.asyncio
 async def test_large_inventory_is_not_repeated_in_model_prompt():
-    from coordinare.services.environment_discovery import discover_and_review
+    from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
     from tests.unit.test_351_environment_discovery import (
         CAPABILITIES,
         COMMIT,

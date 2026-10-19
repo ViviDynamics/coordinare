@@ -9,18 +9,19 @@ import shlex
 import shutil
 import subprocess
 import sys
+from collections import deque
 from pathlib import Path
 
 import pytest
 from coordinare_service_inference.environment.models import EnvironmentManifest
 
-from coordinare.services.environment_discovery import discover_and_review
 from coordinare.services.environment_verification import source_setup
 from coordinare.services.kubernetes_verifier import (
     VerifierSpec,
     build_verifier_pod_manifest,
 )
 from tests.unit.env_manifest_fixture import manifest_proposal, review_proposal
+from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
 from tests.unit.test_351_environment_discovery import CAPABILITIES
 
 
@@ -49,10 +50,13 @@ async def _discover(files: dict[str, str], reviewer_extra: str = ""):
         "verdict": "accept", "rationale": "Every documented requirement has a check", "sources": paths,
     }})
     replies[-1]["assessment"] = review_proposal(replies[-1]["assessment"])
-    responses = iter(replies)
+    responses = deque(replies)
 
     async def chat(messages):
-        return json.dumps(next(responses))
+        context = json.loads(messages[1]['content'])
+        if 'manifest' not in context and 'assessment' in responses[0]:
+            return json.dumps({'manifest': manifest_proposal(manifest)})
+        return json.dumps(responses.popleft())
 
     async def fetch(path):
         return reviewer_extra if path == "additional-context" else files[path]
@@ -77,7 +81,8 @@ async def test_discovery_accepts_aggregate_and_escaped_inputs_within_shared_docu
 async def test_reviewer_can_read_more_context_than_the_verifier_transfer_budget():
     manifest, assessment = await _discover({"evidence": "tool must be usable"}, "x" * (256 * 1024))
     assert assessment.verdict == "accept"
-    assert list(manifest.inputs) == ["evidence"]
+    assert set(manifest.inputs) == {"evidence", "additional-context"}
+    assert "additional-context" in manifest.scope_contract.all_inputs
     assert "additional-context" in assessment.inputs
 
 

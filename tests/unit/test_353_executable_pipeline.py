@@ -10,6 +10,7 @@ from coordinare_service_inference.environment.runner import run_manifest
 
 from coordinare.services.env_cache import verify_env_cache_clean
 from coordinare.services.environment_acceptance import accepted_environment
+from tests.unit.scope_chat_fixture import ScopeChatFixture
 from tests.unit.test_353_bootstrap_pipeline import (
     IMAGE,
     SOURCE,
@@ -131,8 +132,8 @@ async def test_reservations_are_durable_before_model_and_source_requests(tmp_pat
         return await original(messages)
     await publish(service, cache, state, capability, model)
     assert saves[-1]['status'] == 'executing'
-    assert saves[-1]['calls'] == 5
-    assert saves[-1]['reads'] == 4
+    assert saves[-1]['calls'] == 8
+    assert saves[-1]['reads'] == 7
     assert len(saves[-1]['probe_reports']) == 1
 
 
@@ -328,7 +329,7 @@ async def test_post_review_preparation_shares_original_deadline(tmp_path, monkey
     await asyncio.wait_for(service._do_dispatch(symphony_name='suite',
         symphony_config=SimpleNamespace(env_spec_files=[], env_bootstrap_performer_id='bootstrap'),
         github_service=Repository(), eff_config=SimpleNamespace(project_name='suite', github_org='org'),
-        current_sha='fingerprint', cache_state=cache, dispatch_fn=dispatch, llm_chat=Proposal()), 0.2)
+        current_sha='fingerprint', cache_state=cache, dispatch_fn=dispatch, llm_chat=ScopeChatFixture(Proposal(), 'guide')), 0.2)
     assert stopped.is_set()
     dispatch.assert_not_awaited()
     assert cache.environment_attempt['status'] == 'held'

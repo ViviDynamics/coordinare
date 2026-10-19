@@ -7,7 +7,7 @@ import json
 import pytest
 
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
-from coordinare.services.environment_discovery import discover_and_review
+from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
 from tests.unit.test_353_discovery_repair import (
     CAPABILITIES,
     COMMIT,

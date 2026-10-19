@@ -200,3 +200,38 @@ def test_native_scope_function_transfers_finding_responses_at_the_envelope_bound
     raw = json.dumps({'content': None, 'tool_calls': [{'type': 'function', 'function': {
         'name': 'submit_environment_scope', 'arguments': json.dumps(arguments)}}]})
     assert json.loads(decode_function(raw, schema)) == proposal(criterion())
+
+
+@pytest.mark.asyncio
+async def test_scope_keeps_the_existing_phase_call_bound_with_a_larger_shared_budget():
+    async def fetch(path):
+        return SOURCES[path]
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), review()])
+    budget = AttemptBudget(max_calls=128)
+    with pytest.raises(EnvironmentDiscoveryError) as failure:
+        await api()(paths=list(SOURCES), fetch=fetch, chat=replies, commit=COMMIT,
+            limits=DiscoveryLimits(max_model_calls=1), budget=budget)
+    assert failure.value.code == 'scope_phase_call_limit'
+    assert budget.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_source_failure_is_held_with_a_trusted_code_not_raw_provider_text():
+    async def failed(path):
+        raise OSError('credential=private-provider-value')
+    budget = AttemptBudget()
+    with pytest.raises(EnvironmentDiscoveryError) as failure:
+        await run(Replies([{'tool': 'read_file', 'path': 'guide'}]), budget=budget, fetch=failed)
+    assert failure.value.code == 'scope_request_failed'
+    assert budget.error_code == 'scope_request_failed'
+    assert 'private-provider-value' not in str(failure.value)
+    assert budget.schema_repairs == 0
+
+
+@pytest.mark.asyncio
+async def test_scope_prompts_deliver_exact_schema_to_canonical_json_object_transport():
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), review()])
+    await run(replies)
+    assert 'ScopeEnvelope' in replies.messages[1][0]['content']
+    assert 'ScopeAssessmentEnvelope' in replies.messages[2][0]['content']
+    assert '"finding_responses"' in replies.messages[1][0]['content']

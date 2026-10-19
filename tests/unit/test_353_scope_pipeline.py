@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 from coordinare.services.environment_discovery import DiscoveryLimits
 from coordinare.services.environment_repair import (
     begin_attempt,
@@ -87,3 +87,48 @@ async def test_completed_scope_read_survives_crash_before_first_declaration(tmp_
     assert cache.environment_attempt['scope_definition'] is None
     resumed = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
     assert resumed.scope_inputs == cache.environment_attempt['scope_inputs']
+
+
+@pytest.mark.asyncio
+async def test_production_discovery_reviews_scope_before_generating_commands():
+    import json
+
+    from coordinare.services.environment_discovery import discover_and_review
+    from tests.unit.test_353_discovery_repair import CAPABILITIES, assessment
+    from tests.unit.test_353_scope_contract import SOURCES
+
+    phases = []
+    async def fetch(path):
+        return SOURCES.get(path)
+    async def chat(messages, *, response_schema):
+        system = messages[0]['content']
+        context = json.loads(messages[1]['content'])
+        if 'Author source-defined obligations' in system:
+            phases.append('scope_author')
+            if not any('tool_result' in message['content'] for message in messages[2:]):
+                return json.dumps({'tool': 'read_file', 'path': 'guide'})
+            return json.dumps(proposal(criterion()))
+        if 'Independently review source-defined scope' in system:
+            phases.append('scope_review')
+            assert 'manifest' not in context and 'execution_capabilities' not in context
+            return json.dumps(review())
+        if 'manifest' in context:
+            phases.append('manifest_review')
+            assert context['manifest']['schema_version'] == 3
+            value = assessment({})
+            value['assessment']['sources'] = ['guide']
+            return json.dumps(value)
+        phases.append('construction')
+        assert 'scope_contract' in context
+        identifier = context['scope_contract']['definition']['criteria'][0]['id']
+        return json.dumps({'manifest': {'criterion_checks': {identifier: ['operate']},
+            'requirements': [{'id': 'source-operation', 'description': 'Documented operation', 'source': 'guide', 'checks': ['operate']}],
+            'install': [], 'checks': [{'id': 'operate', 'argv': ['tool', 'exercise']}],
+            'activation': {}, 'services': [], 'empty_reason': None, 'runtime_endpoints': []}, 'finding_responses': []})
+    budget = AttemptBudget()
+    manifest, assessed = await discover_and_review(symphony_name='suite', commit=COMMIT, paths=list(SOURCES),
+        fetch=fetch, chat=chat, capabilities=CAPABILITIES, budget=budget)
+    assert phases == ['scope_author', 'scope_author', 'scope_review', 'construction', 'manifest_review']
+    assert manifest.scope_contract_digest == budget.scope_contract.digest()
+    assert assessed.manifest_digest == manifest.digest()
+    assert budget.calls == 5 and budget.calls_completed == 5
