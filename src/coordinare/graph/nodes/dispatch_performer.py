@@ -2325,6 +2325,9 @@ async def _prepare_env_dispatch(state: CoordinareState, service: Any, card_id: s
         # carries no payload.
         if card_context.get("env_cache_path") and _ec_state_for_sym is not None:
             card_context["environment_execution_source"] = _ec_state_for_sym.environment_execution_source
+            card_context["environment_runtime_artifacts"] = None if _is_bootstrap_dispatch else _ec_state_for_sym.environment_runtime_artifacts
+            card_context["environment_attempt_expires_at"] = ((_ec_state_for_sym.environment_attempt or {}).get("expires_at")
+                                                             if _is_bootstrap_dispatch else None)
             card_context["environment_manifest"] = _ec_state_for_sym.environment_manifest
             card_context["environment_assessment"] = _ec_state_for_sym.environment_assessment
             card_context["environment_manifest_digest"] = (_ec_state_for_sym.environment_assessment or {}).get("manifest_digest")

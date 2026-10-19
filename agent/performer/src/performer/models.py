@@ -370,6 +370,8 @@ class Score(BaseModel):
     env_provenance: dict[str, Any] | None = None
     # 351: accepted contract travels outside the installer-writable cache.
     environment_execution_source: dict[str, Any] | None = None
+    environment_runtime_artifacts: dict[str, Any] | None = None
+    environment_attempt_expires_at: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     environment_manifest: dict[str, Any] | None = None
     environment_assessment: dict[str, Any] | None = None
     environment_manifest_digest: str = ""
@@ -548,6 +550,7 @@ class Stand:
     cache_env: dict[str, str] = field(default_factory=dict)
     bootstrap_environment: Any = None
     environment_lifecycle: Any = None
+    environment_runtime: Any = None
 
 
 # ---------------------------------------------------------------------------

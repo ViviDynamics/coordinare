@@ -199,6 +199,8 @@ class BootstrapJobPayload(BaseModel):
     environment_manifest_digest: str | None = None
     environment_verification_image: str | None = None
     environment_verification_platform: str | None = None
+    environment_runtime_artifacts: dict[str, Any] | None = None
+    environment_attempt_expires_at: float | None = None
     dependency_checklist: str | None = Field(
         default=None,
         description=(

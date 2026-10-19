@@ -70,9 +70,14 @@ def verify_image_code(image: str) -> dict[str, Any]:
 
 
 @contextlib.contextmanager
-def candidate_image(base_image: str, output: Path) -> Iterator[str]:
+def candidate_image(base_image: str, output: Path, *, allow_local_image_id: bool = False) -> Iterator[str]:
     """Overlay trusted code, pin via a loopback registry, remove only owned refs."""
-    if not _IMAGE.fullmatch(base_image):
+    local = allow_local_image_id and re.fullmatch(r"sha256:[0-9a-f]{64}", base_image)
+    if local:
+        actual = _docker("image", "inspect", base_image, "--format", "{{.Id}}")
+        if actual != base_image:
+            raise ValueError("local base image identity differs")
+    elif not _IMAGE.fullmatch(base_image):
         raise ValueError("base image must use an immutable repository digest")
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
     source = Path(environment_package.__file__).parent

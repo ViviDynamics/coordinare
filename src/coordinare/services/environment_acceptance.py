@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from coordinare_service_inference.environment.models import (
     CoverageAssessment,
@@ -14,6 +14,7 @@ from coordinare_service_inference.environment.models import (
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_obligations import preserve_execution_obligations
+from coordinare.services.environment_runtime_evidence import validate_runtime_evidence
 
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import Command
@@ -106,12 +107,14 @@ def _required_commands(manifest: EnvironmentManifest, scope: str) -> list[Comman
     return required
 
 
-def _validate_execution_results(report: VerificationReport, manifest: EnvironmentManifest) -> None:
+def _validate_execution_results(report: VerificationReport, manifest: EnvironmentManifest, *, installer: bool = False) -> None:
     by_id = {result.id: result for result in report.results}
     if len(by_id) != len(report.results):
         message = "required execution evidence contains duplicate checks"
         raise ValueError(message)
     required = _required_commands(manifest, report.scope)
+    if installer:
+        required.extend(command for command in manifest.install if command.required)
     digest = manifest.digest()
     if not required or any(
         check.id not in by_id or not by_id[check.id].required
@@ -128,7 +131,8 @@ def _validate_execution_results(report: VerificationReport, manifest: Environmen
         raise ValueError(message)
 
 
-def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True) -> VerificationReport:
+def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True,
+                     runtime_phase: Literal['installer', 'consumer'] = 'consumer') -> VerificationReport:
     """Validate parent-collected results; success text cannot substitute for execution."""
     manifest = accepted_environment(cache)
     if manifest is None:
@@ -154,7 +158,9 @@ def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True) -
     if source.source_commit != manifest.source_commit or report.execution_source_digest != source.digest():
         message = 'required execution source identity differs'
         raise ValueError(message)
-    _validate_execution_results(report, manifest)
+    _validate_execution_results(report, manifest, installer=runtime_phase == 'installer')
+
+    validate_runtime_evidence(report, manifest, cache, phase=runtime_phase)
     if publish:
         cache.environment_verification = report.model_dump(mode="json")
     return report

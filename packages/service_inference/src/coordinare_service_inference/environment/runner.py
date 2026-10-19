@@ -20,7 +20,10 @@ from typing import TYPE_CHECKING
 from .models import CheckResult, Command, EnvironmentManifest, VerificationReport, environment_order
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import AsyncIterator, Mapping, Sequence
+
+    from .runtime import RuntimeArtifactReceipt
+    from .runtime_supervisor import RuntimeLease
 
 OUTPUT_LIMIT = 4096
 ATTEMPT_OUTPUT_LIMIT = 256 * 1024
@@ -178,7 +181,7 @@ def _bound_outputs(results: dict[str, CheckResult]) -> None:
 
 
 def _template_preflight(manifest: EnvironmentManifest, roots: dict[str, str], *, install: bool,
-                        scope: str, secret_names: Sequence[str]) -> VerificationReport | None:
+                        scope: str, secret_names: Sequence[str], runtime_env: Mapping[str, str] | None = None) -> VerificationReport | None:
     """Validate against the target environment before any project command has effects."""
     commands = [*(manifest.install if install else []), *manifest.checks]
     service_required: dict[str, bool] = {}
@@ -193,7 +196,7 @@ def _template_preflight(manifest: EnvironmentManifest, roots: dict[str, str], *,
         status="not_run", output="template preflight did not pass", manifest_digest=digest, context=scope)
         for command in commands if not scope or not command.scope or scope in command.scope}
     try:
-        env = manifest_environment(manifest, **roots, secret_names=secret_names)
+        env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env)
     except ValueError:
         # Avoid including environment values in diagnostics from failed activation.
         results["activation"] = CheckResult(id="activation", required=True, status="fail",
@@ -226,6 +229,7 @@ def manifest_environment(
     repo: str | Path,
     scratch: str | Path,
     secret_names: Sequence[str] = (),
+    runtime_env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Apply only declared activation, without executing cache scripts or starting services."""
     roots = {"cache": str(cache), "repo": str(repo), "scratch": str(scratch)}
@@ -239,12 +243,17 @@ def manifest_environment(
     # Bash startup hooks must never run before an explicit declared command.
     env.pop("BASH_ENV", None)
     env.pop("ENV", None)
+    if runtime_env is not None:
+        env.update({key: value for key, value in runtime_env.items() if key != "PATH"})
     for key in environment_order(manifest.activation.env):
         env[key] = _expand(manifest.activation.env[key], roots, env)
     paths = [_expand(path, roots, env) for path in manifest.activation.path]
     env["PATH"] = os.pathsep.join(dict.fromkeys(
         path for path in [*paths, *env.get("PATH", "").split(os.pathsep)] if path
     ))
+    if runtime_env is not None:
+        prefix = runtime_env.get("PATH", "").split(os.pathsep)[0]
+        env["PATH"] = os.pathsep.join(dict.fromkeys(part for part in [prefix, *env["PATH"].split(os.pathsep)] if part))
     return env
 
 
@@ -530,11 +539,12 @@ async def manifest_services(
     _results: dict[str, CheckResult] | None = None,
     scope: str = "",
     secret_names: Sequence[str] = (),
+    runtime_env: Mapping[str, str] | None = None,
 ) -> AsyncIterator[list[CheckResult]]:
     """Hold explicitly declared services until exit; expose lifecycle failures to callers."""
     roots = {"cache": str(cache), "repo": str(repo), "scratch": str(scratch)}
     redactions = _runtime_secret_values(secret_names)
-    env = manifest_environment(manifest, **roots, secret_names=secret_names)
+    env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env)
     results = _results if _results is not None else {}
     lifecycle: list[CheckResult] = []
     started = []
@@ -665,7 +675,7 @@ async def manifest_services(
                     lifecycle.append(result)
 
 
-async def run_manifest(
+async def _run_manifest_commands(
     manifest: EnvironmentManifest,
     *,
     cache: str | Path,
@@ -675,14 +685,15 @@ async def run_manifest(
     scope: str = "",
     secret_names: Sequence[str] = (),
     execution_source_digest: str | None = None,
+    runtime_env: Mapping[str, str] | None = None,
 ) -> VerificationReport:
     roots = {"cache": str(cache), "repo": str(repo), "scratch": str(scratch)}
     redactions = _runtime_secret_values(secret_names)
-    preflight = _template_preflight(manifest, roots, install=install, scope=scope, secret_names=secret_names)
+    preflight = _template_preflight(manifest, roots, install=install, scope=scope, secret_names=secret_names, runtime_env=runtime_env)
     if preflight is not None:
         preflight.execution_source_digest = execution_source_digest
         return preflight
-    env = manifest_environment(manifest, **roots, secret_names=secret_names)
+    env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env)
     results: dict[str, CheckResult] = {}
     digest = manifest.digest()
     if install:
@@ -702,7 +713,7 @@ async def run_manifest(
             manifest_digest=digest,
             context=scope,
         )
-    async with manifest_services(manifest, **roots, _results=results, scope=scope, secret_names=secret_names) as services:
+    async with manifest_services(manifest, **roots, _results=results, scope=scope, secret_names=secret_names, runtime_env=runtime_env) as services:
         if missing or any(
             r.required and r.status != "pass" for r in [*results.values(), *services]
         ):
@@ -740,6 +751,26 @@ async def run_manifest(
         scope=scope,
         results=sorted(results.values(), key=lambda r: order.get(r.id, -1)),
     )
+
+
+async def run_manifest(
+    manifest: EnvironmentManifest, *, cache: str | Path, repo: str | Path, scratch: str | Path,
+    install: bool = False, scope: str = "", secret_names: Sequence[str] = (),
+    execution_source_digest: str | None = None,
+    runtime_artifacts: RuntimeArtifactReceipt | None = None,
+    runtime_deadline: float | None = None, runtime_lease: RuntimeLease | None = None,
+) -> VerificationReport:
+    if manifest.runtime is not None:
+        from .runtime_execution import execute_with_runtime
+
+        return await execute_with_runtime(manifest, cache=cache, repo=repo, scratch=scratch,
+            install=install, scope=scope, secret_names=secret_names, execution_source_digest=execution_source_digest,
+            runtime_artifacts=runtime_artifacts, runtime_deadline=runtime_deadline, runtime_lease=runtime_lease,
+            commands=_run_manifest_commands)
+    if runtime_lease is not None or runtime_artifacts is not None:
+        raise ValueError("native manifest cannot use private runtime evidence")
+    return await _run_manifest_commands(manifest, cache=cache, repo=repo, scratch=scratch,
+        install=install, scope=scope, secret_names=secret_names, execution_source_digest=execution_source_digest)
 
 
 def _secret_payload() -> str:
@@ -797,6 +828,9 @@ def main() -> None:
     manifest = EnvironmentManifest.model_validate(
         json.loads(sys.stdin.read() if args.manifest_stdin else args.manifest),
     )
+    from .runtime_transport import consume_runtime_controls
+
+    runtime_deadline, runtime_artifacts = consume_runtime_controls(required=manifest.runtime is not None, install=args.install)
     report = asyncio.run(
         run_manifest(
             manifest,
@@ -806,6 +840,7 @@ def main() -> None:
             scope=args.scope, execution_source_digest=execution_source_digest,
             install=args.install,
             secret_names=secret_names,
+            runtime_deadline=runtime_deadline, runtime_artifacts=runtime_artifacts,
         ),
     )
     sys.stdout.write(report.model_dump_json() + "\n")

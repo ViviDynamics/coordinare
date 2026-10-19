@@ -116,3 +116,7 @@ class RuntimeArtifactReceipt(RuntimeContract):
     def require_binding(self, *, manifest_digest: str, source_digest: str, runtime_digest: str) -> None:
         if (self.manifest_digest, self.source_digest, self.runtime_digest) != (manifest_digest, source_digest, runtime_digest):
             raise ValueError('runtime artifact identity differs from accepted contract')
+
+
+RUNTIME_OWNED_ENV = frozenset({'DOCKER_HOST', 'DOCKER_CONFIG', 'DOCKER_CONTEXT',
+                               'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'SSH_AUTH_SOCK'})
