@@ -12,16 +12,25 @@ import shlex
 import shutil
 import signal
 import socket
+import stat
 import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from .runtime import RuntimeArtifactReceipt, RuntimeIdentity, RuntimeSpec
 from .runtime_bundle import BUNDLE_PATH, RuntimeBundleInputs, inspect_bundle
 from .runtime_guest import cloud_configuration, qemu_arguments
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from threading import Event
+
+
+class RuntimeScanStoppedError(Exception):
+    """The owner requested that an in-progress allocation scan stop."""
 
 
 def _remaining(deadline: float) -> float:
@@ -38,8 +47,48 @@ def _digest(path: Path) -> str:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def _allocated(path: Path) -> int:
-    return sum(member.lstat().st_blocks * 512 for member in path.rglob('*') if not member.is_symlink())
+def _scan_active(deadline: float, stop: Event | None) -> None:
+    if stop is not None and stop.is_set():
+        raise RuntimeScanStoppedError
+    _remaining(deadline)
+
+
+def _allocation_entries(descriptor: int, deadline: float, stop: Event | None) -> Iterator[os.stat_result]:
+    _scan_active(deadline, stop)
+    with os.scandir(descriptor) as members:
+        for member in members:
+            _scan_active(deadline, stop)
+            try:
+                metadata = member.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue  # A running project may remove entries during measurement.
+            _scan_active(deadline, stop)
+            yield metadata
+            if stat.S_ISDIR(metadata.st_mode):
+                try:
+                    child = os.open(member.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+                except FileNotFoundError:
+                    continue
+                try:
+                    yield from _allocation_entries(child, deadline, stop)
+                finally:
+                    os.close(child)
+
+
+def _allocated(path: Path, *, deadline: float, stop: Event | None, limit: int) -> int:
+    total = 0
+    _scan_active(deadline, stop)
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        with contextlib.closing(_allocation_entries(descriptor, deadline, stop)) as members:
+            for metadata in members:
+                total += metadata.st_blocks * 512
+                if total > limit:
+                    break
+    finally:
+        os.close(descriptor)
+    _scan_active(deadline, stop)
+    return total
 
 
 async def _command(argv: list[str], *, deadline: float, check: bool = True) -> tuple[int, bytes]:
@@ -101,15 +150,17 @@ class RuntimeLease:
         return await _command(['/usr/bin/ssh', '-F', str(self.work_root/'ssh-config'),
                                '127.0.0.1', script], deadline=min(deadline, self.deadline), check=check)
 
-    def check_bounds(self) -> None:
-        _remaining(self.deadline)
+    def check_bounds(self, *, stop: Event | None = None) -> None:
+        _scan_active(self.deadline, stop)
         bounds = self.spec.policy.resources
         if shutil.disk_usage(self.scratch).free < bounds.reserve_bytes:
             raise RuntimeError('private runtime free-space reserve exhausted')
-        if _allocated(self.cache) > bounds.cache_bytes:
+        if _allocated(self.cache, deadline=self.deadline, stop=stop, limit=bounds.cache_bytes) > bounds.cache_bytes:
             raise RuntimeError('private runtime cache ceiling exhausted')
-        if _allocated(self.scratch) + _allocated(self.work_root) > bounds.scratch_bytes:
+        if _allocated(self.scratch, deadline=self.deadline, stop=stop, limit=bounds.scratch_bytes) + _allocated(
+                self.work_root, deadline=self.deadline, stop=stop, limit=bounds.scratch_bytes) > bounds.scratch_bytes:
             raise RuntimeError('private runtime scratch ceiling exhausted')
+        _scan_active(self.deadline, stop)
         if self.process is not None and self.process.returncode is not None and not self.clean_shutdown:
             raise RuntimeError('private runtime guest exited unexpectedly')
 
