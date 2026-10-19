@@ -376,6 +376,9 @@ async def test_invalid_revision_cannot_publish_partial_definition_or_responses(c
     assert len(budget.scope_definition.criteria) == 1 and budget.scope_responses == []
     assert budget.scope_findings.open_ids() == ['F0001']
     assert budget.calls == 4 and budget.coverage_revisions == 1
+    expected = {'stale_base': 'scope_revision_base', 'late_invalid': 'scope_revision_target',
+                'citation': 'scope_citations_invalid', 'full': 'missing'}.get(case, 'scope_response_ids_invalid')
+    assert expected in budget.validation_codes
 
 
 @pytest.mark.asyncio

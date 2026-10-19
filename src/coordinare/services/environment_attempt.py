@@ -168,6 +168,7 @@ class AttemptBudget:
     def summary(self) -> dict[str, Any]:
         """Only trusted stages/codes, counters and allowlisted provider metadata escape."""
         return {**finding_summary(self.finding_ledger),
+                **{"scope_" + key: value for key, value in finding_summary(self.scope_findings).items()},
                 "scope_criterion_count": len(self.scope_definition.criteria) if self.scope_definition is not None else 0,
                 "scope_review_count": len(self.scope_findings.reviews) if self.scope_findings is not None else 0,
                 "scope_contract_digest": self.scope_contract.digest() if self.scope_contract is not None else None, "stage": self.stage, "outcome": self.outcome, "error_code": self.error_code,

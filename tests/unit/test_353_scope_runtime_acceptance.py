@@ -130,6 +130,7 @@ def test_real_snapshot_restart_preserves_scope_deadline_and_spent_work(tmp_path,
     budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600, now=100)
     budget.calls, budget.reads = 7, 9
     budget.schema_repairs = budget.coverage_revisions = budget.execution_repairs = 1
+    budget.scope_phase = "accepted"
     budget.scope_contract = manifest.scope_contract.model_copy(deep=True)
     budget.scope_definition = budget.scope_contract.definition.model_copy(deep=True)
     budget.scope_inputs = dict(budget.scope_contract.all_inputs)

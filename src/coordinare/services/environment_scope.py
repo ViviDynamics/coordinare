@@ -200,7 +200,7 @@ async def _prepare_author(request: _Request) -> tuple[SourceInspection, list[dic
     paths, fetch, commit, limits, budget = request.paths, request.fetch, request.commit, request.limits, request.budget
     inventory = _checked_inventory(paths, limits)
     author = SourceInspection(inventory, fetch, limits, budget, retained_inputs=budget.scope_inputs)
-    author.name = 'scope_author'
+    author.name = 'scope_revision' if budget.scope_phase == 'revision' else 'scope_author'
     previous = budget.scope_definition
     ledger = budget.scope_findings or FindingLedger(source_commit=commit)
     if ledger.source_commit != commit:
@@ -296,6 +296,7 @@ async def _discover_scope(request: _Request) -> ScopeContract:
         while True:
             if budget.scope_phase != 'review':
                 revising = budget.scope_phase == 'revision'
+                author.name = 'scope_revision' if revising else 'scope_author'
                 definition = await _phase(author, messages, chat=chat, envelope='scope_revision' if revising else 'scope',
                     validate=partial(_validate_revision if revising else _validate_author, author=author, commit=commit, budget=budget))
                 budget.scope_definition = definition
