@@ -15,7 +15,7 @@ from coordinare.services.environment_probes import ProbeEnvelope
 from coordinare.services.environment_proposal_patch import PATCH_SCHEMA
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
 
     from coordinare_service_inference.environment.scope import ScopeContract
 
@@ -33,7 +33,8 @@ def _require_scope_mapping(declaration: dict[str, Any], scope: ScopeContract) ->
     }
 
 
-def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: ScopeContract | None = None) -> dict[str, Any]:
+def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: ScopeContract | None = None,
+                    scope_decision_ids: Sequence[str] | None = None) -> dict[str, Any]:
     tools = [
         {'type': 'object', 'additionalProperties': False, 'required': ['tool', 'path'],
          'properties': {'tool': {'const': 'read_file'}, 'path': {'type': 'string'}}},
@@ -50,6 +51,11 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
     if phase == 'source_tool':
         return {'type': 'object', 'anyOf': tools}
     declaration = final[phase]()
+    if phase == 'scope_assessment' and scope_decision_ids is not None:
+        decisions = declaration['$defs']['ScopeAssessmentProposal']['properties']['decisions']
+        decisions.update(minItems=len(scope_decision_ids), maxItems=len(scope_decision_ids))
+        if scope_decision_ids:
+            declaration['$defs']['FindingDecisionProposal']['properties']['finding_id']['enum'] = list(scope_decision_ids)
     if phase == 'manifest' and scope_contract is not None:
         _require_scope_mapping(declaration, scope_contract)
     definitions = declaration.pop('$defs', {})

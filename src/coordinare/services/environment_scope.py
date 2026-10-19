@@ -85,7 +85,9 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                 exposed = 'source_tool' if not inspection.inputs else envelope
                 budget.expected_envelope = ('source_tool' if not inspection.inputs else
                                             envelope)
-                schema = response_schema(exposed)
+                decision_ids = (budget.scope_findings.open_ids()
+                    if exposed == 'scope_assessment' and budget.scope_findings is not None else None)
+                schema = response_schema(exposed, scope_decision_ids=decision_ids)
                 messages[0] = {'role': 'system', 'content': base_system +
                     '\nReturn one complete envelope matching this schema: ' + canonical(schema).decode()}
                 budget.reserve_call()
@@ -107,6 +109,8 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                     errors = [{'location': ['scope_revision'], 'code': exc.type}]
                 except FindingValidationError as exc:
                     errors = [{'location': list(exc.location), 'code': exc.code}]
+                    if exc.code == 'scope_response_ids_invalid':
+                        errors[0]['guidance'] = str(exc)
                 except EnvironmentDiscoveryError as exc:
                     if exc.code not in {'invalid_json_envelope', 'duplicate_json_key', 'unsupported_envelope',
                                         'invalid_tool_arguments', 'scope_citations_invalid', 'scope_obligation_removed',
@@ -146,6 +150,7 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
         'Independently review source-defined scope, not an executable candidate. You have no author conversation. '
         'Follow development/test entry points and nested references; independently check omissions and conflicts. '
         'Supply exactly one decision for every required_decision_ids entry with cited evidence; '
+        'When required_decision_ids is empty, decisions MUST be []; the daemon assigns IDs to new findings only after this review. '
         'new findings do not replace decisions on retained findings. Use only the decisions array, never alternate decision fields. '
         'accept requires no open or new findings; '
         'revise requires a blocking finding. Unknown applicability or conflicting evidence must hold. '
@@ -255,9 +260,15 @@ def _validate_responses(responses: list[FindingResponse], *, ledger: FindingLedg
     ids = [r.finding_id for r in responses]
     known = {r.id for r in ledger.records}
     if (len(ids) != len(set(ids)) or not set(ledger.open_ids()) <= set(ids) or not set(ids) <= known
-            or any(not set(r.sources) <= inputs.keys()
-                   or not set(r.affected_ids) <= {c.id for c in definition.criteria} for r in responses)):
+            or any(not set(r.sources) <= inputs.keys() for r in responses)):
         _fail('scope_response_ids_invalid')
+    current_ids = {c.id for c in definition.criteria}
+    for index, response in enumerate(responses):
+        if not set(response.affected_ids) <= current_ids:
+            message = ('affected_ids must use current criterion IDs: ' + canonical(sorted(current_ids)).decode()
+                + '. Reassessment replaces the old criterion ID. Use [] for new or reassessed criteria; never cite a replaced ID.')
+            raise FindingValidationError(message, code='scope_response_ids_invalid',
+                location=('finding_responses', str(index), 'affected_ids'))
     return [r.model_dump(mode='json') for r in responses]
 
 

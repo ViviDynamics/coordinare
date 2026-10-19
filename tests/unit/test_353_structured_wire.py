@@ -170,3 +170,20 @@ def test_saved_elm_failure_shapes_remain_held(raw, code):
         assert code in [error['code'] for error in _validation_feedback(exc)]
     else:
         pytest.fail('Malformed saved Elm response must never become an accepted revision')
+
+
+@pytest.mark.parametrize('identifiers', [[], ['F0001']])
+def test_scope_ledger_decision_constraints_survive_strict_wire_encoding(identifiers):
+    from coordinare.services.environment_structured_wire import decode_wire, wire_schema
+
+    schema = response_schema('scope_assessment', scope_decision_ids=identifiers)
+    decision = {'finding_id': 'F0001', 'status': 'resolved', 'rationale': 'Inspected source resolves the finding',
+                'sources': ['fixture'], 'duplicate_of': None}
+    assessment = {'verdict': 'accept', 'rationale': 'Source evidence covers the scope',
+                  'sources': ['fixture'], 'findings': [], 'decisions': [decision] if identifiers else []}
+    payload = {'response': {'scope_assessment': assessment}}
+    jsonschema.validate(payload, wire_schema(schema))
+    assert json.loads(decode_wire(json.dumps(payload), schema)) == {'scope_assessment': assessment}
+    assessment['decisions'] = [{**decision, 'finding_id': 'F9999'}]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(payload, wire_schema(schema))
