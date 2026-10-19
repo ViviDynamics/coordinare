@@ -145,3 +145,20 @@ attempt remain unchanged. New service/executor deadline regressions cover the
 larger batch, shorter remaining attempts, explicit tighter/looser deadlines, and
 eleven isolated 90-second observations sharing one absolute expiry. A fresh Elm
 run follows successful preflight and required CI; the exhausted run is retained.
+
+
+## Follow-up review diagnostics
+
+The fresh `probe-batch30m-elm60m-low` run stopped after945.12seconds before
+probes. Typed revision succeeded (nine added criteria, eight finding responses),
+but the subsequent reviewer omitted decisions for all eight retained findings;
+its correction added forbidden `decisions2`. The two schema slots were exhausted
+with2654.965seconds remaining. The30-minute probe change was not exercised.
+
+Complete retained-finding adjudication remains mandatory. Review input now lists
+the exact daemon-owned required decision IDs separately; incomplete/duplicate
+adjudication identifies `scope_assessment.decisions`, and repair feedback repeats
+those trusted IDs. No decision, verdict, source citation or approval is filled in
+by the daemon. Saved malformed replies remain rejected and ledgers unchanged.
+Regression cases cover both one and eight retained findings. No budgets or
+readiness conditions change in this correction.
