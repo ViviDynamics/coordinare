@@ -145,6 +145,7 @@ def correction_instruction(envelope: str) -> str:
             'and questions nonblank, at most 512 characters. Do not add root schema_version or return a list or manifest. ',
         "manifest": 'Return exactly {"manifest":{...},"finding_responses":[...]} matching the manifest envelope, never a bare proposal. ',
         "scope": 'Return exactly {"scope":{"criteria":[...]},"finding_responses":[...]} with complete source obligations, never executable commands. ',
+        "scope_revision": 'Return exactly {"scope_revision":{"base_digest":"retained definition digest","add":[],"reassess":[]},"finding_responses":[...]} with at most 16 combined additions/reassessments. Never return a complete scope or commands. ' ,
         "scope_assessment": 'Return exactly {"scope_assessment":{...}} with verdict, sources, rationale, findings and decisions. ',
         "assessment": 'Return exactly {"assessment":{...}} matching the review envelope. ',
     }[envelope]

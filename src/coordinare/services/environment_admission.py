@@ -70,7 +70,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
                       "source_commit", "symphony_name", "sources", "verdict", "rationale", "capabilities_digest", "inventory_digest",
                       "commands", "citations", "questions", "probe", "manifest", "assessment", "findings", "decisions",
                       "finding_responses", "finding_id", "issue", "category", "affected_ids", "duplicate_of", "status",
-                      "capability_unavailable", "criteria", "applicability", "usability", "runtime_needs", "scope_assessment", "criterion_checks", "runtime_endpoints"}
+                      "capability_unavailable", "criteria", "applicability", "usability", "runtime_needs", "scope_assessment", "criterion_checks", "runtime_endpoints", "scope_revision", "base_digest", "add", "reassess", "criterion_id", "criterion"}
     result = []
     for error in exc.errors(include_url=False, include_input=False, include_context=False)[:16]:
         location = [part if (isinstance(part, str) and part in allowed_fields) or type(part) is int else "*"
@@ -107,7 +107,7 @@ def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any
                         "Never rename or remove existing required requirement/check/service IDs; revise their definitions in place. "
                         "Use list_files for directories and read_files only for exact file paths from listings. " +
                         ("Use required executable check IDs, not commands or install-only prerequisites. "
-                         if budget.expected_envelope not in {"scope", "scope_assessment", "criterion_checks", "runtime_endpoints"} else
+                         if budget.expected_envelope not in {"scope", "scope_revision", "scope_assessment", "criterion_checks", "runtime_endpoints", "base_digest", "add", "reassess", "criterion_id", "criterion"} else
                          "Preserve source-defined scope; do not generate commands during source review. ") +
                         "Independent review and successful clean execution remain mandatory."})}])
 

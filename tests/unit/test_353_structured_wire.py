@@ -12,7 +12,7 @@ from coordinare.services.environment_response_schema import response_schema
 def test_every_phase_schema_uses_supported_strict_object_representation():
     from coordinare.services.environment_structured_wire import wire_schema
 
-    for phase in ['source_tool', 'probe', 'manifest', 'assessment', 'scope', 'scope_assessment']:
+    for phase in ['source_tool', 'probe', 'manifest', 'assessment', 'scope', 'scope_assessment', 'scope_revision']:
         schema = wire_schema(response_schema(phase))
         jsonschema.Draft202012Validator.check_schema(schema)
         assert schema['type'] == 'object' and 'anyOf' not in schema
@@ -78,3 +78,72 @@ def test_native_schema_preserves_execution_path_grammar_and_operator_variables()
         jsonschema.validate(path, path_schema)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate('repo', path_schema)
+
+
+def test_revision_schema_and_native_transport_have_identical_envelopes():
+    from coordinare_service_inference.environment.scope_revision import ScopeRevisionEnvelope
+
+    from coordinare.services.environment_function_wire import decode_function, functions
+
+    schema = response_schema('scope_revision')
+    declaration = schema['anyOf'][-1]
+    assert set(declaration['required']) == {'scope_revision', 'finding_responses'}
+    assert declaration['additionalProperties'] is False
+    revision = schema['$defs']['ScopeRevision']
+    assert set(revision['required']) == {'base_digest', 'add', 'reassess'}
+    assert revision['additionalProperties'] is False
+    assert revision['properties']['add']['maxItems'] == revision['properties']['reassess']['maxItems'] == 16
+    reassessment = schema['$defs']['ScopeReassessment']
+    assert set(reassessment['required']) == {'criterion_id', 'criterion'}
+    assert reassessment['additionalProperties'] is False
+    values = {'base_digest': 'a'*64, 'add': [], 'reassess': []}
+    responses = [{'finding_id': 'F0001', 'rationale': 'Source evidence defends the existing definition',
+                  'sources': ['guide'], 'affected_ids': []}]
+    native = next(f['function'] for f in functions(schema) if f['function']['name'] == 'submit_environment_scope_revision')
+    assert set(native['parameters']['required']) == {'base_digest', 'add', 'reassess', 'finding_responses'}
+    raw = json.dumps({'tool_calls': [{'type': 'function', 'function': {'name': native['name'],
+        'arguments': json.dumps({**values, 'finding_responses': responses})}}]})
+    decoded = json.loads(decode_function(raw, schema))
+    assert decoded == {'scope_revision': values, 'finding_responses': responses}
+    assert ScopeRevisionEnvelope.model_validate(decoded).finding_responses[0].finding_id == 'F0001'
+    assert 'ScopeEnvelope' not in schema.get('$defs', {})
+    assert 'scope' in response_schema('scope')['anyOf'][-1]['properties']
+
+
+@pytest.mark.parametrize('arguments', [
+    '{"base_digest":"x","add":[],"add":[],"reassess":[],"finding_responses":[]}',
+    '{"base_digest":"x","add":[],"reassess":[],"finding_responses":[],"scope_definition":{}}',
+])
+def test_invalid_native_revision_never_salvages_arguments(arguments):
+    from coordinare_service_inference.environment.scope_revision import ScopeRevisionEnvelope
+
+    from coordinare.services.environment_function_wire import decode_function
+
+    raw = json.dumps({'tool_calls': [{'type': 'function', 'function': {
+        'name': 'submit_environment_scope_revision', 'arguments': arguments}}]})
+    with pytest.raises(ValueError):
+        decoded = decode_function(raw, response_schema('scope_revision'))
+        ScopeRevisionEnvelope.model_validate_json(decoded)
+
+
+def test_revision_rejects_full_scope_function_and_redacts_unknown_fields():
+    from coordinare_service_inference.environment.scope_revision import ScopeRevisionEnvelope
+    from pydantic import ValidationError
+
+    from coordinare.services.environment_admission import _validation_feedback
+    from coordinare.services.environment_discovery_prompts import correction_instruction
+    from coordinare.services.environment_function_wire import decode_function
+
+    raw = json.dumps({'tool_calls': [{'type': 'function', 'function': {
+        'name': 'submit_environment_scope', 'arguments': '{}'}}]})
+    with pytest.raises(KeyError):
+        decode_function(raw, response_schema('scope_revision'))
+    with pytest.raises(ValidationError) as failure:
+        ScopeRevisionEnvelope.model_validate({'scope_revision': {'base_digest': 'a'*64, 'add': [],
+            'reassess': [], 'private-value': 'private-source'}, 'finding_responses': []})
+    errors = _validation_feedback(failure.value)
+    assert errors == [{'location': ['scope_revision', '*'], 'code': 'extra_forbidden'}]
+    assert 'private' not in json.dumps(errors)
+    instruction = correction_instruction('scope_revision')
+    assert 'base_digest' in instruction and 'scope_revision' in instruction
+    assert 'complete scope' in instruction and 'commands' in instruction
