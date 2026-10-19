@@ -43,7 +43,7 @@ async def test_invalid_citations_correct_then_revision_gets_fresh_review():
     assert budget.coverage_revisions == 1
     correction = json.loads(replies.messages[3][-1]['content'])
     assert correction['validation_errors'] == [{'location':['sources'], 'code':'review_citations_invalid',
-        'allowed_sources':[PATH]}]
+        'allowed_sources':[PATH], 'correction_path':['assessment', 'sources']}]
     feedback = json.loads(replies.messages[4][-1]['content'])
     assert feedback['coverage_revision']['sources'] == [PATH]
     assert len(replies.messages[5]) == 2
