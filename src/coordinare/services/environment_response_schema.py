@@ -17,10 +17,23 @@ from coordinare.services.environment_proposal_patch import PATCH_SCHEMA
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from coordinare_service_inference.environment.scope import ScopeContract
+
     from coordinare.services.environment_attempt import DiscoveryChatReply
 
 
-def response_schema(phase: str, *, allow_patch: bool = False) -> dict[str, Any]:
+def _require_scope_mapping(declaration: dict[str, Any], scope: ScopeContract) -> None:
+    identifiers = [criterion.id for criterion in scope.definition.criteria if criterion.applicability == 'required']
+    manifest = declaration['$defs']['EnvironmentManifestProposal']
+    manifest['required'].append('criterion_checks')
+    manifest['properties']['criterion_checks'] = {
+        'type': 'object', 'additionalProperties': False, 'required': identifiers,
+        'properties': {identifier: {'type': 'array', 'minItems': 1, 'items': {'type': 'string'}}
+                       for identifier in identifiers},
+    }
+
+
+def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: ScopeContract | None = None) -> dict[str, Any]:
     tools = [
         {'type': 'object', 'additionalProperties': False, 'required': ['tool', 'path'],
          'properties': {'tool': {'const': 'read_file'}, 'path': {'type': 'string'}}},
@@ -37,6 +50,8 @@ def response_schema(phase: str, *, allow_patch: bool = False) -> dict[str, Any]:
     if phase == 'source_tool':
         return {'type': 'object', 'anyOf': tools}
     declaration = final[phase]()
+    if phase == 'manifest' and scope_contract is not None:
+        _require_scope_mapping(declaration, scope_contract)
     definitions = declaration.pop('$defs', {})
     return {'type': 'object', 'anyOf': [*tools, declaration], '$defs': definitions}
 

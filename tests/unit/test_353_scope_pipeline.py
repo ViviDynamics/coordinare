@@ -121,6 +121,12 @@ async def test_production_discovery_reviews_scope_before_generating_commands():
         phases.append('construction')
         assert 'scope_contract' in context
         identifier = context['scope_contract']['definition']['criteria'][0]['id']
+        manifest_schema = response_schema['$defs']['EnvironmentManifestProposal']
+        assert 'criterion_checks' in manifest_schema['required']
+        mapping = manifest_schema['properties']['criterion_checks']
+        assert mapping['required'] == [identifier]
+        assert set(mapping['properties']) == {identifier}
+        assert mapping['additionalProperties'] is False
         return json.dumps({'manifest': {'criterion_checks': {identifier: ['operate']},
             'requirements': [{'id': 'source-operation', 'description': 'Documented operation', 'source': 'guide', 'checks': ['operate']}],
             'install': [], 'checks': [{'id': 'operate', 'argv': ['tool', 'exercise']}],
