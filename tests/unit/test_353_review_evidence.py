@@ -129,7 +129,9 @@ async def test_additional_review_reads_cannot_bypass_context_cap():
         await discover_and_review(symphony_name='suite', commit=COMMIT, paths=[PATH, 'additional'],
             capabilities=CAPABILITIES, fetch=fetch, chat=chat, budget=budget,
             limits=DiscoveryLimits(max_review_context_bytes=100000, max_file_bytes=400000))
-    assert exc.value.code == 'scope_author_context_limit'
+    assert exc.value.code == 'scope_review_context_limit'
+    assert budget.scope_phase == 'review' and budget.scope_contract is None
+    assert budget.coverage_revisions == 1
     assert review_calls == 1
     assert budget.mandatory_inputs_delivered == 2
 
