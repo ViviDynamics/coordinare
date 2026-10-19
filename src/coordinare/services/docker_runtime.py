@@ -52,12 +52,13 @@ class DockerRuntime:
         extra_labels: dict[str, str] | None = None,
         backend: str | None = None,
     ) -> StartedPerformer:
+        config = await self._pinned(config)
         started = await performer_lifecycle.start_ephemeral(
-            await self._pinned(config),
+            config,
             extra_labels=extra_labels,
             backend=backend,
         )
-        return StartedPerformer(handle=started.container_id, endpoint=started.endpoint)
+        return StartedPerformer(handle=started.container_id, endpoint=started.endpoint, image_ref=config.image)
 
     async def _pinned(
         self, config: PerformerEndpointConfig,

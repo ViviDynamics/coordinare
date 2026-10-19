@@ -548,6 +548,7 @@ class HTTPPerformerService:
 
     async def _require_provenance_capability(
         self, payload: JobInitPayload, ready_status: PerformerStatus | None,
+        *, launched_image: str | None = None,
     ) -> None:
         """234: raise ``ValueError`` (the job is refused before it is posted) when the image cannot take a frozen
         payload. The old image would drop the field and run the cache's own scripts.
@@ -577,7 +578,7 @@ class HTTPPerformerService:
             if verified_image is not None:
                 from coordinare.services.environment_acceptance import immutable_verifier_image
 
-                image = immutable_verifier_image(str(self._config.image))
+                image = immutable_verifier_image(launched_image if launched_image is not None else str(self._config.image))
                 if image != verified_image:
                     message = "consumer image differs from the clean verified image; rebuild the environment"
                     raise ValueError(message)
@@ -618,6 +619,7 @@ class HTTPPerformerService:
     ) -> dict[str, Any]:
         ephemeral_job: _EphemeralJob | None = None
         ready_status: PerformerStatus | None = None
+        launched_image: str | None = None
 
         # 076 (T016) — pre-allocate the coordinare-side session_id BEFORE
         # spinning up the container so it can be set as the
@@ -680,6 +682,7 @@ class HTTPPerformerService:
                 started = await self._run_teardown(self._runtime.start_ephemeral(
                     effective_config, **start_kwargs,
                 ))
+                launched_image = getattr(started, 'image_ref', None)
                 SYSTEM_HEALTH.record_performer_start(type(self._runtime).__name__, ok=True)
             except performer_lifecycle.LifecycleError as exc:
                 # 151: the class name only; the message can carry runtime detail.
@@ -730,7 +733,7 @@ class HTTPPerformerService:
         # Build the job-init payload.
         try:
             payload = self._build_job_payload(card_context, workspace_info)
-            await self._require_provenance_capability(payload, ready_status)
+            await self._require_provenance_capability(payload, ready_status, launched_image=launched_image)
         except ValueError as exc:
             if ephemeral_job is not None:
                 await self._refuse_job(ephemeral_job)

@@ -25,6 +25,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 from coordinare_service_inference.environment.execution_source import read_source_reference
+from coordinare_service_inference.environment.runtime import RuntimePolicy
 from scripts import environment_validation_cleanup
 from scripts.environment_validation_image import candidate_image, verify_image_code
 
@@ -39,10 +40,16 @@ from coordinare.services.env_cache import (
 from coordinare.services.environment_acceptance import (
     accepted_environment,
     execution_report,
+    immutable_verifier_image,
     saved_execution_accepted,
 )
 from coordinare.services.environment_attempt import DiscoveryChatReply, EnvironmentDiscoveryError
 from coordinare.services.environment_repair import journal_for, remaining_seconds
+from coordinare.services.environment_runtime import (
+    admit_installer_runtime,
+    runtime_verifier_options,
+)
+from coordinare.services.environment_runtime_evidence import require_runtime_target
 
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
@@ -70,6 +77,16 @@ class Profile:
     max_coverage_revisions: int = 2
     max_execution_repairs: int = 2
     max_review_context_bytes: int = 1024 * 1024
+    private_service_runtime: dict[str, Any] | None = None
+
+
+def load_runtime_policy(path: Path) -> dict[str, Any]:
+    """Load an explicit platform policy; capability discovery still measures the image."""
+    with path.open('rb') as stream:
+        raw = stream.read(16385)
+    if len(raw) > 16384:
+        raise ValueError('private runtime policy exceeds byte bound')
+    return RuntimePolicy.model_validate_json(raw).model_dump(mode='json')
 
 
 @dataclass
@@ -285,9 +302,34 @@ async def _install(
     snapshot: Snapshot, cache: EnvCacheState, image: str, target: Path, timeout: float,
 ) -> tuple[int, bytes]:
     """A private local clone carries no host credential configuration into the image."""
+    manifest = accepted_environment(cache)
+    if manifest is None:
+        raise ValueError("accepted environment disappeared before installation")
+    if immutable_verifier_image(image) != (cache.environment_capabilities or {}).get('image_ref'):
+        raise ValueError('installer image differs from accepted capabilities')
+    expires_at = time.time()+timeout
+    if cache.environment_attempt is not None:
+        expires_at = min(expires_at, time.time()+remaining_seconds(cache))
+    options = ['--cpus', '2', '--memory', '4g', '--pids-limit', '512']
+    if manifest.runtime is not None:
+        require_runtime_target(manifest, cache)
+        if cache.environment_attempt is None or journal_for(cache).status != 'executing':
+            raise ValueError('private runtime installer requires an executing original attempt')
+        expires_at = min(expires_at, time.time()+manifest.runtime.policy.resources.max_seconds)
+        options = runtime_verifier_options(manifest, target)
+        options.extend(['-e', 'COORDINARE_ENV_RUNTIME_EXPIRES_AT='+str(expires_at)])
+    phase_deadline = time.monotonic()+timeout
+
+    def time_left() -> float:
+        left = min(expires_at-time.time(), phase_deadline-time.monotonic())
+        if left <= 0:
+            raise TimeoutError('installer original deadline exhausted')
+        return left
+
     workspace = target / "installer-source"
     git_environment = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
                            GIT_NO_REPLACE_OBJECTS="1")
+    clone_timeout = min(60, time_left())
     cloned = await asyncio.create_subprocess_exec(
         "git",
         "-c",
@@ -302,8 +344,9 @@ async def _install(
         stderr=asyncio.subprocess.DEVNULL,
         env=git_environment,
     )
-    if await _bounded_wait(cloned, 60):
+    if await _bounded_wait(cloned, clone_timeout):
         raise RuntimeError("private installer snapshot clone failed")
+    checkout_timeout = min(60, time_left())
     checkout = await asyncio.create_subprocess_exec(
         "git",
         "-C",
@@ -318,12 +361,10 @@ async def _install(
         stderr=asyncio.subprocess.DEVNULL,
         env=git_environment,
     )
-    if await _bounded_wait(checkout, 60):
+    if await _bounded_wait(checkout, checkout_timeout):
         raise RuntimeError("private installer snapshot checkout failed")
     name = "coordinare-env-validation-" + uuid.uuid4().hex[:12]
-    manifest = accepted_environment(cache)
-    if manifest is None:
-        raise ValueError("accepted environment disappeared before installation")
+    remaining = time_left()
     process = await asyncio.create_subprocess_exec(
         "docker",
         "run",
@@ -331,12 +372,7 @@ async def _install(
         "-i",
         "--name",
         name,
-        "--cpus",
-        "2",
-        "--memory",
-        "4g",
-        "--pids-limit",
-        "512",
+        *options,
         "-e",
         "BASH_ENV=",
         "-e",
@@ -369,7 +405,7 @@ async def _install(
     try:
         output, _ = await asyncio.wait_for(
             process.communicate(json.dumps({"manifest":manifest.model_dump(mode="json"),
-                "execution_source":cache.environment_execution_source}, ensure_ascii=False).encode()), timeout,
+                "execution_source":cache.environment_execution_source}, ensure_ascii=False).encode()), remaining,
         )
         assert process.returncode is not None
         return process.returncode, output
@@ -422,7 +458,7 @@ async def execute_accepted(
     result.update(stage="installer", installer_ran=True, installer_passed=False, clean_consumer_ran=False)
     code, output = await _install(snapshot, cache, image, target, profile.installer_timeout)
     (target / "installer-output.json").write_bytes(output)
-    report = execution_report(output.decode(), cache, publish=False)
+    report = execution_report(output.decode(), cache, publish=False, runtime_phase='installer')
     result["installer_passed"] = (
         code == 0
         and report.passed
@@ -437,6 +473,8 @@ async def execute_accepted(
         service.record_bootstrap_execution(snapshot.name, state, evidence, cleanup_confirmed=True)
         service.on_bootstrap_complete(snapshot.name, False, state)
         return
+    # _install returns only after the outer writer's removal is confirmed.
+    admit_installer_runtime(cache, report.model_dump(mode='json'), cleanup_confirmed=True)
     result.update(stage="clean_consumer", clean_consumer_ran=True)
     passed, detail = await verify_env_cache_clean(
         state,
@@ -470,7 +508,7 @@ async def execute_accepted(
 
 async def _cleanup_case(target: Path, cache: EnvCacheState, image: str) -> bool:
     """Remove only private case contents, including files created with container ownership."""
-    roots = [cache.cache_dir, target / "installer-source"]
+    roots = [cache.cache_dir, target / "installer-source", target / 'runtime-scratch']
     existing = [root for root in roots if root.is_dir() and not root.is_symlink()]
     if not existing:
         return True
@@ -525,6 +563,7 @@ async def validate_repository(
         manifest_max_coverage_revisions=profile.max_coverage_revisions,
         manifest_max_execution_repairs=profile.max_execution_repairs,
         manifest_max_review_context_bytes=profile.max_review_context_bytes,
+        private_service_runtime=profile.private_service_runtime,
     )
     global_config = SimpleNamespace(
         performer_image=image,
@@ -756,6 +795,7 @@ def main() -> int:
     parser.add_argument("--approval-timeout", type=float, default=600)
     parser.add_argument("--save-transcripts", action="store_true")
     parser.add_argument("--keep-caches", action="store_true")
+    parser.add_argument('--runtime-policy', type=Path, help='Explicit private-service platform policy JSON; image contents are verified')
     args = parser.parse_args()
     new_profile_directory(args.output)
     profile = Profile(
@@ -775,6 +815,7 @@ def main() -> int:
         max_coverage_revisions=args.max_coverage_revisions,
         max_execution_repairs=args.max_execution_repairs,
         max_review_context_bytes=args.max_review_context_bytes,
+        private_service_runtime=load_runtime_policy(args.runtime_policy) if args.runtime_policy else None,
     )
     revision = subprocess.check_output([shutil.which("git") or "/usr/bin/git", "rev-parse", "HEAD"], text=True).strip()
     _write(
