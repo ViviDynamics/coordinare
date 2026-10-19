@@ -39,6 +39,7 @@ from coordinare.services import performer_lifecycle
 from coordinare.services.docker_executor import DockerExecutor
 from coordinare.services.docker_runtime import DockerRuntime
 from coordinare.services.env_provenance import image_capability_refusal
+from coordinare.services.environment_runtime import launch_runtime_policy
 from coordinare.services.event_capture import capture_usage_records
 from coordinare.services.run_header import build_run_header
 from coordinare.services.run_log import RunLogBusyError, redact_log_text
@@ -159,6 +160,20 @@ def _inject_claude_code_secrets(
             secrets["ANTHROPIC_API_KEY"] = anthropic_key
     if role_base_url:
         secrets["ANTHROPIC_BASE_URL"] = str(role_base_url)
+
+
+def _runtime_launch_options(runtime: Any, metadata: dict[str, Any]) -> dict[str, Any]:
+    message = 'private runtime launch policy is unsupported or lacks independent review'
+    try:
+        policy = launch_runtime_policy(metadata)
+        if policy is None:
+            return {}
+        parameters = inspect.signature(runtime.start_ephemeral).parameters
+    except (ValueError, TypeError):
+        raise performer_lifecycle.ContainerStartError(message) from None
+    if 'runtime_policy' not in parameters:
+        raise performer_lifecycle.ContainerStartError(message)
+    return {'runtime_policy': policy}
 
 
 def _runtime_accepts_backend(runtime: Any) -> bool:
@@ -675,6 +690,7 @@ class HTTPPerformerService:
                 # kwarg would otherwise fail here with TypeError.
                 backend = str(card_context.get("backend") or "") or None
                 start_kwargs: dict[str, Any] = {"extra_labels": extra_labels}
+                start_kwargs.update(_runtime_launch_options(self._runtime, card_context))
                 if _runtime_accepts_backend(self._runtime):
                     start_kwargs["backend"] = backend
                 # Settle a started create request before cancellation checks label absence;

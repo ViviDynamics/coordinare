@@ -65,7 +65,8 @@ def test_allocation_scan_checks_original_deadline_during_traversal(tmp_path, mon
         clock[0] = 2.0
         return real_scan(path)
 
-    # Isolate the deadline from the host's unrelated free-space reserve.
+    # Isolate traversal from unrelated carrier admission and free-space gates.
+    monkeypatch.setattr(supervisor, 'require_runtime_resources', lambda _: None)
     monkeypatch.setattr(supervisor.shutil, 'disk_usage', lambda _: SimpleNamespace(free=1024**4))
     monkeypatch.setattr(supervisor, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
     monkeypatch.setattr(supervisor.os, 'scandir', advancing_scan)

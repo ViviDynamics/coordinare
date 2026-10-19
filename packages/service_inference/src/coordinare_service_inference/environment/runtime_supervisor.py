@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Literal
 from .runtime import RuntimeArtifactReceipt, RuntimeIdentity, RuntimeSpec
 from .runtime_bundle import BUNDLE_PATH, RuntimeBundleInputs, inspect_bundle
 from .runtime_guest import cloud_configuration, qemu_arguments
+from .runtime_resources import require_runtime_resources
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -153,6 +154,7 @@ class RuntimeLease:
     def check_bounds(self, *, stop: Event | None = None) -> None:
         _scan_active(self.deadline, stop)
         bounds = self.spec.policy.resources
+        require_runtime_resources(bounds)
         if shutil.disk_usage(self.scratch).free < bounds.reserve_bytes:
             raise RuntimeError('private runtime free-space reserve exhausted')
         if _allocated(self.cache, deadline=self.deadline, stop=stop, limit=bounds.cache_bytes) > bounds.cache_bytes:
@@ -202,7 +204,7 @@ class RuntimeLease:
         try:
             self.check_bounds()
             respected = True
-        except (OSError, RuntimeError, TimeoutError):
+        except (OSError, RuntimeError, ValueError):
             respected = False
         try:
             if self.process is not None and self.process.returncode is None:
@@ -251,6 +253,7 @@ def _admit(spec: RuntimeSpec, *, repo: Path, cache: Path, scratch: Path, readonl
     actual = platform.system().lower() + '/' + platform.machine().lower()
     if actual != spec.policy.identity.carrier_platform or platform.system() != 'Linux':
         raise ValueError('private runtime carrier platform differs')
+    require_runtime_resources(spec.policy.resources)
     observed = inspect_bundle()
     expected = spec.policy.identity.model_dump(exclude={'schema_version', 'carrier_image', 'carrier_platform'})
     if observed != expected:
