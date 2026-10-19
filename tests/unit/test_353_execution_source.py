@@ -111,7 +111,7 @@ def test_complete_tree_preserves_unreviewed_binary_executable_and_link(tmp_path)
     )
     assert (tmp_path / "repo/src/main").read_bytes() == b"app\n"
     assert (tmp_path / "repo/asset.bin").read_bytes() == b"\x00\xff\x80"
-    assert (tmp_path / "repo/bin/tool").stat().st_mode & 0o111 == 0o100
+    assert (tmp_path / "repo/bin/tool").stat().st_mode & 0o111 == 0o111
     assert os.readlink(tmp_path / "repo/current") == "src/main"
     assert (tmp_path / "repo/current").read_bytes() == b"app\n"
     with pytest.raises(ValueError):
@@ -320,3 +320,24 @@ def test_intermediate_symlink_parent_steps_cannot_escape_owned_root(tmp_path):
         api.validate_execution_bundle(path, review_inputs={
             'a': hashlib.sha256(b'inside').hexdigest(),
         })
+
+
+def test_restored_tree_has_git_checkout_permissions_under_private_umask(tmp_path):
+    from coordinare_service_inference.environment.execution_source_restore import (
+        restore_execution_bundle,
+    )
+
+    path, identity = bundle_file(tmp_path)
+    expected = source_api().ExecutionSourceIdentity.model_validate(identity)
+    private_parent = tmp_path / 'private'
+    private_parent.mkdir(mode=0o700)
+    previous = os.umask(0o077)
+    try:
+        restore_execution_bundle(path, private_parent / 'repo', expected=expected, review_inputs={})
+    finally:
+        os.umask(previous)
+    assert private_parent.stat().st_mode & 0o777 == 0o700
+    for name in ('repo', 'repo/src', 'repo/bin'):
+        assert (private_parent / name).stat().st_mode & 0o777 == 0o755
+    assert (private_parent / 'repo/src/main').stat().st_mode & 0o777 == 0o644
+    assert (private_parent / 'repo/bin/tool').stat().st_mode & 0o777 == 0o755

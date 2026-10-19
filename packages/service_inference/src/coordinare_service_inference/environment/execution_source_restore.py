@@ -32,6 +32,7 @@ def restore_execution_bundle(
     destination.mkdir(mode=0o700)
     root_fd = os.open(destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
+        os.fchmod(root_fd, 0o755)
         for archive, member in bundle_members(path):
             if member.name == "metadata.json":
                 continue
@@ -44,6 +45,7 @@ def restore_execution_bundle(
                     next_fd = os.open(
                         part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd,
                     )
+                    os.fchmod(next_fd, 0o755)
                     os.close(directory_fd)
                     directory_fd = next_fd
                 if member.issym():
@@ -58,6 +60,7 @@ def restore_execution_bundle(
                     stream = archive.extractfile(member)
                     if stream is None:
                         raise ValueError("execution source file missing")
+                    os.fchmod(file_fd, 0o755 if member.mode & 0o111 else 0o644)
                     with os.fdopen(file_fd, "wb") as output:
                         shutil.copyfileobj(stream, output, length=64 * 1024)
             finally:

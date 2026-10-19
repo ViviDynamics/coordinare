@@ -135,6 +135,17 @@ def _validate_execution_results(report: VerificationReport, manifest: Environmen
 def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True,
                      runtime_phase: Literal['installer', 'consumer'] = 'consumer') -> VerificationReport:
     """Validate parent-collected results; success text cannot substitute for execution."""
+    return _bound_execution_report(text, cache, publish=publish, runtime_phase=runtime_phase)
+
+
+def failed_installer_report(text: str, cache: EnvCacheState) -> VerificationReport:
+    """Retain failed installer evidence for repair; never publish readiness or a receipt."""
+    return _bound_execution_report(text, cache, publish=False, runtime_phase='installer', failed_installer=True)
+
+
+def _bound_execution_report(text: str, cache: EnvCacheState, *, publish: bool,
+                            runtime_phase: Literal['installer', 'consumer'],
+                            failed_installer: bool = False) -> VerificationReport:
     manifest = accepted_environment(cache)
     if manifest is None:
         message = "required accepted environment contract is missing"
@@ -165,7 +176,19 @@ def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True,
         raise ValueError(message)
     _validate_execution_results(report, manifest, installer=runtime_phase == 'installer')
 
-    validate_runtime_evidence(report, manifest, cache, phase=runtime_phase)
+    if failed_installer:
+        if not any(result.required and result.status == 'fail' for result in report.results):
+            raise ValueError('failed installer evidence requires an actual required failure')
+        if manifest.runtime is not None:
+            from coordinare.services.environment_runtime_evidence import (
+                validate_failed_installer_runtime,
+            )
+
+            validate_failed_installer_runtime(report, manifest, cache)
+        else:
+            validate_runtime_evidence(report, manifest, cache, phase=runtime_phase)
+    else:
+        validate_runtime_evidence(report, manifest, cache, phase=runtime_phase)
     if publish:
         cache.environment_verification = report.model_dump(mode="json")
     return report

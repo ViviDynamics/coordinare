@@ -134,6 +134,7 @@ async def test_installer_stops_monitor_before_removing_sealed_runtime(tmp_path, 
     monkeypatch.setattr(environment_contract, 'seal_runtime', seal)
     await prepare_environment(score, stand)
     try:
+        await environment_contract.execute_contract(score, stand, install=True)
         result = await environment_contract.execute_contract(score, stand)
         assert result['passed'] and result['environment_verification']['runtime_cleanup']
         assert stand.environment_runtime is None

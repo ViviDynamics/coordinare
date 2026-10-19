@@ -415,9 +415,13 @@ def _rejected_evidence(cache: EnvCacheState, data: dict[str, Any]) -> dict[str, 
     manifest = accepted_environment(cache)
     if manifest is None:
         _refuse('execution repair requires independent acceptance')
-    report = execution_report(json.dumps({key: data[key] for key in ('platform', 'manifest_digest', 'execution_source_digest', 'scope', 'results',
+    from coordinare.services.environment_acceptance import failed_installer_report
+
+    evidence_text = json.dumps({key: data[key] for key in ('platform', 'manifest_digest', 'execution_source_digest', 'scope', 'results',
                                                                     'runtime_digest', 'runtime_phase', 'runtime_artifacts', 'runtime_cleanup')
-                                          if key in data}), cache, publish=False)
+                                          if key in data})
+    report = (failed_installer_report(evidence_text, cache) if data.get('runtime_phase') == 'installer'
+              else execution_report(evidence_text, cache, publish=False))
     target = ExecutionCapabilities.model_validate(cache.environment_capabilities)
     if report.platform != target.platform or (data.get('image_ref') is not None and data['image_ref'] != target.image_ref):
         _refuse('execution repair evidence runtime identity differs')

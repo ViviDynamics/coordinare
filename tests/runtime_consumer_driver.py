@@ -39,17 +39,45 @@ async def run(phase: str | None = None, *, contract: dict | None = None) -> None
     data = json.loads(Path('/input/metadata.json').read_text())
     source = Path('/work/source-a' if phase == 'installer' else '/work/relocated/source-'+phase)
     source.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree('/fixture', source, symlinks=True)
     score = Score(title='Synthetic runtime integration; never project readiness', role='env_bootstrap' if phase == 'installer' else 'implementing',
                   repo_url='https://example.invalid/fixtures/synthetic-runtime', branch='main', env_cache_path='/cache',
                   environment_attempt_expires_at=data['expires_at'], **(contract if contract is not None else data['contract']))
     if phase != 'installer' and score.environment_runtime_artifacts is None:
         installer = json.loads(Path('/evidence/installer.json').read_text())
         score.environment_runtime_artifacts = installer['receipt']
-    stand = Stand(path=source, branch='main')
-    actual = await checkout_identity(source, commit=score.environment_manifest['source_commit'],
-                                     review_inputs=score.environment_manifest['inputs'])
     expected = ExecutionSourceIdentity.model_validate(score.environment_execution_source)
+    if phase == 'installer':
+        shutil.copytree('/fixture', source, symlinks=True)
+        actual = await checkout_identity(source, commit=score.environment_manifest['source_commit'],
+                                         review_inputs=score.environment_manifest['inputs'])
+    else:
+        import os
+        import tarfile
+
+        from coordinare_service_inference.environment.execution_source import (
+            SourceEntry,
+            source_identity,
+        )
+        from coordinare_service_inference.environment.execution_source_restore import (
+            restore_execution_bundle,
+        )
+
+        bundle = Path('/input/source.tgz')
+        restore_execution_bundle(bundle, source, expected=expected, review_inputs=score.environment_manifest['inputs'])
+        assert not (source/'.git').exists()
+        with tarfile.open(bundle, 'r:gz') as archive:
+            metadata = json.load(archive.extractfile('metadata.json'))
+        entries = []
+        for item in metadata['entries']:
+            path = source/item['path']
+            content = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
+            mode = '120000' if path.is_symlink() else '100755' if path.stat().st_mode & 0o111 else '100644'
+            algorithm = 'sha1' if len(item['object_id']) == 40 else 'sha256'
+            oid = hashlib.new(algorithm, b'blob '+str(len(content)).encode()+b'\0'+content).hexdigest()
+            entries.append(SourceEntry(path=item['path'], mode=mode, object_id=oid, size=len(content)))
+        actual = source_identity(expected.source_commit, entries)
+        assert {str(path.relative_to(source)) for path in source.rglob('*') if path.is_file() or path.is_symlink()} == {item.path for item in entries}
+    stand = Stand(path=source, branch='main')
     assert actual == expected
     result = {'readiness_evidence': False, 'phase': phase, 'manifest_digest': score.environment_manifest_digest,
               'source_digest': actual.digest(), 'source_root': str(source)}

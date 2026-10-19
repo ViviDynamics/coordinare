@@ -193,6 +193,9 @@ async def test_workflow_installs_without_model_and_reports_parent_evidence(tmp_p
     assert report["environment_verification"]["passed"] is True
     assert report["environment_verification"]["manifest_digest"] == score.environment_manifest_digest
     assert toolkit.metrics.agent_turns == 0
+    evidence = report["environment_verification"]
+    assert [item["id"] for item in evidence["results"]] == ["install", "check"]
+    assert all(item["exit_code"] == 0 for item in evidence["results"])
 
 
 @pytest.mark.asyncio
@@ -459,3 +462,65 @@ async def test_installer_requires_actual_complete_source_before_commands(tmp_pat
     with pytest.raises(ValueError):
         await execute_contract(score, Stand(path=tmp_path, branch='main'), install=True)
     assert not (tmp_path/'installed').exists()
+
+
+@pytest.mark.asyncio
+async def test_ordinary_service_stop_failure_is_rejected_after_cleanup(tmp_path):
+    import sys
+
+    from performer.environment_contract import EnvironmentReadinessError, close_environment, prepare_environment
+
+    score = contract_score(tmp_path)
+    score.role = "implementing"
+    marker = tmp_path / "service-alive"
+    data = {**score.environment_manifest, "install": [], "checks": [{"id": "check", "argv": ["true"]}],
+        "activation": {"path": [], "env": {}}, "services": [{"id": "ordinary", "required": True,
+        "start": {"id": "start", "argv": [sys.executable, "-c", "import pathlib;pathlib.Path('service-alive').touch()"]},
+        "health": {"id": "health", "argv": [sys.executable, "-c", "import pathlib,time; p=pathlib.Path('service-alive');\nfor _ in range(100):\n if p.exists(): break\n time.sleep(.01)\nassert p.exists()"]},
+        "stop": {"id": "stop", "argv": [sys.executable, "-c", "import pathlib;pathlib.Path('service-alive').unlink();p=pathlib.Path('stop-count');n=int(p.read_text())+1 if p.exists() else 1;p.write_text(str(n));raise SystemExit(1 if n>1 else 0)"]}}]}
+    manifest = current_manifest_fixture(data)
+    score.environment_manifest = manifest.model_dump()
+    score.environment_manifest_digest = manifest.digest()
+    score.environment_assessment = current_review_fixture(manifest,
+        {**score.environment_assessment, "manifest_digest": manifest.digest()})
+    stand = Stand(path=tmp_path, branch="main")
+    await prepare_environment(score, stand)
+    assert (tmp_path / 'stop-count').read_text() == '1'
+    assert marker.exists()
+    with pytest.raises(EnvironmentReadinessError, match="required service failed"):
+        await close_environment(stand)
+    assert not marker.exists()
+    assert (tmp_path / 'stop-count').read_text() == '2'
+    assert stand.environment_runtime is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('identity', ['manifest_digest', 'execution_source_digest', 'platform', 'runtime_digest'])
+async def test_installer_evidence_cannot_be_reused_for_different_execution_identity(tmp_path, identity):
+    from performer.environment_contract import execute_contract
+
+    score = contract_score(tmp_path)
+    stand = Stand(path=tmp_path, branch='main')
+    await execute_contract(score, stand, install=True)
+    setattr(stand.environment_installation_report, identity, 'f' * 64)
+    with pytest.raises(ValueError, match='installer execution identity differs'):
+        await execute_contract(score, stand)
+
+
+@pytest.mark.asyncio
+async def test_final_verification_cannot_waive_original_install_failure(tmp_path):
+    from performer.environment_contract import execute_contract
+
+    score = contract_score(tmp_path)
+    manifest = current_manifest_fixture({**score.environment_manifest,
+        'install': [{'id': 'install', 'argv': ['false']}],
+        'checks': [{'id': 'check', 'argv': ['true']}], 'activation': {'path': [], 'env': {}}})
+    score.environment_manifest = manifest.model_dump()
+    score.environment_manifest_digest = manifest.digest()
+    score.environment_assessment = current_review_fixture(manifest,
+        {**score.environment_assessment, 'manifest_digest': manifest.digest()})
+    stand = Stand(path=tmp_path, branch='main')
+    assert not (await execute_contract(score, stand, install=True))['passed']
+    final = await execute_contract(score, stand)
+    assert not final['passed']
+    assert [item['status'] for item in final['environment_verification']['results']] == ['fail', 'pass']

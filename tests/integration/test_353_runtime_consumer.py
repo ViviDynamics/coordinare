@@ -115,7 +115,9 @@ def test_real_performer_retains_and_releases_private_service_runtime(tmp_path):
         'install': [{'id': 'fixture-pull', 'argv': ['docker', 'pull', base]},
                     {'id': 'fixture-build', 'argv': ['docker', 'build', '--pull=false', '--network=none',
                                                    '-t', 'coordinare-runtime-fixture:local', '{repo}']}],
-        'checks': [{'id': 'ordinary-client', 'argv': ['curl', '-fsS', 'http://127.0.0.1:8080/message.txt']}],
+        'checks': [{'id': 'ordinary-client', 'argv': ['curl', '-fsS', 'http://127.0.0.1:8080/message.txt']},
+                   {'id': 'nonroot-source', 'argv': ['docker', 'run', '--rm', '--user', '65534:65534',
+                    '--network', 'none', '--volume', '{repo}:/source:ro', base, 'cat', '/source/message.txt']}],
         'activation': {'path': [], 'env': {}}, 'empty_reason': None,
         'services': [{'id': 'fixture-compose',
             'start': {'id': 'compose-start', 'argv': ['docker', 'compose', '-f', '{repo}/compose.yaml', 'up', '-d', '--no-build', '--pull', 'never']},
@@ -132,6 +134,13 @@ def test_real_performer_retains_and_releases_private_service_runtime(tmp_path):
     for path in (inputs, cache, evidence):
         path.mkdir(mode=0o700)
     shutil.copyfile(repo_root/'tests/runtime_consumer_driver.py', inputs/'driver.py')
+    from tests.unit.test_353_execution_source import bundle_file
+
+    files = {item.path: ((fixture/item.path).readlink().as_posix().encode() if item.mode == '120000'
+                        else (fixture/item.path).read_bytes(), item.mode) for item in entries}
+    bundle, identity = bundle_file(inputs, files, commit=commit)
+    assert identity == source.model_dump()
+    bundle.rename(inputs/'source.tgz')
     expiry = time.time()+1800
     (inputs/'metadata.json').write_text(json.dumps({'readiness_evidence': False, 'expires_at': expiry, 'contract': {
         'environment_manifest': manifest.model_dump(), 'environment_manifest_digest': manifest.digest(),
@@ -168,6 +177,23 @@ def test_real_performer_retains_and_releases_private_service_runtime(tmp_path):
                                            timeout=max(1, expiry-time.time()))
                 (evidence/(phase+'.log')).write_text(completed.stdout+'\n'+completed.stderr)
                 assert completed.returncode == 0, completed.stderr[-4000:]
+                if phase == 'installer':
+                    from coordinare.models.env_cache import EnvCacheState
+                    from coordinare.services.environment_runtime import admit_installer_runtime
+
+                    removed = subprocess.run(['docker', 'rm', name], capture_output=True, timeout=30)
+                    assert removed.returncode == 0, removed.stderr
+                    absent = subprocess.run(['docker', 'container', 'inspect', name], capture_output=True, timeout=10)
+                    assert absent.returncode != 0 and b'No such' in absent.stderr
+                    handoff = EnvCacheState(symphony_name=manifest.symphony_name, sanitised_name='synthetic-runtime', cache_dir=cache)
+                    handoff.environment_manifest = manifest.model_dump()
+                    handoff.environment_assessment = assessment
+                    handoff.environment_capabilities = capability.model_dump()
+                    handoff.environment_execution_source = source.model_dump()
+                    handoff.bootstrap_commit_sha = commit
+                    terminal = json.loads((evidence/'installer.json').read_text())
+                    admit_installer_runtime(handoff, terminal['installer_verification']['environment_verification'], cleanup_confirmed=True)
+                    assert handoff.environment_runtime_artifacts == terminal['receipt']
         installer = json.loads((evidence/'installer.json').read_text())
         consumer = json.loads((evidence/'consumer.json').read_text())
         live = json.loads((evidence/'live_consumer.json').read_text())
