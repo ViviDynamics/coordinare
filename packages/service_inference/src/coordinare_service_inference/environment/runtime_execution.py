@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from .runtime_supervisor import RuntimeLease
 
 
-async def run_guarded(lease: RuntimeLease, operation: Awaitable[VerificationReport]) -> VerificationReport:
+async def run_guarded[T](lease: RuntimeLease, operation: Awaitable[T]) -> T:
     async def watch() -> None:
         while True:
             await asyncio.to_thread(lease.check_bounds)

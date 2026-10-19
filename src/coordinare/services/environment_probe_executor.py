@@ -32,12 +32,23 @@ _ACTIVE_PROBES: set[str] = set()
 RUNTIME_SOURCE = Path(str(environment_probe_runtime.__file__)).read_text()
 
 
-def probe_container_argv(plan: ProbePlan, source: Path, cache: Path) -> list[str]:
+def probe_container_argv(plan: ProbePlan, source: Path, cache: Path, *, scratch: Path | None = None) -> list[str]:
     platform = plan.capabilities.platform.replace("x86_64", "amd64").replace("aarch64", "arm64")
+    resources = ['--pids-limit=128', '--memory=512m', '--cpus=1',
+        '--tmpfs', '/scratch:rw,nosuid,nodev,size=64m,mode=1777']
+    if plan.request.execution_context == 'private_service':
+        policy = plan.capabilities.runtime
+        if policy is None or scratch is None:
+            message = 'private preflight requires runtime policy and private scratch'
+            raise ValueError(message)
+        limits = policy.resources
+        resources = ['--pids-limit=512', f'--memory={limits.memory_mib}m',
+            f'--memory-swap={limits.memory_mib}m', f'--cpus={limits.cpus}',
+            '--mount', f'type=bind,source={scratch},target=/scratch']
     return ["docker", "create", "--name", "coordinare-probe-" + plan.digest()[:24],
         "--platform", platform, "--network=none", "--read-only", "--cap-drop=ALL",
-        "--security-opt=no-new-privileges", "--pids-limit=128", "--memory=512m", "--cpus=1",
-        "--tmpfs", "/scratch:rw,nosuid,nodev,size=64m,mode=1777", "--tmpfs", str(Path("/") / "tmp") + ":rw,nosuid,nodev,size=16m",
+        "--security-opt=no-new-privileges", *resources,
+        "--tmpfs", str(Path("/") / "tmp") + ":rw,nosuid,nodev,size=16m",
         "--mount", f"type=bind,source={source},target=/repo,readonly",
         "--mount", f"type=bind,source={cache},target=/cache,readonly",
         "--entrypoint", "/usr/local/bin/python", plan.capabilities.image_ref,
@@ -111,9 +122,10 @@ async def confirm_probe_cleanup(plan: ProbePlan) -> bool:
     return False if name in _ACTIVE_PROBES else await _bounded_remove(name)
 
 
-async def _command_container(plan: ProbePlan, roots: tuple[Path, Path], command: dict[str, Any], deadline: float) -> ProbeCommandResult:
+async def _command_container(plan: ProbePlan, roots: tuple[Path, Path], command: dict[str, Any], deadline: float,
+                             *, scratch: Path | None = None) -> ProbeCommandResult:
     name = "coordinare-probe-" + plan.digest()[:24]
-    create = asyncio.create_task(_docker(probe_container_argv(plan, *roots), deadline_seconds=max(0.01, min(15, deadline-time.monotonic()))))
+    create = asyncio.create_task(_docker(probe_container_argv(plan, *roots, scratch=scratch), deadline_seconds=max(0.01, min(15, deadline-time.monotonic()))))
     try:
         code, _ = await asyncio.shield(create)
         if code:
@@ -124,7 +136,15 @@ async def _command_container(plan: ProbePlan, roots: tuple[Path, Path], command:
             message = "probe container could not start"
             raise EnvironmentDiscoveryError(message, code="probe_executor_failed")
         seconds = max(0, deadline-time.monotonic())
-        payload = json.dumps({"commands":[command], "seconds":seconds}).encode()
+        data: dict[str, Any] = {"commands":[command], "seconds":seconds}
+        if plan.request.execution_context == 'private_service':
+            if plan.capabilities.runtime is None:
+                message = 'private preflight runtime is missing'
+                raise ValueError(message)
+            data.update(runtime=plan.capabilities.runtime.model_dump(mode='json'),
+                        execution_source_digest=plan.execution_source_digest,
+                        expires_at=time.time()+max(0, deadline-time.monotonic()))
+        payload = json.dumps(data).encode()
         code, output = await _docker(["docker", "exec", "-i", name, "/usr/local/bin/python", "-I", "-c", RUNTIME_SOURCE],
             stdin=payload, deadline_seconds=seconds+1)
         if code or len(output) > MAX_WIRE_REPORT_BYTES:
@@ -179,8 +199,15 @@ async def execute_environment_probe(
                 (root/"cache").mkdir()
                 # Independent commands get separate containers: removal kills even
                 # escaped sessions before another command can run.
-                results = [await _command_container(plan, (root/"repo", root/"cache"), command.model_dump(mode="json"), deadline)
-                    for command in plan.request.commands]
+                results = []
+                for command in plan.request.commands:
+                    if plan.request.execution_context == 'private_service':
+                        with tempfile.TemporaryDirectory(prefix='runtime-scratch-', dir=root) as scratch:
+                            results.append(await _command_container(plan, (root/'repo', root/'cache'),
+                                command.model_dump(mode='json'), deadline, scratch=Path(scratch)))
+                    else:
+                        results.append(await _command_container(plan, (root/'repo', root/'cache'),
+                            command.model_dump(mode='json'), deadline))
     finally:
         _ACTIVE_PROBES.discard(name)
     return ProbeReport(execution_source_digest=plan.execution_source_digest, schema_version=1, plan_digest=plan.digest(), source_commit=plan.source_commit,

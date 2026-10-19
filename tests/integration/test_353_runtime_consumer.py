@@ -172,3 +172,58 @@ def test_real_performer_retains_and_releases_private_service_runtime(tmp_path):
         confirmed = [item.returncode != 0 and b'No such' in item.stderr for item in absent]
         (tmp_path/'cleanup.json').write_text(json.dumps({'containers': owned, 'confirmed_absent': confirmed}))
         assert all(confirmed), 'owned runtime consumer cleanup unconfirmed'
+
+
+def test_real_preflight_observes_only_the_configured_platform(tmp_path):
+    import asyncio
+    import hashlib
+    import time
+
+    from coordinare_service_inference.environment.models import ExecutionCapabilities
+    from coordinare_service_inference.environment.runtime import RuntimePolicy
+
+    from coordinare.services.environment_attempt import AttemptBudget
+    from coordinare.services.environment_probe_executor import execute_environment_probe
+    from coordinare.services.environment_probes import ProbePlan, ProbeRequest
+    from tests.unit.test_353_execution_source_pipeline import bundle_fixture
+
+    image = runtime_image()
+    measurement = subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
+        '--security-opt', 'no-new-privileges', '--entrypoint', 'python', image,
+        '-m', 'coordinare_service_inference.environment.runtime_bundle'], capture_output=True, text=True, timeout=45)
+    assert measurement.returncode == 0, measurement.stderr
+    info = json.loads(subprocess.check_output(['docker', 'image', 'inspect', image], text=True, timeout=10))[0]
+    platform = info['Os']+'/'+{'arm64': 'aarch64', 'amd64': 'x86_64'}.get(info['Architecture'], info['Architecture'])
+    policy = RuntimePolicy.model_validate({'schema_version': 1, 'kind': 'private_service_guest',
+        'identity': {'schema_version': 1, 'carrier_image': image, 'carrier_platform': platform, **json.loads(measurement.stdout)},
+        'resources': {'cpus': 2, 'memory_mib': 4096, 'cache_bytes': 8*1024**3, 'scratch_bytes': 16*1024**3,
+                      'reserve_bytes': 16*1024**3, 'max_seconds': 1800}, 'control_port': 2222, 'max_endpoints': 16})
+    capabilities = ExecutionCapabilities(schema_version=2, runtime=policy, image_ref=image, platform=platform,
+        cache_mount_path='/cache', install_network='enabled', verify_network='disabled')
+    content = b'FROM scratch\n'
+    bundle = bundle_fixture(tmp_path, {'Dockerfile': (content, '100644')})
+    request = ProbeRequest.model_validate({'schema_version': 1, 'execution_context': 'private_service',
+        'commands': [{'id': 'platform', 'argv': ['/bin/sh', '-eu', '-c',
+            'printf scratch-probe > "{scratch}/probe-value"; '
+            'ssh -p 2222 root@127.0.0.1 cat "{scratch}/probe-value"; printf "\\n"; '
+            'docker version --format "{{.Server.Os}}/{{.Server.Arch}}"'],
+                      'timeout_seconds': 30}],
+        'citations': {'platform': ['Dockerfile']}, 'questions': {'platform': 'Can the explicitly configured service platform answer?'}})
+    plan = ProbePlan(request=request, source_commit=bundle.identity.source_commit,
+        inventory_digest=hashlib.sha256(b'Dockerfile').hexdigest(), inputs={'Dockerfile': hashlib.sha256(content).hexdigest()},
+        capabilities=capabilities, execution_source_digest=bundle.identity.digest())
+    name = 'coordinare-probe-'+plan.digest()[:24]
+    (tmp_path/'ownership.json').write_text(json.dumps({'containers': [name], 'readiness_evidence': False}))
+    (tmp_path/'plan.json').write_text(plan.model_dump_json())
+    started = time.monotonic()
+    report = asyncio.run(execute_environment_probe(plan, state={'probe_backend': 'docker'}, source_bundle=bundle,
+        budget=AttemptBudget(timeout_seconds=120)))
+    elapsed = time.monotonic()-started
+    (tmp_path/'report.json').write_text(json.dumps({'report': report.model_dump(mode='json'),
+        'elapsed_seconds': elapsed, 'readiness_evidence': False}))
+    assert elapsed < 120
+    assert report.cleanup_confirmed
+    assert report.results[0].status == 'completed' and report.results[0].exit_code == 0
+    assert report.results[0].output.splitlines() == ['scratch-probe', 'linux/amd64']
+    absent = subprocess.run(['docker', 'container', 'inspect', name], capture_output=True, timeout=10)
+    assert absent.returncode != 0 and b'No such' in absent.stderr

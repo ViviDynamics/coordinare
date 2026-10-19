@@ -11,7 +11,14 @@ from coordinare_service_inference.environment.models import (
     ExecutionCapabilities,  # noqa: TC002 - pydantic resolves field types at runtime
     ProbeCommand,  # noqa: TC002 - pydantic resolves field types at runtime
 )
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_serializer,
+    model_validator,
+)
 from pydantic_core import PydanticCustomError
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
@@ -27,9 +34,18 @@ class ProbeBase(BaseModel):
 
 class ProbeRequest(ProbeBase):
     schema_version: Literal[1]
+    execution_context: Literal['outer', 'private_service'] = Field(default='outer',
+        description='Use outer tools by default; private_service explicitly requests the configured platform-only runtime, never an installed project cache.')
     commands: list[ProbeCommand] = Field(min_length=1, max_length=16)
     citations: dict[str, list[str]] = Field(description="Exactly one key per commands[].id, each with nonempty inspected-source paths.")
     questions: dict[str, str] = Field(description="Exactly one key per commands[].id, each with a nonblank question of 1 to 512 characters.")
+
+    @model_serializer(mode='wrap')
+    def native_wire_identity(self, handler: Any) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if self.execution_context == 'outer':
+            data.pop('execution_context', None)
+        return data
 
     @model_validator(mode="after")
     def valid_commands(self) -> Self:
@@ -57,6 +73,12 @@ class ProbePlan(ProbeBase):
 
     @model_validator(mode="after")
     def inspected_citations(self) -> Self:
+        if self.request.execution_context == 'private_service' and self.capabilities.runtime is None:
+            message = 'private-service preflight requires an explicit runtime policy'
+            raise ValueError(message)
+        if self.request.execution_context == 'private_service' and self.execution_source_digest is None:
+            message = 'private-service preflight requires complete source identity'
+            raise ValueError(message)
         if any(path not in self.inputs for paths in self.request.citations.values() for path in paths):
             raise PydanticCustomError("probe_citations_uninspected", "probe citations must be inspected source inputs")
         if any(len(value) != SHA256_LENGTH or any(c not in '0123456789abcdef' for c in value) for value in self.inputs.values()):

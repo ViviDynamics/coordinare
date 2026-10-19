@@ -40,6 +40,15 @@ privileged execution and enabled clean-consumer egress remain excluded.
 
 ## Required runtime boundary
 
+Capability observations declare `execution_context`: `outer` by default or
+`private_service` when the operator has configured the pinned platform. Native
+plans omit the default field in canonical serialization to preserve their identity.
+A private observation starts a fresh platform-only guest for each command, with
+read-only complete source and empty cache, fresh scratch, no installed-project
+receipt and no network egress. Startup, command execution and teardown consume the
+existing 120-second probe window and original attempt expiry. Nonzero exits remain
+observations; neither successful observations nor cleanup can confer readiness.
+
 - Use software emulation, no KVM/host devices or additional outer capabilities.
   Pin the outer image/platform, guest artifact/platform, emulator/firmware and
   runtime configuration separately. Do not describe a guest architecture as the
