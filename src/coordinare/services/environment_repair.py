@@ -22,6 +22,7 @@ from coordinare.lib.redaction import redact_command_text, redact_state_value
 from coordinare.services.environment_acceptance import (
     accepted_environment,
     execution_report,
+    failed_installer_report,
     saved_execution_accepted,
 )
 from coordinare.services.environment_attempt import (
@@ -415,8 +416,6 @@ def _rejected_evidence(cache: EnvCacheState, data: dict[str, Any]) -> dict[str, 
     manifest = accepted_environment(cache)
     if manifest is None:
         _refuse('execution repair requires independent acceptance')
-    from coordinare.services.environment_acceptance import failed_installer_report
-
     evidence_text = json.dumps({key: data[key] for key in ('platform', 'manifest_digest', 'execution_source_digest', 'scope', 'results',
                                                                     'runtime_digest', 'runtime_phase', 'runtime_artifacts', 'runtime_cleanup')
                                           if key in data})

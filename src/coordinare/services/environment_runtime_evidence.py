@@ -54,6 +54,9 @@ def validate_runtime_evidence(report: VerificationReport, manifest: EnvironmentM
 def validate_failed_installer_runtime(report: VerificationReport, manifest: EnvironmentManifest,
                                       cache: EnvCacheState) -> None:
     """A failed installer has cleanup evidence, never a sealed successful artifact."""
+    if manifest.runtime is None:
+        validate_runtime_evidence(report, manifest, cache, phase='installer')
+        return
     require_runtime_target(manifest, cache)
     runtime = manifest.runtime
     if (runtime is None or report.runtime_digest != runtime.digest()
