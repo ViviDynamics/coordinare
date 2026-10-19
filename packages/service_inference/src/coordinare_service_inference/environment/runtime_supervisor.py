@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import json
 import math
 import os
@@ -17,21 +16,21 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from .runtime import RuntimeArtifactReceipt, RuntimeIdentity, RuntimeSpec
-from .runtime_bundle import BUNDLE_PATH, RuntimeBundleInputs, inspect_bundle
+from .runtime_bundle import BUNDLE_PATH, RuntimeBundleInputs, inspect_bundle, read_bundle
 from .runtime_guest import cloud_configuration, qemu_arguments
+from .runtime_io import RuntimeIOStoppedError as RuntimeScanStoppedError
+from .runtime_io import digest_file as _digest
+from .runtime_io import run_io, settle
 from .runtime_resources import require_runtime_resources
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from threading import Event
-
-
-class RuntimeScanStoppedError(Exception):
-    """The owner requested that an in-progress allocation scan stop."""
 
 
 def _remaining(deadline: float) -> float:
@@ -41,11 +40,6 @@ def _remaining(deadline: float) -> float:
     if remaining <= 0:
         raise TimeoutError('private runtime deadline exhausted')
     return remaining
-
-
-def _digest(path: Path) -> str:
-    with path.open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
 def _scan_active(deadline: float, stop: Event | None) -> None:
@@ -151,18 +145,19 @@ class RuntimeLease:
         return await _command(['/usr/bin/ssh', '-F', str(self.work_root/'ssh-config'),
                                '127.0.0.1', script], deadline=min(deadline, self.deadline), check=check)
 
-    def check_bounds(self, *, stop: Event | None = None) -> None:
-        _scan_active(self.deadline, stop)
+    def check_bounds(self, *, stop: Event | None = None, deadline: float | None = None) -> None:
+        deadline = self.deadline if deadline is None else min(deadline, self.deadline)
+        _scan_active(deadline, stop)
         bounds = self.spec.policy.resources
         require_runtime_resources(bounds)
         if shutil.disk_usage(self.scratch).free < bounds.reserve_bytes:
             raise RuntimeError('private runtime free-space reserve exhausted')
-        if _allocated(self.cache, deadline=self.deadline, stop=stop, limit=bounds.cache_bytes) > bounds.cache_bytes:
+        if _allocated(self.cache, deadline=deadline, stop=stop, limit=bounds.cache_bytes) > bounds.cache_bytes:
             raise RuntimeError('private runtime cache ceiling exhausted')
-        if _allocated(self.scratch, deadline=self.deadline, stop=stop, limit=bounds.scratch_bytes) + _allocated(
-                self.work_root, deadline=self.deadline, stop=stop, limit=bounds.scratch_bytes) > bounds.scratch_bytes:
+        if _allocated(self.scratch, deadline=deadline, stop=stop, limit=bounds.scratch_bytes) + _allocated(
+                self.work_root, deadline=deadline, stop=stop, limit=bounds.scratch_bytes) > bounds.scratch_bytes:
             raise RuntimeError('private runtime scratch ceiling exhausted')
-        _scan_active(self.deadline, stop)
+        _scan_active(deadline, stop)
         if self.process is not None and self.process.returncode is not None and not self.clean_shutdown:
             raise RuntimeError('private runtime guest exited unexpectedly')
 
@@ -185,28 +180,23 @@ class RuntimeLease:
     async def close(self, *, deadline: float) -> RuntimeCleanupReport:
         if self.close_task is None:
             self.close_task = asyncio.create_task(self._close_owned(deadline=deadline))
-        try:
-            return await asyncio.shield(self.close_task)
-        except asyncio.CancelledError:
-            # A cancelled caller still owns its guest until bounded cleanup finishes.
-            await asyncio.shield(self.close_task)
-            raise
+        return await settle(self.close_task)
 
-    def _artifacts_unchanged(self) -> bool:
+    def _artifacts_unchanged(self, *, deadline: float, stop: Event | None = None) -> bool:
         try:
-            return all(path.is_file() and not path.is_symlink() and _digest(path) == digest
+            return all(path.is_file() and not path.is_symlink()
+                       and _digest(path, deadline=min(deadline, self.deadline), stop=stop) == digest
                        for path, digest in self.initial_artifacts.items())
-        except OSError:
+        except (OSError, ValueError):
             return False
 
     async def _close_owned(self, *, deadline: float) -> RuntimeCleanupReport:
         cleanup_deadline = min(deadline, self.deadline, time.monotonic()+15)
+        respected = False
         try:
-            self.check_bounds()
-            respected = True
-        except (OSError, RuntimeError, ValueError):
-            respected = False
-        try:
+            with contextlib.suppress(OSError, RuntimeError, ValueError):
+                await run_io(self.check_bounds, deadline=cleanup_deadline)
+                respected = True
             if self.process is not None and self.process.returncode is None:
                 with contextlib.suppress(OSError, RuntimeError, TimeoutError):
                     await asyncio.wait_for(self.stop_guest(deadline=cleanup_deadline), timeout=_remaining(cleanup_deadline))
@@ -217,25 +207,29 @@ class RuntimeLease:
                         os.killpg(self.process.pid, signal.SIGKILL)
                     await asyncio.wait_for(self.process.wait(), timeout=5)
             finally:
-                unchanged = self._artifacts_unchanged()
-                with contextlib.suppress(OSError):
-                    shutil.rmtree(self.work_root)
-                absent = True
-                for port in [self.spec.policy.control_port, *(endpoint.outer_port for endpoint in self.spec.endpoints)]:
-                    with socket.socket() as listener:
-                        try:
-                            # Closed SSH connections can remain in TIME_WAIT after QEMU is reaped.
-                            # Reuse that state while still requiring an exclusive live listener.
-                            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                            listener.bind(('127.0.0.1', port))
-                            listener.listen(1)
-                        except OSError:
-                            absent = False
-                self.cleanup = RuntimeCleanupReport(
-                    qemu_reaped=self.process is None or self.process.returncode is not None,
-                    keys_absent=not self.work_root.exists(), listeners_absent=absent,
-                    artifacts_unchanged=unchanged, clean_shutdown=self.clean_shutdown, bounds_respected=respected,
-                )
+                unchanged = False
+                try:
+                    with contextlib.suppress(OSError, ValueError):
+                        unchanged = await run_io(self._artifacts_unchanged, deadline=cleanup_deadline)
+                finally:
+                    with contextlib.suppress(OSError):
+                        shutil.rmtree(self.work_root)
+                    absent = True
+                    for port in [self.spec.policy.control_port, *(endpoint.outer_port for endpoint in self.spec.endpoints)]:
+                        with socket.socket() as listener:
+                            try:
+                                # Closed SSH connections can remain in TIME_WAIT after QEMU is reaped.
+                                # Reuse that state while still requiring an exclusive live listener.
+                                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                                listener.bind(('127.0.0.1', port))
+                                listener.listen(1)
+                            except OSError:
+                                absent = False
+                    self.cleanup = RuntimeCleanupReport(
+                        qemu_reaped=self.process is None or self.process.returncode is not None,
+                        keys_absent=not self.work_root.exists(), listeners_absent=absent,
+                        artifacts_unchanged=unchanged, clean_shutdown=self.clean_shutdown, bounds_respected=respected,
+                    )
         return self.cleanup
 
 
@@ -249,16 +243,19 @@ def _verify_receipt(spec: RuntimeSpec, receipt: RuntimeArtifactReceipt | None,
     return receipt
 
 
-def _admit(spec: RuntimeSpec, *, repo: Path, cache: Path, scratch: Path, readonly: bool) -> RuntimeBundleInputs:
+def _admit(spec: RuntimeSpec, *, repo: Path, cache: Path, scratch: Path, readonly: bool,
+           deadline: float, stop: Event | None = None) -> RuntimeBundleInputs:
     actual = platform.system().lower() + '/' + platform.machine().lower()
     if actual != spec.policy.identity.carrier_platform or platform.system() != 'Linux':
         raise ValueError('private runtime carrier platform differs')
     require_runtime_resources(spec.policy.resources)
-    observed = inspect_bundle()
+    observed = inspect_bundle(deadline=deadline, stop=stop)
     expected = spec.policy.identity.model_dump(exclude={'schema_version', 'carrier_image', 'carrier_platform'})
     if observed != expected:
         raise ValueError('private runtime bundle identity differs')
-    bundle = RuntimeBundleInputs.model_validate_json(BUNDLE_PATH.read_bytes())
+    bundle = read_bundle(BUNDLE_PATH, deadline=deadline, stop=stop)
+    if bundle.digest() != spec.policy.identity.configuration_sha256:
+        raise ValueError('private runtime bundle configuration differs')
     roots = [repo.resolve(strict=True), cache.resolve(strict=True), scratch.resolve(strict=True)]
     if any(not path.is_dir() or path == Path.home() for path in roots):
         raise ValueError('private runtime exports require owned directories')
@@ -310,24 +307,27 @@ async def open_runtime(spec: RuntimeSpec, *, artifacts: RuntimeArtifactReceipt |
                        manifest_digest: str | None = None, source_digest: str | None = None,
                        purpose: Literal['installer', 'consumer', 'preflight'] | None = None) -> RuntimeLease:
     """Create only an owned guest after all source-independent admission checks."""
+    deadline = min(deadline, time.monotonic()+spec.policy.resources.max_seconds)
     _remaining(deadline)
     purpose = purpose or ('installer' if install else 'consumer')
     if (purpose == 'installer') != install or (purpose == 'preflight' and artifacts is not None):
         raise ValueError('private runtime purpose differs from artifact policy')
     receipt = _verify_receipt(spec, artifacts, manifest_digest, source_digest) if purpose == 'consumer' else None
-    bundle = _admit(spec, repo=repo, cache=cache, scratch=scratch, readonly=not install)
+    bundle = await run_io(partial(_admit, spec, repo=repo, cache=cache, scratch=scratch, readonly=not install),
+                          deadline=deadline)
     initial = {Path(bundle.guest_image): spec.policy.identity.guest_base_sha256,
                Path(bundle.emulator).resolve(): spec.policy.identity.emulator_sha256,
                Path(bundle.firmware).resolve(): spec.policy.identity.firmware_sha256}
     if receipt is not None:
         artifact = receipt.artifacts[0]
         path = cache/artifact.path
-        if path.is_symlink() or not path.is_file() or path.stat().st_size != artifact.bytes or _digest(path) != artifact.sha256:
+        if (path.is_symlink() or not path.is_file() or path.stat().st_size != artifact.bytes
+                or await run_io(partial(_digest, path), deadline=deadline) != artifact.sha256):
             raise ValueError('private runtime artifact identity differs')
         initial[path] = artifact.sha256
     work = Path(tempfile.mkdtemp(prefix='coordinare-runtime-', dir=scratch.parent))
     lease = RuntimeLease(spec, bundle, uuid.uuid4().hex, work, cache, scratch,
-                         min(deadline, time.monotonic()+spec.policy.resources.max_seconds), install,
+                         deadline, install,
                          manifest_digest, source_digest, {}, initial_artifacts=initial)
     lease.activation_env = {'DOCKER_HOST': f'ssh://root@127.0.0.1:{spec.policy.control_port}',
                             'DOCKER_CONFIG': str(work/'docker'), 'DOCKER_CONTEXT': '',
@@ -335,7 +335,7 @@ async def open_runtime(spec: RuntimeSpec, *, artifacts: RuntimeArtifactReceipt |
                             'DOCKER_TLS_VERIFY': '', 'DOCKER_CERT_PATH': '', 'SSH_AUTH_SOCK': '',
                             'PATH': str(work/'bin') + os.pathsep + os.environ.get('PATH', '')}
     try:
-        lease.check_bounds()
+        await run_io(lease.check_bounds, deadline=lease.deadline)
         base = cache/'installed.qcow2' if receipt is not None else Path(bundle.guest_image)
         _, raw_info = await _command(['/usr/bin/qemu-img', 'info', '--output=json', str(base)], deadline=lease.deadline)
         info = json.loads(raw_info)
@@ -349,7 +349,7 @@ async def open_runtime(spec: RuntimeSpec, *, artifacts: RuntimeArtifactReceipt |
             lease.process = await asyncio.create_subprocess_exec(*arguments, stdout=serial,
                 stderr=asyncio.subprocess.STDOUT, start_new_session=True)
         while True:
-            lease.check_bounds()
+            await run_io(lease.check_bounds, deadline=lease.deadline)
             try:
                 code, _ = await lease.ssh('test -f /run/coordinare-runtime-ready && docker info >/dev/null',
                                           deadline=min(lease.deadline, time.monotonic()+5))
@@ -369,9 +369,10 @@ async def seal_runtime(lease: RuntimeLease, *, manifest_digest: str, source_dige
     """Publish closed project runtime state, never credentials or live service state."""
     if not lease.install or not lease.installation_passed or (manifest_digest, source_digest) != (lease.manifest_digest, lease.source_digest):
         raise ValueError('private runtime installer identity differs')
-    lease.check_bounds()
+    deadline = min(deadline, lease.deadline)
+    await run_io(lease.check_bounds, deadline=deadline)
     await lease.stop_guest(deadline=deadline)
-    if not lease._artifacts_unchanged():
+    if not await run_io(lease._artifacts_unchanged, deadline=deadline):
         raise ValueError('private runtime platform artifacts changed during installation')
     target = lease.cache/'installed.qcow2'
     if target.exists() or target.is_symlink():
@@ -379,8 +380,8 @@ async def seal_runtime(lease: RuntimeLease, *, manifest_digest: str, source_dige
     try:
         await _command(['qemu-img', 'convert', '-O', 'qcow2', str(lease.work_root/'working.qcow2'), str(target)],
                         deadline=min(deadline, lease.deadline))
-        lease.check_bounds()
-        digest = _digest(target)
+        await run_io(lease.check_bounds, deadline=deadline)
+        digest = await run_io(partial(_digest, target), deadline=deadline)
         _remaining(min(deadline, lease.deadline))
         return RuntimeArtifactReceipt.model_validate({
             'schema_version': 1, 'manifest_digest': manifest_digest, 'source_digest': source_digest,
