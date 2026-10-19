@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .models import CheckResult, Command, EnvironmentManifest, VerificationReport, environment_order
+from .runtime_cli import run_cli
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
@@ -831,7 +832,7 @@ def main() -> None:
     from .runtime_transport import consume_runtime_controls
 
     runtime_deadline, runtime_artifacts = consume_runtime_controls(required=manifest.runtime is not None, install=args.install)
-    report = asyncio.run(
+    report = run_cli(
         run_manifest(
             manifest,
             cache=args.cache,
