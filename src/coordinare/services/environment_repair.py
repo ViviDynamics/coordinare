@@ -57,7 +57,10 @@ class RepairJournal(BaseModel):
     """Daemon-owned state; a pending repair survives snapshot roundtrips."""
 
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
-    version: Literal[6] = 6
+    version: Literal[7] = 7
+    scope_author_protocol: Literal[2]
+    scope_phase: Literal["initial", "revision", "review", "accepted"] = "initial"
+    scope_revision_base_digest: Digest | None = None
     scope_inputs: dict[str, Digest] = Field(default_factory=dict)
     scope_responses: list[FindingResponse] = Field(default_factory=list, max_length=32)
     scope_definition: ScopeDefinition | None = None
@@ -105,6 +108,13 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
     data = cache.environment_attempt
     if isinstance(data, dict) and type(data.get('version')) is int and data['version'] in (1, 2, 3, 4, 5):
         _refuse('legacy environment review requires explicit restart after confirmed cleanup', code='legacy_attempt_requires_restart')
+    if isinstance(data, dict) and data.get('version') == 6:
+        if data.get('scope_contract') is None:
+            _refuse('legacy source author protocol requires explicit restart', code='legacy_attempt_requires_restart')
+        data = {**data, 'version': 7, 'scope_author_protocol': 2, 'scope_phase': 'accepted', 'scope_revision_base_digest': None}
+    if isinstance(data, dict) and data.get('version') == 7 and not {
+            'scope_author_protocol', 'scope_phase', 'scope_revision_base_digest'} <= data.keys():
+        _refuse('scope protocol checkpoint is incomplete', code='scope_protocol_invalid')
     try:
         if len(json.dumps(cache.environment_attempt).encode()) > JOURNAL_MAX_BYTES:
             _refuse('environment repair journal exceeds its bound')
@@ -127,6 +137,13 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
 
 def _validate_scope_checkpoint(journal: RepairJournal) -> None:
     definition, contract, findings = journal.scope_definition, journal.scope_contract, journal.scope_findings
+    phase, base = journal.scope_phase, journal.scope_revision_base_digest
+    if ((phase == 'initial' and (definition is not None or contract is not None or base is not None))
+            or (phase == 'review' and (definition is None or contract is not None or base is not None))
+            or (phase == 'revision' and (definition is None or contract is not None
+                or base != definition.digest() or findings is None or not findings.open_ids()))
+            or (phase == 'accepted' and (contract is None or base is not None))):
+        _refuse('scope phase differs from its retained definition', code='scope_protocol_invalid')
     try:
         for path, digest in journal.scope_inputs.items():
             source_path(path)
@@ -153,6 +170,9 @@ def _save_scope_checkpoint(journal: RepairJournal, budget: AttemptBudget) -> Non
         preserve_scope(journal.scope_definition, budget.scope_definition)
     if any(budget.scope_inputs.get(path) != digest for path, digest in journal.scope_inputs.items()):
         _refuse('scope read history cannot be replaced', code='scope_source_identity')
+    journal.scope_author_protocol = budget.scope_author_protocol
+    journal.scope_phase = budget.scope_phase
+    journal.scope_revision_base_digest = budget.scope_revision_base_digest
     journal.scope_inputs = dict(budget.scope_inputs)
     try:
         journal.scope_responses = [FindingResponse.model_validate(value) for value in budget.scope_responses]
@@ -208,7 +228,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
     if data is None:
         cache.environment_source_owner = None
         return
-    if not isinstance(data, dict) or data.get("version") not in (1, 2, 3, 4, 5, 6):
+    if not isinstance(data, dict) or data.get("version") not in (1, 2, 3, 4, 5, 6, 7):
         _refuse("unknown environment journal cannot be reset without reconciliation")
     normalized = dict(data)
     if normalized["version"] == 1:
@@ -216,7 +236,8 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
         normalized["version"] = 2
         for counter in ("schema_repairs", "coverage_revisions", "execution_repairs"):
             normalized[counter], normalized["max_" + counter] = used, maximum
-    normalized["version"] = 6
+    normalized["version"] = 7
+    normalized.setdefault("scope_author_protocol", 2)
     normalized.setdefault("finding_ledger", None)
     try:
         parsed = RepairJournal.model_validate(normalized)
@@ -269,6 +290,9 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
         started=time.monotonic()-(now-journal.started_at), max_calls=journal.max_calls,
         max_reads=journal.max_reads, max_schema_repairs=journal.max_schema_repairs,
         max_coverage_revisions=journal.max_coverage_revisions, max_execution_repairs=journal.max_execution_repairs)
+    budget.scope_author_protocol = journal.scope_author_protocol
+    budget.scope_phase = journal.scope_phase
+    budget.scope_revision_base_digest = journal.scope_revision_base_digest
     budget.scope_inputs = dict(journal.scope_inputs)
     budget.scope_responses = [r.model_dump(mode="json") for r in journal.scope_responses]
     budget.scope_definition = journal.scope_definition.model_copy(deep=True) if journal.scope_definition is not None else None
@@ -307,7 +331,7 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
     if not isinstance(cache.bootstrap_commit_sha, str):
         _refuse("environment repair requires an immutable source commit")
     if previous is None or previous.source_commit != cache.bootstrap_commit_sha or previous.status == 'ready':
-        journal = RepairJournal(source_commit=cache.bootstrap_commit_sha,
+        journal = RepairJournal(source_commit=cache.bootstrap_commit_sha, scope_author_protocol=2,
             base_slug=cache.sanitised_name, base_cache_dir=str(cache.cache_dir),
             origin_slug=previous.origin_slug if previous else cache.sanitised_name,
             started_at=now, expires_at=now+seconds, max_calls=limits.max_model_calls,

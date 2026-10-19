@@ -121,7 +121,7 @@ def test_restart_preserves_findings_expiry_and_consumed_budgets(tmp_path):
     assert resumed.finding_ledger.digest() == ledger.digest()
     assert (resumed.calls, resumed.reads, resumed.schema_repairs, resumed.coverage_revisions) == (9, 20, 1, 2)
     assert cache.environment_attempt['expires_at'] == 700
-    assert cache.environment_attempt['version'] == 6
+    assert cache.environment_attempt['version'] == 7
     resumed.finding_ledger.records[0].proposal.issue = 'Mutation'
     assert cache.environment_attempt['finding_ledger']['records'][0]['proposal']['issue'] != 'Mutation'
 
