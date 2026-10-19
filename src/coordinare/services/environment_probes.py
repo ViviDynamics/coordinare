@@ -90,6 +90,11 @@ class ProbePlan(ProbeBase):
         return hashlib.sha256(json.dumps(self.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def probe_batch_timeout(plan: ProbePlan) -> int:
+    """Fresh private guests share one batch allowance, bounded by the caller's attempt."""
+    return 30 * 60 if plan.request.execution_context == 'private_service' else 120
+
+
 class ProbeCommandResult(ProbeBase):
     id: str
     status: Literal["completed", "timed_out", "execution_error"]
