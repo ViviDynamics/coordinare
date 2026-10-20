@@ -217,3 +217,79 @@ def test_failed_installer_without_success_receipt_is_bounded_repair_evidence(tmp
         assert cache.environment_runtime_artifacts is None
     else:
         assert journal['status'] == 'held'
+
+
+def _covered_contract_metadata(cache, services):
+    """Reviewed metadata whose scope was accepted through a covered runtime-proof objection."""
+    from coordinare_service_inference.environment.findings import FindingLedger
+    from coordinare_service_inference.environment.models import CoverageAssessmentProposal
+    from coordinare_service_inference.environment.scope import (
+        ScopeAssessmentProposal,
+        ScopeContract,
+        SourceAssessmentRecord,
+        derive_finding_decision,
+    )
+
+    from coordinare.services.environment_findings import ReviewSubject, apply_evidence_review
+    from tests.unit.env_manifest_fixture import reviewed_metadata
+
+    metadata = reviewed_metadata(services=services, symphony_name=cache.symphony_name,
+        capabilities=ExecutionCapabilities.model_validate(cache.environment_capabilities))
+    data = metadata['environment_manifest']
+    definition = ScopeContract.model_validate(data['scope_contract']).definition
+    inputs, source, identifier = dict(definition.inputs), sorted(definition.inputs)[0], definition.criteria[0].id
+    subject = ReviewSubject(definition.source_commit, definition.digest(), {identifier})
+    ledger = FindingLedger(source_commit=definition.source_commit)
+    reviews = [
+        {'verdict': 'revise', 'findings': [{'category': 'coverage', 'issue': 'Runtime success is not yet proven',
+            'sources': [source], 'affected_ids': [identifier], 'gap_kind': 'incomplete_success_condition',
+            'inspection_requests': []}], 'decisions': []},
+        {'verdict': 'accept', 'findings': [], 'decisions': [{'finding_id': 'F0001', 'disposition': 'covered',
+            'criterion_ids': [identifier], 'rationale': 'The criterion states its observable success condition',
+            'sources': [source]}]},
+    ]
+    for value in reviews:
+        assessment = ScopeAssessmentProposal.model_validate({**value, 'rationale': 'Independent source judgment', 'sources': [source]})
+        ledger = apply_evidence_review(ledger, subject=subject, reviewer_inputs=inputs,
+            proposal=CoverageAssessmentProposal(verdict=assessment.verdict, rationale=assessment.rationale,
+                sources=assessment.sources, capability_unavailable=False,
+                findings=[f.model_dump(exclude={'inspection_requests', 'gap_kind'}) for f in assessment.findings],
+                decisions=[derive_finding_decision(d).model_dump() for d in assessment.decisions]))
+    contract = ScopeContract(definition=definition, review_inputs=inputs, sources=[source], finding_ledger=ledger,
+        finding_responses=[], source_assessment=SourceAssessmentRecord(review_sequence=2, scope_digest=definition.digest(),
+            source_commit=definition.source_commit, inventory_digest=definition.inventory_digest,
+            reviewer_inputs=inputs, assessment=assessment))
+    manifest = EnvironmentManifest.model_validate({**data, 'scope_contract': contract.model_dump(mode='json'),
+                                                   'scope_contract_digest': contract.digest()})
+    review = current_review_fixture(manifest, {**metadata['environment_assessment'], 'manifest_digest': manifest.digest()})
+    return manifest, review
+
+
+@pytest.mark.parametrize('outcome', ['pass', 'failed_check', 'missing_check', 'unrun_lifecycle'])
+def test_covered_scope_still_requires_every_passing_check(tmp_path, outcome):
+    """Source coverage acceptance never substitutes for clean execution evidence."""
+    import json
+
+    from coordinare.services.environment_acceptance import execution_report
+    from tests.unit.env_manifest_fixture import verification_output
+
+    cache = cache_fixture(tmp_path)
+    service = {'id': 'service', 'required': True,
+        **{name: {'id': name, 'argv': ['true']} for name in ('start', 'health', 'stop', 'init')}}
+    manifest, review = _covered_contract_metadata(cache, [service])
+    assert manifest.scope_contract.source_assessment.assessment.decisions[0].disposition == 'covered'
+    cache.environment_manifest, cache.environment_assessment = manifest.model_dump(), review
+    report = json.loads(verification_output(cache.environment_manifest))
+    if outcome == 'pass':
+        assert execution_report(json.dumps(report), cache).passed
+        return
+    if outcome == 'failed_check':
+        report['results'][0].update(status='fail', exit_code=1)
+        assert not execution_report(json.dumps(report), cache).passed
+    elif outcome == 'missing_check':
+        report['results'] = report['results'][1:]
+        with pytest.raises(ValueError):
+            execution_report(json.dumps(report), cache)
+    else:
+        next(result for result in report['results'] if result['id'] == 'health').update(status='not_run', exit_code=None)
+        assert not execution_report(json.dumps(report), cache).passed
