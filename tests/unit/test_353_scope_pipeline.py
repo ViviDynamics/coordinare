@@ -31,7 +31,7 @@ async def test_scope_contract_roundtrips_without_new_budget_or_mutable_alias(tmp
     assert resumed.scope_contract.digest() == contract.digest()
     assert resumed.calls == budget.calls and resumed.reads == budget.reads
     assert cache.environment_attempt['expires_at'] == original_expiry
-    assert cache.environment_attempt['version'] == 8
+    assert cache.environment_attempt['version'] == 9
     resumed.scope_contract.definition.criteria[0].usability = 'mutated in caller'
     assert cache.environment_attempt['scope_contract']['definition']['criteria'][0]['usability'] != 'mutated in caller'
 
@@ -159,7 +159,7 @@ async def test_scope_revision_crash_resumes_exact_phase_without_renewing_budget(
         await run(Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), objection(),
             revision(criterion(usability='Added operation')), closure()]), budget=budget)
     saved = copy.deepcopy(cache.environment_attempt)
-    assert saved['version'] == 8 and saved['scope_author_protocol'] == 3
+    assert saved['version'] == 9 and saved['scope_author_protocol'] == 4
     assert saved['scope_phase'] == phase
     if phase == 'revision':
         assert saved['scope_revision_base_digest'] == budget.scope_definition.digest()
@@ -220,21 +220,21 @@ async def test_legacy_pending_source_journal_holds_and_explicit_restart_archives
 
 
 @pytest.mark.asyncio
-async def test_legacy_accepted_scope_keeps_canonical_contract_and_original_expiry(tmp_path):
+async def test_legacy_accepted_scope_requires_restart_without_renewal(tmp_path):
+    """Accepted scopes from earlier protocols lack a typed assessment and are never upgraded."""
     cache = cache_fixture(tmp_path)
     cache.bootstrap_commit_sha = COMMIT
     budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
     budget.checkpoint = lambda: checkpoint(cache, budget)
-    contract = await run(Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), review()]), budget=budget)
+    await run(Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), review()]), budget=budget)
     cache.environment_attempt['version'] = 6
-    for key in ('scope_author_protocol', 'scope_phase', 'scope_revision_base_digest'):
+    for key in ('scope_author_protocol', 'scope_phase', 'scope_revision_base_digest', 'scope_assessment'):
         cache.environment_attempt.pop(key, None)
     before = copy.deepcopy(cache.environment_attempt)
-    resumed = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600)
-    assert resumed.scope_contract.digest() == contract.digest()
-    assert resumed.scope_phase == 'accepted' and cache.environment_attempt['version'] == 8
-    assert cache.environment_attempt['expires_at'] == before['expires_at']
-    assert resumed.calls == before['calls'] and resumed.reads == before['reads']
+    with pytest.raises(EnvironmentDiscoveryError) as failure:
+        begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600)
+    assert failure.value.code == 'legacy_attempt_requires_restart'
+    assert cache.environment_attempt == before
 
 
 @pytest.mark.asyncio

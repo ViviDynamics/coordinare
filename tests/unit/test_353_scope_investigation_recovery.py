@@ -63,7 +63,7 @@ async def test_recovery_preserves_queue_findings_and_spent_budget(tmp_path, boun
 
     cache = await saved_investigation(tmp_path, boundary)
     saved = copy.deepcopy(cache.environment_attempt)
-    assert saved['version'] == 8 and saved['scope_author_protocol'] == 3
+    assert saved['version'] == 9 and saved['scope_author_protocol'] == 4
     assert len(saved['scope_investigations']) == 1
     assert len(saved['scope_investigation_results']) == int(boundary in {'result', 'revision'})
     resumed = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600)
