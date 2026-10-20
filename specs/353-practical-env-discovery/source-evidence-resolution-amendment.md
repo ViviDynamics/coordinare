@@ -1,6 +1,6 @@
 # Source evidence resolution and actionable revision feedback
 
-Issue #353; PR #354. Status: written proposal for maintainer review.
+Issue #353; PR #354. Status: approved as written by the maintainer on 2026-10-20.
 
 ## Goal and preserved policy
 
