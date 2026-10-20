@@ -49,8 +49,16 @@ Existing profile limits and the model baseline remain unchanged for comparison.
    repository evidence, without the executable candidate or author conversation.
    It independently follows development/test entry points and nested references,
    then assesses the obligations. Missing or contradictory evidence, unknown
-   applicability and unproven required capabilities hold. Candidate-authored
-   disclaimers and image convenience never authorize exclusions.
+   applicability and undefined required capabilities hold. This phase establishes
+   the required capability and observable operational success condition, not its
+   current installation or successful execution. Runtime probes become available
+   after source-scope acceptance; unproven runtime capability then holds final
+   readiness through executable coverage review and mandatory clean checks.
+   A runtime-only objection requires an explicit independent decision citing the
+   retained obligation, without claiming execution passed. Mixed findings remain
+   open while any source objection is unresolved. Candidate-authored disclaimers
+   and image convenience never authorize exclusions. This clarification was
+   approved on 2026-10-20; it does not waive required executable evidence.
 3. The daemon owns obligation IDs and binds the approved contract to source commit,
    inspected input hashes, complete path inventory digest and requested scope.
    Every admitted author/reviewer read is retained. All findings retain identity

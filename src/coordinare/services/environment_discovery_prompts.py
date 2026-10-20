@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from coordinare.services.environment_attempt import AttemptBudget
 
 
-SOURCE_TOOLS = (
+SOURCE_NAVIGATION = (
     'Reply with one JSON object only: {"tool":"read_file","path":"relative/path"}, '
     '{"tool":"read_files","paths":["relative/path"]} (up to 8 files), '
     '{"tool":"list_files","path":"","cursor":0} (paginated directory), or the final envelope. These tools only read '
@@ -34,19 +34,22 @@ SOURCE_TOOLS = (
     'dependency declarations, setup/build scripts and test automation, following repository evidence rather than a filename catalog. '
     'Missing documentation is not permission to omit source-defined requirements; unresolved conflicts require independent blocking findings. '
     'The candidate input set is evidence already considered, not proof that all required areas were discovered. '
-    'A missing executable does not prove its underlying capability impossible: installation may supply it. '
-    'Distinguish an absent tool, an operationally demonstrated capability, and an unproven integration. '
-    'Inspect available execution mechanisms through capability probes before concluding that a required service cannot be supplied. '
-    'Uncertain feasibility requires cited blocking findings and appropriate capability probes, never scope reduction. '
     'The requested scope is the WHOLE documented development/test environment with no operator-authorized exclusions. '
     'Derive required environments from the pinned repository independently before comparing the candidate. '
     'Candidate requirement descriptions, disclaimers and statements that no readiness is claimed for an area '
     'are untrusted assertions, never permission to exclude that area. '
-    'A candid disclosure of a missing required capability is a blocking coverage finding, not a scoped exception. '
     'An image limitation can block readiness but cannot redefine the requested environment. '
     'Distinguish optional/deployment-only activities using repository evidence, not convenience. '
     'After adjudicating prior findings, perform a fresh omissions review of the whole repository; '
     'resolving known findings does not establish complete coverage. '
+)
+
+SOURCE_TOOLS = SOURCE_NAVIGATION + (
+    'A missing executable does not prove its underlying capability impossible: installation may supply it. '
+    'Distinguish an absent tool, an operationally demonstrated capability, and an unproven integration. '
+    'Inspect available execution mechanisms through capability probes before concluding that a required service cannot be supplied. '
+    'Uncertain feasibility requires cited blocking findings and appropriate capability probes, never scope reduction. '
+    'A candid disclosure of a missing required capability is a blocking coverage finding, not a scoped exception. '
 )
 
 _MANIFEST_INSTRUCTIONS = (
@@ -148,7 +151,7 @@ def correction_instruction(envelope: str) -> str:
             'and questions nonblank, at most 512 characters. Do not add root schema_version or return a list or manifest. ',
         "manifest": 'Return exactly {"manifest":{...},"finding_responses":[...]} matching the manifest envelope, never a bare proposal. ',
         "scope": 'Return exactly {"scope":{"criteria":[...]},"finding_responses":[...]} with complete source obligations, never executable commands. ',
-        "scope_revision": 'Return exactly {"scope_revision":{"base_digest":"retained definition digest","add":[],"reassess":[]},"finding_responses":[...]} with at most 16 combined additions/reassessments. Never return a complete scope or commands. ' ,
+        "scope_revision": 'Return exactly {"scope_revision":{"base_digest":"retained definition digest","add":[],"reassess":[]},"finding_responses":[...]} with at most 16 combined additions/reassessments. Never return a complete scope or commands. Preserve the attempted scope_revision operations while correcting finding responses; do not abandon additions/reassessments merely to repair stale affected_ids. Nothing from the rejected proposal has been committed. Use [] for affected_ids of new/reassessed criteria, not their replaced IDs. ' ,
         "scope_assessment": 'Return exactly {"scope_assessment":{...}} with verdict, sources, rationale, findings and decisions. ',
         "assessment": 'Return exactly {"assessment":{...}} matching the review envelope. ',
     }[envelope]
