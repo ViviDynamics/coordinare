@@ -30,10 +30,29 @@ def proposal(*criteria):
     return {'scope': {'criteria': list(criteria)}, 'finding_responses': []}
 
 
+def source_decision(value):
+    """Wire form of a fixture decision; 'status' is shorthand for the disposition these fixtures intend."""
+    value = dict(value)
+    if 'disposition' in value:
+        return value
+    status, duplicate, requests = value.pop('status'), value.pop('duplicate_of', None), value.pop('inspection_requests', [])
+    if status == 'open':
+        return {**value, 'disposition': 'source_gap', 'gap_kind': 'unread_source',
+                'affected_ids': value.pop('affected_ids', []), 'inspection_requests': requests}
+    assert not requests, 'resolving fixture decisions cannot request inspection'
+    if duplicate is not None:
+        return {**value, 'disposition': 'duplicate', 'duplicate_of': duplicate}
+    return {**value, 'disposition': 'source_correction'}
+
+
+def source_finding(value):
+    return {'gap_kind': 'missing_obligation', **value, 'inspection_requests': value.get('inspection_requests', [])}
+
+
 def review(verdict='accept', *, findings=None, decisions=None, sources=None):
     return {'scope_assessment': {'verdict': verdict, 'rationale': 'Independently inspected source coverage',
-        'sources': sources or ['guide'], 'findings': [dict(value, inspection_requests=value.get('inspection_requests', [])) for value in findings or []],
-        'decisions': [dict(value, inspection_requests=value.get('inspection_requests', [])) for value in decisions or []]}}
+        'sources': sources or ['guide'], 'findings': [source_finding(value) for value in findings or []],
+        'decisions': [source_decision(value) for value in decisions or []]}}
 
 
 class Replies:
@@ -500,9 +519,10 @@ async def test_scope_review_readjudicates_resolved_findings_after_another_revisi
     first = objection()
     first['scope_assessment']['findings'].append({
         'category': 'coverage', 'issue': 'Second required operation missing',
-        'sources': ['guide'], 'affected_ids': [], 'inspection_requests': []})
+        'sources': ['guide'], 'affected_ids': [], 'gap_kind': 'missing_obligation', 'inspection_requests': []})
     resolved = closure()['scope_assessment']['decisions'][0]
-    partial = review('revise', decisions=[resolved, {**resolved, 'finding_id': 'F0002', 'status': 'open'}])
+    partial = review('revise', decisions=[resolved, {**resolved, 'finding_id': 'F0002', 'disposition': 'source_gap',
+        'gap_kind': 'unread_source', 'affected_ids': [], 'inspection_requests': []}])
     responses = [{'finding_id': fid, 'rationale': 'Source evidence retained',
                   'sources': ['guide'], 'affected_ids': []} for fid in ['F0001', 'F0002']]
     final = review(decisions=[resolved, {**resolved, 'finding_id': 'F0002'}])

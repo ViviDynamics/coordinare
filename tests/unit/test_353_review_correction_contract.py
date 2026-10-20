@@ -66,21 +66,35 @@ def test_duplicate_target_refusal_identifies_its_field(target):
     assert error.value.location == ('decisions', '1', 'duplicate_of')
 
 
+def _wire_assessment(phase, count=2):
+    from tests.unit.test_353_scope_contract import source_decision
+    data = assessment(count)
+    if phase == 'scope_assessment':
+        data.pop('capability_unavailable')
+        data['decisions'] = [source_decision(decision) for decision in data['decisions']]
+    return data
+
+
+def _duplicate(phase, decision, target):
+    if phase == 'scope_assessment':
+        from tests.unit.test_353_scope_contract import source_decision
+        keep = {key: decision[key] for key in ('finding_id', 'rationale', 'sources')}
+        return source_decision({**keep, 'status': 'resolved', 'duplicate_of': target})
+    return {**decision, 'status': 'resolved', 'duplicate_of': target}
+
+
 @pytest.mark.parametrize('phase', ['scope_assessment', 'assessment'])
 def test_provider_schema_refuses_open_duplicate_and_preserves_valid_open_survivor(phase):
     from coordinare.services.environment_structured_wire import decode_wire, wire_schema
 
     options = {'review_decision_ids': ['F0001', 'F0002']}
     schema = response_schema(phase, **options)
-    data = assessment()
-    if phase == 'scope_assessment':
-        data.pop('capability_unavailable')
-        for decision in data['decisions']:
-            decision['inspection_requests'] = []
-    data['decisions'][1]['duplicate_of'] = 'F0001'
+    data = _wire_assessment(phase)
+    open_decision = data['decisions'][1]
+    data['decisions'][1] = {**open_decision, 'duplicate_of': 'F0001'}
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({'response': {phase: data}}, wire_schema(schema))
-    data['decisions'][1]['status'] = 'resolved'
+    data['decisions'][1] = _duplicate(phase, open_decision, 'F0001')
     wire = {'response': {phase: data}}
     jsonschema.validate(wire, wire_schema(schema))
     assert json.loads(decode_wire(json.dumps(wire), schema)) == {phase: data}
@@ -94,14 +108,10 @@ def test_review_schema_exposes_remaining_new_finding_capacity(phase):
     ids = [f'F{i:04}' for i in range(1, 25)]
     parameter = 'review_decision_ids'
     schema = response_schema(phase, **{parameter: ids})
-    data = assessment(24)
-    if phase == 'scope_assessment':
-        data.pop('capability_unavailable')
-        for decision in data['decisions']:
-            decision['inspection_requests'] = []
+    data = _wire_assessment(phase, 24)
     finding = {'category': 'coverage', 'issue': 'New source omission', 'sources': ['guide'], 'affected_ids': []}
     if phase == 'scope_assessment':
-        finding['inspection_requests'] = []
+        finding.update(inspection_requests=[], gap_kind='missing_obligation')
     data['findings'] = [copy.deepcopy(finding) for _ in range(9)]
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({phase: data}, schema)
