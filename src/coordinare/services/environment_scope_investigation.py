@@ -52,12 +52,42 @@ def bind_scope_requests(*, assessment: ScopeAssessmentProposal, ledger: FindingL
         raise EnvironmentDiscoveryError(message, code='scope_investigation_limit') from None
 
 
-def _request_evidence(inspection: SourceInspection, binding: ScopeInspectionBinding) -> tuple[str, dict[str, Any]]:
+MAX_ABSENCE_CANDIDATES = 8
+
+
+def absence_candidates(path: str, paths: Sequence[str], *, directories: bool) -> tuple[list[str], int]:
+    """Same final path component, most shared trailing components first; path text only."""
+    if directories:
+        pool = {'/'.join(item.split('/')[:index]) for item in paths for index in range(1, item.count('/')+1)}
+    else:
+        pool = set(paths)
+    wanted = path.split('/')
+    def shared(candidate: str) -> int:
+        count = 0
+        for left, right in zip(reversed(wanted), reversed(candidate.split('/')), strict=False):
+            if left != right:
+                break
+            count += 1
+        return count
+    matches = sorted((item for item in pool if item != path and item.split('/')[-1] == wanted[-1]),
+                     key=lambda item: (-shared(item), len(item), item))
+    return matches[:MAX_ABSENCE_CANDIDATES], max(0, len(matches)-MAX_ABSENCE_CANDIDATES)
+
+
+def _absent(inspection: SourceInspection, payload: dict[str, Any], *, directories: bool, candidates: bool) -> tuple[str, dict[str, Any]]:
+    if candidates:
+        names, more = absence_candidates(payload['path'], inspection.paths, directories=directories)
+        payload = {**payload, 'candidates': names, 'more_candidates': more}
+    return 'absent', payload
+
+
+def _request_evidence(inspection: SourceInspection, binding: ScopeInspectionBinding, *,
+                      candidates: bool = True) -> tuple[str, dict[str, Any]]:
     request = binding.request
     if request.operation == 'read_file':
         if request.path not in inspection.inventory:
-            return 'absent', {'operation': 'read_file', 'path': request.path,
-                              'inventory_digest': inspection.inventory_digest, 'status': 'absent'}
+            return _absent(inspection, {'operation': 'read_file', 'path': request.path,
+                'inventory_digest': inspection.inventory_digest, 'status': 'absent'}, directories=False, candidates=candidates)
         if request.path not in inspection.source_files:
             message = 'investigation content is unavailable'
             raise EnvironmentDiscoveryError(message, code='scope_investigation_unavailable')
@@ -73,11 +103,12 @@ def _request_evidence(inspection: SourceInspection, binding: ScopeInspectionBind
             message = 'investigation directory page is unavailable'
             raise EnvironmentDiscoveryError(message,
                                             code='scope_investigation_unavailable') from exc
-        return 'absent', {'operation': 'list_files', 'path': request.path, 'cursor': request.cursor,
-                          'inventory_digest': inspection.inventory_digest, 'status': 'absent'}
+        return _absent(inspection, {'operation': 'list_files', 'path': request.path, 'cursor': request.cursor,
+            'inventory_digest': inspection.inventory_digest, 'status': 'absent'}, directories=True, candidates=candidates)
 
 
-def _bound_result(inspection: SourceInspection, binding: ScopeInspectionBinding) -> tuple[ScopeInspectionResult, dict[str, Any]]:
+def _bound_result(inspection: SourceInspection, binding: ScopeInspectionBinding, *,
+                  candidates: bool = True) -> tuple[ScopeInspectionResult, dict[str, Any]]:
     if binding.inventory_digest != inspection.inventory_digest:
         message = 'investigation inventory differs'
         raise EnvironmentDiscoveryError(message, code='scope_investigation_identity')
@@ -85,10 +116,11 @@ def _bound_result(inspection: SourceInspection, binding: ScopeInspectionBinding)
             and binding.source_commit != inspection.budget.scope_findings.source_commit):
         message = 'investigation commit differs'
         raise EnvironmentDiscoveryError(message, code='scope_investigation_identity')
-    status, evidence = _request_evidence(inspection, binding)
+    status, evidence = _request_evidence(inspection, binding, candidates=candidates)
     result = ScopeInspectionResult(binding_id=binding.id, status=status,
         evidence_digest=hashlib.sha256(canonical(evidence)).hexdigest(),
-        file_sha256=evidence['sha256'] if status == 'file' else None)
+        file_sha256=evidence['sha256'] if status == 'file' else None,
+        candidates=evidence.get('candidates'), more_candidates=evidence.get('more_candidates', 0))
     return result, evidence
 
 
@@ -141,8 +173,11 @@ def investigation_evidence(*, inspection: SourceInspection, bindings: Sequence[S
         raise EnvironmentDiscoveryError(message, code='scope_investigation_identity')
     evidence = []
     for binding in bindings:
-        result, payload = _bound_result(inspection, binding)
-        if recorded.get(binding.id) != result:
+        prior = recorded.get(binding.id)
+        # Results recorded before candidates existed are re-derived without them, never upgraded.
+        result, payload = _bound_result(inspection, binding, candidates=prior is None or prior.candidates is not None
+                                        or prior.status != 'absent')
+        if prior != result:
             message = 'investigation result is missing or differs'
             raise EnvironmentDiscoveryError(message, code='scope_investigation_identity')
         evidence.append({'binding': binding.model_dump(mode='json'), 'result': result.model_dump(mode='json'), 'evidence': payload})
