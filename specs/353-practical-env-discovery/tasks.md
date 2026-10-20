@@ -178,7 +178,7 @@ independent final review. Earlier incomplete acceptance tasks remain open.
 Spec: `source-evidence-resolution-amendment.md`; plan: `source-evidence-resolution-plan.md`.
 Both approved by the maintainer on 2026-10-20. Native execution with independent review.
 
-- [ ] T090 Absence candidates (task1).
-- [ ] T091 Repeat-absent and unread-source admission rules (task2).
-- [ ] T092 Actionable revision and source-path feedback (task3).
+- [x] T090 Absence candidates (task1).
+- [x] T091 Repeat-absent and unread-source admission rules (task2).
+- [x] T092 Actionable revision and source-path feedback (task3).
 - [ ] T093 Verification, review, push, CI and fresh pinned Elm attempt (task4).
