@@ -268,3 +268,38 @@ def test_report_cannot_substitute_a_different_executed_plan():
     with pytest.raises(EnvironmentDiscoveryError) as caught:
         validate_probe_report(expected,ProbeReport.model_validate(data))
     assert caught.value.code=='probe_report_invalid'
+
+
+@pytest.mark.parametrize('mutation', ['unchanged', 'cache_path', 'install_network', 'guest_identity', 'resources'])
+def test_saved_probe_requires_complete_current_capability_identity(mutation):
+    from coordinare_service_inference.environment.models import ExecutionCapabilities
+
+    from coordinare.services.environment_probes import ProbePlan, validate_saved_probe_reports
+    from tests.unit.test_353_runtime_identity import native_data, policy_data
+
+    capabilities = ExecutionCapabilities.model_validate({
+        **native_data(), 'schema_version': 2, 'runtime': policy_data(),
+    })
+    data = plan().model_dump(mode='json')
+    data['capabilities'] = capabilities.model_dump(mode='json')
+    data['request']['execution_context'] = 'private_service'
+    executed = ProbePlan.model_validate(data)
+    report = report_data(executed)
+    report.update(image_ref=capabilities.image_ref, platform=capabilities.platform)
+    current = capabilities.model_dump(mode='json')
+    if mutation == 'cache_path':
+        current['cache_mount_path'] = '/different-cache'
+    elif mutation == 'install_network':
+        current['install_network'] = 'disabled' if capabilities.install_network == 'enabled' else 'enabled'
+    elif mutation == 'guest_identity':
+        current['runtime']['identity']['guest_base_sha256'] = 'f' * 64
+    elif mutation == 'resources':
+        current['runtime']['resources']['memory_mib'] = 512
+    current = ExecutionCapabilities.model_validate(current)
+    if mutation == 'unchanged':
+        validate_saved_probe_reports([report], COMMIT, current)
+        return
+    assert current.digest() != capabilities.digest()
+    with pytest.raises(EnvironmentDiscoveryError) as caught:
+        validate_saved_probe_reports([report], COMMIT, current)
+    assert caught.value.code == 'probe_report_invalid'
