@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Python 3.12+, Pydantic v2, asyncio and strict provider schemas. No new dependency or agent framework.
 
-**Spec:** [source-investigation-amendment.md](source-investigation-amendment.md), approved by the maintainer's `approve` response. This plan awaits review; implementation has not started.
+**Spec:** [source-investigation-amendment.md](source-investigation-amendment.md), approved by the maintainer's `approve` response. This implementation plan was approved by the maintainer’s subsequent `approve` response. Native execution is authorized.
 
 ## Global Constraints
 
@@ -110,4 +110,4 @@ Spec acceptance scenarios 1–3 map to Task 2; scenario 4 to Task 3; scenario 5 
 
 Self-review follow-up: made request lists mandatory on the new wire protocol, identified explicit source-only fixture updates, and distinguished originating review identity from legitimate later scope changes.
 
-Native implementation is the preserved execution method. No product code or new repository simulation is authorized by this unreviewed plan. After maintainer review, execute Tasks 1–5 in order with TDD and independent final review; remain on the existing isolated feature branch.
+Native implementation is the preserved execution method. The maintainer approved this plan and its native execution. Execute Tasks 1–5 in order with TDD and independent final review; remain on the existing isolated feature branch.
