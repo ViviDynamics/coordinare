@@ -425,3 +425,46 @@ existing attempt budget. The next separate labelled Elm experiment will use
 mandatory independent reviews/checks. It is a changed-budget experiment, not
 proof that the original 512-read profile passed, and it cannot resume or renew
 the terminal attempt. Dettmore remains next after genuine Elm acceptance.
+
+
+### 2,048-read comparison and measured context capacity — 2026-10-20
+
+Fresh `criterion-citations-reads2048-haiku55-elm60m-high64k` on `bacb89cc`
+held after 992.96 seconds at `scope_revision` with
+`scope_revision_context_limit`. It used 328/2,048 reads, four schema repairs
+and three coverage revisions. Three independent source reviews occurred;
+twelve findings remained open in the 60-criterion scope. All twenty requested
+investigations completed. No source contract, executable review, installer or
+clean consumer passed. Owned source and all four image/registry references were
+confirmed absent, and the snapshot was unchanged. The larger read allowance
+removed the previous read-budget bottleneck but did not establish coverage.
+
+The last completed conversation contained 2,010,747 serialized bytes. A pinned
+source-only audit reconstructed every one of its 97 final inspected inputs and
+verified the hashes. Even after deduplicating file payloads, complete evidence
+needed 2,078,237 bytes; retaining the attempted revision and correction errors
+needed 2,104,830 bytes, above the 2,097,152-byte cap. History removal alone cannot
+fit that complete state within the selected limit.
+
+A separately labelled `source-context4mib-one-call-diagnostic` sent the exact
+blocked continuation under a 4 MiB software byte cap, with one new model call
+and a 600-second limit. It used 868,735 input tokens and 45,544 output tokens,
+returned `stop` without an API error, and left the snapshot unchanged. The
+LiteLLM route advertises a one-million-token input limit; raising the byte cap
+does not increase that provider capacity. This diagnostic used frozen prior
+judgments only as input: it ran no independent review, project command, installer
+or consumer, did not resume the terminal attempt, and grants no acceptance.
+
+The returned proposal was rejected because reassessment zero targeted an already
+required criterion; its other two reassessment targets were valid. The follow-up
+keeps core rejection authoritative and reports every invalid target's exact
+operation index and reason (required, unknown or duplicate), with valid retained
+reassessment IDs supplied once. It preserves valid operations and never admits
+required-criterion edits. Offline validation of the exact diagnostic proposal
+confirms that precise rejection without another model call.
+
+The next fresh experiment will retain 2,048 reads, Haiku 5.5 high, 65,536 output
+tokens, 3,600 seconds and original repair/runtime controls, changing the software
+conversation byte ceiling from 2 MiB to 4 MiB. It remains a separately labelled
+capacity experiment; provider capacity, independent coverage and every required
+clean-environment check still apply. A larger context cannot waive open findings.
