@@ -9,7 +9,7 @@ from coordinare.services.environment_discovery_prompts import correction_instruc
 from coordinare.services.environment_proposal_patch import MAX_PATH_DEPTH, PATCH_INSTRUCTION
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from pydantic import ValidationError
 
@@ -70,6 +70,25 @@ SOURCE_DISPOSITION_GUIDANCE = (
     'Preserve every other decision while correcting this one.')
 
 
+REVISION_LIMIT_GUIDANCE = (
+    'A scope revision may contain at most 16 combined add and reassess operations. Established criteria are retained '
+    'without resubmission: add only genuinely new obligations and reassess only retained unknown or not_applicable '
+    'criteria. Submit the most important changes now; further obligations can follow in a later revision.')
+SOURCE_PATH_GUIDANCE = (
+    'Each source must be one exact repository-relative file path that you inspected: no directories, ./ prefixes, '
+    'trailing slashes, URLs or annotations.')
+
+
+def _revision_limit(error: Mapping[str, Any], location: list[Any]) -> dict[str, Any] | None:
+    """Only daemon-owned counts escape; the oversized proposal content is never echoed."""
+    context = error.get('ctx') or {}
+    if error['type'] == 'too_long' and 'scope_revision' in location and location[-1:] in (['add'], ['reassess']):
+        return {'limit': context.get('max_length'), 'submitted': context.get('actual_length'), 'guidance': REVISION_LIMIT_GUIDANCE}
+    if error['type'] == 'scope_revision_limit':
+        return {'limit': context.get('limit'), 'submitted': context.get('submitted'), 'guidance': REVISION_LIMIT_GUIDANCE}
+    return None
+
+
 def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
     """Do not expose arbitrary keys, candidate values, validator context or prose."""
     allowed_fields = {"requirements", "checks", "install", "services", "activation", "id", "source", "description",
@@ -82,7 +101,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
                       "disposition", "criterion_ids", "gap_kind", "inspection_requests", "covered", "source_correction",
                       "source_gap", "duplicate"}
     result = []
-    for error in exc.errors(include_url=False, include_input=False, include_context=False)[:16]:
+    for error in exc.errors(include_url=False, include_input=False)[:16]:
         location = [part if (isinstance(part, str) and part in allowed_fields) or type(part) is int else "*"
                     for part in error["loc"][:8]]
         kind = error["type"]
@@ -98,7 +117,9 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
                            'scope_required_service': 'services', 'scope_id_collision': 'id'}
         if code in scope_locations:
             location = [scope_locations[code]]
-        detail: dict[str, Any] = {"location": location, "code": code}
+        detail: dict[str, Any] = {"location": location, "code": code, **(_revision_limit(error, location) or {})}
+        if code == "invalid_contract_value" and "sources" in location and "guidance" not in detail:
+            detail["guidance"] = SOURCE_PATH_GUIDANCE
         if code == "finding_citations_invalid" or (code == "too_short" and location[-1:] == ["sources"]):
             detail["guidance"] = ("Supply a nonempty list of unique exact inspected file paths as source citations. "
                 "Even an open finding response needs supporting source evidence. "
