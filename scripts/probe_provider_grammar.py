@@ -13,7 +13,10 @@ from typing import Any
 
 import httpx
 
-from coordinare.services.environment_response_schema import constrain_source_criteria, response_schema
+from coordinare.services.environment_response_schema import (
+    constrain_source_criteria,
+    response_schema,
+)
 from coordinare.services.environment_structured_wire import wire_schema
 
 MAX_DECISIONS = 32
@@ -64,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f'environment variable {args.key_env} is not set')
     url = args.base_url.rstrip('/') + '/chat/completions'
     results = {phase: classify(*_post(url, body, key)) for phase, body in probe_requests(args.model).items()}
-    print(json.dumps(results, indent=2))
+    sys.stdout.write(json.dumps(results, indent=2) + "\n")
     return 0 if all(value == 'ok' for value in results.values()) else 1
 
 

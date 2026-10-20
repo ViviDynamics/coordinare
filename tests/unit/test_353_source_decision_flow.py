@@ -209,7 +209,10 @@ def flat(decision):
 
 
 def test_scope_schema_flat_decision_wire():
-    from coordinare.services.environment_response_schema import constrain_source_criteria, response_schema
+    from coordinare.services.environment_response_schema import (
+        constrain_source_criteria,
+        response_schema,
+    )
     criterion_ids = ['S' + '1'*16, 'S' + '2'*16]
     schema = constrain_source_criteria(response_schema('scope_assessment', review_decision_ids=['F0001', 'F0002']),
                                        criterion_ids)
