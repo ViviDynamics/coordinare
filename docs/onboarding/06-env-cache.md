@@ -232,7 +232,7 @@ The daemon reads repository APIs and never clones or executes project commands.
 
 Missing/corrupt source and unsupported submodule/LFS hydration hold readiness;
 review-only files cannot substitute for a complete checkout. Source identity is
-recorded alongside manifest, image and platform identity. Current journal version 7 keeps
+recorded alongside manifest, image and platform identity. Current journal version 8/source protocol 3 keeps
 source ownership, scope checkpoints and prior consumption: interrupted source work requires confirmed
 cleanup. Pending older journals require explicit restart after cleanup, and older
 cache evidence needs normal rebuild/reverification. No old passing flag is promoted

@@ -602,6 +602,7 @@ async def validate_repository(
     }
     calls = 0
     review_starts = 0
+    source_review_starts = 0
     result = {
         "repository": snapshot.name,
         "source_commit": snapshot.commit,
@@ -633,9 +634,13 @@ async def validate_repository(
     selected_chat = chat
     async def recorded(messages: list[dict[str, str]], *, response_schema: dict[str, Any] | None = None,
                        max_context_bytes: int | None = None, context_phase: str = "discovery") -> str | DiscoveryChatReply:
-        nonlocal calls, review_starts
+        nonlocal calls, review_starts, source_review_starts
         calls += 1
-        reviewing = "manifest" in json.loads(messages[1]["content"])
+        context = json.loads(messages[1]["content"])
+        reviewing = "manifest" in context
+        source_reviewing = (context.get("phase_contract", {}).get("subject") == "source_obligations"
+                            and "required_decision_ids" in context)
+        source_review_starts += int(source_reviewing and len(messages) == 2)
         review_starts += int(reviewing and len(messages) == 2)
         if selected_chat is None:
             raise ValueError("validation chat unavailable")
@@ -743,6 +748,9 @@ async def validate_repository(
         result.update(
             seconds=round(time.monotonic() - started, 2),
             model_calls=calls,
+            independent_source_review_reached=source_review_starts > 0,
+            independent_source_review_invocations=source_review_starts,
+            independent_executable_review_invocations=review_starts,
             independent_review_reached=review_starts > 0,
             independent_review_invocations=review_starts,
             attempts=attempts,
