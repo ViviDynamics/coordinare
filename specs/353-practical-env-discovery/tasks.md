@@ -167,8 +167,8 @@ Spec: `source-review-decision-amendment.md`; plan: `source-review-decision-plan.
 Both approved by the maintainer on 2026-10-20. Execution is native with
 independent final review. Earlier incomplete acceptance tasks remain open.
 
-- [ ] T085 Shared disposition contracts, normalization and source contract v2 (task1).
-- [ ] T086 Atomic admission, provider schema, repair feedback and fixture migration (task2).
-- [ ] T087 Journal 9 / source protocol 4 persistence, recovery and fail-closed migration (task3).
+- [x] T085 Shared disposition contracts, normalization and source contract v2 (task1).
+- [x] T086 Atomic admission, provider schema, repair feedback and fixture migration (task2).
+- [x] T087 Journal 9 / source protocol 4 persistence, recovery and fail-closed migration (task3).
 - [ ] T088 Readiness regression, independent review, preflight, push and CI (task4).
 - [ ] T089 Corrected-protocol diagnostic, fresh pinned Elm attempt and remaining ship gates (task5).
