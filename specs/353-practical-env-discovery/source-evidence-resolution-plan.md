@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Python 3.12+, Pydantic v2. No new dependency.
 
-**Spec:** [source-evidence-resolution-amendment.md](source-evidence-resolution-amendment.md), approved as written by the maintainer on 2026-10-20. This plan awaits maintainer review.
+**Spec:** [source-evidence-resolution-amendment.md](source-evidence-resolution-amendment.md), approved as written by the maintainer on 2026-10-20. This plan was approved by the maintainer on 2026-10-20 with native execution.
 
 ## Global Constraints
 
