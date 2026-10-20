@@ -87,7 +87,7 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                                             envelope)
                 decision_ids = ([record.id for record in budget.scope_findings.records]
                     if exposed == 'scope_assessment' and budget.scope_findings is not None else None)
-                schema = response_schema(exposed, scope_decision_ids=decision_ids)
+                schema = response_schema(exposed, review_decision_ids=decision_ids)
                 messages[0] = {'role': 'system', 'content': base_system +
                     '\nReturn one complete envelope matching this schema: ' + canonical(schema).decode()}
                 budget.reserve_call()
