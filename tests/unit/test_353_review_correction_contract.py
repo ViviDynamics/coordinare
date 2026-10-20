@@ -92,8 +92,18 @@ def test_provider_schema_refuses_open_duplicate_and_preserves_valid_open_survivo
     data = _wire_assessment(phase)
     open_decision = data['decisions'][1]
     data['decisions'][1] = {**open_decision, 'duplicate_of': 'F0001'}
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate({'response': {phase: data}}, wire_schema(schema))
+    if phase == 'scope_assessment':
+        # The flat provider wire cannot express branch rules; strict local validation refuses it.
+        from coordinare_service_inference.environment.scope import (
+            ScopeAssessmentEnvelope,
+            normalize_source_assessment,
+        )
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            ScopeAssessmentEnvelope.model_validate(normalize_source_assessment({phase: data}))
+    else:
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({'response': {phase: data}}, wire_schema(schema))
     data['decisions'][1] = _duplicate(phase, open_decision, 'F0001')
     wire = {'response': {phase: data}}
     jsonschema.validate(wire, wire_schema(schema))

@@ -168,6 +168,30 @@ SourceFindingDecision = Annotated[CoveredDecision | SourceCorrectionDecision | S
                                   Field(discriminator='disposition')]
 
 
+_DECISION_BRANCHES: dict[str, type[_SourceDecision]] = {'covered': CoveredDecision,
+    'source_correction': SourceCorrectionDecision, 'source_gap': SourceGapDecision, 'duplicate': DuplicateDecision}
+
+
+def normalize_source_assessment(data: object) -> object:
+    """Map the flat provider wire decision onto its strict branch.
+
+    Only fields outside the chosen disposition whose value is null or empty are dropped;
+    any populated inapplicable field is kept so strict validation rejects it.
+    """
+    assessment = data.get('scope_assessment') if isinstance(data, dict) else None
+    decisions = assessment.get('decisions') if isinstance(assessment, dict) else None
+    if not isinstance(data, dict) or not isinstance(assessment, dict) or not isinstance(decisions, list):
+        return data
+    normalized = []
+    for decision in decisions:
+        branch = _DECISION_BRANCHES.get(decision.get('disposition')) if isinstance(decision, dict) else None
+        if isinstance(decision, dict) and branch is not None:
+            decision = {key: value for key, value in decision.items()
+                        if key in branch.model_fields or value not in (None, [])}
+        normalized.append(decision)
+    return {**data, 'scope_assessment': {**assessment, 'decisions': normalized}}
+
+
 def derive_finding_decision(decision: SourceFindingDecision) -> FindingDecisionProposal:
     """The disposition alone determines generic ledger status; prose is never inspected."""
     return FindingDecisionProposal(finding_id=decision.finding_id, rationale=decision.rationale,

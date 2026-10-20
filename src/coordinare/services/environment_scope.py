@@ -21,6 +21,7 @@ from coordinare_service_inference.environment.scope import (
     canonical,
     criterion_id,
     derive_finding_decision,
+    normalize_source_assessment,
 )
 from coordinare_service_inference.environment.scope_revision import (
     ScopeRevisionEnvelope,
@@ -192,7 +193,7 @@ def _decision_reference_errors(assessment: ScopeAssessmentProposal, *, definitio
 
 def _validate_review(data: dict[str, Any], *, reviewer: SourceInspection, definition: ScopeDefinition,
                      ledger: FindingLedger, commit: str) -> tuple[ScopeAssessmentProposal, FindingLedger, SourceAssessmentRecord]:
-    assessment = ScopeAssessmentEnvelope.model_validate(data).scope_assessment
+    assessment = ScopeAssessmentEnvelope.model_validate(normalize_source_assessment(data)).scope_assessment
     decisions = [decision.finding_id for decision in assessment.decisions]
     if len(decisions) != len(set(decisions)) or set(decisions) != {record.id for record in ledger.records}:
         message = 'every retained finding requires an explicit decision'
