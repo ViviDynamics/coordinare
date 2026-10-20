@@ -30,19 +30,24 @@ def proposal(*criteria):
     return {'scope': {'criteria': list(criteria)}, 'finding_responses': []}
 
 
+WIRE_DECISION_DEFAULTS = {'criterion_ids': [], 'gap_kind': None, 'affected_ids': [], 'inspection_requests': [],
+                          'duplicate_of': None}
+
+
 def source_decision(value):
-    """Wire form of a fixture decision; 'status' is shorthand for the disposition these fixtures intend."""
+    """Provider wire form of a fixture decision: one flat object, unused fields null or empty.
+
+    'status' is shorthand for the disposition these legacy fixtures intend.
+    """
     value = dict(value)
-    if 'disposition' in value:
-        return value
-    status, duplicate, requests = value.pop('status'), value.pop('duplicate_of', None), value.pop('inspection_requests', [])
-    if status == 'open':
-        return {**value, 'disposition': 'source_gap', 'gap_kind': 'unread_source',
-                'affected_ids': value.pop('affected_ids', []), 'inspection_requests': requests}
-    assert not requests, 'resolving fixture decisions cannot request inspection'
-    if duplicate is not None:
-        return {**value, 'disposition': 'duplicate', 'duplicate_of': duplicate}
-    return {**value, 'disposition': 'source_correction'}
+    if 'disposition' not in value:
+        status, duplicate, requests = value.pop('status'), value.pop('duplicate_of', None), value.pop('inspection_requests', [])
+        if status == 'open':
+            value.update(disposition='source_gap', gap_kind='unread_source', inspection_requests=requests)
+        else:
+            assert not requests, 'resolving fixture decisions cannot request inspection'
+            value.update(disposition='duplicate' if duplicate is not None else 'source_correction', duplicate_of=duplicate)
+    return {**WIRE_DECISION_DEFAULTS, **value}
 
 
 def source_finding(value):

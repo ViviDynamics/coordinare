@@ -173,3 +173,19 @@ rejection after failed or unrun checks. Obtain plan/execution-method approval be
 implementation. Use existing preflight, independent code review and current-head CI
 gates. Do not run another whole Elm attempt before the protocol correction and its
 targeted evidence replay are verified. Original shipping acceptance remains intact.
+
+## Provider grammar limit (maintainer-approved, 2026-10-20)
+
+The first corrected-protocol diagnostic made one call, which the provider rejected
+before generating anything: "The compiled grammar is too large". Minimal probes with
+no repository content showed that any three disposition branches compile but all
+four do not, independent of identifier counts, patterns or array bounds. The
+provider wire therefore carries each decision as one flat object: `disposition`
+is an enum and the remaining fields are always present, with inapplicable ones
+null or empty. Identifier enums still constrain finding and criterion references.
+Before validation the daemon drops only null or empty fields outside the chosen
+disposition; any populated inapplicable field remains and the strict discriminated
+union rejects it. Local validation stays authoritative, so the branch rules are
+unchanged even though the schema can no longer express them. An opt-in probe
+(`scripts/probe_provider_grammar.py`) checks every strict discovery schema at its
+largest bounds against a live provider.

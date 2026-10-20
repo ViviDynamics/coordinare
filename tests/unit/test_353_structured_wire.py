@@ -177,8 +177,9 @@ def test_scope_ledger_decision_constraints_survive_strict_wire_encoding(identifi
     from coordinare.services.environment_structured_wire import decode_wire, wire_schema
 
     schema = response_schema('scope_assessment', review_decision_ids=identifiers)
-    decision = {'finding_id': 'F0001', 'disposition': 'source_correction', 'rationale': 'Inspected source resolves the finding',
-                'sources': ['fixture']}
+    from tests.unit.test_353_scope_contract import source_decision
+    decision = source_decision({'finding_id': 'F0001', 'disposition': 'source_correction',
+                                'rationale': 'Inspected source resolves the finding', 'sources': ['fixture']})
     assessment = {'verdict': 'accept', 'rationale': 'Source evidence covers the scope',
                   'sources': ['fixture'], 'findings': [], 'decisions': [decision] if identifiers else []}
     payload = {'response': {'scope_assessment': assessment}}

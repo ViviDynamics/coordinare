@@ -46,23 +46,46 @@ class ProbeRepairSchema:
 _SOURCE_DECISIONS = ('CoveredDecision', 'SourceCorrectionDecision', 'SourceGapDecision', 'DuplicateDecision')
 
 
+def _flat_source_decision(definitions: dict[str, Any]) -> dict[str, Any]:
+    """One wire object per decision: providers cannot compile the four-branch union's grammar.
+
+    The disposition selects the strict branch; local validation rejects populated inapplicable fields.
+    """
+    covered, gap = definitions['CoveredDecision']['properties'], definitions['SourceGapDecision']['properties']
+    duplicate = definitions['DuplicateDecision']['properties']
+    properties = {
+        'finding_id': covered['finding_id'], 'disposition': {'type': 'string', 'enum': [
+            definitions[name]['properties']['disposition']['const'] for name in _SOURCE_DECISIONS]},
+        'rationale': covered['rationale'], 'sources': covered['sources'],
+        'criterion_ids': {'type': 'array', 'items': {'type': 'string'}},
+        'gap_kind': {'anyOf': [{key: value for key, value in gap['gap_kind'].items() if key != 'title'}, {'type': 'null'}]},
+        'affected_ids': {'type': 'array', 'items': {'type': 'string'}},
+        'inspection_requests': gap['inspection_requests'],
+        'duplicate_of': {'anyOf': [{key: value for key, value in duplicate['duplicate_of'].items() if key != 'title'},
+                                   {'type': 'null'}]},
+    }
+    return {'type': 'object', 'additionalProperties': False, 'properties': properties, 'required': list(properties)}
+
+
 def _source_review_constraints(definitions: dict[str, Any], identifiers: Sequence[str] | None) -> None:
-    """Expose the disposition union as plain anyOf branches; strict providers reject discriminator keywords."""
     decisions = definitions['ScopeAssessmentProposal']['properties']['decisions']
-    decisions['items'] = {'anyOf': [{'$ref': f'#/$defs/{name}'} for name in _SOURCE_DECISIONS]}
+    definitions['SourceDecisionWire'] = _flat_source_decision(definitions)
+    for name in _SOURCE_DECISIONS:
+        del definitions[name]
+    decisions['items'] = {'$ref': '#/$defs/SourceDecisionWire'}
     if identifiers is not None:
         decisions.update(minItems=len(identifiers), maxItems=len(identifiers))
         definitions['ScopeAssessmentProposal']['properties']['findings']['maxItems'] = MAX_FINDINGS-len(identifiers)
         if identifiers:
-            for name in _SOURCE_DECISIONS:
-                definitions[name]['properties']['finding_id']['enum'] = list(identifiers)
-            definitions['DuplicateDecision']['properties']['duplicate_of']['enum'] = list(identifiers)
+            wire = definitions['SourceDecisionWire']['properties']
+            wire['finding_id'] = {'type': 'string', 'enum': list(identifiers)}
+            wire['duplicate_of'] = {'anyOf': [{'type': 'string', 'enum': list(identifiers)}, {'type': 'null'}]}
 
 
 def constrain_source_criteria(schema: dict[str, Any], criterion_ids: Sequence[str]) -> dict[str, Any]:
     """Limit source review criterion references to the reviewed definition; local validation stays authoritative."""
     definitions = schema['$defs']
-    for name, field in (('CoveredDecision', 'criterion_ids'), ('SourceGapDecision', 'affected_ids'),
+    for name, field in (('SourceDecisionWire', 'criterion_ids'), ('SourceDecisionWire', 'affected_ids'),
                         ('ScopeFindingProposal', 'affected_ids')):
         definitions[name]['properties'][field]['items'] = {'type': 'string', 'enum': list(criterion_ids)}
     return schema

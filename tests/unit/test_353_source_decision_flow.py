@@ -200,31 +200,83 @@ async def test_missing_decision_holds_within_budget():
     assert budget.scope_contract is None and len(budget.scope_findings.reviews) == 1
 
 
-def test_scope_schema_branches():
-    from coordinare.services.environment_response_schema import (
-        constrain_source_criteria,
-        response_schema,
-    )
+FLAT_DEFAULTS = {'criterion_ids': [], 'gap_kind': None, 'affected_ids': [], 'inspection_requests': [], 'duplicate_of': None}
+
+
+def flat(decision):
+    """The provider wire form: every decision field present, unused ones null or empty."""
+    return {**FLAT_DEFAULTS, **decision}
+
+
+def test_scope_schema_flat_decision_wire():
+    from coordinare.services.environment_response_schema import constrain_source_criteria, response_schema
     criterion_ids = ['S' + '1'*16, 'S' + '2'*16]
     schema = constrain_source_criteria(response_schema('scope_assessment', review_decision_ids=['F0001', 'F0002']),
                                        criterion_ids)
     definitions = schema['$defs']
-    assert 'discriminator' not in json.dumps(definitions['ScopeAssessmentProposal']['properties']['decisions'])
-    branches = {name: definitions[name] for name in
-                ['CoveredDecision', 'SourceCorrectionDecision', 'SourceGapDecision', 'DuplicateDecision']}
-    for branch in branches.values():
-        assert 'status' not in branch['properties']
-        assert branch['properties']['finding_id']['enum'] == ['F0001', 'F0002']
-    assert branches['DuplicateDecision']['properties']['duplicate_of']['enum'] == ['F0001', 'F0002']
-    criteria = branches['CoveredDecision']['properties']['criterion_ids']
-    assert criteria['minItems'] == 1 and criteria['items']['enum'] == criterion_ids
-    assert branches['SourceGapDecision']['properties']['affected_ids']['items']['enum'] == criterion_ids
-    assert sorted(branches['SourceGapDecision']['properties']['gap_kind']['enum']) == sorted([
-        'missing_obligation', 'unread_source', 'source_conflict', 'unknown_applicability',
-        'incomplete_runtime_needs', 'incomplete_success_condition'])
+    assert not {'CoveredDecision', 'SourceCorrectionDecision', 'SourceGapDecision', 'DuplicateDecision'} & set(definitions)
     decisions = definitions['ScopeAssessmentProposal']['properties']['decisions']
-    assert len(decisions['items']['anyOf']) == 4 and decisions['minItems'] == decisions['maxItems'] == 2
+    assert decisions['items'] == {'$ref': '#/$defs/SourceDecisionWire'}
+    assert decisions['minItems'] == decisions['maxItems'] == 2
+    wire = definitions['SourceDecisionWire']
+    assert wire['additionalProperties'] is False and 'status' not in wire['properties']
+    assert sorted(wire['required']) == sorted(['finding_id', 'disposition', 'rationale', 'sources', *FLAT_DEFAULTS])
+    properties = wire['properties']
+    assert properties['disposition']['enum'] == ['covered', 'source_correction', 'source_gap', 'duplicate']
+    assert properties['finding_id']['enum'] == ['F0001', 'F0002']
+    assert properties['duplicate_of']['anyOf'] == [{'type': 'string', 'enum': ['F0001', 'F0002']}, {'type': 'null'}]
+    assert properties['criterion_ids']['items']['enum'] == properties['affected_ids']['items']['enum'] == criterion_ids
+    assert properties['sources']['minItems'] == 1
+    kinds = next(branch['enum'] for branch in properties['gap_kind']['anyOf'] if branch.get('type') == 'string')
+    assert sorted(kinds) == sorted(['missing_obligation', 'unread_source', 'source_conflict', 'unknown_applicability',
+                                    'incomplete_runtime_needs', 'incomplete_success_condition'])
     executable = response_schema('assessment', review_decision_ids=['F0001'])
     assert 'disposition' not in json.dumps(executable)
     statuses = {branch['properties']['status']['const'] for branch in executable['$defs']['FindingDecisionProposal']['anyOf']}
     assert statuses == {'open', 'resolved'}
+
+
+def test_flat_decision_survives_strict_wire_encoding():
+    import jsonschema
+
+    from coordinare.services.environment_response_schema import response_schema
+    from coordinare.services.environment_structured_wire import decode_wire, wire_schema
+    schema = response_schema('scope_assessment', review_decision_ids=['F0001'])
+    decision = flat(covered('F0001', ['S' + '1'*16]))
+    payload = {'response': assess(decisions=[decision])}
+    jsonschema.validate(payload, wire_schema(schema))
+    assert json.loads(decode_wire(json.dumps(payload), schema)) == assess(decisions=[decision])
+
+
+@pytest.mark.asyncio
+async def test_flat_wire_decisions_admit_through_strict_branches():
+    def flat_close(messages):
+        return assess(decisions=[flat(covered('F0001', ids(messages)))])
+    replies = Replies([READ_GUIDE, proposal(criterion()), assess('revise', findings=[gap_finding()]), revision(), flat_close])
+    budget = AttemptBudget()
+    scope = await run(replies, budget=budget)
+    assert budget.schema_repairs == 0 and scope.finding_ledger.open_ids() == []
+    assert scope.source_assessment.assessment.decisions[0].disposition == 'covered'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('extra', [{'inspection_requests': [{'operation': 'read_file', 'path': 'odd/nest'}]},
+                                   {'gap_kind': 'unread_source'}, {'duplicate_of': 'F0001'}])
+async def test_flat_wire_keeps_inapplicable_values_invalid(extra):
+    def bad(messages):
+        return assess(decisions=[{**flat(covered('F0001', ids(messages))), **extra}])
+    replies = Replies([READ_GUIDE, proposal(criterion()), objection(), revision(), bad, accept_covered('F0001')])
+    budget = AttemptBudget()
+    scope = await run(replies, budget=budget)
+    assert budget.schema_repairs == 1 and len(scope.finding_ledger.reviews) == 2
+
+
+@pytest.mark.asyncio
+async def test_flat_gap_without_kind_is_rejected():
+    def bad(messages):
+        return assess('revise', decisions=[flat({'finding_id': 'F0001', 'disposition': 'source_gap',
+            'rationale': 'A concrete source defect remains', 'sources': ['guide']})])
+    replies = Replies([READ_GUIDE, proposal(criterion()), objection(), revision(), bad, accept_covered('F0001')])
+    budget = AttemptBudget()
+    scope = await run(replies, budget=budget)
+    assert budget.schema_repairs == 1 and scope.finding_ledger.open_ids() == []
