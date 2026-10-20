@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from coordinare.services.conducting import SCHEMA_LIMIT_MARKERS
 from coordinare.services.environment_response_schema import (
     constrain_source_criteria,
     response_schema,
@@ -48,7 +49,7 @@ def classify(status: int, text: str) -> str:
     """Report only a bounded outcome; provider bodies are never echoed."""
     if status == 200:
         return 'ok'
-    return 'grammar_too_large' if 'grammar is too large' in text else f'http_{status}'
+    return 'grammar_too_large' if any(marker in text.lower() for marker in SCHEMA_LIMIT_MARKERS) else f'http_{status}'
 
 
 def _post(url: str, body: dict[str, Any], key: str) -> tuple[int, str]:

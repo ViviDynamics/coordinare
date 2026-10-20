@@ -184,7 +184,8 @@ def normalize_source_assessment(data: object) -> object:
         return data
     normalized = []
     for decision in decisions:
-        branch = _DECISION_BRANCHES.get(decision.get('disposition')) if isinstance(decision, dict) else None
+        disposition = decision.get('disposition') if isinstance(decision, dict) else None
+        branch = _DECISION_BRANCHES.get(disposition) if isinstance(disposition, str) else None
         if isinstance(decision, dict) and branch is not None:
             decision = {key: value for key, value in decision.items()
                         if key in branch.model_fields or value not in (None, [])}

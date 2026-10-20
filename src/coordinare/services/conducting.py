@@ -260,7 +260,7 @@ class AnthropicApiBackend:
 
 SCHEMA_LIMIT_ERROR = "schema_limit"
 # Provider refusals to compile a strict response schema, before any generation.
-_SCHEMA_LIMIT_MARKERS = ("grammar is too large", "schema is too complex")
+SCHEMA_LIMIT_MARKERS = ("grammar is too large", "schema is too complex")
 
 
 _BAD_REQUEST = 400
@@ -269,7 +269,7 @@ _BAD_REQUEST = 400
 def _schema_limit_rejection(exc: Exception) -> bool:
     response = getattr(exc, "response", None)
     return (getattr(response, "status_code", None) == _BAD_REQUEST
-            and any(marker in str(getattr(response, "text", "")).lower() for marker in _SCHEMA_LIMIT_MARKERS))
+            and any(marker in str(getattr(response, "text", "")).lower() for marker in SCHEMA_LIMIT_MARKERS))
 
 
 class OpenAiApiBackend:

@@ -35,6 +35,7 @@ def test_probe_requests_cover_every_structured_phase_at_maximum_bounds():
     (200, '{}', 'ok'),
     (400, '{"error":"The compiled grammar is too large, which would cause performance issues."}', 'grammar_too_large'),
     (400, '{"error":"other"}', 'http_400'),
+    (400, '{"error":"Schema is too complex."}', 'grammar_too_large'),
 ])
 def test_probe_outcome_is_classified_without_echoing_bodies(status, text, expected):
     from scripts.probe_provider_grammar import classify
