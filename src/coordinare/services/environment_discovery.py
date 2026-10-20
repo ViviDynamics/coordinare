@@ -79,7 +79,11 @@ from coordinare.services.environment_proposal_patch import (
     PATCH_INSTRUCTION,
     apply_patch,
 )
-from coordinare.services.environment_response_schema import invoke_chat, response_schema
+from coordinare.services.environment_response_schema import (
+    ProbeRepairSchema,
+    invoke_chat,
+    response_schema,
+)
 from coordinare.services.kubernetes_verifier import check_project_files
 
 Fetch = Callable[[str], Awaitable[str | None]]
@@ -305,6 +309,33 @@ def _admit_declaration(inspection: _Inspection, reply: dict[str, Any], validate:
     return False
 
 
+def _phase_schema(inspection: _Inspection, repair_base: dict[str, Any] | None) -> dict[str, Any]:
+    budget = cast("AttemptBudget", inspection.budget)
+    repair = None
+    if repair_base is not None and 'probe' in repair_base:
+        budget.expected_envelope = 'probe'
+        repair = ProbeRepairSchema([command.id for command in ProbeRequest.model_validate(repair_base['probe']).commands],
+            sorted(inspection.inputs))
+    return response_schema(budget.expected_envelope, allow_patch=repair_base is not None,
+        scope_contract=budget.scope_contract, probe_repair=repair)
+
+
+async def _admit_probe_reply(reply: dict[str, Any], raw: str, messages: list[dict[str, str]], inspection: _Inspection,
+                             repair_base: dict[str, Any] | None) -> dict[str, Any] | None:
+    budget = cast("AttemptBudget", inspection.budget)
+    if await _probe_reply(reply['probe'], raw, messages, inspection, budget):
+        inspection.probe_repair = None
+        return None if repair_base is not None and 'probe' in repair_base else repair_base
+    try:
+        ProbeRequest.model_validate(reply['probe'])
+    except ValidationError:
+        return repair_base
+    if repair_base is None or 'probe' not in repair_base:
+        repair_base = copy.deepcopy(reply)
+        inspection.probe_repair = copy.deepcopy(reply)
+    return repair_base
+
+
 async def _phase(
     *, inspection: _Inspection, messages: list[dict[str, str]], chat: ChatJson,
     budget: AttemptBudget, validate: Callable[[dict[str, Any]], Any],
@@ -318,30 +349,12 @@ async def _phase(
                 await budget.flush()
                 budget.context_bytes += sum(len(message["content"].encode()) for message in messages)
                 _admit_phase_context(inspection, budget, messages, can_patch=repair_base is not None)
-                probe_ids = None
-                if repair_base is not None and 'probe' in repair_base:
-                    budget.expected_envelope = 'probe'
-                    probe_ids = [command.id for command in ProbeRequest.model_validate(repair_base['probe']).commands]
-                raw = budget.record_reply(await invoke_chat(chat, messages, schema=response_schema(budget.expected_envelope,
-                    allow_patch=repair_base is not None, scope_contract=budget.scope_contract,
-                    probe_command_ids=probe_ids, probe_sources=sorted(inspection.inputs))))
+                raw = budget.record_reply(await invoke_chat(chat, messages, schema=_phase_schema(inspection, repair_base)))
                 reply = _phase_reply(raw, inspection, repair_base, messages, budget)
                 if reply is None:
                     continue
                 if set(reply) == {"probe"} and inspection.name == "discovery":
-                    if await _probe_reply(reply['probe'], raw, messages, inspection, budget):
-                        if repair_base is not None and 'probe' in repair_base:
-                            repair_base = None
-                        inspection.probe_repair = None
-                    else:
-                        try:
-                            ProbeRequest.model_validate(reply['probe'])
-                        except ValidationError:
-                            pass
-                        else:
-                            if repair_base is None or 'probe' not in repair_base:
-                                repair_base = copy.deepcopy(reply)
-                                inspection.probe_repair = copy.deepcopy(reply)
+                    repair_base = await _admit_probe_reply(reply, raw, messages, inspection, repair_base)
                     continue
                 final = "manifest" if inspection.name == "discovery" else "assessment"
                 final_keys = ({final}, {final, "finding_responses"}) if inspection.name == 'discovery' else ({final},)

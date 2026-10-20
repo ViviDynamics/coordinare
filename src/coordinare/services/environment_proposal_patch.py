@@ -91,7 +91,7 @@ def _apply(base: dict[str, Any] | None, request: dict[str, Any], max_bytes: int)
     roots = {'probe'} if 'probe' in base else ({'manifest', 'finding_responses'} if 'manifest' in base else {'assessment'})
     for change in changes:
         if 'probe' in base and (not isinstance(change, dict) or not isinstance(change.get('path'), list)
-                or len(change['path']) < 2 or change['path'][:2] not in [['probe', 'citations'], ['probe', 'questions']]):
+                or change['path'][:2] not in [['probe', 'citations'], ['probe', 'questions']]):
             message = 'probe corrections may change evidence only'
             raise ValueError(message)
         _replace(target, change, roots)
