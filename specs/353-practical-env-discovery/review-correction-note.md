@@ -106,3 +106,30 @@ state during rejection and retention of corrected reassessments. Focused suites:
 207 passed. Strict typing: 344 modules passed. Independent scoped review: no
 Critical, Important or Minor findings; 148 tests passed. Full-PR review and actual
 Elm installation/clean-consumer success remain outstanding.
+
+The fresh 2 MiB Elm run reached independent scope review in 309.54 seconds, then
+held with `scope_review_indeterminate`: eight source-backed objections, no extra
+reviewer source reads and none of the four coverage revisions consumed. Its
+mandatory evidence was a starting set of 51 inputs. The reviewer identified
+specific unread references and conflicts but described needing more information
+as a terminal inability to judge. No probe, installer or clean consumer ran;
+owned image/registry/source cleanup was confirmed.
+
+The approved source-investigation correction now also explicitly guides the
+reviewer's continuation and verdict choices: inspect available source when more
+information is needed; request revision for actionable source-backed omissions
+or corrections; retain indeterminate for genuine inability to judge or continue
+safely. The context carries those distinctions. Deterministic routing is unchanged:
+an actual indeterminate response always terminates the attempt, even with unused
+revision allowance, retains findings and creates no accepted scope. No model
+judgment is automatically converted or finding automatically resolved.
+
+Against the saved initial-review input, actual Haiku 5.5 using the corrected
+product prompt returned a structurally valid `revise` assessment with six new
+blocking findings in 13.927 seconds (one call, no schema repairs or additional
+source reads). This separate diagnostic used the initial review's empty ledger;
+it does not amend or resolve the eight findings in the held original attempt.
+It establishes protocol continuation, not coverage or readiness. The caller still
+requires author investigation and a fresh independent review. Regression suites:
+209 passed; strict typing: 344 modules. Scoped independent audit: no findings,
+87 tests passed. Genuine pinned Elm bootstrap remains outstanding.
