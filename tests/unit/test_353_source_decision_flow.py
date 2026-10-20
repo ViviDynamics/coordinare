@@ -111,7 +111,8 @@ async def test_old_status_decision_rejected_with_disposition_guidance():
 @pytest.mark.asyncio
 async def test_disposition_with_stray_status_gets_disposition_guidance():
     from coordinare.services.environment_admission import SOURCE_DISPOSITION_GUIDANCE
-    stray = lambda messages: assess(decisions=[{**covered('F0001', ids(messages)), 'status': 'resolved'}])  # noqa: E731
+    def stray(messages):
+        return assess(decisions=[{**covered('F0001', ids(messages)), 'status': 'resolved'}])
     replies = Replies([READ_GUIDE, proposal(criterion()), objection(), revision(), stray, accept_covered('F0001')])
     budget = AttemptBudget()
     await run(replies, budget=budget)
@@ -136,10 +137,12 @@ async def test_stale_criterion_id_rejected_with_current_ids():
 
 @pytest.mark.asyncio
 async def test_resolved_finding_reopened_as_gap_blocks_acceptance():
-    second = lambda messages: assess('revise', findings=[gap_finding(issue='Second source omission')],  # noqa: E731
-                                     decisions=[covered('F0001', ids(messages))])
-    reopened = lambda messages: assess('revise', decisions=[gap('F0001', kind='source_conflict'),  # noqa: E731
-                                                            covered('F0002', ids(messages))])
+    def second(messages):
+        return assess('revise', findings=[gap_finding(issue='Second source omission')],
+                      decisions=[covered('F0001', ids(messages))])
+
+    def reopened(messages):
+        return assess('revise', decisions=[gap('F0001', kind='source_conflict'), covered('F0002', ids(messages))])
     response = [{'finding_id': 'F0002', 'rationale': 'Source evidence retained', 'sources': ['guide'], 'affected_ids': []}]
     replies = Replies([READ_GUIDE, proposal(criterion()), objection(), revision(), second, revision(responses=response), reopened])
     budget = AttemptBudget(max_coverage_revisions=2)
