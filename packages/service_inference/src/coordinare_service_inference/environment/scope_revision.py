@@ -25,7 +25,8 @@ class ScopeRevision(FindingEvidence):
     @model_validator(mode='after')
     def combined_bound(self) -> Self:
         if len(self.add) + len(self.reassess) > MAX_SCOPE_REVISION_CHANGES:
-            raise PydanticCustomError('scope_revision_limit', 'scope revision exceeds 16 changes')
+            raise PydanticCustomError('scope_revision_limit', 'scope revision exceeds {limit} changes',
+                                      {'limit': MAX_SCOPE_REVISION_CHANGES, 'submitted': len(self.add) + len(self.reassess)})
         return self
 
 
