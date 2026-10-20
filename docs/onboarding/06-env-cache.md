@@ -259,7 +259,8 @@ The journal also retains the latest validated candidate, so a restart cannot
 remove established required IDs, scopes or service lifecycle obligations. Revision
 charges and exhausted/held state are saved with their review transition.
 
-New readiness requires coverage assessment version 2 and attempt journal version 5.
+New attempts use journal version 8/source protocol 3. Current readiness requires
+independently accepted source scope and coverage assessment version 2.
 Older review records remain readable as historical evidence but do not establish
 current readiness. Pending legacy attempts need an explicit operator restart after
 confirmed cleanup; this archives prior evidence without deleting unrelated caches.

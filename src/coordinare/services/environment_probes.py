@@ -157,7 +157,8 @@ def select_current_probe_reports(reports: list[dict[str, Any]], source_commit: s
         try:
             report = ProbeReport.model_validate(data)
         except ValidationError:
-            raise EnvironmentDiscoveryError('saved probe report is malformed', code='probe_report_invalid') from None
+            message = 'saved probe report is malformed'
+            raise EnvironmentDiscoveryError(message, code='probe_report_invalid') from None
         if report.plan is None:
             validate_saved_probe_reports([data], source_commit, capabilities)
             continue  # validator always holds a report without its plan
@@ -167,7 +168,8 @@ def select_current_probe_reports(reports: list[dict[str, Any]], source_commit: s
             selected.append(data)
         elif (not allow_cache_relocation or observed.model_dump(exclude={'cache_mount_path'})
                 != capabilities.model_dump(exclude={'cache_mount_path'})):
-            raise EnvironmentDiscoveryError('saved probe runtime differs from current capabilities', code='probe_report_invalid')
+            message = 'saved probe runtime differs from current capabilities'
+            raise EnvironmentDiscoveryError(message, code='probe_report_invalid')
     return selected
 
 

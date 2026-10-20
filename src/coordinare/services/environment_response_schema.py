@@ -13,6 +13,7 @@ from coordinare.services.environment_discovery_prompts import (
     _MANIFEST_ENVELOPE,
     assessment_envelope_schema,
 )
+from coordinare.services.environment_evidence import check_evidence_context
 from coordinare.services.environment_findings import MAX_FINDINGS
 from coordinare.services.environment_probes import ProbeEnvelope
 from coordinare.services.environment_proposal_patch import PATCH_SCHEMA
@@ -103,8 +104,6 @@ async def invoke_chat(chat: Callable[..., Awaitable[str | DiscoveryChatReply]], 
                       context_phase: str = "discovery") -> str | DiscoveryChatReply:
     """Pass schema and final-context admission through capable transport boundaries."""
     if max_context_bytes is not None:
-        from coordinare.services.environment_evidence import check_evidence_context
-
         check_evidence_context(messages, max_bytes=max_context_bytes, phase=context_phase)
     parameters = inspect.signature(chat).parameters
     kwargs: dict[str, Any] = {}
