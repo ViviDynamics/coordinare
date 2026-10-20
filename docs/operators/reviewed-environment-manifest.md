@@ -150,20 +150,24 @@ cleanup is established. Feedback is bounded at 16 KiB and 512 characters per che
 sanitized rejected reports retain a 256 KiB bound, with at most three rejected
 entries and a 4 MiB journal. Raw command output is never a readiness authority.
 
-Manifest and assessment each retain their 256 KiB serialization cap. Accepted source
-contents use one canonical UTF-8 JSON document bounded at 16 MiB, with 64 KiB decoded
-chunks and at most 256 chunks. JSON escaping counts against admission before review
-acceptance. Docker transports source via trusted stdin. Kubernetes creates immutable,
-Pod-owned Secret payloads outside Pod environment/command text. Trusted init code
-checks chunk count, document digest, exact paths and per-file hashes before writing
-private scratch source; the verification container does not mount source Secrets.
-Each source Secret carries at most four chunks (at most 64 Secrets), reserving
-space for UTF-8 input metadata and API/base64 overhead. Each API object remains
-below 900 KiB. Failed creation, cancellation and uncertain
-cleanup hold verification. Restart reconciliation checks ownership and removes
-interrupted verifier Pods and their source payloads; Pod ownership also enables
-Kubernetes garbage collection. Verification/provenance scripts still use bounded
-environment chunks, separate from source payloads.
+Manifest and assessment each retain their 256 KiB serialization cap. Model review
+inputs remain bounded text evidence; executable source travels separately as the
+complete pinned binary repository bundle, bounded at 128 MiB compressed transport
+and 512 MiB expanded contents including metadata. The bundle preserves file modes,
+links and binary files. Docker transports its framed header and archive through
+trusted stdin, outside environment variables and command arguments.
+
+Kubernetes creates immutable, Pod-owned Secret payloads outside Pod environment
+and command text. A separate metadata Secret plus up to 256 data Secrets carries
+at most 257 Secrets in total; each data Secret holds up to eight 64 KiB decoded
+chunks. Each API object remains below 900 KiB. Trusted init code verifies framing,
+archive/source identity, exact paths and reviewed file hashes before restoring
+private scratch source. The verification container does not mount source Secrets.
+Failed creation, cancellation and uncertain cleanup hold verification. Restart
+reconciliation checks ownership and removes interrupted verifier Pods and their
+source payloads; Pod ownership also enables Kubernetes garbage collection.
+Verification/provenance scripts still use bounded environment chunks, separate
+from complete execution source payloads.
 
 Acceptance binds the immutable image, platform, cache mount path and installation/
 verification network policies through `capabilities_digest`. These actual execution
