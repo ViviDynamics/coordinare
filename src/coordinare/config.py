@@ -33,6 +33,7 @@ from coordinare.models.performer_endpoint import (
     detect_duplicate_endpoints,
 )
 from coordinare.presets import PRESET_NAMES, expand_preset
+from coordinare.services.environment_attempt import REPAIR_LIMITS
 from coordinare.services.event_store_settings import EventStoreConfig
 from coordinare.services.observer import OBSERVER_TRIGGERS
 from coordinare.services.otlp_settings import ObservabilityConfig
@@ -1118,9 +1119,9 @@ class EnvCacheConfig(BaseModel):
     manifest_max_total_reads: int = Field(default=512, ge=1, le=8192)
     manifest_max_review_context_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)
     manifest_max_repairs: int | None = Field(default=None, ge=0, le=2, exclude=True)
-    manifest_max_schema_repairs: int = Field(default=2, ge=0, le=2)
-    manifest_max_coverage_revisions: int = Field(default=2, ge=0, le=2)
-    manifest_max_execution_repairs: int = Field(default=2, ge=0, le=2)
+    manifest_max_schema_repairs: int = Field(default=2, ge=0, le=REPAIR_LIMITS["schema"])
+    manifest_max_coverage_revisions: int = Field(default=2, ge=0, le=REPAIR_LIMITS["coverage"])
+    manifest_max_execution_repairs: int = Field(default=2, ge=0, le=REPAIR_LIMITS["execution"])
 
     @model_validator(mode="before")
     @classmethod

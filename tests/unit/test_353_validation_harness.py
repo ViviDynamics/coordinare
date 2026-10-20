@@ -644,3 +644,43 @@ async def test_real_installer_entrypoint_checks_source_before_install_actions(tm
     assert passed.returncode == 0, passed.stderr.decode()
     assert marker.read_text() == "installed"
     assert json.loads(passed.stdout)["execution_source_digest"] == identity.digest()
+
+
+@pytest.mark.asyncio
+async def test_pinned_missing_directory_link_does_not_abort_text_batch(tmp_path):
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_inspection import SourceInspection
+
+    repo = tmp_path / "snapshot"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=True).stdout
+
+    git("init", "-q")
+    (repo / ".opencode").mkdir()
+    (repo / ".opencode/skill").symlink_to("../.agents/skills")
+    (repo / ".gitattributes").write_text("* text=auto\n")
+    (repo / "attributes-link").symlink_to(".gitattributes")
+    git("add", ".")
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "-c", "core.hooksPath=/dev/null", "commit", "-qm", "snapshot")
+    commit = git("rev-parse", "HEAD").decode().strip()
+    # A host-only target must never become evidence for the pinned repository.
+    (repo / ".agents/skills").mkdir(parents=True)
+    (repo / ".agents/skills/private").write_text("host-only content")
+    snapshot = Snapshot(repo, commit, "fixture", "sample")
+    paths = await snapshot.get_repository_paths("fixture", "sample", ref=commit)
+
+    async def fetch(path):
+        return await snapshot.get_file_content("fixture", "sample", path, ref=commit)
+
+    inspection = SourceInspection(paths, fetch, DiscoveryLimits())
+    result = await inspection.tool_result({"tool": "read_files",
+        "paths": [".opencode/skill", ".gitattributes", "attributes-link"]})
+    assert snapshot.modes[".opencode/skill"] == "120000"
+    assert result["errors"] == [{"index": 0, "code": "source_unavailable"}]
+    assert [item["path"] for item in result["files"]] == [".gitattributes", "attributes-link"]
+    assert all(item["content"] == "* text=auto\n" for item in result["files"])
+    assert set(inspection.inputs) == {".gitattributes", "attributes-link"}
+    assert "host-only" not in json.dumps(result)

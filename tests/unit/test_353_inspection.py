@@ -161,3 +161,49 @@ async def test_navigation_errors_are_bounded_and_do_not_fetch_unknown_sources():
     await inspection.tool_result({'tool': 'read_file', 'path': 'known'})
     with pytest.raises(EnvironmentDiscoveryError, match='read limit'):
         await inspection.tool_result({'tool': 'read_file', 'path': 'known'})
+
+
+@pytest.mark.asyncio
+async def test_navigation_unavailable_link_preserves_other_batch_evidence():
+    from coordinare.services.environment_attempt import AttemptBudget
+
+    async def source(path):
+        return None if path == '.opencode/skill' else 'pinned attributes'
+
+    budget = AttemptBudget()
+    inspection = SourceInspection(['.opencode/skill', '.gitattributes'], source, DiscoveryLimits(), budget)
+    result = await inspection.tool_result({'tool': 'read_files', 'paths': ['.opencode/skill', '.gitattributes']})
+    assert result['errors'] == [{'index': 0, 'code': 'source_unavailable'}]
+    assert result['files'] == [{'path': '.gitattributes', 'content': 'pinned attributes',
+        'sha256': hashlib.sha256(b'pinned attributes').hexdigest()}]
+    assert set(inspection.inputs) == {'.gitattributes'}
+    assert inspection.reads == budget.reads == 2
+    with pytest.raises(EnvironmentDiscoveryError, match='unavailable'):
+        await inspection.read_files(['.opencode/skill'])
+    assert '.opencode/skill' not in inspection.inputs
+
+
+@pytest.mark.asyncio
+async def test_navigation_does_not_recover_source_identity_or_access_refusals():
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceError
+
+    async def refused(path):
+        raise ExecutionSourceError('link escapes pinned repository')
+
+    inspection = SourceInspection(['link'], refused, DiscoveryLimits())
+    with pytest.raises(ExecutionSourceError, match='escapes'):
+        await inspection.tool_result({'tool': 'read_file', 'path': 'link'})
+
+
+@pytest.mark.asyncio
+async def test_navigation_cannot_treat_lost_previously_inspected_content_as_optional():
+    values = iter(['pinned evidence', None])
+
+    async def source(path):
+        return next(values)
+
+    inspection = SourceInspection(['known'], source, DiscoveryLimits())
+    await inspection.read('known')
+    with pytest.raises(EnvironmentDiscoveryError) as exc:
+        await inspection.tool_result({'tool': 'read_file', 'path': 'known'})
+    assert exc.value.code == 'source_identity'

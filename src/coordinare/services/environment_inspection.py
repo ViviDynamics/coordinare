@@ -77,11 +77,16 @@ class SourceInspection:
         result["next_cursor"] = end if end < len(entries) else None
         return result
 
-    async def _read(self, path: str) -> dict[str, str]:
+    async def _read(self, path: str, *, navigation: bool = False) -> dict[str, str]:
         content = await self.fetch(path)
         if not isinstance(content, str):
+            if path in self.inputs or (self.retained_inputs is not None and path in self.retained_inputs):
+                message = 'previously inspected source is unavailable'
+                raise EnvironmentDiscoveryError(message, code='source_identity')
+            if navigation:
+                return {'path': path, 'error': 'source_unavailable'}
             message = f"{self.name} source is unavailable or not text"
-            raise EnvironmentDiscoveryError(message)
+            raise EnvironmentDiscoveryError(message, code='source_unavailable')
         encoded = content.encode("utf-8")
         self.total_bytes += len(encoded)
         if self.budget is not None:
@@ -102,7 +107,7 @@ class SourceInspection:
         self.source_files[path] = content
         return {"path": path, "content": content, "sha256": digest}
 
-    async def read_files(self, paths: Sequence[str]) -> dict[str, list[dict[str, str]]]:
+    async def read_files(self, paths: Sequence[str], *, navigation: bool = False) -> dict[str, list[dict[str, str]]]:
         if (not isinstance(paths, list | tuple) or not 1 <= len(paths) <= MAX_BATCH_FILES
                 or any(not isinstance(path, str) or path not in self.inventory for path in paths)
                 or len(set(paths)) != len(paths)):
@@ -115,7 +120,7 @@ class SourceInspection:
         if self.reads > self.limits.max_reads:
             message = f"{self.name} file read limit exceeded"
             raise EnvironmentDiscoveryError(message)
-        tasks = [asyncio.create_task(self._read(path)) for path in paths]
+        tasks = [asyncio.create_task(self._read(path, navigation=navigation)) for path in paths]
         try:
             return {"files": await asyncio.gather(*tasks)}
         finally:
@@ -138,10 +143,16 @@ class SourceInspection:
         valid = [path for path in paths if path in self.inventory]
         errors = [{"index": index, "code": "source_path_not_found"}
                   for index, path in enumerate(paths) if path not in self.inventory]
-        result: dict[str, Any] = await self.read_files(valid) if valid else {"files": []}
+        result: dict[str, Any] = await self.read_files(valid, navigation=True) if valid else {"files": []}
+        unavailable = [item for item in result['files'] if 'error' in item]
+        errors.extend({'index': paths.index(item['path']), 'code': item['error']} for item in unavailable)
+        result['files'] = [item for item in result['files'] if 'error' not in item]
         if not errors:
             return result["files"][0] if single else result
-        result.update(errors=errors, guidance="Use list_files to select exact repository paths; root path is empty or '.'.")
+        result.update(errors=sorted(errors, key=lambda error: error['index']),
+            guidance="Use list_files to select exact repository paths; root path is empty or '.'. "
+            "Unavailable or non-text content, including unresolved links, is not inspected evidence and cannot be cited. "
+            "Inspect related repository declarations; unresolved required evidence must hold readiness.")
         return result
 
     async def tool_result(self, reply: dict[str, Any]) -> dict[str, Any]:

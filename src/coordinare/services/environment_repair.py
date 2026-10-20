@@ -27,6 +27,7 @@ from coordinare.services.environment_acceptance import (
 )
 from coordinare.services.environment_attempt import (
     MAX_ATTEMPT_SECONDS,
+    REPAIR_LIMITS,
     AttemptBudget,
     EnvironmentDiscoveryError,
 )
@@ -87,13 +88,13 @@ class RepairJournal(BaseModel):
     expires_at: float
     max_calls: int = Field(ge=1)
     max_reads: int = Field(ge=1)
-    max_schema_repairs: int = Field(ge=0, le=2)
-    max_coverage_revisions: int = Field(ge=0, le=2)
-    max_execution_repairs: int = Field(ge=0, le=2)
+    max_schema_repairs: int = Field(ge=0, le=REPAIR_LIMITS["schema"])
+    max_coverage_revisions: int = Field(ge=0, le=REPAIR_LIMITS["coverage"])
+    max_execution_repairs: int = Field(ge=0, le=REPAIR_LIMITS["execution"])
     calls: int = Field(default=0, ge=0)
     reads: int = Field(default=0, ge=0)
-    schema_repairs: int = Field(default=0, ge=0, le=2)
-    coverage_revisions: int = Field(default=0, ge=0, le=2)
+    schema_repairs: int = Field(default=0, ge=0, le=REPAIR_LIMITS["schema"])
+    coverage_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["coverage"])
     execution_repairs: int = Field(default=0, ge=0, le=2)
     generation: int = Field(default=0, ge=0, le=2)
     status: Literal['discovering', 'executing', 'repair_pending', 'held', 'ready'] = 'discovering'
