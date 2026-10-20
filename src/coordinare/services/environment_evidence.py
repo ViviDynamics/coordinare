@@ -73,7 +73,8 @@ class AuthorEvidenceCache:
 
     def __init__(self, *, source_commit: str, inventory_digest: str, max_bytes: int) -> None:
         if max_bytes < 1:
-            raise ValueError('author evidence cache requires a positive byte bound')
+            message = 'author evidence cache requires a positive byte bound'
+            raise ValueError(message)
         self.source_commit = source_commit
         self.inventory_digest = inventory_digest
         self.max_bytes = max_bytes
@@ -84,7 +85,8 @@ class AuthorEvidenceCache:
         if (inspection.name in {'review', 'scope_review'} or inspection.inventory_digest != self.inventory_digest
                 or budget is None or budget.scope_findings is None
                 or budget.scope_findings.source_commit != self.source_commit):
-            raise EnvironmentDiscoveryError('author cache source identity differs', code='scope_author_evidence_identity')
+            message = 'author cache source identity differs'
+            raise EnvironmentDiscoveryError(message, code='scope_author_evidence_identity')
 
     def capture(self, inspection: SourceInspection) -> None:
         self._check_identity(inspection)
@@ -92,10 +94,12 @@ class AuthorEvidenceCache:
         for path, content in inspection.source_files.items():
             digest = hashlib.sha256(content.encode()).hexdigest()
             if (inspection.inputs.get(path) != digest or (path in candidate and candidate[path] != (content, digest))):
-                raise EnvironmentDiscoveryError('author cache source hash differs', code='scope_author_evidence_drift')
+                message = 'author cache source hash differs'
+                raise EnvironmentDiscoveryError(message, code='scope_author_evidence_drift')
             candidate[path] = (content, digest)
         if sum(len(content.encode()) for content, _digest in candidate.values()) > self.max_bytes:
-            raise EnvironmentDiscoveryError('author cache source byte limit exceeded', code='scope_author_evidence_limit')
+            message = 'author cache source byte limit exceeded'
+            raise EnvironmentDiscoveryError(message, code='scope_author_evidence_limit')
         self._entries = candidate
 
     def restore(self, inspection: SourceInspection, expected_inputs: Mapping[str, str]) -> list[dict[str, str]]:
@@ -107,6 +111,7 @@ class AuthorEvidenceCache:
                 continue
             content, digest = entry
             if digest != expected or hashlib.sha256(content.encode()).hexdigest() != expected:
-                raise EnvironmentDiscoveryError('author cache source hash differs', code='scope_author_evidence_drift')
+                message = 'author cache source hash differs'
+                raise EnvironmentDiscoveryError(message, code='scope_author_evidence_drift')
             evidence.append(inspection.admit_content(path, content, fetched=False))
         return evidence

@@ -92,7 +92,8 @@ class SourceInspection:
     def admit_content(self, path: str, content: str, *, fetched: bool) -> dict[str, str]:
         """Admit exact fetched or cached bytes under the same phase source bounds."""
         if path not in self.inventory:
-            raise EnvironmentDiscoveryError('source content differs from inventory', code='source_identity')
+            message = 'source content differs from inventory'
+            raise EnvironmentDiscoveryError(message, code='source_identity')
         encoded = content.encode("utf-8")
         self.total_bytes += len(encoded)
         if fetched and self.budget is not None:

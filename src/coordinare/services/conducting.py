@@ -17,6 +17,7 @@ from coordinare.services.conductor_calls import (
     ModelRequest,
     split_messages,
 )
+from coordinare.services.environment_evidence import check_evidence_context
 from coordinare.services.environment_function_wire import (
     INSTRUCTION,
     decode_function,
@@ -457,8 +458,6 @@ class OpenAiApiBackend:
                 messages.insert(0, {"role": "system", "content": instruction})
             response_schema = canonical_schema if function_mode or text_mode else wire_schema(canonical_schema)
         if max_context_bytes is not None:
-            from coordinare.services.environment_evidence import check_evidence_context
-
             check_evidence_context(messages, max_bytes=max_context_bytes, phase=context_phase)
         reply = await self._chat_reply(messages, json_mode=True, response_schema=response_schema)
         text = reply.text

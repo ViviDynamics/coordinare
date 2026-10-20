@@ -1635,7 +1635,8 @@ def _require_dispatch_environment(score: Score) -> None:
         accepted_manifest(score)
     if score.role == "env_bootstrap":
         if score.workflow.strip() not in {"", "env_bootstrap"}:
-            raise ValueError("reviewed bootstrap requires the env_bootstrap workflow")
+            message = "reviewed bootstrap requires the env_bootstrap workflow"
+            raise ValueError(message)
         score.workflow = "env_bootstrap"
 
 
