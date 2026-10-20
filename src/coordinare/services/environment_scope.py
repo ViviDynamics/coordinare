@@ -45,7 +45,12 @@ from coordinare.services.environment_findings import (
 )
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_response_schema import invoke_chat, response_schema
-from coordinare.services.environment_scope_investigation import bind_scope_requests
+from coordinare.services.environment_scope_investigation import (
+    bind_scope_requests,
+    investigate_scope_requests,
+    investigation_evidence,
+    validate_investigation_responses,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -127,7 +132,7 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                 except EnvironmentDiscoveryError as exc:
                     if exc.code not in {'invalid_json_envelope', 'duplicate_json_key', 'unsupported_envelope',
                                         'invalid_tool_arguments', 'scope_citations_invalid', 'scope_obligation_removed',
-                                        'scope_response_ids_invalid'}:
+                                        'scope_response_ids_invalid', 'scope_investigation_response_invalid'}:
                         raise
                     errors = [{'location': [], 'code': exc.code}]
                 _repair(messages, raw, errors, budget)
@@ -189,6 +194,9 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
         'Return indeterminate when you genuinely cannot establish an actionable assessment or safely continue; explain the limitation. '
         'An indeterminate verdict terminates this attempt; it is never automatically converted to revise or accept. '
         'An excluded activity needs source-backed applicability, never an image limitation or candidate disclaimer. '
+        'Every finding and decision requires inspection_requests: [] or up to eight distinct read_file/list_files requests. '
+        'Requests delegate unread exact paths/cursors to the author; sources remains independently inspected file citations. '
+        'Resolved decisions and accept verdicts cannot request further inspection. '
         'Return scope_assessment with verdict, rationale, sources, findings, decisions. '
         if review else
         'Author source-defined obligations for the whole documented development/test environment. '
@@ -242,7 +250,10 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
                 **({'required_decision_ids': [record.id for record in ledger.records],
                     'review_resolution': {'unread_available_source': 'inspect',
                         'actionable_findings': 'revise', 'unable_to_judge': 'indeterminate'}} if review else {}),
-                'finding_responses': responses or []}).decode()}]
+                'finding_responses': responses or [],
+                'investigation_evidence': investigation_evidence(inspection=inspection,
+                    bindings=_current_investigations(inspection.budget),
+                    results=inspection.budget.scope_investigation_results) if inspection.budget is not None else []}).decode()}]
 
 
 class ScopeRunOptions(TypedDict):
@@ -258,6 +269,13 @@ class _Request:
     commit: str
     limits: DiscoveryLimits
     budget: AttemptBudget
+
+
+def _current_investigations(budget: AttemptBudget | None) -> list[Any]:
+    if budget is None or budget.scope_findings is None:
+        return []
+    sequence = len(budget.scope_findings.reviews)
+    return [binding for binding in budget.scope_investigations if binding.review_sequence == sequence]
 
 
 async def _prepare_author(request: _Request) -> tuple[SourceInspection, list[dict[str, str]], dict[str, str]]:
@@ -282,6 +300,10 @@ async def _prepare_author(request: _Request) -> tuple[SourceInspection, list[dic
             required_inputs[path] = digest
     budget.scope_findings = ledger
     evidence = await prepare_mandatory_evidence(author, required_inputs, phase='scope_author')
+    if budget.scope_phase == 'revision':
+        completed = {result.binding_id for result in budget.scope_investigation_results}
+        pending = [binding for binding in _current_investigations(budget) if binding.id not in completed]
+        await investigate_scope_requests(author, pending)
     messages = _messages(author, review=False, definition=previous, evidence=evidence)
 
     return author, messages, required_inputs
@@ -349,6 +371,8 @@ def _validate_revision(data: dict[str, Any], *, author: SourceInspection, commit
     preserve_scope(base, definition)
     responses = _validate_responses(envelope.finding_responses, ledger=ledger,
         inputs=author.inputs, definition=definition)
+    validate_investigation_responses(bindings=_current_investigations(budget),
+        results=budget.scope_investigation_results, responses=envelope.finding_responses, inputs=author.inputs)
     budget.scope_responses = responses
     return definition
 
@@ -426,11 +450,7 @@ async def _discover_scope(request: _Request) -> ScopeContract:
             await budget.flush()
             if assessment.verdict != 'revise':
                 _fail('scope_review_indeterminate')
-            required_inputs.update(reviewer.inputs)
-            author = SourceInspection(inventory, fetch, limits, budget, retained_inputs=budget.scope_inputs)
-            author.name = 'scope_revision'
-            evidence = await prepare_mandatory_evidence(author, required_inputs, phase='scope_revision')
-            messages = _messages(author, review=False, definition=definition, evidence=evidence)
+            author, messages, required_inputs = await _prepare_author(request)
 
 
 async def discover_scope(*, paths: Sequence[str], fetch: Fetch, chat: ChatJson, commit: str,
