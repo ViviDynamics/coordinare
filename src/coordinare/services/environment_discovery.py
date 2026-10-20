@@ -71,7 +71,7 @@ from coordinare.services.environment_probes import (
     ProbeReport,
     ProbeRequest,
     bind_probe_report,
-    validate_saved_probe_reports,
+    select_current_probe_reports,
 )
 from coordinare.services.environment_proposal_patch import (
     MAX_CHANGES,
@@ -608,7 +608,11 @@ async def discover_and_review(
         max_coverage_revisions=bounds.max_coverage_revisions, max_execution_repairs=bounds.max_execution_repairs)
     try:
         async with asyncio.timeout_at(budget.deadline):
-            validate_saved_probe_reports(budget.probe_reports, commit, capabilities)
+            # Journal history remains append-only. A prepared execution repair may
+            # retire old-cache observations, then must spend a fresh probe batch.
+            budget.probe_reports = select_current_probe_reports(budget.probe_reports, commit, capabilities,
+                allow_cache_relocation=(configured.previous_manifest is not None
+                    and configured.execution_feedback is not None and bool(budget.executed_manifests)))
             result = await _discover_attempt(source_identity=(symphony_name, commit), paths=paths,
                 fetch=fetch, chat=chat, options=replace(configured, budget=budget))
             budget.outcome = "accepted"
