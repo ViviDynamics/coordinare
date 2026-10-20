@@ -80,13 +80,13 @@ class SourceInspection:
     async def _read(self, path: str, *, navigation: bool = False) -> dict[str, str]:
         content = await self.fetch(path)
         if not isinstance(content, str):
-            if path in self.inputs or (self.retained_inputs is not None and path in self.retained_inputs):
+            if navigation and (path in self.inputs or (self.retained_inputs is not None and path in self.retained_inputs)):
                 message = 'previously inspected source is unavailable'
                 raise EnvironmentDiscoveryError(message, code='source_identity')
             if navigation:
                 return {'path': path, 'error': 'source_unavailable'}
             message = f"{self.name} source is unavailable or not text"
-            raise EnvironmentDiscoveryError(message, code='source_unavailable')
+            raise EnvironmentDiscoveryError(message)
         encoded = content.encode("utf-8")
         self.total_bytes += len(encoded)
         if self.budget is not None:

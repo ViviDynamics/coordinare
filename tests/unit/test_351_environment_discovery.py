@@ -203,8 +203,9 @@ async def test_source_unavailable_holds():
     async def fetch(path):
         return None
 
-    with pytest.raises(EnvironmentDiscoveryError, match="unavailable"):
+    with pytest.raises(EnvironmentDiscoveryError) as exc:
         await discover_and_review(symphony_name="suite", commit=COMMIT, paths=[PATH], fetch=fetch, chat=ScriptedChat(), capabilities=CAPABILITIES)
+    assert exc.value.code == 'scope_phase_call_limit'
 
 
 @pytest.mark.asyncio
