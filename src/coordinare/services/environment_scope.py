@@ -47,6 +47,7 @@ from coordinare.services.environment_findings import (
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_response_schema import invoke_chat, response_schema
 from coordinare.services.environment_scope_investigation import (
+    ScopeInvestigationResponseError,
     bind_scope_requests,
     investigate_scope_requests,
     investigation_evidence,
@@ -124,7 +125,7 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                     errors = _validation_feedback(exc)
                 except PydanticCustomError as exc:
                     errors = [{'location': ['scope_revision'], 'code': exc.type}]
-                except _ResponseReferenceError as exc:
+                except (_ResponseReferenceError, ScopeInvestigationResponseError) as exc:
                     errors = exc.errors
                 except FindingValidationError as exc:
                     errors = [{'location': list(exc.location), 'code': exc.code}]
@@ -221,6 +222,8 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
             'never invent IDs or cite replaced IDs. Inspect source evidence, not runtime/image convenience. '
             'Investigate outstanding concrete source references with source tools before resubmitting; '
             'do not merely restate unread areas when relevant entry points remain available. '
+            'Every successful file investigation must be cited in sources of its bound finding response. '
+            'Use the exact binding finding_id and evidence file path; directory listings are not file citations. '
             'Do not generate commands. Return scope_revision and finding_responses.'
         )
     return [{'role': 'system', 'content': SOURCE_NAVIGATION+instructions+
@@ -345,12 +348,31 @@ def _validate_responses(responses: list[FindingResponse], *, ledger: FindingLedg
                         inputs: dict[str, str], definition: ScopeDefinition) -> list[dict[str, Any]]:
     ids = [r.finding_id for r in responses]
     known = {r.id for r in ledger.records}
-    if (len(ids) != len(set(ids)) or not set(ledger.open_ids()) <= set(ids) or not set(ids) <= known
-            or any(not set(r.sources) <= inputs.keys() for r in responses)):
-        _fail('scope_response_ids_invalid')
-    current_ids = {c.id for c in definition.criteria}
     errors: list[dict[str, Any]] = []
+    if len(ids) != len(set(ids)) or not set(ledger.open_ids()) <= set(ids) or not set(ids) <= known:
+        errors.append({'code': 'scope_response_ids_invalid', 'location': ['finding_responses'],
+            'guidance': 'Respond once to every open retained finding ID, using only retained IDs. '
+                        'Keep the proposed scope_revision operations while correcting responses.',
+            'required_finding_ids': ledger.open_ids(), 'retained_finding_ids': sorted(known)})
+    current_ids = {c.id for c in definition.criteria}
     for index, response in enumerate(responses):
+        invalid_sources = [i for i, path in enumerate(response.sources) if path not in inputs]
+        if invalid_sources:
+            ranges: list[list[int]] = []
+            for source_index in invalid_sources:
+                if ranges and source_index == ranges[-1][1]+1:
+                    ranges[-1][1] = source_index
+                else:
+                    ranges.append([source_index, source_index])
+            errors.append({'code': 'scope_response_ids_invalid',
+                'location': ['finding_responses', str(index), 'sources', str(invalid_sources[0])],
+                **({'finding_id': response.finding_id} if response.finding_id in known else {}),
+                'invalid_source_count': len(invalid_sources), 'invalid_source_ranges': ranges[:32],
+                'omitted_source_range_count': max(0, len(ranges)-32),
+                'guidance': 'Cite an exact inspected file path, never a directory or unread path. '
+                            'Ranges are inclusive source indices; additional ranges remain invalid when omitted. '
+                            'Correct every uninspected citation using source tools or delivered evidence. '
+                            'Keep the proposed scope_revision operations.'})
         if not set(response.affected_ids) <= current_ids:
             message = ('Reassessment replaces the old criterion ID. Use [] for new or reassessed criteria; '
                        'never cite a replaced ID. Preserve the attempted scope_revision operations while correcting responses.')
@@ -382,8 +404,16 @@ def _validate_revision(data: dict[str, Any], *, author: SourceInspection, commit
                     _citation_error(*location, 'sources', str(source_index))
     definition = apply_scope_revision(base, envelope.scope_revision, inspected_inputs=dict(author.inputs))
     preserve_scope(base, definition)
-    responses = _validate_responses(envelope.finding_responses, ledger=ledger,
-        inputs=author.inputs, definition=definition)
+    try:
+        responses = _validate_responses(envelope.finding_responses, ledger=ledger,
+            inputs=author.inputs, definition=definition)
+    except _ResponseReferenceError as exc:
+        try:
+            validate_investigation_responses(bindings=_current_investigations(budget),
+                results=budget.scope_investigation_results, responses=envelope.finding_responses, inputs=author.inputs)
+        except ScopeInvestigationResponseError as citations:
+            exc.errors.extend(citations.errors)
+        raise
     validate_investigation_responses(bindings=_current_investigations(budget),
         results=budget.scope_investigation_results, responses=envelope.finding_responses, inputs=author.inputs)
     budget.scope_responses = responses

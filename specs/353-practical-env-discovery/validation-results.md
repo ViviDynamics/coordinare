@@ -367,3 +367,28 @@ approved low effort and 60-minute budget, optional platform tools and unchanged
 repair caps. This varies both the corrected implementation and effort relative
 to the retained high-effort result, so it cannot isolate an effort-only effect.
 Broader repository runs remain paused and Elm readiness is unproven.
+
+
+### Explicit source-investigation run — 2026-10-20
+
+Fresh profile `source-investigation-haiku55-elm60m-high64k` on Coordinare
+`3d528600ec1f0b292904146d83fc07d16d0593a2`, same pinned Elm, Haiku 5.5 high,
+65,536 output tokens, 2 MiB conversation and original 3,600-second/512-read/8/4/2
+budgets, held after 350.99 seconds at `scope_revision` with
+`attempt_schema_limit`. It completed all ten independently requested source
+investigations before revision, used 107 reads and one coverage revision, and
+exhausted eight schema repairs. One independent source review ran; no executable
+review, installer or clean consumer ran. All four owned image/registry references
+and the owned source directory were confirmed absent; the snapshot was unchanged.
+
+The revision repeatedly omitted requested-file citations or cited a directory.
+Repair feedback identified only a generic code and location, withholding the
+missing file/finding relationship and exact invalid citation field. The scoped
+correction returns all missing requested-file citations and response reference
+errors together, retains the proposed revision, and states the citation rule in
+the revision instructions. Invalid source indices use bounded compact ranges so
+feedback cannot grow one repeated instruction per invalid path. Counts explicitly
+report omitted ranges; every invalid entry still rejects admission. Synthetic
+regressions cover mixed errors and 3,500 consecutive or separated invalid entries.
+This correction requires fresh verification and a fresh Elm attempt; the held
+attempt is terminal and provides no runtime acceptance.

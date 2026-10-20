@@ -148,11 +148,22 @@ def investigation_evidence(*, inspection: SourceInspection, bindings: Sequence[S
     return evidence
 
 
+class ScopeInvestigationResponseError(FindingValidationError):
+    """All omitted requested-file citations, from trusted inspection bindings only."""
+
+    def __init__(self, errors: list[dict[str, Any]]) -> None:
+        super().__init__('finding responses must cite requested inspected files',
+                         code='scope_investigation_response_invalid', location=('finding_responses',))
+        self.errors = errors
+
+
 def validate_investigation_responses(*, bindings: Sequence[ScopeInspectionBinding],
                                     results: Sequence[ScopeInspectionResult], responses: Sequence[FindingResponse],
                                     inputs: Mapping[str, str]) -> None:
     recorded = {result.binding_id: result for result in results}
     answered = {response.finding_id: response for response in responses}
+    indices = {response.finding_id: str(index) for index, response in enumerate(responses)}
+    errors = []
     if len(recorded) != len(results):
         message = 'investigation result identities repeat'
         raise EnvironmentDiscoveryError(message, code='scope_investigation_identity')
@@ -166,9 +177,14 @@ def validate_investigation_responses(*, bindings: Sequence[ScopeInspectionBindin
             if (binding.request.operation != 'read_file' or response is None
                     or binding.request.path not in response.sources
                     or inputs.get(binding.request.path) != result.file_sha256):
-                message = 'finding response must cite requested inspected file'
-                raise FindingValidationError(message,
-                    code='scope_investigation_response_invalid', location=('finding_responses',))
+                errors.append({'code': 'scope_investigation_response_invalid',
+                    'location': ['finding_responses', indices.get(binding.finding_id, ''), 'sources'],
+                    'finding_id': binding.finding_id, 'required_source': binding.request.path,
+                    'guidance': 'Cite this exact requested inspected file in the corresponding finding response. '
+                                'Keep the proposed scope_revision operations; correct all listed citations together. '
+                                'Investigation does not close the finding or establish readiness.'})
+    if errors:
+        raise ScopeInvestigationResponseError(errors)
 
 
 def _invalid_history(message: str) -> NoReturn:
