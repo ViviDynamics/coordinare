@@ -334,3 +334,67 @@ async def test_post_review_preparation_shares_original_deadline(tmp_path, monkey
     dispatch.assert_not_awaited()
     assert cache.environment_attempt['status'] == 'held'
     assert not cache.cache_dir_ready
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('repeat_cancel', [False, True])
+@pytest.mark.parametrize('creation_fails', [False, True])
+async def test_hung_creation_cancellation_is_bounded_and_late_writer_keeps_owned_cleanup(monkeypatch, repeat_cancel, creation_fails):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from coordinare.services.http_performer_service import HTTPPerformerService
+    from coordinare.services.performer_runtime import StartedPerformer
+    from tests.unit.services.test_http_performer_service import _ephemeral_config
+
+    entered, release, removed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    present = False
+    lookups = []
+    async def create():
+        nonlocal present
+        entered.set()
+        await release.wait()
+        if creation_fails:
+            raise RuntimeError('synthetic creation status is unknown')
+        present = True
+        return StartedPerformer(handle='owned', endpoint='http://localhost:1')
+    async def find(session_id):
+        lookups.append(session_id)
+        return StartedPerformer(handle='owned', endpoint='http://localhost:1') if present else None
+    async def stop(handle):
+        nonlocal present
+        assert handle == 'owned'
+        present = False
+        removed.set()
+    service = HTTPPerformerService(_ephemeral_config(), client=AsyncMock(),
+        runtime=SimpleNamespace(find_session=find, stop=stop))
+    monkeypatch.setattr('coordinare.services.http_performer_service._CANCEL_CREATE_SECONDS', 0.02, raising=False)
+    task = asyncio.create_task(service._run_creation('session-owned', create()))
+    await entered.wait()
+    task.cancel()
+    if repeat_cancel:
+        await asyncio.sleep(0)
+        task.cancel()
+    try:
+        done, _ = await asyncio.wait({task}, timeout=0.2)
+        assert done, 'cancellation waited indefinitely for runtime creation'
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await service.stop_session_confirmed('session-owned') is False
+        assert lookups == [], 'absence cannot be confirmed while creation is pending'
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    if not creation_fails:
+        await asyncio.wait_for(removed.wait(), 0.5)
+    if service._teardown_tasks:
+        settled = await asyncio.wait_for(asyncio.gather(*service._teardown_tasks, return_exceptions=True), 0.5)
+        if not creation_fails:
+            assert not any(isinstance(value, BaseException) for value in settled)
+    assert not present
+    if creation_fails:
+        assert 'session-owned' in service._pending_creations
+        assert await service.stop_session_confirmed('session-owned') is False
+        assert lookups == []
+    else:
+        assert 'session-owned' not in service._pending_creations

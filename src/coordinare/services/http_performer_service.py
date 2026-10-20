@@ -106,6 +106,7 @@ UNDRAINED_REASON = "transcript not fully drained"
 _TRANSCRIPT_MARKER_SECONDS = 1.0
 # The most aclose waits for teardown steps still running (review 6, F2).
 _CLOSE_TEARDOWN_SECONDS = 10.0
+_CANCEL_CREATE_SECONDS = 5.0
 # How many finished runs are remembered, so that a late poll or teardown never
 # recreates a writer for them (129 review, item 7).
 _TRANSCRIPT_FINALISED_MEMORY = 4096
@@ -346,6 +347,7 @@ class HTTPPerformerService:
         self._undrained: dict[str, str] = {}
         # Shielded teardown steps still running; aclose waits for them (review 6, F2).
         self._teardown_tasks: set[asyncio.Task[Any]] = set()
+        self._pending_creations: dict[str, asyncio.Future[Any]] = {}
         # Spec 146: which runtime starts performers. Defaults to Docker so every
         # existing deployment and test behaves exactly as before; the Kubernetes
         # runtime is opted into via agent_transport config.
@@ -457,6 +459,47 @@ class HTTPPerformerService:
                 # Retrieved here, so a failure of the step is not reported as unhandled.
                 task.exception()
             raise
+
+    async def _run_creation[T](self, session_id: str, awaitable: Awaitable[T]) -> T:
+        """Bound cancellation settlement while retaining ownership of late creates."""
+        task = asyncio.ensure_future(awaitable)
+        self._pending_creations[session_id] = task
+        self._teardown_tasks.add(task)
+        task.add_done_callback(self._teardown_tasks.discard)
+        cancelled = False
+        try:
+            await asyncio.wait({task})
+            return task.result()
+        except asyncio.CancelledError:
+            cancelled = True
+            await asyncio.wait({task}, timeout=_CANCEL_CREATE_SECONDS)
+            raise
+        finally:
+            if not cancelled or (task.done() and not task.cancelled() and task.exception() is None):
+                self._pending_creations.pop(session_id, None)
+            else:
+                task.add_done_callback(lambda completed: self._schedule_created_cleanup(session_id, completed))
+
+    def _schedule_created_cleanup(self, session_id: str, created: asyncio.Future[Any]) -> None:
+        if created.cancelled() or created.exception() is not None:
+            # A cancelled or failed request may have reached the server. Retain
+            # uncertain ownership; label absence cannot settle an in-flight create.
+            logger.warning('http_performer.cancelled_creation_unconfirmed', session_id=session_id)
+            return
+        task = asyncio.create_task(self._cleanup_created_session(session_id))
+        self._teardown_tasks.add(task)
+        task.add_done_callback(self._teardown_tasks.discard)
+
+    async def _cleanup_created_session(self, session_id: str) -> None:
+        self._pending_creations.pop(session_id, None)
+        try:
+            confirmed = await self.stop_session_confirmed(session_id)
+        except Exception as exc:
+            logger.warning('http_performer.late_creation_cleanup_failed', session_id=session_id,
+                           error_type=type(exc).__name__)
+            return
+        if not confirmed:
+            logger.warning('http_performer.late_creation_cleanup_unconfirmed', session_id=session_id)
 
     async def aclose(self) -> None:
         # Teardown steps still running are awaited, bounded, so a shutdown does not
@@ -693,9 +736,9 @@ class HTTPPerformerService:
                 start_kwargs.update(_runtime_launch_options(self._runtime, card_context))
                 if _runtime_accepts_backend(self._runtime):
                     start_kwargs["backend"] = backend
-                # Settle a started create request before cancellation checks label absence;
-                # cancellation must not race a Pod/container that is created late.
-                started = await self._run_teardown(self._runtime.start_ephemeral(
+                # Cancellation retains late-create ownership and never treats
+                # label absence as confirmation while a create is unresolved.
+                started = await self._run_creation(session_id, self._runtime.start_ephemeral(
                     effective_config, **start_kwargs,
                 ))
                 launched_image = getattr(started, 'image_ref', None)
@@ -1727,6 +1770,8 @@ class HTTPPerformerService:
         item 6). The confirmation runs in a finally, shielded, so a cancelled drain still
         stops the container once.
         """
+        if session_id in self._pending_creations:
+            return False
         confirmed = False
         try:
             await self._teardown_drain(session_id)
