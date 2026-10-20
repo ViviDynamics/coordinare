@@ -65,6 +65,8 @@ def _decode_reply(raw: str, name: str, limits: DiscoveryLimits) -> dict[str, Any
 SOURCE_DISPOSITION_GUIDANCE = (
     'Each source review decision needs exactly one disposition: covered, source_correction, source_gap or duplicate, '
     'with that disposition\'s required fields. Do not supply a status field; the daemon derives it. '
+    'Use criterion_ids only for covered; affected_ids, gap_kind and inspection_requests only for source_gap; '
+    'duplicate_of only for duplicate. Every other decision field must be null or []. '
     'Preserve every other decision while correcting this one.')
 
 
@@ -102,7 +104,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
                 "Even an open finding response needs supporting source evidence. "
                 "Do not use directory paths, duplicate citations or uninspected files; inspect relevant source first.")
         if code in {"union_tag_not_found", "union_tag_invalid"} or (
-                code == "extra_forbidden" and location[-1:] == ["status"] and "decisions" in location):
+                code == "extra_forbidden" and "scope_assessment" in location and "decisions" in location):
             detail["guidance"] = SOURCE_DISPOSITION_GUIDANCE
         if code == "runtime_credential_reference":
             detail["guidance"] = ("Use ${NAME} for a named credential supplied by the trusted runtime. "
