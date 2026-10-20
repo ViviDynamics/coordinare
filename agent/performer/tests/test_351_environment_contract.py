@@ -524,3 +524,48 @@ async def test_final_verification_cannot_waive_original_install_failure(tmp_path
     final = await execute_contract(score, stand)
     assert not final['passed']
     assert [item['status'] for item in final['environment_verification']['results']] == ['fail', 'pass']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('workflow', ['', 'env_bootstrap'])
+async def test_reviewed_dispatch_uses_deterministic_workflow_without_repair(tmp_path, monkeypatch, workflow):
+    import asyncio
+    import json
+    from unittest.mock import AsyncMock
+
+    from performer.config import Settings
+    from performer.protocol import PerformerMessage
+    from performer.environment_contract import close_environment
+
+    score = contract_score(tmp_path, failed=True)
+    score.workflow = workflow
+    stand = Stand(path=tmp_path, branch='main')
+    monkeypatch.setattr(main, 'clone_repository', AsyncMock(return_value=stand))
+    monkeypatch.setattr(main, '_launch_dispatch_proxy', AsyncMock(return_value=None))
+    monkeypatch.setattr(main, 'get_head_sha', AsyncMock(return_value=score.environment_manifest['source_commit']))
+    monkeypatch.setattr(main, '_snapshot_pr_comment_baseline', AsyncMock())
+    monkeypatch.setattr(main, 'get_backend', lambda *args: pytest.fail('reviewed bootstrap must not start a model backend'))
+    monkeypatch.setattr('performer.backends.get_backend', lambda *args: pytest.fail('reviewed workflow must not request an agent turn'))
+    message = PerformerMessage(action='dispatch', payload=score.model_dump())
+    perf = None
+    try:
+        _, perf = await main.handle_dispatch(message, Settings())
+        await asyncio.wait_for(perf.backend._task, timeout=10)
+        report = json.loads(perf.backend.get_status().output)['env_bootstrap_run']
+        assert perf.score.workflow == 'env_bootstrap'
+        assert report['status'] == 'error'
+        assert report['repairs'] == 0
+        assert perf.backend.metrics.agent_turns == 0
+        assert report['environment_verification']['manifest_digest'] == score.environment_manifest_digest
+    finally:
+        if perf is not None:
+            await perf.backend.stop()
+        await close_environment(stand)
+
+
+def test_reviewed_bootstrap_rejects_alternate_workflow(tmp_path):
+    score = contract_score(tmp_path)
+    score.workflow = 'custom'
+    with pytest.raises(ValueError, match='requires the env_bootstrap workflow'):
+        main._require_dispatch_environment(score)
+    assert score.workflow == 'custom'

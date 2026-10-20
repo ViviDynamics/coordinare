@@ -1628,42 +1628,15 @@ async def _stop_orchestration_proxy(perf: Performance) -> None:
             pass
 
 
-def _require_bootstrap_integrity(result: dict[str, Any]) -> None:
-    if result.get("integrity_failure"):
-        raise ValueError(result["reason"])
-
-
-async def _prepare_prose_bootstrap(score: Score, stand: Stand) -> None:
-    """Install the accepted contract before giving a repair harness the workspace."""
-    from performer.workflows.bootstrap_environment import BootstrapEnvironment
-
-    stand.bootstrap_environment = BootstrapEnvironment(stand, score)
-    snapshot = await stand.bootstrap_environment.run("snapshot")
-    if not snapshot["passed"]:
-        from performer.environment_contract import close_environment
-
-        await close_environment(stand)
-        cleanup_stand(stand)
-        raise ValueError(snapshot["reason"])
-    # A failed deterministic installation is repairable by the harness.
-    try:
-        installed = await stand.bootstrap_environment.run("install")
-        _require_bootstrap_integrity(installed)
-    except BaseException:
-        from performer.environment_contract import close_environment
-
-        await close_environment(stand)
-        cleanup_stand(stand)
-        raise
-    if not installed["passed"]:
-        score.persona_instructions += "\nRepair the accepted environment checks: " + installed.get("reason", "")
-
-
 def _require_dispatch_environment(score: Score) -> None:
     if score.role == "env_bootstrap" or score.env_cache_path:
         from performer.environment_contract import accepted_manifest
 
         accepted_manifest(score)
+    if score.role == "env_bootstrap":
+        if score.workflow.strip() not in {"", "env_bootstrap"}:
+            raise ValueError("reviewed bootstrap requires the env_bootstrap workflow")
+        score.workflow = "env_bootstrap"
 
 
 async def handle_dispatch(
@@ -1687,8 +1660,6 @@ async def handle_dispatch(
     apply_github_url_override(score.github_graphql_url, "GITHUB_GRAPHQL_URL", settings)
 
     stand: Stand = await clone_repository(score)
-    if role == "env_bootstrap" and score.workflow != "env_bootstrap":
-        await _prepare_prose_bootstrap(score, stand)
     try:
         orchestration_proxy = await _launch_dispatch_proxy(
             score, backend_name, model_name, stand, settings,
