@@ -175,7 +175,7 @@ def test_legacy_v1_contract_manifest_is_not_ready(tmp_path):
     contract.pop('source_assessment')
     from coordinare_service_inference.environment.scope import ScopeContract
     manifest['scope_contract_digest'] = ScopeContract.model_validate(contract).digest()
-    with pytest.raises(ValidationError, match='scope_contract_refresh_required|fresh source review'):
+    with pytest.raises(ValidationError, match=r'scope_contract_refresh_required|fresh source review'):
         EnvironmentManifest.model_validate(manifest)
     cache.environment_manifest = manifest
     assert accepted_environment(cache) is None
