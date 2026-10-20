@@ -48,3 +48,30 @@ request transport and response schema. Focused regressions: 153 passed. Strict
 mypy: all 344 source modules passed. Independent delta review found no Critical
 or Important issue; its suggested manifest-capacity test is included. Full-PR
 review and genuine clean-consumer project acceptance remain outstanding.
+
+The fresh local-ingress simulations exposed two different finite bounds. Elm's
+fifth HTTP-200 response exhausted its 32768 output tokens and truncated the initial
+scope JSON (170.72 seconds elapsed). A single 65536-token saved-request diagnostic
+returned a valid source-read request, which does not prove a final scope can be
+authored. No scope, manifest, installation or clean verification was accepted.
+
+Dettmore completed 18 model responses and three independent scope reviews before
+holding during revision evidence preparation (566.52 seconds elapsed). An exact
+saved-response replay, with no model or project execution, reproduced the cause:
+the same author inspection accumulated 264 reads across authoring and revisions,
+exceeding its 256-per-phase quota even though the attempt used only 470 of 512
+reads. Its byte count was below the 4 MiB limit. Each revision now creates a new
+inspection, just as each independent review does, and fetches the complete required
+evidence again. It retains the original shared attempt budget and source-hash
+ledger; it resets no attempt counter, deadline, repair allowance or finding.
+Missing or changed retained evidence still holds. This correction has no stack
+specific behavior and raises no configured limit.
+
+With that correction, all 18 saved Dettmore response messages and schemas replay
+unchanged. The previously failing evidence preparation completes with all 71
+retained inputs and 485 total reads, reaching the next unsaved model request.
+This is evidence of removing the erroneous phase-bound failure, not coverage or
+bootstrap acceptance. Regression coverage verifies a successful revision across
+separate phase quotas and refusal when the unchanged aggregate read budget runs
+out. Both failed full runs remain retained, with owned image/registry/source
+cleanup confirmed. Any next full run uses a fresh labeled profile.

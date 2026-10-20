@@ -374,6 +374,8 @@ async def _discover_scope(request: _Request) -> ScopeContract:
             if assessment.verdict != 'revise':
                 _fail('scope_review_indeterminate')
             required_inputs.update(reviewer.inputs)
+            author = SourceInspection(inventory, fetch, limits, budget, retained_inputs=budget.scope_inputs)
+            author.name = 'scope_revision'
             evidence = await prepare_mandatory_evidence(author, required_inputs, phase='scope_revision')
             messages = _messages(author, review=False, definition=definition, evidence=evidence)
 
