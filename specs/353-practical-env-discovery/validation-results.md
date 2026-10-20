@@ -468,3 +468,33 @@ tokens, 3,600 seconds and original repair/runtime controls, changing the softwar
 conversation byte ceiling from 2 MiB to 4 MiB. It remains a separately labelled
 capacity experiment; provider capacity, independent coverage and every required
 clean-environment check still apply. A larger context cannot waive open findings.
+
+### 4 MiB comparison and citation schema mismatch: 2026-10-20
+
+Fresh `context4mib-reads2048-haiku55-elm60m-high64k` on `8122b741`
+held after 634.4 seconds at `scope_revision / attempt_schema_limit`.
+It completed thirty model calls, four independent source reviews and 341 of
+2,048 permitted reads. Its 58-criterion scope retained nine open findings.
+Eight schema repairs and four coverage revisions were spent. No source
+contract, executable coverage review, installer or clean consumer was accepted.
+All four owned image/registry references and the execution source directory are
+confirmed absent; the pinned snapshot remained unchanged.
+
+The final four rejected proposals all returned an empty citation list for
+finding F0003. Direct validation reproduced the nonempty/unique citation
+rejection, but the supplied JSON schema declared only an unconstrained array,
+and repair feedback reduced the error to `invalid_contract_value`. The correction
+exposes the existing minimum citation count in the schema and returns fixed,
+safe guidance for empty or duplicate citation lists. A regression exercises a
+single correction while preserving proposed scope additions. Offline replay of
+the exact final proposal remains rejected with precise nonempty-citation
+feedback and makes no new model call or project execution.
+
+There is also a separate semantic review problem. The third reviewer described
+F0006's required obligation and success condition as present but kept it open
+until a clean runtime run passed; F0003 deferred resolution until scope acceptance
+itself. Those are circular source-review decisions. Other findings concern
+genuinely unread source or missing explicit obligations. This diagnostic does
+not resolve any finding, grant source acceptance or waive runtime proof. The
+citation correction alone does not establish that those semantic problems are
+fixed. Elm acceptance and subsequent Dettmore validation remain pending.

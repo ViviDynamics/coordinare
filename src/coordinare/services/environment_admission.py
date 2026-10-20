@@ -82,12 +82,17 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             "requirement_check_reference", "clean_dependency_install_only", "runtime_credential_reference",
             "probe_id_maps", "probe_cited_question", "probe_required_true", "probe_citations_uninspected",
             "scope_identity_mismatch", "scope_required_check_mapping", "scope_required_service", "scope_id_collision",
+            "finding_citations_invalid",
         } else "invalid_contract_value"
         scope_locations = {'scope_required_check_mapping': 'criterion_checks', 'scope_identity_mismatch': 'scope_contract_digest',
                            'scope_required_service': 'services', 'scope_id_collision': 'id'}
         if code in scope_locations:
             location = [scope_locations[code]]
         detail: dict[str, Any] = {"location": location, "code": code}
+        if code == "finding_citations_invalid" or (code == "too_short" and location[-1:] == ["sources"]):
+            detail["guidance"] = ("Supply a nonempty list of unique exact inspected file paths as source citations. "
+                "Even an open finding response needs supporting source evidence. "
+                "Do not use directory paths, duplicate citations or uninspected files; inspect relevant source first.")
         if code == "runtime_credential_reference":
             detail["guidance"] = ("Use ${NAME} for a named credential supplied by the trusted runtime. "
                 "For a credential environment variable named K, its value must be exactly ${K}, not a reference to another name. "

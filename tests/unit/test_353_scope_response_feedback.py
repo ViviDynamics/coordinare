@@ -11,6 +11,47 @@ from tests.unit.test_353_scope_investigation_flow import discover, objection
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('invalid_sources', [[], ['guide', 'guide']])
+async def test_invalid_source_list_explains_constraint_and_preserves_revision(invalid_sources):
+    budget = AttemptBudget()
+    observed = []
+    extra = criterion(usability='An additional required operation succeeds')
+
+    def rejected(messages):
+        attempted = revision(extra)(messages)
+        attempted['finding_responses'][0]['sources'] = invalid_sources
+        return attempted
+
+    def correct(messages):
+        observed.extend(json.loads(messages[-1]['content'])['validation_errors'])
+        attempted = json.loads(messages[-2]['content'])
+        assert attempted['scope_revision']['add'] == [extra]
+        attempted['finding_responses'][0]['sources'] = ['guide']
+        return attempted
+
+    scope = await discover([
+        {'tool': 'read_file', 'path': 'guide'}, proposal(criterion()),
+        review('revise', findings=[objection([])]),
+        rejected, correct,
+        review(decisions=[{'finding_id': 'F0001', 'status': 'resolved',
+            'rationale': 'Both source obligations are retained', 'sources': ['guide'], 'duplicate_of': None}]),
+    ], {'guide': 'Two required operations'}, budget=budget)
+    assert len(scope.definition.criteria) == 2
+    assert scope.finding_ledger.open_ids() == []
+    assert budget.schema_repairs == 1
+    assert observed[0]['location'] == ['finding_responses', 0, 'sources']
+    assert 'nonempty' in observed[0]['guidance']
+    assert 'unique' in observed[0]['guidance']
+
+
+def test_source_revision_wire_schema_requires_at_least_one_finding_citation():
+    from coordinare.services.environment_response_schema import response_schema
+
+    schema = response_schema('scope_revision')
+    assert schema['$defs']['FindingResponse']['properties']['sources']['minItems'] == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('rejected_sources', [['guide'], ['odd']])
 async def test_missing_investigation_citations_are_reported_together_before_retry(rejected_sources):
     sources = {'guide': 'Inspect two operational entry points',
