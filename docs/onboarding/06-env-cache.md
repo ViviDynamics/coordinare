@@ -88,7 +88,9 @@ Idle bootstrap reaping defaults to 1800 seconds; an unmatched tool call has a
 separate 2700-second bound. The outer bootstrap wall clock defaults to 3600 seconds.
 These existing job limits also constrain bounded workflows. Discovery and review
 have a shared 600-second attempt budget plus 120-second phase budgets, at most
-two repair rounds, 128 total model calls and 512 total reads by default. Directory
+two repairs per category, 128 total model calls and 512 total reads by default.
+Schema, coverage and execution repair maxima are configurable up to eight, four
+and two respectively, without increasing the shared deadline or read/call limits. Directory
 pages and batched reads bound model context. See the operator guide for configuration.
 
 State schema 40 persists the reviewed manifest and assessment. Older snapshots
@@ -230,8 +232,8 @@ The daemon reads repository APIs and never clones or executes project commands.
 
 Missing/corrupt source and unsupported submodule/LFS hydration hold readiness;
 review-only files cannot substitute for a complete checkout. Source identity is
-recorded alongside manifest, image and platform identity. Journal version 4 keeps
-source ownership and prior consumption: interrupted source work requires confirmed
+recorded alongside manifest, image and platform identity. Current journal version 7 keeps
+source ownership, scope checkpoints and prior consumption: interrupted source work requires confirmed
 cleanup. Pending older journals require explicit restart after cleanup, and older
 cache evidence needs normal rebuild/reverification. No old passing flag is promoted
 into source-complete evidence. Activation must make installed tools usable through

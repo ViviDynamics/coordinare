@@ -316,18 +316,22 @@ token capacity; the byte cap does not guarantee provider context capacity. Provi
 request failures hold and do not consume schema corrections. Output limits remain set
 on the model backend.
 
-Schema corrections, coverage revisions and executable repairs each have an independent
-maximum of two, configurable from zero to two. All categories share the original
+Schema corrections, coverage revisions and executable repairs default to two each.
+Their independent configurable ranges are zero to eight, zero to four and zero to
+two respectively (`manifest_max_schema_repairs`, `manifest_max_coverage_revisions`,
+`manifest_max_execution_repairs`). All categories share the original
 aggregate deadline, model-call and source-read limits. A new candidate, new reviewer,
 cache generation or daemon restart never renews them. The old `manifest_max_repairs`
 configuration is a deprecated alias supplying all three limits; combining it with any
 new category setting is rejected. A valid coverage revision can add obligations but
 cannot remove, make optional or narrow existing required checks or lifecycle scopes.
 
-Attempt journal version two stores every category's consumption. Pending or held
-version-one journals require an explicit clean rebuild after confirming no executor is
-running; they are never silently granted new allowances. Frozen accepted caches remain
-readable. The existing authenticated environment-bootstrap action now archives the old
+Current attempt journal version seven stores category consumption and source-scope
+protocol checkpoints. Versions one through five require an explicit clean rebuild
+after confirming no executor is running. Version six can migrate only when it
+already contains an accepted source-scope contract; otherwise it also requires an
+explicit restart. Migration never grants fresh allowances. Frozen contracts remain
+subject to the current identity, coverage and execution acceptance checks. The existing authenticated environment-bootstrap action now archives the old
 journal and starts in a new empty cache sibling. Discovery-only holds need no executor
 cleanup. After execution, the action must confirm that its owned session stopped;
 a missing owner or failed confirmation returns a hold without clearing the journal or

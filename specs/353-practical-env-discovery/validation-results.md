@@ -1,6 +1,46 @@
 # Repository validation results
 
-## Latest Elm correction test: held before installation, 2026-10-18
+## Latest Elm source-review run: held on read budget, 2026-10-20
+
+Coordinare `ea4f4c33825cae8f2f6b26dad8456fb881875c3c` tested the pinned Elm
+commit `bc224a78db6f669d56863599d653f14e7605de0b` in a fresh isolated
+pre-merge experiment. Required CI was still failed on an unrelated dashboard
+request-latency assertion; this run did not qualify the PR for shipping.
+
+The attempt held after **774.06 seconds** at `scope_review_preparation`, with
+`attempt_read_limit`; it did not time out. All 23 model responses reported `stop`.
+Four independent source reviews and four coverage revisions occurred. Six schema
+repairs were consumed. The final proposed definition had 78 criteria, with 32
+retained findings and 23 still open. No source-scope contract was accepted.
+**No executable-manifest review, installer or clean consumer ran. Readiness remains
+unproven.** The harness's legacy top-level independent-review count tracks executable
+review only; the four source reviews are recorded in `diagnostics.scope_review_count`.
+
+The initial author inspected 56 distinct files. Subsequent revisions retained the
+same 56 inputs despite review objections identifying additional files to inspect.
+The only later source-tool operation reread an existing file. Mandatory evidence
+redelivery consumed 505 of 512 reads; the next eight-file batch could not fit the
+remaining seven reads. The attempt still had 2,826 seconds left. Increasing time
+alone cannot resolve this observed loop. The proposed
+[source-investigation correction](source-investigation-amendment.md) has written-spec
+approval; its [implementation plan](source-investigation-plan.md) awaits review.
+It has not been implemented or validated against Elm.
+
+Profile: `claude-haiku-5-5`, high effort, authenticated local LiteLLM connection,
+strict JSON schema, 65,536 output tokens, 2 MiB conversation ceiling, 3,600-second
+attempt/request/phase/installer limits, 1,800-second private probe batch and 8/4/2
+schema/coverage/execution allowances. The existing immutable optional VM base and
+resource/isolation policy were retained. This separately labeled experiment does
+not renew an earlier held attempt or replace historical baseline results.
+
+Private evidence is under `.agents/state/353-org-validation/` in
+`review-resolution-premerge-haiku55-elm60m-high64k/elm/`: `result.json`,
+`environment-attempt.json`, all 23 response files and `investigation-audit.json`.
+The separate image directory contains `cleanup-verified.json`. All four owned
+Docker image/registry references and the owned source directory were confirmed
+absent; the pinned checkout was unchanged. Broader repository runs remain stopped.
+
+## Earlier Elm correction test: held before installation, 2026-10-18
 
 Code `41fc772259e925a36c6a6613ee20ca56f5cf0ff2` was tested against the same
 pinned Elm source with the approved low-effort model and 3,600-second profile.
