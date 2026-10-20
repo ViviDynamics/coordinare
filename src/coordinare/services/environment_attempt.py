@@ -80,8 +80,8 @@ class AttemptBudget:
     scope_investigations: list[ScopeInspectionBinding] = field(default_factory=list, repr=False)
     scope_inputs: dict[str, str] = field(default_factory=dict, repr=False)
     scope_responses: list[dict[str, Any]] = field(default_factory=list, repr=False)
-    scope_author_protocol: Literal[2] = 2
-    scope_phase: Literal["initial", "revision", "review", "accepted"] = "initial"
+    scope_author_protocol: Literal[3] = 3
+    scope_phase: Literal["initial", "investigation", "revision", "review", "accepted"] = "initial"
     scope_revision_base_digest: str | None = None
     scope_definition: ScopeDefinition | None = field(default=None, repr=False)
     scope_contract: ScopeContract | None = field(default=None, repr=False)

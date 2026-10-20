@@ -31,7 +31,7 @@ async def test_scope_contract_roundtrips_without_new_budget_or_mutable_alias(tmp
     assert resumed.scope_contract.digest() == contract.digest()
     assert resumed.calls == budget.calls and resumed.reads == budget.reads
     assert cache.environment_attempt['expires_at'] == original_expiry
-    assert cache.environment_attempt['version'] == 7
+    assert cache.environment_attempt['version'] == 8
     resumed.scope_contract.definition.criteria[0].usability = 'mutated in caller'
     assert cache.environment_attempt['scope_contract']['definition']['criteria'][0]['usability'] != 'mutated in caller'
 
@@ -159,7 +159,7 @@ async def test_scope_revision_crash_resumes_exact_phase_without_renewing_budget(
         await run(Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), objection(),
             revision(criterion(usability='Added operation')), closure()]), budget=budget)
     saved = copy.deepcopy(cache.environment_attempt)
-    assert saved['version'] == 7 and saved['scope_author_protocol'] == 2
+    assert saved['version'] == 8 and saved['scope_author_protocol'] == 3
     assert saved['scope_phase'] == phase
     if phase == 'revision':
         assert saved['scope_revision_base_digest'] == budget.scope_definition.digest()
@@ -232,7 +232,7 @@ async def test_legacy_accepted_scope_keeps_canonical_contract_and_original_expir
     before = copy.deepcopy(cache.environment_attempt)
     resumed = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600)
     assert resumed.scope_contract.digest() == contract.digest()
-    assert resumed.scope_phase == 'accepted' and cache.environment_attempt['version'] == 7
+    assert resumed.scope_phase == 'accepted' and cache.environment_attempt['version'] == 8
     assert cache.environment_attempt['expires_at'] == before['expires_at']
     assert resumed.calls == before['calls'] and resumed.reads == before['reads']
 

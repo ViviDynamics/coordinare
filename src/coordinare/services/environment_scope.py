@@ -284,7 +284,7 @@ async def _prepare_author(request: _Request) -> tuple[SourceInspection, list[dic
     paths, fetch, commit, limits, budget = request.paths, request.fetch, request.commit, request.limits, request.budget
     inventory = _checked_inventory(paths, limits)
     author = SourceInspection(inventory, fetch, limits, budget, retained_inputs=budget.scope_inputs)
-    author.name = 'scope_revision' if budget.scope_phase == 'revision' else 'scope_author'
+    author.name = 'scope_revision' if budget.scope_phase in {'investigation', 'revision'} else 'scope_author'
     previous = budget.scope_definition
     ledger = budget.scope_findings or FindingLedger(source_commit=commit)
     if ledger.source_commit != commit:
@@ -306,10 +306,15 @@ async def _prepare_author(request: _Request) -> tuple[SourceInspection, list[dic
     evidence.extend(await prepare_mandatory_evidence(author, missing, phase='scope_author'))
     budget.mandatory_inputs_required = len(required_inputs)
     budget.mandatory_inputs_delivered = len(evidence)
-    if budget.scope_phase == 'revision':
+    if budget.scope_phase in {'investigation', 'revision'}:
         completed = {result.binding_id for result in budget.scope_investigation_results}
         pending = [binding for binding in _current_investigations(budget) if binding.id not in completed]
         await investigate_scope_requests(author, pending)
+        investigation_evidence(inspection=author, bindings=_current_investigations(budget),
+                               results=budget.scope_investigation_results)
+        if budget.scope_phase == 'investigation':
+            budget.scope_phase = 'revision'
+            await budget.flush()
     if request.author_cache is not None:
         request.author_cache.capture(author)
     messages = _messages(author, review=False, definition=previous, evidence=evidence)
@@ -415,6 +420,8 @@ async def _discover_scope(request: _Request) -> ScopeContract:
         if (saved.definition.source_commit, saved.definition.inventory_digest) != (commit, inspection.inventory_digest):
             _fail('scope_source_identity')
         await prepare_mandatory_evidence(inspection, saved.all_inputs, phase='scope_resume')
+        investigation_evidence(inspection=inspection, bindings=budget.scope_investigations,
+                               results=budget.scope_investigation_results)
         return saved
     pinned = SourceInspection(_checked_inventory(paths, limits), fetch, limits, budget)
     request = replace(request, author_cache=AuthorEvidenceCache(source_commit=commit,
@@ -441,6 +448,8 @@ async def _discover_scope(request: _Request) -> ScopeContract:
                     definition=definition, ledger=ledger, commit=commit))
             budget.scope_findings = ledger
             if assessment.verdict == 'revise':
+                budget.scope_phase = 'investigation' if _current_investigations(budget) else 'revision'
+                budget.scope_revision_base_digest = definition.digest()
                 try:
                     budget.reserve_repair('coverage')
                 except EnvironmentDiscoveryError as exc:
@@ -457,12 +466,14 @@ async def _discover_scope(request: _Request) -> ScopeContract:
                 budget.scope_phase = 'accepted'
                 await budget.flush()
                 return contract
-            if assessment.verdict == 'revise':
-                budget.scope_phase = 'revision'
-                budget.scope_revision_base_digest = definition.digest()
-            await budget.flush()
             if assessment.verdict != 'revise':
+                if _current_investigations(budget):
+                    budget.scope_phase = 'investigation'
+                    budget.scope_revision_base_digest = definition.digest()
+                budget.error_code = 'scope_review_indeterminate'
+                await budget.flush()
                 _fail('scope_review_indeterminate')
+            await budget.flush()
             author, messages, required_inputs = await _prepare_author(request)
 
 
