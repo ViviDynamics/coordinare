@@ -43,7 +43,11 @@ from coordinare.services.environment_acceptance import (
     immutable_verifier_image,
     saved_execution_accepted,
 )
-from coordinare.services.environment_attempt import DiscoveryChatReply, EnvironmentDiscoveryError
+from coordinare.services.environment_attempt import (
+    REPAIR_LIMITS,
+    DiscoveryChatReply,
+    EnvironmentDiscoveryError,
+)
 from coordinare.services.environment_repair import journal_for, remaining_seconds
 from coordinare.services.environment_runtime import (
     admit_installer_runtime,
@@ -795,9 +799,9 @@ def main() -> int:
     parser.add_argument("--structured-transport", choices=["json_schema", "tool_call", "json_object"], default="json_schema")
     parser.add_argument("--phase-timeout", type=float, default=120)
     parser.add_argument("--attempt-timeout", type=float, default=600)
-    parser.add_argument("--max-schema-repairs", type=int, choices=range(3), default=2)
-    parser.add_argument("--max-coverage-revisions", type=int, choices=range(3), default=2)
-    parser.add_argument("--max-execution-repairs", type=int, choices=range(3), default=2)
+    parser.add_argument("--max-schema-repairs", type=int, choices=range(REPAIR_LIMITS["schema"] + 1), default=2)
+    parser.add_argument("--max-coverage-revisions", type=int, choices=range(REPAIR_LIMITS["coverage"] + 1), default=2)
+    parser.add_argument("--max-execution-repairs", type=int, choices=range(REPAIR_LIMITS["execution"] + 1), default=2)
     parser.add_argument("--max-review-context-bytes", type=int, default=1024 * 1024)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--approval-timeout", type=float, default=600)

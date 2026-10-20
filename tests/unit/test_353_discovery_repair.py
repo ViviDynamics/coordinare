@@ -260,7 +260,7 @@ async def test_backend_metadata_remains_request_local(monkeypatch):
     assert isinstance(await backend.chat_json([{"role": "user", "content": "first"}]), str)
 
 
-@pytest.mark.parametrize("changes", [{"max_schema_repairs": 3}, {"max_schema_repairs": -1}, {"timeout_seconds": 3601}, {"max_calls": 0}])
+@pytest.mark.parametrize("changes", [{"max_schema_repairs": 9}, {"max_schema_repairs": -1}, {"timeout_seconds": 3601}, {"max_calls": 0}])
 def test_invalid_attempt_bounds_cannot_extend_policy(changes):
     with pytest.raises(ValueError):
         AttemptBudget(**changes)
@@ -302,16 +302,26 @@ async def test_invalid_navigation_does_not_spend_schema_repairs(tool):
 
 
 @pytest.mark.asyncio
-async def test_unavailable_snapshot_file_cannot_be_repaired():
+async def test_unavailable_snapshot_file_cannot_establish_scope_evidence():
+    from coordinare.services.environment_discovery import discover_and_review as discover
+    from tests.unit.scope_chat_fixture import ScopeChatFixture
+
     async def unavailable(path):
         return None
 
     replies = Replies([{"tool": "read_file", "path": PATH}])
+    scope_chat = ScopeChatFixture(replies, PATH)
     events = []
-    with pytest.raises(EnvironmentDiscoveryError, match="unavailable"):
-        await discover_and_review(symphony_name="suite", commit=COMMIT, paths=[PATH],
-            fetch=unavailable, chat=replies, capabilities=CAPABILITIES, diagnostics=events.append)
+    with pytest.raises(EnvironmentDiscoveryError) as exc:
+        await discover(symphony_name="suite", commit=COMMIT, paths=[PATH],
+            fetch=unavailable, chat=scope_chat, capabilities=CAPABILITIES, diagnostics=events.append)
+    assert exc.value.code == 'scope_phase_call_limit'
     assert events[-1]["repairs"] == 0
+    assert events[-1]["outcome"] == 'held'
+    assert replies.messages == []  # Unavailable evidence never reaches construction or review.
+    feedback = json.loads(scope_chat.scope_messages[-1][-1]['content'])['tool_result']
+    assert feedback['errors'] == [{'index': 0, 'code': 'source_unavailable'}]
+    assert feedback['files'] == []
 
 
 @pytest.mark.asyncio

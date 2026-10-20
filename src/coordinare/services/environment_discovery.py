@@ -36,7 +36,7 @@ from coordinare.services.environment_admission import (
 )
 from coordinare.services.environment_attempt import (
     MAX_ATTEMPT_SECONDS,
-    MAX_REPAIRS,
+    REPAIR_LIMITS,
     AttemptBudget,
     DiscoveryChatReply,
     EnvironmentDiscoveryError,
@@ -113,10 +113,11 @@ class DiscoveryLimits:
     phase_timeout_seconds: float = 120
 
     def __post_init__(self) -> None:
-        repair_limits = (self.max_schema_repairs, self.max_coverage_revisions, self.max_execution_repairs)
+        repair_limits = {"schema": self.max_schema_repairs, "coverage": self.max_coverage_revisions,
+                         "execution": self.max_execution_repairs}
         if (any(value <= 0 for name, value in self.__dict__.items()
                 if name not in {"max_schema_repairs", "max_coverage_revisions", "max_execution_repairs"})
-                or any(not 0 <= value <= MAX_REPAIRS for value in repair_limits)
+                or any(not 0 <= value <= REPAIR_LIMITS[kind] for kind, value in repair_limits.items())
                 or self.attempt_timeout_seconds > MAX_ATTEMPT_SECONDS or self.max_review_context_bytes > 16 * 1024 * 1024):
             message = "discovery limits must be positive"
             raise ValueError(message)

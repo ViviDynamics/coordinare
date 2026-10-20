@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 MAX_ATTEMPT_SECONDS = 3600
-MAX_REPAIRS = 2
+REPAIR_LIMITS = {"schema": 8, "coverage": 4, "execution": 2}
 MAX_PROBE_BATCHES = 2
 RepairKind = Literal["schema", "coverage", "execution"]
 REPAIR_COUNTERS = {"schema": "schema_repairs", "coverage": "coverage_revisions", "execution": "execution_repairs"}
@@ -87,7 +87,7 @@ class AttemptBudget:
 
     def __post_init__(self) -> None:
         if (not 0 < self.timeout_seconds <= MAX_ATTEMPT_SECONDS or self.max_calls < 1 or self.max_reads < 1
-                or any(not 0 <= getattr(self, "max_" + counter) <= MAX_REPAIRS for counter in REPAIR_COUNTERS.values())):
+                or any(not 0 <= getattr(self, "max_" + counter) <= REPAIR_LIMITS[kind] for kind, counter in REPAIR_COUNTERS.items())):
             message = "environment discovery budget limits are invalid"
             raise ValueError(message)
 
