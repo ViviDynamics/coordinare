@@ -7,8 +7,9 @@ import pytest
 
 
 def test_probe_requests_cover_every_structured_phase_at_maximum_bounds():
-    from coordinare.services.environment_structured_wire import wire_schema
     from scripts.probe_provider_grammar import MAX_CRITERIA, MAX_DECISIONS, probe_requests
+
+    from coordinare.services.environment_structured_wire import wire_schema
 
     requests = probe_requests('model-x')
     assert set(requests) == {'scope', 'scope_revision', 'scope_assessment', 'assessment', 'probe', 'manifest'}
@@ -21,7 +22,10 @@ def test_probe_requests_cover_every_structured_phase_at_maximum_bounds():
     wire = scope['$defs']['SourceDecisionWire']['properties']
     assert len(wire['finding_id']['enum']) == MAX_DECISIONS == 32
     assert len(wire['criterion_ids']['items']['enum']) == MAX_CRITERIA == 128
-    from coordinare.services.environment_response_schema import constrain_source_criteria, response_schema
+    from coordinare.services.environment_response_schema import (
+        constrain_source_criteria,
+        response_schema,
+    )
     expected = constrain_source_criteria(response_schema('scope_assessment', review_decision_ids=[
         f'F{i:04}' for i in range(1, MAX_DECISIONS+1)]), [f'S{i:016x}' for i in range(MAX_CRITERIA)])
     assert scope == wire_schema(expected)
