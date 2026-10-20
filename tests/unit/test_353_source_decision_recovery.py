@@ -26,7 +26,15 @@ from tests.unit.test_353_scope_contract import (
     proposal,
     revision,
 )
-from tests.unit.test_353_source_decision_flow import READ_GUIDE, accept_covered, objection
+from tests.unit.test_353_source_decision_flow import (
+    READ_GUIDE,
+    accept_covered,
+    assess,
+    covered,
+    gap_finding,
+    ids,
+    objection,
+)
 
 CLOSE = [READ_GUIDE, proposal(criterion()), objection(), revision(), accept_covered('F0001')]
 
@@ -35,7 +43,15 @@ class Interrupted(BaseException):
     pass
 
 
-async def saved_flow(tmp_path, values, *, stop_phase=None):
+SECOND = [*CLOSE[:4], lambda messages: assess('revise', findings=[gap_finding(issue='Second source omission')],
+                                              decisions=[covered('F0001', ids(messages))])]
+
+
+def second_review(budget):
+    return budget.scope_findings is not None and len(budget.scope_findings.reviews) == 2
+
+
+async def saved_flow(tmp_path, values, *, stop_phase=None, stop_when=None):
     """Run discovery with a real journal, keeping a copy of every published checkpoint."""
     from coordinare.services.environment_scope import discover_scope
 
@@ -46,7 +62,7 @@ async def saved_flow(tmp_path, values, *, stop_phase=None):
     async def checkpoint():
         save_attempt(cache, budget)
         snapshots.append(copy.deepcopy(cache.environment_attempt))
-        if stop_phase is not None and budget.scope_phase == stop_phase:
+        if stop_phase is not None and budget.scope_phase == stop_phase and (stop_when is None or stop_when(budget)):
             raise Interrupted
     budget.checkpoint = checkpoint
     async def fetch(path):
@@ -78,18 +94,28 @@ async def test_roundtrip_preserves_assessment_and_spent_counters(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('corrupt', ['scope_digest', 'reviewer_input', 'source_commit', 'disposition'])
+@pytest.mark.parametrize('corrupt', ['scope_digest', 'reviewer_input', 'source_commit', 'finding', 'disposition',
+                                     'foreign_criterion', 'inventory'])
 async def test_recovery_rejects_changed_bindings(tmp_path, corrupt):
-    cache, _, _ = await saved_flow(tmp_path, CLOSE[:3], stop_phase='revision')
+    cache, _, _ = await saved_flow(tmp_path, SECOND, stop_phase='revision', stop_when=second_review)
     record = cache.environment_attempt['scope_assessment']
+    assert record['review_sequence'] == 2 and journal_for(cache).scope_phase == 'revision'
+    decision = record['assessment']['decisions'][0]
     if corrupt == 'scope_digest':
         record['scope_digest'] = 'e'*64
     elif corrupt == 'reviewer_input':
         record['reviewer_inputs']['guide'] = 'f'*64
     elif corrupt == 'source_commit':
         record['source_commit'] = 'b'*40
-    else:
+    elif corrupt == 'finding':
         record['assessment']['findings'][0]['issue'] = 'A different objection'
+    elif corrupt == 'disposition':
+        record['assessment']['decisions'][0] = {key: decision[key] for key in ('finding_id', 'rationale', 'sources')} | {
+            'disposition': 'source_gap', 'gap_kind': 'unread_source', 'affected_ids': [], 'inspection_requests': []}
+    elif corrupt == 'foreign_criterion':
+        decision['criterion_ids'] = ['S' + '9'*16]
+    else:
+        record['inventory_digest'] = 'e'*64
     assert refused(cache) in {'scope_protocol_invalid', 'scope_source_identity'}
 
 
@@ -164,6 +190,32 @@ async def test_restart_archives_v8_unchanged(tmp_path):
     restart_environment_attempt(cache, cleanup_confirmed=True)
     assert cache.environment_attempt_archive[-1] == data
     assert cache.environment_attempt is None and cache.cache_dir != old_dir
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', ['discovering', 'held', 'ready'])
+async def test_restart_archives_legacy_journal_with_v1_bound_manifest(tmp_path, status):
+    cache, _, _ = await saved_flow(tmp_path, CLOSE)
+    manifest = copy.deepcopy(cache_fixture(tmp_path/'other').environment_manifest)
+    manifest['scope_contract']['schema_version'] = 1
+    manifest['scope_contract'].pop('source_assessment')
+    data = legacy(cache.environment_attempt)
+    data.update(coverage_manifest=manifest, status=status)
+    cache.environment_attempt = copy.deepcopy(data)
+    assert refused(cache) == 'legacy_attempt_requires_restart'
+    restart_environment_attempt(cache, cleanup_confirmed=True)
+    assert cache.environment_attempt_archive[-1] == data and cache.environment_attempt is None
+
+
+@pytest.mark.asyncio
+async def test_contract_rejects_assessment_citing_foreign_criterion(tmp_path):
+    from coordinare_service_inference.environment.scope import ScopeContract
+    _, budget, _ = await saved_flow(tmp_path, CLOSE)
+    contract = budget.scope_contract.model_dump(mode='json')
+    ScopeContract.model_validate(contract)
+    contract['source_assessment']['assessment']['decisions'][0]['criterion_ids'] = ['S' + '9'*16]
+    with pytest.raises(ValidationError):
+        ScopeContract.model_validate(contract)
 
 
 def test_legacy_v1_contract_manifest_is_not_ready(tmp_path):

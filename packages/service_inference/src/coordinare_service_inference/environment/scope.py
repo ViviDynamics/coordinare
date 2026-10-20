@@ -206,8 +206,28 @@ class SourceAssessmentRecord(FindingEvidence):
     assessment: ScopeAssessmentProposal
 
 
-def validate_source_assessment(record: SourceAssessmentRecord, *, ledger: FindingLedger) -> None:
-    """Require the saved typed assessment to reproduce its ledger review exactly."""
+def _criterion_references(assessment: ScopeAssessmentProposal) -> set[str]:
+    named = {identifier for finding in assessment.findings for identifier in finding.affected_ids}
+    for decision in assessment.decisions:
+        if isinstance(decision, CoveredDecision):
+            named.update(decision.criterion_ids)
+        elif isinstance(decision, SourceGapDecision):
+            named.update(decision.affected_ids)
+    return named
+
+
+def validate_source_assessment(record: SourceAssessmentRecord, *, ledger: FindingLedger,
+                               definition: ScopeDefinition | None = None) -> None:
+    """Require the saved typed assessment to reproduce its ledger review exactly.
+
+    When the reviewed definition is available, the typed criterion references and
+    pinned identity must also belong to it, so recovery repeats admission checks.
+    """
+    if definition is not None and (
+            (record.scope_digest, record.source_commit, record.inventory_digest)
+                != (definition.digest(), definition.source_commit, definition.inventory_digest)
+            or not _criterion_references(record.assessment) <= {c.id for c in definition.criteria}):
+        raise PydanticCustomError('source_assessment_binding', 'source assessment differs from its reviewed definition')
     reviews = ledger.reviews
     review = reviews[record.review_sequence-1] if record.review_sequence <= len(reviews) else None
     assessment = record.assessment
@@ -269,11 +289,9 @@ class ScopeContract(FindingEvidence):
             return
         if (record is None or record.review_sequence != len(self.finding_ledger.reviews)
                 or record.assessment.verdict != 'accept' or record.assessment.sources != self.sources
-                or (record.scope_digest, record.source_commit, record.inventory_digest)
-                    != (definition.digest(), definition.source_commit, definition.inventory_digest)
                 or record.reviewer_inputs != self.review_inputs):
             raise ValueError('scope contract requires its accepting typed source assessment')
-        validate_source_assessment(record, ledger=self.finding_ledger)
+        validate_source_assessment(record, ledger=self.finding_ledger, definition=definition)
 
     def digest(self) -> str:
         return hashlib.sha256(canonical(self.model_dump(mode='json'))).hexdigest()

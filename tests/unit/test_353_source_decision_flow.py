@@ -109,6 +109,19 @@ async def test_old_status_decision_rejected_with_disposition_guidance():
 
 
 @pytest.mark.asyncio
+async def test_disposition_with_stray_status_gets_disposition_guidance():
+    from coordinare.services.environment_admission import SOURCE_DISPOSITION_GUIDANCE
+    stray = lambda messages: assess(decisions=[{**covered('F0001', ids(messages)), 'status': 'resolved'}])  # noqa: E731
+    replies = Replies([READ_GUIDE, proposal(criterion()), objection(), revision(), stray, accept_covered('F0001')])
+    budget = AttemptBudget()
+    await run(replies, budget=budget)
+    assert budget.schema_repairs == 1
+    errors = feedback(replies)
+    assert any(error['code'] == 'extra_forbidden' and error.get('guidance') == SOURCE_DISPOSITION_GUIDANCE
+               for error in errors)
+
+
+@pytest.mark.asyncio
 async def test_stale_criterion_id_rejected_with_current_ids():
     stale = assess(decisions=[covered('F0001', [UNKNOWN_ID])])
     replies = Replies([READ_GUIDE, proposal(criterion()), objection(), revision(), stale, accept_covered('F0001')])

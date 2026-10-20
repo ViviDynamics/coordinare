@@ -193,8 +193,14 @@ def _validate_source_assessment(journal: RepairJournal) -> None:
         _refuse('source assessment differs from its review history', code='scope_protocol_invalid')
     if record is None or findings is None:
         return
+    definition = journal.scope_definition
+    # Only a pending review of a newly revised definition follows an assessment of its predecessor.
+    assessed = definition if definition is not None and record.scope_digest == definition.digest() else None
+    if assessed is None and (journal.scope_phase != 'review' or definition is None
+                             or record.inventory_digest != definition.inventory_digest):
+        _refuse('source assessment differs from its reviewed definition', code='scope_protocol_invalid')
     try:
-        validate_source_assessment(record, ledger=findings)
+        validate_source_assessment(record, ledger=findings, definition=assessed)
     except ValueError:
         _refuse('source assessment differs from its review history', code='scope_protocol_invalid')
     if (record.review_sequence != len(findings.reviews) or record.source_commit != journal.source_commit
@@ -294,6 +300,9 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
             _refuse('unknown legacy scope protocol requires reconciliation')
         # Validation for explicit archival only; the original data is retained.
         normalized['scope_author_protocol'] = 4
+        # A legacy executable candidate is bound to a contract the current policy refuses;
+        # it is archived unchanged and never revalidated as current evidence.
+        normalized['coverage_manifest'] = None
     normalized['version'] = CURRENT_JOURNAL_VERSION
     normalized.setdefault('scope_author_protocol', 4)
     normalized.setdefault("finding_ledger", None)
