@@ -76,3 +76,49 @@ async def test_all_stale_response_locations_are_reported_without_committing_revi
     assert all(c.applicability == 'required' for c in scope.definition.criteria)
     assert scope.finding_ledger.open_ids() == []
     assert budget.schema_repairs == 1 and budget.coverage_revisions == 1
+
+
+@pytest.mark.asyncio
+async def test_reviewer_can_investigate_then_request_source_revision():
+    finding = {'category': 'coverage', 'issue': 'Nested operational obligation omitted',
+               'sources': ['odd/nest'], 'affected_ids': []}
+
+    def investigate(messages):
+        context = json.loads(messages[1]['content'])
+        assert context['review_resolution'] == {
+            'unread_available_source': 'inspect', 'actionable_findings': 'revise',
+            'unable_to_judge': 'indeterminate',
+        }
+        return {'tool': 'read_file', 'path': 'odd/nest'}
+
+    replies = Replies([
+        {'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), investigate,
+        review('revise', findings=[finding], sources=['guide', 'odd/nest']),
+        revision(criterion('odd/nest', usability='Nested service persists a request'), sources=['odd/nest']),
+        review(decisions=[{'finding_id': 'F0001', 'status': 'resolved',
+                           'rationale': 'Nested operation now required', 'sources': ['odd/nest'],
+                           'duplicate_of': None}], sources=['guide', 'odd/nest']),
+    ])
+    budget = AttemptBudget()
+    scope = await run(replies, budget=budget)
+    assert len(scope.definition.criteria) == 2
+    assert scope.finding_ledger.open_ids() == []
+    assert budget.coverage_revisions == 1 and budget.schema_repairs == 0
+
+
+@pytest.mark.asyncio
+async def test_actual_indeterminate_remains_terminal_with_unused_revision_budget():
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+
+    finding = {'category': 'coverage', 'issue': 'Cannot establish coverage from available evidence',
+               'sources': ['guide'], 'affected_ids': []}
+    budget = AttemptBudget()
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()),
+                       review('indeterminate', findings=[finding])])
+    with pytest.raises(EnvironmentDiscoveryError) as failure:
+        await run(replies, budget=budget)
+    assert failure.value.code == 'scope_review_indeterminate'
+    assert budget.coverage_revisions == 0
+    assert budget.calls == 3
+    assert budget.scope_contract is None
+    assert budget.scope_findings.open_ids() == ['F0001']

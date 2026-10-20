@@ -160,6 +160,9 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
     instructions = (
         'Independently review source-defined scope, not an executable candidate. You have no author conversation. '
         'Follow development/test entry points and nested references; independently check omissions and conflicts. '
+        'Mandatory evidence is a starting set, not a restriction on source inspection. '
+        'Use source tools for concrete unread references when more evidence is needed to assess coverage. '
+        'Do not end the review merely because a relevant available file has not yet been read. '
         'Supply exactly one decision for every required_decision_ids entry with cited evidence; '
         'Reassess previously resolved findings against the current scope too. '
         'When required_decision_ids is empty, decisions MUST be []; the daemon assigns IDs to new findings only after this review. '
@@ -169,7 +172,10 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
         'The original still needs its own independent decision and remains blocking while open. '
         'If a new blocking objection cannot fit the findings capacity, return indeterminate; never omit it to accept. '
         'accept requires no open or new findings; '
-        'revise requires a blocking finding. Unknown applicability or conflicting evidence must hold. '
+        'Return revise for specific source-backed omissions, conflicts or corrections the author must address. '
+        'revise is a blocking judgment, not acceptance. Unknown applicability or conflicting evidence prevents acceptance. '
+        'Return indeterminate when you genuinely cannot establish an actionable assessment or safely continue; explain the limitation. '
+        'An indeterminate verdict terminates this attempt; it is never automatically converted to revise or accept. '
         'An excluded activity needs source-backed applicability, never an image limitation or candidate disclaimer. '
         'Return scope_assessment with verdict, rationale, sources, findings, decisions. '
         if review else
@@ -221,7 +227,9 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
                 'scope_base_digest': definition.digest() if definition else None,
                 'scope_definition': definition.model_dump(mode='json') if definition else None,
                 'mandatory_evidence': evidence, 'finding_ledger': ledger.model_dump(mode='json'),
-                **({'required_decision_ids': [record.id for record in ledger.records]} if review else {}),
+                **({'required_decision_ids': [record.id for record in ledger.records],
+                    'review_resolution': {'unread_available_source': 'inspect',
+                        'actionable_findings': 'revise', 'unable_to_judge': 'indeterminate'}} if review else {}),
                 'finding_responses': responses or []}).decode()}]
 
 
