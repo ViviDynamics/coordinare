@@ -111,3 +111,24 @@ Spec acceptance scenarios 1–3 map to Task 2; scenario 4 to Task 3; scenario 5 
 Self-review follow-up: made request lists mandatory on the new wire protocol, identified explicit source-only fixture updates, and distinguished originating review identity from legitimate later scope changes.
 
 Native implementation is the preserved execution method. The maintainer approved this plan and its native execution. Execute Tasks 1–5 in order with TDD and independent final review; remain on the existing isolated feature branch.
+
+
+## Follow-up after the completed fixed-budget comparison
+
+The two fresh comparisons on `3d528600` and `36c95ff9` retained all Global
+Constraints above and held; neither establishes acceptance. The latter exhausted
+512 reads after four independent source reviews and retained more mandatory
+inputs than the remaining construction/read allowance could fit. Record that
+result permanently. Under the maintainer's existing authorization to increase
+insufficient validation limits, expose the already configurable aggregate-read
+setting in the harness without changing defaults, and label the next fresh
+experiment with 2,048 reads. Retain 3,600 seconds, original repair caps, per-phase
+limits, full reviewer freshness and every required runtime check. This is an
+explicit comparison-profile change; no old attempt or counter is renewed.
+
+Also complete actionable citation feedback for initial and revised criteria,
+which the latest transcript showed still used first-error-only diagnostics.
+Aggregate exact invalid indices and inspection guidance without echoing rejected
+source values, and keep bounded feedback, atomic rejection and the proposed
+revision. Verify with RED/GREEN regressions, independent review, preflight and CI
+before the next fresh experiment. Task5 remains incomplete until actual acceptance.

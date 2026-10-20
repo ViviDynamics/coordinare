@@ -356,3 +356,12 @@ Interrupted execution remains held across source changes and restarts.
 Current diagnostics record the actual stage, category consumed/max counts, mandatory
 inputs delivered/required, context bytes and remaining aggregate time. Raw source and
 model rationale are excluded from these summaries.
+
+
+The opt-in repository validation CLI accepts `--max-total-reads` using the existing
+`manifest_max_total_reads` product bounds (1–8,192; default 512). Its profile records
+the selected allowance, and every actual fetch still spends that attempt's finite
+read budget. A larger allowance requires a fresh labelled profile; it does not
+resume a held attempt, reset repair counters, replace independent evidence fetches,
+or waive any required execution check. Compare results with the changed allowance
+identified explicitly.

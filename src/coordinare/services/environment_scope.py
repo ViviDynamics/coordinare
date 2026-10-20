@@ -71,12 +71,26 @@ def _citation_error(*location: str) -> NoReturn:
 
 
 class _ResponseReferenceError(FindingValidationError):
-    """All invalid response references in one atomic rejected proposal."""
+    """Complete bounded citation/reference diagnostics for one rejected proposal."""
 
     def __init__(self, errors: list[dict[str, Any]]) -> None:
-        super().__init__(errors[0]['guidance'], code='scope_response_ids_invalid',
+        super().__init__(errors[0]['guidance'], code=errors[0]['code'],
                          location=tuple(errors[0]['location']))
         self.errors = errors
+
+
+def _criterion_citation_errors(sources: Sequence[str], inputs: dict[str, str],
+                               location: tuple[str, ...]) -> list[dict[str, Any]]:
+    # Criterion proposals already bound sources to 32; group rather than repeat guidance.
+    invalid = [str(index) for index, path in enumerate(sources) if path not in inputs]
+    if not invalid:
+        return []
+    return [{'code': 'scope_citations_invalid', 'location': [*location, invalid[0]],
+        'invalid_source_indices': invalid,
+        'guidance': 'Use read_file or read_files to inspect the referenced file contents before citing them. '
+                    'A directory listing is navigation evidence, not inspected content. '
+                    'All listed source indices are invalid; preserve proposed criteria/revision operations '
+                    'while inspecting the files or correcting unsupported citations.'}]
 
 
 def preserve_scope(previous: ScopeDefinition, current: ScopeDefinition) -> None:
@@ -129,7 +143,7 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                     errors = exc.errors
                 except FindingValidationError as exc:
                     errors = [{'location': list(exc.location), 'code': exc.code}]
-                    if exc.code == 'scope_response_ids_invalid' or exc.location[:1] in {('decisions',), ('findings',)}:
+                    if exc.code in {'scope_response_ids_invalid', 'scope_citations_invalid'} or exc.location[:1] in {('decisions',), ('findings',)}:
                         errors[0]['guidance'] = str(exc)
                 except EnvironmentDiscoveryError as exc:
                     if exc.code not in {'invalid_json_envelope', 'duplicate_json_key', 'unsupported_envelope',
@@ -331,10 +345,12 @@ def _validate_author(data: dict[str, Any], *, author: SourceInspection, commit: 
     if ledger is None:
         _fail("scope_source_identity")
     envelope = ScopeEnvelope.model_validate(data)
+    errors = []
     for criterion_index, criterion in enumerate(envelope.scope.criteria):
-        for source_index, path in enumerate(criterion.sources):
-            if path not in author.inputs:
-                _citation_error('scope', 'criteria', str(criterion_index), 'sources', str(source_index))
+        errors.extend(_criterion_citation_errors(criterion.sources, author.inputs,
+            ('scope', 'criteria', str(criterion_index), 'sources')))
+    if errors:
+        raise _ResponseReferenceError(errors)
     definition = ScopeDefinition(source_commit=commit, inventory_digest=author.inventory_digest, inputs=dict(author.inputs),
         criteria=[ScopeCriterion(**c.model_dump(), id=criterion_id(c)) for c in envelope.scope.criteria])
     if budget.scope_definition is not None:
@@ -393,15 +409,16 @@ def _validate_revision(data: dict[str, Any], *, author: SourceInspection, commit
     if base is None or ledger is None or base.source_commit != commit or base.inventory_digest != author.inventory_digest:
         _fail('scope_source_identity')
     envelope = ScopeRevisionEnvelope.model_validate(data)
+    errors = []
     for operation, changes in (('add', envelope.scope_revision.add), ('reassess', envelope.scope_revision.reassess)):
         for index, change in enumerate(changes):
             criterion = change.criterion if operation == 'reassess' else change
-            for source_index, path in enumerate(criterion.sources):
-                if path not in author.inputs:
-                    location = ['scope_revision', operation, str(index)]
-                    if operation == 'reassess':
-                        location.append('criterion')
-                    _citation_error(*location, 'sources', str(source_index))
+            location = ['scope_revision', operation, str(index)]
+            if operation == 'reassess':
+                location.append('criterion')
+            errors.extend(_criterion_citation_errors(criterion.sources, author.inputs, (*location, 'sources')))
+    if errors:
+        raise _ResponseReferenceError(errors)
     definition = apply_scope_revision(base, envelope.scope_revision, inspected_inputs=dict(author.inputs))
     preserve_scope(base, definition)
     try:
