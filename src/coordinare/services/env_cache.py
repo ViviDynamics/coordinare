@@ -1109,6 +1109,13 @@ class _Completion:
 MAX_CONSECUTIVE_STAT_REFUSALS = 3
 
 
+def _timeout_label(attempt_expired: bool, stage: str) -> tuple[str, str]:
+    """Only the attempt's own timer is its deadline; an inner bounded step that timed out is distinct."""
+    if attempt_expired:
+        return "attempt_deadline", "environment discovery budget deadline exceeded"
+    return "step_timeout", f"environment {stage} step exceeded its own time limit"
+
+
 class EnvCacheService:
     """Manages per-symphony env-cache bootstrapping and SHA change detection."""
 
@@ -2504,8 +2511,9 @@ class EnvCacheService:
 
         source_temporary = tempfile.TemporaryDirectory(prefix='coordinare-discovery-source-')
         reserve_execution_source(cache_state, source_temporary.name)
+        attempt_timer = asyncio.timeout_at(budget.deadline)
         try:
-            async with asyncio.timeout_at(budget.deadline):
+            async with attempt_timer:
                 budget.stage = "capabilities"
                 if capabilities is None:
                     from coordinare.services.environment_capabilities import (
@@ -2551,9 +2559,8 @@ class EnvCacheService:
                     execution_source_digest=source_bundle.identity.digest(),
                 )
         except TimeoutError:
-            budget.error_code = "attempt_deadline"
-            message = "environment discovery budget deadline exceeded"
-            raise EnvironmentDiscoveryError(message, code="attempt_deadline") from None
+            budget.error_code, message = _timeout_label(attempt_timer.expired(), budget.stage)
+            raise EnvironmentDiscoveryError(message, code=budget.error_code) from None
         except EnvironmentDiscoveryError as exc:
             budget.error_code = exc.code
             raise
