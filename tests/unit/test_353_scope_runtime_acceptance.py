@@ -280,16 +280,17 @@ def test_covered_scope_still_requires_every_passing_check(tmp_path, outcome):
     assert manifest.scope_contract.source_assessment.assessment.decisions[0].disposition == 'covered'
     cache.environment_manifest, cache.environment_assessment = manifest.model_dump(), review
     report = json.loads(verification_output(cache.environment_manifest))
-    if outcome == 'pass':
-        assert execution_report(json.dumps(report), cache).passed
-        return
     if outcome == 'failed_check':
         report['results'][0].update(status='fail', exit_code=1)
-        assert not execution_report(json.dumps(report), cache).passed
     elif outcome == 'missing_check':
         report['results'] = report['results'][1:]
+    elif outcome == 'unrun_lifecycle':
+        next(result for result in report['results'] if result['id'] == 'health').update(status='not_run', exit_code=None)
+    if outcome == 'missing_check':
         with pytest.raises(ValueError):
             execution_report(json.dumps(report), cache)
     else:
-        next(result for result in report['results'] if result['id'] == 'health').update(status='not_run', exit_code=None)
-        assert not execution_report(json.dumps(report), cache).passed
+        assert execution_report(json.dumps(report), cache).passed is (outcome == 'pass')
+    cache.environment_verification = {**report, 'image_ref': cache.environment_capabilities['image_ref']}
+    assert accepted_environment(cache) is not None
+    assert saved_execution_accepted(cache) is (outcome == 'pass')
