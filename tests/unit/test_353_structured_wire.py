@@ -177,8 +177,8 @@ def test_scope_ledger_decision_constraints_survive_strict_wire_encoding(identifi
     from coordinare.services.environment_structured_wire import decode_wire, wire_schema
 
     schema = response_schema('scope_assessment', review_decision_ids=identifiers)
-    decision = {'finding_id': 'F0001', 'status': 'resolved', 'rationale': 'Inspected source resolves the finding',
-                'sources': ['fixture'], 'duplicate_of': None, 'inspection_requests': []}
+    decision = {'finding_id': 'F0001', 'disposition': 'source_correction', 'rationale': 'Inspected source resolves the finding',
+                'sources': ['fixture']}
     assessment = {'verdict': 'accept', 'rationale': 'Source evidence covers the scope',
                   'sources': ['fixture'], 'findings': [], 'decisions': [decision] if identifiers else []}
     payload = {'response': {'scope_assessment': assessment}}
@@ -198,7 +198,8 @@ def test_nonempty_scope_inspection_request_survives_strict_transport(inspection)
 
     assessment = {'verdict': 'revise', 'rationale': 'Inspect nested source', 'sources': ['fixture'],
         'findings': [{'category': 'coverage', 'issue': 'Nested obligation needs inspection',
-            'sources': ['fixture'], 'affected_ids': [], 'inspection_requests': [inspection]}], 'decisions': []}
+            'sources': ['fixture'], 'affected_ids': [], 'gap_kind': 'unread_source',
+            'inspection_requests': [inspection]}], 'decisions': []}
     schema = response_schema('scope_assessment', review_decision_ids=[])
     encoded = {'response': {'scope_assessment': assessment}}
     assert json.loads(decode_wire(json.dumps(encoded), schema)) == {'scope_assessment': assessment}

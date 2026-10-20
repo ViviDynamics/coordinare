@@ -12,7 +12,11 @@ if TYPE_CHECKING:
 
     from coordinare_service_inference.environment.findings import FindingLedger
     from coordinare_service_inference.environment.models import EnvironmentManifest
-    from coordinare_service_inference.environment.scope import ScopeContract, ScopeDefinition
+    from coordinare_service_inference.environment.scope import (
+        ScopeContract,
+        ScopeDefinition,
+        SourceAssessmentRecord,
+    )
     from coordinare_service_inference.environment.scope_investigation import (
         ScopeInspectionBinding,
         ScopeInspectionResult,
@@ -86,6 +90,7 @@ class AttemptBudget:
     scope_definition: ScopeDefinition | None = field(default=None, repr=False)
     scope_contract: ScopeContract | None = field(default=None, repr=False)
     scope_findings: FindingLedger | None = field(default=None, repr=False)
+    scope_assessment: SourceAssessmentRecord | None = field(default=None, repr=False)
     coverage_manifest: EnvironmentManifest | None = field(default=None, repr=False)
     executed_manifests: list[EnvironmentManifest] = field(default_factory=list, repr=False)
     execution_review_evidence: list[dict[str, Any]] = field(default_factory=list, repr=False)

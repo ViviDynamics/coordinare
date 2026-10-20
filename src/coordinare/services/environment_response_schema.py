@@ -43,11 +43,38 @@ class ProbeRepairSchema:
     inspected_sources: Sequence[str]
 
 
+_SOURCE_DECISIONS = ('CoveredDecision', 'SourceCorrectionDecision', 'SourceGapDecision', 'DuplicateDecision')
+
+
+def _source_review_constraints(definitions: dict[str, Any], identifiers: Sequence[str] | None) -> None:
+    """Expose the disposition union as plain anyOf branches; strict providers reject discriminator keywords."""
+    decisions = definitions['ScopeAssessmentProposal']['properties']['decisions']
+    decisions['items'] = {'anyOf': [{'$ref': f'#/$defs/{name}'} for name in _SOURCE_DECISIONS]}
+    if identifiers is not None:
+        decisions.update(minItems=len(identifiers), maxItems=len(identifiers))
+        definitions['ScopeAssessmentProposal']['properties']['findings']['maxItems'] = MAX_FINDINGS-len(identifiers)
+        if identifiers:
+            for name in _SOURCE_DECISIONS:
+                definitions[name]['properties']['finding_id']['enum'] = list(identifiers)
+            definitions['DuplicateDecision']['properties']['duplicate_of']['enum'] = list(identifiers)
+
+
+def constrain_source_criteria(schema: dict[str, Any], criterion_ids: Sequence[str]) -> dict[str, Any]:
+    """Limit source review criterion references to the reviewed definition; local validation stays authoritative."""
+    definitions = schema['$defs']
+    for name, field in (('CoveredDecision', 'criterion_ids'), ('SourceGapDecision', 'affected_ids'),
+                        ('ScopeFindingProposal', 'affected_ids')):
+        definitions[name]['properties'][field]['items'] = {'type': 'string', 'enum': list(criterion_ids)}
+    return schema
+
+
 def _review_constraints(declaration: dict[str, Any], phase: str, identifiers: Sequence[str] | None) -> None:
     definitions = declaration['$defs']
-    assessment = definitions['ScopeAssessmentProposal' if phase == 'scope_assessment' else 'CoverageAssessmentProposal']
-    decision_name = 'ScopeFindingDecisionProposal' if phase == 'scope_assessment' else 'FindingDecisionProposal'
-    decision = definitions[decision_name]
+    if phase == 'scope_assessment':
+        _source_review_constraints(definitions, identifiers)
+        return
+    assessment = definitions['CoverageAssessmentProposal']
+    decision = definitions['FindingDecisionProposal']
     if identifiers is not None:
         assessment['properties']['decisions'].update(minItems=len(identifiers), maxItems=len(identifiers))
         assessment['properties']['findings']['maxItems'] = MAX_FINDINGS-len(identifiers)
@@ -61,7 +88,7 @@ def _review_constraints(declaration: dict[str, Any], phase: str, identifiers: Se
     open_decision['properties']['status'] = {'const': 'open', 'type': 'string'}
     open_decision['properties']['duplicate_of'] = {'type': 'null'}
     resolved_decision['properties']['status'] = {'const': 'resolved', 'type': 'string'}
-    definitions[decision_name] = {'anyOf': [open_decision, resolved_decision]}
+    definitions['FindingDecisionProposal'] = {'anyOf': [open_decision, resolved_decision]}
 
 
 def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: ScopeContract | None = None,

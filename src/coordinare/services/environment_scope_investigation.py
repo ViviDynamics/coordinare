@@ -6,7 +6,7 @@ import hashlib
 import time
 from typing import TYPE_CHECKING, Any, NoReturn
 
-from coordinare_service_inference.environment.scope import canonical
+from coordinare_service_inference.environment.scope import SourceGapDecision, canonical
 from coordinare_service_inference.environment.scope_investigation import (
     ScopeInspectionBinding,
     ScopeInspectionQueue,
@@ -38,7 +38,8 @@ def bind_scope_requests(*, assessment: ScopeAssessmentProposal, ledger: FindingL
         message = 'inspection review identity differs'
         raise EnvironmentDiscoveryError(message, code='scope_investigation_identity')
     requests = [(fid, finding.inspection_requests) for fid, finding in zip(latest.added_ids, assessment.findings, strict=True)]
-    requests.extend((decision.finding_id, decision.inspection_requests) for decision in assessment.decisions)
+    requests.extend((decision.finding_id, decision.inspection_requests) for decision in assessment.decisions
+                    if isinstance(decision, SourceGapDecision))
     bindings = [*retained]
     for fid, proposed in requests:
         bindings.extend(ScopeInspectionBinding.bind(finding_id=fid, review_sequence=latest.sequence,

@@ -122,21 +122,6 @@ class ScopeFindingProposal(FindingProposal):
         return unique_requests(value)
 
 
-class ScopeFindingDecisionProposal(FindingDecisionProposal):
-    inspection_requests: list[ScopeInspectionRequest] = Field(max_length=8)
-
-    @field_validator('inspection_requests')
-    @classmethod
-    def distinct_requests(cls, value: list[ScopeInspectionRequest]) -> list[ScopeInspectionRequest]:
-        return unique_requests(value)
-
-    @model_validator(mode='after')
-    def no_resolved_requests(self) -> Self:
-        if self.status == 'resolved' and self.inspection_requests:
-            raise ValueError('resolved finding cannot require investigation')
-        return self
-
-
 class _SourceDecision(FindingEvidence):
     finding_id: FindingId
     rationale: str

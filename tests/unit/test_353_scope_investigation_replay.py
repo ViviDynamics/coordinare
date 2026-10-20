@@ -37,7 +37,7 @@ def test_replay_keeps_explicit_requests_separate_from_read_citations(tmp_path):
 
     reply = {'scope_assessment': {'verdict': 'revise', 'rationale': 'Inspect nested source', 'sources': ['guide'],
         'findings': [{'category': 'coverage', 'issue': 'Nested source needed', 'sources': ['guide'], 'affected_ids': [],
-            'inspection_requests': [{'operation': 'read_file', 'path': 'unfamiliar/nested'}]}], 'decisions': []}}
+            'gap_kind': 'unread_source', 'inspection_requests': [{'operation': 'read_file', 'path': 'unfamiliar/nested'}]}], 'decisions': []}}
     (tmp_path/'chat-001.json').write_text(json.dumps({'response': json.dumps(reply)}))
     result = replay(tmp_path)
     assert result['structured_inspection_requests'] == [{'operation': 'read_file', 'path': 'unfamiliar/nested'}]

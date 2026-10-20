@@ -19,10 +19,12 @@ def current_manifest_fixture(data: dict) -> EnvironmentManifest:
     """
     from coordinare_service_inference.environment.findings import FindingLedger, FindingReview
     from coordinare_service_inference.environment.scope import (
+        ScopeAssessmentProposal,
         ScopeContract,
         ScopeCriterion,
         ScopeCriterionProposal,
         ScopeDefinition,
+        SourceAssessmentRecord,
         criterion_id,
     )
 
@@ -31,10 +33,14 @@ def current_manifest_fixture(data: dict) -> EnvironmentManifest:
         usability='Exercise the fixture source constraints through required consumer checks', runtime_needs=[])
     definition = ScopeDefinition(source_commit=data['source_commit'], inventory_digest=data['inventory_digest'],
         inputs=data['inputs'], criteria=[ScopeCriterion(id=criterion_id(criterion), **criterion.model_dump())])
+    accepted = ScopeAssessmentProposal(verdict='accept', rationale='Synthetic fixture source review',
+        sources=sorted(data['inputs']), findings=[], decisions=[])
     scope = ScopeContract(definition=definition, review_inputs=dict(data['inputs']), sources=sorted(data['inputs']),
         finding_ledger=FindingLedger(source_commit=data['source_commit'], reviews=[FindingReview(sequence=1,
             manifest_digest=definition.digest(), inputs=dict(data['inputs']), decisions=[], added_ids=[])]),
-        finding_responses=[])
+        finding_responses=[], source_assessment=SourceAssessmentRecord(review_sequence=1,
+            scope_digest=definition.digest(), source_commit=data['source_commit'],
+            inventory_digest=data['inventory_digest'], reviewer_inputs=dict(data['inputs']), assessment=accepted))
     checks = [item['id'] for item in data['checks'] if item.get('required', True) and not item.get('scope')]
     return EnvironmentManifest.model_validate({**data, 'schema_version': 3, 'policy_version': '353-scope-v1',
         'scope_contract': scope.model_dump(mode='json'), 'scope_contract_digest': scope.digest(),

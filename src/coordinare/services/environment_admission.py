@@ -62,6 +62,12 @@ def _decode_reply(raw: str, name: str, limits: DiscoveryLimits) -> dict[str, Any
     return reply
 
 
+SOURCE_DISPOSITION_GUIDANCE = (
+    'Each source review decision needs exactly one disposition: covered, source_correction, source_gap or duplicate, '
+    'with that disposition\'s required fields. Do not supply a status field; the daemon derives it. '
+    'Preserve every other decision while correcting this one.')
+
+
 def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
     """Do not expose arbitrary keys, candidate values, validator context or prose."""
     allowed_fields = {"requirements", "checks", "install", "services", "activation", "id", "source", "description",
@@ -70,7 +76,9 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
                       "source_commit", "symphony_name", "sources", "verdict", "rationale", "capabilities_digest", "inventory_digest",
                       "commands", "citations", "questions", "probe", "manifest", "assessment", "findings", "decisions",
                       "finding_responses", "finding_id", "issue", "category", "affected_ids", "duplicate_of", "status",
-                      "capability_unavailable", "criteria", "applicability", "usability", "runtime_needs", "scope_assessment", "criterion_checks", "runtime_endpoints", "scope_revision", "base_digest", "add", "reassess", "criterion_id", "criterion"}
+                      "capability_unavailable", "criteria", "applicability", "usability", "runtime_needs", "scope_assessment", "criterion_checks", "runtime_endpoints", "scope_revision", "base_digest", "add", "reassess", "criterion_id", "criterion",
+                      "disposition", "criterion_ids", "gap_kind", "inspection_requests", "covered", "source_correction",
+                      "source_gap", "duplicate"}
     result = []
     for error in exc.errors(include_url=False, include_input=False, include_context=False)[:16]:
         location = [part if (isinstance(part, str) and part in allowed_fields) or type(part) is int else "*"
@@ -82,7 +90,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             "requirement_check_reference", "clean_dependency_install_only", "runtime_credential_reference",
             "probe_id_maps", "probe_cited_question", "probe_required_true", "probe_citations_uninspected",
             "scope_identity_mismatch", "scope_required_check_mapping", "scope_required_service", "scope_id_collision",
-            "finding_citations_invalid",
+            "finding_citations_invalid", "union_tag_not_found", "union_tag_invalid",
         } else "invalid_contract_value"
         scope_locations = {'scope_required_check_mapping': 'criterion_checks', 'scope_identity_mismatch': 'scope_contract_digest',
                            'scope_required_service': 'services', 'scope_id_collision': 'id'}
@@ -93,6 +101,9 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             detail["guidance"] = ("Supply a nonempty list of unique exact inspected file paths as source citations. "
                 "Even an open finding response needs supporting source evidence. "
                 "Do not use directory paths, duplicate citations or uninspected files; inspect relevant source first.")
+        if code in {"union_tag_not_found", "union_tag_invalid"} or (
+                code == "extra_forbidden" and location[-1:] == ["status"] and "decisions" in location):
+            detail["guidance"] = SOURCE_DISPOSITION_GUIDANCE
         if code == "runtime_credential_reference":
             detail["guidance"] = ("Use ${NAME} for a named credential supplied by the trusted runtime. "
                 "For a credential environment variable named K, its value must be exactly ${K}, not a reference to another name. "

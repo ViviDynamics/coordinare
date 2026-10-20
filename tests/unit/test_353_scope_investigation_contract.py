@@ -12,7 +12,7 @@ from tests.unit.test_353_scope_contract import COMMIT
 
 def finding(requests):
     return {'category': 'coverage', 'issue': 'Inspect unfamiliar nested obligation',
-            'sources': ['guide'], 'affected_ids': [], 'inspection_requests': requests}
+            'sources': ['guide'], 'affected_ids': [], 'gap_kind': 'unread_source', 'inspection_requests': requests}
 
 
 def binding_data():
@@ -96,15 +96,15 @@ def test_binding_changes_for_each_identity_component():
 def test_requests_cannot_accompany_acceptance_or_resolution(status):
     from coordinare_service_inference.environment.scope import (
         ScopeAssessmentProposal,
-        ScopeFindingDecisionProposal,
+        SourceFindingDecision,
     )
 
     request = {'operation': 'read_file', 'path': 'other'}
     if status == 'resolved':
-        value = {'finding_id': 'F0001', 'status': status, 'rationale': 'Resolved', 'sources': ['guide'],
-                 'duplicate_of': None, 'inspection_requests': [request]}
+        value = {'finding_id': 'F0001', 'disposition': 'source_correction', 'rationale': 'Resolved',
+                 'sources': ['guide'], 'inspection_requests': [request]}
         with pytest.raises(ValidationError):
-            ScopeFindingDecisionProposal.model_validate(value)
+            TypeAdapter(SourceFindingDecision).validate_python(value)
     else:
         with pytest.raises(ValidationError):
             ScopeAssessmentProposal.model_validate({'verdict': status, 'rationale': 'Accepted', 'sources': ['guide'],

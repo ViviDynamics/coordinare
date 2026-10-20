@@ -28,10 +28,12 @@ from coordinare_service_inference.environment.models import (
 )
 from coordinare_service_inference.environment.render import render_verify
 from coordinare_service_inference.environment.scope import (
+    ScopeAssessmentProposal,
     ScopeContract,
     ScopeCriterion,
     ScopeCriterionProposal,
     ScopeDefinition,
+    SourceAssessmentRecord,
     criterion_id,
 )
 
@@ -60,9 +62,14 @@ def fixture(count: int = 1000) -> tuple[dict, dict, dict]:
         usability='Every independently listed required check succeeds', runtime_needs=[])
     definition = ScopeDefinition(source_commit=data['source_commit'], inventory_digest=data['inventory_digest'],
         inputs=data['inputs'], criteria=[ScopeCriterion(id=criterion_id(criterion), **criterion.model_dump())])
+    accepted = ScopeAssessmentProposal(verdict='accept', rationale='Synthetic benchmark source review',
+        sources=['x'], findings=[], decisions=[])
     scope = ScopeContract(definition=definition, review_inputs=data['inputs'], sources=['x'], finding_responses=[],
         finding_ledger=FindingLedger(source_commit=data['source_commit'], reviews=[FindingReview(sequence=1,
-            manifest_digest=definition.digest(), inputs=data['inputs'], decisions=[], added_ids=[])]))
+            manifest_digest=definition.digest(), inputs=data['inputs'], decisions=[], added_ids=[])]),
+        source_assessment=SourceAssessmentRecord(review_sequence=1, scope_digest=definition.digest(),
+            source_commit=data['source_commit'], inventory_digest=data['inventory_digest'],
+            reviewer_inputs=data['inputs'], assessment=accepted))
     data.update(scope_contract=scope.model_dump(mode='json'), scope_contract_digest=scope.digest(),
         criterion_checks={definition.criteria[0].id: [check['id'] for check in data['checks']]})
     manifest = EnvironmentManifest.model_validate(data)
