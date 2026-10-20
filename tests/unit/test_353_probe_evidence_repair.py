@@ -28,7 +28,7 @@ def test_corrected_probe_schema_rejects_missing_evidence_and_unknown_ids():
     valid = {'probe': request_data()}
     jsonschema.validate(valid, schema)
     for field, value in [('citations', {}), ('questions', {}), ('citations', {'tool': []}),
-                         ('questions', {'tool': ''}), ('citations', {'tool': ['unread.md']}),
+                         ('questions', {'tool': ''}), ('questions', {'tool': '  \t\n'}), ('citations', {'tool': ['unread.md']}),
                          ('questions', {'other': 'Invented ID'})]:
         invalid = copy.deepcopy(valid)
         invalid['probe'][field] = value
