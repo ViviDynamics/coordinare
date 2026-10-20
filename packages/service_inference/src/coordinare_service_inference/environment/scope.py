@@ -105,7 +105,7 @@ class ScopeContract(FindingEvidence):
     schema_version: Literal[1] = 1
     definition: ScopeDefinition
     review_inputs: dict[str, Digest] = Field(min_length=1)
-    sources: list[str]
+    sources: list[str] = Field(min_length=1)
     finding_ledger: FindingLedger
     finding_responses: list[FindingResponse] = Field(max_length=32)
 
@@ -158,7 +158,7 @@ class ScopeFindingDecisionProposal(FindingDecisionProposal):
 class ScopeAssessmentProposal(FindingEvidence):
     verdict: Literal['accept', 'revise', 'indeterminate']
     rationale: str = Field(min_length=1, max_length=2048, description='Nonblank evidence summary, at most 2048 UTF-8 bytes.')
-    sources: list[str]
+    sources: list[str] = Field(min_length=1)
     findings: list[ScopeFindingProposal] = Field(max_length=32)
     decisions: list[ScopeFindingDecisionProposal] = Field(max_length=32)
 

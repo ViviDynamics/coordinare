@@ -6,6 +6,7 @@ import json
 from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from .evidence_safety import reject_nested_credentials, source_path
 
@@ -38,7 +39,7 @@ class FindingEvidence(BaseModel):
     @classmethod
     def source_paths(cls, value: list[str]) -> list[str]:
         if not value or len(set(value)) != len(value):
-            raise ValueError('finding citations must be nonempty and unique')
+            raise PydanticCustomError('finding_citations_invalid', 'finding citations must be nonempty and unique')
         return [source_path(path) for path in value]
 
     @field_validator('inputs', check_fields=False)
@@ -52,14 +53,14 @@ class FindingEvidence(BaseModel):
 class FindingProposal(FindingEvidence):
     category: Category
     issue: str
-    sources: list[str]
+    sources: list[str] = Field(min_length=1)
     affected_ids: list[str]
 
 
 class FindingResponse(FindingEvidence):
     finding_id: FindingId
     rationale: str
-    sources: list[str]
+    sources: list[str] = Field(min_length=1)
     affected_ids: list[str]
 
 
@@ -67,7 +68,7 @@ class FindingDecisionProposal(FindingEvidence):
     finding_id: FindingId
     status: Literal['open', 'resolved']
     rationale: str
-    sources: list[str]
+    sources: list[str] = Field(min_length=1)
     duplicate_of: FindingId | None = None
 
 
