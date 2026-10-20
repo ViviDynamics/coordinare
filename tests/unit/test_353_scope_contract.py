@@ -43,7 +43,8 @@ def source_decision(value):
     if 'disposition' not in value:
         status, duplicate, requests = value.pop('status'), value.pop('duplicate_of', None), value.pop('inspection_requests', [])
         if status == 'open':
-            value.update(disposition='source_gap', gap_kind='unread_source', inspection_requests=requests)
+            value.update(disposition='source_gap', gap_kind='unread_source' if requests else 'missing_obligation',
+                         inspection_requests=requests)
         else:
             assert not requests, 'resolving fixture decisions cannot request inspection'
             value.update(disposition='duplicate' if duplicate is not None else 'source_correction', duplicate_of=duplicate)
@@ -527,7 +528,7 @@ async def test_scope_review_readjudicates_resolved_findings_after_another_revisi
         'sources': ['guide'], 'affected_ids': [], 'gap_kind': 'missing_obligation', 'inspection_requests': []})
     resolved = closure()['scope_assessment']['decisions'][0]
     partial = review('revise', decisions=[resolved, {**resolved, 'finding_id': 'F0002', 'disposition': 'source_gap',
-        'gap_kind': 'unread_source', 'affected_ids': [], 'inspection_requests': []}])
+        'gap_kind': 'missing_obligation', 'affected_ids': [], 'inspection_requests': []}])
     responses = [{'finding_id': fid, 'rationale': 'Source evidence retained',
                   'sources': ['guide'], 'affected_ids': []} for fid in ['F0001', 'F0002']]
     final = review(decisions=[resolved, {**resolved, 'finding_id': 'F0002'}])
