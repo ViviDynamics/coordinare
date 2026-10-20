@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypedDict, Unpack
 
@@ -35,6 +35,7 @@ from coordinare.services.environment_admission import (
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 from coordinare.services.environment_discovery_prompts import SOURCE_NAVIGATION
 from coordinare.services.environment_evidence import (
+    AuthorEvidenceCache,
     check_evidence_context,
     prepare_mandatory_evidence,
 )
@@ -269,6 +270,7 @@ class _Request:
     commit: str
     limits: DiscoveryLimits
     budget: AttemptBudget
+    author_cache: AuthorEvidenceCache | None = None
 
 
 def _current_investigations(budget: AttemptBudget | None) -> list[Any]:
@@ -299,11 +301,17 @@ async def _prepare_author(request: _Request) -> tuple[SourceInspection, list[dic
                 _fail('scope_source_identity')
             required_inputs[path] = digest
     budget.scope_findings = ledger
-    evidence = await prepare_mandatory_evidence(author, required_inputs, phase='scope_author')
+    evidence = request.author_cache.restore(author, required_inputs) if request.author_cache is not None else []
+    missing = {path: digest for path, digest in required_inputs.items() if path not in author.inputs}
+    evidence.extend(await prepare_mandatory_evidence(author, missing, phase='scope_author'))
+    budget.mandatory_inputs_required = len(required_inputs)
+    budget.mandatory_inputs_delivered = len(evidence)
     if budget.scope_phase == 'revision':
         completed = {result.binding_id for result in budget.scope_investigation_results}
         pending = [binding for binding in _current_investigations(budget) if binding.id not in completed]
         await investigate_scope_requests(author, pending)
+    if request.author_cache is not None:
+        request.author_cache.capture(author)
     messages = _messages(author, review=False, definition=previous, evidence=evidence)
 
     return author, messages, required_inputs
@@ -389,6 +397,8 @@ async def _author_definition(request: _Request, author: SourceInspection,
     definition = await _phase(author, messages, chat=request.chat, envelope='scope_revision' if revising else 'scope',
         validate=partial(_validate_revision if revising else _validate_author, author=author,
                          commit=request.commit, budget=budget))
+    if request.author_cache is not None:
+        request.author_cache.capture(author)
     budget.scope_definition = definition
     budget.scope_phase = 'review'
     budget.scope_revision_base_digest = None
@@ -406,6 +416,9 @@ async def _discover_scope(request: _Request) -> ScopeContract:
             _fail('scope_source_identity')
         await prepare_mandatory_evidence(inspection, saved.all_inputs, phase='scope_resume')
         return saved
+    pinned = SourceInspection(_checked_inventory(paths, limits), fetch, limits, budget)
+    request = replace(request, author_cache=AuthorEvidenceCache(source_commit=commit,
+        inventory_digest=pinned.inventory_digest, max_bytes=limits.max_source_bytes))
     author, messages, required_inputs = await _prepare_author(request)
     inventory = author.paths
     ledger = budget.scope_findings

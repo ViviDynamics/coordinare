@@ -87,9 +87,15 @@ class SourceInspection:
                 return {'path': path, 'error': 'source_unavailable'}
             message = f"{self.name} source is unavailable or not text"
             raise EnvironmentDiscoveryError(message)
+        return self.admit_content(path, content, fetched=True)
+
+    def admit_content(self, path: str, content: str, *, fetched: bool) -> dict[str, str]:
+        """Admit exact fetched or cached bytes under the same phase source bounds."""
+        if path not in self.inventory:
+            raise EnvironmentDiscoveryError('source content differs from inventory', code='source_identity')
         encoded = content.encode("utf-8")
         self.total_bytes += len(encoded)
-        if self.budget is not None:
+        if fetched and self.budget is not None:
             self.budget.inspected_bytes += len(encoded)
         if len(encoded) > self.limits.max_file_bytes or self.total_bytes > self.limits.max_source_bytes:
             message = f"{self.name} source byte limit exceeded"

@@ -18,7 +18,7 @@ from tests.unit.test_353_scope_contract import (
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('total_reads', [7, 4])
+@pytest.mark.parametrize('total_reads', [6, 4])
 async def test_revision_has_own_phase_reads_but_shared_attempt_limit(total_reads):
     finding = {'category': 'coverage', 'issue': 'Nested service obligation missing',
                'sources': ['odd/nest'], 'affected_ids': []}
@@ -51,6 +51,6 @@ async def test_revision_has_own_phase_reads_but_shared_attempt_limit(total_reads
     assert scope.finding_ledger.open_ids() == []
     assert scope.definition.inputs == scope.all_inputs
     assert set(scope.all_inputs) == set(SOURCES)
-    assert budget.reads == 7
+    assert budget.reads == 6
     assert budget.coverage_revisions == 1
     assert len(scope.finding_ledger.reviews) == 2
