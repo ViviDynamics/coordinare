@@ -21,6 +21,7 @@ from .findings import (
     FindingResponse,
     validate_finding_ledger,
 )
+from .scope_investigation import ScopeInspectionRequest, unique_requests
 
 
 def canonical(value: object) -> bytes:
@@ -130,12 +131,43 @@ class ScopeContract(FindingEvidence):
         return hashlib.sha256(canonical(self.model_dump(mode='json'))).hexdigest()
 
 
+class ScopeFindingProposal(FindingProposal):
+    inspection_requests: list[ScopeInspectionRequest] = Field(max_length=8)
+
+    @field_validator('inspection_requests')
+    @classmethod
+    def distinct_requests(cls, value: list[ScopeInspectionRequest]) -> list[ScopeInspectionRequest]:
+        return unique_requests(value)
+
+
+class ScopeFindingDecisionProposal(FindingDecisionProposal):
+    inspection_requests: list[ScopeInspectionRequest] = Field(max_length=8)
+
+    @field_validator('inspection_requests')
+    @classmethod
+    def distinct_requests(cls, value: list[ScopeInspectionRequest]) -> list[ScopeInspectionRequest]:
+        return unique_requests(value)
+
+    @model_validator(mode='after')
+    def no_resolved_requests(self) -> Self:
+        if self.status == 'resolved' and self.inspection_requests:
+            raise ValueError('resolved finding cannot require investigation')
+        return self
+
+
 class ScopeAssessmentProposal(FindingEvidence):
     verdict: Literal['accept', 'revise', 'indeterminate']
     rationale: str = Field(min_length=1, max_length=2048, description='Nonblank evidence summary, at most 2048 UTF-8 bytes.')
     sources: list[str]
-    findings: list[FindingProposal] = Field(max_length=32)
-    decisions: list[FindingDecisionProposal] = Field(max_length=32)
+    findings: list[ScopeFindingProposal] = Field(max_length=32)
+    decisions: list[ScopeFindingDecisionProposal] = Field(max_length=32)
+
+
+    @model_validator(mode='after')
+    def no_accepted_requests(self) -> Self:
+        if self.verdict == 'accept' and any(item.inspection_requests for item in [*self.findings, *self.decisions]):
+            raise ValueError('accepting judgment cannot require investigation')
+        return self
 
 
 class ScopeAssessmentEnvelope(FindingEvidence):

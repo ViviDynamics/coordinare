@@ -178,7 +178,7 @@ def test_scope_ledger_decision_constraints_survive_strict_wire_encoding(identifi
 
     schema = response_schema('scope_assessment', review_decision_ids=identifiers)
     decision = {'finding_id': 'F0001', 'status': 'resolved', 'rationale': 'Inspected source resolves the finding',
-                'sources': ['fixture'], 'duplicate_of': None}
+                'sources': ['fixture'], 'duplicate_of': None, 'inspection_requests': []}
     assessment = {'verdict': 'accept', 'rationale': 'Source evidence covers the scope',
                   'sources': ['fixture'], 'findings': [], 'decisions': [decision] if identifiers else []}
     payload = {'response': {'scope_assessment': assessment}}
@@ -187,3 +187,32 @@ def test_scope_ledger_decision_constraints_survive_strict_wire_encoding(identifi
     assessment['decisions'] = [{**decision, 'finding_id': 'F9999'}]
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(payload, wire_schema(schema))
+
+
+@pytest.mark.parametrize('inspection', [
+    {'operation': 'read_file', 'path': 'unfamiliar/entry'},
+    {'operation': 'list_files', 'path': '', 'cursor': 0},
+])
+def test_nonempty_scope_inspection_request_survives_strict_transport(inspection):
+    from coordinare.services.environment_structured_wire import decode_wire, wire_schema
+
+    assessment = {'verdict': 'revise', 'rationale': 'Inspect nested source', 'sources': ['fixture'],
+        'findings': [{'category': 'coverage', 'issue': 'Nested obligation needs inspection',
+            'sources': ['fixture'], 'affected_ids': [], 'inspection_requests': [inspection]}], 'decisions': []}
+    schema = response_schema('scope_assessment', review_decision_ids=[])
+    encoded = {'response': {'scope_assessment': assessment}}
+    assert json.loads(decode_wire(json.dumps(encoded), schema)) == {'scope_assessment': assessment}
+    wire = wire_schema(schema)
+    jsonschema.validate(encoded, wire)
+    def visit(value):
+        if isinstance(value, dict):
+            assert 'oneOf' not in value and 'discriminator' not in value
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+    visit(wire)
+    assessment['findings'][0]['inspection_requests'][0] = {'operation': 'read_file', 'path': 'nested', 'cursor': 0}
+    with pytest.raises(ValueError):
+        decode_wire(json.dumps(encoded), schema)

@@ -19,15 +19,15 @@ def _object_schema(properties: dict[str, Any]) -> dict[str, Any]:
 
 def _compile(node: dict[str, Any]) -> dict[str, Any]:
     result = {key: value for key, value in node.items()
-              if key not in {'default', 'title', '$defs', 'properties', 'additionalProperties', 'required', 'items', 'anyOf', 'const'}}
+              if key not in {'default', 'title', '$defs', 'properties', 'additionalProperties', 'required', 'items', 'anyOf', 'oneOf', 'discriminator', 'const'}}
     if 'default' in node:
         result['description'] = str(node.get('description', '')) + ' Declared logical default: ' + json.dumps(node['default'])
     if 'const' in node:
         result['enum'] = [node['const']]
         if 'type' not in result:
             result['type'] = {str: 'string', int: 'integer', bool: 'boolean'}[type(node['const'])]
-    if 'anyOf' in node:
-        result['anyOf'] = [_compile(branch) for branch in node['anyOf']]
+    if 'anyOf' in node or 'oneOf' in node:
+        result['anyOf'] = [_compile(branch) for branch in node.get('anyOf', node.get('oneOf', []))]
         if 'properties' not in node:
             result.pop('type', None)
             return result
@@ -92,8 +92,8 @@ def _decode_union(value: Any, branches: list[dict[str, Any]], definitions: dict[
 def _decode(value: Any, schema: dict[str, Any], definitions: dict[str, Any]) -> Any:
     if '$ref' in schema:
         return _decode(value, definitions[schema['$ref'].removeprefix('#/$defs/')], definitions)
-    if 'anyOf' in schema:
-        return _decode_union(value, schema['anyOf'], definitions)
+    if 'anyOf' in schema or 'oneOf' in schema:
+        return _decode_union(value, schema.get('anyOf', schema.get('oneOf', [])), definitions)
     if ('const' in schema and value != schema['const']) or ('enum' in schema and value not in schema['enum']):
         message = 'wire discriminator does not match schema'
         raise ValueError(message)

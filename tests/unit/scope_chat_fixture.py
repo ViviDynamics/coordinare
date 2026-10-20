@@ -50,7 +50,7 @@ class ScopeChatFixture:
             self.scope_messages.append(messages)
             return json.dumps({'scope_assessment': {'verdict': 'accept', 'rationale': 'Synthetic independent scope judgment',
                 'sources': [self.path], 'findings': [], 'decisions': [{'finding_id': record['id'], 'status': 'resolved',
-                    'rationale': 'Independent fixture evidence covers obligation', 'sources': [self.path], 'duplicate_of': None}
+                    'rationale': 'Independent fixture evidence covers obligation', 'sources': [self.path], 'duplicate_of': None, 'inspection_requests': []}
                     for record in context['finding_ledger']['records']]}})
         try:
             reply = await invoke_chat(self.chat, messages, schema=response_schema,

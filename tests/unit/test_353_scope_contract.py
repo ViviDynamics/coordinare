@@ -32,7 +32,8 @@ def proposal(*criteria):
 
 def review(verdict='accept', *, findings=None, decisions=None, sources=None):
     return {'scope_assessment': {'verdict': verdict, 'rationale': 'Independently inspected source coverage',
-        'sources': sources or ['guide'], 'findings': findings or [], 'decisions': decisions or []}}
+        'sources': sources or ['guide'], 'findings': [dict(value, inspection_requests=value.get('inspection_requests', [])) for value in findings or []],
+        'decisions': [dict(value, inspection_requests=value.get('inspection_requests', [])) for value in decisions or []]}}
 
 
 class Replies:
@@ -494,7 +495,7 @@ async def test_scope_review_readjudicates_resolved_findings_after_another_revisi
     first = objection()
     first['scope_assessment']['findings'].append({
         'category': 'coverage', 'issue': 'Second required operation missing',
-        'sources': ['guide'], 'affected_ids': []})
+        'sources': ['guide'], 'affected_ids': [], 'inspection_requests': []})
     resolved = closure()['scope_assessment']['decisions'][0]
     partial = review('revise', decisions=[resolved, {**resolved, 'finding_id': 'F0002', 'status': 'open'}])
     responses = [{'finding_id': fid, 'rationale': 'Source evidence retained',

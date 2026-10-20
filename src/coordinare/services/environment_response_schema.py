@@ -45,7 +45,8 @@ class ProbeRepairSchema:
 def _review_constraints(declaration: dict[str, Any], phase: str, identifiers: Sequence[str] | None) -> None:
     definitions = declaration['$defs']
     assessment = definitions['ScopeAssessmentProposal' if phase == 'scope_assessment' else 'CoverageAssessmentProposal']
-    decision = definitions['FindingDecisionProposal']
+    decision_name = 'ScopeFindingDecisionProposal' if phase == 'scope_assessment' else 'FindingDecisionProposal'
+    decision = definitions[decision_name]
     if identifiers is not None:
         assessment['properties']['decisions'].update(minItems=len(identifiers), maxItems=len(identifiers))
         assessment['properties']['findings']['maxItems'] = MAX_FINDINGS-len(identifiers)
@@ -59,7 +60,7 @@ def _review_constraints(declaration: dict[str, Any], phase: str, identifiers: Se
     open_decision['properties']['status'] = {'const': 'open', 'type': 'string'}
     open_decision['properties']['duplicate_of'] = {'type': 'null'}
     resolved_decision['properties']['status'] = {'const': 'resolved', 'type': 'string'}
-    definitions['FindingDecisionProposal'] = {'anyOf': [open_decision, resolved_decision]}
+    definitions[decision_name] = {'anyOf': [open_decision, resolved_decision]}
 
 
 def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: ScopeContract | None = None,

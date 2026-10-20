@@ -45,6 +45,7 @@ from coordinare.services.environment_findings import (
 )
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_response_schema import invoke_chat, response_schema
+from coordinare.services.environment_scope_investigation import bind_scope_requests
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -147,9 +148,19 @@ def _validate_review(data: dict[str, Any], *, reviewer: SourceInspection, defini
     for index, path in enumerate(assessment.sources):
         if path not in reviewer.inputs:
             _citation_error('scope_assessment', 'sources', str(index))
-    proposal = CoverageAssessmentProposal(**assessment.model_dump(), capability_unavailable=False)
+    base = assessment.model_dump(exclude={'findings', 'decisions'})
+    proposal = CoverageAssessmentProposal(**base, capability_unavailable=False,
+        findings=[item.model_dump(exclude={'inspection_requests'}) for item in assessment.findings],
+        decisions=[item.model_dump(exclude={'inspection_requests'}) for item in assessment.decisions])
     updated = apply_evidence_review(ledger, subject=ReviewSubject(commit, definition.digest(),
         {c.id for c in definition.criteria}), proposal=proposal, reviewer_inputs=reviewer.inputs)
+    budget = reviewer.budget
+    if budget is None:
+        _fail('attempt_budget_identity')
+    bindings = bind_scope_requests(assessment=assessment, ledger=updated, scope_digest=definition.digest(),
+        inventory_digest=definition.inventory_digest, retained=budget.scope_investigations)
+    # Both candidates are fully checked; caller publishes their matching ledger.
+    budget.scope_investigations = bindings
     return assessment, updated
 
 
