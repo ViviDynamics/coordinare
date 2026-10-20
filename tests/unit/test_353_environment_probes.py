@@ -303,3 +303,30 @@ def test_saved_probe_requires_complete_current_capability_identity(mutation):
     with pytest.raises(EnvironmentDiscoveryError) as caught:
         validate_saved_probe_reports([report], COMMIT, current)
     assert caught.value.code == 'probe_report_invalid'
+
+
+@pytest.mark.parametrize('allow', [False, True])
+def test_repaired_cache_retires_old_observations_without_reusing_them(allow):
+    from coordinare.services.environment_probes import select_current_probe_reports
+
+    previous = plan()
+    report = report_data(previous)
+    current = previous.capabilities.model_copy(update={'cache_mount_path': '/devenv/new-generation'})
+    history = [copy.deepcopy(report)]
+    if allow:
+        assert select_current_probe_reports(history, COMMIT, current, allow_cache_relocation=True) == []
+        assert history == [report]
+    else:
+        with pytest.raises(EnvironmentDiscoveryError):
+            select_current_probe_reports(history, COMMIT, current)
+
+
+def test_repaired_cache_cannot_retire_probe_evidence_for_other_runtime_changes():
+    from coordinare.services.environment_probes import select_current_probe_reports
+
+    previous = plan()
+    changed = previous.capabilities.model_copy(update={
+        'cache_mount_path': '/devenv/new-generation',
+        'install_network': 'disabled' if previous.capabilities.install_network == 'enabled' else 'enabled'})
+    with pytest.raises(EnvironmentDiscoveryError):
+        select_current_probe_reports([report_data(previous)], COMMIT, changed, allow_cache_relocation=True)

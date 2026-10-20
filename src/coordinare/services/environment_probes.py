@@ -149,6 +149,28 @@ def validate_saved_probe_reports(reports: list[dict[str, Any]], source_commit: s
         raise EnvironmentDiscoveryError(message, code="probe_report_invalid")
 
 
+def select_current_probe_reports(reports: list[dict[str, Any]], source_commit: str,
+                                 capabilities: ExecutionCapabilities, *, allow_cache_relocation: bool = False) -> list[dict[str, Any]]:
+    """Retain history externally, but never deliver old-cache observations as current."""
+    selected = []
+    for data in reports:
+        try:
+            report = ProbeReport.model_validate(data)
+        except ValidationError:
+            raise EnvironmentDiscoveryError('saved probe report is malformed', code='probe_report_invalid') from None
+        if report.plan is None:
+            validate_saved_probe_reports([data], source_commit, capabilities)
+            continue  # validator always holds a report without its plan
+        observed = report.plan.capabilities
+        validate_saved_probe_reports([data], source_commit, observed)
+        if observed.digest() == capabilities.digest():
+            selected.append(data)
+        elif (not allow_cache_relocation or observed.model_dump(exclude={'cache_mount_path'})
+                != capabilities.model_dump(exclude={'cache_mount_path'})):
+            raise EnvironmentDiscoveryError('saved probe runtime differs from current capabilities', code='probe_report_invalid')
+    return selected
+
+
 def validate_probe_report(plan: ProbePlan, report: ProbeReport) -> None:
     if (report.execution_source_digest != plan.execution_source_digest or report.plan_digest != plan.digest() or (report.plan is not None and report.plan.digest() != plan.digest())
             or report.source_commit != plan.source_commit
