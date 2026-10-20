@@ -269,7 +269,9 @@ async def test_unread_citation_correction_identifies_exact_element_without_echoi
                       if m['role'] == 'user' and 'validation_errors' in json.loads(m['content']))
     expected = (['scope', 'criteria', '0', 'sources', '0'] if phase == 'author'
                 else ['scope_assessment', 'sources', '0'])
-    assert correction['validation_errors'] == [{'code': 'scope_citations_invalid', 'location': expected}]
+    errors = correction['validation_errors']
+    assert [{key: error[key] for key in ('code', 'location')} for error in errors] == [{'code': 'scope_citations_invalid', 'location': expected}]
+    assert all(error['guidance'] for error in errors)
     assert bad_path not in json.dumps(correction)
     assert budget.schema_repairs == 1 and budget.coverage_revisions == 0
     assert result.definition.criteria[0].sources == ['guide']
@@ -390,7 +392,10 @@ async def test_revision_citation_feedback_is_precise_without_echoing_evidence():
     budget = AttemptBudget()
     await run(replies, budget=budget)
     feedback = json.loads(replies.messages[4][-1]['content'])
-    assert feedback['validation_errors'] == [{'location': ['scope_revision', 'add', '0', 'sources', '0'], 'code': 'scope_citations_invalid'}]
+    errors = feedback['validation_errors']
+    assert [{key: error[key] for key in ('code', 'location')} for error in errors] == [{'location': ['scope_revision', 'add', '0', 'sources', '0'], 'code': 'scope_citations_invalid'}]
+    assert errors[0]['invalid_source_indices'] == ['0']
+    assert 'read_file' in errors[0]['guidance']
     assert feedback['expected_envelope'] == 'scope_revision'
     assert 'odd/nest' not in json.dumps(feedback)
     assert budget.schema_repairs == 1

@@ -81,6 +81,7 @@ class Profile:
     max_coverage_revisions: int = 2
     max_execution_repairs: int = 2
     max_review_context_bytes: int = 1024 * 1024
+    max_total_reads: int = 512
     private_service_runtime: dict[str, Any] | None = None
 
 
@@ -575,6 +576,7 @@ async def validate_repository(
         manifest_max_coverage_revisions=profile.max_coverage_revisions,
         manifest_max_execution_repairs=profile.max_execution_repairs,
         manifest_max_review_context_bytes=profile.max_review_context_bytes,
+        manifest_max_total_reads=profile.max_total_reads,
         private_service_runtime=profile.private_service_runtime,
     )
     global_config = SimpleNamespace(
@@ -792,6 +794,15 @@ async def _batch(args: argparse.Namespace, image: str, profile: Profile) -> list
     return results
 
 
+def _aggregate_read_allowance(value: str) -> int:
+    """Use the existing product limits before profile/image/model side effects."""
+    try:
+        return EnvCacheConfig(manifest_max_total_reads=int(value)).manifest_max_total_reads
+    except ValueError:
+        message = 'aggregate read allowance must satisfy the configured finite product bounds'
+        raise argparse.ArgumentTypeError(message) from None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repositories", nargs="+")
@@ -813,6 +824,7 @@ def main() -> int:
     parser.add_argument("--max-coverage-revisions", type=int, choices=range(REPAIR_LIMITS["coverage"] + 1), default=2)
     parser.add_argument("--max-execution-repairs", type=int, choices=range(REPAIR_LIMITS["execution"] + 1), default=2)
     parser.add_argument("--max-review-context-bytes", type=int, default=1024 * 1024)
+    parser.add_argument("--max-total-reads", type=_aggregate_read_allowance, default=512)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--approval-timeout", type=float, default=600)
     parser.add_argument("--save-transcripts", action="store_true")
@@ -837,6 +849,7 @@ def main() -> int:
         max_coverage_revisions=args.max_coverage_revisions,
         max_execution_repairs=args.max_execution_repairs,
         max_review_context_bytes=args.max_review_context_bytes,
+        max_total_reads=args.max_total_reads,
         private_service_runtime=load_runtime_policy(args.runtime_policy) if args.runtime_policy else None,
     )
     revision = subprocess.check_output([shutil.which("git") or "/usr/bin/git", "rev-parse", "HEAD"], text=True).strip()

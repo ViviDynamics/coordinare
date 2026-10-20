@@ -392,3 +392,36 @@ report omitted ranges; every invalid entry still rejects admission. Synthetic
 regressions cover mixed errors and 3,500 consecutive or separated invalid entries.
 This correction requires fresh verification and a fresh Elm attempt; the held
 attempt is terminal and provides no runtime acceptance.
+
+
+### Actionable-citation comparison and aggregate-read accounting — 2026-10-20
+
+Fresh `actionable-citations-haiku55-elm60m-high64k` on Coordinare `36c95ff9`
+held after 1,010.87 seconds at `scope_review_preparation` with
+`attempt_read_limit`. It retained the same pinned Elm, provider, image/runtime,
+2 MiB context, 3,600-second limits and original 512-read/8-schema/4-coverage/2-execution
+allowances. It completed four independent source reviews and eleven requested
+investigations. The final journal records 512 reads, eight schema repairs and
+four coverage revisions, with two source findings still open. No source contract,
+executable review, installer or clean consumer passed. Owned source and all four
+image/registry references were confirmed absent; the pinned snapshot was unchanged.
+
+At 476 reads the candidate retained 105 source inputs, leaving 36 reads. Even
+acceptance at that point could not fit the construction phase's mandatory complete
+105-file fetch, followed by a separate independent executable review. The next
+source-review preparation actually exhausted the allowance. Extra elapsed time
+would not repair that bound. The run also spent six corrections on criterion
+citations: its first-error-only feedback lacked explicit inspection guidance.
+The follow-up aggregates unread criterion citations with bounded indices and
+requires file inspection before resubmission; source and citation admission remain
+unchanged.
+
+The validation CLI now exposes the existing product setting as
+`--max-total-reads` (default 512, existing valid range 1–8,192), records it in
+`profile.json`, and forwards it to the actual attempt. Invalid CLI values fail
+before profile, image or model activity. This changes no product default or
+existing attempt budget. The next separate labelled Elm experiment will use
+2,048 reads, retaining the same model, time/context limits, repair caps and
+mandatory independent reviews/checks. It is a changed-budget experiment, not
+proof that the original 512-read profile passed, and it cannot resume or renew
+the terminal attempt. Dettmore remains next after genuine Elm acceptance.

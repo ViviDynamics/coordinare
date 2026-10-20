@@ -115,3 +115,62 @@ async def test_sparse_invalid_citation_ranges_are_bounded_and_report_omitted_err
     assert errors[0]['invalid_source_count'] == 3500
     assert errors[0]['invalid_source_ranges'] == [[2*i, 2*i] for i in range(32)]
     assert errors[0]['omitted_source_range_count'] == 3468
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('revising', [False, True])
+async def test_unread_criterion_citations_request_inspection_together_before_resubmission(revising):
+    sources = {'guide': 'Inspect both nested operation definitions',
+               'odd/one': 'First operation', 'odd/two': 'Second operation'}
+    observed = []
+    budget = AttemptBudget()
+    candidate = [criterion('odd/one'), criterion('odd/two', usability='Second operation succeeds')]
+
+    def inspect(messages):
+        observed.extend(json.loads(messages[-1]['content'])['validation_errors'])
+        return {'tool': 'read_files', 'paths': ['odd/one', 'odd/two']}
+
+    if revising:
+        values = [{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()),
+            review('revise', findings=[objection([])]), revision(*candidate, sources=['guide']), inspect,
+            revision(*candidate, sources=['odd/one', 'odd/two']),
+            review(sources=list(sources), decisions=[{'finding_id': 'F0001', 'status': 'resolved',
+                'rationale': 'Inspected operations retained', 'sources': ['odd/one', 'odd/two'], 'duplicate_of': None}])]
+    else:
+        values = [{'tool': 'read_file', 'path': 'guide'}, proposal(*candidate), inspect,
+                  proposal(*candidate), review(sources=list(sources))]
+    scope = await discover(values, sources, budget=budget)
+    assert scope.finding_ledger.open_ids() == []
+    assert budget.schema_repairs == 1
+    prefix = ['scope_revision', 'add'] if revising else ['scope', 'criteria']
+    assert [error['location'] for error in observed] == [[*prefix, '0', 'sources', '0'], [*prefix, '1', 'sources', '0']]
+    assert all(error['code'] == 'scope_citations_invalid' for error in observed)
+    assert all('read_file' in error['guidance'] for error in observed)
+
+
+@pytest.mark.asyncio
+async def test_reassessment_reports_all_unread_sources_in_one_criterion_before_inspection():
+    sources = {'guide': 'Applicability requires nested evidence', 'odd/one': 'Required operation', 'odd/two': 'Operation details'}
+    observed = []
+    budget = AttemptBudget()
+    replacement = {**criterion('odd/one'), 'sources': ['odd/one', 'odd/two']}
+
+    def revise(messages):
+        base = json.loads(messages[1]['content'])['scope_definition']
+        return revision(reassess=[{'criterion_id': base['criteria'][0]['id'], 'criterion': replacement}], sources=['guide'])(messages)
+
+    def inspect(messages):
+        observed.extend(json.loads(messages[-1]['content'])['validation_errors'])
+        return {'tool': 'read_files', 'paths': ['odd/one', 'odd/two']}
+
+    scope = await discover([
+        {'tool': 'read_file', 'path': 'guide'}, proposal(criterion(applicability='unknown')),
+        review('revise', findings=[objection([])]), revise, inspect, revise,
+        review(sources=list(sources), decisions=[{'finding_id': 'F0001', 'status': 'resolved',
+            'rationale': 'Required operation established', 'sources': ['odd/one', 'odd/two'], 'duplicate_of': None}]),
+    ], sources, budget=budget)
+    assert scope.definition.criteria[0].applicability == 'required'
+    assert scope.finding_ledger.open_ids() == []
+    assert len(observed) == 1 and observed[0]['invalid_source_indices'] == ['0', '1']
+    assert observed[0]['location'] == ['scope_revision', 'reassess', '0', 'criterion', 'sources', '0']
+    assert budget.schema_repairs == 1
