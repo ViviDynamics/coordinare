@@ -189,3 +189,14 @@ union rejects it. Local validation stays authoritative, so the branch rules are
 unchanged even though the schema can no longer express them. An opt-in probe
 (`scripts/probe_provider_grammar.py`) checks every strict discovery schema at its
 largest bounds against a live provider.
+
+The same probe found that two pre-existing executable-phase schemas also exceed
+the provider's strict limits: the capability probe ("Schema is too complex", from
+the execution-directory pattern) and the manifest proposal (compiled grammar too
+large, from its structure). Neither had been reached under this provider. With
+maintainer approval, a strict request the provider refuses to compile, a fast 400
+before any generation, is resent once without a compiled grammar: the canonical
+schema goes in the prompt (`json_object` transport). The fallback is recorded in
+attempt diagnostics, uses no extra call allowance, and leaves local validation,
+repair limits and every execution gate unchanged. Other provider errors still fail
+closed.

@@ -45,6 +45,7 @@ class DiscoveryChatReply:
     finish_reason: str | None = None
     error_code: str | None = None
     wire_text: str | None = None
+    transport_fallback: str | None = None
 
 
 @dataclass
@@ -77,6 +78,7 @@ class AttemptBudget:
     error_code: str | None = None
     usage: dict[str, int] = field(default_factory=dict)
     finish_reasons: dict[str, int] = field(default_factory=dict)
+    transport_fallbacks: int = 0
     metadata_available: bool = False
     validation_codes: list[str] = field(default_factory=list)
     finding_ledger: FindingLedger | None = field(default=None, repr=False)
@@ -168,6 +170,7 @@ class AttemptBudget:
             message = "environment model provider rejected or failed the request"
             raise EnvironmentDiscoveryError(message, code="provider_request_failed")
         self.metadata_available |= reply.usage is not None or reply.finish_reason is not None
+        self.transport_fallbacks += reply.transport_fallback is not None
         for key, value in (reply.usage or {}).items():
             if (key in {"input", "output", "input_tokens", "output_tokens", "cache_read", "cache_write"}
                     and type(value) is int and 0 <= value <= 10**12):
@@ -192,4 +195,5 @@ class AttemptBudget:
                 "mandatory_inputs_delivered": self.mandatory_inputs_delivered,
                 "remaining_seconds": round(max(0, self.deadline - time.monotonic()), 3), "usage": dict(self.usage),
                 "finish_reasons": dict(self.finish_reasons), "metadata_available": self.metadata_available,
+                "transport_fallbacks": self.transport_fallbacks,
                 "validation_codes": list(self.validation_codes)}
