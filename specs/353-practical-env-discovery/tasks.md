@@ -172,3 +172,13 @@ independent final review. Earlier incomplete acceptance tasks remain open.
 - [x] T087 Journal 9 / source protocol 4 persistence, recovery and fail-closed migration (task3).
 - [x] T088 Readiness regression, independent review, preflight, push and CI (task4).
 - [ ] T089 Corrected-protocol diagnostic, fresh pinned Elm attempt and remaining ship gates (task5).
+
+## Approved source evidence resolution amendment
+
+Spec: `source-evidence-resolution-amendment.md`; plan: `source-evidence-resolution-plan.md`.
+Both approved by the maintainer on 2026-10-20. Native execution with independent review.
+
+- [ ] T090 Absence candidates (task1).
+- [ ] T091 Repeat-absent and unread-source admission rules (task2).
+- [ ] T092 Actionable revision and source-path feedback (task3).
+- [ ] T093 Verification, review, push, CI and fresh pinned Elm attempt (task4).
