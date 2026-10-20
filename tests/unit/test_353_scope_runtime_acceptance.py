@@ -135,6 +135,7 @@ def test_real_snapshot_restart_preserves_scope_deadline_and_spent_work(tmp_path,
     budget.scope_definition = budget.scope_contract.definition.model_copy(deep=True)
     budget.scope_inputs = dict(budget.scope_contract.all_inputs)
     budget.scope_findings = budget.scope_contract.finding_ledger.model_copy(deep=True)
+    budget.scope_assessment = budget.scope_contract.source_assessment.model_copy(deep=True)
     save_attempt(cache, budget, executing=phase != 'scope_review')
     snapshots = _persist_env_cache({'sym': cache})
     restored = EnvCacheState(symphony_name='sym', sanitised_name='sym', cache_dir=cache.cache_dir)
