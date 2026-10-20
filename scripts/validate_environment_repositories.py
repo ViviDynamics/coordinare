@@ -631,7 +631,8 @@ async def validate_repository(
         chat = backend.chat_json_with_metadata
 
     selected_chat = chat
-    async def recorded(messages: list[dict[str, str]], *, response_schema: dict[str, Any] | None = None) -> str | DiscoveryChatReply:
+    async def recorded(messages: list[dict[str, str]], *, response_schema: dict[str, Any] | None = None,
+                       max_context_bytes: int | None = None, context_phase: str = "discovery") -> str | DiscoveryChatReply:
         nonlocal calls, review_starts
         calls += 1
         reviewing = "manifest" in json.loads(messages[1]["content"])
@@ -640,7 +641,8 @@ async def validate_repository(
             raise ValueError("validation chat unavailable")
         from coordinare.services.environment_response_schema import invoke_chat
 
-        response = await invoke_chat(selected_chat, messages, schema=response_schema or {})
+        response = await invoke_chat(selected_chat, messages, schema=response_schema or {},
+                                     max_context_bytes=max_context_bytes, context_phase=context_phase)
         text = response.text if isinstance(response, DiscoveryChatReply) else response
         if profile.save_transcripts:
             _write(

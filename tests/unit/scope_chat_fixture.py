@@ -26,7 +26,7 @@ class ScopeChatFixture:
         self.path = path
         self.scope_messages = []
 
-    async def __call__(self, messages, *, response_schema):
+    async def __call__(self, messages, *, response_schema, max_context_bytes=None, context_phase="discovery"):
         system = messages[0]['content']
         context = json.loads(messages[1]['content'])
         if 'Author source-defined obligations' in system:
@@ -53,7 +53,8 @@ class ScopeChatFixture:
                     'rationale': 'Independent fixture evidence covers obligation', 'sources': [self.path], 'duplicate_of': None}
                     for record in context['finding_ledger']['records']]}})
         try:
-            reply = await invoke_chat(self.chat, messages, schema=response_schema)
+            reply = await invoke_chat(self.chat, messages, schema=response_schema,
+                                      max_context_bytes=max_context_bytes, context_phase=context_phase)
         except AssertionError as exc:
             raise FixtureAssertionError(str(exc)) from exc
         text = reply.text if isinstance(reply, DiscoveryChatReply) else reply
