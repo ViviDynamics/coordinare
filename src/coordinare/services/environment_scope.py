@@ -56,6 +56,7 @@ from coordinare.services.environment_response_schema import (
 )
 from coordinare.services.environment_scope_investigation import (
     ScopeInvestigationResponseError,
+    absence_candidates,
     bind_scope_requests,
     investigate_scope_requests,
     investigation_evidence,
@@ -195,11 +196,11 @@ def _request_rule_errors(assessment: ScopeAssessmentProposal, *, reviewer: Sourc
     """Reject repeat requests for proven-absent paths and unread-source gaps naming no existing path."""
     budget = reviewer.budget
     recorded = {result.binding_id: result for result in (budget.scope_investigation_results if budget is not None else [])}
-    absent = {}
+    absent = set()
     for binding in budget.scope_investigations if budget is not None else []:
         result = recorded.get(binding.id)
         if result is not None and result.status == 'absent':
-            absent[(binding.request.operation, binding.request.path)] = result.candidates or []
+            absent.add((binding.request.operation, binding.request.path))
     def exists(request: Any) -> bool:
         if request.operation == 'read_file':
             return request.path in reviewer.inventory
@@ -210,11 +211,15 @@ def _request_rule_errors(assessment: ScopeAssessmentProposal, *, reviewer: Sourc
     for group, index, item in items:
         location = ['scope_assessment', group, str(index), 'inspection_requests']
         for position, request in enumerate(item.inspection_requests):
-            known = absent.get((request.operation, request.path))
-            if known is not None:
-                errors.append({'code': 'scope_request_absent', 'location': [*location, str(position)], 'candidates': known,
-                    'guidance': 'This path is absent from the pinned inventory; request or read a listed candidate, '
-                                'or choose another disposition. Preserve every other decision.'})
+            if (request.operation, request.path) in absent:
+                # Re-derived from the pinned inventory; stored candidates are never trusted for feedback.
+                names, more = absence_candidates(request.path, reviewer.paths, directories=request.operation == 'list_files')
+                errors.append({'code': 'scope_request_absent', 'location': [*location, str(position)],
+                    'candidates': names, 'more_candidates': more,
+                    'guidance': ('This path is absent from the pinned inventory; request or read a listed candidate, '
+                                 'or choose another disposition. Preserve every other decision.') if names else
+                                ('This path is absent from the pinned inventory and no same-named path exists; use source '
+                                 'tools to find the real reference or choose another disposition. Preserve every other decision.')})
         if item.gap_kind == 'unread_source' and not any(exists(request) for request in item.inspection_requests):
             errors.append({'code': 'scope_gap_request_invalid', 'location': location,
                 'guidance': 'An unread_source gap must request at least one file or directory present in the pinned inventory. '
