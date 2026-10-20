@@ -160,3 +160,15 @@ planning subagent. Execution is native with independent review. Specs:
 - [ ] T082 Complete executable mapping and bounded correction (task5).
 - [ ] T083 Acceptance, provenance, legacy and restart invariants (task6).
 - [ ] T084 Elm complete bootstrap, then original repository validation and ship gates (task7).
+
+## Approved source review decision amendment
+
+Spec: `source-review-decision-amendment.md`; plan: `source-review-decision-plan.md`.
+Both approved by the maintainer on 2026-10-20. Execution is native with
+independent final review. Earlier incomplete acceptance tasks remain open.
+
+- [ ] T085 Shared disposition contracts, normalization and source contract v2 (task1).
+- [ ] T086 Atomic admission, provider schema, repair feedback and fixture migration (task2).
+- [ ] T087 Journal 9 / source protocol 4 persistence, recovery and fail-closed migration (task3).
+- [ ] T088 Readiness regression, independent review, preflight, push and CI (task4).
+- [ ] T089 Corrected-protocol diagnostic, fresh pinned Elm attempt and remaining ship gates (task5).

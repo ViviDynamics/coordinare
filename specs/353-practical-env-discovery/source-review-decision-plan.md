@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Python 3.12+, Pydantic v2 discriminated unions, strict provider JSON schemas. No new dependency, agent or keyword classifier.
 
-**Spec:** [source-review-decision-amendment.md](source-review-decision-amendment.md), approved as written by the maintainer on 2026-10-20. This plan awaits maintainer review. Native execution is preselected; the docs commit `3dfe0efc` is pushed together with this plan.
+**Spec:** [source-review-decision-amendment.md](source-review-decision-amendment.md), approved as written by the maintainer on 2026-10-20. This plan was approved by the maintainer on 2026-10-20 with native execution; the docs commit `3dfe0efc` is pushed together with this plan.
 
 ## Global Constraints
 
