@@ -1,6 +1,6 @@
 # Explicit investigation before source-scope revision
 
-Issue: #353. PR: #354. Status: written amendment approved by the maintainer on 2026-10-20; implementation awaits plan review.
+Issue: #353. PR: #354. Status: written amendment approved by the maintainer on 2026-10-20; implementation plan also approved; native execution authorized.
 
 ## Intended outcome and observed failure
 
