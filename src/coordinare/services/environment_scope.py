@@ -103,7 +103,8 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                 await budget.flush()
                 size = check_evidence_context(messages, max_bytes=inspection.limits.max_review_context_bytes, phase=inspection.name)
                 budget.context_bytes += size
-                raw = budget.record_reply(await invoke_chat(chat, messages, schema=schema))
+                raw = budget.record_reply(await invoke_chat(chat, messages, schema=schema,
+                    max_context_bytes=inspection.limits.max_review_context_bytes, context_phase=inspection.name))
                 try:
                     reply = _decode_reply(raw, inspection.name, inspection.limits)
                     if 'tool' in reply:

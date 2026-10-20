@@ -431,7 +431,8 @@ class OpenAiApiBackend:
         manifest README pass). Returns the assistant text ('' on any failure)."""
         return await self._chat(messages, json_mode=True)
 
-    async def chat_json_with_metadata(self, messages: list[dict[str, str]], *, response_schema: dict[str, Any] | None = None) -> DiscoveryChatReply:
+    async def chat_json_with_metadata(self, messages: list[dict[str, str]], *, response_schema: dict[str, Any] | None = None,
+                                      max_context_bytes: int | None = None, context_phase: str = "discovery") -> DiscoveryChatReply:
         """Keep diagnostics tied to this request without changing string-only callers."""
         from coordinare.services.environment_attempt import DiscoveryChatReply
         from coordinare.services.environment_structured_wire import (
@@ -455,6 +456,10 @@ class OpenAiApiBackend:
             else:
                 messages.insert(0, {"role": "system", "content": instruction})
             response_schema = canonical_schema if function_mode or text_mode else wire_schema(canonical_schema)
+        if max_context_bytes is not None:
+            from coordinare.services.environment_evidence import check_evidence_context
+
+            check_evidence_context(messages, max_bytes=max_context_bytes, phase=context_phase)
         reply = await self._chat_reply(messages, json_mode=True, response_schema=response_schema)
         text = reply.text
         error_code = "provider_request_failed" if reply.error else None

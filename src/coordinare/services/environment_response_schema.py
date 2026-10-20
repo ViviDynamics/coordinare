@@ -98,8 +98,19 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
 
 
 async def invoke_chat(chat: Callable[..., Awaitable[str | DiscoveryChatReply]], messages: list[dict[str, str]],
-                      *, schema: dict[str, Any]) -> str | DiscoveryChatReply:
-    """Older injected transports keep their signature; API transports receive schemas."""
-    if 'response_schema' in inspect.signature(chat).parameters:
-        return await chat(messages, response_schema=schema)
-    return await chat(messages)
+                      *, schema: dict[str, Any], max_context_bytes: int | None = None,
+                      context_phase: str = "discovery") -> str | DiscoveryChatReply:
+    """Pass schema and final-context admission through capable transport boundaries."""
+    if max_context_bytes is not None:
+        from coordinare.services.environment_evidence import check_evidence_context
+
+        check_evidence_context(messages, max_bytes=max_context_bytes, phase=context_phase)
+    parameters = inspect.signature(chat).parameters
+    kwargs: dict[str, Any] = {}
+    if 'response_schema' in parameters:
+        kwargs['response_schema'] = schema
+    if 'max_context_bytes' in parameters:
+        kwargs['max_context_bytes'] = max_context_bytes
+    if 'context_phase' in parameters:
+        kwargs['context_phase'] = context_phase
+    return await chat(messages, **kwargs)

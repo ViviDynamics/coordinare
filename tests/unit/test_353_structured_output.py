@@ -217,3 +217,95 @@ async def test_canonical_json_http_request_delivers_the_current_scope_bound_sche
     mapping = delivered['$defs']['EnvironmentManifestProposal']['properties']['criterion_checks']
     assert mapping['required'] == [identifier]
     assert messages == original_messages
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('transport', ['json_schema', 'json_object', 'tool_call'])
+async def test_final_transport_context_is_admitted_before_api_call(monkeypatch, transport):
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+    from coordinare.services.environment_evidence import check_evidence_context
+    from coordinare.services.environment_response_schema import invoke_chat, response_schema
+
+    requests = []
+    def answer(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={'choices': [{'message': {'content': '{}'}, 'finish_reason': 'stop'}]})
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: original(transport=httpx.MockTransport(answer), **kwargs))
+    backend = OpenAiApiBackend(api_key='fixture', base_url='https://fixture.invalid/v1', structured_transport=transport)
+    schema = response_schema('scope')
+    messages = [{'role': 'system', 'content': 'Return one scope. Schema: '+json.dumps(schema)}]
+    admitted = check_evidence_context(messages, max_bytes=100000, phase='scope_author')
+    with pytest.raises(EnvironmentDiscoveryError) as held:
+        await invoke_chat(backend.chat_json_with_metadata, messages, schema=schema,
+                          max_context_bytes=admitted, context_phase='scope_author')
+    assert held.value.code == 'scope_author_context_limit'
+    assert requests == []
+    assert messages[0]['content'] == 'Return one scope. Schema: '+json.dumps(schema)
+
+    await invoke_chat(backend.chat_json_with_metadata, messages, schema=schema,
+                      max_context_bytes=100000, context_phase='scope_author')
+    assert len(requests) == 1
+    final_size = check_evidence_context(requests[0]['messages'], max_bytes=100000, phase='scope_author')
+    assert final_size > admitted
+    await invoke_chat(backend.chat_json_with_metadata, messages, schema=schema,
+                      max_context_bytes=final_size, context_phase='scope_author')
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_scope_phase_delivers_its_limit_and_preserves_context_hold():
+    from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
+    from coordinare.services.environment_evidence import check_evidence_context
+    from tests.unit.test_353_scope_contract import criterion, proposal, review, run
+
+    values = iter([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), review()])
+    observed = []
+    async def chat(messages, *, response_schema, max_context_bytes, context_phase):
+        observed.append((max_context_bytes, context_phase))
+        if len(observed) == 2:
+            check_evidence_context([{'role': 'system', 'content': 'x'*max_context_bytes}],
+                                   max_bytes=max_context_bytes, phase=context_phase)
+        return json.dumps(next(values))
+    budget = AttemptBudget()
+    with pytest.raises(EnvironmentDiscoveryError) as held:
+        await run(chat, budget=budget)
+    assert held.value.code == 'scope_author_context_limit'
+    assert observed == [(1048576, 'scope_author'), (1048576, 'scope_author')]
+    assert budget.schema_repairs == 0
+    assert budget.scope_contract is None
+
+
+@pytest.mark.asyncio
+async def test_manifest_phase_delivers_context_limit_to_transport():
+    from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
+    from tests.unit.test_351_environment_discovery import PATH
+    from tests.unit.test_353_discovery_repair import candidate, run
+
+    values = iter([{'tool': 'read_file', 'path': PATH}, {'manifest': candidate()}])
+    phases = []
+    async def chat(messages, *, response_schema, max_context_bytes, context_phase):
+        phases.append(context_phase)
+        assert max_context_bytes == 1048576
+        if len(phases) == 2:
+            raise EnvironmentDiscoveryError('synthetic transport context hold', code=context_phase+'_context_limit')
+        return json.dumps(next(values))
+    budget = AttemptBudget()
+    with pytest.raises(EnvironmentDiscoveryError) as held:
+        await run(chat, budget=budget)
+    assert held.value.code == 'discovery_context_limit'
+    assert phases == ['discovery', 'discovery']
+    assert budget.schema_repairs == 0
+
+
+@pytest.mark.asyncio
+async def test_legacy_injected_chat_cannot_exceed_explicit_context_bound():
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+    from coordinare.services.environment_response_schema import invoke_chat
+
+    async def legacy(messages):
+        pytest.fail('oversized context reached legacy injected transport')
+    with pytest.raises(EnvironmentDiscoveryError) as held:
+        await invoke_chat(legacy, [{'role': 'user', 'content': 'x'*200}], schema={},
+                          max_context_bytes=100, context_phase='discovery')
+    assert held.value.code == 'discovery_context_limit'

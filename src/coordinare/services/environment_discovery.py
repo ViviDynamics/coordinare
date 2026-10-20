@@ -351,7 +351,8 @@ async def _phase(
                 await budget.flush()
                 budget.context_bytes += sum(len(message["content"].encode()) for message in messages)
                 _admit_phase_context(inspection, budget, messages, can_patch=repair_base is not None)
-                raw = budget.record_reply(await invoke_chat(chat, messages, schema=_phase_schema(inspection, repair_base)))
+                raw = budget.record_reply(await invoke_chat(chat, messages, schema=_phase_schema(inspection, repair_base),
+                    max_context_bytes=inspection.limits.max_review_context_bytes, context_phase=inspection.name))
                 reply = _phase_reply(raw, inspection, repair_base, messages, budget)
                 if reply is None:
                     continue
