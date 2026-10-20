@@ -684,3 +684,30 @@ async def test_pinned_missing_directory_link_does_not_abort_text_batch(tmp_path)
     assert all(item["content"] == "* text=auto\n" for item in result["files"])
     assert set(inspection.inputs) == {".gitattributes", "attributes-link"}
     assert "host-only" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_source_review_count_is_visible_before_executable_review(tmp_path, monkeypatch):
+    from tests.unit.test_353_bootstrap_pipeline import SOURCE, Proposal
+
+    source = tmp_path/'source'
+    source.mkdir()
+    subprocess.run(['git', 'init', '-q', str(source)], check=True)
+    (source/'guide').write_text(SOURCE)
+    subprocess.run(['git', '-C', str(source), 'add', '.'], check=True)
+    subprocess.run(['git', '-C', str(source), '-c', 'user.name=Fixture', '-c',
+        'user.email=fixture@example.invalid', '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'source'], check=True)
+    commit = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+    image = 'trusted@sha256:'+'a'*64
+    async def identity(_image):
+        return image, 'linux/x86_64'
+    monkeypatch.setattr('coordinare.services.environment_capabilities._docker_identity', identity)
+    result = await validate_repository(Snapshot(source, commit, 'fixture', 'suite'), image=image,
+        output=tmp_path/'profile', profile=Profile(model='fixture', base_url='http://localhost:1', execute=False),
+        chat=ScopeChatFixture(Proposal(), 'guide'))
+    assert result['independent_source_review_invocations'] == 1
+    assert result['independent_source_review_reached'] is True
+    assert result['independent_executable_review_invocations'] == 0
+    assert result['independent_review_reached'] is False
+    assert result['status'] == 'held' and result['ready_at_validation'] is False
+    assert result['installer_ran'] is False and result['clean_consumer_ran'] is False

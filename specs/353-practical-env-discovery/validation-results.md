@@ -23,8 +23,21 @@ redelivery consumed 505 of 512 reads; the next eight-file batch could not fit th
 remaining seven reads. The attempt still had 2,826 seconds left. Increasing time
 alone cannot resolve this observed loop. The proposed
 [source-investigation correction](source-investigation-amendment.md) has written-spec
-approval; its [implementation plan](source-investigation-plan.md) awaits review.
-It has not been implemented or validated against Elm.
+and implementation-plan approval. Its generic request queue, author-only cache
+and interruption recovery are implemented and independently reviewed. Deterministic
+regressions cover unknown nested paths, incomplete evidence, exact listing pages,
+missing cache, immutable origin identities and original finite budgets. The 56-file
+cache regression performs 168 fetches instead of 224 while retaining two complete
+fresh independent reviewer fetches. This correction has not yet been run against Elm.
+
+The offline replay processes all 23 saved responses without executing commands or
+inventing new inspection requests. It counts six source-assessment response proposals
+and seven revision proposals, including schema-rejected proposals; the durable
+journal records four admitted source reviews and zero executable reviews. The one
+post-author source-read tool call selected an existing path, with no new file selected.
+All six old assessment responses lack the newly required explicit request fields
+and are rejected by the current source-review protocol. That protocol rejection
+is not a simulated successful investigation or an Elm acceptance claim.
 
 Profile: `claude-haiku-5-5`, high effort, authenticated local LiteLLM connection,
 strict JSON schema, 65,536 output tokens, 2 MiB conversation ceiling, 3,600-second

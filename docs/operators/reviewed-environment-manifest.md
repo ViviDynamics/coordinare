@@ -309,7 +309,7 @@ input at the pinned commit, verifies its hash and delivers its contents to the r
 The reviewer can inspect more files and must still judge executable coverage. Delivery
 establishes the supplied bytes; it does not establish that the model understood them.
 Source drift and missing evidence hold before judgment. The full serialized review
-conversation, including additional tool results, is limited to 1 MiB by default
+conversation, including transport instructions, embedded schemas and additional tool results, is limited to 1 MiB by default
 (`manifest_max_review_context_bytes`, maximum 16 MiB). Oversized evidence holds without
 truncation or automatic partitioning. The JSON-chat backend currently exposes no input
 token capacity; the byte cap does not guarantee provider context capacity. Provider
@@ -326,11 +326,22 @@ configuration is a deprecated alias supplying all three limits; combining it wit
 new category setting is rejected. A valid coverage revision can add obligations but
 cannot remove, make optional or narrow existing required checks or lifecycle scopes.
 
-Current attempt journal version seven stores category consumption and source-scope
-protocol checkpoints. Versions one through five require an explicit clean rebuild
-after confirming no executor is running. Version six can migrate only when it
-already contains an accepted source-scope contract; otherwise it also requires an
-explicit restart. Migration never grants fresh allowances. Frozen contracts remain
+Source review can delegate up to eight exact file-read or paginated directory-list
+requests per finding. The daemon binds each request to its finding, originating
+review, scope, source commit and inventory. Investigation must finish before an
+author revision, and responses must cite requested file contents. A listing proves
+only its exact page; unavailable content is not pinned absence. Inspection never
+resolves a finding or grants readiness. The author can reuse verified same-attempt
+bytes within the existing byte/context limits. Independent reviewers fetch every
+required input afresh; the original read and repair budgets remain in force.
+
+Current attempt journal version eight/source protocol three stores the bounded
+inspection queue and results, category consumption and source-scope checkpoints.
+Versions one through five require an explicit clean rebuild after confirming no
+executor is running. Versions six and seven can migrate only when they already
+contain an accepted source-scope contract and no pending investigation; otherwise
+they require an explicit restart. Missing in-memory author content requires charged
+reinspection or a hold, never fabricated completion. Migration never grants fresh allowances. Frozen contracts remain
 subject to the current identity, coverage and execution acceptance checks. The existing authenticated environment-bootstrap action now archives the old
 journal and starts in a new empty cache sibling. Discovery-only holds need no executor
 cleanup. After execution, the action must confirm that its owned session stopped;
