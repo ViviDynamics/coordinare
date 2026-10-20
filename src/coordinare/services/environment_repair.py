@@ -16,6 +16,10 @@ from coordinare_service_inference.environment.models import (
     ExecutionCapabilities,
 )
 from coordinare_service_inference.environment.scope import ScopeContract, ScopeDefinition
+from coordinare_service_inference.environment.scope_investigation import (
+    ScopeInspectionBinding,  # noqa: TC002 - pydantic resolves journal field types at runtime
+    ScopeInspectionResult,  # noqa: TC002 - pydantic resolves journal field types at runtime
+)
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from coordinare.lib.redaction import redact_command_text, redact_state_value
@@ -38,6 +42,7 @@ from coordinare.services.environment_obligations import (
 )
 from coordinare.services.environment_probes import ProbePlan, ProbeReport, bind_probe_report
 from coordinare.services.environment_scope import preserve_scope
+from coordinare.services.environment_scope_investigation import validate_investigation_history
 
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import CheckResult
@@ -55,17 +60,19 @@ OUTPUT_MAX_CHARS = 512
 
 
 PREVIOUS_SCOPE_JOURNAL_VERSION = 6
-CURRENT_JOURNAL_VERSION = 7
+CURRENT_JOURNAL_VERSION = 8
 
 
 class RepairJournal(BaseModel):
     """Daemon-owned state; a pending repair survives snapshot roundtrips."""
 
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
-    version: Literal[7] = 7
-    scope_author_protocol: Literal[2]
-    scope_phase: Literal["initial", "revision", "review", "accepted"] = "initial"
+    version: Literal[8] = 8
+    scope_author_protocol: Literal[3]
+    scope_phase: Literal["initial", "investigation", "revision", "review", "accepted"] = "initial"
     scope_revision_base_digest: Digest | None = None
+    scope_investigations: list[ScopeInspectionBinding] = Field(default_factory=list, max_length=256)
+    scope_investigation_results: list[ScopeInspectionResult] = Field(default_factory=list, max_length=256)
     scope_inputs: dict[str, Digest] = Field(default_factory=dict)
     scope_responses: list[FindingResponse] = Field(default_factory=list, max_length=32)
     scope_definition: ScopeDefinition | None = None
@@ -113,12 +120,15 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
     data = cache.environment_attempt
     if isinstance(data, dict) and type(data.get('version')) is int and data['version'] in (1, 2, 3, 4, 5):
         _refuse('legacy environment review requires explicit restart after confirmed cleanup', code='legacy_attempt_requires_restart')
-    if isinstance(data, dict) and data.get('version') == PREVIOUS_SCOPE_JOURNAL_VERSION:
-        if data.get('scope_contract') is None:
+    if isinstance(data, dict) and data.get('version') in {PREVIOUS_SCOPE_JOURNAL_VERSION, 7}:
+        if (data.get('scope_contract') is None or data.get('scope_investigations')
+                or data.get('scope_investigation_results')):
             _refuse('legacy source author protocol requires explicit restart', code='legacy_attempt_requires_restart')
-        data = {**data, 'version': 7, 'scope_author_protocol': 2, 'scope_phase': 'accepted', 'scope_revision_base_digest': None}
+        data = {**data, 'version': 8, 'scope_author_protocol': 3, 'scope_phase': 'accepted',
+                'scope_revision_base_digest': None, 'scope_investigations': [], 'scope_investigation_results': []}
     if isinstance(data, dict) and data.get('version') == CURRENT_JOURNAL_VERSION and not {
-            'scope_author_protocol', 'scope_phase', 'scope_revision_base_digest'} <= data.keys():
+            'scope_author_protocol', 'scope_phase', 'scope_revision_base_digest',
+            'scope_investigations', 'scope_investigation_results'} <= data.keys():
         _refuse('scope protocol checkpoint is incomplete', code='scope_protocol_invalid')
     try:
         if len(json.dumps(cache.environment_attempt).encode()) > JOURNAL_MAX_BYTES:
@@ -145,10 +155,16 @@ def _validate_scope_checkpoint(journal: RepairJournal) -> None:
     phase, base = journal.scope_phase, journal.scope_revision_base_digest
     if ((phase == 'initial' and (definition is not None or contract is not None or base is not None))
             or (phase == 'review' and (definition is None or contract is not None or base is not None))
-            or (phase == 'revision' and (definition is None or contract is not None
+            or (phase in {'investigation', 'revision'} and (definition is None or contract is not None
                 or base != definition.digest() or findings is None or not findings.open_ids()))
             or (phase == 'accepted' and (contract is None or base is not None))):
         _refuse('scope phase differs from its retained definition', code='scope_protocol_invalid')
+    validate_investigation_history(bindings=journal.scope_investigations, results=journal.scope_investigation_results,
+        ledger=findings, definition=definition, inputs=journal.scope_inputs)
+    if phase in {'revision', 'review', 'accepted'} and findings is not None:
+        completed = {result.binding_id for result in journal.scope_investigation_results}
+        if any(binding.id not in completed for binding in journal.scope_investigations):
+            _refuse('scope revision precedes required investigation', code='scope_investigation_identity')
     try:
         for path, digest in journal.scope_inputs.items():
             source_path(path)
@@ -175,6 +191,11 @@ def _save_scope_checkpoint(journal: RepairJournal, budget: AttemptBudget) -> Non
         preserve_scope(journal.scope_definition, budget.scope_definition)
     if any(budget.scope_inputs.get(path) != digest for path, digest in journal.scope_inputs.items()):
         _refuse('scope read history cannot be replaced', code='scope_source_identity')
+    if (budget.scope_investigations[:len(journal.scope_investigations)] != journal.scope_investigations
+            or budget.scope_investigation_results[:len(journal.scope_investigation_results)] != journal.scope_investigation_results):
+        _refuse('investigation history cannot be removed or replaced', code='scope_investigation_identity')
+    journal.scope_investigations = list(budget.scope_investigations)
+    journal.scope_investigation_results = list(budget.scope_investigation_results)
     journal.scope_author_protocol = budget.scope_author_protocol
     journal.scope_phase = budget.scope_phase
     journal.scope_revision_base_digest = budget.scope_revision_base_digest
@@ -233,7 +254,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
     if data is None:
         cache.environment_source_owner = None
         return
-    if not isinstance(data, dict) or data.get("version") not in (1, 2, 3, 4, 5, 6, 7):
+    if not isinstance(data, dict) or data.get("version") not in (1, 2, 3, 4, 5, 6, 7, 8):
         _refuse("unknown environment journal cannot be reset without reconciliation")
     normalized = dict(data)
     if normalized["version"] == 1:
@@ -241,8 +262,13 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
         normalized["version"] = 2
         for counter in ("schema_repairs", "coverage_revisions", "execution_repairs"):
             normalized[counter], normalized["max_" + counter] = used, maximum
-    normalized["version"] = 7
-    normalized.setdefault("scope_author_protocol", 2)
+    if data['version'] < CURRENT_JOURNAL_VERSION:
+        if normalized.get('scope_author_protocol') not in (None, 2, 3):
+            _refuse('unknown legacy scope protocol requires reconciliation')
+        # Validation for explicit archival only; the original data is retained.
+        normalized['scope_author_protocol'] = 3
+    normalized['version'] = CURRENT_JOURNAL_VERSION
+    normalized.setdefault('scope_author_protocol', 3)
     normalized.setdefault("finding_ledger", None)
     try:
         parsed = RepairJournal.model_validate(normalized)
@@ -295,6 +321,8 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
         started=time.monotonic()-(now-journal.started_at), max_calls=journal.max_calls,
         max_reads=journal.max_reads, max_schema_repairs=journal.max_schema_repairs,
         max_coverage_revisions=journal.max_coverage_revisions, max_execution_repairs=journal.max_execution_repairs)
+    budget.scope_investigations = [item.model_copy(deep=True) for item in journal.scope_investigations]
+    budget.scope_investigation_results = [item.model_copy(deep=True) for item in journal.scope_investigation_results]
     budget.scope_author_protocol = journal.scope_author_protocol
     budget.scope_phase = journal.scope_phase
     budget.scope_revision_base_digest = journal.scope_revision_base_digest
@@ -336,7 +364,7 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
     if not isinstance(cache.bootstrap_commit_sha, str):
         _refuse("environment repair requires an immutable source commit")
     if previous is None or previous.source_commit != cache.bootstrap_commit_sha or previous.status == 'ready':
-        journal = RepairJournal(source_commit=cache.bootstrap_commit_sha, scope_author_protocol=2,
+        journal = RepairJournal(source_commit=cache.bootstrap_commit_sha, scope_author_protocol=3,
             base_slug=cache.sanitised_name, base_cache_dir=str(cache.cache_dir),
             origin_slug=previous.origin_slug if previous else cache.sanitised_name,
             started_at=now, expires_at=now+seconds, max_calls=limits.max_model_calls,

@@ -21,7 +21,10 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from coordinare_service_inference.environment.findings import FindingLedger, FindingResponse
-    from coordinare_service_inference.environment.scope import ScopeAssessmentProposal
+    from coordinare_service_inference.environment.scope import (
+        ScopeAssessmentProposal,
+        ScopeDefinition,
+    )
 
     from coordinare.services.environment_inspection import SourceInspection
 
@@ -96,7 +99,8 @@ async def investigate_scope_requests(inspection: SourceInspection,
                 if binding.inventory_digest != inspection.inventory_digest:
                     raise EnvironmentDiscoveryError('investigation inventory differs', code='scope_investigation_identity')
                 request = binding.request
-                if request.operation == 'read_file' and request.path in inspection.inventory:
+                if (request.operation == 'read_file' and request.path in inspection.inventory
+                        and request.path not in inspection.source_files):
                     try:
                         await inspection.read_files([request.path])
                     except EnvironmentDiscoveryError as exc:
@@ -151,3 +155,39 @@ def validate_investigation_responses(*, bindings: Sequence[ScopeInspectionBindin
                     or inputs.get(binding.request.path) != result.file_sha256):
                 raise FindingValidationError('finding response must cite requested inspected file',
                     code='scope_investigation_response_invalid', location=('finding_responses',))
+
+
+def validate_investigation_history(*, bindings: Sequence[ScopeInspectionBinding],
+                                   results: Sequence[ScopeInspectionResult], ledger: FindingLedger | None,
+                                   definition: ScopeDefinition | None, inputs: Mapping[str, str]) -> None:
+    """Bind persisted history to its originating review, never the latest scope."""
+    try:
+        checked = ScopeInspectionQueue.model_validate({'bindings': [item.model_dump(mode='json') for item in bindings]})
+        parsed = [ScopeInspectionResult.model_validate(item.model_dump(mode='json')) for item in results]
+        if len(canonical({'bindings': [item.model_dump(mode='json') for item in checked.bindings],
+                          'results': [item.model_dump(mode='json') for item in parsed]})) > 256*1024:
+            raise ValueError('investigation metadata exceeds aggregate bound')
+        by_id = {item.id: item for item in checked.bindings}
+        if len({result.binding_id for result in parsed}) != len(parsed):
+            raise ValueError('investigation result identities repeat')
+        for binding in checked.bindings:
+            if (ledger is None or definition is None or binding.source_commit != ledger.source_commit
+                    or binding.inventory_digest != definition.inventory_digest
+                    or binding.review_sequence > len(ledger.reviews)):
+                raise ValueError('investigation origin differs')
+            origin = ledger.reviews[binding.review_sequence-1]
+            eligible = {*origin.added_ids, *(item.finding_id for item in origin.decisions if item.status == 'open')}
+            if binding.scope_digest != origin.manifest_digest or binding.finding_id not in eligible:
+                raise ValueError('investigation differs from originating review')
+        for result in parsed:
+            binding = by_id.get(result.binding_id)
+            if binding is None:
+                raise ValueError('investigation result has no request')
+            request = binding.request
+            if ((result.status == 'file' and (request.operation != 'read_file'
+                    or inputs.get(request.path) != result.file_sha256))
+                    or (result.status == 'listing' and request.operation != 'list_files')
+                    or (result.status == 'absent' and request.path in inputs)):
+                raise ValueError('investigation result differs from retained source')
+    except (ValidationError, ValueError, TypeError):
+        raise EnvironmentDiscoveryError('investigation checkpoint identity is invalid', code='scope_investigation_identity') from None
