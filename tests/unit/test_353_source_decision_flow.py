@@ -283,3 +283,30 @@ async def test_flat_gap_without_kind_is_rejected():
     budget = AttemptBudget()
     scope = await run(replies, budget=budget)
     assert budget.schema_repairs == 1 and scope.finding_ledger.open_ids() == []
+
+
+@pytest.mark.asyncio
+async def test_populated_inapplicable_field_gets_disposition_guidance():
+    from coordinare.services.environment_admission import SOURCE_DISPOSITION_GUIDANCE
+
+    def bad(messages):
+        return assess('revise', decisions=[flat({**gap('F0001'), 'criterion_ids': ids(messages)})])
+    replies = Replies([READ_GUIDE, proposal(criterion()), objection(), revision(), bad, accept_covered('F0001')])
+    budget = AttemptBudget()
+    await run(replies, budget=budget)
+    assert budget.schema_repairs == 1
+    errors = feedback(replies)
+    assert any(error['code'] == 'extra_forbidden' and error['location'][-1] == 'criterion_ids'
+               and error.get('guidance') == SOURCE_DISPOSITION_GUIDANCE for error in errors)
+    assert 'null or []' in SOURCE_DISPOSITION_GUIDANCE
+
+
+@pytest.mark.asyncio
+async def test_review_instructions_explain_flat_decision_fields():
+    replies = Replies([READ_GUIDE, proposal(criterion()), accept_covered()])
+    await run(replies)
+    system = replies.messages[-1][0]['content']
+    assert 'criterion_ids only for covered' in system
+    assert 'affected_ids, gap_kind and inspection_requests only for source_gap' in system
+    assert 'duplicate_of only for duplicate' in system
+    assert 'Every other decision field must be null or []' in system
