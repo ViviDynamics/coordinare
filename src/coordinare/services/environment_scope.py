@@ -191,6 +191,37 @@ def _decision_reference_errors(assessment: ScopeAssessmentProposal, *, definitio
     return errors
 
 
+def _request_rule_errors(assessment: ScopeAssessmentProposal, *, reviewer: SourceInspection) -> list[dict[str, Any]]:
+    """Reject repeat requests for proven-absent paths and unread-source gaps naming no existing path."""
+    budget = reviewer.budget
+    recorded = {result.binding_id: result for result in (budget.scope_investigation_results if budget is not None else [])}
+    absent = {}
+    for binding in budget.scope_investigations if budget is not None else []:
+        result = recorded.get(binding.id)
+        if result is not None and result.status == 'absent':
+            absent[(binding.request.operation, binding.request.path)] = result.candidates or []
+    def exists(request: Any) -> bool:
+        if request.operation == 'read_file':
+            return request.path in reviewer.inventory
+        return request.path == '' or any(path.startswith(request.path+'/') for path in reviewer.paths)
+    items = [('findings', index, item) for index, item in enumerate(assessment.findings)]
+    items.extend(('decisions', index, item) for index, item in enumerate(assessment.decisions) if isinstance(item, SourceGapDecision))
+    errors: list[dict[str, Any]] = []
+    for group, index, item in items:
+        location = ['scope_assessment', group, str(index), 'inspection_requests']
+        for position, request in enumerate(item.inspection_requests):
+            known = absent.get((request.operation, request.path))
+            if known is not None:
+                errors.append({'code': 'scope_request_absent', 'location': [*location, str(position)], 'candidates': known,
+                    'guidance': 'This path is absent from the pinned inventory; request or read a listed candidate, '
+                                'or choose another disposition. Preserve every other decision.'})
+        if item.gap_kind == 'unread_source' and not any(exists(request) for request in item.inspection_requests):
+            errors.append({'code': 'scope_gap_request_invalid', 'location': location,
+                'guidance': 'An unread_source gap must request at least one file or directory present in the pinned inventory. '
+                            'Use listed absence candidates or source tools to find the real path.'})
+    return errors
+
+
 def _validate_review(data: dict[str, Any], *, reviewer: SourceInspection, definition: ScopeDefinition,
                      ledger: FindingLedger, commit: str) -> tuple[ScopeAssessmentProposal, FindingLedger, SourceAssessmentRecord]:
     assessment = ScopeAssessmentEnvelope.model_validate(normalize_source_assessment(data)).scope_assessment
@@ -202,7 +233,8 @@ def _validate_review(data: dict[str, Any], *, reviewer: SourceInspection, defini
     for index, path in enumerate(assessment.sources):
         if path not in reviewer.inputs:
             _citation_error('scope_assessment', 'sources', str(index))
-    errors = _decision_reference_errors(assessment, definition=definition)
+    errors = [*_decision_reference_errors(assessment, definition=definition),
+              *_request_rule_errors(assessment, reviewer=reviewer)]
     if errors:
         raise _ResponseReferenceError(errors)
     base = assessment.model_dump(exclude={'findings', 'decisions'})
@@ -260,6 +292,8 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
         'An indeterminate verdict terminates this attempt; it is never automatically converted to revise or accept. '
         'An excluded activity needs source-backed applicability, never an image limitation or candidate disclaimer. '
         'Every new finding and source_gap decision requires inspection_requests: [] or up to eight distinct read_file/list_files requests. '
+        'An unread_source gap must request at least one file or directory present in the pinned inventory. '
+        'Never re-request a path already reported absent; use its listed candidates. '
         'Requests delegate unread exact paths/cursors to the author; sources remains independently inspected file citations. '
         'covered, source_correction and duplicate decisions and accept verdicts cannot request further inspection. '
         'Return scope_assessment with verdict, rationale, sources, findings, decisions. '

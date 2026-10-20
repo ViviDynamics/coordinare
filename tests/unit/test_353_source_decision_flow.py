@@ -21,13 +21,18 @@ def assess(verdict='accept', *, findings=(), decisions=(), sources=None):
         'sources': sources or ['guide'], 'findings': list(findings), 'decisions': list(decisions)}}
 
 
+def fixture_kind(value):
+    """An unread_source gap must request an existing path; generic fixture gaps are missing obligations."""
+    return 'unread_source' if value.get('inspection_requests') else 'missing_obligation'
+
+
 def gap_finding(issue='Nested service obligation is unread', **value):
     return {'category': 'coverage', 'issue': issue, 'sources': ['guide'], 'affected_ids': [],
-            'gap_kind': 'unread_source', 'inspection_requests': [], **value}
+            'gap_kind': fixture_kind(value), 'inspection_requests': [], **value}
 
 
-def gap(fid='F0001', kind='unread_source', **value):
-    return {'finding_id': fid, 'disposition': 'source_gap', 'gap_kind': kind, 'affected_ids': [],
+def gap(fid='F0001', kind=None, **value):
+    return {'finding_id': fid, 'disposition': 'source_gap', 'gap_kind': kind or fixture_kind(value), 'affected_ids': [],
             'inspection_requests': [], 'rationale': 'A concrete source defect remains', 'sources': ['guide'], **value}
 
 

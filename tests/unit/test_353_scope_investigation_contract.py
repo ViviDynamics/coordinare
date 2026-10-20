@@ -12,7 +12,7 @@ from tests.unit.test_353_scope_contract import COMMIT
 
 def finding(requests):
     return {'category': 'coverage', 'issue': 'Inspect unfamiliar nested obligation',
-            'sources': ['guide'], 'affected_ids': [], 'gap_kind': 'unread_source', 'inspection_requests': requests}
+            'sources': ['guide'], 'affected_ids': [], 'gap_kind': 'missing_obligation', 'inspection_requests': requests}
 
 
 def binding_data():
