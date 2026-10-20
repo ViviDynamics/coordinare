@@ -188,7 +188,7 @@ def resolved_source_path(
                 source_refusal("execution source symlink traverses a missing or non-directory")
             resolved.append(part)
     result = "/".join(resolved)
-    if result not in entries and not any(p.startswith(result + "/") for p in entries):
+    if result and result not in entries and not any(p.startswith(result + "/") for p in entries):
         raise ExecutionSourceError("execution source symlink target missing")
     return result
 

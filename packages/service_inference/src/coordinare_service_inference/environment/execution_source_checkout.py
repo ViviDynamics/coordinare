@@ -121,9 +121,11 @@ async def checkout_identity(
                             or bool(info.st_mode & 0o111) != (entry.mode == "100755")
                         ):
                             raise ValueError("execution source checkout file identity differs")
+                        first_chunk = True
                         while chunk := stream.read(CHUNK_BYTES):
-                            if chunk.startswith(b"version https://git-lfs.github.com/spec/v1\n"):
+                            if first_chunk and chunk.startswith(b"version https://git-lfs.github.com/spec/v1\n"):
                                 raise ValueError("execution source LFS content unsupported")
+                            first_chunk = False
                             digest.update(chunk)
                             review_hash.update(chunk)
                 if digest.hexdigest() != entry.object_id:
