@@ -34,7 +34,8 @@ def _require_scope_mapping(declaration: dict[str, Any], scope: ScopeContract) ->
 
 
 def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: ScopeContract | None = None,
-                    scope_decision_ids: Sequence[str] | None = None) -> dict[str, Any]:
+                    scope_decision_ids: Sequence[str] | None = None,
+                    probe_command_ids: Sequence[str] | None = None, probe_sources: Sequence[str] | None = None) -> dict[str, Any]:
     tools = [
         {'type': 'object', 'additionalProperties': False, 'required': ['tool', 'path'],
          'properties': {'tool': {'const': 'read_file'}, 'path': {'type': 'string'}}},
@@ -56,6 +57,14 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
         decisions.update(minItems=len(scope_decision_ids), maxItems=len(scope_decision_ids))
         if scope_decision_ids:
             declaration['$defs']['FindingDecisionProposal']['properties']['finding_id']['enum'] = list(scope_decision_ids)
+    if phase == 'probe' and probe_command_ids is not None:
+        properties = declaration['$defs']['ProbeRequest']['properties']
+        citation = {'type': 'array', 'minItems': 1, 'items': {'type': 'string', **(
+            {'enum': list(probe_sources)} if probe_sources else {})}}
+        question = {'type': 'string', 'minLength': 1, 'maxLength': 512}
+        for name, value in [('citations', citation), ('questions', question)]:
+            properties[name] = {'type': 'object', 'additionalProperties': False,
+                'required': list(probe_command_ids), 'properties': dict.fromkeys(probe_command_ids, value)}
     if phase == 'manifest' and scope_contract is not None:
         _require_scope_mapping(declaration, scope_contract)
     definitions = declaration.pop('$defs', {})
