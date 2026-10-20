@@ -321,7 +321,7 @@ request failures hold and do not consume schema corrections. Output limits remai
 on the model backend.
 
 Schema corrections, coverage revisions and executable repairs default to two each.
-Their independent configurable ranges are zero to eight, zero to four and zero to
+Their independent configurable ranges are zero to eight, zero to eight and zero to
 two respectively (`manifest_max_schema_repairs`, `manifest_max_coverage_revisions`,
 `manifest_max_execution_repairs`). All categories share the original
 aggregate deadline, model-call and source-read limits. A new candidate, new reviewer,

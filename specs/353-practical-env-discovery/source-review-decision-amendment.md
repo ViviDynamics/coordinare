@@ -200,3 +200,15 @@ schema goes in the prompt (`json_object` transport). The fallback is recorded in
 attempt diagnostics, uses no extra call allowance, and leaves local validation,
 repair limits and every execution gate unchanged. Other provider errors still fail
 closed.
+
+## Coverage revision ceiling (maintainer-approved, 2026-10-20)
+
+The second fresh pinned Elm attempt under this protocol held at the coverage
+revision limit after 633 of 3,600 seconds and 396 of 2,048 reads. Five independent
+source reviews adjudicated every finding without contradiction; nine findings were
+resolved as covered, and the last review raised one new unread-source gap after
+all four revisions were spent. The configurable coverage revision ceiling rises
+from four to eight. The default remains two, every revision still consumes the
+original aggregate deadline, call and read budgets, and resumed attempts never
+renew or enlarge their recorded allowances. The next labelled Elm experiment uses
+eight coverage revisions with every other control unchanged.

@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 MAX_ATTEMPT_SECONDS = 3600
-REPAIR_LIMITS = {"schema": 8, "coverage": 4, "execution": 2}
+REPAIR_LIMITS = {"schema": 8, "coverage": 8, "execution": 2}
 MAX_PROBE_BATCHES = 2
 RepairKind = Literal["schema", "coverage", "execution"]
 REPAIR_COUNTERS = {"schema": "schema_repairs", "coverage": "coverage_revisions", "execution": "execution_repairs"}
