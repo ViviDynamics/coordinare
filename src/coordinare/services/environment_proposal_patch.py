@@ -18,7 +18,8 @@ PATCH_SCHEMA = {'type':'object','additionalProperties':False,'required':['tool',
 PATCH_INSTRUCTION = (
     'A previous unambiguous complete declaration is available for correction. Prefer small correction records or source inspection requests, preserving unrelated records: '
     '{"tool":"repair_proposal","changes":[{"path":["finding_responses"],"value_json":"[]"}]}. '
-    'Paths start with manifest, finding_responses, or assessment as appropriate for the current declaration. '
+    'Paths start with manifest, finding_responses, assessment, or probe as appropriate for the current declaration. '
+    'Probe corrections may change only probe.citations and probe.questions; preserve every command and execution setting. '
     'For manifest field validation locations, prefix manifest unless the location already starts with finding_responses. '
     f'Use at most {MAX_CHANGES} correction records and paths of depth at most {MAX_PATH_DEPTH}. '
     'If more fields need correction, replace their common existing array or object once with its complete corrected value, '
@@ -87,8 +88,12 @@ def _apply(base: dict[str, Any] | None, request: dict[str, Any], max_bytes: int)
         message = 'invalid correction request'
         raise ValueError(message)
     target = copy.deepcopy(base)
-    roots = {'manifest', 'finding_responses'} if 'manifest' in base else {'assessment'}
+    roots = {'probe'} if 'probe' in base else ({'manifest', 'finding_responses'} if 'manifest' in base else {'assessment'})
     for change in changes:
+        if 'probe' in base and (not isinstance(change, dict) or not isinstance(change.get('path'), list)
+                or len(change['path']) < 2 or change['path'][:2] not in [['probe', 'citations'], ['probe', 'questions']]):
+            message = 'probe corrections may change evidence only'
+            raise ValueError(message)
         _replace(target, change, roots)
     if len(json.dumps(target, ensure_ascii=False, allow_nan=False).encode()) > max_bytes:
         message = 'corrected declaration exceeds bound'

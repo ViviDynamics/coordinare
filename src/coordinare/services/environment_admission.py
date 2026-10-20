@@ -126,8 +126,9 @@ def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any
                         "Never rename or remove existing required requirement/check/service IDs; revise their definitions in place. "
                         "Use list_files for directories and read_files only for exact file paths from listings. " +
                         ("Use required executable check IDs, not commands or install-only prerequisites. "
-                         if budget.expected_envelope not in {"scope", "scope_revision", "scope_assessment", "criterion_checks", "runtime_endpoints", "base_digest", "add", "reassess", "criterion_id", "criterion"} else
-                         "Preserve source-defined scope; do not generate commands during source review. ") +
+                         if budget.expected_envelope in {"manifest", "assessment"} else
+                         "Preserve source-defined scope; do not generate commands during source review. "
+                         if budget.expected_envelope in {"scope", "scope_revision", "scope_assessment"} else "") +
                         "Independent review and successful clean execution remain mandatory."})}])
 
 
