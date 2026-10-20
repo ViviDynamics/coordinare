@@ -1,6 +1,6 @@
 # Explicit investigation before source-scope revision
 
-Issue: #353. PR: #354. Status: proposed written amendment; not approved for implementation.
+Issue: #353. PR: #354. Status: written amendment approved by the maintainer on 2026-10-20; implementation awaits plan review.
 
 ## Intended outcome and observed failure
 
@@ -128,5 +128,4 @@ Do not change the constitution, required CI assertions, global timeouts, provide
 model effort, project source, runtime privileges, egress policy or other repositories.
 The unrelated required dashboard latency failure remains a shipping blocker.
 The full PR review, existing sample acceptance, Elm clean execution and final-head
-required CI gates remain outstanding. This draft is a proposed correction, not an
-implementation plan or acceptance claim.
+required CI gates remain outstanding. This approved amendment is not an implementation plan or acceptance claim.
