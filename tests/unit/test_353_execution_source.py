@@ -341,3 +341,48 @@ def test_restored_tree_has_git_checkout_permissions_under_private_umask(tmp_path
         assert (private_parent / name).stat().st_mode & 0o777 == 0o755
     assert (private_parent / 'repo/src/main').stat().st_mode & 0o777 == 0o644
     assert (private_parent / 'repo/bin/tool').stat().st_mode & 0o777 == 0o755
+
+
+@pytest.mark.parametrize(('link', 'target'), [('root', '.'), ('nested/up', '..')])
+def test_safe_repository_root_symlink_roundtrips(tmp_path, link, target):
+    from coordinare_service_inference.environment.execution_source_restore import (
+        restore_execution_bundle,
+    )
+
+    api = source_api()
+    files = {'source.txt': (b'root content', '100644'), link: (target.encode(), '120000')}
+    bundle, identity = bundle_file(tmp_path, files)
+    expected = api.ExecutionSourceIdentity.model_validate(identity)
+    assert api.validate_execution_bundle(bundle, expected=expected) == expected
+    restored = tmp_path / 'restored'
+    restore_execution_bundle(bundle, restored, expected=expected, review_inputs={})
+    assert os.readlink(restored / link) == target
+    assert (restored / link / 'source.txt').read_bytes() == b'root content'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('offset', [0, 65536])
+async def test_installer_lfs_marker_only_at_file_start(tmp_path, monkeypatch, offset):
+    from coordinare_service_inference.environment import execution_source_checkout as checkout
+
+    content = b'x' * offset + b'version https://git-lfs.github.com/spec/v1\nordinary embedded text\n'
+    files = {'data.bin': (content, '100644')}
+    entry = entries_for(files)[0]
+    (tmp_path / 'data.bin').write_bytes(content)
+
+    async def git(repo, *args):
+        assert repo == tmp_path
+        if args == ('rev-parse', 'HEAD'):
+            return (COMMIT + '\n').encode()
+        assert args == ('ls-tree', '-rzl', '--full-tree', COMMIT)
+        return f"100644 blob {entry['object_id']} {len(content)}\tdata.bin\0".encode()
+
+    monkeypatch.setattr(checkout, '_git', git)
+    if offset == 0:
+        with pytest.raises(ValueError, match='LFS'):
+            await checkout.checkout_identity(tmp_path, commit=COMMIT, review_inputs={})
+        return
+    bundle, identity = bundle_file(tmp_path, files)
+    expected = source_api().ExecutionSourceIdentity.model_validate(identity)
+    assert source_api().validate_execution_bundle(bundle, expected=expected) == expected
+    assert await checkout.checkout_identity(tmp_path, commit=COMMIT, review_inputs={}) == expected
