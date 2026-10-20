@@ -75,3 +75,34 @@ bootstrap acceptance. Regression coverage verifies a successful revision across
 separate phase quotas and refusal when the unchanged aggregate read budget runs
 out. Both failed full runs remain retained, with owned image/registry/source
 cleanup confirmed. Any next full run uses a fresh labeled profile.
+
+On 2026-10-20 the user approved separating source coverage from runtime-proof
+checks, investigating outstanding source references before resubmission, and
+batching stale criterion-reference diagnostics while preserving attempted changes.
+This corrects the documented source-first phase boundary; the constitution and
+final readiness policy are unchanged. Shared navigation guidance now stays source
+only. Executable construction and final review retain capability-probe and
+operational-evidence instructions. Source messages explicitly carry their limited
+phase authority and retain required capabilities with observable success conditions.
+Unknown applicability, unread relevant sources, contradictory requirements and the
+source portions of mixed findings still block. Each finding needs an explicit
+independent decision; no category is automatically closed or exempted.
+
+Revision validation now reports every invalid response reference in one bounded
+correction, with indexed paths, validated finding IDs and invalid counts. It prints
+current computed IDs once and omits arbitrary invalid values. Definitions and
+responses remain uncommitted on rejection. Correction guidance preserves attempted
+additions/reassessments while fixing responses; deliberately defending an existing
+definition with empty operations remains legal and independently reviewable. There
+is no automatic ID remapping, partial commit, repair reset or new correction protocol.
+
+A saved first-revision replay against actual Haiku 5.5 completed in 31.481 seconds:
+one model correction preserved all three attempted reassessments and passed strict
+revision validation. It was a separate diagnostic, not a resumed bootstrap or scope
+acceptance. Replaying all 22 original responses offline retains exactly the same
+scope definition, ledger, 308 reads and final coverage-limit hold. New regressions
+cover phase authority, required unprobed operations, all stale locations, unchanged
+state during rejection and retention of corrected reassessments. Focused suites:
+207 passed. Strict typing: 344 modules passed. Independent scoped review: no
+Critical, Important or Minor findings; 148 tests passed. Full-PR review and actual
+Elm installation/clean-consumer success remain outstanding.
