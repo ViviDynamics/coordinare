@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -12,6 +13,7 @@ from coordinare.services.environment_discovery_prompts import (
     _MANIFEST_ENVELOPE,
     assessment_envelope_schema,
 )
+from coordinare.services.environment_findings import MAX_FINDINGS
 from coordinare.services.environment_probes import ProbeEnvelope
 from coordinare.services.environment_proposal_patch import PATCH_SCHEMA
 
@@ -40,8 +42,29 @@ class ProbeRepairSchema:
     inspected_sources: Sequence[str]
 
 
+def _review_constraints(declaration: dict[str, Any], phase: str, identifiers: Sequence[str] | None) -> None:
+    definitions = declaration['$defs']
+    assessment = definitions['ScopeAssessmentProposal' if phase == 'scope_assessment' else 'CoverageAssessmentProposal']
+    decision = definitions['FindingDecisionProposal']
+    if identifiers is not None:
+        assessment['properties']['decisions'].update(minItems=len(identifiers), maxItems=len(identifiers))
+        assessment['properties']['findings']['maxItems'] = MAX_FINDINGS-len(identifiers)
+        if identifiers:
+            decision['properties']['finding_id']['enum'] = list(identifiers)
+            decision['properties']['duplicate_of'] = {'anyOf': [
+                {'type': 'string', 'enum': list(identifiers)}, {'type': 'null'}]}
+        else:
+            decision['properties']['duplicate_of'] = {'type': 'null'}
+    open_decision, resolved_decision = deepcopy(decision), deepcopy(decision)
+    open_decision['properties']['status'] = {'const': 'open', 'type': 'string'}
+    open_decision['properties']['duplicate_of'] = {'type': 'null'}
+    resolved_decision['properties']['status'] = {'const': 'resolved', 'type': 'string'}
+    definitions['FindingDecisionProposal'] = {'anyOf': [open_decision, resolved_decision]}
+
+
 def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: ScopeContract | None = None,
                     scope_decision_ids: Sequence[str] | None = None,
+                    review_decision_ids: Sequence[str] | None = None,
                     probe_repair: ProbeRepairSchema | None = None) -> dict[str, Any]:
     tools = [
         {'type': 'object', 'additionalProperties': False, 'required': ['tool', 'path'],
@@ -59,11 +82,8 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
     if phase == 'source_tool':
         return {'type': 'object', 'anyOf': tools}
     declaration = final[phase]()
-    if phase == 'scope_assessment' and scope_decision_ids is not None:
-        decisions = declaration['$defs']['ScopeAssessmentProposal']['properties']['decisions']
-        decisions.update(minItems=len(scope_decision_ids), maxItems=len(scope_decision_ids))
-        if scope_decision_ids:
-            declaration['$defs']['FindingDecisionProposal']['properties']['finding_id']['enum'] = list(scope_decision_ids)
+    if phase in {'scope_assessment', 'assessment'}:
+        _review_constraints(declaration, phase, scope_decision_ids if phase == 'scope_assessment' else review_decision_ids)
     if phase == 'probe' and probe_repair is not None:
         properties = declaration['$defs']['ProbeRequest']['properties']
         citation = {'type': 'array', 'minItems': 1, 'items': {'type': 'string', **(

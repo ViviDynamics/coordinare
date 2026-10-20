@@ -71,12 +71,31 @@ class ReviewSubject:
     obligation_ids: set[str]
 
 
+def _check_duplicate_decisions(ledger: FindingLedger, proposal: CoverageAssessmentProposal) -> None:
+    retained = {record.id for record in ledger.records}
+    for index, decision in enumerate(proposal.decisions):
+        target = decision.duplicate_of
+        if target is None:
+            continue
+        location = ('decisions', str(index))
+        if decision.status != 'resolved':
+            refuse_finding('A duplicate entry must use status resolved; its original finding remains independently blocking.',
+                location=(*location, 'status'))
+        if target not in retained or target == decision.finding_id:
+            refuse_finding('duplicate_of must name another retained finding ID, never itself or a new finding.',
+                location=(*location, 'duplicate_of'))
+
+
 def apply_evidence_review(ledger: FindingLedger, *, subject: ReviewSubject, proposal: CoverageAssessmentProposal,
                           reviewer_inputs: Mapping[str, str]) -> FindingLedger:
     """Produce a new checked ledger; never mutate history during model correction."""
     source_commit, subject_digest, obligation_ids = subject.source_commit, subject.digest, subject.obligation_ids
     if ledger.source_commit != source_commit:
         refuse_finding('finding source identity changed', code='source_identity')
+    _check_duplicate_decisions(ledger, proposal)
+    if len(ledger.records) + len(proposal.findings) > MAX_FINDINGS:
+        refuse_finding(f'At most {MAX_FINDINGS-len(ledger.records)} new findings fit; adjudicate retained IDs in decisions instead of re-adding them.',
+            code='review_findings_limit', location=('findings',))
     for finding in proposal.findings:
         if not set(finding.sources) <= reviewer_inputs.keys():
             refuse_finding('finding cites unread evidence', code='review_citations_invalid')

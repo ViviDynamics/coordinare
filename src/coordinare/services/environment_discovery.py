@@ -318,7 +318,8 @@ def _phase_schema(inspection: _Inspection, repair_base: dict[str, Any] | None) -
         repair = ProbeRepairSchema([command.id for command in ProbeRequest.model_validate(repair_base['probe']).commands],
             sorted(inspection.inputs))
     return response_schema(budget.expected_envelope, allow_patch=repair_base is not None,
-        scope_contract=budget.scope_contract, probe_repair=repair)
+        scope_contract=budget.scope_contract, probe_repair=repair,
+        review_decision_ids=[record.id for record in budget.finding_ledger.records] if budget.finding_ledger is not None else [])
 
 
 async def _admit_probe_reply(reply: dict[str, Any], raw: str, messages: list[dict[str, str]], inspection: _Inspection,
@@ -786,6 +787,10 @@ async def _discover_attempt(
                         'Explicitly decide EVERY retained finding ID, including previously resolved findings, against this candidate. '
                         'Use open or resolved with repository citations; silence or calling an objection non-blocking cannot close it. '
                         'Report new blocking findings with category, issue, sources and affected_ids; the daemon assigns IDs. '
+                        'Do not re-add retained objections as new findings, even under different wording. '
+                        'Consolidate duplicate entries using a resolved decision with duplicate_of naming the original retained ID. '
+                        'The original needs its own independent decision and stays blocking while open. '
+                        'If a new blocking objection cannot fit the findings capacity, return indeterminate; never omit it to accept. '
                         'accept requires no open or new findings; revise requires an open or new finding. '
                         'Set capability_unavailable true only for an open/new cited capability that this consumer cannot supply. '
                         'If impossibility is unproven, set capability_unavailable false and retain a blocking finding '

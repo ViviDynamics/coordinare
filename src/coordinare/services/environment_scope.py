@@ -109,7 +109,7 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                     errors = [{'location': ['scope_revision'], 'code': exc.type}]
                 except FindingValidationError as exc:
                     errors = [{'location': list(exc.location), 'code': exc.code}]
-                    if exc.code == 'scope_response_ids_invalid':
+                    if exc.code == 'scope_response_ids_invalid' or exc.location[:1] in {('decisions',), ('findings',)}:
                         errors[0]['guidance'] = str(exc)
                 except EnvironmentDiscoveryError as exc:
                     if exc.code not in {'invalid_json_envelope', 'duplicate_json_key', 'unsupported_envelope',
@@ -153,6 +153,10 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
         'Reassess previously resolved findings against the current scope too. '
         'When required_decision_ids is empty, decisions MUST be []; the daemon assigns IDs to new findings only after this review. '
         'new findings do not replace decisions on retained findings. Use only the decisions array, never alternate decision fields. '
+        'findings contains genuinely new objections only; do not re-add a retained objection under new wording. '
+        'To consolidate duplicate entries, set the duplicate decision status to resolved and duplicate_of to the original retained ID. '
+        'The original still needs its own independent decision and remains blocking while open. '
+        'If a new blocking objection cannot fit the findings capacity, return indeterminate; never omit it to accept. '
         'accept requires no open or new findings; '
         'revise requires a blocking finding. Unknown applicability or conflicting evidence must hold. '
         'An excluded activity needs source-backed applicability, never an image limitation or candidate disclaimer. '
