@@ -72,11 +72,16 @@ class ScopeInspectionResult(FindingEvidence):
     status: Literal['file', 'listing', 'absent']
     evidence_digest: Digest
     file_sha256: Digest | None = None
+    # Same-named pinned inventory paths for an absent request; None means recorded before candidates existed.
+    candidates: list[str] | None = Field(default=None, max_length=8)
+    more_candidates: int = Field(default=0, ge=0)
 
     @model_validator(mode='after')
     def file_identity(self) -> Self:
         if (self.status == 'file') != (self.file_sha256 is not None):
             raise ValueError('only a file result requires a file content hash')
+        if self.status != 'absent' and (self.candidates is not None or self.more_candidates):
+            raise ValueError('only an absent result can name inventory candidates')
         return self
 
 
