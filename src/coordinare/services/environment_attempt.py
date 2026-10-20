@@ -166,11 +166,11 @@ class AttemptBudget:
         if not isinstance(reply, DiscoveryChatReply):
             message = "model reply has unsupported metadata"
             raise EnvironmentDiscoveryError(message, code="model_reply_invalid")
+        self.transport_fallbacks += reply.transport_fallback is not None
         if reply.error_code is not None:
             message = "environment model provider rejected or failed the request"
             raise EnvironmentDiscoveryError(message, code="provider_request_failed")
         self.metadata_available |= reply.usage is not None or reply.finish_reason is not None
-        self.transport_fallbacks += reply.transport_fallback is not None
         for key, value in (reply.usage or {}).items():
             if (key in {"input", "output", "input_tokens", "output_tokens", "cache_read", "cache_write"}
                     and type(value) is int and 0 <= value <= 10**12):

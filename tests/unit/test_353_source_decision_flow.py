@@ -310,3 +310,14 @@ async def test_review_instructions_explain_flat_decision_fields():
     assert 'affected_ids, gap_kind and inspection_requests only for source_gap' in system
     assert 'duplicate_of only for duplicate' in system
     assert 'Every other decision field must be null or []' in system
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('disposition', [['covered'], {'kind': 'covered'}, 7])
+async def test_non_string_disposition_is_repairable(disposition):
+    def bad(messages):
+        return assess(decisions=[{**flat(covered('F0001', ids(messages))), 'disposition': disposition}])
+    replies = Replies([READ_GUIDE, proposal(criterion()), objection(), revision(), bad, accept_covered('F0001')])
+    budget = AttemptBudget()
+    scope = await run(replies, budget=budget)
+    assert budget.schema_repairs == 1 and scope.finding_ledger.open_ids() == []

@@ -80,3 +80,17 @@ def test_budget_summary_counts_transport_fallbacks():
     budget.record_reply(DiscoveryChatReply(text='{}', transport_fallback='json_object'))
     budget.record_reply(DiscoveryChatReply(text='{}'))
     assert budget.summary()['transport_fallbacks'] == 1
+
+
+def test_failed_fallback_is_still_counted():
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+    budget = AttemptBudget()
+    with pytest.raises(EnvironmentDiscoveryError):
+        budget.record_reply(DiscoveryChatReply(text='', error_code='provider_request_failed', transport_fallback='json_object'))
+    assert budget.summary()['transport_fallbacks'] == 1
+
+
+@pytest.mark.asyncio
+async def test_marker_on_non_400_status_does_not_fall_back(monkeypatch):
+    reply, requests = await send(monkeypatch, [(422, GRAMMAR)])
+    assert len(requests) == 1 and reply.transport_fallback is None and reply.error_code == 'provider_request_failed'
