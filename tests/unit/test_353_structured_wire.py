@@ -176,7 +176,7 @@ def test_saved_elm_failure_shapes_remain_held(raw, code):
 def test_scope_ledger_decision_constraints_survive_strict_wire_encoding(identifiers):
     from coordinare.services.environment_structured_wire import decode_wire, wire_schema
 
-    schema = response_schema('scope_assessment', scope_decision_ids=identifiers)
+    schema = response_schema('scope_assessment', review_decision_ids=identifiers)
     decision = {'finding_id': 'F0001', 'status': 'resolved', 'rationale': 'Inspected source resolves the finding',
                 'sources': ['fixture'], 'duplicate_of': None}
     assessment = {'verdict': 'accept', 'rationale': 'Source evidence covers the scope',

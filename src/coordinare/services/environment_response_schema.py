@@ -63,7 +63,6 @@ def _review_constraints(declaration: dict[str, Any], phase: str, identifiers: Se
 
 
 def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: ScopeContract | None = None,
-                    scope_decision_ids: Sequence[str] | None = None,
                     review_decision_ids: Sequence[str] | None = None,
                     probe_repair: ProbeRepairSchema | None = None) -> dict[str, Any]:
     tools = [
@@ -83,7 +82,7 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
         return {'type': 'object', 'anyOf': tools}
     declaration = final[phase]()
     if phase in {'scope_assessment', 'assessment'}:
-        _review_constraints(declaration, phase, scope_decision_ids if phase == 'scope_assessment' else review_decision_ids)
+        _review_constraints(declaration, phase, review_decision_ids)
     if phase == 'probe' and probe_repair is not None:
         properties = declaration['$defs']['ProbeRequest']['properties']
         citation = {'type': 'array', 'minItems': 1, 'items': {'type': 'string', **(

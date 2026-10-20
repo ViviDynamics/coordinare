@@ -70,7 +70,7 @@ def test_duplicate_target_refusal_identifies_its_field(target):
 def test_provider_schema_refuses_open_duplicate_and_preserves_valid_open_survivor(phase):
     from coordinare.services.environment_structured_wire import decode_wire, wire_schema
 
-    options = {'scope_decision_ids' if phase == 'scope_assessment' else 'review_decision_ids': ['F0001', 'F0002']}
+    options = {'review_decision_ids': ['F0001', 'F0002']}
     schema = response_schema(phase, **options)
     data = assessment()
     if phase == 'scope_assessment':
@@ -90,7 +90,7 @@ def test_provider_schema_refuses_open_duplicate_and_preserves_valid_open_survivo
 @pytest.mark.parametrize('phase', ['scope_assessment', 'assessment'])
 def test_review_schema_exposes_remaining_new_finding_capacity(phase):
     ids = [f'F{i:04}' for i in range(1, 25)]
-    parameter = 'scope_decision_ids' if phase == 'scope_assessment' else 'review_decision_ids'
+    parameter = 'review_decision_ids'
     schema = response_schema(phase, **{parameter: ids})
     data = assessment(24)
     if phase == 'scope_assessment':
