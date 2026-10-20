@@ -68,7 +68,7 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
         properties = declaration['$defs']['ProbeRequest']['properties']
         citation = {'type': 'array', 'minItems': 1, 'items': {'type': 'string', **(
             {'enum': list(probe_repair.inspected_sources)} if probe_repair.inspected_sources else {})}}
-        question = {'type': 'string', 'minLength': 1, 'maxLength': 512}
+        question = {'type': 'string', 'minLength': 1, 'maxLength': 512, 'pattern': r'\S'}
         for name, value in [('citations', citation), ('questions', question)]:
             properties[name] = {'type': 'object', 'additionalProperties': False,
                 'required': list(probe_repair.command_ids), 'properties': dict.fromkeys(probe_repair.command_ids, value)}
