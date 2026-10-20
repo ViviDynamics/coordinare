@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from coordinare_service_inference.environment.scope import ScopeAssessmentEnvelope, ScopeEnvelope
@@ -33,9 +34,15 @@ def _require_scope_mapping(declaration: dict[str, Any], scope: ScopeContract) ->
     }
 
 
+@dataclass(frozen=True)
+class ProbeRepairSchema:
+    command_ids: Sequence[str]
+    inspected_sources: Sequence[str]
+
+
 def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: ScopeContract | None = None,
                     scope_decision_ids: Sequence[str] | None = None,
-                    probe_command_ids: Sequence[str] | None = None, probe_sources: Sequence[str] | None = None) -> dict[str, Any]:
+                    probe_repair: ProbeRepairSchema | None = None) -> dict[str, Any]:
     tools = [
         {'type': 'object', 'additionalProperties': False, 'required': ['tool', 'path'],
          'properties': {'tool': {'const': 'read_file'}, 'path': {'type': 'string'}}},
@@ -57,14 +64,14 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
         decisions.update(minItems=len(scope_decision_ids), maxItems=len(scope_decision_ids))
         if scope_decision_ids:
             declaration['$defs']['FindingDecisionProposal']['properties']['finding_id']['enum'] = list(scope_decision_ids)
-    if phase == 'probe' and probe_command_ids is not None:
+    if phase == 'probe' and probe_repair is not None:
         properties = declaration['$defs']['ProbeRequest']['properties']
         citation = {'type': 'array', 'minItems': 1, 'items': {'type': 'string', **(
-            {'enum': list(probe_sources)} if probe_sources else {})}}
+            {'enum': list(probe_repair.inspected_sources)} if probe_repair.inspected_sources else {})}}
         question = {'type': 'string', 'minLength': 1, 'maxLength': 512}
         for name, value in [('citations', citation), ('questions', question)]:
             properties[name] = {'type': 'object', 'additionalProperties': False,
-                'required': list(probe_command_ids), 'properties': dict.fromkeys(probe_command_ids, value)}
+                'required': list(probe_repair.command_ids), 'properties': dict.fromkeys(probe_repair.command_ids, value)}
     if phase == 'manifest' and scope_contract is not None:
         _require_scope_mapping(declaration, scope_contract)
     definitions = declaration.pop('$defs', {})

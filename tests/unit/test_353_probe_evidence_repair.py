@@ -10,7 +10,7 @@ import pytest
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 from coordinare.services.environment_probes import ProbeReport
 from coordinare.services.environment_proposal_patch import apply_patch
-from coordinare.services.environment_response_schema import response_schema
+from coordinare.services.environment_response_schema import ProbeRepairSchema, response_schema
 from tests.unit.scope_chat_fixture import discover_with_fixture_scope
 from tests.unit.test_353_discovery_repair import (
     CAPABILITIES,
@@ -24,7 +24,7 @@ from tests.unit.test_353_environment_probes import report_data, request_data
 
 
 def test_corrected_probe_schema_rejects_missing_evidence_and_unknown_ids():
-    schema = response_schema('probe', probe_command_ids=['tool'], probe_sources=[PATH])
+    schema = response_schema('probe', probe_repair=ProbeRepairSchema(['tool'], [PATH]))
     valid = {'probe': request_data()}
     jsonschema.validate(valid, schema)
     for field, value in [('citations', {}), ('questions', {}), ('citations', {'tool': []}),
@@ -52,8 +52,8 @@ def test_probe_evidence_patch_preserves_commands_and_cannot_modify_execution():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('changed_commands', [False, True])
-async def test_unread_probe_citation_can_be_read_then_corrected_without_regenerating_plan(changed_commands):
+@pytest.mark.parametrize('invalid_correction', [None, 'commands', 'empty_evidence', 'execution_context'])
+async def test_unread_probe_citation_can_be_read_then_corrected_without_regenerating_plan(invalid_correction):
     new_path = 'nested/new-evidence.md'
     proposal = request_data()
     proposal['citations']['tool'] = [new_path]
@@ -61,9 +61,15 @@ async def test_unread_probe_citation_can_be_read_then_corrected_without_regenera
     patch = {'tool': 'repair_proposal', 'changes': [
         {'path': ['probe', 'citations', 'tool'], 'value_json': json.dumps([new_path])}]}
     altered = copy.deepcopy(proposal)
-    altered['commands'][0]['argv'] = ['different-executable']
+    if invalid_correction == 'commands':
+        altered['commands'][0]['argv'] = ['different-executable']
+    elif invalid_correction == 'empty_evidence':
+        altered['citations'] = {}
+        altered['questions'] = {}
+    elif invalid_correction == 'execution_context':
+        altered['execution_context'] = 'private_service'
     replies = iter([{'tool': 'read_file', 'path': PATH}, {'probe': proposal},
-        {'tool': 'read_file', 'path': new_path}, *([{'probe': altered}] if changed_commands else []),
+        {'tool': 'read_file', 'path': new_path}, *([{'probe': altered}] if invalid_correction else []),
         patch, {'manifest': candidate()}, {'tool': 'read_file', 'path': PATH}, assessment(candidate())])
     feedback = []
     executed = []
@@ -100,14 +106,14 @@ async def test_unread_probe_citation_can_be_read_then_corrected_without_regenera
     assert len(executed) == 1
     assert executed[0].request.commands[0].id == commands[0]['id']
     assert manifest.digest() == review.manifest_digest and manifest.checks[0].required
-    assert budget.schema_repairs == 1 + int(changed_commands)
+    assert budget.schema_repairs == 1 + int(invalid_correction is not None)
 
 
 def test_probe_repair_wire_requires_the_same_evidence_keys_after_encoding():
     from coordinare.services.environment_probes import ProbeRequest
     from coordinare.services.environment_structured_wire import decode_wire, wire_schema
 
-    logical_schema = response_schema('probe', probe_command_ids=['tool'], probe_sources=[PATH])
+    logical_schema = response_schema('probe', probe_repair=ProbeRepairSchema(['tool'], [PATH]))
     logical = {'probe': ProbeRequest.model_validate(request_data()).model_dump(mode='json')}
     logical['probe']['execution_context'] = 'outer'
     encoded = copy.deepcopy(logical)
