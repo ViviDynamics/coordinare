@@ -132,3 +132,20 @@ Aggregate exact invalid indices and inspection guidance without echoing rejected
 source values, and keep bounded feedback, atomic rejection and the proposed
 revision. Verify with RED/GREEN regressions, independent review, preflight and CI
 before the next fresh experiment. Task5 remains incomplete until actual acceptance.
+
+
+The subsequent 2,048-read/2 MiB comparison completed three source reviews and
+held at the conversation byte cap. A pinned capacity audit proves complete
+evidence plus the pending revision/errors exceeds 2 MiB even after file
+deduplication. A separately labelled one-call source-author diagnostic confirmed
+that the blocked request fits Haiku's advertised token capacity under a 4 MiB
+software byte ceiling; it produced no acceptance or execution evidence. The next
+fresh profile changes only that byte ceiling relative to the 2,048-read profile.
+The old attempt remains terminal and its cleanup is confirmed.
+
+Complete the demonstrated reassessment-target diagnostics before retesting:
+retain authoritative merge rejection, report every invalid operation index and
+reason together, provide only trusted retained eligible IDs, and preserve valid
+operations. Required criteria remain immutable; additional obligations require
+new criteria. This is actionable feedback for existing policy, not permission to
+edit required obligations or relax independent review. Task5 remains incomplete.

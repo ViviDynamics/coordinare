@@ -174,3 +174,47 @@ async def test_reassessment_reports_all_unread_sources_in_one_criterion_before_i
     assert len(observed) == 1 and observed[0]['invalid_source_indices'] == ['0', '1']
     assert observed[0]['location'] == ['scope_revision', 'reassess', '0', 'criterion', 'sources', '0']
     assert budget.schema_repairs == 1
+
+
+@pytest.mark.asyncio
+async def test_all_invalid_reassessment_targets_report_reasons_and_preserve_valid_operations():
+    sources = {'guide': 'Required operation', 'optional/one': 'First required operation',
+               'optional/two': 'Second required operation'}
+    observed = []
+    budget = AttemptBudget()
+    extra = criterion('guide', usability='Additional required operation succeeds')
+
+    def proposed(messages, *, invalid):
+        base = json.loads(messages[1]['content'])['scope_definition']
+        ids = [c['id'] for c in base['criteria']]
+        valid = [{'criterion_id': ids[1], 'criterion': criterion('optional/one')},
+                 {'criterion_id': ids[2], 'criterion': criterion('optional/two')}]
+        changes = ([{'criterion_id': ids[0], 'criterion': criterion()},
+                    {'criterion_id': 'S'+'f'*16, 'criterion': criterion()},
+                    valid[0], valid[0], valid[1]] if invalid else valid)
+        return revision(extra, reassess=changes, sources=list(sources))(messages)
+
+    def bad(messages):
+        return proposed(messages, invalid=True)
+
+    def correct(messages):
+        observed.extend(json.loads(messages[-1]['content'])['validation_errors'])
+        return proposed(messages, invalid=False)
+
+    scope = await discover([
+        {'tool': 'read_files', 'paths': list(sources)},
+        proposal(criterion(), criterion('optional/one', applicability='unknown'),
+                 criterion('optional/two', applicability='not_applicable')),
+        review('revise', findings=[objection([])], sources=list(sources)), bad, correct,
+        review(sources=list(sources), decisions=[{'finding_id': 'F0001', 'status': 'resolved',
+            'rationale': 'Required operations retained and additions included', 'sources': list(sources), 'duplicate_of': None}]),
+    ], sources, budget=budget)
+    assert len(scope.definition.criteria) == 4
+    assert all(c.applicability == 'required' for c in scope.definition.criteria)
+    assert budget.schema_repairs == 1
+    assert [error['location'] for error in observed] == [
+        ['scope_revision', 'reassess', str(i), 'criterion_id'] for i in (0, 1, 3)]
+    assert [error['reason'] for error in observed] == ['required', 'unknown', 'duplicate']
+    assert all(error['code'] == 'scope_revision_target' and error['guidance'] for error in observed)
+    assert 'S'+'f'*16 not in json.dumps(observed)
+    assert len(observed[0]['allowed_reassessment_ids']) == 2
