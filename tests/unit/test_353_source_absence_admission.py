@@ -96,3 +96,50 @@ async def test_reviewer_instructions_name_absent_rule():
     assert 'An unread_source gap must request at least one file or directory present in the pinned inventory' in system
     assert 'Never re-request a path already reported absent' in system
     assert json.loads(replies.messages[-1][1]['content'])['investigation_evidence'] == []
+
+
+def _reviewer_with_absence(paths, requested, stored_candidates):
+    from coordinare_service_inference.environment.scope_investigation import (
+        ScopeInspectionBinding,
+        ScopeInspectionResult,
+    )
+
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_inspection import SourceInspection
+    async def fetch(path):
+        return 'content'
+    budget = AttemptBudget()
+    reviewer = SourceInspection(paths, fetch, DiscoveryLimits(), budget)
+    binding = ScopeInspectionBinding.bind(finding_id='F0001', review_sequence=1, scope_digest='1'*64,
+        source_commit='a'*40, inventory_digest=reviewer.inventory_digest, request={'operation': 'read_file', 'path': requested})
+    budget.scope_investigations = [binding]
+    budget.scope_investigation_results = [ScopeInspectionResult(binding_id=binding.id, status='absent',
+        evidence_digest='0'*64, candidates=stored_candidates)]
+    return reviewer
+
+
+def _repeat(requested):
+    from coordinare_service_inference.environment.scope import ScopeAssessmentProposal
+    return ScopeAssessmentProposal.model_validate(assess('revise', findings=[gap_finding(
+        gap_kind='missing_obligation', inspection_requests=[{'operation': 'read_file', 'path': requested}])])['scope_assessment'])
+
+
+def test_repeat_feedback_recomputes_candidates_instead_of_trusting_storage():
+    from coordinare.services.environment_scope import _request_rule_errors
+    reviewer = _reviewer_with_absence(['pkg/scripts/gen.mjs', 'guide'], 'scripts/gen.mjs', ['guide'])
+    [error] = _request_rule_errors(_repeat('scripts/gen.mjs'), reviewer=reviewer)
+    assert error['candidates'] == ['pkg/scripts/gen.mjs'] and error['more_candidates'] == 0
+
+
+def test_repeat_feedback_without_candidates_says_so():
+    from coordinare.services.environment_scope import _request_rule_errors
+    reviewer = _reviewer_with_absence(['guide'], 'scripts/gen.mjs', None)
+    [error] = _request_rule_errors(_repeat('scripts/gen.mjs'), reviewer=reviewer)
+    assert error['candidates'] == [] and 'no same-named' in error['guidance']
+
+
+def test_candidate_entries_must_be_safe_paths():
+    from coordinare_service_inference.environment.scope_investigation import ScopeInspectionResult
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        ScopeInspectionResult(binding_id='I'+'0'*64, status='absent', evidence_digest='0'*64, candidates=['../escape'])

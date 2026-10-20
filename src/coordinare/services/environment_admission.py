@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from coordinare_service_inference.environment.scope_revision import MAX_SCOPE_REVISION_CHANGES
+
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 from coordinare.services.environment_discovery_prompts import correction_instruction
 from coordinare.services.environment_proposal_patch import MAX_PATH_DEPTH, PATCH_INSTRUCTION
@@ -71,7 +73,7 @@ SOURCE_DISPOSITION_GUIDANCE = (
 
 
 REVISION_LIMIT_GUIDANCE = (
-    'A scope revision may contain at most 16 combined add and reassess operations. Established criteria are retained '
+    f'A scope revision may contain at most {MAX_SCOPE_REVISION_CHANGES} combined add and reassess operations. Established criteria are retained '
     'without resubmission: add only genuinely new obligations and reassess only retained unknown or not_applicable '
     'criteria. Submit the most important changes now; further obligations can follow in a later revision.')
 SOURCE_PATH_GUIDANCE = (

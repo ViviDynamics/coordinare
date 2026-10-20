@@ -76,6 +76,11 @@ class ScopeInspectionResult(FindingEvidence):
     candidates: list[str] | None = Field(default=None, max_length=8)
     more_candidates: int = Field(default=0, ge=0)
 
+    @field_validator('candidates')
+    @classmethod
+    def safe_candidates(cls, value: list[str] | None) -> list[str] | None:
+        return [source_path(path) for path in value] if value is not None else None
+
     @model_validator(mode='after')
     def file_identity(self) -> Self:
         if (self.status == 'file') != (self.file_sha256 is not None):
