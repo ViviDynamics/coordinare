@@ -1,6 +1,6 @@
 # Contract: Dispatch Payload (Coordinare → Performer)
 
-**Last updated**: 2026-04-06
+**Last updated**: 2026-10-20
 **Boundary**: `AgentService.dispatch_card()` → wire (subprocess stdin) → `Score(**payload)` in performer
 
 ## Overview
@@ -201,3 +201,21 @@ the accepted manifest. Existing manifest digest covers both extensions.
 | `environment_execution_source` | compact version1 identity object | for reviewed environment dispatch | daemon validated pinned provider source | performer installer checkout preflight; source-bound execution reports |
 
 Includes source_commit, tree_digest, file_count and expanded_bytes. Contains no source bytes, paths to temporary artifacts, credentials or full entry inventory. Missing legacy identity requires normal rebuild/reverification, never relabeling old evidence.
+
+
+### Reviewed runtime receipt and original expiry (353)
+
+These top-level fields are declared on `Score` and pass through dispatch metadata;
+they are controller/runtime inputs, not model prompt instructions.
+
+| Field | Type | Required | Set by | Used by |
+|-------|------|----------|--------|---------|
+| `environment_runtime_artifacts` | object or null | for a reviewed private-runtime consumer; null on initial bootstrap dispatch | daemon `dispatch_performer` from the cache's admitted installer receipt | performer `open_score_runtime` and contract execution validate the sealed artifacts against the exact manifest, complete source and runtime digests before clean startup |
+| `environment_attempt_expires_at` | positive finite float or null (UTC epoch seconds) | for reviewed private-runtime bootstrap; null on consumer dispatch | daemon `dispatch_performer` from the original attempt journal expiry | performer `open_score_runtime` converts remaining wall time to a monotonic bound and takes the minimum with the runtime policy deadline; missing/expired bootstrap expiry cannot create a new allowance |
+
+The receipt contains schema version, manifest/source/runtime digests, `sealed: true`
+and bounded cache artifact names, hashes and sizes. It carries no source bytes or
+credentials. The installer seals and reports its receipt after successful checks
+and quiescence; the daemon must admit that evidence before consumer dispatch.
+Neither a receipt nor an expiry authorizes failed or unrun required checks.
+The contract roundtrip tests retain both fields through `AgentService` and `Score`.

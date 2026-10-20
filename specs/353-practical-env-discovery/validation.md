@@ -2,7 +2,7 @@
 
 ## Readiness decision
 
-The implementation has passing CI and focused regressions, but **real environment acceptance remains unmet**. Keep PR #354 and issue #353 open. A model verdict or green Coordinare CI cannot waive missing clean-consumer execution for sample and Elm.
+This report records earlier implementation validation; its head-specific CI results below are historical. The latest [validation results](validation-results.md) retain a required dashboard latency CI failure and **real environment acceptance remains unmet**. Keep PR #354 and issue #353 open. A model verdict or green Coordinare CI cannot waive missing clean-consumer execution for sample and Elm.
 
 ## What was verified
 

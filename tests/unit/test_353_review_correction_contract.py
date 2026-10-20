@@ -75,6 +75,8 @@ def test_provider_schema_refuses_open_duplicate_and_preserves_valid_open_survivo
     data = assessment()
     if phase == 'scope_assessment':
         data.pop('capability_unavailable')
+        for decision in data['decisions']:
+            decision['inspection_requests'] = []
     data['decisions'][1]['duplicate_of'] = 'F0001'
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({'response': {phase: data}}, wire_schema(schema))
@@ -95,7 +97,11 @@ def test_review_schema_exposes_remaining_new_finding_capacity(phase):
     data = assessment(24)
     if phase == 'scope_assessment':
         data.pop('capability_unavailable')
+        for decision in data['decisions']:
+            decision['inspection_requests'] = []
     finding = {'category': 'coverage', 'issue': 'New source omission', 'sources': ['guide'], 'affected_ids': []}
+    if phase == 'scope_assessment':
+        finding['inspection_requests'] = []
     data['findings'] = [copy.deepcopy(finding) for _ in range(9)]
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({phase: data}, schema)
