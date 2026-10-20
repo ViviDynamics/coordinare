@@ -141,7 +141,7 @@ class SourceInspection:
             message = "source batch must contain one to eight distinct string paths"
             raise EnvironmentDiscoveryError(message, code="invalid_tool_arguments")
         valid = [path for path in paths if path in self.inventory]
-        errors = [{"index": index, "code": "source_path_not_found"}
+        errors: list[dict[str, Any]] = [{"index": index, "code": "source_path_not_found"}
                   for index, path in enumerate(paths) if path not in self.inventory]
         result: dict[str, Any] = await self.read_files(valid, navigation=True) if valid else {"files": []}
         unavailable = [item for item in result['files'] if 'error' in item]
