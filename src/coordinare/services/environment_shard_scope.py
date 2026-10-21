@@ -419,8 +419,8 @@ class ShardedScope:
         await self.load_spine()
         saved = (budget.scope_shards or {}) if (budget.scope_shards or {}).get('plan_digest') == self.plan.digest() else {}
         done = {key: ShardSummary.model_validate(value) for key, value in saved.get('summaries', {}).items()}
-        pending = [shard for shard in self.plan.shards if shard.id not in done]
-        summaries = [*done.values(), *await run_pool(pending, self.author_shard, budget=budget,
+        unfinished = [shard for shard in self.plan.shards if shard.id not in done]
+        summaries = [*done.values(), *await run_pool(unfinished, self.author_shard, budget=budget,
                                                       split=self._split, concurrency=self.concurrency)]
         assigned: set[str] = set(saved.get('assigned', []))
         generation = int(saved.get('generation', 0))

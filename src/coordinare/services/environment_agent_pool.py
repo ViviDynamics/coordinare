@@ -49,7 +49,7 @@ async def run_pool[T, R](work: Sequence[T], worker: Callable[[T], Coroutine[Any,
                 except ShardOverflowError as overflow:
                     parts = list(split(item, overflow))
                     if not parts or parts == [item]:
-                        message = 'a shard agent cannot fit its smallest share'
+                        message = 'a shard agent overflows even its smallest share'
                         raise EnvironmentDiscoveryError(message, code='shard_context_limit') from None
                     queue.extend(((*key, index), part) for index, part in enumerate(parts))
                     queue.sort(key=lambda queued: queued[0])
