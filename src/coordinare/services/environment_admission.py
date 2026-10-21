@@ -159,9 +159,14 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
     return result
 
 
-def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *,
-            can_patch: bool = False, charge: bool = True) -> None:
-    """Explain a rejected reply; shard agents count their own corrections (charge=False)."""
+def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *, can_patch: bool = False) -> None:
+    explain_rejection(messages, raw, errors, budget, can_patch=can_patch)
+    budget.reserve_repair("schema")
+
+
+def explain_rejection(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *,
+                      can_patch: bool = False) -> None:
+    """Return a rejected reply with its errors; callers own how the correction is counted."""
     if budget.scope_contract is not None:
         required_ids = [c.id for c in budget.scope_contract.definition.criteria if c.applicability == 'required']
         for error in errors:
@@ -170,7 +175,7 @@ def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any
     if budget.expected_envelope == 'scope_assessment' and budget.scope_findings is not None:
         for error in errors:
             if error['code'] == 'review_findings_invalid' and error['location'] == ['scope_assessment', 'decisions']:
-                error['required_decision_ids'] = [record.id for record in budget.scope_findings.records]
+                error.setdefault('required_decision_ids', [record.id for record in budget.scope_findings.records])
     if can_patch and budget.expected_envelope in {'manifest', 'assessment'}:
         for error in errors:
             location = error['location']
@@ -180,8 +185,6 @@ def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any
                 if len(path) <= MAX_PATH_DEPTH:
                     error['correction_path'] = path
     budget.validation_codes.extend(error["code"] for error in errors)
-    if charge:
-        budget.reserve_repair("schema")
     messages.extend([{"role": "assistant", "content": raw},
                      {"role": "user", "content": _json({"validation_errors": errors,
                         "expected_envelope": budget.expected_envelope,
