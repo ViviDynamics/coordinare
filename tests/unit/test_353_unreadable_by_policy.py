@@ -1,6 +1,8 @@
 """Oversized files and symlinks are listed but never read; asking for one never ends an attempt."""
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 from coordinare_service_inference.environment.scope_investigation import ScopeInspectionBinding
 
@@ -23,8 +25,7 @@ def inspection(fetched=None, *, with_entries=True, budget=None):
         if fetched is not None:
             fetched.append(path)
         return None if path == '.opencode/skill' else 'content'
-    return SourceInspection(sorted(entries()), fetch, DiscoveryLimits(), budget,
-                            entries=entries() if with_entries else None)
+    return SourceInspection(entries() if with_entries else sorted(entries()), fetch, DiscoveryLimits(), budget)
 
 
 def binding(source, path):
@@ -129,7 +130,12 @@ async def test_github_tree_reports_sizes_and_modes(monkeypatch):
 @pytest.mark.asyncio
 async def test_scope_discovery_uses_entries_for_investigation():
     from tests.unit.test_353_scope_contract import Replies, criterion, proposal, revision, run
-    from tests.unit.test_353_source_decision_flow import READ_GUIDE, accept_covered, assess, gap_finding
+    from tests.unit.test_353_source_decision_flow import (
+        READ_GUIDE,
+        accept_covered,
+        assess,
+        gap_finding,
+    )
     link = {'operation': 'read_file', 'path': 'linked'}
     replies = Replies([READ_GUIDE, proposal(criterion()),
         assess('revise', findings=[gap_finding(gap_kind='missing_obligation', inspection_requests=[link])]),
@@ -162,12 +168,10 @@ async def test_env_cache_passes_provider_entries_into_discovery(tmp_path, monkey
     monkeypatch.setattr(service_module, 'discover_and_review', discover, raising=False)
     import coordinare.services.environment_discovery as discovery_module
     monkeypatch.setattr(discovery_module, 'discover_and_review', discover)
-    try:
+    with contextlib.suppress(EnvironmentDiscoveryError):
         await service._build_manifest_artifacts(performer_mounts=(cache.cache_dir.parent,), symphony_name='suite',
             repo='suite', github_org='org', github_service=repository, readme_contents={}, current_sha='fingerprint',
             cache_dir=cache.cache_dir, cache_mount_path=capability.cache_mount_path,
             llm_chat=ScopeChatFixture(Proposal(), 'guide'), cache_state=cache, capabilities=capability)
-    except EnvironmentDiscoveryError:
-        pass
     assert seen['paths'] == ['guide']
     assert seen['entries'] == {'guide': InventoryEntry('guide', 10, '100644')}

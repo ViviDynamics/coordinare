@@ -147,6 +147,16 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+async def _pinned_inventory(github_service: Any, org: str, repo: str, *, commit: str,
+                            limit: int) -> tuple[list[str], dict[str, Any] | None]:
+    """Prefer pinned sizes and modes; providers without them keep the paths-only inventory."""
+    entry_source = getattr(github_service, 'get_repository_entries', None)
+    if not callable(entry_source):
+        return await github_service.get_repository_paths(org, repo, ref=commit, max_entries=limit), None
+    entries = {entry.path: entry for entry in await entry_source(org, repo, ref=commit, max_entries=limit)}
+    return sorted(entries), entries
+
+
 def _remember_manifest(cache: EnvCacheState | None, items: list[dict[str, Any]]) -> None:
     """Keep dispatch inputs even when writing the generated scripts is refused."""
     if cache is not None:
@@ -2538,16 +2548,8 @@ class EnvCacheService:
                     _source_refusal('complete execution source commit differs')
                 cache_state.environment_execution_source = source_bundle.identity.model_dump(mode='json')
                 budget.stage = "inventory"
-                entry_source = getattr(github_service, 'get_repository_entries', None)
-                if callable(entry_source):
-                    listed = await entry_source(github_org, repo, ref=commit, max_entries=limits.max_inventory_entries)
-                    entries = {entry.path: entry for entry in listed}
-                    paths = sorted(entries)
-                else:
-                    entries = None
-                    paths = await github_service.get_repository_paths(
-                        github_org, repo, ref=commit, max_entries=limits.max_inventory_entries,
-                    )
+                paths, entries = await _pinned_inventory(github_service, github_org, repo,
+                                                         commit=commit, limit=limits.max_inventory_entries)
                 from coordinare.services.environment_probe_service import (
                     ProbeServiceContext,
                     run_owned_probe,

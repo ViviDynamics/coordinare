@@ -67,7 +67,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from coordinare_service_inference.environment.inventory import InventoryEntry
-
     from coordinare_service_inference.environment.scope_revision import ScopeRevision
 
     from coordinare.services.environment_discovery import ChatJson, DiscoveryLimits, Fetch
@@ -392,7 +391,7 @@ def _current_investigations(budget: AttemptBudget | None) -> list[Any]:
 async def _prepare_author(request: _Request) -> tuple[SourceInspection, list[dict[str, str]], dict[str, str]]:
     paths, fetch, commit, limits, budget = request.paths, request.fetch, request.commit, request.limits, request.budget
     inventory = _checked_inventory(paths, limits)
-    author = SourceInspection(inventory, fetch, limits, budget, retained_inputs=budget.scope_inputs, entries=request.entries)
+    author = SourceInspection(request.entries or inventory, fetch, limits, budget, retained_inputs=budget.scope_inputs)
     author.name = 'scope_revision' if budget.scope_phase in {'investigation', 'revision'} else 'scope_author'
     previous = budget.scope_definition
     ledger = budget.scope_findings or FindingLedger(source_commit=commit)
@@ -606,15 +605,15 @@ async def _discover_scope(request: _Request) -> ScopeContract:
     saved = budget.scope_contract
     if saved is not None:
         saved = ScopeContract.model_validate(saved.model_dump(mode='json'))
-        inspection = SourceInspection(_checked_inventory(paths, limits), fetch, limits, budget, retained_inputs=budget.scope_inputs,
-                                      entries=request.entries)
+        inspection = SourceInspection(request.entries or _checked_inventory(paths, limits), fetch, limits, budget,
+                                      retained_inputs=budget.scope_inputs)
         if (saved.definition.source_commit, saved.definition.inventory_digest) != (commit, inspection.inventory_digest):
             _fail('scope_source_identity')
         await prepare_mandatory_evidence(inspection, saved.all_inputs, phase='scope_resume')
         investigation_evidence(inspection=inspection, bindings=budget.scope_investigations,
                                results=budget.scope_investigation_results)
         return saved
-    pinned = SourceInspection(_checked_inventory(paths, limits), fetch, limits, budget, entries=request.entries)
+    pinned = SourceInspection(request.entries or _checked_inventory(paths, limits), fetch, limits, budget)
     request = replace(request, author_cache=AuthorEvidenceCache(source_commit=commit,
         inventory_digest=pinned.inventory_digest, max_bytes=limits.max_source_bytes))
     author, messages, required_inputs = await _prepare_author(request)
@@ -626,8 +625,7 @@ async def _discover_scope(request: _Request) -> ScopeContract:
     async with asyncio.timeout_at(budget.deadline):
         while True:
             definition = await _author_definition(request, author, messages)
-            reviewer = SourceInspection(inventory, fetch, limits, budget, retained_inputs=budget.scope_inputs,
-                                        entries=request.entries)
+            reviewer = SourceInspection(request.entries or inventory, fetch, limits, budget, retained_inputs=budget.scope_inputs)
             reviewer.name = 'scope_review'
             expected = {**required_inputs, **definition.inputs}
             evidence = await prepare_mandatory_evidence(reviewer, expected, phase='scope_review')
