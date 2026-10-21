@@ -133,7 +133,13 @@ def _accepted_discovery(monkeypatch):
         if provider is None or isinstance(provider, Mock):
             async def source(owner, repo, *, commit, destination, deadline):
                 destination.mkdir(parents=True)
-                payload, identity = bundle_file(destination, {'tools.plan':(b'baseline','100644')}, commit=commit)
+                # The pinned bundle must list exactly the paths the provider reports.
+                provider = getattr(github, 'get_repository_paths', None)
+                listed = getattr(provider, 'return_value', None)
+                paths = listed if isinstance(listed, list) and listed else ['tools.plan']
+                if isinstance(provider, Mock) and listed is not paths:
+                    provider.return_value = paths
+                payload, identity = bundle_file(destination, dict.fromkeys(paths, (b'baseline', '100644')), commit=commit)
                 return ExecutionSourceBundle(ExecutionSourceIdentity.model_validate(identity), payload,
                     hashlib.sha256(payload.read_bytes()).hexdigest(), payload.stat().st_size)
             github.prepare_execution_source = source
