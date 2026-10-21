@@ -83,10 +83,21 @@ of the manifest digest.
   environment the same way supplied secrets are restored. The values are added to
   the redaction set, so they never appear in captured output.
 - Because the values change on every run, a service that stores a credential
-  must initialize its data in `{scratch}`, not `{cache}`. Installation runs
-  without generated values (install is offline-reproducible and must not bake a
-  password into the cache); a manifest whose install commands reference a local
-  credential is rejected (`local_credential_in_install`).
+  must initialize its data in `{scratch}`, not `{cache}`. Install commands and
+  activation (which also applies to install commands) cannot reference a local
+  credential (`local_credential_in_install`), so nothing installed into the cache
+  depends on one. Builder's call after review: services and checks in the install
+  pass still receive that pass's values; a service that wrongly initializes into
+  `{cache}` fails honestly in the clean consumer, where the cache is read-only and
+  the values differ.
+- A generated name may not shadow an operator secret, an inherited variable, a
+  runtime-provided variable, or a runtime-owned name (`DOCKER_HOST`,
+  `SSH_AUTH_SOCK` and the rest of `RUNTIME_OWNED_ENV`, plus
+  `COORDINARE_SCRATCH_DIR`). `purpose` is screened like any other text for
+  credential-bearing URLs.
+- A performer job generates one set of values and uses it for its own
+  verification, the agent's activation and the held services. The values are
+  registered with the job transcript's exact-value redaction.
 - The clean consumer and every later performer run generate fresh values, so the
   digest-bound manifest works offline with no stored secret.
 

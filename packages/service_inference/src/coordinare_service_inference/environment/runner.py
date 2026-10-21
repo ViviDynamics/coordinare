@@ -252,6 +252,8 @@ def manifest_environment(
     env.pop("ENV", None)
     if runtime_env is not None:
         env.update({key: value for key, value in runtime_env.items() if key != "PATH"})
+    if set(generated) & set(runtime_env or {}):
+        raise ValueError("local_credential_conflict")
     env.update(generated)
     for key in environment_order(manifest.activation.env):
         env[key] = _expand(manifest.activation.env[key], roots, env)
@@ -771,9 +773,13 @@ async def run_manifest(
     execution_source_digest: str | None = None,
     runtime_artifacts: RuntimeArtifactReceipt | None = None,
     runtime_deadline: float | None = None, runtime_lease: RuntimeLease | None = None,
+    credentials: Mapping[str, str] | None = None,
 ) -> VerificationReport:
     try:
-        credentials = local_credential_values(manifest, supplied=secret_names)
+        if credentials is None:
+            credentials = local_credential_values(manifest, supplied=secret_names)
+        elif set(credentials) != {credential.name for credential in manifest.local_credentials}:
+            raise ValueError("local_credential_conflict")
     except ValueError:
         return VerificationReport(execution_source_digest=execution_source_digest, manifest_digest=manifest.digest(),
             scope=scope, results=[CheckResult(id="local_credentials", required=True, status="fail",
@@ -796,7 +802,8 @@ async def run_manifest(
 def local_credential_values(manifest: EnvironmentManifest, *, supplied: Collection[str]) -> dict[str, str]:
     """Fresh values for credentials of services the manifest starts; never persisted, never operator secrets."""
     names = [credential.name for credential in manifest.local_credentials]
-    if set(names) & set(supplied):
+    # A generated value must never stand in for an operator secret or shadow an inherited variable.
+    if set(names) & (set(supplied) | set(os.environ)):
         raise ValueError("local_credential_conflict")
     return {name: secrets.token_urlsafe(32) for name in names}
 

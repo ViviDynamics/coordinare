@@ -71,3 +71,18 @@ def test_unreferenced_credential_is_rejected():
 def test_install_commands_cannot_use_generated_credentials():
     install = [{'id': 'seed', 'argv': ['sh', '-c', 'echo ${PGPASSWORD}'], 'env': {'PGPASSWORD': '${PGPASSWORD}'}}]
     assert 'local_credential_in_install' in codes(manifest(install=install))
+
+
+def test_activation_cannot_carry_generated_credentials_into_install():
+    activation = {'env': {'PGPASSWORD': '${PGPASSWORD}'}}
+    assert 'local_credential_in_install' in codes(manifest(activation=activation))
+
+
+@pytest.mark.parametrize('name', ['DOCKER_HOST', 'SSH_AUTH_SOCK', 'COORDINARE_SCRATCH_DIR'])
+def test_runtime_owned_names_cannot_be_generated(name):
+    assert codes(manifest(local_credentials=[{**CREDENTIAL, 'name': name}]))
+
+
+def test_purpose_cannot_carry_a_literal_credential():
+    purpose = 'connect with postgres://postgres:postgres@localhost/elm'
+    assert 'runtime_credential_reference' in codes(manifest(local_credentials=[{**CREDENTIAL, 'purpose': purpose}]))

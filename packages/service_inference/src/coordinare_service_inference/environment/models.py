@@ -215,7 +215,7 @@ class Service(StrictModel):
     required: bool = True
 
 
-RESERVED_CREDENTIAL_NAMES = frozenset({"BASH_ENV", "ENV", "PATH", "COORDINARE_REPO_DIR"})
+RESERVED_CREDENTIAL_NAMES = frozenset({"BASH_ENV", "ENV", "PATH", "COORDINARE_REPO_DIR", "COORDINARE_SCRATCH_DIR"})
 _CREDENTIAL_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
@@ -229,8 +229,16 @@ class LocalCredential(StrictModel):
     @field_validator("name")
     @classmethod
     def unreserved(cls, value: str) -> str:
-        if value in RESERVED_CREDENTIAL_NAMES or value.startswith("COORDINARE_ENV_"):
+        from .runtime import RUNTIME_OWNED_ENV
+
+        if value in RESERVED_CREDENTIAL_NAMES or value in RUNTIME_OWNED_ENV or value.startswith("COORDINARE_ENV_"):
             raise ValueError("local credential name is reserved for trusted orchestration")
+        return value
+
+    @field_validator("purpose")
+    @classmethod
+    def no_literal(cls, value: str) -> str:
+        reject_literal_credentials(value)
         return value
 
 
@@ -363,10 +371,13 @@ class EnvironmentManifest(StrictModel):
                                       "local credentials need unique names and a service this manifest starts")
         if not names:
             return
-        if set(names) & {name for command in self.install for name in _references(command)}:
-            raise PydanticCustomError("local_credential_in_install", "install commands cannot use generated credentials")
+        # Activation also applies to install commands, so it cannot carry generated credentials either.
+        installed = {name for command in self.install for name in _references(command)}
+        installed |= {name for text in self.activation.env.values() for name in _CREDENTIAL_REFERENCE.findall(text)}
+        if set(names) & installed:
+            raise PydanticCustomError("local_credential_in_install",
+                                      "install commands and activation cannot use generated credentials")
         used = {name for command in commands[len(self.install):] for name in _references(command)}
-        used |= {name for text in self.activation.env.values() for name in _CREDENTIAL_REFERENCE.findall(text)}
         if set(names) - used:
             raise PydanticCustomError("local_credential_unused", "every local credential must be referenced as ${NAME}")
 
