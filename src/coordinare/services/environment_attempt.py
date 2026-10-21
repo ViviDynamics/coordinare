@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 
 
 MAX_ATTEMPT_SECONDS = 3600
+# Maintainer ruling (issue 353): sharded discovery on a self-hosted model may run up to four hours.
+MAX_SHARDED_ATTEMPT_SECONDS = 4 * 3600
 REPAIR_LIMITS = {"schema": 8, "coverage": 8, "execution": 2}
 MAX_PROBE_BATCHES = 2
 RepairKind = Literal["schema", "coverage", "execution"]
@@ -105,7 +107,7 @@ class AttemptBudget:
     checkpoint: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        if (not 0 < self.timeout_seconds <= MAX_ATTEMPT_SECONDS or self.max_calls < 1 or self.max_reads < 1
+        if (not 0 < self.timeout_seconds <= MAX_SHARDED_ATTEMPT_SECONDS or self.max_calls < 1 or self.max_reads < 1
                 or any(not 0 <= getattr(self, "max_" + counter) <= REPAIR_LIMITS[kind] for kind, counter in REPAIR_COUNTERS.items())):
             message = "environment discovery budget limits are invalid"
             raise ValueError(message)

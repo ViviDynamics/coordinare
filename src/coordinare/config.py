@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, Literal, get_args
+from typing import Any, ClassVar, Literal, Self, get_args
 from urllib.parse import urlparse
 
 import structlog
@@ -1088,7 +1088,7 @@ class ServiceInferenceConfig(BaseModel):
 
 # Maintainer ruling for sharded source discovery (issue 353): calls, reads and the attempt deadline.
 SHARDED_BUDGET_DEFAULTS = {"manifest_max_model_calls": 1024, "manifest_max_total_reads": 8192,
-                           "manifest_attempt_timeout_seconds": 3600.0}
+                           "manifest_attempt_timeout_seconds": 4 * 3600.0}
 
 
 class EnvCacheConfig(BaseModel):
@@ -1119,7 +1119,8 @@ class EnvCacheConfig(BaseModel):
     manifest_max_source_bytes: int = Field(default=4 * 1024 * 1024, ge=1, le=16 * 1024 * 1024)
     manifest_max_inventory_entries: int = Field(default=100_000, ge=1, le=1_000_000)
     manifest_phase_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
-    manifest_attempt_timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
+    # Up to one hour; sharded discovery (manifest_shard_context_tokens set) may run up to four.
+    manifest_attempt_timeout_seconds: float = Field(default=600.0, gt=0, le=4 * 3600)
     manifest_max_model_calls: int = Field(default=128, ge=1, le=4096)
     manifest_max_total_reads: int = Field(default=512, ge=1, le=8192)
     manifest_max_review_context_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)
@@ -1130,6 +1131,13 @@ class EnvCacheConfig(BaseModel):
     manifest_max_schema_repairs: int = Field(default=2, ge=0, le=REPAIR_LIMITS["schema"])
     manifest_max_coverage_revisions: int = Field(default=2, ge=0, le=REPAIR_LIMITS["coverage"])
     manifest_max_execution_repairs: int = Field(default=2, ge=0, le=REPAIR_LIMITS["execution"])
+
+    @model_validator(mode="after")
+    def _attempt_ceiling(self) -> Self:
+        if self.manifest_shard_context_tokens is None and self.manifest_attempt_timeout_seconds > 3600:
+            message = "attempts over one hour require sharded discovery (manifest_shard_context_tokens)"
+            raise ValueError(message)
+        return self
 
     @model_validator(mode="before")
     @classmethod

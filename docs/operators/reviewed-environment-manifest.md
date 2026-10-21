@@ -111,8 +111,11 @@ source text and 120 seconds. One attempt, including runtime identity resolution,
 inventory fetching, installation, clean verification and executable repairs, defaults to 600 seconds, 128 model calls, 512 total reads and at
 most two repair rounds. The configured outer `bootstrap_max_seconds` also applies;
 zero there never removes discovery's own bound. `manifest_attempt_timeout_seconds`
-can be raised to at most 3600 seconds. Phase changes and fresh reviews cannot reset
-the aggregate counters.
+can be raised to at most 3600 seconds, or to at most 14400 seconds (four hours) when
+`manifest_shard_context_tokens` enables sharded discovery. Sharded discovery defaults to
+14400 seconds, 1,024 model calls and 8,192 total reads unless those are set explicitly;
+raise `bootstrap_max_seconds` to match, or it caps the attempt. Phase changes and fresh
+reviews cannot reset the aggregate counters.
 
 The pinned inventory carries each path's size and mode, plus a symbolic link's
 recorded target, from the verified execution-source bundle. Files larger than the
