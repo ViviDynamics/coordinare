@@ -22,6 +22,7 @@ from coordinare_service_inference.environment.scope import (
     ScopeCriterion,
     ScopeCriterionProposal,
     ScopeDefinition,
+    ScopeExclusion,
     ShardSummary,
     ShardSummaryEnvelope,
     TriageVerdict,
@@ -82,11 +83,13 @@ from coordinare.services.environment_scope_investigation import (
     validate_investigation_responses,
 )
 from coordinare.services.environment_shard_triage import (
+    LISTING_OVERHEAD,
     TRIAGE_INSTRUCTIONS,
     TRIAGE_SIDES,
     exclusions,
     listing_payload,
     listing_shards,
+    merge_side,
     validate_triage,
 )
 from coordinare.services.environment_shards import (
@@ -399,16 +402,25 @@ class ShardedScope:
         saved = (self.budget.scope_shards or {}).get('triage', {})
         work = [(side, shard) for side in TRIAGE_SIDES for shard in listing
                 if shard.id not in saved.get(side, {})]
-        weights = {path: InventoryEntry(path, len(path), '100644') for shard in listing for path in shard.paths}
+        weights = {path: InventoryEntry(path, len(path) + LISTING_OVERHEAD, '100644') for shard in listing for path in shard.paths}
 
         def halves(item: tuple[str, Shard], _overflow: ShardOverflowError) -> list[tuple[str, Shard]]:
             side, shard = item
             return [(side, part) for part in split_by_bytes(shard, weights)]
 
         await run_pool(work, self.triage_listing, budget=self.budget, split=halves, concurrency=self.concurrency)
+        return self.recorded_sides()
+
+    def recorded_sides(self) -> list[dict[str, TriageVerdict]]:
         recorded = (self.budget.scope_shards or {}).get('triage', {})
-        return [{path: TriageVerdict.model_validate(value) for verdicts in recorded.get(side, {}).values()
-                 for path, value in verdicts.items()} for side in TRIAGE_SIDES]
+        return [merge_side({path: TriageVerdict.model_validate(value) for path, value in verdicts.items()}
+                           for _shard, verdicts in sorted(recorded.get(side, {}).items())) for side in TRIAGE_SIDES]
+
+    def current_exclusions(self, inputs: Collection[str]) -> list[ScopeExclusion]:
+        """Exclusions over what is still unread: a file read by reference or investigation is no longer excluded."""
+        if not (self.budget.scope_shards or {}).get('triage'):
+            return []
+        return exclusions(set(self.plan.owners) - set(inputs), spine=self.plan.spine, sides=self.recorded_sides())[1]
 
     async def triage_listing(self, item: tuple[str, Shard]) -> None:
         side, shard = item
@@ -469,6 +481,7 @@ class ShardedScope:
         excluded, _records = exclusions(self.plan.owners, spine=self.plan.spine, sides=sides)
         authored = [Shard(id=shard.id, paths=paths, readable_bytes=shard.readable_bytes, depth=shard.depth)
                     for shard in self.plan.shards if (paths := tuple(p for p in shard.paths if p not in excluded))]
+        self._persist(authored=sorted(shard.id for shard in authored))
         unfinished = [shard for shard in authored if shard.id not in done]
         summaries = [*done.values(), *await run_pool(unfinished, self.author_shard, budget=budget,
                                                       split=self._split, concurrency=self.concurrency)]
@@ -494,10 +507,12 @@ class ShardedScope:
             _fail('scope_no_obligations')
         inputs = {path: budget.scope_inputs[path] for summary in summaries for path in summary.inputs}
         # A file read through a reference is no longer excluded, whatever triage said.
-        _unread, records = exclusions(set(self.plan.owners) - set(inputs), spine=self.plan.spine, sides=sides)
-        definition = ScopeDefinition(source_commit=self.request.commit, inventory_digest=self.view(name='scope').inventory_digest,
-            inputs=inputs, criteria=[ScopeCriterion(**c.model_dump(), id=criterion_id(c)) for c in criteria],
-            exclusions=records)
+        try:
+            definition = ScopeDefinition(source_commit=self.request.commit, inventory_digest=self.view(name='scope').inventory_digest,
+                inputs=inputs, criteria=[ScopeCriterion(**c.model_dump(), id=criterion_id(c)) for c in criteria],
+                exclusions=self.current_exclusions(inputs))
+        except ValidationError:
+            _fail('scope_size_limit')  # Never trimmed to fit: the definition, criteria and exclusions stay whole.
         budget.scope_definition = definition
         budget.scope_responses = []
         self._persist(summaries={}, assigned=[], generation=0)
@@ -606,11 +621,13 @@ class ShardedScope:
                         carried: Mapping[str, str]) -> list[Shard]:
         """Shards owning a retained finding, changed criteria or an input no reviewer has read; others carry forward."""
         reviewed = (self.budget.scope_shards or {}).get('reviewed_criteria', {})
+        authored = set((self.budget.scope_shards or {}).get('authored', []))
         unread = {self.plan.owners.get(path) for path, digest in definition.inputs.items() if carried.get(path) != digest}
         targets = []
         for shard in self.plan.shards:
             current = _fingerprints([c for c in definition.criteria if criterion_owner(c, self.plan) == shard.id])
-            if shard.id in owned or shard.id in unread or reviewed.get(shard.id, []) != current:
+            first = shard.id in authored and shard.id not in reviewed
+            if first or shard.id in owned or shard.id in unread or reviewed.get(shard.id, []) != current:
                 targets.append(shard)
         return targets
 
@@ -793,6 +810,9 @@ class ShardedScope:
         results = await run_pool(work, partial(self.revise_group, base=base, investigator=investigator),
                                  budget=budget, split=halves, concurrency=self.concurrency)
         definition, responses = combine_revisions(base, results, inputs=budget.scope_inputs)
+        if definition.exclusions:
+            definition = ScopeDefinition.model_validate({**definition.model_dump(mode='json'),
+                'exclusions': [item.model_dump(mode='json') for item in self.current_exclusions(definition.inputs)]})
         preserve_scope(base, definition)
         try:
             budget.scope_responses = _validate_responses(responses, ledger=ledger, inputs=dict(budget.scope_inputs),

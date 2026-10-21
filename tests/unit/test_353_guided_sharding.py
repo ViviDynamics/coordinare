@@ -109,3 +109,66 @@ async def test_triage_is_not_repeated_after_a_restart(tmp_path):
     await flow(cache, second)
     assert not [role for role, _messages in second.conversations if role == 'triage']
     assert COMMIT
+
+
+def verdict(path, value):
+    return TriageVerdict(path=path, verdict=value, rationale='r')
+
+
+def test_a_repeated_path_in_one_triage_is_a_correctable_error():
+    from coordinare.services.environment_scope import _ResponseReferenceError
+    from coordinare.services.environment_shard_triage import validate_triage
+    from coordinare.services.environment_shards import Shard
+    shard = Shard(id='shard-000-00000000', paths=('a/x.yml', 'a/y.md'), readable_bytes=0, depth=0)
+    data = {'listing_triage': {'verdicts': [{'path': 'a', 'verdict': 'environment', 'rationale': 'r'},
+                                            {'path': 'a', 'verdict': 'unrelated', 'rationale': 'r'}]}}
+    with pytest.raises(_ResponseReferenceError) as failure:
+        validate_triage(data, shard=shard)
+    assert failure.value.errors[0]['code'] == 'triage_path_repeated'
+
+
+def test_a_directory_judged_differently_across_listing_shards_keeps_the_inclusive_verdict():
+    from coordinare.services.environment_shard_triage import merge_side
+    merged = merge_side([{'a': verdict('a', 'environment')}, {'a': verdict('a', 'unrelated')}])
+    assert merged['a'].verdict == 'environment'
+    side = merged
+    excluded, _ = exclusions(['a/x.yml', 'a/y.md'], spine=[], sides=[side, {'a': verdict('a', 'unrelated')}])
+    assert not excluded
+
+
+def test_exclusion_records_stay_within_their_bound_with_exact_counts():
+    paths = [f'g{i % 10}/sub{i}/file.txt' for i in range(600)]
+    side = {f'g{i % 10}/sub{i}': verdict(f'g{i % 10}/sub{i}', 'unrelated') for i in range(600)}
+    excluded, records = exclusions(paths, spine=[], sides=[side, side])
+    assert len(records) == 10 and sum(record.files for record in records) == len(excluded) == 600
+    # More unrelated top-level areas than the record can hold: everything is read instead.
+    wide = {f'g{i}': verdict(f'g{i}', 'unrelated') for i in range(600)}
+    assert exclusions([f'g{i}/f.txt' for i in range(600)], spine=[], sides=[wide, wide]) == (set(), [])
+
+
+@pytest.mark.asyncio
+async def test_exclusions_shrink_when_an_investigation_reads_an_excluded_file():
+    from tests.unit.test_353_shard_review_fixes import InvestigatingRouter
+
+    class Both(InvestigatingRouter):
+        unrelated = ('svc2',)
+
+    contract = await run(Both())
+    assert 'svc2/file2.txt' in contract.definition.inputs
+    [record] = contract.definition.exclusions
+    assert (record.path, record.files) == ('svc2', 2)
+
+
+@pytest.mark.asyncio
+async def test_an_authored_shard_that_read_nothing_is_still_reviewed():
+    class Silent(Router):
+        def author(self, messages, user):
+            return {'shard_summary': {'criteria': [], 'cross_references': [], 'questions': []}} if 'svc1' in json.dumps(
+                user['root_directory']) and user['shard']['id'] == self._svc1 else super().author(messages, user)
+
+    from tests.unit.test_353_shard_scope import PLAN
+    silent = Silent()
+    silent._svc1 = next(shard.id for shard in PLAN.shards if shard.paths[0].startswith('svc1'))
+    await run(silent)
+    first_round = [m for role, m in silent.conversations if role == 'review']
+    assert len(first_round) >= len(PLAN.shards)
