@@ -260,7 +260,7 @@ async def test_backend_metadata_remains_request_local(monkeypatch):
     assert isinstance(await backend.chat_json([{"role": "user", "content": "first"}]), str)
 
 
-@pytest.mark.parametrize("changes", [{"max_schema_repairs": 9}, {"max_schema_repairs": -1}, {"timeout_seconds": 3601}, {"max_calls": 0}])
+@pytest.mark.parametrize("changes", [{"max_schema_repairs": 9}, {"max_schema_repairs": -1}, {"timeout_seconds": 4 * 3600 + 1}, {"max_calls": 0}])
 def test_invalid_attempt_bounds_cannot_extend_policy(changes):
     with pytest.raises(ValueError):
         AttemptBudget(**changes)
