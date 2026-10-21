@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from coordinare_service_inference.environment.scope import (
+    ListingTriageEnvelope,
     ScopeAssessmentEnvelope,
     ScopeEnvelope,
     ShardSummaryEnvelope,
@@ -134,7 +135,8 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
     final: dict[str, Callable[[], dict[str, Any]]] = {'probe': ProbeEnvelope.model_json_schema, 'manifest': _MANIFEST_ENVELOPE.model_json_schema,
              'assessment': assessment_envelope_schema, 'scope': ScopeEnvelope.model_json_schema,
              'scope_assessment': ScopeAssessmentEnvelope.model_json_schema, 'scope_revision': ScopeRevisionEnvelope.model_json_schema,
-             'shard_summary': ShardSummaryEnvelope.model_json_schema}
+             'shard_summary': ShardSummaryEnvelope.model_json_schema,
+             'listing_triage': ListingTriageEnvelope.model_json_schema}
     if phase == 'source_tool':
         return {'type': 'object', 'anyOf': tools}
     declaration = final[phase]()

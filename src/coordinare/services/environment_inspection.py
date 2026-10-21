@@ -203,9 +203,10 @@ class SourceInspection:
                     raise
                 return {"errors": [{"code": "invalid_directory_or_cursor"}],
                         "guidance": "Use a listed directory path (root: empty or '.'); start at cursor 0, then use next_cursor."}
-        if set(reply) == {"tool", "paths"} and reply.get("tool") == "read_files":
+        # A cursor belongs to list_files; on a read it carries no meaning and is ignored.
+        if set(reply) - {"cursor"} == {"tool", "paths"} and reply.get("tool") == "read_files":
             return await self._navigation_reads(reply["paths"])
-        if set(reply) == {"tool", "path"} and reply.get("tool") == "read_file":
+        if set(reply) - {"cursor"} == {"tool", "path"} and reply.get("tool") == "read_file":
             return await self._navigation_reads([reply["path"]], single=True)
         message = f"{self.name} returned an unsupported tool or envelope"
         raise EnvironmentDiscoveryError(message, code="unsupported_envelope")

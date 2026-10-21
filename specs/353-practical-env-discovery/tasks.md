@@ -207,3 +207,13 @@ maintainer rulings recorded in the plan). Native execution with independent revi
 - [x] T100 Sharded authoring, independent shard review into one ledger, and sharded revision (Phases 2-3, Tasks 5-6).
 - [x] T101 Persisted shard progress and recovery (Phase 4, Task 7).
 - [ ] T102 Harness flags, independent review, preflight, push, CI and pinned Elm then Dettmore runs (Phase 5, Task 8).
+
+## Approved guided sharding
+
+Spec: `guided-sharding-amendment.md`; plan: `guided-sharding-plan.md` (approved 2026-10-21). Motivated by the
+sharded Elm attempt `...-sharded-v1`: 276 size-based shards, held at `attempt_schema_limit` after 1,957 s and
+125 calls with 3 shards authored.
+
+- [x] T103 Read tolerance for a stray cursor; triage and exclusion models; `listing_triage` envelope.
+- [x] T104 Two independent listing-only triages; authoring of non-excluded areas; exclusions in the reviewed definition.
+- [ ] T105 Independent review, preflight, push, CI and pinned Elm then Dettmore on GLM.

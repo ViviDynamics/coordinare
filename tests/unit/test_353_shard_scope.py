@@ -26,6 +26,7 @@ from coordinare.services.environment_shard_scope import (
     needs_sharding,
     route_cross_references,
 )
+from coordinare.services.environment_shard_triage import TRIAGE_INSTRUCTIONS
 
 COMMIT = 'a' * 40
 TOKENS = 4000  # share = 7,000 bytes
@@ -60,10 +61,17 @@ class Router:
 
     async def __call__(self, messages, *, response_schema):
         system, user = messages[0]['content'], json.loads(messages[1]['content'])
-        role = ('author' if SHARD_AUTHOR_INSTRUCTIONS in system else 'review' if SHARD_REVIEW_PREAMBLE in system
+        role = ('triage' if TRIAGE_INSTRUCTIONS in system else 'author' if SHARD_AUTHOR_INSTRUCTIONS in system else 'review' if SHARD_REVIEW_PREAMBLE in system
                 else 'merge' if MERGE_REVIEW_PREAMBLE in system else 'revision' if SHARD_REVISION_PREAMBLE in system else '?')
         self.conversations.append((role, copy.deepcopy(messages)))
         return json.dumps(getattr(self, role)(messages, user))
+
+    unrelated: tuple[str, ...] = ()
+
+    def triage(self, messages, user):
+        tops = sorted({item['path'].split('/')[0] for item in user['files']})
+        return {'listing_triage': {'verdicts': [{'path': top, 'verdict': 'unrelated' if top in self.unrelated else 'environment',
+                                                 'rationale': 'listing judgment'} for top in tops]}}
 
     def author(self, messages, user):
         shard = next(s for s in self.plan.shards if user['shard']['id'].startswith(s.id))
