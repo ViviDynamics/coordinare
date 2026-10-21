@@ -6,7 +6,7 @@ from typing import NoReturn, Self
 from pydantic import Field, model_validator
 from pydantic_core import PydanticCustomError
 
-from .findings import Digest, FindingEvidence, FindingResponse
+from .findings import MAX_LEDGER_FINDINGS, Digest, FindingEvidence, FindingResponse
 from .scope import ScopeCriterion, ScopeCriterionProposal, ScopeDefinition, criterion_id
 
 MAX_SCOPE_REVISION_CHANGES = 16
@@ -32,7 +32,7 @@ class ScopeRevision(FindingEvidence):
 
 class ScopeRevisionEnvelope(FindingEvidence):
     scope_revision: ScopeRevision
-    finding_responses: list[FindingResponse] = Field(max_length=128)
+    finding_responses: list[FindingResponse] = Field(max_length=MAX_LEDGER_FINDINGS)
 
 
 def _invalid(code: str) -> NoReturn:

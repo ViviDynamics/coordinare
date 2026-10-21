@@ -8,10 +8,12 @@ import io
 import json
 import re
 import tarfile
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, NoReturn
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from .inventory import InventoryEntry
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping
@@ -224,6 +226,29 @@ async def read_source_reference(
         else:
             resolved.append(part)
     return await fetch(checked_path("/".join(resolved)))
+
+
+def bundle_inventory(
+    path: Path, *, expected: ExecutionSourceIdentity | Mapping[str, Any],
+) -> dict[str, InventoryEntry]:
+    """Pinned sizes, modes and recorded link targets from a verified bundle, without reading file contents."""
+    identity = expected if isinstance(expected, ExecutionSourceIdentity) else ExecutionSourceIdentity.model_validate(expected)
+    validate_execution_bundle(path, expected=identity)
+    entries: dict[str, InventoryEntry] = {}
+    targets: dict[str, str] = {}
+    for archive, member in bundle_members(path):
+        if member.name == "metadata.json" and not entries:
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise ExecutionSourceError("execution source metadata missing")
+            data = json.loads(stream.read(MAX_METADATA_BYTES + 1), object_pairs_hook=_unique)
+            for item in data["entries"]:
+                entry = SourceEntry.model_validate(item)
+                entries[entry.path] = InventoryEntry(entry.path, entry.size, entry.mode)
+        elif member.issym():
+            targets[checked_path(member.name[len("files/"):])] = member.linkname
+    return {path: replace(entry, target=targets.get(path)) if entry.mode == "120000" else entry
+            for path, entry in entries.items()}
 
 
 def validate_execution_bundle(

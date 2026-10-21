@@ -13,3 +13,4 @@ class InventoryEntry:
     path: str
     size: int
     mode: Mode
+    target: str | None = None  # Recorded link text for mode 120000; never followed.

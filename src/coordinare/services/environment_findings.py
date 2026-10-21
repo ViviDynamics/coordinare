@@ -119,7 +119,7 @@ def apply_evidence_review(ledger: FindingLedger, *, subject: ReviewSubject, prop
     except ValidationError as exc:
         # Growth beyond trusted aggregate bounds is terminal; malformed model
         # decisions remain correctable within the existing schema allowance.
-        if len(records) > MAX_FINDINGS or any('512 KiB' in str(error.get('msg', '')) for error in exc.errors()):
+        if len(records) > MAX_FINDINGS or any(error.get('type') == 'finding_ledger_limit' for error in exc.errors()):
             refuse_finding('finding ledger limit exceeded', code='review_findings_limit')
         refuse_finding('finding adjudication is incomplete or invalid', code='review_findings_invalid')
     if (proposal.verdict == 'accept' and result.open_ids()) or (proposal.verdict == 'revise' and not result.open_ids()):
