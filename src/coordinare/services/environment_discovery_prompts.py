@@ -52,6 +52,15 @@ SOURCE_TOOLS = SOURCE_NAVIGATION + (
     'A candid disclosure of a missing required capability is a blocking coverage finding, not a scoped exception. '
 )
 
+LOCAL_CREDENTIAL_AUTHORING = (
+    'Never write a literal credential, even a throwaway test password. A credential for a service this manifest '
+    'starts goes in local_credentials as {name, service, purpose} and is referenced as ${NAME}; the runner generates '
+    'a fresh value every run, so data that stores it lives under {scratch} and install commands cannot use it. '
+    'For a credential environment variable named K the value is exactly ${K}.')
+LOCAL_CREDENTIAL_REVIEW = (
+    'Judge every local_credentials entry: it must belong to a service this manifest starts. A credential the source '
+    'shows comes from outside the environment, such as a cloud key or registry token, is a blocking finding.')
+
 _MANIFEST_INSTRUCTIONS = (
     'Use the fixed scope_contract supplied by the daemon: criterion_checks maps every required criterion ID '
     'to required unscoped consumer checks. Never return scope_contract, scope_contract_digest or change source obligations. '
@@ -79,6 +88,7 @@ _MANIFEST_INSTRUCTIONS = (
     'Execution roots use {cache}, {repo}, {scratch}, never ${cache}, ${repo}, ${scratch}. '
     'The runner expands ${NAME} before starting the command: use it only for runtime environment variables. '
     'For shell-local variables assigned inside bash -c, use $name rather than ${name}. '
+    f'{LOCAL_CREDENTIAL_AUTHORING} '
     'Create every declared activation directory during installation; do not hide a missing path by removing useful activation. '
     'The project environment scope is fixed by pinned development/test evidence, never by image convenience. '
     'Include finding_responses for every open finding ID: rationale, sources and affected_ids. '
