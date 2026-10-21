@@ -6,8 +6,6 @@ import itertools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from coordinare.services.environment_attempt import EnvironmentDiscoveryError
-
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
@@ -89,8 +87,7 @@ def plan_shards(entries: Mapping[str, InventoryEntry], *, share: int, spine: Col
         if path in excluded or not readable(entry, max_file_bytes=max_file_bytes):
             continue
         if shard_weight(entry) > share:
-            message = 'a readable file exceeds one agent share'
-            raise EnvironmentDiscoveryError(message, code='shard_context_limit')
+            continue  # Larger than one agent share: listed, never assigned, as with any oversized file.
         parts = path.split('/')
         files.setdefault('/'.join(parts[:-1]), []).append(entry)
         for index in range(len(parts) - 1):

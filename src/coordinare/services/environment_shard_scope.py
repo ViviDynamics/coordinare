@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Unpack
 
@@ -121,10 +121,12 @@ SHARD_AUTHOR_INSTRUCTIONS = (
     'Return {"shard_summary":{"criteria":[...],"cross_references":[...],"questions":[...]}}. '
 )
 SHARD_REVIEW_PREAMBLE = (
-    'You independently review ONE shard of a repository too large for one conversation. root_directory lists your '
-    'shard; spine_evidence holds shared root-level files; scope_criteria are the current criteria citing your shard and '
-    'criterion_index names every current criterion. Judge omissions, conflicts and applicability for obligations your '
-    'shard establishes; other reviewers judge the rest. required_decision_ids are the retained findings assigned to you. '
+    'You independently review ONE shard of a repository too large for one conversation. mandatory_evidence holds your '
+    'shard\'s inspected files and the shared root-level files; root_directory navigates the whole repository so you can '
+    'follow references, but read only what judging your shard requires: your reads are limited. scope_criteria are the '
+    'current criteria citing your shard and criterion_index names every current criterion. Judge omissions, conflicts '
+    'and applicability for obligations your shard establishes; other reviewers judge the rest. required_decision_ids '
+    'are the retained findings assigned to you. '
 )
 MERGE_REVIEW_PREAMBLE = (
     'You independently review the repository-wide consistency of a scope assembled from per-shard work. '
@@ -342,7 +344,7 @@ class ShardedScope:
                     try:
                         reply = _decode_reply(raw, inspection.name, limits)
                         if 'tool' in reply:
-                            result = await inspection.tool_result(reply)
+                            result = await _bounded_tool_result(inspection, reply)
                             messages.extend([{'role': 'assistant', 'content': raw},
                                              {'role': 'user', 'content': canonical({'tool_result': result}).decode()}])
                             continue
@@ -571,11 +573,12 @@ class ShardedScope:
         carried = {path: digest for path, digest in previous.items() if path not in target_paths}
         work: list[Shard | None] = [*targets, None]
         # Each part's share of the ledger's remaining capacity, so the combined round always fits.
-        capacity = max(0, MAX_FINDINGS - len(ledger.records)) // len(work)
+        capacities = finding_capacities(MAX_FINDINGS - len(ledger.records), len(work))
+        slots = {MERGE_OWNER if target is None else target.id: capacity for target, capacity in zip(work, capacities, strict=True)}
 
         async def review(target: Shard | None) -> tuple[str, ScopeAssessmentProposal, dict[str, str]]:
             owner = MERGE_OWNER if target is None else target.id
-            material = ReviewMaterial([], owned.get(owner, []), [], capacity)
+            material = ReviewMaterial([], owned.get(owner, []), [], slots[owner])
             if target is None:
                 assessment, inputs = await self.review_merge(definition=definition, material=material)
             else:
@@ -705,7 +708,10 @@ class ShardedScope:
         if ledger is None or base.digest() != budget.scope_revision_base_digest:
             _fail('scope_source_identity')
         await self.load_spine()
+        # Investigation is daemon work over every requested file, not a conversation's read allowance.
         investigator = self.view(name='scope_revision')
+        investigator.limits = replace(investigator.limits, max_reads=max(investigator.limits.max_reads,
+                                      len(_current_investigations(budget)) + 1))
         completed = {result.binding_id for result in budget.scope_investigation_results}
         await investigate_scope_requests(investigator, [binding for binding in _current_investigations(budget)
                                                         if binding.id not in completed])
@@ -745,6 +751,22 @@ class ShardedScope:
         return definition
 
 
+def finding_capacities(remaining: int, parts: int) -> list[int]:
+    """Split the ledger's remaining capacity exactly; earlier parts take the remainder."""
+    base, extra = divmod(max(0, remaining), parts)
+    return [base + (index < extra) for index in range(parts)]
+
+
+async def _bounded_tool_result(inspection: SourceInspection, reply: dict[str, Any]) -> dict[str, Any]:
+    """A conversation whose read allowance is spent is told so and must conclude; the attempt continues."""
+    requested = reply.get('paths') if reply.get('tool') == 'read_files' else [reply.get('path')] if reply.get('tool') == 'read_file' else []
+    if isinstance(requested, list) and inspection.reads + len(requested) > inspection.limits.max_reads:
+        return {'errors': [{'code': 'read_allowance_exhausted', 'remaining_reads': inspection.limits.max_reads - inspection.reads}],
+                'guidance': 'This conversation has no read allowance left for that request. Conclude from the evidence you '
+                            'hold; report unread relevant files as findings or open questions rather than guessing.'}
+    return await inspection.tool_result(reply)
+
+
 def combine_revisions(base: ScopeDefinition, results: Sequence[tuple[ScopeRevision, list[FindingResponse]]], *,
                       inputs: Mapping[str, str]) -> tuple[ScopeDefinition, list[FindingResponse]]:
     """Apply every group's revision in order. Identical additions collapse; a response naming a criterion another
@@ -753,7 +775,12 @@ def combine_revisions(base: ScopeDefinition, results: Sequence[tuple[ScopeRevisi
     for revision, answered in results:
         current = {criterion.id for criterion in definition.criteria}
         additions = [criterion for criterion in revision.add if criterion_id(criterion) not in current]
-        change = revision.model_copy(update={'base_digest': definition.digest(), 'add': additions})
+        # An identical reassessment already applied by another group is the same change, not a conflict.
+        reassess = [item for item in revision.reassess
+                    if not (item.criterion_id in replaced and criterion_id(item.criterion) in current)]
+        if len(definition.criteria) + len(additions) > MAX_SCOPE_CRITERIA:
+            _fail('scope_size_limit')  # Obligations are never dropped or folded to fit.
+        change = revision.model_copy(update={'base_digest': definition.digest(), 'add': additions, 'reassess': reassess})
         try:
             definition = apply_scope_revision(definition, change, inspected_inputs=dict(inputs))
         except (PydanticCustomError, ValidationError):

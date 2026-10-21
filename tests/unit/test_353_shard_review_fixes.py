@@ -206,15 +206,55 @@ async def test_an_accepted_sharded_scope_resumes_beyond_the_conversation_read_al
     plan = build_plan(ENTRIES, context_tokens=4000, max_file_bytes=4096, max_reads=4)
     accepted = await attempt(Router(plan=plan))
     assert len(accepted.all_inputs) > limits.max_reads
+    spent = cache.environment_attempt['reads']
     resumed = await attempt(Router(plan=plan))
     assert resumed == accepted
+    # Resume verification is integrity work; it does not spend the attempt's model read allowance.
+    assert cache.environment_attempt['reads'] == spent
 
 
-def test_unsplittable_oversized_file_holds_with_shard_code():
-    entries = {'big.txt': InventoryEntry('big.txt', 4000, '100644')}
+def test_a_file_larger_than_one_share_is_listed_but_never_stops_the_attempt():
+    entries = {'big.txt': InventoryEntry('big.txt', 4000, '100644'), 'ok.txt': InventoryEntry('ok.txt', 10, '100644')}
+    assert [shard.paths for shard in plan_shards(entries, share=1000, spine=[], max_file_bytes=4096)] == [('ok.txt',)]
+
+
+def test_finding_capacity_is_split_exactly():
+    from coordinare.services.environment_shard_scope import finding_capacities
+    assert finding_capacities(10, 13) == [1] * 10 + [0] * 3
+    assert sum(finding_capacities(128, 20)) == 128 and max(finding_capacities(128, 20)) - min(finding_capacities(128, 20)) <= 1
+
+
+@pytest.mark.asyncio
+async def test_a_spent_read_allowance_is_reported_to_the_agent_not_held():
+    from coordinare.services.environment_inspection import SourceInspection
+    from coordinare.services.environment_shard_scope import _bounded_tool_result
+
+    async def fetch(path):
+        return SOURCES.get(path)
+    inspection = SourceInspection(ENTRIES, fetch, DiscoveryLimits(max_reads=1), AttemptBudget())
+    await inspection.read_files(['README.md'])
+    result = await _bounded_tool_result(inspection, {'tool': 'read_file', 'path': 'svc0/file0.txt'})
+    assert result['errors'][0]['code'] == 'read_allowance_exhausted'
+
+
+def test_combined_revisions_beyond_the_criterion_cap_hold_as_size_limit(monkeypatch):
+    import coordinare.services.environment_shard_scope as sharded
+    monkeypatch.setattr(sharded, 'MAX_SCOPE_CRITERIA', 2)
+    base = definition(full('svc1/file0.txt', 'kept'))
+    adds = [ScopeRevision(base_digest=base.digest(), add=[ScopeCriterionProposal(**criterion('svc1/file0.txt', f'new {i}'))],
+                          reassess=[]) for i in range(2)]
     with pytest.raises(EnvironmentDiscoveryError) as failure:
-        plan_shards(entries, share=1000, spine=[], max_file_bytes=4096)
-    assert failure.value.code == 'shard_context_limit'
+        combine_revisions(base, [(item, []) for item in adds], inputs=base.inputs)
+    assert failure.value.code == 'scope_size_limit'
+
+
+def test_identical_reassessments_from_two_groups_are_one_change():
+    unknown = full('svc0/file0.txt', 'u', applicability='unknown')
+    base = definition(unknown)
+    known = ScopeCriterionProposal(**criterion('svc0/file0.txt', 'u'))
+    same = ScopeRevision(base_digest=base.digest(), add=[], reassess=[ScopeReassessment(criterion_id=unknown.id, criterion=known)])
+    combined, _ = combine_revisions(base, [(same, []), (same, [])], inputs=base.inputs)
+    assert [c.id for c in combined.criteria] == [criterion_id(known)]
 
 
 _ = MERGE_OWNER

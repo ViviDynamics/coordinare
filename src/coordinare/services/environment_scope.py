@@ -617,6 +617,7 @@ async def _accept_scope(budget: AttemptBudget, *, definition: ScopeDefinition, r
 
 
 RESUME_SOURCE_BYTES = 64 * 1024 * 1024
+RESUME_SECONDS_PER_INPUT = 0.5
 
 
 async def conclude_review(budget: AttemptBudget, review: tuple[ScopeAssessmentProposal, FindingLedger, SourceAssessmentRecord],
@@ -652,10 +653,13 @@ async def _discover_scope(request: _Request) -> ScopeContract:
     saved = budget.scope_contract
     if saved is not None:
         saved = ScopeContract.model_validate(saved.model_dump(mode='json'))
-        # Resume verification is daemon work, not a conversation: it re-reads every accepted input, however many.
-        verify = replace(limits, max_reads=max(limits.max_reads, len(saved.all_inputs)),
-                         max_source_bytes=max(limits.max_source_bytes, RESUME_SOURCE_BYTES))
-        inspection = SourceInspection(request.entries or _checked_inventory(paths, limits), fetch, verify, budget,
+        # Resume verification is daemon integrity work, not model work: it re-reads every accepted input, however many,
+        # without spending the attempt's model read allowance, under a deadline scaled to the input count.
+        count = len(saved.all_inputs)
+        verify = replace(limits, max_reads=max(limits.max_reads, count),
+                         max_source_bytes=max(limits.max_source_bytes, RESUME_SOURCE_BYTES),
+                         phase_timeout_seconds=max(limits.phase_timeout_seconds, count * RESUME_SECONDS_PER_INPUT))
+        inspection = SourceInspection(request.entries or _checked_inventory(paths, limits), fetch, verify, None,
                                       retained_inputs=budget.scope_inputs)
         if (saved.definition.source_commit, saved.definition.inventory_digest) != (commit, inspection.inventory_digest):
             _fail('scope_source_identity')
