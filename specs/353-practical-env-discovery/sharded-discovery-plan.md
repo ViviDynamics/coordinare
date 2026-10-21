@@ -52,14 +52,15 @@ Second review fixes: shard reviewers navigate the whole repository (needed for i
 their prompt saying so, and a spent per-conversation read allowance is reported to the agent instead of holding;
 finding capacity is split exactly across parts; resume verification and revision investigation are daemon work that
 does not spend a conversation's or the attempt's model read allowance; a readable file larger than one share is
-listed but never assigned; combined revisions over 512 criteria hold as `scope_size_limit` and identical
+assigned its own shard (its agent may overflow and hold, never silently skip it); combined revisions over 512 criteria hold as `scope_size_limit` and identical
 reassessments from two groups count once.
 
 Run setting: as in the single-conversation path, `phase_timeout_seconds` bounds a whole agent conversation, not one
 call. Live sharded runs set it to the attempt deadline.
 
-Known limits, not addressed here: when the ledger is nearly full, later parts may receive no finding capacity and
-must return indeterminate; a rationale-only duplicate between shards keeps the first rationale; a split parent's
+Known limits, not addressed here: when the ledger is nearly full, later parts (the merge reviewer first) may receive
+no finding capacity and must return indeterminate; a reviewer's reads are bounded by count, not bytes, so navigation
+can still overflow its context and hold with `shard_context_limit`; identical reassessments keep the first rationale; a rationale-only duplicate between shards keeps the first rationale; a split parent's
 spent work is re-spent after a restart; reviewed state is tracked per owning shard; review and merge conversations do not split on overflow (they hold with
 `shard_context_limit`); inputs read by an agent that later overflowed stay in the scope inputs; shard questions are
 not yet surfaced to reviewers; the contract's 2 MiB bound caps an accepted scope at roughly 3,000 inspected files;

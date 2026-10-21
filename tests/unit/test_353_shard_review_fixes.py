@@ -213,9 +213,11 @@ async def test_an_accepted_sharded_scope_resumes_beyond_the_conversation_read_al
     assert cache.environment_attempt['reads'] == spent
 
 
-def test_a_file_larger_than_one_share_is_listed_but_never_stops_the_attempt():
+def test_a_readable_file_larger_than_one_share_gets_its_own_shard_never_silence():
     entries = {'big.txt': InventoryEntry('big.txt', 4000, '100644'), 'ok.txt': InventoryEntry('ok.txt', 10, '100644')}
-    assert [shard.paths for shard in plan_shards(entries, share=1000, spine=[], max_file_bytes=4096)] == [('ok.txt',)]
+    # Its agent may overflow and hold loudly; it is never silently left out of every shard.
+    assert sorted(shard.paths for shard in plan_shards(entries, share=1000, spine=[], max_file_bytes=4096)) == [
+        ('big.txt',), ('ok.txt',)]
 
 
 def test_finding_capacity_is_split_exactly():
