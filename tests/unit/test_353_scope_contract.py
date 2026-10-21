@@ -74,11 +74,11 @@ class Replies:
         return json.dumps(value(messages) if callable(value) else value)
 
 
-async def run(replies, *, budget=None, fetch=None, paths=None):
+async def run(replies, *, budget=None, fetch=None, paths=None, entries=None):
     async def default_fetch(path):
         return SOURCES.get(path)
     return await api()(paths=paths or list(SOURCES), fetch=fetch or default_fetch,
-        chat=replies, commit=COMMIT, limits=DiscoveryLimits(), budget=budget or AttemptBudget())
+        chat=replies, commit=COMMIT, limits=DiscoveryLimits(), budget=budget or AttemptBudget(), entries=entries)
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ import asyncio
 import time
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypedDict, Unpack
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, NotRequired, TypedDict, Unpack
 
 from coordinare_service_inference.environment.findings import FindingLedger, FindingResponse
 from coordinare_service_inference.environment.models import CoverageAssessmentProposal
@@ -64,7 +64,9 @@ from coordinare.services.environment_scope_investigation import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
+
+    from coordinare_service_inference.environment.inventory import InventoryEntry
 
     from coordinare_service_inference.environment.scope_revision import ScopeRevision
 
@@ -203,7 +205,7 @@ def _request_rule_errors(assessment: ScopeAssessmentProposal, *, reviewer: Sourc
             absent.add((binding.request.operation, binding.request.path))
     def exists(request: Any) -> bool:
         if request.operation == 'read_file':
-            return request.path in reviewer.inventory
+            return request.path in reviewer.inventory and reviewer.policy_status(request.path) == 'readable'
         return request.path == '' or any(path.startswith(request.path+'/') for path in reviewer.paths)
     items = [('findings', index, item) for index, item in enumerate(assessment.findings)]
     items.extend(('decisions', index, item) for index, item in enumerate(assessment.decisions) if isinstance(item, SourceGapDecision))
@@ -365,6 +367,7 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
 class ScopeRunOptions(TypedDict):
     limits: DiscoveryLimits
     budget: AttemptBudget
+    entries: NotRequired[Mapping[str, InventoryEntry] | None]
 
 
 @dataclass(frozen=True)
@@ -376,6 +379,7 @@ class _Request:
     limits: DiscoveryLimits
     budget: AttemptBudget
     author_cache: AuthorEvidenceCache | None = None
+    entries: Mapping[str, InventoryEntry] | None = None
 
 
 def _current_investigations(budget: AttemptBudget | None) -> list[Any]:
@@ -388,7 +392,7 @@ def _current_investigations(budget: AttemptBudget | None) -> list[Any]:
 async def _prepare_author(request: _Request) -> tuple[SourceInspection, list[dict[str, str]], dict[str, str]]:
     paths, fetch, commit, limits, budget = request.paths, request.fetch, request.commit, request.limits, request.budget
     inventory = _checked_inventory(paths, limits)
-    author = SourceInspection(inventory, fetch, limits, budget, retained_inputs=budget.scope_inputs)
+    author = SourceInspection(inventory, fetch, limits, budget, retained_inputs=budget.scope_inputs, entries=request.entries)
     author.name = 'scope_revision' if budget.scope_phase in {'investigation', 'revision'} else 'scope_author'
     previous = budget.scope_definition
     ledger = budget.scope_findings or FindingLedger(source_commit=commit)
@@ -602,14 +606,15 @@ async def _discover_scope(request: _Request) -> ScopeContract:
     saved = budget.scope_contract
     if saved is not None:
         saved = ScopeContract.model_validate(saved.model_dump(mode='json'))
-        inspection = SourceInspection(_checked_inventory(paths, limits), fetch, limits, budget, retained_inputs=budget.scope_inputs)
+        inspection = SourceInspection(_checked_inventory(paths, limits), fetch, limits, budget, retained_inputs=budget.scope_inputs,
+                                      entries=request.entries)
         if (saved.definition.source_commit, saved.definition.inventory_digest) != (commit, inspection.inventory_digest):
             _fail('scope_source_identity')
         await prepare_mandatory_evidence(inspection, saved.all_inputs, phase='scope_resume')
         investigation_evidence(inspection=inspection, bindings=budget.scope_investigations,
                                results=budget.scope_investigation_results)
         return saved
-    pinned = SourceInspection(_checked_inventory(paths, limits), fetch, limits, budget)
+    pinned = SourceInspection(_checked_inventory(paths, limits), fetch, limits, budget, entries=request.entries)
     request = replace(request, author_cache=AuthorEvidenceCache(source_commit=commit,
         inventory_digest=pinned.inventory_digest, max_bytes=limits.max_source_bytes))
     author, messages, required_inputs = await _prepare_author(request)
@@ -621,7 +626,8 @@ async def _discover_scope(request: _Request) -> ScopeContract:
     async with asyncio.timeout_at(budget.deadline):
         while True:
             definition = await _author_definition(request, author, messages)
-            reviewer = SourceInspection(inventory, fetch, limits, budget, retained_inputs=budget.scope_inputs)
+            reviewer = SourceInspection(inventory, fetch, limits, budget, retained_inputs=budget.scope_inputs,
+                                        entries=request.entries)
             reviewer.name = 'scope_review'
             expected = {**required_inputs, **definition.inputs}
             evidence = await prepare_mandatory_evidence(reviewer, expected, phase='scope_review')
@@ -662,7 +668,8 @@ async def discover_scope(*, paths: Sequence[str], fetch: Fetch, chat: ChatJson, 
     budget = options["budget"]
     try:
         async with asyncio.timeout_at(budget.deadline):
-            return await _discover_scope(_Request(paths, fetch, chat, commit, options["limits"], budget))
+            return await _discover_scope(_Request(paths, fetch, chat, commit, options["limits"], budget,
+                                                  entries=options.get("entries")))
     except TimeoutError:
         budget.error_code = 'attempt_deadline'
         _fail('attempt_deadline')

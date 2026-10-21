@@ -69,7 +69,7 @@ class ScopeInspectionBinding(FindingEvidence):
 
 class ScopeInspectionResult(FindingEvidence):
     binding_id: str = Field(pattern=r'^I[0-9a-f]{64}$')
-    status: Literal['file', 'listing', 'absent']
+    status: Literal['file', 'listing', 'absent', 'too_large', 'link']
     evidence_digest: Digest
     file_sha256: Digest | None = None
     # Same-named pinned inventory paths for an absent request; None means recorded before candidates existed.

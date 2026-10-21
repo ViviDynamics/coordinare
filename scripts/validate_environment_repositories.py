@@ -24,6 +24,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
+from coordinare_service_inference.environment.inventory import MODES as INVENTORY_MODES
+from coordinare_service_inference.environment.inventory import InventoryEntry
 from coordinare_service_inference.environment.execution_source import read_source_reference
 from coordinare_service_inference.environment.runtime import RuntimePolicy
 from scripts import environment_validation_cleanup
@@ -181,6 +183,26 @@ class Snapshot:
         metadata, name = records[0].split(b'\t', 1)
         _mode, kind, oid = metadata.decode('ascii').split()
         return oid if name.decode() == path and kind == 'blob' else None
+
+    async def get_repository_entries(
+        self, owner: str, repo: str, *, ref: str, max_entries: int = 100_000,
+    ) -> list[InventoryEntry]:
+        """Pinned blob paths with byte size and mode, from the tree only."""
+        if ref != self.commit:
+            raise ValueError("snapshot identity differs")
+        records = (await self.git("ls-tree", "-rlz", "--full-tree", ref)).split(b"\0")
+        entries: list[InventoryEntry] = []
+        for record in records:
+            if not record:
+                continue
+            metadata, path = record.split(b"\t", 1)
+            mode, kind, _digest, size = metadata.decode("ascii").split()
+            if kind == "blob" and mode in INVENTORY_MODES:
+                entries.append(InventoryEntry(path.decode("utf-8"), int(size), mode))
+        if len(entries) > max_entries:
+            raise EnvironmentDiscoveryError("snapshot inventory entry limit exceeded")
+        await self.get_repository_paths(owner, repo, ref=ref, max_entries=max_entries)
+        return sorted(entries, key=lambda entry: entry.path)
 
     async def get_repository_paths(
         self, owner: str, repo: str, *, ref: str, max_entries: int = 100_000,

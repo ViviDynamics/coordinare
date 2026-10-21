@@ -2538,9 +2538,16 @@ class EnvCacheService:
                     _source_refusal('complete execution source commit differs')
                 cache_state.environment_execution_source = source_bundle.identity.model_dump(mode='json')
                 budget.stage = "inventory"
-                paths = await github_service.get_repository_paths(
-                    github_org, repo, ref=commit, max_entries=limits.max_inventory_entries,
-                )
+                entry_source = getattr(github_service, 'get_repository_entries', None)
+                if callable(entry_source):
+                    listed = await entry_source(github_org, repo, ref=commit, max_entries=limits.max_inventory_entries)
+                    entries = {entry.path: entry for entry in listed}
+                    paths = sorted(entries)
+                else:
+                    entries = None
+                    paths = await github_service.get_repository_paths(
+                        github_org, repo, ref=commit, max_entries=limits.max_inventory_entries,
+                    )
                 from coordinare.services.environment_probe_service import (
                     ProbeServiceContext,
                     run_owned_probe,
@@ -2556,7 +2563,7 @@ class EnvCacheService:
                     symphony_name=symphony_name, commit=commit, paths=paths,
                     fetch=fetch, chat=llm_chat, capabilities=capabilities, declared_services=declared_services,
                     limits=limits, budget=budget, previous_manifest=previous, execution_feedback=feedback, probe_executor=probe_executor, require_preflight=True,
-                    execution_source_digest=source_bundle.identity.digest(),
+                    execution_source_digest=source_bundle.identity.digest(), entries=entries,
                 )
         except TimeoutError:
             budget.error_code, message = _timeout_label(attempt_timer.expired(), budget.stage)

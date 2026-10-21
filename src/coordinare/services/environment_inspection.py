@@ -4,14 +4,18 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
+
+from coordinare_service_inference.environment.inventory import InventoryEntry
 
 from coordinare_service_inference.environment.models import source_path
+
+__all__ = ['InventoryEntry', 'SourceInspection']
 
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from coordinare.services.environment_discovery import DiscoveryLimits, Fetch
 
@@ -19,16 +23,21 @@ if TYPE_CHECKING:
 MAX_BATCH_FILES = 8
 
 
+PolicyStatus = Literal['readable', 'too_large', 'link']
+
+
 class SourceInspection:
     """One independent phase's exact read ledger; no ecosystem-specific navigation."""
 
     def __init__(self, paths: Sequence[str], fetch: Fetch, limits: DiscoveryLimits, budget: AttemptBudget | None = None,
-                 *, retained_inputs: dict[str, str] | None = None) -> None:
+                 *, retained_inputs: dict[str, str] | None = None,
+                 entries: Mapping[str, InventoryEntry] | None = None) -> None:
         self.budget = budget
         self.retained_inputs = retained_inputs
         self.name = "discovery"
         self.paths = sorted(paths)
         self.inventory = set(paths)
+        self.entries = dict(entries) if entries is not None else None
         self.fetch = fetch
         self.limits = limits
         self.inputs: dict[str, str] = {}
@@ -138,6 +147,15 @@ class SourceInspection:
             if self.retained_inputs is not None and self.budget is not None:
                 await self.budget.flush()
 
+    def policy_status(self, path: str) -> PolicyStatus:
+        """Symlinks and files over the per-file limit are listed but never read or followed."""
+        entry = self.entries.get(path) if self.entries is not None else None
+        if entry is None:
+            return 'readable'
+        if entry.mode == '120000':
+            return 'link'
+        return 'too_large' if entry.size > self.limits.max_file_bytes else 'readable'
+
     async def read(self, path: Any) -> dict[str, str]:
         return (await self.read_files([path]))["files"][0]
 
@@ -147,9 +165,10 @@ class SourceInspection:
                 or any(not isinstance(path, str) for path in paths) or len(set(paths)) != len(paths)):
             message = "source batch must contain one to eight distinct string paths"
             raise EnvironmentDiscoveryError(message, code="invalid_tool_arguments")
-        valid = [path for path in paths if path in self.inventory]
-        errors: list[dict[str, Any]] = [{"index": index, "code": "source_path_not_found"}
-                  for index, path in enumerate(paths) if path not in self.inventory]
+        valid = [path for path in paths if path in self.inventory and self.policy_status(path) == 'readable']
+        errors: list[dict[str, Any]] = [{"index": index, "code": "source_path_not_found" if path not in self.inventory
+                                         else self.policy_status(path)}
+                  for index, path in enumerate(paths) if path not in valid]
         result: dict[str, Any] = await self.read_files(valid, navigation=True) if valid else {"files": []}
         unavailable = [item for item in result['files'] if 'error' in item]
         errors.extend({'index': paths.index(item['path']), 'code': item['error']} for item in unavailable)
@@ -158,7 +177,8 @@ class SourceInspection:
             return result["files"][0] if single else result
         result.update(errors=sorted(errors, key=lambda error: error['index']),
             guidance="Use list_files to select exact repository paths; root path is empty or '.'. "
-            "Unavailable or non-text content, including unresolved links, is not inspected evidence and cannot be cited. "
+            "Unavailable or non-text content, links (link) and files over the read limit (too_large) are listed but "
+            "never read; they are not inspected evidence and cannot be cited. "
             "Inspect related repository declarations; unresolved required evidence must hold readiness.")
         return result
 
