@@ -121,8 +121,9 @@ MIN_SPLIT = 2
 
 SHARD_AUTHOR_INSTRUCTIONS = (
     'You author source-defined obligations for ONE shard of a repository too large for one conversation. '
-    'Your shard is the set of files in root_directory; other agents handle the rest of the repository, and '
-    'spine_evidence holds shared root-level files. Inspect your shard: development/test entry points, dependency '
+    'Your shard is exactly the files in shard_files (paths and sizes); other agents handle the rest of the repository, '
+    'and spine_evidence holds shared root-level files. Read the shard files that can define the environment directly '
+    'with read_files, up to 8 per call; you do not need list_files to find them. Inspect: development/test entry points, dependency '
     'declarations, build and test automation and nested instructions. Report every obligation of the whole documented '
     'development/test environment that evidence in your shard or the spine establishes. Each criterion needs exact '
     'inspected source paths, description, applicability (required, not_applicable or unknown), cited rationale, '
@@ -133,7 +134,8 @@ SHARD_AUTHOR_INSTRUCTIONS = (
     'Return {"shard_summary":{"criteria":[...],"cross_references":[...],"questions":[...]}}. '
 )
 SHARD_REVIEW_PREAMBLE = (
-    'You independently review ONE shard of a repository too large for one conversation. mandatory_evidence holds your '
+    'You independently review ONE shard of a repository too large for one conversation. shard_files lists every file '
+    'in your shard; read any you need directly with read_files. mandatory_evidence holds your '
     'shard\'s inspected files and the shared root-level files; root_directory navigates the whole repository so you can '
     'follow references, but read only what judging your shard requires: your reads are limited. scope_criteria are the '
     'current criteria citing your shard and criterion_index names every current criterion. Judge omissions, conflicts '
@@ -243,6 +245,7 @@ class ReviewMaterial(NamedTuple):
     owned: Sequence[str]
     evidence: list[dict[str, str]]
     capacity: int
+    paths: Sequence[str] = ()
 
 
 class Assignment(NamedTuple):
@@ -329,6 +332,10 @@ class ShardedScope:
         for offset in range(0, len(missing), 8):
             for item in (await reader.read_files(missing[offset:offset + 8]))['files']:
                 self.spine_files[item['path']] = item['content']
+
+    def file_list(self, paths: Sequence[str]) -> list[dict[str, Any]]:
+        """The shard's complete file list, so an agent reads directly instead of walking directories."""
+        return [{'path': path, 'bytes': self.entries[path].size} for path in paths if path in self.entries]
 
     def admit_spine(self, inspection: SourceInspection) -> list[dict[str, str]]:
         return [inspection.admit_content(path, self.spine_files[path], fetched=False) for path in self.plan.spine]
@@ -447,6 +454,7 @@ class ShardedScope:
                         'phase_contract': {'subject': 'source_obligations', 'runtime_evidence': 'required_after_scope_acceptance',
                                            'readiness_authority': False},
                         'shard': {'id': shard.id, 'files': len(shard.paths)},
+                        'shard_files': self.file_list(shard.paths),
                         'root_directory': inspection.list_directory(), 'spine_evidence': spine}).decode()}]
         summary: ShardSummary = await self.agent_phase(inspection, messages, AgentTask('shard_summary',
             partial(self._validate_summary, inspection=inspection, shard=shard)))
@@ -462,15 +470,12 @@ class ShardedScope:
         for index, criterion in enumerate(proposal.criteria):
             errors.extend(_criterion_citation_errors(criterion.sources, inspection.inputs,
                 ('shard_summary', 'criteria', str(index), 'sources')))
-        for index, path in enumerate(proposal.cross_references):
-            if path not in self.entries:
-                errors.append({'code': 'shard_cross_reference_invalid',
-                    'location': ['shard_summary', 'cross_references', str(index)],
-                    'guidance': 'Cross references must be exact paths present in the pinned repository inventory; '
-                                'remove guesses. Preserve every criterion while correcting them.'})
         if errors:
             raise _ResponseReferenceError(errors)
-        return ShardSummary(**proposal.model_dump(), shard_id=shard.id, inputs=dict(inspection.inputs))
+        # Cross references are navigation hints: a path outside the pinned inventory is dropped, not corrected.
+        known = [path for path in proposal.cross_references if path in self.entries]
+        return ShardSummary(**proposal.model_dump(exclude={'cross_references'}), cross_references=known,
+                            shard_id=shard.id, inputs=dict(inspection.inputs))
 
     async def author_round(self) -> ScopeDefinition:
         budget = self.budget
@@ -531,7 +536,7 @@ class ShardedScope:
 
     def _review_messages(self, inspection: SourceInspection, *, preamble: str, definition: ScopeDefinition,
                          material: ReviewMaterial) -> list[dict[str, str]]:
-        criteria, owned, evidence, capacity = material
+        criteria, owned, evidence, capacity, _paths = material
         ledger = self.budget.scope_findings
         bindings = [binding for binding in _current_investigations(self.budget) if binding.finding_id in owned]
         records = [record.model_dump(mode='json') for record in ledger.records if record.id in owned] if ledger else []
@@ -541,6 +546,7 @@ class ShardedScope:
                     'phase_contract': {'subject': 'source_obligations', 'runtime_evidence': 'required_after_scope_acceptance',
                                        'readiness_authority': False},
                     'root_directory': inspection.list_directory(), 'scope_digest': definition.digest(),
+                    'shard_files': self.file_list(material.paths),
                     'criterion_index': [_compact(c) for c in definition.criteria],
                     'scope_criteria': [c.model_dump(mode='json') for c in criteria],
                     'mandatory_evidence': evidence, 'assigned_findings': records,
@@ -596,7 +602,7 @@ class ShardedScope:
         inspection = self.view(name='scope_shard_review')
         evidence = await self._review_evidence(inspection, definition, paths=shard.paths, owned=material.owned)
         criteria = [c for c in definition.criteria if any(self.plan.owners.get(path) == shard.id for path in c.sources)]
-        material = material._replace(criteria=criteria, evidence=evidence)
+        material = material._replace(criteria=criteria, evidence=evidence, paths=shard.paths)
         messages = self._review_messages(inspection, preamble=SHARD_REVIEW_PREAMBLE, definition=definition, material=material)
         return await self._judge(inspection, messages, definition=definition, material=material)
 
