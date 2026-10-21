@@ -152,12 +152,14 @@ class ScopeDefinition(FindingEvidence):
     inputs: dict[str, Digest] = Field(min_length=1)
     criteria: list[ScopeCriterion] = Field(min_length=1, max_length=MAX_SCOPE_CRITERIA)
     exclusions: list[ScopeExclusion] = Field(default_factory=list, max_length=MAX_SCOPE_EXCLUSIONS)
+    unread_unsure: list[ScopeExclusion] = Field(default_factory=list, max_length=MAX_SCOPE_EXCLUSIONS)
 
     @model_serializer(mode='wrap')
     def omit_empty_exclusions(self, handler: Any) -> dict[str, Any]:
         data: dict[str, Any] = handler(self)
-        if not self.exclusions:
-            data.pop('exclusions', None)
+        for key in ('exclusions', 'unread_unsure'):
+            if not getattr(self, key):
+                data.pop(key, None)
         return data
 
     @model_validator(mode='after')

@@ -69,9 +69,12 @@ class Router:
     unrelated: tuple[str, ...] = ()
 
     def triage(self, messages, user):
-        tops = sorted({item['path'].split('/')[0] for item in user['files']})
-        return {'listing_triage': {'verdicts': [{'path': top, 'verdict': 'unrelated' if top in self.unrelated else 'environment',
-                                                 'rationale': 'listing judgment'} for top in tops]}}
+        # Unrelated areas are judged as directories; every other file is named environment.
+        tops = sorted({item['path'].split('/')[0] for item in user['files']} & set(self.unrelated))
+        named = [item['path'] for item in user['files'] if item['path'].split('/')[0] not in self.unrelated]
+        return {'listing_triage': {'verdicts': [
+            *({'path': top, 'verdict': 'unrelated', 'rationale': 'listing judgment'} for top in tops),
+            *({'path': path, 'verdict': 'environment', 'rationale': 'listing judgment'} for path in named)]}}
 
     def author(self, messages, user):
         shard = next(s for s in self.plan.shards if user['shard']['id'].startswith(s.id))
