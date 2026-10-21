@@ -57,7 +57,7 @@ if TYPE_CHECKING:
 
 PRE_PROBE_JOURNAL_VERSION = 2
 PRE_SOURCE_JOURNAL_VERSION = 3
-JOURNAL_MAX_BYTES = 4 * 1024 * 1024
+JOURNAL_MAX_BYTES = 16 * 1024 * 1024
 MAX_ARCHIVED_ATTEMPTS = 3
 REPORT_MAX_BYTES = 256 * 1024
 FEEDBACK_MAX_BYTES = 16 * 1024
@@ -78,7 +78,7 @@ class RepairJournal(BaseModel):
     scope_investigations: list[ScopeInspectionBinding] = Field(default_factory=list, max_length=256)
     scope_investigation_results: list[ScopeInspectionResult] = Field(default_factory=list, max_length=256)
     scope_inputs: dict[str, Digest] = Field(default_factory=dict)
-    scope_responses: list[FindingResponse] = Field(default_factory=list, max_length=32)
+    scope_responses: list[FindingResponse] = Field(default_factory=list, max_length=128)
     scope_definition: ScopeDefinition | None = None
     scope_contract: ScopeContract | None = None
     scope_findings: FindingLedger | None = None

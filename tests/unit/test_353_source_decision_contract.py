@@ -202,7 +202,7 @@ def test_contract_bound_with_large_assessment():
     record = SourceAssessmentRecord(review_sequence=2, scope_digest=definition.digest(), source_commit=COMMIT,
         inventory_digest=INVENTORY, reviewer_inputs=inputs, assessment=second)
     contract = ScopeContract.model_validate(_contract(definition, ledger, record, review_inputs=inputs))
-    assert len(json.dumps(contract.model_dump(mode='json')).encode()) <= 256*1024
-    oversized = record.model_copy(update={'reviewer_inputs': {**inputs, **{f'z/{i:05}': f'{i:064x}' for i in range(2000)}}})
+    assert len(json.dumps(contract.model_dump(mode='json')).encode()) <= 2*1024*1024
+    oversized = record.model_copy(update={'reviewer_inputs': {**inputs, **{f'z/{i:05}': f'{i:064x}' for i in range(30000)}}})
     with pytest.raises(ValidationError, match='scope contract exceeds its bound'):
         ScopeContract.model_validate(_contract(definition, ledger, oversized, review_inputs=oversized.reviewer_inputs))

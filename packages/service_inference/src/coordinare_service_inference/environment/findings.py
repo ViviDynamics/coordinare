@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 Digest = Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]
 Commit = Annotated[str, Field(pattern=r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$')]
 FindingId = Annotated[str, Field(pattern=r'^F[0-9]{4}$')]
+MAX_LEDGER_FINDINGS = 128
+LEDGER_MAX_BYTES = 512*1024
 Category = Literal['coverage', 'capability', 'activation', 'service_lifecycle', 'execution_definition']
 
 
@@ -91,7 +93,7 @@ class FindingReview(FindingEvidence):
 class FindingLedger(FindingEvidence):
     schema_version: Literal[1] = 1
     source_commit: Commit
-    records: list[FindingRecord] = Field(default_factory=list, max_length=32)
+    records: list[FindingRecord] = Field(default_factory=list, max_length=MAX_LEDGER_FINDINGS)
     reviews: list[FindingReview] = Field(default_factory=list)
 
     def canonical(self) -> bytes:
@@ -103,8 +105,8 @@ class FindingLedger(FindingEvidence):
 
     @model_validator(mode='after')
     def valid_history(self) -> Self:
-        if len(self.canonical()) > 131072:
-            raise ValueError('finding ledger exceeds 128 KiB')
+        if len(self.canonical()) > LEDGER_MAX_BYTES:
+            raise ValueError('finding ledger exceeds 512 KiB')
         if [r.id for r in self.records] != [f'F{i:04}' for i in range(1, len(self.records)+1)]:
             raise ValueError('finding identities must be monotonic and unique')
         records = {record.id: record for record in self.records}

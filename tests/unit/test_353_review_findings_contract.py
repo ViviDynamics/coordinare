@@ -82,19 +82,19 @@ def test_finding_field_limits_count_utf8_bytes():
 def test_finding_count_and_serialized_bounds():
     data = ledger_data()
     record = data['records'][0]
-    data['records'] = [dict(record, id=f'F{i:04}') for i in range(1, 33)]
+    data['records'] = [dict(record, id=f'F{i:04}') for i in range(1, 129)]
     data['reviews'] = [{'sequence': 1, 'manifest_digest': DIGEST, 'inputs': INPUTS,
                        'decisions': [], 'added_ids': [r['id'] for r in data['records']]}]
     findings.FindingLedger.model_validate(data)
-    data['records'].append(dict(record, id='F0033'))
+    data['records'].append(dict(record, id='F0129'))
     with pytest.raises(ValueError):
         findings.FindingLedger.model_validate(data)
     data = {'schema_version': 1, 'source_commit': COMMIT, 'records': [], 'reviews': [
         {'sequence': 1, 'manifest_digest': DIGEST, 'inputs': {'p': 'c'*64}, 'decisions': [], 'added_ids': []}]}
     size = len(json.dumps(data, sort_keys=True, separators=(',', ':')).encode())
-    data['reviews'][0]['inputs'] = {'p' * (131072-size+1): 'c'*64}
+    data['reviews'][0]['inputs'] = {'p' * (512*1024-size+1): 'c'*64}
     findings.FindingLedger.model_validate(data)
-    data['reviews'][0]['inputs'] = {'p' * (131072-size+2): 'c'*64}
+    data['reviews'][0]['inputs'] = {'p' * (512*1024-size+2): 'c'*64}
     with pytest.raises(ValueError):
         findings.FindingLedger.model_validate(data)
 
