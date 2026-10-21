@@ -664,6 +664,8 @@ async def _discover_scope(request: _Request) -> ScopeContract:
         if (saved.definition.source_commit, saved.definition.inventory_digest) != (commit, inspection.inventory_digest):
             _fail('scope_source_identity')
         await prepare_mandatory_evidence(inspection, saved.all_inputs, phase='scope_resume')
+        if any(binding.source_commit != commit for binding in budget.scope_investigations):
+            _fail('scope_investigation_identity')
         investigation_evidence(inspection=inspection, bindings=budget.scope_investigations,
                                results=budget.scope_investigation_results)
         return saved
