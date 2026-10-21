@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Python 3.12+, asyncio, Pydantic v2. No new dependency.
 
-**Spec:** [sharded-discovery-amendment.md](sharded-discovery-amendment.md), approved by the maintainer on 2026-10-21. This plan awaits maintainer review.
+**Spec:** [sharded-discovery-amendment.md](sharded-discovery-amendment.md), approved by the maintainer on 2026-10-21. This plan was approved by the maintainer on 2026-10-21, together with a request for an executable-stage design ([sharded-executable-amendment.md](sharded-executable-amendment.md)).
 
 ## Global Constraints
 
