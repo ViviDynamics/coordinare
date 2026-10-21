@@ -172,3 +172,30 @@ async def test_an_authored_shard_that_read_nothing_is_still_reviewed():
     await run(silent)
     first_round = [m for role, m in silent.conversations if role == 'review']
     assert len(first_round) >= len(PLAN.shards)
+
+
+@pytest.mark.asyncio
+async def test_shard_agents_receive_their_complete_file_list():
+    from tests.unit.test_353_shard_scope import PLAN
+    router = Router()
+    await run(router)
+    authors = [json.loads(m[1]['content']) for role, m in router.conversations if role == 'author']
+    by_id = {shard.id: shard for shard in PLAN.shards}
+    for user in authors:
+        assert [item['path'] for item in user['shard_files']] == list(by_id[user['shard']['id']].paths)
+    reviews = [json.loads(m[1]['content']) for role, m in router.conversations if role == 'review']
+    assert reviews and all(user['shard_files'] for user in reviews)
+
+
+@pytest.mark.asyncio
+async def test_unknown_cross_references_are_dropped_not_corrected():
+    class Guessing(Router):
+        def author(self, messages, user):
+            reply = super().author(messages, user)
+            if 'shard_summary' in reply:
+                reply['shard_summary']['cross_references'] = ['no/such/file.txt']
+            return reply
+
+    budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
+    await run(Guessing(), budget=budget)
+    assert budget.shard_schema_repairs == 0
