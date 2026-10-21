@@ -1086,6 +1086,7 @@ class ServiceInferenceConfig(BaseModel):
     web_search_enabled: bool = False
 
 
+ONE_HOUR_SECONDS = 3600
 # Maintainer ruling for sharded source discovery (issue 353): calls, reads and the attempt deadline.
 SHARDED_BUDGET_DEFAULTS = {"manifest_max_model_calls": 1024, "manifest_max_total_reads": 8192,
                            "manifest_attempt_timeout_seconds": 4 * 3600.0}
@@ -1134,7 +1135,7 @@ class EnvCacheConfig(BaseModel):
 
     @model_validator(mode="after")
     def _attempt_ceiling(self) -> Self:
-        if self.manifest_shard_context_tokens is None and self.manifest_attempt_timeout_seconds > 3600:
+        if self.manifest_shard_context_tokens is None and self.manifest_attempt_timeout_seconds > ONE_HOUR_SECONDS:
             message = "attempts over one hour require sharded discovery (manifest_shard_context_tokens)"
             raise ValueError(message)
         return self
