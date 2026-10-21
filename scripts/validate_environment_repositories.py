@@ -593,7 +593,8 @@ async def validate_repository(
         env_cache_root=output,
         state_file_path=output.parent / "daemon-state" / (snapshot.name + ".json"),
         env_cache=settings,
-        bootstrap_max_seconds=3600,
+        # The outer wall clock never undercuts a sharded attempt's longer ceiling.
+        bootstrap_max_seconds=int(max(3600, settings.manifest_attempt_timeout_seconds)),
         github_org=snapshot.org,
         project_name=snapshot.name,
         env_bootstrap_max_attempts=3,
