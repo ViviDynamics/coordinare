@@ -66,3 +66,37 @@ async def test_operator_conflict_fails_before_any_command(tmp_path, monkeypatch)
     assert not report.passed and not marker.exists()
     [result] = [r for r in report.results if r.id == 'local_credentials']
     assert result.required and result.status == 'fail' and 'operator-value' not in result.output
+
+
+def test_an_inherited_variable_with_the_same_name_conflicts(monkeypatch):
+    monkeypatch.setenv('PGPASSWORD', 'inherited')
+    with pytest.raises(ValueError, match='local_credential_conflict'):
+        local_credential_values(manifest(), supplied=())
+
+
+def test_runtime_environment_cannot_be_shadowed(tmp_path):
+    with pytest.raises(ValueError, match='local_credential_conflict'):
+        manifest_environment(manifest(), cache=tmp_path, repo=tmp_path, scratch=tmp_path,
+                             runtime_env={'PGPASSWORD': 'runtime'}, credentials={'PGPASSWORD': 'generated'})
+
+
+@pytest.mark.asyncio
+async def test_supplied_values_are_the_ones_commands_see(tmp_path):
+    out = tmp_path / 'seen'
+    record = {'id': 'record', 'argv': [sys.executable, '-c', f'open({str(out)!r}, "w").write(__import__("os").environ["PGPASSWORD"])'],
+              'env': {'PGPASSWORD': '${PGPASSWORD}'}, 'required': True}
+    report = await run_manifest(manifest([record]), cache=tmp_path, repo=tmp_path, scratch=tmp_path, scope='app',
+                                credentials={'PGPASSWORD': 'job-value-' + 'x'*40})
+    assert report.passed and out.read_text() == 'job-value-' + 'x'*40
+
+
+def test_transcript_redacts_job_generated_values():
+    from performer.transcript import TranscriptBuffer, redact_job_values, set_active_buffer
+    buffer = TranscriptBuffer('job', max_bytes=10_000)
+    token = set_active_buffer(buffer)
+    try:
+        redact_job_values(['generated-' + 'y'*40])
+    finally:
+        from performer.transcript import _transcript_var
+        _transcript_var.reset(token)
+    assert 'generated-' + 'y'*40 in buffer._secret_values()

@@ -55,7 +55,7 @@ SOURCE_TOOLS = SOURCE_NAVIGATION + (
 LOCAL_CREDENTIAL_AUTHORING = (
     'Never write a literal credential, even a throwaway test password. A credential for a service this manifest '
     'starts goes in local_credentials as {name, service, purpose} and is referenced as ${NAME}; the runner generates '
-    'a fresh value every run, so data that stores it lives under {scratch} and install commands cannot use it. '
+    'a fresh value every run, so data that stores it lives under {scratch}, and neither install commands nor activation can use it. '
     'For a credential environment variable named K the value is exactly ${K}.')
 LOCAL_CREDENTIAL_REVIEW = (
     'Judge every local_credentials entry: it must belong to a service this manifest starts. A credential the source '

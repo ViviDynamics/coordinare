@@ -80,15 +80,15 @@ CREDENTIAL_GUIDANCE = (
     'Use ${NAME} for every credential. For a credential environment variable named K, its value must be exactly ${K}. '
     'A credential for a service this manifest starts, such as a local test database password, belongs in '
     'local_credentials as {name, service, purpose} and is referenced as ${NAME}; the trusted runner generates a fresh '
-    'value every run, so data that stores it must live under {scratch} and install commands cannot use it. '
+    'value every run, so data that stores it must live under {scratch}, and neither install commands nor activation can use it. '
     'Any other credential comes from the trusted runtime; do not invent one, and unavailable required values hold readiness. '
     'Never move a literal credential into argv, activation, scope text or another field; describe a credential-bearing '
     'URL from source without its password.')
 LOCAL_CREDENTIAL_GUIDANCE = {
     'local_credential_invalid': 'Each local credential needs a unique name and the id of a service declared in this manifest.',
     'local_credential_unused': 'Reference every declared local credential as ${NAME}, or remove the declaration.',
-    'local_credential_in_install': ('Install commands cannot use generated credentials; move the step that needs the '
-                                    'credential into a service init or a check.'),
+    'local_credential_in_install': ('Install commands and activation cannot use generated credentials; reference the '
+                                    'credential only in the service and check commands that need it.'),
 }
 NESTED_RESPONSES_GUIDANCE = ('finding_responses belongs beside scope at the top level of the envelope, never inside scope: '
                              'return {"scope": {...}, "finding_responses": [...]}.')

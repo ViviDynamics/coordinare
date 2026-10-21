@@ -7,6 +7,7 @@ from coordinare_service_inference.environment.runtime_supervisor import seal_run
 
 from performer.environment_runtime import close_score_runtime, open_score_runtime, runtime_activation
 from performer.environment_runtime_monitor import start_runtime_monitor
+from performer.transcript import redact_job_values
 
 from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
 from coordinare_service_inference.environment.execution_source_checkout import checkout_identity
@@ -144,6 +145,7 @@ async def execute_contract(score: Score, stand: Stand, *, install: bool = False)
             scratch=Path(scratch), install=install, scope="" if score.role == "env_bootstrap" else score.role,
             secret_names=score.environment_secret_names,
             execution_source_digest=expected_source.digest(), **runtime_kwargs,
+            credentials=getattr(stand, "environment_credentials", None) or None,
         )
     if not install and score.role == "env_bootstrap" and (stand.environment_installation_report is not None
                                            or (lease is not None and lease.install)):
@@ -191,8 +193,10 @@ async def prepare_environment(score: Score, stand: Stand) -> None:
             stand.environment_runtime_monitor = monitor
             lifecycle.push_async_callback(monitor.stop)
         runtime_kwargs: dict[str, Any] = {"runtime_env": lease.activation_env} if lease is not None else {}
-        # One set of generated local service credentials serves this job's activation and its services.
-        runtime_kwargs["credentials"] = local_credential_values(manifest, supplied=score.environment_secret_names)
+        # One set of generated local service credentials serves this job's verification, activation and services.
+        stand.environment_credentials = local_credential_values(manifest, supplied=score.environment_secret_names)
+        redact_job_values(stand.environment_credentials.values())
+        runtime_kwargs["credentials"] = stand.environment_credentials
         stand.cache_env = manifest_environment(manifest, **roots, secret_names=score.environment_secret_names, **runtime_kwargs)
         # Bootstrap actions create missing paths; verification runs after installation.
         if score.role != "env_bootstrap":

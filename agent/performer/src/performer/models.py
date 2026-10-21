@@ -548,6 +548,7 @@ class Stand:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     git_env: dict[str, str] = field(default_factory=dict)
     cache_env: dict[str, str] = field(default_factory=dict)
+    environment_credentials: dict[str, str] = field(default_factory=dict)
     bootstrap_environment: Any = None
     environment_lifecycle: Any = None
     environment_installation_report: Any = None
