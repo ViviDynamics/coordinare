@@ -457,12 +457,11 @@ class ShardedScope:
     @property
     def work(self) -> ShardPlan:
         """The authored plan, rebuilt from recorded triage after a restart; the full plan before triage."""
-        if self._work is None:
-            if not (self.budget.scope_shards or {}).get('triage'):
-                return self.plan
-            self.plan_work(self.recorded_sides())
-        assert self._work is not None
-        return self._work
+        if self._work is not None:
+            return self._work
+        if not (self.budget.scope_shards or {}).get('triage'):
+            return self.plan
+        return self.plan_work(self.recorded_sides())
 
     async def triage_listing(self, item: tuple[str, Shard]) -> None:
         side, shard = item
