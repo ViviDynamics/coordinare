@@ -202,14 +202,14 @@ async def test_unknown_cross_references_are_dropped_not_corrected():
 
 
 def test_an_echoed_listing_id_is_ignored_but_other_keys_are_not():
-    from pydantic import ValidationError
 
     from coordinare.services.environment_shard_triage import validate_triage
     from coordinare.services.environment_shards import Shard
     shard = Shard(id='shard-000-00000000', paths=('a/x.yml',), readable_bytes=0, depth=0)
     triage = {'verdicts': [{'path': 'a', 'verdict': 'environment', 'rationale': 'r'}]}
     assert validate_triage({'listing_triage': triage, 'listing_shard': shard.id}, shard=shard)['a'].verdict == 'environment'
-    with pytest.raises(ValidationError):
+    from coordinare.services.environment_scope import _ResponseReferenceError
+    with pytest.raises(_ResponseReferenceError):
         validate_triage({'listing_triage': triage, 'listing_shard': 'other'}, shard=shard)
 
 
@@ -218,11 +218,27 @@ def test_triage_offers_no_tools_and_ignores_merged_null_alternatives():
     from coordinare.services.environment_shard_triage import validate_triage
     from coordinare.services.environment_shards import Shard
     schema = AgentTask('listing_triage', lambda data: data, listing_only=True).schema(final=True)
-    assert 'anyOf' not in schema and 'listing_triage' in schema['properties']
+    [declaration] = schema['anyOf']
+    assert 'listing_triage' in declaration['properties'] and 'tool' not in json.dumps(schema)
     shard = Shard(id='shard-000-00000000', paths=('a/x.yml',), readable_bytes=0, depth=0)
     merged = {'listing_triage': {'verdicts': [{'path': 'a', 'verdict': 'environment', 'rationale': 'r', 'cursor': None}],
                                  'files': None}, 'tool': None, 'path': None, 'cursor2': None}
     assert validate_triage(merged, shard=shard)['a'].verdict == 'environment'
-    from pydantic import ValidationError
-    with pytest.raises(ValidationError):
-        validate_triage({**merged, "cursor": 0}, shard=shard)
+    from coordinare.services.environment_scope import _ResponseReferenceError
+    for extra in ({'cursor': 0}, {'properties': {}, '$defs': {}}):
+        with pytest.raises(_ResponseReferenceError) as failure:
+            validate_triage({**merged, **extra}, shard=shard)
+        assert failure.value.errors[0]['code'] == 'triage_envelope_invalid'
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_triage_reads_its_area_instead_of_holding():
+    class Garbled(Router):
+        unrelated = ('svc2',)
+
+        def triage(self, messages, user):
+            return {'listing_triage': {'verdicts': []}, 'properties': {}}
+
+    budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
+    contract = await run(Garbled(), budget=budget)
+    assert not contract.definition.exclusions and budget.scope_phase == 'accepted'

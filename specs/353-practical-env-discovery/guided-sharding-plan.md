@@ -64,3 +64,19 @@ Known limits:
 - The merge reviewer's check of exclusions is an instruction, not an enforced finding.
 - `ScopeExclusion` records the two sides' rationales but not an agent identity.
 - A coarsened record names the containing area; its file count is exact.
+
+## Live-run fixes (2026-10-21)
+
+The first four guided Elm attempts held in triage on GLM reply-format behaviour, never on a judgment:
+- `listing_shard` echoed back;
+- tool alternatives merged into replies as null keys;
+- JSON Schema keywords copied from the bare schema.
+
+Each is now tolerated or explained:
+- An echo of the listing's own id is ignored.
+- Null-valued keys are dropped.
+- Triage is offered only its own schema, wrapped like the other agents' schemas.
+- An extra top-level key gets explicit guidance.
+
+Builder's call: a triage agent that exhausts its corrections now marks its listing `unsure`, so that area is read
+in full and nothing is excluded. Triage only decides what may be skipped, so this is strictly conservative.
