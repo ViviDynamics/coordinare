@@ -114,6 +114,16 @@ zero there never removes discovery's own bound. `manifest_attempt_timeout_second
 can be raised to at most 3600 seconds. Phase changes and fresh reviews cannot reset
 the aggregate counters.
 
+The pinned inventory carries each path's size and mode, plus a symbolic link's
+recorded target, from the verified execution-source bundle. Files larger than the
+per-file read limit and symbolic links are listed but never read or followed:
+asking for one returns `too_large` (with its size) or `link` (with its recorded
+target) instead of holding the attempt, and a source gap cannot rest on such a file
+alone. Files already read earlier in the same attempt remain readable evidence.
+A source scope holds at most 512 criteria and a finding ledger at most 128 findings;
+a repository needing more holds with `scope_size_limit` rather than dropping
+obligations.
+
 The complete inventory defaults to 100,000 paths and remains daemon-side. Agents
 navigate sorted directory pages of at most 200 entries / 32 KiB and request batches
 of at most eight text files. All inspected discovery inputs retain their exact
@@ -148,9 +158,10 @@ model calls and source reads; inability to save holds external work. Restart can
 renew the deadline or reuse rejected contents. Interrupted execution holds until
 cleanup is established. Feedback is bounded at 16 KiB and 512 characters per check;
 sanitized rejected reports retain a 256 KiB bound, with at most three rejected
-entries and a 4 MiB journal. Raw command output is never a readiness authority.
+entries and a 16 MiB journal. Raw command output is never a readiness authority.
 
-Manifest and assessment each retain their 256 KiB serialization cap. Model review
+Manifest and assessment each retain a 4 MiB serialization cap; a scope definition is
+bounded at 1 MiB, its contract at 2 MiB and a finding ledger at 512 KiB. Model review
 inputs remain bounded text evidence; executable source travels separately as the
 complete pinned binary repository bundle, bounded at 128 MiB compressed transport
 and 512 MiB expanded contents including metadata. The bundle preserves file modes,
@@ -350,7 +361,7 @@ subject to the current identity, coverage and execution acceptance checks. The e
 journal and starts in a new empty cache sibling. Discovery-only holds need no executor
 cleanup. After execution, the action must confirm that its owned session stopped;
 a missing owner or failed confirmation returns a hold without clearing the journal or
-consuming the reset cooldown. At most three old journals and 4 MiB of archive evidence
+consuming the reset cooldown. At most three old journals and 16 MiB of archive evidence
 are retained; exceeding that bound requires explicit archival before another reset.
 Interrupted execution remains held across source changes and restarts.
 Current diagnostics record the actual stage, category consumed/max counts, mandatory

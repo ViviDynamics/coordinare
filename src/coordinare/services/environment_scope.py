@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, NotRequired, TypedDict
 from coordinare_service_inference.environment.findings import FindingLedger, FindingResponse
 from coordinare_service_inference.environment.models import CoverageAssessmentProposal
 from coordinare_service_inference.environment.scope import (
+    MAX_SCOPE_CRITERIA,
     ScopeAssessmentEnvelope,
     ScopeAssessmentProposal,
     ScopeContract,
@@ -205,7 +206,8 @@ def _request_rule_errors(assessment: ScopeAssessmentProposal, *, reviewer: Sourc
     def exists(request: Any) -> bool:
         if request.operation == 'read_file':
             return request.path in reviewer.inventory and reviewer.policy_status(request.path) == 'readable'
-        return request.path == '' or any(path.startswith(request.path+'/') for path in reviewer.paths)
+        return any((request.path == '' or path.startswith(request.path+'/')) and reviewer.policy_status(path) == 'readable'
+                   for path in reviewer.paths)
     items = [('findings', index, item) for index, item in enumerate(assessment.findings)]
     items.extend(('decisions', index, item) for index, item in enumerate(assessment.decisions) if isinstance(item, SourceGapDecision))
     errors: list[dict[str, Any]] = []
@@ -223,7 +225,8 @@ def _request_rule_errors(assessment: ScopeAssessmentProposal, *, reviewer: Sourc
                                  'tools to find the real reference or choose another disposition. Preserve every other decision.')})
         if item.gap_kind == 'unread_source' and not any(exists(request) for request in item.inspection_requests):
             errors.append({'code': 'scope_gap_request_invalid', 'location': location,
-                'guidance': 'An unread_source gap must request at least one file or directory present in the pinned inventory. '
+                'guidance': 'An unread_source gap must request at least one readable file, or a directory containing one, '
+                            'present in the pinned inventory; links and files over the read limit are listed but never read. '
                             'Use listed absence candidates or source tools to find the real path.'})
     return errors
 
@@ -435,6 +438,9 @@ def _validate_author(data: dict[str, Any], *, author: SourceInspection, commit: 
     ledger = budget.scope_findings
     if ledger is None:
         _fail("scope_source_identity")
+    proposed = data.get('scope', {}).get('criteria') if isinstance(data.get('scope'), dict) else None
+    if isinstance(proposed, list) and len(proposed) > MAX_SCOPE_CRITERIA:
+        _fail('scope_size_limit')  # Obligations are never dropped or folded to fit.
     envelope = ScopeEnvelope.model_validate(data)
     errors = []
     for criterion_index, criterion in enumerate(envelope.scope.criteria):
@@ -524,6 +530,8 @@ def _validate_revision(data: dict[str, Any], *, author: SourceInspection, commit
     if base is None or ledger is None or base.source_commit != commit or base.inventory_digest != author.inventory_digest:
         _fail('scope_source_identity')
     envelope = ScopeRevisionEnvelope.model_validate(data)
+    if len(base.criteria) + len(envelope.scope_revision.add) > MAX_SCOPE_CRITERIA:
+        _fail('scope_size_limit')  # Obligations are never dropped or folded to fit.
     errors = []
     for operation, changes in (('add', envelope.scope_revision.add), ('reassess', envelope.scope_revision.reassess)):
         for index, change in enumerate(changes):

@@ -89,7 +89,8 @@ def _request_evidence(inspection: SourceInspection, binding: ScopeInspectionBind
         if policy != 'readable':
             entry = inspection.entries[request.path] if inspection.entries is not None else None
             return policy, {'operation': 'read_file', 'path': request.path, 'inventory_digest': inspection.inventory_digest,
-                            'status': policy, 'size': entry.size if entry is not None else None}
+                            'status': policy, 'size': entry.size if entry is not None else None,
+                            **({'target': entry.target} if entry is not None and entry.target is not None else {})}
         if request.path not in inspection.inventory:
             return _absent(inspection, {'operation': 'read_file', 'path': request.path,
                 'inventory_digest': inspection.inventory_digest, 'status': 'absent'}, directories=False, candidates=candidates)

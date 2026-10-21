@@ -22,7 +22,10 @@ from coordinare_service_inference.cache_key import (
     forced_regen_cache_key,
     parse_prior_manifest,
 )
-from coordinare_service_inference.environment.execution_source import ExecutionSourceError
+from coordinare_service_inference.environment.execution_source import (
+    ExecutionSourceError,
+    bundle_inventory,
+)
 from coordinare_service_inference.manual_override import SERVICES_SUBDIR
 
 from coordinare.lib.redaction import redact_state_value
@@ -147,14 +150,15 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-async def _pinned_inventory(github_service: Any, org: str, repo: str, *, commit: str,
-                            limit: int) -> tuple[list[str], dict[str, Any] | None]:
-    """Prefer pinned sizes and modes; providers without them keep the paths-only inventory."""
-    entry_source = getattr(github_service, 'get_repository_entries', None)
-    if not callable(entry_source):
-        return await github_service.get_repository_paths(org, repo, ref=commit, max_entries=limit), None
-    entries = {entry.path: entry for entry in await entry_source(org, repo, ref=commit, max_entries=limit)}
-    return sorted(entries), entries
+async def _pinned_inventory(github_service: Any, org: str, repo: str, *, limit: int,
+                            bundle: Any) -> tuple[list[str], dict[str, Any]]:
+    """Sizes, modes and link targets come from the verified pinned bundle; paths must agree with the provider."""
+    paths = await github_service.get_repository_paths(org, repo, ref=bundle.identity.source_commit, max_entries=limit)
+    entries = await asyncio.to_thread(bundle_inventory, bundle.payload_path, expected=bundle.identity)
+    if set(paths) != set(entries):
+        message = 'pinned bundle inventory differs from the repository inventory'
+        raise ExecutionSourceError(message, code='source_identity')
+    return sorted(paths), entries
 
 
 def _remember_manifest(cache: EnvCacheState | None, items: list[dict[str, Any]]) -> None:
@@ -2549,7 +2553,7 @@ class EnvCacheService:
                 cache_state.environment_execution_source = source_bundle.identity.model_dump(mode='json')
                 budget.stage = "inventory"
                 paths, entries = await _pinned_inventory(github_service, github_org, repo,
-                                                         commit=commit, limit=limits.max_inventory_entries)
+                    limit=limits.max_inventory_entries, bundle=source_bundle)
                 from coordinare.services.environment_probe_service import (
                     ProbeServiceContext,
                     run_owned_probe,

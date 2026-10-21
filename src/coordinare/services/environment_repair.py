@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 from coordinare_service_inference.environment.evidence_safety import source_path
-from coordinare_service_inference.environment.findings import Digest, FindingLedger, FindingResponse
+from coordinare_service_inference.environment.findings import (
+    MAX_LEDGER_FINDINGS,
+    Digest,
+    FindingLedger,
+    FindingResponse,
+)
 from coordinare_service_inference.environment.models import (
     EnvironmentManifest,
     ExecutionCapabilities,
@@ -78,7 +83,7 @@ class RepairJournal(BaseModel):
     scope_investigations: list[ScopeInspectionBinding] = Field(default_factory=list, max_length=256)
     scope_investigation_results: list[ScopeInspectionResult] = Field(default_factory=list, max_length=256)
     scope_inputs: dict[str, Digest] = Field(default_factory=dict)
-    scope_responses: list[FindingResponse] = Field(default_factory=list, max_length=128)
+    scope_responses: list[FindingResponse] = Field(default_factory=list, max_length=MAX_LEDGER_FINDINGS)
     scope_definition: ScopeDefinition | None = None
     scope_contract: ScopeContract | None = None
     scope_findings: FindingLedger | None = None

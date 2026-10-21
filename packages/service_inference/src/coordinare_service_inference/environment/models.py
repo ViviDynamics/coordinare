@@ -23,6 +23,7 @@ from pydantic_core import PydanticCustomError
 
 from .evidence_safety import reject_literal_credentials, reject_nested_credentials, source_path
 from .findings import (
+    MAX_LEDGER_FINDINGS,
     FindingDecisionProposal,
     FindingLedger,
     FindingProposal,
@@ -257,7 +258,7 @@ class EnvironmentManifest(StrictModel):
             validate_scope_mapping(self.scope_contract, self)
         reject_nested_credentials(self.model_dump())
         if len(self.model_dump_json().encode()) > MAX_DOCUMENT_BYTES:
-            raise ValueError("manifest exceeds 256 KiB")
+            raise ValueError(f"manifest exceeds {MAX_DOCUMENT_BYTES // 1024 // 1024} MiB")
         for path, digest in self.inputs.items():
             source_path(path)
             if not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -366,7 +367,7 @@ class CoverageAssessment(StrictModel):
         for path in [*self.sources, *self.inputs]:
             source_path(path)
         if len(self.model_dump_json().encode()) > MAX_DOCUMENT_BYTES:
-            raise ValueError("assessment exceeds 256 KiB")
+            raise ValueError(f"assessment exceeds {MAX_DOCUMENT_BYTES // 1024 // 1024} MiB")
         return self
 
 
@@ -425,8 +426,8 @@ class EnvironmentManifestProposal(StrictModel):
 class CoverageAssessmentProposal(StrictModel):
     """A judgment about the exact manifest supplied in this isolated conversation."""
 
-    findings: list[FindingProposal] = Field(max_length=128)
-    decisions: list[FindingDecisionProposal] = Field(max_length=128)
+    findings: list[FindingProposal] = Field(max_length=MAX_LEDGER_FINDINGS)
+    decisions: list[FindingDecisionProposal] = Field(max_length=MAX_LEDGER_FINDINGS)
     capability_unavailable: bool
     verdict: Literal["accept", "revise", "indeterminate"]
     rationale: str = Field(min_length=1)

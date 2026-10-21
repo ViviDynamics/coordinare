@@ -106,7 +106,7 @@ class FindingLedger(FindingEvidence):
     @model_validator(mode='after')
     def valid_history(self) -> Self:
         if len(self.canonical()) > LEDGER_MAX_BYTES:
-            raise ValueError('finding ledger exceeds 512 KiB')
+            raise PydanticCustomError('finding_ledger_limit', 'finding ledger exceeds its byte bound')
         if [r.id for r in self.records] != [f'F{i:04}' for i in range(1, len(self.records)+1)]:
             raise ValueError('finding identities must be monotonic and unique')
         records = {record.id: record for record in self.records}

@@ -151,11 +151,23 @@ class SourceInspection:
     def policy_status(self, path: str) -> PolicyStatus:
         """Symlinks and files over the per-file limit are listed but never read or followed."""
         entry = self.entries.get(path) if self.entries is not None else None
-        if entry is None:
+        # Evidence already read in this attempt stays readable; the policy governs new reads only.
+        if entry is None or path in self.inputs or (self.retained_inputs is not None and path in self.retained_inputs):
             return 'readable'
         if entry.mode == '120000':
             return 'link'
         return 'too_large' if entry.size > self.limits.max_file_bytes else 'readable'
+
+    def _unread_error(self, index: int, path: str) -> dict[str, Any]:
+        if path not in self.inventory:
+            return {"index": index, "code": "source_path_not_found"}
+        entry = self.entries[path] if self.entries is not None else None
+        detail: dict[str, Any] = {"index": index, "code": self.policy_status(path)}
+        if entry is not None:
+            detail["size"] = entry.size
+            if entry.target is not None:
+                detail["target"] = entry.target
+        return detail
 
     async def read(self, path: Any) -> dict[str, str]:
         return (await self.read_files([path]))["files"][0]
@@ -167,9 +179,7 @@ class SourceInspection:
             message = "source batch must contain one to eight distinct string paths"
             raise EnvironmentDiscoveryError(message, code="invalid_tool_arguments")
         valid = [path for path in paths if path in self.inventory and self.policy_status(path) == 'readable']
-        errors: list[dict[str, Any]] = [{"index": index, "code": "source_path_not_found" if path not in self.inventory
-                                         else self.policy_status(path)}
-                  for index, path in enumerate(paths) if path not in valid]
+        errors: list[dict[str, Any]] = [self._unread_error(index, path) for index, path in enumerate(paths) if path not in valid]
         result: dict[str, Any] = await self.read_files(valid, navigation=True) if valid else {"files": []}
         unavailable = [item for item in result['files'] if 'error' in item]
         errors.extend({'index': paths.index(item['path']), 'code': item['error']} for item in unavailable)
