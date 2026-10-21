@@ -86,6 +86,36 @@ class ScopeEnvelope(FindingEvidence):
     finding_responses: list[FindingResponse] = Field(max_length=MAX_SCOPE_FINDINGS)
 
 
+MAX_CROSS_REFERENCES = 64
+MAX_SHARD_QUESTIONS = 16
+
+
+class ShardSummaryProposal(FindingEvidence):
+    """One shard author's cited obligations; the daemon merges shards into one definition."""
+
+    criteria: list[ScopeCriterionProposal] = Field(max_length=MAX_SCOPE_CRITERIA)
+    cross_references: list[str] = Field(default_factory=list, max_length=MAX_CROSS_REFERENCES)
+    questions: list[str] = Field(default_factory=list, max_length=MAX_SHARD_QUESTIONS)
+
+    @field_validator('questions')
+    @classmethod
+    def bounded_questions(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() or len(item.encode()) > 2048 for item in value):
+            raise ValueError('shard questions must be nonblank and at most 2048 UTF-8 bytes')
+        return value
+
+
+class ShardSummaryEnvelope(FindingEvidence):
+    shard_summary: ShardSummaryProposal
+
+
+class ShardSummary(ShardSummaryProposal):
+    """A completed shard, bound to the exact inputs its agent inspected."""
+
+    shard_id: str = Field(pattern=r'^shard-[0-9]{3}-[0-9a-f]{8}(?:\.[0-9]+)*$')
+    inputs: dict[str, Digest]
+
+
 class ScopeDefinition(FindingEvidence):
     schema_version: Literal[1] = 1
     requested_scope: Literal['whole_documented_development_test_environment'] = 'whole_documented_development_test_environment'

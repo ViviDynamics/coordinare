@@ -82,6 +82,9 @@ class Profile:
     max_execution_repairs: int = 2
     max_review_context_bytes: int = 1024 * 1024
     max_total_reads: int = 512
+    max_model_calls: int = 128
+    context_tokens: int | None = None
+    agent_concurrency: int = 12
     private_service_runtime: dict[str, Any] | None = None
 
 
@@ -577,6 +580,9 @@ async def validate_repository(
         manifest_max_execution_repairs=profile.max_execution_repairs,
         manifest_max_review_context_bytes=profile.max_review_context_bytes,
         manifest_max_total_reads=profile.max_total_reads,
+        manifest_max_model_calls=profile.max_model_calls,
+        manifest_shard_context_tokens=profile.context_tokens,
+        manifest_agent_concurrency=profile.agent_concurrency,
         private_service_runtime=profile.private_service_runtime,
     )
     global_config = SimpleNamespace(
@@ -803,6 +809,26 @@ def _aggregate_read_allowance(value: str) -> int:
         raise argparse.ArgumentTypeError(message) from None
 
 
+def _config_value(field: str, value: str) -> Any:
+    try:
+        return getattr(EnvCacheConfig(**{field: int(value)}), field)
+    except ValueError:
+        message = f'{field} must satisfy the configured finite product bounds'
+        raise argparse.ArgumentTypeError(message) from None
+
+
+def _model_call_allowance(value: str) -> int:
+    return int(_config_value('manifest_max_model_calls', value))
+
+
+def _context_tokens(value: str) -> int:
+    return int(_config_value('manifest_shard_context_tokens', value))
+
+
+def _agent_concurrency(value: str) -> int:
+    return int(_config_value('manifest_agent_concurrency', value))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repositories", nargs="+")
@@ -825,6 +851,10 @@ def main() -> int:
     parser.add_argument("--max-execution-repairs", type=int, choices=range(REPAIR_LIMITS["execution"] + 1), default=2)
     parser.add_argument("--max-review-context-bytes", type=int, default=1024 * 1024)
     parser.add_argument("--max-total-reads", type=_aggregate_read_allowance, default=512)
+    parser.add_argument("--max-model-calls", type=_model_call_allowance, default=128)
+    parser.add_argument("--context-tokens", type=_context_tokens, default=None,
+                        help="Model context size; enables sharded source discovery for repositories larger than one share")
+    parser.add_argument("--agent-concurrency", type=_agent_concurrency, default=12)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--approval-timeout", type=float, default=600)
     parser.add_argument("--save-transcripts", action="store_true")
@@ -850,6 +880,9 @@ def main() -> int:
         max_execution_repairs=args.max_execution_repairs,
         max_review_context_bytes=args.max_review_context_bytes,
         max_total_reads=args.max_total_reads,
+        max_model_calls=args.max_model_calls,
+        context_tokens=args.context_tokens,
+        agent_concurrency=args.agent_concurrency,
         private_service_runtime=load_runtime_policy(args.runtime_policy) if args.runtime_policy else None,
     )
     revision = subprocess.check_output([shutil.which("git") or "/usr/bin/git", "rev-parse", "HEAD"], text=True).strip()

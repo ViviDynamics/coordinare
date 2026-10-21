@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-from coordinare.services.environment_agent_pool import ShardOverflow, run_pool
+from coordinare.services.environment_agent_pool import ShardOverflowError, run_pool
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 
 
@@ -40,7 +40,7 @@ async def test_overflow_requeues_split_remainder():
         budget.reserve_call()
         seen.append(item)
         if len(item) > 2:
-            raise ShardOverflow(item)
+            raise ShardOverflowError(item)
         return item
 
     results = await run_pool([('a', 'b', 'c', 'd'), ('e',)], worker, budget=budget, split=halves)
@@ -94,7 +94,7 @@ async def test_no_new_allowances():
 @pytest.mark.asyncio
 async def test_an_unsplittable_overflow_holds():
     async def worker(item):
-        raise ShardOverflow(item)
+        raise ShardOverflowError(item)
 
     with pytest.raises(EnvironmentDiscoveryError) as failure:
         await run_pool([('only',)], worker, budget=AttemptBudget(), split=lambda item, exc: [item])

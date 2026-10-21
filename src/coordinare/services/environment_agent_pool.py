@@ -3,21 +3,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Callable, Coroutine, Sequence
 
     from coordinare.services.environment_attempt import AttemptBudget
 
-T = TypeVar('T')
-R = TypeVar('R')
 DEFAULT_CONCURRENCY = 12
 
 
-class ShardOverflow(Exception):  # noqa: N818 - a control signal, not an error, for the pool
+class ShardOverflowError(Exception):
     """A shard agent could not finish within its context; the remainder is split and requeued."""
 
     def __init__(self, remainder: Any) -> None:
@@ -25,8 +23,8 @@ class ShardOverflow(Exception):  # noqa: N818 - a control signal, not an error, 
         self.remainder = remainder
 
 
-async def run_pool(work: Sequence[T], worker: Callable[[T], Awaitable[R]], *, budget: AttemptBudget,
-                   split: Callable[[T, ShardOverflow], Sequence[T]], concurrency: int = DEFAULT_CONCURRENCY) -> list[R]:
+async def run_pool[T, R](work: Sequence[T], worker: Callable[[T], Coroutine[Any, Any, R]], *, budget: AttemptBudget,
+                   split: Callable[[T, ShardOverflowError], Sequence[T]], concurrency: int = DEFAULT_CONCURRENCY) -> list[R]:
     """Run every item; results follow the input order, with split remainders in place of their parent.
 
     Any failure other than an overflow cancels every running worker and is raised once.
@@ -48,7 +46,7 @@ async def run_pool(work: Sequence[T], worker: Callable[[T], Awaitable[R]], *, bu
                 key, item = running.pop(task)
                 try:
                     results[key] = task.result()
-                except ShardOverflow as overflow:
+                except ShardOverflowError as overflow:
                     parts = list(split(item, overflow))
                     if not parts or parts == [item]:
                         message = 'a shard agent cannot fit its smallest share'

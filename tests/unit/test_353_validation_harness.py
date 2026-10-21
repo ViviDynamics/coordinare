@@ -711,3 +711,24 @@ async def test_source_review_count_is_visible_before_executable_review(tmp_path,
     assert result['independent_review_reached'] is False
     assert result['status'] == 'held' and result['ready_at_validation'] is False
     assert result['installer_ran'] is False and result['clean_consumer_ran'] is False
+
+
+@pytest.mark.parametrize(('parse', 'good', 'bad'), [('_model_call_allowance', '1024', '5000'),
+                                                     ('_context_tokens', '262144', '100'),
+                                                     ('_agent_concurrency', '12', '17')])
+def test_sharded_discovery_flags_use_product_bounds(parse, good, bad):
+    import argparse
+
+    from scripts import validate_environment_repositories as harness
+    assert getattr(harness, parse)(good) == int(good)
+    with pytest.raises(argparse.ArgumentTypeError):
+        getattr(harness, parse)(bad)
+
+
+def test_profile_carries_sharded_discovery_settings_into_limits():
+    from coordinare.config import EnvCacheConfig
+    settings = EnvCacheConfig(manifest_max_model_calls=1024, manifest_shard_context_tokens=262144,
+                              manifest_agent_concurrency=12, manifest_max_total_reads=8192)
+    assert (settings.manifest_max_model_calls, settings.manifest_shard_context_tokens,
+            settings.manifest_agent_concurrency) == (1024, 262144, 12)
+    assert EnvCacheConfig().manifest_shard_context_tokens is None
