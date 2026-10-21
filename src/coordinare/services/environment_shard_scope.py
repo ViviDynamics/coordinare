@@ -124,8 +124,8 @@ MIN_SPLIT = 2
 SHARD_AUTHOR_INSTRUCTIONS = (
     'You author source-defined obligations for ONE shard of a repository too large for one conversation. '
     'Your shard is exactly the files in shard_files (paths and sizes); other agents handle the rest of the repository, '
-    'and spine_evidence holds shared root-level files. Read the shard files that can define the environment directly '
-    'with read_files, up to 8 per call; you do not need list_files to find them. Inspect: development/test entry points, dependency '
+    'and spine_evidence holds shared root-level files. shard_evidence already holds the content of every shard file: '
+    'judge it directly, without reading it again. Inspect: development/test entry points, dependency '
     'declarations, build and test automation and nested instructions. Report every obligation of the whole documented '
     'development/test environment that evidence in your shard or the spine establishes. Each criterion needs exact '
     'inspected source paths, description, applicability (required, not_applicable or unknown), cited rationale, '
@@ -490,13 +490,20 @@ class ShardedScope:
     async def author_shard(self, shard: Shard) -> ShardSummary:
         inspection = self.view(shard.paths, name='scope_shard_author')
         spine = self.admit_spine(inspection)
+        # Every named file is read by the daemon for the author: none can be skipped, and no call is spent reading it.
+        evidence: list[dict[str, str]] = []
+        unread = [path for path in shard.paths if path not in inspection.inputs]
+        for offset in range(0, len(unread), 8):
+            evidence.extend(item for item in (await inspection.read_files(unread[offset:offset + 8], navigation=True))['files']
+                            if 'error' not in item)
         messages = [{'role': 'system', 'content': SOURCE_NAVIGATION + SHARD_AUTHOR_INSTRUCTIONS + PHASE_CONTRACT},
                     {'role': 'user', 'content': canonical({'requested_scope': 'whole_documented_development_test_environment',
                         'phase_contract': {'subject': 'source_obligations', 'runtime_evidence': 'required_after_scope_acceptance',
                                            'readiness_authority': False},
                         'shard': {'id': shard.id, 'files': len(shard.paths)},
                         'shard_files': self.file_list(shard.paths),
-                        'root_directory': inspection.list_directory(), 'spine_evidence': spine}).decode()}]
+                        'root_directory': inspection.list_directory(), 'spine_evidence': spine,
+                        'shard_evidence': evidence}).decode()}]
         summary: ShardSummary = await self.agent_phase(inspection, messages, AgentTask('shard_summary',
             partial(self._validate_summary, inspection=inspection, shard=shard)))
         completed = dict((self.budget.scope_shards or {}).get('summaries', {}))
@@ -652,8 +659,7 @@ class ShardedScope:
         """Repository-wide consistency, and full judgment of criteria no shard owns (root-level obligations)."""
         inspection = self.view(name='scope_merge_review')
         # Inputs no authored shard owns (files read through references) are reviewed here.
-        unowned = [path for path in definition.inputs if path not in self.work.owners and path not in self.plan.spine]
-        evidence = await self._review_evidence(inspection, definition, paths=unowned, owned=material.owned)
+        evidence = await self._review_evidence(inspection, definition, paths=(), owned=material.owned)
         criteria = [c for c in definition.criteria if criterion_owner(c, self.work) == MERGE_OWNER]
         material = material._replace(criteria=criteria, evidence=evidence)
         messages = self._review_messages(inspection, preamble=MERGE_REVIEW_PREAMBLE, definition=definition, material=material)
@@ -690,6 +696,14 @@ class ShardedScope:
         # Earlier independent reads stand for unchanged shards: the pinned bytes are identical.
         previous = budget.scope_assessment.reviewer_inputs if budget.scope_assessment is not None else {}
         targets = self._review_targets(definition, owned, previous)
+        # Inputs no authored shard owns (files read through references) get their own reviewers, never one merge reviewer.
+        unowned = {path: self.entries[path] for path in definition.inputs
+                   if path not in self.work.owners and path not in self.plan.spine and path in self.entries}
+        referenced = [Shard(id=f'{shard.id}.x', paths=shard.paths, readable_bytes=shard.readable_bytes, depth=shard.depth)
+                      for shard in plan_shards(unowned, share=self.plan.share, spine=(), max_file_bytes=self.request.limits.max_file_bytes,
+                                               max_files=max(1, self.request.limits.max_reads // 2 - len(self.plan.spine)))
+                      if any(previous.get(path) != definition.inputs[path] for path in shard.paths)]
+        targets = [*targets, *referenced]
         target_paths = {path for shard in targets for path in shard.paths}
         carried = {path: digest for path, digest in previous.items() if path not in target_paths}
         work: list[Shard | None] = [*targets, None]

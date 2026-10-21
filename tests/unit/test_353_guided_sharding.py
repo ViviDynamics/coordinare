@@ -141,9 +141,12 @@ def test_exclusion_records_stay_within_their_bound_with_exact_counts():
     side = {f'g{i % 10}/sub{i}': verdict(f'g{i % 10}/sub{i}', 'unrelated') for i in range(600)}
     excluded, records = exclusions(paths, spine=[], sides=[side, side])
     assert len(records) == 10 and sum(record.files for record in records) == len(excluded) == 600
-    # More unrelated top-level areas than the record can hold: everything is read instead.
+    # More unrelated top-level areas than the record can hold: the attempt holds rather than misreport them.
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
     wide = {f'g{i}': verdict(f'g{i}', 'unrelated') for i in range(600)}
-    assert exclusions([f'g{i}/f.txt' for i in range(600)], spine=[], sides=[wide, wide]) == (set(), [])
+    with pytest.raises(EnvironmentDiscoveryError) as failure:
+        exclusions([f'g{i}/f.txt' for i in range(600)], spine=[], sides=[wide, wide])
+    assert failure.value.code == 'scope_size_limit'
 
 
 @pytest.mark.asyncio
@@ -281,3 +284,25 @@ async def test_only_named_files_are_authored_and_unsure_areas_are_recorded():
     assert not contract.definition.exclusions and sum(area.files for area in contract.definition.unread_unsure) == 6
     [merge] = [json.loads(m[1]['content']) for role, m in router.conversations if role == 'merge']
     assert merge['unread_unsure']
+
+
+@pytest.mark.asyncio
+async def test_every_named_file_reaches_its_author_without_a_read_call():
+    router = Router()
+    await run(router)
+    for role, messages in router.conversations:
+        if role == 'author' and len(messages) == 2:
+            user = json.loads(messages[1]['content'])
+            assert [item['path'] for item in user['shard_evidence']] == [item['path'] for item in user['shard_files']]
+
+
+@pytest.mark.asyncio
+async def test_referenced_inputs_get_their_own_reviewer_not_the_merge_reviewer():
+    from tests.unit.test_353_shard_review_fixes import ChainRouter
+    router = ChainRouter()
+    contract = await run(router)
+    [merge] = [json.loads(m[1]['content']) for role, m in router.conversations if role == 'merge']
+    assert not [item for item in merge['mandatory_evidence'] if item['path'].startswith('svc')]
+    reviewed = {item['path'] for role, m in router.conversations if role == 'review'
+                for item in json.loads(m[1]['content'])['mandatory_evidence']}
+    assert {'svc1/file1.txt', 'svc2/file1.txt'} <= reviewed and contract.definition.inputs

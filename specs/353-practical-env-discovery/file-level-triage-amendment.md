@@ -48,3 +48,12 @@ No language or filename rules in the daemon; no change to exclusion independence
 ## Delivery
 
 Maintainer approval, then native implementation with an independent review, preflight and CI, then pinned Elm.
+
+## Review fixes (2026-10-21)
+
+- The daemon loads every named file into its shard author's conversation, so no named file can be skipped and no
+  model call is spent reading it.
+- Inputs read through references, which no authored shard owns, get their own shard reviewers instead of all
+  landing on the merge reviewer.
+- If the unread records cannot fit even as top-level areas, the attempt holds with `scope_size_limit`; judgments
+  are never relabelled or folded into an unnamed area. Group rationales are kept in full.
