@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -41,22 +42,16 @@ def spine_paths(entries: Mapping[str, InventoryEntry], *, limit_bytes: int, max_
     """Readable root-level files, smallest first, that every shard agent receives."""
     root = sorted((entry for entry in entries.values() if '/' not in entry.path and readable(entry, max_file_bytes=max_file_bytes)),
                   key=lambda entry: (entry.size, entry.path))
-    spine, used = [], 0
-    for entry in root:
-        if used + shard_weight(entry) > limit_bytes:
-            break
-        spine.append(entry.path)
-        used += shard_weight(entry)
-    return sorted(spine)
+    totals = itertools.accumulate(shard_weight(entry) for entry in root)
+    return sorted(entry.path for entry, total in zip(root, totals, strict=True) if total <= limit_bytes)
 
 
 def _units(directory: str, files: dict[str, list[InventoryEntry]], dirs: dict[str, list[str]],
            totals: dict[str, int], share: int) -> list[tuple[list[str], int, int]]:
     """Each unit fits the share: a whole directory, or the split units of an oversized one."""
     depth = directory.count('/') + 1 if directory else 0
-    children: list[tuple[str, list[tuple[list[str], int, int]]]] = []
-    for entry in files.get(directory, []):
-        children.append((entry.path, [([entry.path], shard_weight(entry), depth)]))
+    children: list[tuple[str, list[tuple[list[str], int, int]]]] = [
+        (entry.path, [([entry.path], shard_weight(entry), depth)]) for entry in files.get(directory, [])]
     for child in dirs.get(directory, []):
         if totals[child] <= share:
             children.append((child, [(_collect(child, files, dirs), totals[child], child.count('/') + 1)]))

@@ -11,7 +11,7 @@ from coordinare_service_inference.environment.models import (
 from coordinare_service_inference.environment.runtime import RuntimeSpec
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
-from coordinare.services.environment_scope import discover_scope
+from coordinare.services.environment_shard_scope import discover_source_scope
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -51,7 +51,7 @@ class ReviewedConstruction:
     async def prepare(self, inputs: dict[str, str] | None = None) -> ScopeContract:
         if inputs is not None:
             self.retain_inputs(inputs)
-        return await discover_scope(paths=self.paths, fetch=self.fetch, chat=self.chat, commit=self.source_identity[1],
+        return await discover_source_scope(paths=self.paths, fetch=self.fetch, chat=self.chat, commit=self.source_identity[1],
             limits=self.limits, budget=self.budget, entries=self.entries)
 
     def require_scope(self) -> ScopeContract:

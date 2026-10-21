@@ -100,7 +100,7 @@ class Router:
 
 
 async def run(router, *, budget=None, limits=LIMITS, entries=ENTRIES):
-    from coordinare.services.environment_scope import discover_scope
+    from coordinare.services.environment_shard_scope import discover_source_scope as discover_scope
 
     async def fetch(path):
         return SOURCES.get(path)

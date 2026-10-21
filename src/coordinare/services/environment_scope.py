@@ -65,7 +65,7 @@ from coordinare.services.environment_scope_investigation import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from coordinare_service_inference.environment.inventory import InventoryEntry
     from coordinare_service_inference.environment.scope_revision import ScopeRevision
@@ -616,10 +616,10 @@ async def _accept_scope(budget: AttemptBudget, *, definition: ScopeDefinition, r
     return contract
 
 
-async def conclude_review(budget: AttemptBudget, *, assessment: ScopeAssessmentProposal, ledger: FindingLedger,
-                          record: SourceAssessmentRecord, definition: ScopeDefinition,
-                          reviewer: SourceInspection) -> ScopeContract | None:
+async def conclude_review(budget: AttemptBudget, review: tuple[ScopeAssessmentProposal, FindingLedger, SourceAssessmentRecord],
+                          *, definition: ScopeDefinition, reviewer: SourceInspection) -> ScopeContract | None:
     """Publish one validated review; None means a revision round follows."""
+    assessment, ledger, record = review
     budget.scope_findings = ledger
     budget.scope_assessment = record
     if assessment.verdict == 'revise':
@@ -657,13 +657,6 @@ async def _discover_scope(request: _Request) -> ScopeContract:
         investigation_evidence(inspection=inspection, bindings=budget.scope_investigations,
                                results=budget.scope_investigation_results)
         return saved
-    from coordinare.services.environment_shard_scope import discover_sharded_scope, needs_sharding
-
-    if request.entries and limits.shard_context_tokens and needs_sharding(
-            request.entries, context_tokens=limits.shard_context_tokens, max_file_bytes=limits.max_file_bytes):
-        _checked_inventory(paths, limits)
-        return await discover_sharded_scope(request, entries=request.entries,
-            context_tokens=limits.shard_context_tokens, concurrency=limits.agent_concurrency)
     pinned = SourceInspection(request.entries or _checked_inventory(paths, limits), fetch, limits, budget)
     request = replace(request, author_cache=AuthorEvidenceCache(source_commit=commit,
         inventory_digest=pinned.inventory_digest, max_bytes=limits.max_source_bytes))
@@ -687,8 +680,7 @@ async def _discover_scope(request: _Request) -> ScopeContract:
                           responses=budget.scope_responses),
                 chat=chat, envelope='scope_assessment', validate=partial(_validate_review, reviewer=reviewer,
                     definition=definition, ledger=ledger, commit=commit))
-            contract = await conclude_review(budget, assessment=assessment, ledger=ledger, record=record,
-                                             definition=definition, reviewer=reviewer)
+            contract = await conclude_review(budget, (assessment, ledger, record), definition=definition, reviewer=reviewer)
             if contract is not None:
                 return contract
             author, messages, required_inputs = await _prepare_author(request)
@@ -697,11 +689,16 @@ async def _discover_scope(request: _Request) -> ScopeContract:
 async def discover_scope(*, paths: Sequence[str], fetch: Fetch, chat: ChatJson, commit: str,
                          **options: Unpack[ScopeRunOptions]) -> ScopeContract:
     """All scope reads, judgments and corrections share the caller's original expiry."""
-    budget = options["budget"]
+    return await run_scope(_Request(paths, fetch, chat, commit, options["limits"], options["budget"],
+                                    entries=options.get("entries")), _discover_scope)
+
+
+async def run_scope(request: _Request, runner: Callable[[_Request], Awaitable[ScopeContract]]) -> ScopeContract:
+    """Shared expiry and failure mapping for every way of establishing source scope."""
+    budget = request.budget
     try:
         async with asyncio.timeout_at(budget.deadline):
-            return await _discover_scope(_Request(paths, fetch, chat, commit, options["limits"], budget,
-                                                  entries=options.get("entries")))
+            return await runner(request)
     except TimeoutError:
         budget.error_code = 'attempt_deadline'
         _fail('attempt_deadline')

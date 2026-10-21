@@ -11,8 +11,9 @@ import hashlib
 import time
 from dataclasses import dataclass, field
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Unpack
 
+from coordinare_service_inference.environment.findings import FindingLedger
 from coordinare_service_inference.environment.scope import (
     MAX_SCOPE_CRITERIA,
     ScopeAssessmentEnvelope,
@@ -34,9 +35,10 @@ from pydantic import ValidationError
 from pydantic_core import PydanticCustomError
 
 from coordinare.services.environment_admission import (
+    _checked_inventory,
     _decode_reply,
-    _repair,
     _validation_feedback,
+    explain_rejection,
 )
 from coordinare.services.environment_agent_pool import ShardOverflowError, run_pool
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
@@ -61,12 +63,15 @@ from coordinare.services.environment_scope import (
     _decision_reference_errors,
     _fail,
     _reassessment_target_errors,
+    _Request,
     _request_rule_errors,
     _ResponseReferenceError,
     _validate_responses,
     _validate_review,
     conclude_review,
+    discover_scope,
     preserve_scope,
+    run_scope,
 )
 from coordinare.services.environment_scope_investigation import (
     ScopeInvestigationResponseError,
@@ -86,22 +91,20 @@ from coordinare.services.environment_shards import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping, Sequence
 
-    from coordinare_service_inference.environment.findings import (
-        FindingLedger,
-        FindingRecord,
-        FindingResponse,
-    )
+    from coordinare_service_inference.environment.findings import FindingRecord, FindingResponse
     from coordinare_service_inference.environment.inventory import InventoryEntry
     from coordinare_service_inference.environment.scope import ScopeContract
     from coordinare_service_inference.environment.scope_investigation import ScopeInspectionBinding
     from coordinare_service_inference.environment.scope_revision import ScopeRevision
 
     from coordinare.services.environment_attempt import AttemptBudget
-    from coordinare.services.environment_scope import _Request
+    from coordinare.services.environment_discovery import ChatJson, Fetch
+    from coordinare.services.environment_scope import ScopeRunOptions
 
 SHARD_SCHEMA_REPAIRS = 2
 SPINE_FRACTION = 4
 MERGE_OWNER = 'merge'
+MIN_SPLIT = 2
 _APPLICABILITY_RANK = {'required': 2, 'unknown': 1, 'not_applicable': 0}
 
 SHARD_AUTHOR_INSTRUCTIONS = (
@@ -163,7 +166,7 @@ def needs_sharding(entries: Mapping[str, InventoryEntry], *, context_tokens: int
 
 
 def split_shard(shard: Shard, _overflow: ShardOverflowError) -> list[Shard]:
-    if len(shard.paths) < 2:
+    if len(shard.paths) < MIN_SPLIT:
         return [shard]
     middle = len(shard.paths) // 2
     halves = (shard.paths[:middle], shard.paths[middle:])
@@ -223,6 +226,56 @@ def finding_owner(record: FindingRecord, definition: ScopeDefinition, plan: Shar
     return MERGE_OWNER
 
 
+Envelope = Literal['shard_summary', 'scope_assessment', 'scope_revision']
+_CORRECTABLE = frozenset({'invalid_json_envelope', 'duplicate_json_key', 'unsupported_envelope',
+                          'invalid_tool_arguments', 'scope_citations_invalid'})
+
+
+class ReviewMaterial(NamedTuple):
+    criteria: Sequence[ScopeCriterion]
+    owned: Sequence[str]
+    spine: list[dict[str, str]]
+    evidence: list[dict[str, str]]
+
+
+class Assignment(NamedTuple):
+    owner: str
+    ids: Sequence[str]
+    bindings: Sequence[ScopeInspectionBinding]
+
+
+@dataclass(frozen=True)
+class AgentTask:
+    envelope: Envelope
+    validate: Callable[[dict[str, Any]], Any]
+    decision_ids: Sequence[str] | None = None
+    criterion_ids: Sequence[str] | None = None
+
+    def schema(self, *, final: bool) -> dict[str, Any]:
+        """Source tools only until the agent holds evidence, as in the single-conversation path."""
+        if not final:
+            return response_schema('source_tool')
+        schema = response_schema(self.envelope, review_decision_ids=self.decision_ids)
+        if self.envelope == 'scope_assessment' and self.criterion_ids is not None:
+            constrain_source_criteria(schema, list(self.criterion_ids))
+        return schema
+
+
+def _rejection_errors(exc: Exception, envelope: str) -> list[dict[str, Any]]:
+    """Correctable rejections become feedback; anything else ends the attempt."""
+    if isinstance(exc, ValidationError):
+        return _validation_feedback(exc)
+    if isinstance(exc, PydanticCustomError):
+        return [{'location': [envelope], 'code': exc.type}]
+    if isinstance(exc, (_ResponseReferenceError, ScopeInvestigationResponseError)):
+        return list(exc.errors)
+    if isinstance(exc, FindingValidationError):
+        return [{'location': list(exc.location), 'code': exc.code, 'guidance': str(exc)}]
+    if isinstance(exc, EnvironmentDiscoveryError) and exc.code in _CORRECTABLE:
+        return [{'location': [], 'code': exc.code}]
+    raise exc
+
+
 def _restricted(entries: Mapping[str, InventoryEntry], paths: Collection[str]) -> dict[str, InventoryEntry]:
     return {path: entries[path] for path in sorted(paths) if path in entries}
 
@@ -274,9 +327,7 @@ class ShardedScope:
         saved.update(state)
         self.budget.scope_shards = saved
 
-    async def agent_phase(self, inspection: SourceInspection, messages: list[dict[str, str]], *,
-                          envelope: str, validate: Callable[[dict[str, Any]], Any],
-                          decision_ids: Sequence[str] | None = None, criterion_ids: Sequence[str] | None = None) -> Any:
+    async def agent_phase(self, inspection: SourceInspection, messages: list[dict[str, str]], task: AgentTask) -> Any:
         """One shard conversation; its own correction allowance, the shared call and read budget."""
         budget, limits = self.budget, self.request.limits
         budget.shard_agents += 1
@@ -285,23 +336,10 @@ class ShardedScope:
         try:
             async with asyncio.timeout_at(min(budget.deadline, time.monotonic() + limits.phase_timeout_seconds)):
                 for _ in range(limits.max_model_calls):
-                    exposed = 'source_tool' if not inspection.inputs else envelope
-                    schema = response_schema(exposed, review_decision_ids=decision_ids if exposed == 'scope_assessment' else None)
-                    if exposed == 'scope_assessment' and criterion_ids is not None:
-                        constrain_source_criteria(schema, list(criterion_ids))
+                    schema = task.schema(final=bool(inspection.inputs))
                     messages[0] = {'role': 'system', 'content': base_system +
                         '\nReturn one complete envelope matching this schema: ' + canonical(schema).decode()}
-                    budget.reserve_call()
-                    await budget.flush()
-                    try:
-                        size = check_evidence_context(messages, max_bytes=limits.max_review_context_bytes, phase=inspection.name)
-                        budget.context_bytes += size
-                        raw = budget.record_reply(await invoke_chat(self.request.chat, messages,
-                            schema=schema, max_context_bytes=limits.max_review_context_bytes, context_phase=inspection.name))
-                    except EnvironmentDiscoveryError as exc:
-                        if exc.code.endswith('_context_limit'):
-                            raise ShardOverflowError(None) from None
-                        raise
+                    raw = await self._ask(inspection, messages, schema)
                     try:
                         reply = _decode_reply(raw, inspection.name, limits)
                         if 'tool' in reply:
@@ -309,32 +347,36 @@ class ShardedScope:
                             messages.extend([{'role': 'assistant', 'content': raw},
                                              {'role': 'user', 'content': canonical({'tool_result': result}).decode()}])
                             continue
-                        return validate(reply)
-                    except ValidationError as exc:
-                        errors = _validation_feedback(exc)
-                    except PydanticCustomError as exc:
-                        errors = [{'location': [envelope], 'code': exc.type}]
-                    except (_ResponseReferenceError, ScopeInvestigationResponseError) as exc:
-                        errors = exc.errors
-                    except FindingValidationError as exc:
-                        errors = [{'location': list(exc.location), 'code': exc.code, 'guidance': str(exc)}]
-                    except EnvironmentDiscoveryError as exc:
-                        if exc.code not in {'invalid_json_envelope', 'duplicate_json_key', 'unsupported_envelope',
-                                            'invalid_tool_arguments', 'scope_citations_invalid'}:
-                            raise
-                        errors = [{'location': [], 'code': exc.code}]
+                        return task.validate(reply)
+                    except (ValidationError, PydanticCustomError, FindingValidationError, EnvironmentDiscoveryError) as exc:
+                        errors = _rejection_errors(exc, task.envelope)
                     if corrections >= SHARD_SCHEMA_REPAIRS:
                         budget.validation_codes.extend(error['code'] for error in errors)
                         message = 'shard agent exhausted its schema corrections'
                         raise EnvironmentDiscoveryError(message, code='attempt_schema_limit')
                     corrections += 1
                     budget.shard_schema_repairs += 1
-                    budget.expected_envelope = envelope  # type: ignore[assignment]
-                    _repair(messages, raw, errors, budget, charge=False)
+                    budget.expected_envelope = task.envelope
+                    explain_rejection(messages, raw, errors, budget)
                 _fail('scope_phase_call_limit')
         except TimeoutError:
             budget.check()
             _fail('scope_phase_deadline')
+
+    async def _ask(self, inspection: SourceInspection, messages: list[dict[str, str]], schema: dict[str, Any]) -> str:
+        """Charge one call; a conversation outgrowing its context returns its work to the pool for splitting."""
+        budget, limits = self.budget, self.request.limits
+        budget.reserve_call()
+        await budget.flush()
+        try:
+            budget.context_bytes += check_evidence_context(messages, max_bytes=limits.max_review_context_bytes,
+                                                           phase=inspection.name)
+            return budget.record_reply(await invoke_chat(self.request.chat, messages, schema=schema,
+                max_context_bytes=limits.max_review_context_bytes, context_phase=inspection.name))
+        except EnvironmentDiscoveryError as exc:
+            if exc.code.endswith('_context_limit'):
+                raise ShardOverflowError(None) from None
+            raise
 
     # ----- authoring -----
 
@@ -347,8 +389,8 @@ class ShardedScope:
                                            'readiness_authority': False},
                         'shard': {'id': shard.id, 'files': len(shard.paths)},
                         'root_directory': inspection.list_directory(), 'spine_evidence': spine}).decode()}]
-        summary: ShardSummary = await self.agent_phase(inspection, messages, envelope='shard_summary',
-            validate=partial(self._validate_summary, inspection=inspection, shard=shard))
+        summary: ShardSummary = await self.agent_phase(inspection, messages, AgentTask('shard_summary',
+            partial(self._validate_summary, inspection=inspection, shard=shard)))
         completed = dict((self.budget.scope_shards or {}).get('summaries', {}))
         completed[shard.id] = summary.model_dump(mode='json')
         self._persist(summaries=completed)
@@ -413,8 +455,8 @@ class ShardedScope:
         return owned
 
     def _review_messages(self, inspection: SourceInspection, *, preamble: str, definition: ScopeDefinition,
-                         criteria: Sequence[ScopeCriterion], owned: Sequence[str], spine: list[dict[str, str]],
-                         evidence: list[dict[str, str]]) -> list[dict[str, str]]:
+                         material: ReviewMaterial) -> list[dict[str, str]]:
+        criteria, owned, spine, evidence = material
         ledger = self.budget.scope_findings
         records = [record.model_dump(mode='json') for record in ledger.records if record.id in owned] if ledger else []
         responses = [response for response in self.budget.scope_responses if response.get('finding_id') in owned]
@@ -460,23 +502,22 @@ class ShardedScope:
         evidence = await prepare_mandatory_evidence(inspection, expected, phase='scope_review')
         criteria = [c for c in definition.criteria if any(self.plan.owners.get(path) == shard.id for path in c.sources)]
         messages = self._review_messages(inspection, preamble=SHARD_REVIEW_PREAMBLE, definition=definition,
-                                         criteria=criteria, owned=owned, spine=spine, evidence=evidence)
-        part: tuple[ScopeAssessmentProposal, dict[str, str]] = await self.agent_phase(
-            inspection, messages, envelope='scope_assessment', decision_ids=list(owned),
-            criterion_ids=[c.id for c in definition.criteria],
-            validate=partial(self._validate_part, inspection=inspection, definition=definition, owned=owned))
-        return part
+                                         material=ReviewMaterial(criteria, owned, spine, evidence))
+        return await self._judge(inspection, messages, definition=definition, owned=owned)
 
     async def review_merge(self, *, definition: ScopeDefinition,
                            owned: Sequence[str]) -> tuple[ScopeAssessmentProposal, dict[str, str]]:
         inspection = self.view(name='scope_merge_review')
         spine = self.admit_spine(inspection)
         messages = self._review_messages(inspection, preamble=MERGE_REVIEW_PREAMBLE, definition=definition,
-                                         criteria=[], owned=owned, spine=spine, evidence=[])
-        part: tuple[ScopeAssessmentProposal, dict[str, str]] = await self.agent_phase(
-            inspection, messages, envelope='scope_assessment', decision_ids=list(owned),
-            criterion_ids=[c.id for c in definition.criteria],
-            validate=partial(self._validate_part, inspection=inspection, definition=definition, owned=owned))
+                                         material=ReviewMaterial([], owned, spine, []))
+        return await self._judge(inspection, messages, definition=definition, owned=owned)
+
+    async def _judge(self, inspection: SourceInspection, messages: list[dict[str, str]], *, definition: ScopeDefinition,
+                     owned: Sequence[str]) -> tuple[ScopeAssessmentProposal, dict[str, str]]:
+        part: tuple[ScopeAssessmentProposal, dict[str, str]] = await self.agent_phase(inspection, messages, AgentTask(
+            'scope_assessment', partial(self._validate_part, inspection=inspection, definition=definition, owned=owned),
+            decision_ids=list(owned), criterion_ids=[c.id for c in definition.criteria]))
         return part
 
     def _review_targets(self, definition: ScopeDefinition, owned: Mapping[str, list[str]],
@@ -530,8 +571,7 @@ class ShardedScope:
         for shard in targets:
             reviewed[shard.id] = sorted(c.id for c in definition.criteria if criterion_owner(c, self.plan) == shard.id)
         self._persist(reviewed_criteria=reviewed)
-        return await conclude_review(budget, assessment=assessment, ledger=updated, record=record,
-                                     definition=definition, reviewer=reviewer)
+        return await conclude_review(budget, (assessment, updated, record), definition=definition, reviewer=reviewer)
 
     # ----- revision -----
 
@@ -567,29 +607,17 @@ class ShardedScope:
                         'required_response_ids': list(ids),
                         'investigation_evidence': investigation_evidence(inspection=inspection, bindings=bindings,
                             results=budget.scope_investigation_results)}).decode()}]
-        result: tuple[ScopeRevision, list[FindingResponse]] = await self.agent_phase(inspection, messages, envelope='scope_revision',
-            validate=partial(self._validate_group, inspection=inspection, base=base, owner=owner, ids=ids, bindings=bindings))
+        result: tuple[ScopeRevision, list[FindingResponse]] = await self.agent_phase(inspection, messages, AgentTask(
+            'scope_revision', partial(self._validate_group, inspection=inspection, base=base,
+                                      assignment=Assignment(owner, ids, bindings))))
         return result
 
-    def _validate_group(self, data: dict[str, Any], *, inspection: SourceInspection, base: ScopeDefinition, owner: str,
-                        ids: Sequence[str], bindings: Sequence[ScopeInspectionBinding]) -> tuple[ScopeRevision, list[FindingResponse]]:
+    def _validate_group(self, data: dict[str, Any], *, inspection: SourceInspection, base: ScopeDefinition,
+                        assignment: Assignment) -> tuple[ScopeRevision, list[FindingResponse]]:
+        owner, ids, bindings = assignment
         envelope = ScopeRevisionEnvelope.model_validate(data)
         revision = envelope.scope_revision
-        errors: list[dict[str, Any]] = []
-        if revision.base_digest != base.digest():
-            errors.append({'code': 'scope_revision_base', 'location': ['scope_revision', 'base_digest'],
-                           'guidance': 'Use the exact scope_base_digest.'})
-        for operation, changes in (('add', revision.add), ('reassess', revision.reassess)):
-            for index, change in enumerate(changes):
-                criterion = change.criterion if operation == 'reassess' else change
-                location = ['scope_revision', operation, str(index)] + (['criterion'] if operation == 'reassess' else [])
-                errors.extend(_criterion_citation_errors(criterion.sources, inspection.inputs, (*location, 'sources')))
-        by_id = {criterion.id: criterion for criterion in base.criteria}
-        for index, change in enumerate(revision.reassess):
-            target = by_id.get(change.criterion_id)
-            if owner != MERGE_OWNER and target is not None and criterion_owner(target, self.plan) != owner:
-                errors.append({'code': 'scope_revision_target', 'location': ['scope_revision', 'reassess', str(index), 'criterion_id'],
-                    'guidance': 'Reassess only criteria in scope_criteria owned by your assigned findings; add a criterion instead.'})
+        errors = self._operation_errors(revision, inspection=inspection, base=base, owner=owner)
         if errors:
             raise _ResponseReferenceError(errors)
         try:
@@ -619,6 +647,26 @@ class ShardedScope:
                                          responses=responses, inputs=inspection.inputs)
         return revision, list(responses)
 
+    def _operation_errors(self, revision: ScopeRevision, *, inspection: SourceInspection, base: ScopeDefinition,
+                          owner: str) -> list[dict[str, Any]]:
+        """Citations from this agent's reads; reassessment only of criteria its assignment owns."""
+        errors: list[dict[str, Any]] = []
+        if revision.base_digest != base.digest():
+            errors.append({'code': 'scope_revision_base', 'location': ['scope_revision', 'base_digest'],
+                           'guidance': 'Use the exact scope_base_digest.'})
+        for index, criterion in enumerate(revision.add):
+            errors.extend(_criterion_citation_errors(criterion.sources, inspection.inputs,
+                                                     ('scope_revision', 'add', str(index), 'sources')))
+        by_id = {criterion.id: criterion for criterion in base.criteria}
+        for index, change in enumerate(revision.reassess):
+            errors.extend(_criterion_citation_errors(change.criterion.sources, inspection.inputs,
+                                                     ('scope_revision', 'reassess', str(index), 'criterion', 'sources')))
+            target = by_id.get(change.criterion_id)
+            if owner != MERGE_OWNER and target is not None and criterion_owner(target, self.plan) != owner:
+                errors.append({'code': 'scope_revision_target', 'location': ['scope_revision', 'reassess', str(index), 'criterion_id'],
+                    'guidance': 'Reassess only criteria in scope_criteria owned by your assigned findings; add a criterion instead.'})
+        return errors
+
     async def revision_round(self, base: ScopeDefinition) -> ScopeDefinition:
         budget = self.budget
         ledger = budget.scope_findings
@@ -645,7 +693,7 @@ class ShardedScope:
 
         def halves(item: tuple[str, tuple[str, ...]], _overflow: ShardOverflowError) -> list[tuple[str, tuple[str, ...]]]:
             owner, ids = item
-            if len(ids) < 2:
+            if len(ids) < MIN_SPLIT:
                 return [item]
             return [(owner, ids[:len(ids) // 2]), (owner, ids[len(ids) // 2:])]
 
@@ -694,18 +742,36 @@ def combine_round(parts: Sequence[tuple[str, ScopeAssessmentProposal, Mapping[st
         'findings': findings, 'decisions': [decisions[key] for key in sorted(decisions, key=lambda key: order.get(key, 0))]}}
 
 
-async def discover_sharded_scope(request: _Request, *, entries: Mapping[str, InventoryEntry],
-                                 context_tokens: int, concurrency: int) -> ScopeContract:
+def _sharded(request: _Request) -> bool:
+    limits, entries = request.limits, request.entries
+    return bool(entries and limits.shard_context_tokens and request.budget.scope_contract is None and needs_sharding(
+        entries, context_tokens=limits.shard_context_tokens, max_file_bytes=limits.max_file_bytes))
+
+
+async def discover_source_scope(*, paths: Sequence[str], fetch: Fetch, chat: ChatJson, commit: str,
+                                **options: Unpack[ScopeRunOptions]) -> ScopeContract:
+    """One conversation when the repository fits one share; otherwise the same protocol divided into shards."""
+    request = _Request(paths, fetch, chat, commit, options['limits'], options['budget'], entries=options.get('entries'))
+    if not _sharded(request):
+        return await discover_scope(paths=paths, fetch=fetch, chat=chat, commit=commit, **options)
+    _checked_inventory(paths, request.limits)
+    return await run_scope(request, discover_sharded_scope)
+
+
+async def discover_sharded_scope(request: _Request) -> ScopeContract:
     """The single-conversation loop's states and verdict handling, with each phase divided into shards."""
-    budget = request.budget
-    plan = build_plan(entries, context_tokens=context_tokens, max_file_bytes=request.limits.max_file_bytes)
+    budget, limits, entries = request.budget, request.limits, request.entries
+    if not entries or not limits.shard_context_tokens:
+        _fail('scope_source_identity')
+    plan = build_plan(entries, context_tokens=limits.shard_context_tokens, max_file_bytes=limits.max_file_bytes)
     saved = budget.scope_shards
     if saved is not None and saved.get('plan_digest') not in (None, plan.digest()):
         _fail('scope_shard_identity')
-    scope = ShardedScope(request, entries, plan, concurrency)
+    scope = ShardedScope(request, entries, plan, limits.agent_concurrency)
     if budget.scope_findings is None:
-        from coordinare_service_inference.environment.findings import FindingLedger
         budget.scope_findings = FindingLedger(source_commit=request.commit)
+    elif budget.scope_findings.source_commit != request.commit:
+        _fail('scope_source_identity')
     while True:
         if budget.scope_phase == 'initial':
             definition = await scope.author_round()
@@ -727,5 +793,6 @@ def shard_plan_summary(plan: ShardPlan) -> dict[str, Any]:
             'largest_shard_files': max((len(shard.paths) for shard in plan.shards), default=0)}
 
 
-__all__ = ['ShardPlan', 'ShardedScope', 'build_plan', 'combine_round', 'discover_sharded_scope', 'finding_owner',
+__all__ = ['ShardPlan', 'ShardedScope', 'build_plan', 'combine_round', 'discover_sharded_scope', 'discover_source_scope',
+           'finding_owner',
            'merge_summaries', 'needs_sharding', 'route_cross_references', 'shard_plan_summary', 'split_shard']

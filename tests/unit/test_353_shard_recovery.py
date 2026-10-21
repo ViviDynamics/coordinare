@@ -11,7 +11,15 @@ from coordinare_service_inference.environment.scope import ScopeCriterionProposa
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_repair import JOURNAL_MAX_BYTES, begin_attempt, save_attempt
 from tests.unit.test_353_execution_repair import cache_fixture
-from tests.unit.test_353_shard_scope import COMMIT, ENTRIES, LIMITS, PLAN, SOURCES, Router, criterion
+from tests.unit.test_353_shard_scope import (
+    COMMIT,
+    ENTRIES,
+    LIMITS,
+    PLAN,
+    SOURCES,
+    Router,
+    criterion,
+)
 
 
 class Interrupted(BaseException):
@@ -19,7 +27,7 @@ class Interrupted(BaseException):
 
 
 async def flow(cache, router, *, stop_when=None):
-    from coordinare.services.environment_scope import discover_scope
+    from coordinare.services.environment_shard_scope import discover_source_scope as discover_scope
 
     budget = begin_attempt(cache, LIMITS, outer_seconds=600)
 
