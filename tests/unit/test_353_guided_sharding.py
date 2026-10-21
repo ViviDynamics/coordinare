@@ -26,7 +26,7 @@ class Sides(Router):
     def triage(self, messages, user):
         if self.incomplete_once and len(messages) == 2:
             self.incomplete_once = False
-            return {'listing_triage': {'verdicts': [{'path': 'svc0', 'verdict': 'environment', 'rationale': 'r'}]}}
+            return {'listing_triage': {'verdicts': [{'path': 'svc0', 'verdict': 'unsure', 'rationale': 'r'}]}}
         if len(messages) == 2:
             self.calls[user['listing_shard']] = self.calls.get(user['listing_shard'], 0) + 1
         self.unrelated = self.sides[min(self.calls.get(user['listing_shard'], 1), 2) - 1]
@@ -120,7 +120,7 @@ def test_a_repeated_path_in_one_triage_is_a_correctable_error():
     from coordinare.services.environment_shard_triage import validate_triage
     from coordinare.services.environment_shards import Shard
     shard = Shard(id='shard-000-00000000', paths=('a/x.yml', 'a/y.md'), readable_bytes=0, depth=0)
-    data = {'listing_triage': {'verdicts': [{'path': 'a', 'verdict': 'environment', 'rationale': 'r'},
+    data = {'listing_triage': {'verdicts': [{'path': 'a', 'verdict': 'unsure', 'rationale': 'r'},
                                             {'path': 'a', 'verdict': 'unrelated', 'rationale': 'r'}]}}
     with pytest.raises(_ResponseReferenceError) as failure:
         validate_triage(data, shard=shard)
@@ -206,8 +206,8 @@ def test_an_echoed_listing_id_is_ignored_but_other_keys_are_not():
     from coordinare.services.environment_shard_triage import validate_triage
     from coordinare.services.environment_shards import Shard
     shard = Shard(id='shard-000-00000000', paths=('a/x.yml',), readable_bytes=0, depth=0)
-    triage = {'verdicts': [{'path': 'a', 'verdict': 'environment', 'rationale': 'r'}]}
-    assert validate_triage({'listing_triage': triage, 'listing_shard': shard.id}, shard=shard)['a'].verdict == 'environment'
+    triage = {'verdicts': [{'path': 'a/x.yml', 'verdict': 'environment', 'rationale': 'r'}]}
+    assert validate_triage({'listing_triage': triage, 'listing_shard': shard.id}, shard=shard)['a/x.yml'].verdict == 'environment'
     from coordinare.services.environment_scope import _ResponseReferenceError
     with pytest.raises(_ResponseReferenceError):
         validate_triage({'listing_triage': triage, 'listing_shard': 'other'}, shard=shard)
@@ -221,9 +221,9 @@ def test_triage_offers_no_tools_and_ignores_merged_null_alternatives():
     [declaration] = schema['anyOf']
     assert 'listing_triage' in declaration['properties'] and 'tool' not in json.dumps(schema)
     shard = Shard(id='shard-000-00000000', paths=('a/x.yml',), readable_bytes=0, depth=0)
-    merged = {'listing_triage': {'verdicts': [{'path': 'a', 'verdict': 'environment', 'rationale': 'r', 'cursor': None}],
+    merged = {'listing_triage': {'verdicts': [{'path': 'a/x.yml', 'verdict': 'environment', 'rationale': 'r', 'cursor': None}],
                                  'files': None}, 'tool': None, 'path': None, 'cursor2': None}
-    assert validate_triage(merged, shard=shard)['a'].verdict == 'environment'
+    assert validate_triage(merged, shard=shard)['a/x.yml'].verdict == 'environment'
     from coordinare.services.environment_scope import _ResponseReferenceError
     for extra in ({'cursor': 0}, {'properties': {}, '$defs': {}}):
         with pytest.raises(_ResponseReferenceError) as failure:
@@ -242,3 +242,42 @@ async def test_an_unusable_triage_reads_its_area_instead_of_holding():
     budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
     contract = await run(Garbled(), budget=budget)
     assert not contract.definition.exclusions and budget.scope_phase == 'accepted'
+
+
+def test_an_environment_verdict_must_name_a_file():
+    from coordinare.services.environment_scope import _ResponseReferenceError
+    from coordinare.services.environment_shard_triage import validate_triage
+    from coordinare.services.environment_shards import Shard
+    shard = Shard(id='shard-000-00000000', paths=('a/x.yml', 'a/y.go'), readable_bytes=0, depth=0)
+    with pytest.raises(_ResponseReferenceError) as failure:
+        validate_triage({'listing_triage': {'verdicts': [{'path': 'a', 'verdict': 'environment', 'rationale': 'r'}]}}, shard=shard)
+    assert failure.value.errors[0]['code'] == 'triage_environment_directory'
+    named = validate_triage({'listing_triage': {'verdicts': [{'path': 'a', 'verdict': 'unsure', 'rationale': 'r'},
+        {'path': 'a/x.yml', 'verdict': 'environment', 'rationale': 'r'}]}}, shard=shard)
+    assert named['a/x.yml'].verdict == 'environment'
+
+
+@pytest.mark.asyncio
+async def test_only_named_files_are_authored_and_unsure_areas_are_recorded():
+    class Named(Router):
+        def triage(self, messages, user):
+            tops = sorted({item['path'].split('/')[0] for item in user['files']})
+            verdicts = [{'path': top, 'verdict': 'unsure', 'rationale': 'r'} for top in tops if top != 'README.md']
+            verdicts += [{'path': item['path'], 'verdict': 'environment', 'rationale': 'r'}
+                         for item in user['files'] if item['path'].endswith('file0.txt') or item['path'] == 'README.md']
+            return {'listing_triage': {'verdicts': verdicts}}
+
+        def author(self, messages, user):
+            if len(messages) == 2:
+                return {'tool': 'read_files', 'paths': [item['path'] for item in user['shard_files']][:8]}
+            first = user['shard_files'][0]['path']
+            return {'shard_summary': {'criteria': [criterion(first, first)], 'cross_references': [], 'questions': []}}
+
+    router = Named()
+    contract = await run(router)
+    authored = {item['path'] for role, m in router.conversations if role == 'author'
+                for item in json.loads(m[1]['content'])['shard_files']}
+    assert authored == {f'svc{d}/file0.txt' for d in range(3)}
+    assert not contract.definition.exclusions and sum(area.files for area in contract.definition.unread_unsure) == 6
+    [merge] = [json.loads(m[1]['content']) for role, m in router.conversations if role == 'merge']
+    assert merge['unread_unsure']

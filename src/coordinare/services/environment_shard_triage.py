@@ -28,11 +28,11 @@ TRIAGE_SIDES = ('author', 'review')
 TRIAGE_INSTRUCTIONS = (
     'You triage ONE part of a repository listing, seeing only file paths and sizes, never contents. '
     'For the documented development and test environment (installing dependencies, building, running tests and '
-    'local services), judge each area: environment (likely to define or exercise that environment, so it must be '
-    'read: dependency declarations, build and test automation, setup scripts and docs, CI, service and container '
-    'definitions, test entry points), unrelated (an area you judge cannot define environment obligations, such as '
-    'application logic, assets or generated data, with a short reason), or unsure. Prefer environment or unsure '
-    'when in doubt: an unread area must be one you are confident is unrelated. A verdict on a directory covers '
+    'local services), name the FILES that define it: environment is a verdict on one listed file only (dependency '
+    'declarations, build and test automation, setup scripts and docs, CI, service and container definitions, test '
+    'entry points). Judge directories and remaining files as unrelated (cannot define environment obligations, such '
+    'as application logic, assets or generated data, with a short reason) or unsure. Files you name are read first; '
+    'other agents follow references from them, and reviewers see what stayed unread. A directory verdict covers '
     'everything beneath it unless a deeper verdict overrides it. Every listed file must be covered by some verdict. '
     'Return {"listing_triage":{"verdicts":[{"path":"dir/or/file","verdict":"environment|unrelated|unsure",'
     '"rationale":"short reason"}]}} with no other keys. Return data only: never copy JSON Schema keywords such as '
@@ -106,6 +106,12 @@ def validate_triage(data: dict[str, Any], *, shard: Shard) -> dict[str, TriageVe
         if path not in prefixes:
             errors.append({'code': 'triage_path_invalid', 'location': ['listing_triage', 'verdicts', str(index), 'path'],
                            'guidance': 'Use a listed file path or one of its directories, exactly as listed.'})
+        if verdict.verdict == 'environment' and path not in shard.paths:
+            errors.append({'code': 'triage_environment_directory',
+                           'location': ['listing_triage', 'verdicts', str(index), 'path'],
+                           'guidance': 'An environment verdict must name one listed file. Name the specific files in this '
+                                       'directory that define the environment, and judge the directory itself unrelated or '
+                                       'unsure. Keep your other verdicts.'})
         if path in verdicts:
             errors.append({'code': 'triage_path_repeated', 'location': ['listing_triage', 'verdicts', str(index), 'path'],
                            'guidance': 'Give each path exactly one verdict; use a deeper path to override a directory verdict.'})
@@ -135,38 +141,66 @@ def merge_side(parts: Iterable[Mapping[str, TriageVerdict]]) -> dict[str, Triage
     return merged
 
 
+def _grouped(paths: Iterable[str], keys: Mapping[str, str], rationales: Mapping[str, list[str]]) -> list[ScopeExclusion] | None:
+    """Group paths by area, coarsening the deepest areas until the record fits; None when even top-level areas exceed it."""
+    groups: dict[str, list[str]] = {}
+    notes: dict[str, list[str]] = {}
+    for path in sorted(paths):
+        groups.setdefault(keys[path], []).append(path)
+        notes.setdefault(keys[path], list(rationales.get(path, [])))
+    while len(groups) > MAX_SCOPE_EXCLUSIONS and any('/' in key for key in groups):
+        depth = max(key.count('/') for key in groups)
+        coarser: dict[str, list[str]] = {}
+        for key, members in groups.items():
+            parent = key.rsplit('/', 1)[0] if key.count('/') == depth else key
+            coarser.setdefault(parent, []).extend(members)
+            if parent != key:
+                notes.setdefault(parent, []).extend(item for item in notes[key] if item not in notes[parent])
+        groups = coarser
+    if len(groups) > MAX_SCOPE_EXCLUSIONS:
+        return None
+    return [ScopeExclusion(path=key, files=len(members), rationale=' | '.join(notes[key])[:1100] or 'listing judgment')
+            for key, members in sorted(groups.items())]
+
+
 def exclusions(readable_paths: Collection[str], *, spine: Collection[str],
                sides: Sequence[Mapping[str, TriageVerdict]]) -> tuple[set[str], list[ScopeExclusion]]:
     """Excluded only when every independent side covered the file and judged it unrelated."""
-    excluded: set[str] = set()
-    groups: dict[str, list[str]] = {}
+    keys: dict[str, str] = {}
     rationales: dict[str, list[str]] = {}
-    for path in sorted(readable_paths):
+    for path in readable_paths:
         if path in spine:
             continue
         judged = [covering(path, side) for side in sides]
         if not judged or any(verdict is None or verdict.verdict != 'unrelated' for verdict in judged):
             continue
-        excluded.add(path)
-        key = judged[0].path if judged[0] is not None else path
-        groups.setdefault(key, []).append(path)
-        rationales.setdefault(key, [verdict.rationale for verdict in judged if verdict is not None])
-    while len(groups) > MAX_SCOPE_EXCLUSIONS and any('/' in key for key in groups):
-        # Coarsen the deepest groups to their parents; files counts stay exact, the path names the containing area.
-        depth = max(key.count('/') for key in groups)
-        coarser: dict[str, list[str]] = {}
-        for key, paths in groups.items():
-            parent = key.rsplit('/', 1)[0] if key.count('/') == depth else key
-            coarser.setdefault(parent, []).extend(paths)
-            if parent != key:
-                rationales.setdefault(parent, []).extend(item for item in rationales[key] if item not in rationales[parent])
-        groups = coarser
-    if len(groups) > MAX_SCOPE_EXCLUSIONS:
+        keys[path] = judged[0].path if judged[0] is not None else path
+        rationales[path] = [verdict.rationale for verdict in judged if verdict is not None]
+    records = _grouped(keys, keys, rationales)
+    if records is None:
         return set(), []  # The record cannot be bounded: read everything rather than exclude unrecorded areas.
-    records = [ScopeExclusion(path=key, files=len(paths),
-                              rationale=' | '.join(rationales[key])[:1100]) for key, paths in sorted(groups.items())]
-    return excluded, records
+    return set(keys), records
 
 
-__all__ = ['TRIAGE_INSTRUCTIONS', 'TRIAGE_SIDES', 'covering', 'exclusions', 'listing_payload', 'listing_shards',
-           'validate_triage']
+def named_files(readable_paths: Collection[str], *, spine: Collection[str],
+                sides: Sequence[Mapping[str, TriageVerdict]]) -> set[str]:
+    """Files authored up front: the spine plus every file either side named environment."""
+    named = {path for path in readable_paths if path in spine}
+    named.update(path for path in readable_paths
+                 if any((verdict := covering(path, side)) is not None and verdict.verdict == 'environment' for side in sides))
+    return named
+
+
+def unread_unsure(readable_paths: Collection[str], *, read: Collection[str], excluded: Collection[str],
+                  sides: Sequence[Mapping[str, TriageVerdict]]) -> list[ScopeExclusion]:
+    """Areas neither read nor excluded: listed to reviewers, who may require them read."""
+    keys: dict[str, str] = {}
+    rationales: dict[str, list[str]] = {}
+    for path in readable_paths:
+        if path in read or path in excluded:
+            continue
+        judged = [verdict for side in sides if (verdict := covering(path, side)) is not None]
+        unsure = [verdict for verdict in judged if verdict.verdict != 'unrelated'] or judged
+        keys[path] = unsure[0].path if unsure else path
+        rationales[path] = [verdict.rationale for verdict in unsure]
+    return _grouped(keys, keys, rationales) or [ScopeExclusion(path='.', files=len(keys), rationale='unread areas')] if keys else []

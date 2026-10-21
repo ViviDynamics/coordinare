@@ -217,3 +217,13 @@ sharded Elm attempt `...-sharded-v1`: 276 size-based shards, held at `attempt_sc
 - [x] T103 Read tolerance for a stray cursor; triage and exclusion models; `listing_triage` envelope.
 - [x] T104 Two independent listing-only triages; authoring of non-excluded areas; exclusions in the reviewed definition.
 - [ ] T105 Independent review, preflight, push, CI and pinned Elm then Dettmore on GLM.
+
+## Approved file-level triage
+
+Spec: `file-level-triage-amendment.md` (approved 2026-10-21). Guided-v5 kept 172 shards from directory-level
+environment verdicts and was stopped before authoring.
+
+- [x] T106 Environment verdicts name files; authoring and review shard only the named files plus the spine; unsure
+  areas recorded as `unread_unsure` and shown to the merge reviewer; inputs no authored shard owns are reviewed by
+  the merge reviewer; an unusable triage names every listed file.
+- [ ] T107 Independent review, preflight, push, CI and pinned Elm then Dettmore on GLM.
