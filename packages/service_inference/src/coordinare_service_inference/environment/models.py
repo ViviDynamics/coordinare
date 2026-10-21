@@ -240,7 +240,8 @@ class LocalCredential(StrictModel):
     def no_literal(cls, value: str) -> str:
         reject_literal_credentials(value)
         # Purpose names what the credential is for; it never states a value.
-        if re.search(r"(?:password|passwd|secret|token|key)\s*(?:is|=|:)\s*\S|[\"'`]", value, re.IGNORECASE):
+        if re.search(r"(?:password|passwd|secret|token|key)\s*(?:=|:|\bis\s+(?!required\b|needed\b|generated\b))\s*\S"
+                     r"|[\"`]|'[^']*'", value, re.IGNORECASE):
             raise PydanticCustomError("runtime_credential_reference", "purpose must describe the credential without a value")
         return value
 
@@ -383,9 +384,13 @@ class EnvironmentManifest(StrictModel):
         consumers = commands[len(self.install):]
         used = {name for command in consumers for name in _references(command)}
         # Data that stores a per-run value lives in {scratch}; {cache} reaches tools only through activation PATH.
+        # A lexical guard: it also follows activation variables that point into {cache}, but not scripts' own writes.
+        cached = [key for key, value in self.activation.env.items() if key != "PATH" and "{cache}" in value]
         for command in consumers:
             texts = [*command.argv, command.cwd, *(value for key, value in command.env.items() if key != "PATH")]
-            if set(names) & _references(command) and any("{cache}" in text for text in texts):
+            via_activation = any(re.search(r"\$(?:\{" + re.escape(key) + r"\}|" + re.escape(key) + r"(?![A-Za-z0-9_]))", text)
+                                 for key in cached for text in texts)
+            if set(names) & _references(command) and (via_activation or any("{cache}" in text for text in texts)):
                 raise PydanticCustomError("local_credential_cache_data",
                                           "commands using generated credentials cannot reference {cache}")
         if set(names) - used:

@@ -101,3 +101,14 @@ def test_credential_data_cannot_live_in_the_cache():
 def test_cached_tools_on_path_are_allowed():
     check = {**CHECK, 'env': {**CHECK['env'], 'PATH': '{cache}/tools/bin:/usr/bin'}}
     EnvironmentManifest.model_validate(manifest(checks=[check]))
+
+
+def test_activation_variables_pointing_into_the_cache_count_as_cache_data():
+    init = {**POSTGRES['init'], 'argv': ['sh', '-c', 'initdb -D "$PGDATA"']}
+    data = manifest(services=[{**POSTGRES, 'init': init}], activation={'env': {'PGDATA': '{cache}/pg'}})
+    assert 'local_credential_cache_data' in codes(data)
+
+
+@pytest.mark.parametrize('purpose', ['API key is required by the suite', "the team's test database password"])
+def test_ordinary_purpose_text_is_accepted(purpose):
+    EnvironmentManifest.model_validate(manifest(local_credentials=[{**CREDENTIAL, 'purpose': purpose}]))

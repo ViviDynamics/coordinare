@@ -91,7 +91,10 @@ of the manifest digest.
   references a local credential may not mention `{cache}` in its argv, cwd or
   any env value other than `PATH` (`local_credential_cache_data`). Cached tools
   are reached through activation path entries, and credential-bearing data stays
-  under `{scratch}`.
+  under `{scratch}`. The same rule applies when such a command reads an activation
+  variable whose value points into `{cache}`. This is a text check: it cannot see
+  what a script found on `PATH` writes. That residual case still fails honestly
+  in the clean consumer, where the cache is read-only and the values differ.
 - A generated name may not shadow an operator secret, an inherited variable, a
   runtime-provided variable, or a runtime-owned name (`DOCKER_HOST`,
   `SSH_AUTH_SOCK` and the rest of `RUNTIME_OWNED_ENV`, plus
