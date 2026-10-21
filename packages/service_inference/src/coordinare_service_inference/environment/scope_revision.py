@@ -32,7 +32,7 @@ class ScopeRevision(FindingEvidence):
 
 class ScopeRevisionEnvelope(FindingEvidence):
     scope_revision: ScopeRevision
-    finding_responses: list[FindingResponse] = Field(max_length=32)
+    finding_responses: list[FindingResponse] = Field(max_length=128)
 
 
 def _invalid(code: str) -> NoReturn:

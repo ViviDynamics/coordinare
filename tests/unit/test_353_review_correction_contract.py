@@ -115,10 +115,10 @@ def test_provider_schema_refuses_open_duplicate_and_preserves_valid_open_survivo
 
 @pytest.mark.parametrize('phase', ['scope_assessment', 'assessment'])
 def test_review_schema_exposes_remaining_new_finding_capacity(phase):
-    ids = [f'F{i:04}' for i in range(1, 25)]
+    ids = [f'F{i:04}' for i in range(1, 121)]
     parameter = 'review_decision_ids'
     schema = response_schema(phase, **{parameter: ids})
-    data = _wire_assessment(phase, 24)
+    data = _wire_assessment(phase, 120)
     finding = {'category': 'coverage', 'issue': 'New source omission', 'sources': ['guide'], 'affected_ids': []}
     if phase == 'scope_assessment':
         finding.update(inspection_requests=[], gap_kind='missing_obligation')
@@ -127,7 +127,7 @@ def test_review_schema_exposes_remaining_new_finding_capacity(phase):
         jsonschema.validate({phase: data}, schema)
     data['findings'].pop()
     jsonschema.validate({phase: data}, schema)
-    complete = response_schema(phase, **{parameter: [f'F{i:04}' for i in range(1, 33)]})
+    complete = response_schema(phase, **{parameter: [f'F{i:04}' for i in range(1, 129)]})
     model = 'ScopeAssessmentProposal' if phase == 'scope_assessment' else 'CoverageAssessmentProposal'
     assert complete['$defs'][model]['properties']['findings']['maxItems'] == 0
 

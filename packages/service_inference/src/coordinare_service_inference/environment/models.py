@@ -37,7 +37,7 @@ from .runtime import (
 )
 from .scope import ScopeContract, validate_scope_mapping
 
-MAX_DOCUMENT_BYTES = 256 * 1024
+MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
 EXECUTION_PATH_PATTERN = r"^(?:/|\{(?:cache|repo|scratch)\}|\$\{[A-Za-z_][A-Za-z0-9_]*\})(?:[^\x00-\x1f\x7f\\]*)$"
 
 
@@ -425,8 +425,8 @@ class EnvironmentManifestProposal(StrictModel):
 class CoverageAssessmentProposal(StrictModel):
     """A judgment about the exact manifest supplied in this isolated conversation."""
 
-    findings: list[FindingProposal] = Field(max_length=32)
-    decisions: list[FindingDecisionProposal] = Field(max_length=32)
+    findings: list[FindingProposal] = Field(max_length=128)
+    decisions: list[FindingDecisionProposal] = Field(max_length=128)
     capability_unavailable: bool
     verdict: Literal["accept", "revise", "indeterminate"]
     rationale: str = Field(min_length=1)

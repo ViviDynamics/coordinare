@@ -157,9 +157,9 @@ def test_combined_sixteen_bound_and_final_criterion_limit():
     value["add"].append(criterion(usability="sixteenth addition"))
     with pytest.raises(ValidationError):
         apply(base, value)
-    full = definition(*[criterion(usability=f"operation {i}") for i in range(128)])
+    full = definition(*[criterion(usability=f"operation {i}") for i in range(512)])
     with pytest.raises(ValidationError):
-        apply(full, delta(full, add=[criterion(usability="129")]))
+        apply(full, delta(full, add=[criterion(usability="513")]))
 
 
 def test_final_definition_byte_bound_is_preserved():
@@ -173,10 +173,10 @@ def test_final_definition_byte_bound_is_preserved():
                 **criterion(usability=f"large {i}"),
                 "runtime_needs": ["x" * 2048 + str(j) for j in range(31)],
             }
-            for i in range(4)
+            for i in range(16)
         ],
     )
-    # Keep individual strings legal while exceeding the complete 256 KiB bound.
+    # Keep individual strings legal while exceeding the complete 1 MiB bound.
     for item in value["add"]:
         item["runtime_needs"] = ["x" * 2046 + str(j).zfill(2) for j in range(32)]
     with pytest.raises(ValidationError):

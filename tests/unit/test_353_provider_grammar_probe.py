@@ -20,8 +20,8 @@ def test_probe_requests_cover_every_structured_phase_at_maximum_bounds():
         assert 'properties' in response_format['json_schema']['schema']
     scope = requests['scope_assessment']['response_format']['json_schema']['schema']
     wire = scope['$defs']['SourceDecisionWire']['properties']
-    assert len(wire['finding_id']['enum']) == MAX_DECISIONS == 32
-    assert len(wire['criterion_ids']['items']['enum']) == MAX_CRITERIA == 128
+    assert len(wire["finding_id"]["enum"]) == MAX_DECISIONS == 128
+    assert len(wire["criterion_ids"]["items"]["enum"]) == MAX_CRITERIA == 512
     from coordinare.services.environment_response_schema import (
         constrain_source_criteria,
         response_schema,

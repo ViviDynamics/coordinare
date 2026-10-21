@@ -20,8 +20,8 @@ from coordinare.services.environment_response_schema import (
 )
 from coordinare.services.environment_structured_wire import wire_schema
 
-MAX_DECISIONS = 32
-MAX_CRITERIA = 128
+MAX_DECISIONS = 128
+MAX_CRITERIA = 512
 
 
 def _schemas() -> dict[str, dict[str, Any]]:

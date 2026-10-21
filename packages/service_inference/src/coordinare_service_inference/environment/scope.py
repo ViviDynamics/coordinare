@@ -25,6 +25,12 @@ from .findings import (
 from .scope_investigation import ScopeInspectionRequest, unique_requests
 
 
+MAX_SCOPE_CRITERIA = 512
+MAX_SCOPE_FINDINGS = 128
+SCOPE_DEFINITION_MAX_BYTES = 1024*1024
+SCOPE_CONTRACT_MAX_BYTES = 2*1024*1024
+
+
 def canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
 
@@ -72,12 +78,12 @@ class ScopeCriterion(ScopeCriterionProposal):
 
 
 class ScopeProposal(FindingEvidence):
-    criteria: list[ScopeCriterionProposal] = Field(min_length=1, max_length=128)
+    criteria: list[ScopeCriterionProposal] = Field(min_length=1, max_length=MAX_SCOPE_CRITERIA)
 
 
 class ScopeEnvelope(FindingEvidence):
     scope: ScopeProposal
-    finding_responses: list[FindingResponse] = Field(max_length=32)
+    finding_responses: list[FindingResponse] = Field(max_length=MAX_SCOPE_FINDINGS)
 
 
 class ScopeDefinition(FindingEvidence):
@@ -86,7 +92,7 @@ class ScopeDefinition(FindingEvidence):
     source_commit: Commit
     inventory_digest: Digest
     inputs: dict[str, Digest] = Field(min_length=1)
-    criteria: list[ScopeCriterion] = Field(min_length=1, max_length=128)
+    criteria: list[ScopeCriterion] = Field(min_length=1, max_length=MAX_SCOPE_CRITERIA)
 
     @model_validator(mode='after')
     def source_owned(self) -> Self:
@@ -94,7 +100,7 @@ class ScopeDefinition(FindingEvidence):
             raise ValueError('scope criteria must be unique')
         if any(path not in self.inputs for c in self.criteria for path in c.sources):
             raise ValueError('scope criterion cites unread source')
-        if len(canonical(self.model_dump(mode='json'))) > 256*1024:
+        if len(canonical(self.model_dump(mode='json'))) > SCOPE_DEFINITION_MAX_BYTES:
             raise ValueError('scope definition exceeds its bound')
         return self
 
@@ -130,7 +136,7 @@ class _SourceDecision(FindingEvidence):
 
 class CoveredDecision(_SourceDecision):
     disposition: Literal['covered']
-    criterion_ids: list[str] = Field(min_length=1, max_length=128)
+    criterion_ids: list[str] = Field(min_length=1, max_length=MAX_SCOPE_CRITERIA)
 
     @field_validator('criterion_ids')
     @classmethod
@@ -145,7 +151,7 @@ class SourceCorrectionDecision(_SourceDecision):
 class SourceGapDecision(_SourceDecision):
     disposition: Literal['source_gap']
     gap_kind: SourceGapKind
-    affected_ids: list[str] = Field(max_length=128)
+    affected_ids: list[str] = Field(max_length=MAX_SCOPE_CRITERIA)
     inspection_requests: list[ScopeInspectionRequest] = Field(max_length=8)
 
     @field_validator('affected_ids')
@@ -204,8 +210,8 @@ class ScopeAssessmentProposal(FindingEvidence):
     verdict: Literal['accept', 'revise', 'indeterminate']
     rationale: str = Field(min_length=1, max_length=2048, description='Nonblank evidence summary, at most 2048 UTF-8 bytes.')
     sources: list[str] = Field(min_length=1)
-    findings: list[ScopeFindingProposal] = Field(max_length=32)
-    decisions: list[SourceFindingDecision] = Field(max_length=32)
+    findings: list[ScopeFindingProposal] = Field(max_length=MAX_SCOPE_FINDINGS)
+    decisions: list[SourceFindingDecision] = Field(max_length=MAX_SCOPE_FINDINGS)
 
     @model_validator(mode='after')
     def no_accepted_requests(self) -> Self:
@@ -273,7 +279,7 @@ class ScopeContract(FindingEvidence):
     review_inputs: dict[str, Digest] = Field(min_length=1)
     sources: list[str] = Field(min_length=1)
     finding_ledger: FindingLedger
-    finding_responses: list[FindingResponse] = Field(max_length=32)
+    finding_responses: list[FindingResponse] = Field(max_length=MAX_SCOPE_FINDINGS)
     source_assessment: SourceAssessmentRecord | None = None
 
     @model_serializer(mode='wrap')
@@ -293,7 +299,7 @@ class ScopeContract(FindingEvidence):
 
     @model_validator(mode='after')
     def independent_closure(self) -> Self:
-        if len(canonical(self.model_dump(mode='json'))) > 256*1024:
+        if len(canonical(self.model_dump(mode='json'))) > SCOPE_CONTRACT_MAX_BYTES:
             raise PydanticCustomError('scope_contract_limit', 'scope contract exceeds its bound')
         if any(c.applicability == 'unknown' for c in self.definition.criteria):
             raise ValueError('scope applicability remains unknown')
