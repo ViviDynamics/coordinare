@@ -181,7 +181,7 @@ def test_sharded_discovery_gets_the_ruled_budget_unless_set():
     from coordinare.config import EnvCacheConfig
     sharded = EnvCacheConfig(manifest_shard_context_tokens=262144)
     assert (sharded.manifest_max_model_calls, sharded.manifest_max_total_reads,
-            sharded.manifest_attempt_timeout_seconds) == (1024, 8192, 3600.0)
+            sharded.manifest_attempt_timeout_seconds) == (1024, 8192, 14400.0)
     explicit = EnvCacheConfig(manifest_shard_context_tokens=262144, manifest_max_model_calls=64)
     assert explicit.manifest_max_model_calls == 64
     assert EnvCacheConfig().manifest_max_model_calls == 128

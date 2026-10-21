@@ -57,3 +57,10 @@ Maintainer approval, then native implementation with an independent review, pref
   landing on the merge reviewer.
 - If the unread records cannot fit even as top-level areas, the attempt holds with `scope_size_limit`; judgments
   are never relabelled or folded into an unnamed area. Group rationales are kept in full.
+
+## Maintainer ruling: sharded attempt ceiling (2026-10-21)
+
+File-level triage v1 named 1,698 files (22.6 MB; 927 files and 14.5 MB from one triage that fell back to naming its
+whole listing) and authored 1 of 93 shards before it was stopped. The maintainer approved raising the attempt
+ceiling for sharded discovery only to four hours (`MAX_SHARDED_ATTEMPT_SECONDS`). Non-sharded attempts keep
+their one-hour maximum, and sharded configuration defaults to four hours unless set.

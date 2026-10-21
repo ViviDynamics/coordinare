@@ -41,6 +41,7 @@ from coordinare.services.environment_acceptance import (
 )
 from coordinare.services.environment_attempt import (
     MAX_ATTEMPT_SECONDS,
+    MAX_SHARDED_ATTEMPT_SECONDS,
     REPAIR_LIMITS,
     AttemptBudget,
     EnvironmentDiscoveryError,
@@ -144,7 +145,7 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
         journal = RepairJournal.model_validate(data)
     except (TypeError, ValueError, ValidationError):
         _refuse('environment repair journal is invalid')
-    if not 0 < journal.expires_at - journal.started_at <= MAX_ATTEMPT_SECONDS:
+    if not 0 < journal.expires_at - journal.started_at <= MAX_SHARDED_ATTEMPT_SECONDS:
         _refuse('environment repair deadline is invalid')
     if journal.finding_ledger is not None and journal.finding_ledger.source_commit != journal.source_commit:
         _refuse('finding ledger source differs from attempt', code='source_identity')
@@ -318,7 +319,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
         parsed = RepairJournal.model_validate(normalized)
     except ValidationError:
         _refuse("malformed environment journal requires reconciliation before reset")
-    if not 0 < parsed.expires_at - parsed.started_at <= MAX_ATTEMPT_SECONDS:
+    if not 0 < parsed.expires_at - parsed.started_at <= MAX_SHARDED_ATTEMPT_SECONDS:
         _refuse("invalid environment deadline requires reconciliation before reset")
     uncertain = (data.get("source_owner") is not None or data.get("probe_owner") is not None or data.get("probe_plan") is not None
         or data.get("status") == "executing" or data.get("last_error") == "cleanup_unconfirmed"
@@ -405,8 +406,8 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
     previous = journal_for(cache) if cache.environment_attempt is not None else None
     if previous is not None and (previous.last_error == "cleanup_unconfirmed" or previous.status == "executing" or previous.probe_owner is not None or previous.source_owner is not None):
         _refuse("environment repair requires confirmed cleanup of interrupted execution")
-    seconds = min(limits.attempt_timeout_seconds, outer_seconds if outer_seconds > 0 else MAX_ATTEMPT_SECONDS,
-                  MAX_ATTEMPT_SECONDS)
+    ceiling = MAX_SHARDED_ATTEMPT_SECONDS if limits.shard_context_tokens else MAX_ATTEMPT_SECONDS
+    seconds = min(limits.attempt_timeout_seconds, outer_seconds if outer_seconds > 0 else ceiling, ceiling)
     if not isinstance(cache.bootstrap_commit_sha, str):
         _refuse("environment repair requires an immutable source commit")
     if previous is None or previous.source_commit != cache.bootstrap_commit_sha or previous.status == 'ready':

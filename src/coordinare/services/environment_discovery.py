@@ -36,6 +36,7 @@ from coordinare.services.environment_admission import (
 )
 from coordinare.services.environment_attempt import (
     MAX_ATTEMPT_SECONDS,
+    MAX_SHARDED_ATTEMPT_SECONDS,
     REPAIR_LIMITS,
     AttemptBudget,
     DiscoveryChatReply,
@@ -123,7 +124,8 @@ class DiscoveryLimits:
                 if name not in {"max_schema_repairs", "max_coverage_revisions", "max_execution_repairs"}
                 and value is not None)
                 or any(not 0 <= value <= REPAIR_LIMITS[kind] for kind, value in repair_limits.items())
-                or self.attempt_timeout_seconds > MAX_ATTEMPT_SECONDS or self.max_review_context_bytes > 16 * 1024 * 1024):
+                or self.attempt_timeout_seconds > (MAX_SHARDED_ATTEMPT_SECONDS if self.shard_context_tokens else MAX_ATTEMPT_SECONDS)
+                or self.max_review_context_bytes > 16 * 1024 * 1024):
             message = "discovery limits must be positive"
             raise ValueError(message)
 
