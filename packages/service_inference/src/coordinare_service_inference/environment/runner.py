@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 OUTPUT_LIMIT = 4096
 ATTEMPT_OUTPUT_LIMIT = 256 * 1024
+GENERATED_NAMES_ENV = "COORDINARE_ENV_GENERATED_NAMES"
 _VALUE_REFERENCE = re.compile(r"\$\{(?P<environment>[A-Za-z_][A-Za-z0-9_]*)\}|\{(?P<root>cache|repo|scratch)\}")
 
 
@@ -255,6 +256,8 @@ def manifest_environment(
     if set(generated) & set(runtime_env or {}):
         raise ValueError("local_credential_conflict")
     env.update(generated)
+    if generated:
+        env[GENERATED_NAMES_ENV] = json.dumps(sorted(generated))
     for key in environment_order(manifest.activation.env):
         env[key] = _expand(manifest.activation.env[key], roots, env)
     paths = [_expand(path, roots, env) for path in manifest.activation.path]
@@ -803,7 +806,12 @@ def local_credential_values(manifest: EnvironmentManifest, *, supplied: Collecti
     """Fresh values for credentials of services the manifest starts; never persisted, never operator secrets."""
     names = [credential.name for credential in manifest.local_credentials]
     # A generated value must never stand in for an operator secret or shadow an inherited variable.
-    if set(names) & (set(supplied) | set(os.environ)):
+    # Names an enclosing runner generated (a job's verify subprocess) are regenerated, not conflicts.
+    try:
+        enclosing = set(json.loads(os.environ.get(GENERATED_NAMES_ENV, "[]")))
+    except (TypeError, ValueError):
+        enclosing = set()
+    if set(names) & (set(supplied) | (set(os.environ) - enclosing)):
         raise ValueError("local_credential_conflict")
     return {name: secrets.token_urlsafe(32) for name in names}
 

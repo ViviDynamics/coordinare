@@ -87,6 +87,9 @@ CREDENTIAL_GUIDANCE = (
 LOCAL_CREDENTIAL_GUIDANCE = {
     'local_credential_invalid': 'Each local credential needs a unique name and the id of a service declared in this manifest.',
     'local_credential_unused': 'Reference every declared local credential as ${NAME}, or remove the declaration.',
+    'local_credential_cache_data': ('A command that uses a generated credential must keep its data under {scratch} '
+                                    'and must not reference {cache} in argv, cwd or env other than PATH; reach cached '
+                                    'tools through activation path entries.'),
     'local_credential_in_install': ('Install commands and activation cannot use generated credentials; reference the '
                                     'credential only in the service and check commands that need it.'),
 }

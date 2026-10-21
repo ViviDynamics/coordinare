@@ -86,10 +86,12 @@ of the manifest digest.
   must initialize its data in `{scratch}`, not `{cache}`. Install commands and
   activation (which also applies to install commands) cannot reference a local
   credential (`local_credential_in_install`), so nothing installed into the cache
-  depends on one. Builder's call after review: services and checks in the install
-  pass still receive that pass's values; a service that wrongly initializes into
-  `{cache}` fails honestly in the clean consumer, where the cache is read-only and
-  the values differ.
+  depends on one. Services and checks in the install pass receive that pass's
+  values, so (maintainer decision 2026-10-21) any service or check command that
+  references a local credential may not mention `{cache}` in its argv, cwd or
+  any env value other than `PATH` (`local_credential_cache_data`). Cached tools
+  are reached through activation path entries, and credential-bearing data stays
+  under `{scratch}`.
 - A generated name may not shadow an operator secret, an inherited variable, a
   runtime-provided variable, or a runtime-owned name (`DOCKER_HOST`,
   `SSH_AUTH_SOCK` and the rest of `RUNTIME_OWNED_ENV`, plus
