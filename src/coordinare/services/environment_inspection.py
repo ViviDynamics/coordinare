@@ -4,10 +4,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
 from coordinare_service_inference.environment.inventory import InventoryEntry
-
 from coordinare_service_inference.environment.models import source_path
 
 __all__ = ['InventoryEntry', 'SourceInspection']
@@ -15,7 +15,7 @@ __all__ = ['InventoryEntry', 'SourceInspection']
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
     from coordinare.services.environment_discovery import DiscoveryLimits, Fetch
 
@@ -29,15 +29,16 @@ PolicyStatus = Literal['readable', 'too_large', 'link']
 class SourceInspection:
     """One independent phase's exact read ledger; no ecosystem-specific navigation."""
 
-    def __init__(self, paths: Sequence[str], fetch: Fetch, limits: DiscoveryLimits, budget: AttemptBudget | None = None,
-                 *, retained_inputs: dict[str, str] | None = None,
-                 entries: Mapping[str, InventoryEntry] | None = None) -> None:
+    def __init__(self, paths: Sequence[str] | Mapping[str, InventoryEntry], fetch: Fetch, limits: DiscoveryLimits,
+                 budget: AttemptBudget | None = None, *, retained_inputs: dict[str, str] | None = None) -> None:
+        """A mapping inventory carries pinned sizes and modes; a plain path list keeps every path readable."""
         self.budget = budget
         self.retained_inputs = retained_inputs
         self.name = "discovery"
         self.paths = sorted(paths)
+        self.entries = dict(paths) if isinstance(paths, Mapping) else None
+        paths = list(paths)
         self.inventory = set(paths)
-        self.entries = dict(entries) if entries is not None else None
         self.fetch = fetch
         self.limits = limits
         self.inputs: dict[str, str] = {}

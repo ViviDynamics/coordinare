@@ -740,6 +740,14 @@ def _head_checks_state(pr_node: dict[str, Any]) -> str:
     return str(rollup.get("state") or "") if isinstance(rollup, dict) else ""
 
 
+
+
+def _blob_entry(path: str, entry: dict[str, Any]) -> InventoryEntry:
+    mode, size = entry.get("mode"), entry.get("size")
+    if mode not in INVENTORY_MODES or type(size) is not int or size < 0:
+        message = "repository inventory contains unsupported blob metadata"
+        raise GitHubError(message)
+    return InventoryEntry(path, size, mode)
 class GitHubService(CardIdentityMap):
     """Async GitHub GraphQL service with field and option caching."""
 
@@ -2566,12 +2574,7 @@ class GitHubService(CardIdentityMap):
         self, owner: str, repo: str, *, ref: str, max_entries: int = 100_000,
     ) -> list[str]:
         """Return a complete pinned blob inventory, refusing partial source trees."""
-        return [entry.path for entry in await self.get_repository_entries(owner, repo, ref=ref, max_entries=max_entries)]
-
-    async def get_repository_entries(
-        self, owner: str, repo: str, *, ref: str, max_entries: int = 100_000,
-    ) -> list[InventoryEntry]:
-        """Pinned blob paths with byte size and mode from the tree, refusing partial source trees."""
+        # The tree walk also records blob metadata for get_repository_entries.
         if not ref or not owner or not repo:
             message = "repository inventory requires owner, repository and ref"
             raise GitHubError(message)
@@ -2605,7 +2608,7 @@ class GitHubService(CardIdentityMap):
         if not isinstance(entries, list) or len(entries) > max_entries:
             message = "repository inventory is invalid or exceeds limit"
             raise GitHubError(message)
-        paths: dict[str, InventoryEntry] = {}
+        paths: dict[str, dict[str, Any]] = {}
         links: set[str] = set()
         for entry in entries:
             if not isinstance(entry, dict) or entry.get("type") not in {"blob", "tree"}:
@@ -2623,15 +2626,20 @@ class GitHubService(CardIdentityMap):
                 if path in paths:
                     message = "repository inventory contains duplicate path"
                     raise GitHubError(message)
-                mode, size = entry.get("mode"), entry.get("size")
-                if mode not in INVENTORY_MODES or type(size) is not int or size < 0:
-                    message = "repository inventory contains unsupported blob metadata"
-                    raise GitHubError(message)
-                paths[path] = InventoryEntry(path, size, mode)
-                if mode == "120000":
+                paths[path] = entry
+                if entry.get("mode") == "120000":
                     links.add(path)
         self._execution_source_link_inventory = (owner, repo, ref, frozenset(links))
-        return [paths[path] for path in sorted(paths)]
+        self._inventory_blobs = (owner, repo, ref, paths)
+        return sorted(paths)
+
+    async def get_repository_entries(
+        self, owner: str, repo: str, *, ref: str, max_entries: int = 100_000,
+    ) -> list[InventoryEntry]:
+        """Pinned blob paths with byte size and mode from the same tree, refusing partial source trees."""
+        await self.get_repository_paths(owner, repo, ref=ref, max_entries=max_entries)
+        _owner, _repo, _ref, blobs = self._inventory_blobs
+        return [_blob_entry(path, blobs[path]) for path in sorted(blobs)]
 
     async def get_file_content(
         self, owner: str, repo: str, path: str, ref: str = "HEAD",

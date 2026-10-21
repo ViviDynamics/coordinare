@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from coordinare_service_inference.environment.inventory import InventoryEntry
-
     from coordinare_service_inference.environment.models import ExecutionCapabilities
     from coordinare_service_inference.environment.scope import ScopeContract
 
