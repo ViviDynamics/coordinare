@@ -211,3 +211,18 @@ def test_an_echoed_listing_id_is_ignored_but_other_keys_are_not():
     assert validate_triage({'listing_triage': triage, 'listing_shard': shard.id}, shard=shard)['a'].verdict == 'environment'
     with pytest.raises(ValidationError):
         validate_triage({'listing_triage': triage, 'listing_shard': 'other'}, shard=shard)
+
+
+def test_triage_offers_no_tools_and_ignores_merged_null_alternatives():
+    from coordinare.services.environment_shard_scope import AgentTask
+    from coordinare.services.environment_shard_triage import validate_triage
+    from coordinare.services.environment_shards import Shard
+    schema = AgentTask('listing_triage', lambda data: data, listing_only=True).schema(final=True)
+    assert 'anyOf' not in schema and 'listing_triage' in schema['properties']
+    shard = Shard(id='shard-000-00000000', paths=('a/x.yml',), readable_bytes=0, depth=0)
+    merged = {'listing_triage': {'verdicts': [{'path': 'a', 'verdict': 'environment', 'rationale': 'r', 'cursor': None}],
+                                 'files': None}, 'tool': None, 'path': None, 'cursor2': None}
+    assert validate_triage(merged, shard=shard)['a'].verdict == 'environment'
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        validate_triage({**merged, "cursor": 0}, shard=shard)

@@ -69,8 +69,24 @@ def covering(path: str, verdicts: Mapping[str, TriageVerdict]) -> TriageVerdict 
     return None
 
 
+def _without_nulls(data: Any) -> Any:
+    """Drop null-valued keys (a provider merging schema alternatives); populated unknown keys are still rejected."""
+    if not isinstance(data, dict):
+        return data
+    cleaned = {key: value for key, value in data.items() if value is not None}
+    triage = cleaned.get('listing_triage')
+    if isinstance(triage, dict):
+        triage = {key: value for key, value in triage.items() if value is not None}
+        if isinstance(triage.get('verdicts'), list):
+            triage['verdicts'] = [{key: value for key, value in item.items() if value is not None}
+                                  if isinstance(item, dict) else item for item in triage['verdicts']]
+        cleaned['listing_triage'] = triage
+    return cleaned
+
+
 def validate_triage(data: dict[str, Any], *, shard: Shard) -> dict[str, TriageVerdict]:
     """Every listed file covered; verdicts only on listed files or their directories."""
+    data = _without_nulls(data)
     if isinstance(data, dict) and data.get('listing_shard') == shard.id:
         # An echo of the daemon's own listing id carries no judgment; any other extra key is still rejected.
         data = {key: value for key, value in data.items() if key != 'listing_shard'}
