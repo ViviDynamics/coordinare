@@ -48,7 +48,19 @@ The maintainer approved fixing every Critical and Important finding of the Phase
 - Shard summaries merge by exact criterion identity only; distinct obligations are never folded and citations never dropped.
 - Sharded configuration defaults to the ruled budget (1,024 calls, 8,192 reads, 3,600 s) unless a value is set.
 
-Known limits, not addressed here: review and merge conversations do not split on overflow (they hold with
+Second review fixes: shard reviewers navigate the whole repository (needed for investigations and references) with
+their prompt saying so, and a spent per-conversation read allowance is reported to the agent instead of holding;
+finding capacity is split exactly across parts; resume verification and revision investigation are daemon work that
+does not spend a conversation's or the attempt's model read allowance; a readable file larger than one share is
+listed but never assigned; combined revisions over 512 criteria hold as `scope_size_limit` and identical
+reassessments from two groups count once.
+
+Run setting: as in the single-conversation path, `phase_timeout_seconds` bounds a whole agent conversation, not one
+call. Live sharded runs set it to the attempt deadline.
+
+Known limits, not addressed here: when the ledger is nearly full, later parts may receive no finding capacity and
+must return indeterminate; a rationale-only duplicate between shards keeps the first rationale; a split parent's
+spent work is re-spent after a restart; reviewed state is tracked per owning shard; review and merge conversations do not split on overflow (they hold with
 `shard_context_limit`); inputs read by an agent that later overflowed stay in the scope inputs; shard questions are
 not yet surfaced to reviewers; the contract's 2 MiB bound caps an accepted scope at roughly 3,000 inspected files;
 executable construction still preloads every scope input (see sharded-executable-amendment.md).
