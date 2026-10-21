@@ -32,6 +32,27 @@
 - Concurrency stays at 12 agents.
 - Trigger: the GLM Elm attempt `...-creds-v3` held with `scope_revision_context_limit` (1.8 MB of retained evidence against the 1 MiB conversation cap).
 
+## Review fix pass (2026-10-21)
+
+The maintainer approved fixing every Critical and Important finding of the Phase 2-5 review, plus inexpensive minors:
+
+- Cross-references are routed until none remain, recorded only after their follow-ups finish, under their own id namespace.
+- Root-level (merge-owned) criteria reach the merge reviewer in full; the criterion index carries ids, short descriptions and applicability only.
+- Review re-runs compare complete criterion content, so a rationale-only reassessment is reviewed again.
+- Reviewers read their own evidence (shard inputs, spine, their findings' investigations) over the full inventory, and receive investigation evidence.
+- Shards are bounded by half the per-conversation read allowance as well as by bytes; overflow splits by bytes.
+- An accepted sharded scope resumes with daemon verification limits sized to its inputs.
+- Revisions combine identical additions and follow reassessed IDs in responses; true conflicts hold with `scope_revision_conflict`.
+- Revision agents receive only the criteria their findings name, so splitting findings shrinks evidence.
+- Each review part reports at most its share of the ledger's remaining finding capacity (`review_findings_limit` correction).
+- Shard summaries merge by exact criterion identity only; distinct obligations are never folded and citations never dropped.
+- Sharded configuration defaults to the ruled budget (1,024 calls, 8,192 reads, 3,600 s) unless a value is set.
+
+Known limits, not addressed here: review and merge conversations do not split on overflow (they hold with
+`shard_context_limit`); inputs read by an agent that later overflowed stay in the scope inputs; shard questions are
+not yet surfaced to reviewers; the contract's 2 MiB bound caps an accepted scope at roughly 3,000 inspected files;
+executable construction still preloads every scope input (see sharded-executable-amendment.md).
+
 ## Review Focus
 
 1. A directory with one huge readable file and many tiny ones: the huge file becomes its own shard, tiny files pack together. Test in Task 3.

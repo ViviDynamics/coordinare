@@ -1086,6 +1086,11 @@ class ServiceInferenceConfig(BaseModel):
     web_search_enabled: bool = False
 
 
+# Maintainer ruling for sharded source discovery (issue 353): calls, reads and the attempt deadline.
+SHARDED_BUDGET_DEFAULTS = {"manifest_max_model_calls": 1024, "manifest_max_total_reads": 8192,
+                           "manifest_attempt_timeout_seconds": 3600.0}
+
+
 class EnvCacheConfig(BaseModel):
     """Env-cache bootstrap configuration (spec 063+).
 
@@ -1125,6 +1130,14 @@ class EnvCacheConfig(BaseModel):
     manifest_max_schema_repairs: int = Field(default=2, ge=0, le=REPAIR_LIMITS["schema"])
     manifest_max_coverage_revisions: int = Field(default=2, ge=0, le=REPAIR_LIMITS["coverage"])
     manifest_max_execution_repairs: int = Field(default=2, ge=0, le=REPAIR_LIMITS["execution"])
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sharded_budget_defaults(cls, data: Any) -> Any:
+        """Sharded discovery gets the maintainer's larger shared budget unless a value is set explicitly."""
+        if not isinstance(data, dict) or data.get("manifest_shard_context_tokens") is None:
+            return data
+        return {**SHARDED_BUDGET_DEFAULTS, **data}
 
     @model_validator(mode="before")
     @classmethod

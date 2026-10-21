@@ -112,7 +112,7 @@ class ShardSummaryEnvelope(FindingEvidence):
 class ShardSummary(ShardSummaryProposal):
     """A completed shard, bound to the exact inputs its agent inspected."""
 
-    shard_id: str = Field(pattern=r'^shard-[0-9]{3}-[0-9a-f]{8}(?:\.[0-9]+)*$')
+    shard_id: str = Field(pattern=r'^shard-[0-9]{3}-[0-9a-f]{8}(?:\.r?[0-9]+)*$')
     inputs: dict[str, Digest]
 
 
