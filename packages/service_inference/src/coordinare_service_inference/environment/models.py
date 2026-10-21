@@ -239,6 +239,9 @@ class LocalCredential(StrictModel):
     @classmethod
     def no_literal(cls, value: str) -> str:
         reject_literal_credentials(value)
+        # Purpose names what the credential is for; it never states a value.
+        if re.search(r"(?:password|passwd|secret|token|key)\s*(?:is|=|:)\s*\S|[\"'`]", value, re.IGNORECASE):
+            raise PydanticCustomError("runtime_credential_reference", "purpose must describe the credential without a value")
         return value
 
 
@@ -377,7 +380,14 @@ class EnvironmentManifest(StrictModel):
         if set(names) & installed:
             raise PydanticCustomError("local_credential_in_install",
                                       "install commands and activation cannot use generated credentials")
-        used = {name for command in commands[len(self.install):] for name in _references(command)}
+        consumers = commands[len(self.install):]
+        used = {name for command in consumers for name in _references(command)}
+        # Data that stores a per-run value lives in {scratch}; {cache} reaches tools only through activation PATH.
+        for command in consumers:
+            texts = [*command.argv, command.cwd, *(value for key, value in command.env.items() if key != "PATH")]
+            if set(names) & _references(command) and any("{cache}" in text for text in texts):
+                raise PydanticCustomError("local_credential_cache_data",
+                                          "commands using generated credentials cannot reference {cache}")
         if set(names) - used:
             raise PydanticCustomError("local_credential_unused", "every local credential must be referenced as ${NAME}")
 

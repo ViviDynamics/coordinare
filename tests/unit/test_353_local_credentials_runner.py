@@ -100,3 +100,15 @@ def test_transcript_redacts_job_generated_values():
         from performer.transcript import _transcript_var
         _transcript_var.reset(token)
     assert 'generated-' + 'y'*40 in buffer._secret_values()
+
+
+def test_a_nested_runner_regenerates_names_its_enclosing_job_generated(tmp_path, monkeypatch):
+    values = local_credential_values(manifest(), supplied=())
+    env = manifest_environment(manifest(), cache=tmp_path, repo=tmp_path, scratch=tmp_path, credentials=values)
+    # A job's verify subprocess inherits the job environment, including its generated values.
+    for key in ('PGPASSWORD', 'COORDINARE_ENV_GENERATED_NAMES'):
+        monkeypatch.setenv(key, env[key])
+    nested = local_credential_values(manifest(), supplied=())
+    assert nested['PGPASSWORD'] != values['PGPASSWORD']
+    with pytest.raises(ValueError, match='local_credential_conflict'):
+        local_credential_values(manifest(), supplied=['PGPASSWORD'])

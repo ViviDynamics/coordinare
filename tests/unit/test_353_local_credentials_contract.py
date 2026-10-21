@@ -86,3 +86,18 @@ def test_runtime_owned_names_cannot_be_generated(name):
 def test_purpose_cannot_carry_a_literal_credential():
     purpose = 'connect with postgres://postgres:postgres@localhost/elm'
     assert 'runtime_credential_reference' in codes(manifest(local_credentials=[{**CREDENTIAL, 'purpose': purpose}]))
+
+
+@pytest.mark.parametrize('purpose', ['superuser password is postgres', 'token: abc', "password 'financepass'"])
+def test_purpose_cannot_state_a_value(purpose):
+    assert 'runtime_credential_reference' in codes(manifest(local_credentials=[{**CREDENTIAL, 'purpose': purpose}]))
+
+
+def test_credential_data_cannot_live_in_the_cache():
+    init = {**POSTGRES['init'], 'argv': ['sh', '-c', 'initdb {cache}/pg']}
+    assert 'local_credential_cache_data' in codes(manifest(services=[{**POSTGRES, 'init': init}]))
+
+
+def test_cached_tools_on_path_are_allowed():
+    check = {**CHECK, 'env': {**CHECK['env'], 'PATH': '{cache}/tools/bin:/usr/bin'}}
+    EnvironmentManifest.model_validate(manifest(checks=[check]))
