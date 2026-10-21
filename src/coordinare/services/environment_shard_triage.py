@@ -14,6 +14,7 @@ from coordinare_service_inference.environment.scope import (
     ScopeExclusion,
 )
 
+from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_scope import _ResponseReferenceError
 from coordinare.services.environment_shards import Shard, plan_shards, readable
 
@@ -147,7 +148,8 @@ def _grouped(paths: Iterable[str], keys: Mapping[str, str], rationales: Mapping[
     notes: dict[str, list[str]] = {}
     for path in sorted(paths):
         groups.setdefault(keys[path], []).append(path)
-        notes.setdefault(keys[path], list(rationales.get(path, [])))
+        known = notes.setdefault(keys[path], [])
+        known.extend(item for item in rationales.get(path, []) if item not in known)
     while len(groups) > MAX_SCOPE_EXCLUSIONS and any('/' in key for key in groups):
         depth = max(key.count('/') for key in groups)
         coarser: dict[str, list[str]] = {}
@@ -178,7 +180,8 @@ def exclusions(readable_paths: Collection[str], *, spine: Collection[str],
         rationales[path] = [verdict.rationale for verdict in judged if verdict is not None]
     records = _grouped(keys, keys, rationales)
     if records is None:
-        return set(), []  # The record cannot be bounded: read everything rather than exclude unrecorded areas.
+        message = 'unread areas cannot be recorded within the scope bound, even as top-level areas'
+        raise EnvironmentDiscoveryError(message, code='scope_size_limit')
     return set(keys), records
 
 
@@ -203,4 +206,8 @@ def unread_unsure(readable_paths: Collection[str], *, read: Collection[str], exc
         unsure = [verdict for verdict in judged if verdict.verdict != 'unrelated'] or judged
         keys[path] = unsure[0].path if unsure else path
         rationales[path] = [verdict.rationale for verdict in unsure]
-    return _grouped(keys, keys, rationales) or [ScopeExclusion(path='.', files=len(keys), rationale='unread areas')] if keys else []
+    records = _grouped(keys, keys, rationales)
+    if records is None:
+        message = 'unread areas cannot be recorded within the scope bound, even as top-level areas'
+        raise EnvironmentDiscoveryError(message, code='scope_size_limit')
+    return records

@@ -52,11 +52,18 @@ CHAIN = ['svc0/file1.txt', 'svc1/file1.txt', 'svc2/file1.txt', 'svc0/file2.txt',
 
 
 class ChainRouter(Router):
-    """Each author reads one file; references chain across shards for four follow-up hops."""
+    """Triage names only each service's first file; references chain across shards for four follow-up hops."""
 
     def __init__(self):
         super().__init__()
         self.hop = 0
+
+    def triage(self, messages, user):
+        tops = sorted({item['path'].split('/')[0] for item in user['files']} - {'README.md'})
+        verdicts = [{'path': top, 'verdict': 'unsure', 'rationale': 'r'} for top in tops]
+        verdicts += [{'path': item['path'], 'verdict': 'environment', 'rationale': 'r'} for item in user['files']
+                     if item['path'].endswith('file0.txt') or item['path'] == 'README.md']
+        return {'listing_triage': {'verdicts': verdicts}}
 
     def author(self, messages, user):
         follow = '.r' in user['shard']['id']
@@ -64,8 +71,7 @@ class ChainRouter(Router):
             if follow:
                 self.hop += 1
                 return {'tool': 'read_file', 'path': CHAIN[self.hop - 1]}
-            shard = next(s for s in PLAN.shards if s.id == user['shard']['id'])
-            return {'tool': 'read_file', 'path': shard.paths[0]}
+            return {'tool': 'read_file', 'path': user['shard_files'][0]['path']}
         read = json.loads(messages[-1]['content'])['tool_result']['path']
         nxt = CHAIN[CHAIN.index(read) + 1] if read in CHAIN[:-1] else None
         start = read == 'svc0/file0.txt'
