@@ -269,7 +269,7 @@ class AgentTask:
         schema = response_schema(self.envelope, review_decision_ids=self.decision_ids)
         if self.listing_only:
             # No tool alternatives: some providers merge every alternative's fields into one reply.
-            return {**schema['anyOf'][-1], '$defs': schema.get('$defs', {})}
+            return {'type': 'object', 'anyOf': [schema['anyOf'][-1]], '$defs': schema.get('$defs', {})}
         if self.envelope == 'scope_assessment' and self.criterion_ids is not None:
             constrain_source_criteria(schema, list(self.criterion_ids))
         return schema
@@ -438,8 +438,15 @@ class ShardedScope:
         inspection.name = 'scope_triage'
         messages = [{'role': 'system', 'content': TRIAGE_INSTRUCTIONS},
                     {'role': 'user', 'content': canonical(listing_payload(shard, self.entries)).decode()}]
-        verdicts: dict[str, TriageVerdict] = await self.agent_phase(inspection, messages, AgentTask(
-            'listing_triage', partial(validate_triage, shard=shard), listing_only=True))
+        try:
+            verdicts: dict[str, TriageVerdict] = await self.agent_phase(inspection, messages, AgentTask(
+                'listing_triage', partial(validate_triage, shard=shard), listing_only=True))
+        except EnvironmentDiscoveryError as exc:
+            if exc.code != 'attempt_schema_limit':
+                raise
+            # Triage only decides what may be skipped: an unusable triage reads its whole listing, excluding nothing.
+            verdicts = {top: TriageVerdict(path=top, verdict='unsure', rationale='triage reply unusable; area read in full')
+                        for top in sorted({path.split('/')[0] for path in shard.paths})}
         triage = dict((self.budget.scope_shards or {}).get('triage', {}))
         side_record = dict(triage.get(side, {}))
         side_record[shard.id] = {path: verdict.model_dump(mode='json') for path, verdict in verdicts.items()}
