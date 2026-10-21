@@ -152,13 +152,16 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             detail["guidance"] = CREDENTIAL_GUIDANCE
         if code in LOCAL_CREDENTIAL_GUIDANCE:
             detail["guidance"] = LOCAL_CREDENTIAL_GUIDANCE[code]
-        if code == "extra_forbidden" and location[:2] == ["scope", "finding_responses"]:
+        if (code == "extra_forbidden" and location[:2] == ["scope", "finding_responses"]) or (
+                code == "missing" and location == ["finding_responses"]):
             detail["guidance"] = NESTED_RESPONSES_GUIDANCE
         result.append(detail)
     return result
 
 
-def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *, can_patch: bool = False) -> None:
+def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *,
+            can_patch: bool = False, charge: bool = True) -> None:
+    """Explain a rejected reply; shard agents count their own corrections (charge=False)."""
     if budget.scope_contract is not None:
         required_ids = [c.id for c in budget.scope_contract.definition.criteria if c.applicability == 'required']
         for error in errors:
@@ -177,7 +180,8 @@ def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any
                 if len(path) <= MAX_PATH_DEPTH:
                     error['correction_path'] = path
     budget.validation_codes.extend(error["code"] for error in errors)
-    budget.reserve_repair("schema")
+    if charge:
+        budget.reserve_repair("schema")
     messages.extend([{"role": "assistant", "content": raw},
                      {"role": "user", "content": _json({"validation_errors": errors,
                         "expected_envelope": budget.expected_envelope,
@@ -189,7 +193,7 @@ def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any
                         ("Use required executable check IDs, not commands or install-only prerequisites. "
                          if budget.expected_envelope in {"manifest", "assessment"} else
                          "Preserve source-defined scope; do not generate commands during source review. "
-                         if budget.expected_envelope in {"scope", "scope_revision", "scope_assessment"} else "") +
+                         if budget.expected_envelope in {"scope", "scope_revision", "scope_assessment", "shard_summary"} else "") +
                         "Independent review and successful clean execution remain mandatory."})}])
 
 

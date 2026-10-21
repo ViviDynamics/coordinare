@@ -72,13 +72,17 @@ class AttemptBudget:
     mandatory_inputs_delivered: int = 0
     inspected_bytes: int = 0
     context_bytes: int = 0
-    expected_envelope: Literal["source_tool", "probe", "manifest", "assessment", "scope", "scope_assessment", "scope_revision"] = "manifest"
+    expected_envelope: Literal["source_tool", "probe", "manifest", "assessment", "scope", "scope_assessment", "scope_revision",
+                               "shard_summary"] = "manifest"
     stage: str = "inventory"
     outcome: str = "held"
     error_code: str | None = None
     usage: dict[str, int] = field(default_factory=dict)
     finish_reasons: dict[str, int] = field(default_factory=dict)
     transport_fallbacks: int = 0
+    # Diagnostics only: each shard agent has its own correction allowance.
+    shard_agents: int = 0
+    shard_schema_repairs: int = 0
     metadata_available: bool = False
     validation_codes: list[str] = field(default_factory=list)
     finding_ledger: FindingLedger | None = field(default=None, repr=False)
@@ -90,6 +94,8 @@ class AttemptBudget:
     scope_phase: Literal["initial", "investigation", "revision", "review", "accepted"] = "initial"
     scope_revision_base_digest: str | None = None
     scope_definition: ScopeDefinition | None = field(default=None, repr=False)
+    # Sharded discovery: plan digest, completed shard summaries and reviewed shard criteria.
+    scope_shards: dict[str, Any] | None = field(default=None, repr=False)
     scope_contract: ScopeContract | None = field(default=None, repr=False)
     scope_findings: FindingLedger | None = field(default=None, repr=False)
     scope_assessment: SourceAssessmentRecord | None = field(default=None, repr=False)
@@ -196,4 +202,5 @@ class AttemptBudget:
                 "remaining_seconds": round(max(0, self.deadline - time.monotonic()), 3), "usage": dict(self.usage),
                 "finish_reasons": dict(self.finish_reasons), "metadata_available": self.metadata_available,
                 "transport_fallbacks": self.transport_fallbacks,
+                "shard_agents": self.shard_agents, "shard_schema_repairs": self.shard_schema_repairs,
                 "validation_codes": list(self.validation_codes)}

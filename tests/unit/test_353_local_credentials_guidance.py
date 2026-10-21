@@ -53,3 +53,15 @@ def test_finding_responses_nested_in_scope_gets_envelope_guidance():
 
 def test_manifest_author_is_told_how_to_declare_local_credentials():
     assert LOCAL_CREDENTIAL_AUTHORING in ''.join(_MANIFEST_INSTRUCTIONS)
+
+
+def test_missing_top_level_finding_responses_gets_envelope_guidance():
+    class Envelope(BaseModel):
+        model_config = ConfigDict(extra='forbid')
+        scope: dict
+        finding_responses: list[str]
+
+    with pytest.raises(ValidationError) as failure:
+        Envelope.model_validate({'scope': {}})
+    [error] = _validation_feedback(failure.value)
+    assert error['location'] == ['finding_responses'] and error['guidance'] == NESTED_RESPONSES_GUIDANCE

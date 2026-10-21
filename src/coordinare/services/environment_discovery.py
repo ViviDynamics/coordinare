@@ -112,12 +112,16 @@ class DiscoveryLimits:
     max_review_context_bytes: int = 1024 * 1024
     max_output_bytes: int = 256 * 1024
     phase_timeout_seconds: float = 120
+    # Sharded discovery is used when set and the readable repository exceeds one agent's share.
+    shard_context_tokens: int | None = None
+    agent_concurrency: int = 12
 
     def __post_init__(self) -> None:
         repair_limits = {"schema": self.max_schema_repairs, "coverage": self.max_coverage_revisions,
                          "execution": self.max_execution_repairs}
         if (any(value <= 0 for name, value in self.__dict__.items()
-                if name not in {"max_schema_repairs", "max_coverage_revisions", "max_execution_repairs"})
+                if name not in {"max_schema_repairs", "max_coverage_revisions", "max_execution_repairs"}
+                and value is not None)
                 or any(not 0 <= value <= REPAIR_LIMITS[kind] for kind, value in repair_limits.items())
                 or self.attempt_timeout_seconds > MAX_ATTEMPT_SECONDS or self.max_review_context_bytes > 16 * 1024 * 1024):
             message = "discovery limits must be positive"

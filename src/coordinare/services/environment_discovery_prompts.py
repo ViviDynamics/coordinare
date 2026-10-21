@@ -163,6 +163,8 @@ def correction_instruction(envelope: str) -> str:
         "scope": 'Return exactly {"scope":{"criteria":[...]},"finding_responses":[...]} with complete source obligations, never executable commands. ',
         "scope_revision": 'Return exactly {"scope_revision":{"base_digest":"retained definition digest","add":[],"reassess":[]},"finding_responses":[...]} with at most 16 combined additions/reassessments. Never return a complete scope or commands. Preserve the attempted scope_revision operations while correcting finding responses; do not abandon additions/reassessments merely to repair stale affected_ids. Nothing from the rejected proposal has been committed. Use [] for affected_ids of new/reassessed criteria, not their replaced IDs. ' ,
         "scope_assessment": 'Return exactly {"scope_assessment":{...}} with verdict, sources, rationale, findings and decisions. ',
+        "shard_summary": 'Return exactly {"shard_summary":{"criteria":[...],"cross_references":[...],"questions":[...]}} '
+            'with source obligations evidenced by your shard, never executable commands. ',
         "assessment": 'Return exactly {"assessment":{...}} matching the review envelope. ',
     }[envelope]
 

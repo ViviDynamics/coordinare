@@ -88,6 +88,8 @@ class RepairJournal(BaseModel):
     scope_contract: ScopeContract | None = None
     scope_findings: FindingLedger | None = None
     scope_assessment: SourceAssessmentRecord | None = None
+    # Sharded discovery progress; validated against the recomputed shard plan when resumed.
+    scope_shards: dict[str, Any] | None = None
     finding_ledger: FindingLedger | None = None
     coverage_manifest: EnvironmentManifest | None = None
     source_owner: str | None = None
@@ -233,6 +235,7 @@ def _save_scope_checkpoint(journal: RepairJournal, budget: AttemptBudget) -> Non
     journal.scope_phase = budget.scope_phase
     journal.scope_revision_base_digest = budget.scope_revision_base_digest
     journal.scope_inputs = dict(budget.scope_inputs)
+    journal.scope_shards = json.loads(json.dumps(budget.scope_shards)) if budget.scope_shards is not None else None
     try:
         journal.scope_responses = [FindingResponse.model_validate(value) for value in budget.scope_responses]
     except ValidationError:
@@ -368,6 +371,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.scope_phase = journal.scope_phase
     budget.scope_revision_base_digest = journal.scope_revision_base_digest
     budget.scope_inputs = dict(journal.scope_inputs)
+    budget.scope_shards = json.loads(json.dumps(journal.scope_shards)) if journal.scope_shards is not None else None
     budget.scope_responses = [r.model_dump(mode="json") for r in journal.scope_responses]
     budget.scope_definition = journal.scope_definition.model_copy(deep=True) if journal.scope_definition is not None else None
     budget.scope_contract = journal.scope_contract.model_copy(deep=True) if journal.scope_contract is not None else None

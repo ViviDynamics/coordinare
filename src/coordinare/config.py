@@ -1118,6 +1118,9 @@ class EnvCacheConfig(BaseModel):
     manifest_max_model_calls: int = Field(default=128, ge=1, le=4096)
     manifest_max_total_reads: int = Field(default=512, ge=1, le=8192)
     manifest_max_review_context_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)
+    # Sharded source discovery: the model context size that sets each agent's share (unset keeps one conversation).
+    manifest_shard_context_tokens: int | None = Field(default=None, ge=8192, le=4_000_000)
+    manifest_agent_concurrency: int = Field(default=12, ge=1, le=16)
     manifest_max_repairs: int | None = Field(default=None, ge=0, le=2, exclude=True)
     manifest_max_schema_repairs: int = Field(default=2, ge=0, le=REPAIR_LIMITS["schema"])
     manifest_max_coverage_revisions: int = Field(default=2, ge=0, le=REPAIR_LIMITS["coverage"])

@@ -30,11 +30,11 @@ def share_bytes(context_tokens: int) -> int:
 
 
 def readable(entry: InventoryEntry, *, max_file_bytes: int) -> bool:
-    return entry.mode != '120000' and entry.size <= max_file_bytes
+    return bool(entry.mode != '120000' and entry.size <= max_file_bytes)
 
 
 def shard_weight(entry: InventoryEntry) -> int:
-    return entry.size + len(entry.path) + PATH_OVERHEAD
+    return int(entry.size) + len(entry.path) + PATH_OVERHEAD
 
 
 def spine_paths(entries: Mapping[str, InventoryEntry], *, limit_bytes: int, max_file_bytes: int) -> list[str]:

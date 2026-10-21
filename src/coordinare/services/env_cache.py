@@ -2510,6 +2510,8 @@ class EnvCacheService:
             max_schema_repairs=getattr(cfg, "manifest_max_schema_repairs", 2),
             max_coverage_revisions=getattr(cfg, "manifest_max_coverage_revisions", 2),
             max_execution_repairs=getattr(cfg, "manifest_max_execution_repairs", 2),
+            shard_context_tokens=getattr(cfg, "manifest_shard_context_tokens", None),
+            agent_concurrency=getattr(cfg, "manifest_agent_concurrency", 12),
         )
         outer_budget = getattr(cfg, "bootstrap_max_seconds",
             getattr(self._coordinare_config.global_config, "bootstrap_max_seconds", 3600))
