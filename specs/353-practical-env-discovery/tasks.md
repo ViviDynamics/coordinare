@@ -194,4 +194,16 @@ execution with independent review. Motivated by the GLM Elm attempt
 - [x] T094 `local_credentials` model and validation codes (task1).
 - [x] T095 Per-run generation, injection and redaction in the runner and performer (task2).
 - [x] T096 Author, reviewer and envelope repair guidance (task3).
-- [ ] T097 Independent review, preflight, push, CI and a fresh GLM Elm attempt.
+- [x] T097 Independent review, preflight, push and CI (6ea65858). The fresh GLM Elm attempt `...-creds-v3` held at
+  `scope_revision_context_limit` before reaching the manifest, so the credential change awaits a live run.
+
+## Approved sharded source discovery
+
+Spec: `sharded-discovery-amendment.md`; plan: `sharded-discovery-plan.md` (both approved 2026-10-21, with
+maintainer rulings recorded in the plan). Native execution with independent review.
+
+- [x] T098 Inventory metadata, unreadable-by-policy evidence and enlarged bounds (Phase 1).
+- [x] T099 Shard planner and bounded agent pool (Phase 2, Tasks 3-4).
+- [x] T100 Sharded authoring, independent shard review into one ledger, and sharded revision (Phases 2-3, Tasks 5-6).
+- [x] T101 Persisted shard progress and recovery (Phase 4, Task 7).
+- [ ] T102 Harness flags, independent review, preflight, push, CI and pinned Elm then Dettmore runs (Phase 5, Task 8).
