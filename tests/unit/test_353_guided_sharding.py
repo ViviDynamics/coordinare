@@ -199,3 +199,15 @@ async def test_unknown_cross_references_are_dropped_not_corrected():
     budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
     await run(Guessing(), budget=budget)
     assert budget.shard_schema_repairs == 0
+
+
+def test_an_echoed_listing_id_is_ignored_but_other_keys_are_not():
+    from pydantic import ValidationError
+
+    from coordinare.services.environment_shard_triage import validate_triage
+    from coordinare.services.environment_shards import Shard
+    shard = Shard(id='shard-000-00000000', paths=('a/x.yml',), readable_bytes=0, depth=0)
+    triage = {'verdicts': [{'path': 'a', 'verdict': 'environment', 'rationale': 'r'}]}
+    assert validate_triage({'listing_triage': triage, 'listing_shard': shard.id}, shard=shard)['a'].verdict == 'environment'
+    with pytest.raises(ValidationError):
+        validate_triage({'listing_triage': triage, 'listing_shard': 'other'}, shard=shard)
