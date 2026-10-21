@@ -46,3 +46,21 @@ Implements [guided-sharding-amendment.md](guided-sharding-amendment.md), approve
    - triage resume does not repeat work;
    - call counts scale with authored areas.
 6. Full suite, independent review, preflight, push, CI, then pinned Elm and Dettmore on GLM.
+
+## Review fixes and known limits (2026-10-21)
+
+Fixed after independent review:
+- A repeated path in one triage is a correctable error.
+- A directory judged differently across listing shards keeps the more inclusive verdict.
+- Every authored shard gets its first review even if its author read nothing.
+- Exclusions are recomputed after a revision reads an excluded file.
+- Exclusion records coarsen to stay within 512 with exact file counts. If even top-level areas exceed the
+  bound, nothing is excluded.
+- A definition that cannot fit holds as `scope_size_limit`.
+
+Known limits:
+- Both triage sides use the same model and prompt in separate conversations, so their agreement is independent
+  judgment, not independent models.
+- The merge reviewer's check of exclusions is an instruction, not an enforced finding.
+- `ScopeExclusion` records the two sides' rationales but not an agent identity.
+- A coarsened record names the containing area; its file count is exact.

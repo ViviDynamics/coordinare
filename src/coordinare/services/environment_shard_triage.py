@@ -18,7 +18,7 @@ from coordinare.services.environment_scope import _ResponseReferenceError
 from coordinare.services.environment_shards import Shard, plan_shards, readable
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Mapping, Sequence
+    from collections.abc import Collection, Iterable, Mapping, Sequence
 
     from coordinare_service_inference.environment.scope import TriageVerdict
 
@@ -80,6 +80,9 @@ def validate_triage(data: dict[str, Any], *, shard: Shard) -> dict[str, TriageVe
         if path not in prefixes:
             errors.append({'code': 'triage_path_invalid', 'location': ['listing_triage', 'verdicts', str(index), 'path'],
                            'guidance': 'Use a listed file path or one of its directories, exactly as listed.'})
+        if path in verdicts:
+            errors.append({'code': 'triage_path_repeated', 'location': ['listing_triage', 'verdicts', str(index), 'path'],
+                           'guidance': 'Give each path exactly one verdict; use a deeper path to override a directory verdict.'})
         verdicts[path] = verdict.model_copy(update={'path': path})
     uncovered = sorted({path.split('/')[0] if '/' in path else path for path in shard.paths if covering(path, verdicts) is None})
     if uncovered:
@@ -90,6 +93,20 @@ def validate_triage(data: dict[str, Any], *, shard: Shard) -> dict[str, TriageVe
     if errors:
         raise _ResponseReferenceError(errors)
     return verdicts
+
+
+VERDICT_RANK = {'environment': 2, 'unsure': 1, 'unrelated': 0}
+
+
+def merge_side(parts: Iterable[Mapping[str, TriageVerdict]]) -> dict[str, TriageVerdict]:
+    """One side's verdicts across listing shards; a directory judged differently keeps the more inclusive verdict."""
+    merged: dict[str, TriageVerdict] = {}
+    for part in parts:
+        for path, verdict in sorted(part.items()):
+            kept = merged.get(path)
+            if kept is None or VERDICT_RANK[verdict.verdict] > VERDICT_RANK[kept.verdict]:
+                merged[path] = verdict
+    return merged
 
 
 def exclusions(readable_paths: Collection[str], *, spine: Collection[str],
@@ -108,15 +125,18 @@ def exclusions(readable_paths: Collection[str], *, spine: Collection[str],
         key = judged[0].path if judged[0] is not None else path
         groups.setdefault(key, []).append(path)
         rationales.setdefault(key, [verdict.rationale for verdict in judged if verdict is not None])
-    while len(groups) > MAX_SCOPE_EXCLUSIONS:  # Coarsen to parent directories until the record fits its bound.
+    while len(groups) > MAX_SCOPE_EXCLUSIONS and any('/' in key for key in groups):
+        # Coarsen the deepest groups to their parents; files counts stay exact, the path names the containing area.
+        depth = max(key.count('/') for key in groups)
         coarser: dict[str, list[str]] = {}
         for key, paths in groups.items():
-            parent = key.rsplit('/', 1)[0] if '/' in key else key
+            parent = key.rsplit('/', 1)[0] if key.count('/') == depth else key
             coarser.setdefault(parent, []).extend(paths)
-            rationales.setdefault(parent, rationales[key])
-        if len(coarser) == len(groups):
-            break
+            if parent != key:
+                rationales.setdefault(parent, []).extend(item for item in rationales[key] if item not in rationales[parent])
         groups = coarser
+    if len(groups) > MAX_SCOPE_EXCLUSIONS:
+        return set(), []  # The record cannot be bounded: read everything rather than exclude unrecorded areas.
     records = [ScopeExclusion(path=key, files=len(paths),
                               rationale=' | '.join(rationales[key])[:1100]) for key, paths in sorted(groups.items())]
     return excluded, records
