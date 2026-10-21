@@ -312,15 +312,18 @@ async def test_post_review_preparation_shares_original_deadline(tmp_path, monkey
     service, cache, state, capability = setup(tmp_path)
     service.bind_kubernetes_state(state)
     original = service._build_manifest_artifacts
+    marks = {}
     async def build(**kwargs):
         result = await original(**kwargs, capabilities=capability)
         cache.environment_attempt['expires_at'] = time.time()+0.02
+        marks['built'] = time.monotonic()
         return result
     stopped = asyncio.Event()
     async def credentials(**kwargs):
         try:
             await asyncio.Event().wait()
         finally:
+            marks['stopped'] = time.monotonic()
             stopped.set()
     monkeypatch.setattr(service, '_build_manifest_artifacts', build)
     monkeypatch.setattr(service, '_load_test_env_vars', credentials)
@@ -329,8 +332,9 @@ async def test_post_review_preparation_shares_original_deadline(tmp_path, monkey
     await asyncio.wait_for(service._do_dispatch(symphony_name='suite',
         symphony_config=SimpleNamespace(env_spec_files=[], env_bootstrap_performer_id='bootstrap'),
         github_service=Repository(), eff_config=SimpleNamespace(project_name='suite', github_org='org'),
-        current_sha='fingerprint', cache_state=cache, dispatch_fn=dispatch, llm_chat=ScopeChatFixture(Proposal(), 'guide')), 0.2)
-    assert stopped.is_set()
+        current_sha='fingerprint', cache_state=cache, dispatch_fn=dispatch, llm_chat=ScopeChatFixture(Proposal(), 'guide')), 5)
+    # The shared 0.02 s deadline, not the harness ceiling, must stop post-review preparation.
+    assert stopped.is_set() and marks['stopped'] - marks['built'] < 1.0
     dispatch.assert_not_awaited()
     assert cache.environment_attempt['status'] == 'held'
     assert not cache.cache_dir_ready
