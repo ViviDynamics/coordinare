@@ -85,6 +85,11 @@ def _request_evidence(inspection: SourceInspection, binding: ScopeInspectionBind
                       candidates: bool = True) -> tuple[str, dict[str, Any]]:
     request = binding.request
     if request.operation == 'read_file':
+        policy = inspection.policy_status(request.path) if request.path in inspection.inventory else 'readable'
+        if policy != 'readable':
+            entry = inspection.entries[request.path] if inspection.entries is not None else None
+            return policy, {'operation': 'read_file', 'path': request.path, 'inventory_digest': inspection.inventory_digest,
+                            'status': policy, 'size': entry.size if entry is not None else None}
         if request.path not in inspection.inventory:
             return _absent(inspection, {'operation': 'read_file', 'path': request.path,
                 'inventory_digest': inspection.inventory_digest, 'status': 'absent'}, directories=False, candidates=candidates)
@@ -139,6 +144,7 @@ async def investigate_scope_requests(inspection: SourceInspection,
                     raise EnvironmentDiscoveryError(message, code='scope_investigation_identity')
                 request = binding.request
                 if (request.operation == 'read_file' and request.path in inspection.inventory
+                        and inspection.policy_status(request.path) == 'readable'
                         and request.path not in inspection.source_files):
                     try:
                         await inspection.read_files([request.path])
@@ -257,7 +263,8 @@ def validate_investigation_history(*, bindings: Sequence[ScopeInspectionBinding]
             if ((result.status == 'file' and (request.operation != 'read_file'
                     or inputs.get(request.path) != result.file_sha256))
                     or (result.status == 'listing' and request.operation != 'list_files')
-                    or (result.status == 'absent' and request.path in inputs)):
+                    or (result.status in {'absent', 'too_large', 'link'} and request.path in inputs)
+                    or (result.status in {'too_large', 'link'} and request.operation != 'read_file')):
                 _invalid_history('investigation result differs from retained source')
     except (ValidationError, ValueError, TypeError):
         message = 'investigation checkpoint identity is invalid'

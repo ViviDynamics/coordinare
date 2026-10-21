@@ -10,12 +10,13 @@ import copy
 import hashlib
 import json
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Any, NotRequired, TypedDict, Unpack, cast
 
 from coordinare_service_inference.environment.findings import FindingLedger, FindingResponse
+from coordinare_service_inference.environment.inventory import InventoryEntry
 from coordinare_service_inference.environment.models import (
     Command,
     CoverageAssessment,
@@ -137,8 +138,8 @@ def _json(value: Any) -> str:
 
 class _Inspection(SourceInspection):
     def __init__(self, name: str, paths: Sequence[str], fetch: Fetch, limits: DiscoveryLimits,
-                 budget: AttemptBudget | None = None) -> None:
-        super().__init__(paths, fetch, limits, budget)
+                 budget: AttemptBudget | None = None, *, entries: Mapping[str, InventoryEntry] | None = None) -> None:
+        super().__init__(paths, fetch, limits, budget, entries=entries)
         self.name = name
         self.stage_prompts: DiscoveryPrompts | None = None
         self.require_preflight = False
@@ -412,10 +413,11 @@ async def _timed_review_evidence(reviewer: _Inspection, manifest: EnvironmentMan
 
 
 async def _prepare_reviewer(inventory: Sequence[str], fetch: Fetch, bounds: DiscoveryLimits,
-                            budget: AttemptBudget, manifest: EnvironmentManifest) -> tuple[_Inspection, list[dict[str, str]]]:
+                            budget: AttemptBudget, manifest: EnvironmentManifest,
+                            entries: Mapping[str, InventoryEntry] | None = None) -> tuple[_Inspection, list[dict[str, str]]]:
     budget.coverage_manifest = manifest
     await budget.flush()
-    reviewer = _Inspection('review', inventory, fetch, bounds, budget)
+    reviewer = _Inspection('review', inventory, fetch, bounds, budget, entries=entries)
     return reviewer, await _timed_review_evidence(reviewer, manifest)
 
 
@@ -448,6 +450,7 @@ class _DiscoveryOptions:
     probe_executor: ProbeExecutor | None = None
     require_preflight: bool = False
     execution_source_digest: str | None = None
+    entries: Mapping[str, InventoryEntry] | None = None
 
 
 
@@ -726,10 +729,11 @@ async def _discover_attempt(
     budget = cast("AttemptBudget", options.budget)
     bounds = options.limits or DiscoveryLimits()
     inventory = _checked_inventory(paths, bounds)
-    construction = ReviewedConstruction(source_identity, inventory, fetch, chat, bounds, budget, capabilities)
+    construction = ReviewedConstruction(source_identity, inventory, fetch, chat, bounds, budget, capabilities,
+                                        entries=options.entries)
     scope = await construction.prepare(options.previous_manifest.inputs if options.previous_manifest is not None else None)
     tools = SOURCE_TOOLS
-    discovery = _Inspection("discovery", inventory, fetch, bounds, budget)
+    discovery = _Inspection("discovery", inventory, fetch, bounds, budget, entries=options.entries)
     scope_evidence = await prepare_mandatory_evidence(discovery, scope.all_inputs, phase="construction")
     discovery.observe_sources = construction.observe_sources
     identity = {**construction.context(), "mandatory_scope_evidence": scope_evidence, "symphony_name": symphony_name, "source_commit": commit,
@@ -774,7 +778,8 @@ async def _discover_attempt(
                     messages=messages, validate=validate_candidate)
                 manifest = validate_candidate(candidate)
                 prior_manifests.append(manifest)
-                reviewer, mandatory_evidence = await _prepare_reviewer(inventory, fetch, bounds, budget, manifest)
+                reviewer, mandatory_evidence = await _prepare_reviewer(inventory, fetch, bounds, budget, manifest,
+                                                                       options.entries)
                 reviewer.observe_sources = construction.observe_sources
                 await construction.observe_sources(reviewer.inputs)
                 assessment_data, reviewer_reads = await _phase(

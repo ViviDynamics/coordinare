@@ -14,7 +14,9 @@ from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_scope import discover_scope
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
+
+    from coordinare_service_inference.environment.inventory import InventoryEntry
 
     from coordinare_service_inference.environment.models import ExecutionCapabilities
     from coordinare_service_inference.environment.scope import ScopeContract
@@ -39,6 +41,7 @@ class ReviewedConstruction:
     limits: DiscoveryLimits
     budget: AttemptBudget
     capabilities: ExecutionCapabilities
+    entries: Mapping[str, InventoryEntry] | None = None
 
     def retain_inputs(self, inputs: dict[str, str]) -> None:
         if any(path not in self.paths or self.budget.scope_inputs.get(path, digest) != digest for path, digest in inputs.items()):
@@ -50,7 +53,7 @@ class ReviewedConstruction:
         if inputs is not None:
             self.retain_inputs(inputs)
         return await discover_scope(paths=self.paths, fetch=self.fetch, chat=self.chat, commit=self.source_identity[1],
-            limits=self.limits, budget=self.budget)
+            limits=self.limits, budget=self.budget, entries=self.entries)
 
     def require_scope(self) -> ScopeContract:
         scope = self.budget.scope_contract
