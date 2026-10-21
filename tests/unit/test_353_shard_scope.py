@@ -51,7 +51,8 @@ def decision(finding_id, criterion_ids):
 class Router:
     """Answers each agent conversation by its role, recording every conversation it saw."""
 
-    def __init__(self, *, revise_shard=None, invalid_author=0):
+    def __init__(self, *, revise_shard=None, invalid_author=0, plan=PLAN):
+        self.plan = plan
         self.revise_shard = revise_shard
         self.invalid_author = invalid_author
         self.conversations: list[tuple[str, list[dict[str, str]]]] = []
@@ -65,7 +66,7 @@ class Router:
         return json.dumps(getattr(self, role)(messages, user))
 
     def author(self, messages, user):
-        shard = next(s for s in PLAN.shards if user['shard']['id'].startswith(s.id))
+        shard = next(s for s in self.plan.shards if user['shard']['id'].startswith(s.id))
         if len(messages) == 2:
             return {'tool': 'read_files', 'paths': list(shard.paths)[:8]}
         if self.invalid_author:
@@ -79,7 +80,7 @@ class Router:
         self.reviews += 1
         ids = [c['id'] for c in user['criterion_index']]
         decisions = [decision(fid, ids[:1]) for fid in user['required_decision_ids']]
-        shard_files = [item['path'] for item in user['mandatory_evidence']]
+        shard_files = [item['path'] for item in user['mandatory_evidence'] if item['path'] not in self.plan.spine]
         if self.revise_shard is not None and shard_files and shard_files[0].startswith(self.revise_shard) and not user['required_decision_ids']:
             finding = {'category': 'coverage', 'issue': 'Missing a service obligation', 'sources': [shard_files[0]],
                        'affected_ids': [], 'gap_kind': 'missing_obligation', 'inspection_requests': []}
@@ -200,11 +201,16 @@ def summary(shard_id, criteria, refs=()):
                         cross_references=list(refs), questions=[], inputs={})
 
 
-def test_duplicate_criteria_merge_without_downgrade():
+def test_duplicate_criteria_merge_without_downgrade_or_folding():
+    same = criterion('README.md', 'root make test')
+    [merged] = merge_summaries([summary('shard-000-00000000', [same]), summary('shard-001-00000000', [same])])
+    assert merged.applicability == 'required'
+    # Distinct citations or applicability are distinct obligations: never folded, never downgraded.
     weak = {**criterion('a/x', 'same'), 'applicability': 'unknown'}
-    strong = criterion('b/y', 'same')
-    [merged] = merge_summaries([summary('shard-000-00000000', [weak]), summary('shard-001-00000000', [strong])])
-    assert merged.applicability == 'required' and merged.sources == ['a/x', 'b/y']
+    kept = merge_summaries([summary('shard-000-00000000', [weak]), summary('shard-001-00000000', [criterion('b/y', 'same')])])
+    assert sorted((c.sources[0], c.applicability) for c in kept) == [('a/x', 'unknown'), ('b/y', 'required')]
+    many = [criterion(f'svc{i}/Makefile', 'Run the test target') for i in range(40)]
+    assert len(merge_summaries([summary('shard-000-00000000', many)])) == 40
 
 
 def test_cross_reference_routed_once():

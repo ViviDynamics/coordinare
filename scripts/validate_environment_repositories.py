@@ -71,7 +71,7 @@ class Profile:
     max_tokens: int = 32768
     effort: str | None = None
     phase_timeout: float = 120
-    attempt_timeout: float = 600
+    attempt_timeout: float | None = None
     execute: bool = False
     approval_timeout: float = 600
     installer_timeout: float = 900
@@ -81,8 +81,8 @@ class Profile:
     max_coverage_revisions: int = 2
     max_execution_repairs: int = 2
     max_review_context_bytes: int = 1024 * 1024
-    max_total_reads: int = 512
-    max_model_calls: int = 128
+    max_total_reads: int | None = None
+    max_model_calls: int | None = None
     context_tokens: int | None = None
     agent_concurrency: int = 12
     private_service_runtime: dict[str, Any] | None = None
@@ -574,16 +574,17 @@ async def validate_repository(
     )
     settings = EnvCacheConfig(
         manifest_phase_timeout_seconds=profile.phase_timeout,
-        manifest_attempt_timeout_seconds=profile.attempt_timeout,
         manifest_max_schema_repairs=profile.max_schema_repairs,
         manifest_max_coverage_revisions=profile.max_coverage_revisions,
         manifest_max_execution_repairs=profile.max_execution_repairs,
         manifest_max_review_context_bytes=profile.max_review_context_bytes,
-        manifest_max_total_reads=profile.max_total_reads,
-        manifest_max_model_calls=profile.max_model_calls,
         manifest_shard_context_tokens=profile.context_tokens,
         manifest_agent_concurrency=profile.agent_concurrency,
         private_service_runtime=profile.private_service_runtime,
+        # Unset budgets take product defaults: the sharded budget when sharding is enabled.
+        **{name: value for name, value in (("manifest_attempt_timeout_seconds", profile.attempt_timeout),
+            ("manifest_max_total_reads", profile.max_total_reads), ("manifest_max_model_calls", profile.max_model_calls))
+           if value is not None},
     )
     global_config = SimpleNamespace(
         performer_image=image,
@@ -845,13 +846,13 @@ def main() -> int:
     parser.add_argument("--effort")
     parser.add_argument("--structured-transport", choices=["json_schema", "tool_call", "json_object"], default="json_schema")
     parser.add_argument("--phase-timeout", type=float, default=120)
-    parser.add_argument("--attempt-timeout", type=float, default=600)
+    parser.add_argument("--attempt-timeout", type=float, default=None)
     parser.add_argument("--max-schema-repairs", type=int, choices=range(REPAIR_LIMITS["schema"] + 1), default=2)
     parser.add_argument("--max-coverage-revisions", type=int, choices=range(REPAIR_LIMITS["coverage"] + 1), default=2)
     parser.add_argument("--max-execution-repairs", type=int, choices=range(REPAIR_LIMITS["execution"] + 1), default=2)
     parser.add_argument("--max-review-context-bytes", type=int, default=1024 * 1024)
-    parser.add_argument("--max-total-reads", type=_aggregate_read_allowance, default=512)
-    parser.add_argument("--max-model-calls", type=_model_call_allowance, default=128)
+    parser.add_argument("--max-total-reads", type=_aggregate_read_allowance, default=None)
+    parser.add_argument("--max-model-calls", type=_model_call_allowance, default=None)
     parser.add_argument("--context-tokens", type=_context_tokens, default=None,
                         help="Model context size; enables sharded source discovery for repositories larger than one share")
     parser.add_argument("--agent-concurrency", type=_agent_concurrency, default=12)

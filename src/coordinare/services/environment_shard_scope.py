@@ -47,7 +47,7 @@ from coordinare.services.environment_evidence import (
     check_evidence_context,
     prepare_mandatory_evidence,
 )
-from coordinare.services.environment_findings import FindingValidationError
+from coordinare.services.environment_findings import MAX_FINDINGS, FindingValidationError
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_response_schema import (
     constrain_source_criteria,
@@ -86,6 +86,7 @@ from coordinare.services.environment_shards import (
     shard_weight,
     share_bytes,
     spine_paths,
+    split_by_bytes,
 )
 
 if TYPE_CHECKING:
@@ -105,7 +106,6 @@ SHARD_SCHEMA_REPAIRS = 2
 SPINE_FRACTION = 4
 MERGE_OWNER = 'merge'
 MIN_SPLIT = 2
-_APPLICABILITY_RANK = {'required': 2, 'unknown': 1, 'not_applicable': 0}
 
 SHARD_AUTHOR_INSTRUCTIONS = (
     'You author source-defined obligations for ONE shard of a repository too large for one conversation. '
@@ -151,10 +151,13 @@ class ShardPlan:
             'shards': [[shard.id, list(shard.paths)] for shard in self.shards]})).hexdigest()
 
 
-def build_plan(entries: Mapping[str, InventoryEntry], *, context_tokens: int, max_file_bytes: int) -> ShardPlan:
+def build_plan(entries: Mapping[str, InventoryEntry], *, context_tokens: int, max_file_bytes: int,
+               max_reads: int | None = None) -> ShardPlan:
+    """Each shard fits half an agent's context and half its per-conversation reads (the rest is for navigation)."""
     share = share_bytes(context_tokens)
     spine = spine_paths(entries, limit_bytes=share // SPINE_FRACTION, max_file_bytes=max_file_bytes)
-    shards = plan_shards(entries, share=share, spine=spine, max_file_bytes=max_file_bytes)
+    max_files = max(1, max_reads // 2 - len(spine)) if max_reads is not None else None
+    shards = plan_shards(entries, share=share, spine=spine, max_file_bytes=max_file_bytes, max_files=max_files)
     owners = {path: shard.id for shard in shards for path in shard.paths}
     return ShardPlan(tuple(shards), tuple(spine), share, owners)
 
@@ -165,28 +168,16 @@ def needs_sharding(entries: Mapping[str, InventoryEntry], *, context_tokens: int
     return total > share_bytes(context_tokens)
 
 
-def split_shard(shard: Shard, _overflow: ShardOverflowError) -> list[Shard]:
-    if len(shard.paths) < MIN_SPLIT:
-        return [shard]
-    middle = len(shard.paths) // 2
-    halves = (shard.paths[:middle], shard.paths[middle:])
-    return [Shard(id=f'{shard.id}.{index}', paths=paths, readable_bytes=shard.readable_bytes // 2, depth=shard.depth + 1)
-            for index, paths in enumerate(halves)]
-
-
 def merge_summaries(summaries: Sequence[ShardSummary]) -> list[ScopeCriterionProposal]:
-    """Deterministic union: one criterion per obligation, citations combined, never downgraded."""
-    merged: dict[tuple[str, str, tuple[str, ...]], ScopeCriterionProposal] = {}
+    """Deterministic union by criterion identity: exact duplicates collapse, distinct obligations never fold.
+
+    Identity covers description, sources, applicability, usability and runtime needs, so no citation is lost and
+    no applicability is downgraded; reviewers adjudicate near-duplicates as findings.
+    """
+    merged: dict[str, ScopeCriterionProposal] = {}
     for summary in summaries:
         for criterion in summary.criteria:
-            key = (criterion.description.strip(), criterion.usability.strip(), tuple(criterion.runtime_needs))
-            kept = merged.get(key)
-            if kept is None:
-                merged[key] = criterion
-                continue
-            stronger = criterion if _APPLICABILITY_RANK[criterion.applicability] > _APPLICABILITY_RANK[kept.applicability] else kept
-            sources = sorted({*kept.sources, *criterion.sources})[:32]
-            merged[key] = stronger.model_copy(update={'sources': sources})
+            merged.setdefault(criterion_id(criterion), criterion)
     if len(merged) > MAX_SCOPE_CRITERIA:
         _fail('scope_size_limit')  # Obligations are never dropped or folded to fit.
     return list(merged.values())
@@ -204,7 +195,7 @@ def route_cross_references(summaries: Sequence[ShardSummary], plan: ShardPlan, *
             assigned.add(path)
             groups.setdefault(owner, []).append(path)
     order = {shard.id: index for index, shard in enumerate(plan.shards)}
-    return [Shard(id=f'{owner}.{generation}', paths=tuple(sorted(paths)), readable_bytes=0, depth=0)
+    return [Shard(id=f'{owner}.r{generation}', paths=tuple(sorted(paths)), readable_bytes=0, depth=0)
             for owner, paths in sorted(groups.items(), key=lambda item: order[item[0]])]
 
 
@@ -234,8 +225,8 @@ _CORRECTABLE = frozenset({'invalid_json_envelope', 'duplicate_json_key', 'unsupp
 class ReviewMaterial(NamedTuple):
     criteria: Sequence[ScopeCriterion]
     owned: Sequence[str]
-    spine: list[dict[str, str]]
     evidence: list[dict[str, str]]
+    capacity: int
 
 
 class Assignment(NamedTuple):
@@ -280,13 +271,18 @@ def _restricted(entries: Mapping[str, InventoryEntry], paths: Collection[str]) -
     return {path: entries[path] for path in sorted(paths) if path in entries}
 
 
-COMPACT_DESCRIPTION_CHARS = 240
+COMPACT_DESCRIPTION_CHARS = 160
 
 
 def _compact(criterion: ScopeCriterion) -> dict[str, Any]:
-    """Index entry: enough to name and place a criterion without carrying its full text into every agent."""
+    """Index entry: enough to name a criterion; full text travels only to agents that judge or revise it."""
     return {'id': criterion.id, 'description': criterion.description[:COMPACT_DESCRIPTION_CHARS],
-            'applicability': criterion.applicability, 'sources': list(criterion.sources)}
+            'applicability': criterion.applicability}
+
+
+def _fingerprints(criteria: Sequence[ScopeCriterion]) -> list[str]:
+    """Complete criterion content, including rationale that criterion IDs omit."""
+    return sorted(hashlib.sha256(canonical(c.model_dump(mode='json'))).hexdigest() for c in criteria)
 
 
 @dataclass
@@ -326,6 +322,9 @@ class ShardedScope:
             saved = {'plan_digest': self.plan.digest()}
         saved.update(state)
         self.budget.scope_shards = saved
+
+    def _split(self, shard: Shard, _overflow: ShardOverflowError) -> list[Shard]:
+        return split_by_bytes(shard, self.entries)
 
     async def agent_phase(self, inspection: SourceInspection, messages: list[dict[str, str]], task: AgentTask) -> Any:
         """One shard conversation; its own correction allowance, the shared call and read budget."""
@@ -420,17 +419,23 @@ class ShardedScope:
         done = {key: ShardSummary.model_validate(value) for key, value in saved.get('summaries', {}).items()}
         pending = [shard for shard in self.plan.shards if shard.id not in done]
         summaries = [*done.values(), *await run_pool(pending, self.author_shard, budget=budget,
-                                                      split=split_shard, concurrency=self.concurrency)]
+                                                      split=self._split, concurrency=self.concurrency)]
         assigned: set[str] = set(saved.get('assigned', []))
-        for generation in range(1, 4):
+        generation = int(saved.get('generation', 0))
+        # Each path is routed once, so following references always terminates; nothing is left unrouted.
+        while True:
             read = {path for summary in summaries for path in summary.inputs}
-            follow = route_cross_references(summaries, self.plan, read=read, assigned=assigned, generation=generation)
-            self._persist(assigned=sorted(assigned))
-            follow = [shard for shard in follow if shard.id not in done]
+            routed = set(assigned)
+            follow = [shard for shard in route_cross_references(summaries, self.plan, read=read, assigned=routed,
+                                                                generation=generation + 1) if shard.id not in done]
             if not follow:
                 break
-            summaries.extend(await run_pool(follow, self.author_shard, budget=budget, split=split_shard,
+            summaries.extend(await run_pool(follow, self.author_shard, budget=budget, split=self._split,
                                             concurrency=self.concurrency))
+            generation += 1
+            assigned = routed
+            self._persist(assigned=sorted(assigned), generation=generation)
+            await budget.flush()
         summaries.sort(key=lambda summary: summary.shard_id)
         criteria = merge_summaries(summaries)
         if not criteria:
@@ -440,7 +445,7 @@ class ShardedScope:
             inputs=inputs, criteria=[ScopeCriterion(**c.model_dump(), id=criterion_id(c)) for c in criteria])
         budget.scope_definition = definition
         budget.scope_responses = []
-        self._persist(summaries={}, assigned=[])
+        self._persist(summaries={}, assigned=[], generation=0)
         budget.scope_phase = 'review'
         budget.scope_revision_base_digest = None
         await budget.flush()
@@ -456,8 +461,9 @@ class ShardedScope:
 
     def _review_messages(self, inspection: SourceInspection, *, preamble: str, definition: ScopeDefinition,
                          material: ReviewMaterial) -> list[dict[str, str]]:
-        criteria, owned, spine, evidence = material
+        criteria, owned, evidence, capacity = material
         ledger = self.budget.scope_findings
+        bindings = [binding for binding in _current_investigations(self.budget) if binding.finding_id in owned]
         records = [record.model_dump(mode='json') for record in ledger.records if record.id in owned] if ledger else []
         responses = [response for response in self.budget.scope_responses if response.get('finding_id') in owned]
         return [{'role': 'system', 'content': SOURCE_NAVIGATION + preamble + REVIEW_INSTRUCTIONS + PHASE_CONTRACT},
@@ -467,14 +473,22 @@ class ShardedScope:
                     'root_directory': inspection.list_directory(), 'scope_digest': definition.digest(),
                     'criterion_index': [_compact(c) for c in definition.criteria],
                     'scope_criteria': [c.model_dump(mode='json') for c in criteria],
-                    'spine_evidence': spine, 'mandatory_evidence': evidence, 'assigned_findings': records,
-                    'required_decision_ids': list(owned), 'finding_responses': responses,
+                    'mandatory_evidence': evidence, 'assigned_findings': records,
+                    'required_decision_ids': list(owned), 'finding_responses': responses, 'findings_capacity': capacity,
+                    'investigation_evidence': investigation_evidence(inspection=inspection, bindings=bindings,
+                        results=self.budget.scope_investigation_results),
                     'review_resolution': {'unread_available_source': 'inspect', 'actionable_findings': 'revise',
                                           'unable_to_judge': 'indeterminate'}}).decode()}]
 
     def _validate_part(self, data: dict[str, Any], *, inspection: SourceInspection, definition: ScopeDefinition,
-                       owned: Sequence[str]) -> tuple[ScopeAssessmentProposal, dict[str, str]]:
+                       material: ReviewMaterial) -> tuple[ScopeAssessmentProposal, dict[str, str]]:
+        owned = material.owned
         assessment = ScopeAssessmentEnvelope.model_validate(normalize_source_assessment(data)).scope_assessment
+        if len(assessment.findings) > material.capacity:
+            raise _ResponseReferenceError([{'code': 'review_findings_limit', 'location': ['scope_assessment', 'findings'],
+                'findings_capacity': material.capacity,
+                'guidance': 'Report at most findings_capacity new findings; adjudicate retained findings in decisions. '
+                            'If more blocking objections remain, return indeterminate rather than omitting them.'}])
         decided = [decision.finding_id for decision in assessment.decisions]
         if len(decided) != len(set(decided)) or set(decided) != set(owned):
             raise _ResponseReferenceError([{'code': 'review_findings_invalid', 'location': ['scope_assessment', 'decisions'],
@@ -494,30 +508,41 @@ class ShardedScope:
             raise _ResponseReferenceError(errors)
         return assessment, dict(inspection.inputs)
 
+    async def _review_evidence(self, inspection: SourceInspection, definition: ScopeDefinition, *,
+                               paths: Collection[str], owned: Sequence[str]) -> list[dict[str, str]]:
+        """Reviewers read their own evidence: their shard's inputs, the spine and their findings' investigations."""
+        wanted = set(paths) | set(self.plan.spine)
+        wanted.update(binding.request.path for binding in _current_investigations(self.budget)
+                      if binding.finding_id in owned and binding.request.operation == 'read_file')
+        expected = {path: digest for path, digest in self.budget.scope_inputs.items()
+                    if path in wanted and (path in definition.inputs or path in self.plan.spine or path not in self.plan.owners)}
+        expected.update({path: digest for path, digest in definition.inputs.items() if path in paths})
+        return await prepare_mandatory_evidence(inspection, dict(sorted(expected.items())), phase='scope_review')
+
     async def review_shard(self, shard: Shard, *, definition: ScopeDefinition,
-                           owned: Sequence[str]) -> tuple[ScopeAssessmentProposal, dict[str, str]]:
-        inspection = self.view(shard.paths, name='scope_shard_review')
-        spine = self.admit_spine(inspection)
-        expected = {path: digest for path, digest in definition.inputs.items() if path in shard.paths}
-        evidence = await prepare_mandatory_evidence(inspection, expected, phase='scope_review')
+                           material: ReviewMaterial) -> tuple[ScopeAssessmentProposal, dict[str, str]]:
+        inspection = self.view(name='scope_shard_review')
+        evidence = await self._review_evidence(inspection, definition, paths=shard.paths, owned=material.owned)
         criteria = [c for c in definition.criteria if any(self.plan.owners.get(path) == shard.id for path in c.sources)]
-        messages = self._review_messages(inspection, preamble=SHARD_REVIEW_PREAMBLE, definition=definition,
-                                         material=ReviewMaterial(criteria, owned, spine, evidence))
-        return await self._judge(inspection, messages, definition=definition, owned=owned)
+        material = material._replace(criteria=criteria, evidence=evidence)
+        messages = self._review_messages(inspection, preamble=SHARD_REVIEW_PREAMBLE, definition=definition, material=material)
+        return await self._judge(inspection, messages, definition=definition, material=material)
 
     async def review_merge(self, *, definition: ScopeDefinition,
-                           owned: Sequence[str]) -> tuple[ScopeAssessmentProposal, dict[str, str]]:
+                           material: ReviewMaterial) -> tuple[ScopeAssessmentProposal, dict[str, str]]:
+        """Repository-wide consistency, and full judgment of criteria no shard owns (root-level obligations)."""
         inspection = self.view(name='scope_merge_review')
-        spine = self.admit_spine(inspection)
-        messages = self._review_messages(inspection, preamble=MERGE_REVIEW_PREAMBLE, definition=definition,
-                                         material=ReviewMaterial([], owned, spine, []))
-        return await self._judge(inspection, messages, definition=definition, owned=owned)
+        evidence = await self._review_evidence(inspection, definition, paths=(), owned=material.owned)
+        criteria = [c for c in definition.criteria if criterion_owner(c, self.plan) == MERGE_OWNER]
+        material = material._replace(criteria=criteria, evidence=evidence)
+        messages = self._review_messages(inspection, preamble=MERGE_REVIEW_PREAMBLE, definition=definition, material=material)
+        return await self._judge(inspection, messages, definition=definition, material=material)
 
     async def _judge(self, inspection: SourceInspection, messages: list[dict[str, str]], *, definition: ScopeDefinition,
-                     owned: Sequence[str]) -> tuple[ScopeAssessmentProposal, dict[str, str]]:
+                     material: ReviewMaterial) -> tuple[ScopeAssessmentProposal, dict[str, str]]:
         part: tuple[ScopeAssessmentProposal, dict[str, str]] = await self.agent_phase(inspection, messages, AgentTask(
-            'scope_assessment', partial(self._validate_part, inspection=inspection, definition=definition, owned=owned),
-            decision_ids=list(owned), criterion_ids=[c.id for c in definition.criteria]))
+            'scope_assessment', partial(self._validate_part, inspection=inspection, definition=definition, material=material),
+            decision_ids=list(material.owned), criterion_ids=[c.id for c in definition.criteria]))
         return part
 
     def _review_targets(self, definition: ScopeDefinition, owned: Mapping[str, list[str]],
@@ -527,7 +552,7 @@ class ShardedScope:
         unread = {self.plan.owners.get(path) for path, digest in definition.inputs.items() if carried.get(path) != digest}
         targets = []
         for shard in self.plan.shards:
-            current = sorted(c.id for c in definition.criteria if criterion_owner(c, self.plan) == shard.id)
+            current = _fingerprints([c for c in definition.criteria if criterion_owner(c, self.plan) == shard.id])
             if shard.id in owned or shard.id in unread or reviewed.get(shard.id) != current:
                 targets.append(shard)
         return targets
@@ -545,13 +570,17 @@ class ShardedScope:
         target_paths = {path for shard in targets for path in shard.paths}
         carried = {path: digest for path, digest in previous.items() if path not in target_paths}
         work: list[Shard | None] = [*targets, None]
+        # Each part's share of the ledger's remaining capacity, so the combined round always fits.
+        capacity = max(0, MAX_FINDINGS - len(ledger.records)) // len(work)
 
         async def review(target: Shard | None) -> tuple[str, ScopeAssessmentProposal, dict[str, str]]:
+            owner = MERGE_OWNER if target is None else target.id
+            material = ReviewMaterial([], owned.get(owner, []), [], capacity)
             if target is None:
-                assessment, inputs = await self.review_merge(definition=definition, owned=owned.get(MERGE_OWNER, []))
-                return MERGE_OWNER, assessment, inputs
-            assessment, inputs = await self.review_shard(target, definition=definition, owned=owned.get(target.id, []))
-            return target.id, assessment, inputs
+                assessment, inputs = await self.review_merge(definition=definition, material=material)
+            else:
+                assessment, inputs = await self.review_shard(target, definition=definition, material=material)
+            return owner, assessment, inputs
 
         def unsplittable(item: Shard | None, overflow: ShardOverflowError) -> list[Shard | None]:
             return [item]  # A review covers its whole share; overflow holds.
@@ -569,7 +598,7 @@ class ShardedScope:
             _fail('scope_shard_review_invalid')
         reviewed = dict((budget.scope_shards or {}).get('reviewed_criteria', {}))
         for shard in targets:
-            reviewed[shard.id] = sorted(c.id for c in definition.criteria if criterion_owner(c, self.plan) == shard.id)
+            reviewed[shard.id] = _fingerprints([c for c in definition.criteria if criterion_owner(c, self.plan) == shard.id])
         self._persist(reviewed_criteria=reviewed)
         return await conclude_review(budget, (assessment, updated, record), definition=definition, reviewer=reviewer)
 
@@ -591,8 +620,9 @@ class ShardedScope:
                 inspection.admit_content(path, investigator.source_files[path], fetched=False)
         records = [record for record in ledger.records if record.id in ids]
         by_id = {criterion.id: criterion for criterion in base.criteria}
-        concerned = [by_id[identifier] for record in records for identifier in record.proposal.affected_ids if identifier in by_id]
-        concerned.extend(c for c in base.criteria if criterion_owner(c, self.plan) == owner and c not in concerned)
+        # Only the criteria these findings name, so splitting the findings also shrinks the evidence.
+        concerned = list({identifier: by_id[identifier] for record in records
+                          for identifier in record.proposal.affected_ids if identifier in by_id}.values())
         needed = {path for record in records for path in record.proposal.sources}
         needed.update(path for criterion in concerned for path in criterion.sources)
         expected = {path: budget.scope_inputs[path] for path in sorted(needed)
@@ -617,6 +647,8 @@ class ShardedScope:
         owner, ids, bindings = assignment
         envelope = ScopeRevisionEnvelope.model_validate(data)
         revision = envelope.scope_revision
+        if len(base.criteria) + len(revision.add) > MAX_SCOPE_CRITERIA:
+            _fail('scope_size_limit')  # Obligations are never dropped or folded to fit.
         errors = self._operation_errors(revision, inspection=inspection, base=base, owner=owner)
         if errors:
             raise _ResponseReferenceError(errors)
@@ -699,14 +731,7 @@ class ShardedScope:
 
         results = await run_pool(work, partial(self.revise_group, base=base, investigator=investigator),
                                  budget=budget, split=halves, concurrency=self.concurrency)
-        definition, responses = base, []
-        for revision, answered in results:
-            try:
-                definition = apply_scope_revision(definition, revision.model_copy(update={'base_digest': definition.digest()}),
-                                                  inspected_inputs=dict(budget.scope_inputs))
-            except PydanticCustomError:
-                _fail('scope_revision_conflict')
-            responses.extend(answered)
+        definition, responses = combine_revisions(base, results, inputs=budget.scope_inputs)
         preserve_scope(base, definition)
         try:
             budget.scope_responses = _validate_responses(responses, ledger=ledger, inputs=dict(budget.scope_inputs),
@@ -718,6 +743,27 @@ class ShardedScope:
         budget.scope_revision_base_digest = None
         await budget.flush()
         return definition
+
+
+def combine_revisions(base: ScopeDefinition, results: Sequence[tuple[ScopeRevision, list[FindingResponse]]], *,
+                      inputs: Mapping[str, str]) -> tuple[ScopeDefinition, list[FindingResponse]]:
+    """Apply every group's revision in order. Identical additions collapse; a response naming a criterion another
+    group reassessed follows it to its replacement. Genuinely conflicting reassessments hold."""
+    definition, responses, replaced = base, [], {}
+    for revision, answered in results:
+        current = {criterion.id for criterion in definition.criteria}
+        additions = [criterion for criterion in revision.add if criterion_id(criterion) not in current]
+        change = revision.model_copy(update={'base_digest': definition.digest(), 'add': additions})
+        try:
+            definition = apply_scope_revision(definition, change, inspected_inputs=dict(inputs))
+        except (PydanticCustomError, ValidationError):
+            _fail('scope_revision_conflict')
+        replaced.update({item.criterion_id: criterion_id(item.criterion) for item in revision.reassess})
+        responses.extend(answered)
+    final = [response.model_copy(update={'affected_ids': [replaced.get(identifier, identifier)
+                                                          for identifier in response.affected_ids]})
+             for response in responses]
+    return definition, final
 
 
 def combine_round(parts: Sequence[tuple[str, ScopeAssessmentProposal, Mapping[str, str]]], *,
@@ -763,7 +809,8 @@ async def discover_sharded_scope(request: _Request) -> ScopeContract:
     budget, limits, entries = request.budget, request.limits, request.entries
     if not entries or not limits.shard_context_tokens:
         _fail('scope_source_identity')
-    plan = build_plan(entries, context_tokens=limits.shard_context_tokens, max_file_bytes=limits.max_file_bytes)
+    plan = build_plan(entries, context_tokens=limits.shard_context_tokens, max_file_bytes=limits.max_file_bytes,
+                      max_reads=limits.max_reads)
     saved = budget.scope_shards
     if saved is not None and saved.get('plan_digest') not in (None, plan.digest()):
         _fail('scope_shard_identity')
@@ -793,6 +840,17 @@ def shard_plan_summary(plan: ShardPlan) -> dict[str, Any]:
             'largest_shard_files': max((len(shard.paths) for shard in plan.shards), default=0)}
 
 
-__all__ = ['ShardPlan', 'ShardedScope', 'build_plan', 'combine_round', 'discover_sharded_scope', 'discover_source_scope',
-           'finding_owner',
-           'merge_summaries', 'needs_sharding', 'route_cross_references', 'shard_plan_summary', 'split_shard']
+__all__ = [
+    'ShardPlan',
+    'ShardedScope',
+    'build_plan',
+    'combine_revisions',
+    'combine_round',
+    'discover_sharded_scope',
+    'discover_source_scope',
+    'finding_owner',
+    'merge_summaries',
+    'needs_sharding',
+    'route_cross_references',
+    'shard_plan_summary',
+]
