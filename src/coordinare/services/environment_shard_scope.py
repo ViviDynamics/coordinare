@@ -267,6 +267,9 @@ class AgentTask:
         if not final:
             return response_schema('source_tool')
         schema = response_schema(self.envelope, review_decision_ids=self.decision_ids)
+        if self.listing_only:
+            # No tool alternatives: some providers merge every alternative's fields into one reply.
+            return {**schema['anyOf'][-1], '$defs': schema.get('$defs', {})}
         if self.envelope == 'scope_assessment' and self.criterion_ids is not None:
             constrain_source_criteria(schema, list(self.criterion_ids))
         return schema
