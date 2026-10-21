@@ -1,6 +1,6 @@
 # Sharded source discovery for repositories larger than one context
 
-Issue #353; PR #354. Status: written proposal for maintainer review.
+Issue #353; PR #354. Status: approved by the maintainer on 2026-10-21.
 
 ## Intent
 
