@@ -76,6 +76,22 @@ REVISION_LIMIT_GUIDANCE = (
     f'A scope revision may contain at most {MAX_SCOPE_REVISION_CHANGES} combined add and reassess operations. Established criteria are retained '
     'without resubmission: add only genuinely new obligations and reassess only retained unknown or not_applicable '
     'criteria. Submit the most important changes now; further obligations can follow in a later revision.')
+CREDENTIAL_GUIDANCE = (
+    'Use ${NAME} for every credential. For a credential environment variable named K, its value must be exactly ${K}. '
+    'A credential for a service this manifest starts, such as a local test database password, belongs in '
+    'local_credentials as {name, service, purpose} and is referenced as ${NAME}; the trusted runner generates a fresh '
+    'value every run, so data that stores it must live under {scratch} and install commands cannot use it. '
+    'Any other credential comes from the trusted runtime; do not invent one, and unavailable required values hold readiness. '
+    'Never move a literal credential into argv, activation, scope text or another field; describe a credential-bearing '
+    'URL from source without its password.')
+LOCAL_CREDENTIAL_GUIDANCE = {
+    'local_credential_invalid': 'Each local credential needs a unique name and the id of a service declared in this manifest.',
+    'local_credential_unused': 'Reference every declared local credential as ${NAME}, or remove the declaration.',
+    'local_credential_in_install': ('Install commands cannot use generated credentials; move the step that needs the '
+                                    'credential into a service init or a check.'),
+}
+NESTED_RESPONSES_GUIDANCE = ('finding_responses belongs beside scope at the top level of the envelope, never inside scope: '
+                             'return {"scope": {...}, "finding_responses": [...]}.')
 SOURCE_PATH_GUIDANCE = (
     'Each source must be one exact repository-relative file path that you inspected: no directories, ./ prefixes, '
     'trailing slashes, URLs or annotations.')
@@ -101,7 +117,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
                       "finding_responses", "finding_id", "issue", "category", "affected_ids", "duplicate_of", "status",
                       "capability_unavailable", "criteria", "applicability", "usability", "runtime_needs", "scope_assessment", "criterion_checks", "runtime_endpoints", "scope_revision", "base_digest", "add", "reassess", "criterion_id", "criterion",
                       "disposition", "criterion_ids", "gap_kind", "inspection_requests", "covered", "source_correction",
-                      "source_gap", "duplicate"}
+                      "source_gap", "duplicate", "local_credentials", "name", "purpose", "service"}
     result = []
     for error in exc.errors(include_url=False, include_input=False)[:16]:
         location = [part if (isinstance(part, str) and part in allowed_fields) or type(part) is int else "*"
@@ -113,7 +129,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             "requirement_check_reference", "clean_dependency_install_only", "runtime_credential_reference",
             "probe_id_maps", "probe_cited_question", "probe_required_true", "probe_citations_uninspected",
             "scope_identity_mismatch", "scope_required_check_mapping", "scope_required_service", "scope_id_collision",
-            "finding_citations_invalid", "union_tag_not_found", "union_tag_invalid",
+            "finding_citations_invalid", "union_tag_not_found", "union_tag_invalid", *LOCAL_CREDENTIAL_GUIDANCE,
         } else "invalid_contract_value"
         scope_locations = {'scope_required_check_mapping': 'criterion_checks', 'scope_identity_mismatch': 'scope_contract_digest',
                            'scope_required_service': 'services', 'scope_id_collision': 'id'}
@@ -130,10 +146,11 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
                 code == "extra_forbidden" and "scope_assessment" in location and "decisions" in location):
             detail["guidance"] = SOURCE_DISPOSITION_GUIDANCE
         if code == "runtime_credential_reference":
-            detail["guidance"] = ("Use ${NAME} for a named credential supplied by the trusted runtime. "
-                "For a credential environment variable named K, its value must be exactly ${K}, not a reference to another name. "
-                "Never move literal credentials into argv, activation or another field. "
-                "Do not invent runtime credentials; unavailable required values must hold readiness.")
+            detail["guidance"] = CREDENTIAL_GUIDANCE
+        if code in LOCAL_CREDENTIAL_GUIDANCE:
+            detail["guidance"] = LOCAL_CREDENTIAL_GUIDANCE[code]
+        if code == "extra_forbidden" and location[:2] == ["scope", "finding_responses"]:
+            detail["guidance"] = NESTED_RESPONSES_GUIDANCE
         result.append(detail)
     return result
 

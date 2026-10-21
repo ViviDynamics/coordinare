@@ -182,3 +182,16 @@ Both approved by the maintainer on 2026-10-20. Native execution with independent
 - [x] T091 Repeat-absent and unread-source admission rules (task2).
 - [x] T092 Actionable revision and source-path feedback (task3).
 - [ ] T093 Verification, review, push, CI and fresh pinned Elm attempt (task4).
+
+## Approved local service credentials amendment
+
+Spec: `local-service-credentials-amendment.md`; plan: `local-service-credentials-plan.md`.
+Approved by the maintainer on 2026-10-21, with targeted GLM repair guidance added. Native
+execution with independent review. Motivated by the GLM Elm attempt
+`source-evidence-cov8-internal-glm53flash-elm60m-high32k-v2`, which held with
+`attempt_schema_limit` on literal test database passwords.
+
+- [x] T094 `local_credentials` model and validation codes (task1).
+- [x] T095 Per-run generation, injection and redaction in the runner and performer (task2).
+- [x] T096 Author, reviewer and envelope repair guidance (task3).
+- [ ] T097 Independent review, preflight, push, CI and a fresh GLM Elm attempt.

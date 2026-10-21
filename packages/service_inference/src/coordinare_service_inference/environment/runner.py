@@ -7,9 +7,11 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import functools
 import json
 import os
 import re
+import secrets
 import signal
 import sys
 import time
@@ -21,7 +23,7 @@ from .models import CheckResult, Command, EnvironmentManifest, VerificationRepor
 from .runtime_cli import run_cli
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Collection, Mapping, Sequence
 
     from .runtime import RuntimeArtifactReceipt
     from .runtime_supervisor import RuntimeLease
@@ -36,6 +38,7 @@ _VALUE_REFERENCE = re.compile(r"\$\{(?P<environment>[A-Za-z_][A-Za-z0-9_]*)\}|\{
 _LINUX_SUPERVISOR = r"""
 from __future__ import annotations
 import contextlib
+import functools
 import ctypes
 import json
 import os
@@ -182,7 +185,8 @@ def _bound_outputs(results: dict[str, CheckResult]) -> None:
 
 
 def _template_preflight(manifest: EnvironmentManifest, roots: dict[str, str], *, install: bool,
-                        scope: str, secret_names: Sequence[str], runtime_env: Mapping[str, str] | None = None) -> VerificationReport | None:
+                        scope: str, secret_names: Sequence[str], runtime_env: Mapping[str, str] | None = None,
+                        credentials: Mapping[str, str] | None = None) -> VerificationReport | None:
     """Validate against the target environment before any project command has effects."""
     commands = [*(manifest.install if install else []), *manifest.checks]
     service_required: dict[str, bool] = {}
@@ -197,7 +201,7 @@ def _template_preflight(manifest: EnvironmentManifest, roots: dict[str, str], *,
         status="not_run", output="template preflight did not pass", manifest_digest=digest, context=scope)
         for command in commands if not scope or not command.scope or scope in command.scope}
     try:
-        env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env)
+        env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env, credentials=credentials)
     except ValueError:
         # Avoid including environment values in diagnostics from failed activation.
         results["activation"] = CheckResult(id="activation", required=True, status="fail",
@@ -231,6 +235,7 @@ def manifest_environment(
     scratch: str | Path,
     secret_names: Sequence[str] = (),
     runtime_env: Mapping[str, str] | None = None,
+    credentials: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Apply only declared activation, without executing cache scripts or starting services."""
     roots = {"cache": str(cache), "repo": str(repo), "scratch": str(scratch)}
@@ -240,12 +245,14 @@ def manifest_environment(
     except ValueError:
         existing_names = []
     inherited = {name for name in existing_names if isinstance(name, str)} if isinstance(existing_names, list) else set()
-    env['COORDINARE_ENV_SECRET_NAMES'] = json.dumps(sorted(inherited | set(secret_names)))
+    generated = dict(credentials or {})
+    env['COORDINARE_ENV_SECRET_NAMES'] = json.dumps(sorted(inherited | set(secret_names) | set(generated)))
     # Bash startup hooks must never run before an explicit declared command.
     env.pop("BASH_ENV", None)
     env.pop("ENV", None)
     if runtime_env is not None:
         env.update({key: value for key, value in runtime_env.items() if key != "PATH"})
+    env.update(generated)
     for key in environment_order(manifest.activation.env):
         env[key] = _expand(manifest.activation.env[key], roots, env)
     paths = [_expand(path, roots, env) for path in manifest.activation.path]
@@ -541,11 +548,12 @@ async def manifest_services(
     scope: str = "",
     secret_names: Sequence[str] = (),
     runtime_env: Mapping[str, str] | None = None,
+    credentials: Mapping[str, str] | None = None,
 ) -> AsyncIterator[list[CheckResult]]:
     """Hold explicitly declared services until exit; expose lifecycle failures to callers."""
     roots = {"cache": str(cache), "repo": str(repo), "scratch": str(scratch)}
-    redactions = _runtime_secret_values(secret_names)
-    env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env)
+    redactions = _runtime_secret_values(secret_names) | frozenset((credentials or {}).values())
+    env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env, credentials=credentials)
     results = _results if _results is not None else {}
     lifecycle: list[CheckResult] = []
     started = []
@@ -687,14 +695,16 @@ async def _run_manifest_commands(
     secret_names: Sequence[str] = (),
     execution_source_digest: str | None = None,
     runtime_env: Mapping[str, str] | None = None,
+    credentials: Mapping[str, str] | None = None,
 ) -> VerificationReport:
     roots = {"cache": str(cache), "repo": str(repo), "scratch": str(scratch)}
-    redactions = _runtime_secret_values(secret_names)
-    preflight = _template_preflight(manifest, roots, install=install, scope=scope, secret_names=secret_names, runtime_env=runtime_env)
+    redactions = _runtime_secret_values(secret_names) | frozenset((credentials or {}).values())
+    preflight = _template_preflight(manifest, roots, install=install, scope=scope, secret_names=secret_names,
+                                    runtime_env=runtime_env, credentials=credentials)
     if preflight is not None:
         preflight.execution_source_digest = execution_source_digest
         return preflight
-    env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env)
+    env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env, credentials=credentials)
     results: dict[str, CheckResult] = {}
     digest = manifest.digest()
     if install:
@@ -714,7 +724,8 @@ async def _run_manifest_commands(
             manifest_digest=digest,
             context=scope,
         )
-    async with manifest_services(manifest, **roots, _results=results, scope=scope, secret_names=secret_names, runtime_env=runtime_env) as services:
+    async with manifest_services(manifest, **roots, _results=results, scope=scope, secret_names=secret_names,
+                                 runtime_env=runtime_env, credentials=credentials) as services:
         if missing or any(
             r.required and r.status != "pass" for r in [*results.values(), *services]
         ):
@@ -761,17 +772,33 @@ async def run_manifest(
     runtime_artifacts: RuntimeArtifactReceipt | None = None,
     runtime_deadline: float | None = None, runtime_lease: RuntimeLease | None = None,
 ) -> VerificationReport:
+    try:
+        credentials = local_credential_values(manifest, supplied=secret_names)
+    except ValueError:
+        return VerificationReport(execution_source_digest=execution_source_digest, manifest_digest=manifest.digest(),
+            scope=scope, results=[CheckResult(id="local_credentials", required=True, status="fail",
+                output="a declared local credential name is also supplied as a runtime secret",
+                manifest_digest=manifest.digest(), context=scope)])
+    commands = functools.partial(_run_manifest_commands, credentials=credentials)
     if manifest.runtime is not None:
         from .runtime_execution import execute_with_runtime
 
         return await execute_with_runtime(manifest, cache=cache, repo=repo, scratch=scratch,
             install=install, scope=scope, secret_names=secret_names, execution_source_digest=execution_source_digest,
             runtime_artifacts=runtime_artifacts, runtime_deadline=runtime_deadline, runtime_lease=runtime_lease,
-            commands=_run_manifest_commands)
+            commands=commands)
     if runtime_lease is not None or runtime_artifacts is not None:
         raise ValueError("native manifest cannot use private runtime evidence")
-    return await _run_manifest_commands(manifest, cache=cache, repo=repo, scratch=scratch,
+    return await commands(manifest, cache=cache, repo=repo, scratch=scratch,
         install=install, scope=scope, secret_names=secret_names, execution_source_digest=execution_source_digest)
+
+
+def local_credential_values(manifest: EnvironmentManifest, *, supplied: Collection[str]) -> dict[str, str]:
+    """Fresh values for credentials of services the manifest starts; never persisted, never operator secrets."""
+    names = [credential.name for credential in manifest.local_credentials]
+    if set(names) & set(supplied):
+        raise ValueError("local_credential_conflict")
+    return {name: secrets.token_urlsafe(32) for name in names}
 
 
 def _secret_payload() -> str:

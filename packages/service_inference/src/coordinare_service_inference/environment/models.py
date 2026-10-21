@@ -215,6 +215,30 @@ class Service(StrictModel):
     required: bool = True
 
 
+RESERVED_CREDENTIAL_NAMES = frozenset({"BASH_ENV", "ENV", "PATH", "COORDINARE_REPO_DIR"})
+_CREDENTIAL_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+class LocalCredential(StrictModel):
+    """A credential for a service the manifest starts; the trusted runner generates its value per run."""
+
+    name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=128)
+    service: str = Field(min_length=1)
+    purpose: str = Field(min_length=1, max_length=400)
+
+    @field_validator("name")
+    @classmethod
+    def unreserved(cls, value: str) -> str:
+        if value in RESERVED_CREDENTIAL_NAMES or value.startswith("COORDINARE_ENV_"):
+            raise ValueError("local credential name is reserved for trusted orchestration")
+        return value
+
+
+def _references(command: Command) -> set[str]:
+    return {name for text in [*command.argv, command.cwd, *command.env.values()]
+            for name in _CREDENTIAL_REFERENCE.findall(text)}
+
+
 class EnvironmentManifest(StrictModel):
     schema_version: Literal[1, 2, 3]
     scope_contract: ScopeContract | None = None
@@ -233,6 +257,7 @@ class EnvironmentManifest(StrictModel):
     services: list[Service]
     empty_reason: str | None
     policy_version: Literal["351-v1", "353-v2", "353-scope-v1"]
+    local_credentials: list[LocalCredential] = Field(default_factory=list, max_length=32)
 
     @model_serializer(mode="wrap")
     def serialize_native_compatibly(self, handler: Any) -> dict[str, Any]:
@@ -242,6 +267,8 @@ class EnvironmentManifest(StrictModel):
         if self.schema_version < 3:
             for key in ('scope_contract', 'scope_contract_digest', 'criterion_checks'):
                 data.pop(key, None)
+        if not self.local_credentials:
+            data.pop('local_credentials', None)
         return data
 
     @model_validator(mode="after")
@@ -325,7 +352,23 @@ class EnvironmentManifest(StrictModel):
                     raise PydanticCustomError("requirement_check_reference", "requirement must reference required executable checks")
         if not self.requirements and not (self.empty_reason and self.empty_reason.strip()):
             raise ValueError("empty environment requires justification")
+        self._validate_local_credentials(commands)
         return self
+
+    def _validate_local_credentials(self, commands: list[Command]) -> None:
+        names = [credential.name for credential in self.local_credentials]
+        service_ids = {service.id for service in self.services}
+        if len(names) != len(set(names)) or any(c.service not in service_ids for c in self.local_credentials):
+            raise PydanticCustomError("local_credential_invalid",
+                                      "local credentials need unique names and a service this manifest starts")
+        if not names:
+            return
+        if set(names) & {name for command in self.install for name in _references(command)}:
+            raise PydanticCustomError("local_credential_in_install", "install commands cannot use generated credentials")
+        used = {name for command in commands[len(self.install):] for name in _references(command)}
+        used |= {name for text in self.activation.env.values() for name in _CREDENTIAL_REFERENCE.findall(text)}
+        if set(names) - used:
+            raise PydanticCustomError("local_credential_unused", "every local credential must be referenced as ${NAME}")
 
     def digest(self) -> str:
         return hashlib.sha256(self.canonical_json().encode()).hexdigest()
@@ -421,6 +464,7 @@ class EnvironmentManifestProposal(StrictModel):
     activation: Activation
     services: list[Service]
     empty_reason: str | None
+    local_credentials: list[LocalCredential] = Field(default_factory=list, max_length=32)
 
 
 class CoverageAssessmentProposal(StrictModel):

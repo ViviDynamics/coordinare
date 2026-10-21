@@ -169,7 +169,11 @@ async def execute_contract(score: Score, stand: Stand, *, install: bool = False)
 async def prepare_environment(score: Score, stand: Stand) -> None:
     """Activate declarative metadata and hold only explicitly declared services for this job."""
 
-    from coordinare_service_inference.environment.runner import manifest_environment, manifest_services
+    from coordinare_service_inference.environment.runner import (
+        local_credential_values,
+        manifest_environment,
+        manifest_services,
+    )
 
     manifest = accepted_manifest(score)
     lifecycle = AsyncExitStack()
@@ -186,7 +190,9 @@ async def prepare_environment(score: Score, stand: Stand) -> None:
             monitor = start_runtime_monitor(lease)
             stand.environment_runtime_monitor = monitor
             lifecycle.push_async_callback(monitor.stop)
-        runtime_kwargs = {"runtime_env": lease.activation_env} if lease is not None else {}
+        runtime_kwargs: dict[str, Any] = {"runtime_env": lease.activation_env} if lease is not None else {}
+        # One set of generated local service credentials serves this job's activation and its services.
+        runtime_kwargs["credentials"] = local_credential_values(manifest, supplied=score.environment_secret_names)
         stand.cache_env = manifest_environment(manifest, **roots, secret_names=score.environment_secret_names, **runtime_kwargs)
         # Bootstrap actions create missing paths; verification runs after installation.
         if score.role != "env_bootstrap":

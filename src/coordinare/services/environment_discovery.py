@@ -43,6 +43,7 @@ from coordinare.services.environment_attempt import (
 )
 from coordinare.services.environment_construction import ReviewedConstruction, ScopeReopenedError
 from coordinare.services.environment_discovery_prompts import (
+    LOCAL_CREDENTIAL_REVIEW,
     SOURCE_TOOLS,
     DiscoveryPrompts,
     assessment_envelope_schema,
@@ -793,6 +794,7 @@ async def _discover_attempt(
                         'Installation and activation repairs must satisfy the original source obligation. Reject selective omission, '
                         'filtering, retry-to-pass, or command shadowing through environment variables, wrappers or installed tools. '
                         'Unchanged command text alone does not prove unchanged coverage. '
+                        f'{LOCAL_CREDENTIAL_REVIEW} '
                         'Explicitly decide EVERY retained finding ID, including previously resolved findings, against this candidate. '
                         'Use open or resolved with repository citations; silence or calling an objection non-blocking cannot close it. '
                         'Report new blocking findings with category, issue, sources and affected_ids; the daemon assigns IDs. '
