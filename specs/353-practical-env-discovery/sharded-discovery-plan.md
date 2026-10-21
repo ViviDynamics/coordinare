@@ -26,6 +26,12 @@
 - **Byte bounds scale with the count caps** (the design kept byte limits implicit): scope definition 1 MiB, scope contract 2 MiB, finding ledger 512 KiB, manifest document 4 MiB, repair journal 16 MiB. The design's executor note that the 4 MiB journal bound "still applies" cannot hold once a 512-criterion definition is persisted alongside its contract.
 - **Open item outside the approved design:** executable manifest construction and executable review still load all scope inputs into one conversation (`environment_discovery._discover_attempt`, `prepare_mandatory_evidence(..., scope.all_inputs)`). On a repository whose sharded scope succeeds, that stage would hit the same context wall. This plan does not change it; a follow-up design is needed before readiness can be reached on large repositories.
 
+## Maintainer rulings during Phase 2 (2026-10-21)
+
+- Schema repairs: each shard agent has its own allowance of 2 corrections; an agent that exhausts it holds the attempt with `attempt_schema_limit`. The single-conversation path keeps the attempt-wide 8. Calls (1,024), reads (8,192), coverage revisions (8) and the deadline remain shared.
+- Concurrency stays at 12 agents.
+- Trigger: the GLM Elm attempt `...-creds-v3` held with `scope_revision_context_limit` (1.8 MB of retained evidence against the 1 MiB conversation cap).
+
 ## Review Focus
 
 1. A directory with one huge readable file and many tiny ones: the huge file becomes its own shard, tiny files pack together. Test in Task 3.
