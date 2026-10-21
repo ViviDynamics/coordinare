@@ -14,6 +14,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Unpack
 
 from coordinare_service_inference.environment.findings import FindingLedger
+from coordinare_service_inference.environment.inventory import InventoryEntry
 from coordinare_service_inference.environment.scope import (
     MAX_SCOPE_CRITERIA,
     ScopeAssessmentEnvelope,
@@ -23,6 +24,7 @@ from coordinare_service_inference.environment.scope import (
     ScopeDefinition,
     ShardSummary,
     ShardSummaryEnvelope,
+    TriageVerdict,
     canonical,
     criterion_id,
     normalize_source_assessment,
@@ -79,6 +81,14 @@ from coordinare.services.environment_scope_investigation import (
     investigation_evidence,
     validate_investigation_responses,
 )
+from coordinare.services.environment_shard_triage import (
+    TRIAGE_INSTRUCTIONS,
+    TRIAGE_SIDES,
+    exclusions,
+    listing_payload,
+    listing_shards,
+    validate_triage,
+)
 from coordinare.services.environment_shards import (
     Shard,
     plan_shards,
@@ -93,7 +103,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping, Sequence
 
     from coordinare_service_inference.environment.findings import FindingRecord, FindingResponse
-    from coordinare_service_inference.environment.inventory import InventoryEntry
     from coordinare_service_inference.environment.scope import ScopeContract
     from coordinare_service_inference.environment.scope_investigation import ScopeInspectionBinding
     from coordinare_service_inference.environment.scope_revision import ScopeRevision
@@ -130,6 +139,8 @@ SHARD_REVIEW_PREAMBLE = (
 )
 MERGE_REVIEW_PREAMBLE = (
     'You independently review the repository-wide consistency of a scope assembled from per-shard work. '
+    'exclusions lists areas left unread because two independent listing triages judged them unrelated to the '
+    'environment; if any could define environment obligations, raise an unread_source finding requesting it. '
     'criterion_index names every current criterion with its citations. Judge cross-shard omissions, conflicts and '
     'applicability that no single shard can see, reading any repository file you need. required_decision_ids are the '
     'retained findings assigned to you. '
@@ -219,7 +230,7 @@ def finding_owner(record: FindingRecord, definition: ScopeDefinition, plan: Shar
     return MERGE_OWNER
 
 
-Envelope = Literal['shard_summary', 'scope_assessment', 'scope_revision']
+Envelope = Literal['shard_summary', 'scope_assessment', 'scope_revision', 'listing_triage']
 _CORRECTABLE = frozenset({'invalid_json_envelope', 'duplicate_json_key', 'unsupported_envelope',
                           'invalid_tool_arguments', 'scope_citations_invalid'})
 
@@ -243,6 +254,7 @@ class AgentTask:
     validate: Callable[[dict[str, Any]], Any]
     decision_ids: Sequence[str] | None = None
     criterion_ids: Sequence[str] | None = None
+    listing_only: bool = False  # Triage judges a listing; it never reads source.
 
     def schema(self, *, final: bool) -> dict[str, Any]:
         """Source tools only until the agent holds evidence, as in the single-conversation path."""
@@ -337,7 +349,7 @@ class ShardedScope:
         try:
             async with asyncio.timeout_at(min(budget.deadline, time.monotonic() + limits.phase_timeout_seconds)):
                 for _ in range(limits.max_model_calls):
-                    schema = task.schema(final=bool(inspection.inputs))
+                    schema = task.schema(final=task.listing_only or bool(inspection.inputs))
                     messages[0] = {'role': 'system', 'content': base_system +
                         '\nReturn one complete envelope matching this schema: ' + canonical(schema).decode()}
                     raw = await self._ask(inspection, messages, schema)
@@ -379,6 +391,40 @@ class ShardedScope:
                 raise ShardOverflowError(None) from None
             raise
 
+    # ----- triage -----
+
+    async def triage(self) -> list[dict[str, TriageVerdict]]:
+        """Two independent listing-only triages over the same listing shards, persisted per listing shard."""
+        listing = listing_shards(self.entries, share=self.plan.share, max_file_bytes=self.request.limits.max_file_bytes)
+        saved = (self.budget.scope_shards or {}).get('triage', {})
+        work = [(side, shard) for side in TRIAGE_SIDES for shard in listing
+                if shard.id not in saved.get(side, {})]
+        weights = {path: InventoryEntry(path, len(path), '100644') for shard in listing for path in shard.paths}
+
+        def halves(item: tuple[str, Shard], _overflow: ShardOverflowError) -> list[tuple[str, Shard]]:
+            side, shard = item
+            return [(side, part) for part in split_by_bytes(shard, weights)]
+
+        await run_pool(work, self.triage_listing, budget=self.budget, split=halves, concurrency=self.concurrency)
+        recorded = (self.budget.scope_shards or {}).get('triage', {})
+        return [{path: TriageVerdict.model_validate(value) for verdicts in recorded.get(side, {}).values()
+                 for path, value in verdicts.items()} for side in TRIAGE_SIDES]
+
+    async def triage_listing(self, item: tuple[str, Shard]) -> None:
+        side, shard = item
+        inspection = SourceInspection({}, self.request.fetch, self.request.limits, self.budget)
+        inspection.name = 'scope_triage'
+        messages = [{'role': 'system', 'content': TRIAGE_INSTRUCTIONS},
+                    {'role': 'user', 'content': canonical(listing_payload(shard, self.entries)).decode()}]
+        verdicts: dict[str, TriageVerdict] = await self.agent_phase(inspection, messages, AgentTask(
+            'listing_triage', partial(validate_triage, shard=shard), listing_only=True))
+        triage = dict((self.budget.scope_shards or {}).get('triage', {}))
+        side_record = dict(triage.get(side, {}))
+        side_record[shard.id] = {path: verdict.model_dump(mode='json') for path, verdict in verdicts.items()}
+        triage[side] = side_record
+        self._persist(triage=triage)
+        await self.budget.flush()
+
     # ----- authoring -----
 
     async def author_shard(self, shard: Shard) -> ShardSummary:
@@ -419,7 +465,11 @@ class ShardedScope:
         await self.load_spine()
         saved = (budget.scope_shards or {}) if (budget.scope_shards or {}).get('plan_digest') == self.plan.digest() else {}
         done = {key: ShardSummary.model_validate(value) for key, value in saved.get('summaries', {}).items()}
-        unfinished = [shard for shard in self.plan.shards if shard.id not in done]
+        sides = await self.triage()
+        excluded, _records = exclusions(self.plan.owners, spine=self.plan.spine, sides=sides)
+        authored = [Shard(id=shard.id, paths=paths, readable_bytes=shard.readable_bytes, depth=shard.depth)
+                    for shard in self.plan.shards if (paths := tuple(p for p in shard.paths if p not in excluded))]
+        unfinished = [shard for shard in authored if shard.id not in done]
         summaries = [*done.values(), *await run_pool(unfinished, self.author_shard, budget=budget,
                                                       split=self._split, concurrency=self.concurrency)]
         assigned: set[str] = set(saved.get('assigned', []))
@@ -443,8 +493,11 @@ class ShardedScope:
         if not criteria:
             _fail('scope_no_obligations')
         inputs = {path: budget.scope_inputs[path] for summary in summaries for path in summary.inputs}
+        # A file read through a reference is no longer excluded, whatever triage said.
+        _unread, records = exclusions(set(self.plan.owners) - set(inputs), spine=self.plan.spine, sides=sides)
         definition = ScopeDefinition(source_commit=self.request.commit, inventory_digest=self.view(name='scope').inventory_digest,
-            inputs=inputs, criteria=[ScopeCriterion(**c.model_dump(), id=criterion_id(c)) for c in criteria])
+            inputs=inputs, criteria=[ScopeCriterion(**c.model_dump(), id=criterion_id(c)) for c in criteria],
+            exclusions=records)
         budget.scope_definition = definition
         budget.scope_responses = []
         self._persist(summaries={}, assigned=[], generation=0)
@@ -477,6 +530,8 @@ class ShardedScope:
                     'scope_criteria': [c.model_dump(mode='json') for c in criteria],
                     'mandatory_evidence': evidence, 'assigned_findings': records,
                     'required_decision_ids': list(owned), 'finding_responses': responses, 'findings_capacity': capacity,
+                    **({'exclusions': [item.model_dump(mode='json') for item in definition.exclusions]}
+                       if preamble == MERGE_REVIEW_PREAMBLE else {}),
                     'investigation_evidence': investigation_evidence(inspection=inspection, bindings=bindings,
                         results=self.budget.scope_investigation_results),
                     'review_resolution': {'unread_available_source': 'inspect', 'actionable_findings': 'revise',
@@ -555,7 +610,7 @@ class ShardedScope:
         targets = []
         for shard in self.plan.shards:
             current = _fingerprints([c for c in definition.criteria if criterion_owner(c, self.plan) == shard.id])
-            if shard.id in owned or shard.id in unread or reviewed.get(shard.id) != current:
+            if shard.id in owned or shard.id in unread or reviewed.get(shard.id, []) != current:
                 targets.append(shard)
         return targets
 

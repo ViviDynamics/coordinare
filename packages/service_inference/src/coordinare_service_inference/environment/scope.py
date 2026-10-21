@@ -116,6 +116,34 @@ class ShardSummary(ShardSummaryProposal):
     inputs: dict[str, Digest]
 
 
+MAX_TRIAGE_VERDICTS = 2048
+MAX_SCOPE_EXCLUSIONS = 512
+
+
+class TriageVerdict(FindingEvidence):
+    """A listing-only judgment on a directory (covering its descendants) or a file."""
+
+    path: str = Field(min_length=1, max_length=1024)
+    verdict: Literal['environment', 'unrelated', 'unsure']
+    rationale: str = Field(min_length=1, max_length=512)
+
+
+class ListingTriage(FindingEvidence):
+    verdicts: list[TriageVerdict] = Field(min_length=1, max_length=MAX_TRIAGE_VERDICTS)
+
+
+class ListingTriageEnvelope(FindingEvidence):
+    listing_triage: ListingTriage
+
+
+class ScopeExclusion(FindingEvidence):
+    """An area left unread because two independent listing triages both judged it unrelated."""
+
+    path: str = Field(min_length=1, max_length=1024)
+    files: int = Field(ge=1)
+    rationale: str = Field(min_length=1, max_length=1100)
+
+
 class ScopeDefinition(FindingEvidence):
     schema_version: Literal[1] = 1
     requested_scope: Literal['whole_documented_development_test_environment'] = 'whole_documented_development_test_environment'
@@ -123,6 +151,14 @@ class ScopeDefinition(FindingEvidence):
     inventory_digest: Digest
     inputs: dict[str, Digest] = Field(min_length=1)
     criteria: list[ScopeCriterion] = Field(min_length=1, max_length=MAX_SCOPE_CRITERIA)
+    exclusions: list[ScopeExclusion] = Field(default_factory=list, max_length=MAX_SCOPE_EXCLUSIONS)
+
+    @model_serializer(mode='wrap')
+    def omit_empty_exclusions(self, handler: Any) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if not self.exclusions:
+            data.pop('exclusions', None)
+        return data
 
     @model_validator(mode='after')
     def source_owned(self) -> Self:
