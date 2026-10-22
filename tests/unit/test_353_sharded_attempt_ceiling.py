@@ -40,3 +40,17 @@ def test_begin_attempt_caps_by_mode(tmp_path):
 
     assert deadline(DiscoveryLimits(attempt_timeout_seconds=3600)) == 3600
     assert deadline(DiscoveryLimits(attempt_timeout_seconds=14400, shard_context_tokens=262144)) == 14400
+
+
+def test_a_phase_over_one_hour_requires_sharded_discovery():
+    import pytest
+    from pydantic import ValidationError
+
+    from coordinare.config import EnvCacheConfig
+
+    assert EnvCacheConfig(manifest_phase_timeout_seconds=7200,
+                          manifest_shard_context_tokens=262144).manifest_phase_timeout_seconds == 7200
+    with pytest.raises(ValidationError):
+        EnvCacheConfig(manifest_phase_timeout_seconds=7200)
+    with pytest.raises(ValidationError):
+        EnvCacheConfig(manifest_phase_timeout_seconds=5 * 3600, manifest_shard_context_tokens=262144)

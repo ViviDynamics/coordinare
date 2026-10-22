@@ -1119,7 +1119,8 @@ class EnvCacheConfig(BaseModel):
     manifest_max_file_bytes: int = Field(default=256 * 1024, ge=1, le=4 * 1024 * 1024)
     manifest_max_source_bytes: int = Field(default=4 * 1024 * 1024, ge=1, le=16 * 1024 * 1024)
     manifest_max_inventory_entries: int = Field(default=100_000, ge=1, le=1_000_000)
-    manifest_phase_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
+    # Over one hour only for sharded discovery, whose attempts may run up to four hours.
+    manifest_phase_timeout_seconds: float = Field(default=120.0, gt=0, le=4 * 3600)
     # Up to one hour; sharded discovery (manifest_shard_context_tokens set) may run up to four.
     manifest_attempt_timeout_seconds: float = Field(default=600.0, gt=0, le=4 * 3600)
     manifest_max_model_calls: int = Field(default=128, ge=1, le=4096)
@@ -1137,6 +1138,9 @@ class EnvCacheConfig(BaseModel):
     def _attempt_ceiling(self) -> Self:
         if self.manifest_shard_context_tokens is None and self.manifest_attempt_timeout_seconds > ONE_HOUR_SECONDS:
             message = "attempts over one hour require sharded discovery (manifest_shard_context_tokens)"
+            raise ValueError(message)
+        if self.manifest_shard_context_tokens is None and self.manifest_phase_timeout_seconds > ONE_HOUR_SECONDS:
+            message = "phases over one hour require sharded discovery (manifest_shard_context_tokens)"
             raise ValueError(message)
         return self
 
