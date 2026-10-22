@@ -144,6 +144,28 @@ class ScopeExclusion(FindingEvidence):
     rationale: str = Field(min_length=1, max_length=1100)
 
 
+class ConsolidationGroup(FindingEvidence):
+    """Criteria describing one environment obligation, replaced by one criterion citing all their sources."""
+
+    member_ids: list[str] = Field(min_length=2, max_length=MAX_SCOPE_CRITERIA)
+    criterion: ScopeCriterionProposal
+
+
+class ScopeConsolidation(FindingEvidence):
+    groups: list[ConsolidationGroup] = Field(max_length=MAX_SCOPE_CRITERIA)
+
+
+class ScopeConsolidationEnvelope(FindingEvidence):
+    scope_consolidation: ScopeConsolidation
+
+
+class ConsolidationRecord(FindingEvidence):
+    """Which authored criteria a consolidated criterion replaced, for reviewers."""
+
+    criterion_id: str = Field(pattern=r'^S[0-9a-f]{16}$')
+    member_ids: list[str] = Field(min_length=2, max_length=MAX_SCOPE_CRITERIA)
+
+
 class ScopeDefinition(FindingEvidence):
     schema_version: Literal[1] = 1
     requested_scope: Literal['whole_documented_development_test_environment'] = 'whole_documented_development_test_environment'
@@ -153,11 +175,12 @@ class ScopeDefinition(FindingEvidence):
     criteria: list[ScopeCriterion] = Field(min_length=1, max_length=MAX_SCOPE_CRITERIA)
     exclusions: list[ScopeExclusion] = Field(default_factory=list, max_length=MAX_SCOPE_EXCLUSIONS)
     unread_unsure: list[ScopeExclusion] = Field(default_factory=list, max_length=MAX_SCOPE_EXCLUSIONS)
+    consolidated: list[ConsolidationRecord] = Field(default_factory=list, max_length=MAX_SCOPE_CRITERIA)
 
     @model_serializer(mode='wrap')
     def omit_empty_exclusions(self, handler: Any) -> dict[str, Any]:
         data: dict[str, Any] = handler(self)
-        for key in ('exclusions', 'unread_unsure'):
+        for key in ('exclusions', 'unread_unsure', 'consolidated'):
             if not getattr(self, key):
                 data.pop(key, None)
         return data

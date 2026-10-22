@@ -15,6 +15,7 @@ from coordinare_service_inference.environment.scope import (
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 from coordinare.services.environment_discovery import DiscoveryLimits
 from coordinare.services.environment_shard_scope import (
+    CONSOLIDATION_INSTRUCTIONS,
     MERGE_OWNER,
     MERGE_REVIEW_PREAMBLE,
     SHARD_AUTHOR_INSTRUCTIONS,
@@ -61,12 +62,16 @@ class Router:
 
     async def __call__(self, messages, *, response_schema):
         system, user = messages[0]['content'], json.loads(messages[1]['content'])
-        role = ('triage' if TRIAGE_INSTRUCTIONS in system else 'author' if SHARD_AUTHOR_INSTRUCTIONS in system else 'review' if SHARD_REVIEW_PREAMBLE in system
+        role = ('consolidation' if CONSOLIDATION_INSTRUCTIONS in system else 'triage' if TRIAGE_INSTRUCTIONS in system
+                else 'author' if SHARD_AUTHOR_INSTRUCTIONS in system else 'review' if SHARD_REVIEW_PREAMBLE in system
                 else 'merge' if MERGE_REVIEW_PREAMBLE in system else 'revision' if SHARD_REVISION_PREAMBLE in system else '?')
         self.conversations.append((role, copy.deepcopy(messages)))
         return json.dumps(getattr(self, role)(messages, user))
 
     unrelated: tuple[str, ...] = ()
+
+    def consolidation(self, messages, user):
+        return {'scope_consolidation': {'groups': []}}
 
     def triage(self, messages, user):
         # Unrelated areas are judged as directories; every other file is named environment.
