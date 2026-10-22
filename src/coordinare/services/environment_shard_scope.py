@@ -143,6 +143,19 @@ SHARD_AUTHOR_INSTRUCTIONS = (
 )
 CONSOLIDATION_THRESHOLD = 40
 CONSOLIDATION_CHUNK = 25
+EVIDENCE_FIRST_ERROR: dict[str, Any] = {
+    'code': 'evidence_required', 'location': [],
+    'guidance': 'Read the source files you will rely on with read_files before returning the envelope; a judgment '
+                'must rest on evidence you hold.'}
+# Canonical JSON sorts keys, and this one sorts first: every agent of a role sends a byte-identical prefix of its
+# context message, which servers that cache prompt prefixes reuse across agents.
+SHARED_CONTEXT = '_shared_context'
+
+
+def agent_context(shared: Mapping[str, Any], own: Mapping[str, Any]) -> str:
+    return str(canonical({SHARED_CONTEXT: dict(shared), **own}).decode())
+
+
 LISTING_ONLY_ERROR: dict[str, Any] = {'code': 'unsupported_envelope', 'location': [],
                                       'guidance': 'Source tools are unavailable to this agent; return only the requested envelope.'}
 # Failures of the consolidation conversation itself; the scope then proceeds as authored.
@@ -335,14 +348,15 @@ async def run_agent(context: AgentContext, inspection: SourceInspection, message
     """One bounded agent conversation; its own correction allowance, the shared call and read budget."""
     budget, limits = context.budget, context.limits
     budget.shard_agents += 1
-    base_system = messages[0]['content']
+    # One system message for the whole conversation, so a server that caches prompt prefixes keeps reusing it.
+    # The final schema already offers the source tools; answering before holding evidence is corrected instead.
+    schema = task.schema(final=True)
+    messages[0] = {'role': 'system', 'content': messages[0]['content'] +
+        '\nReturn one complete envelope matching this schema: ' + canonical(schema).decode()}
     corrections = 0
     try:
         async with asyncio.timeout_at(min(budget.deadline, time.monotonic() + limits.phase_timeout_seconds)):
             for _ in range(limits.max_model_calls):
-                schema = task.schema(final=task.listing_only or bool(inspection.inputs))
-                messages[0] = {'role': 'system', 'content': base_system +
-                    '\nReturn one complete envelope matching this schema: ' + canonical(schema).decode()}
                 raw = await _ask(context, inspection, messages, schema)
                 try:
                     reply = _decode_reply(raw, inspection.name, limits)
@@ -352,7 +366,8 @@ async def run_agent(context: AgentContext, inspection: SourceInspection, message
                                          {'role': 'user', 'content': canonical({'tool_result': result}).decode()}])
                         continue
                     # A listing-only agent judges what it was given; a tool request is corrected, never executed.
-                    errors = [dict(LISTING_ONLY_ERROR)] if 'tool' in reply else []
+                    errors = ([dict(LISTING_ONLY_ERROR)] if 'tool' in reply
+                              else [dict(EVIDENCE_FIRST_ERROR)] if not task.listing_only and not inspection.inputs else [])
                     if not errors:
                         return task.validate(reply)
                 except (ValidationError, PydanticCustomError, FindingValidationError, EnvironmentDiscoveryError) as exc:
@@ -587,13 +602,16 @@ class ShardedScope:
             evidence.extend(item for item in (await inspection.read_files(unread[offset:offset + 8], navigation=True))['files']
                             if 'error' not in item)
         messages = [{'role': 'system', 'content': SOURCE_NAVIGATION + SHARD_AUTHOR_INSTRUCTIONS + PHASE_CONTRACT},
-                    {'role': 'user', 'content': canonical({'requested_scope': 'whole_documented_development_test_environment',
-                        'phase_contract': {'subject': 'source_obligations', 'runtime_evidence': 'required_after_scope_acceptance',
-                                           'readiness_authority': False},
-                        'shard': {'id': shard.id, 'files': len(shard.paths)},
-                        'shard_files': self.file_list(shard.paths),
-                        'root_directory': inspection.list_directory(), 'spine_evidence': spine,
-                        'shard_evidence': evidence}).decode()}]
+                    {'role': 'user', 'content': agent_context(
+                        {'requested_scope': 'whole_documented_development_test_environment',
+                         'phase_contract': {'subject': 'source_obligations',
+                                            'runtime_evidence': 'required_after_scope_acceptance',
+                                            'readiness_authority': False},
+                         'spine_evidence': spine},
+                        # The root listing is this agent's view, so it is not shared.
+                        {'root_directory': inspection.list_directory(),
+                         'shard': {'id': shard.id, 'files': len(shard.paths)}, 'shard_files': self.file_list(shard.paths),
+                         'shard_evidence': evidence})}]
         summary: ShardSummary = await self.agent_phase(inspection, messages, AgentTask('shard_summary',
             partial(self._validate_summary, inspection=inspection, shard=shard)))
         completed = dict((self.budget.scope_shards or {}).get('summaries', {}))
@@ -680,12 +698,13 @@ class ShardedScope:
         records = [record.model_dump(mode='json') for record in ledger.records if record.id in owned] if ledger else []
         responses = [response for response in self.budget.scope_responses if response.get('finding_id') in owned]
         return [{'role': 'system', 'content': SOURCE_NAVIGATION + preamble + REVIEW_INSTRUCTIONS + PHASE_CONTRACT},
-                {'role': 'user', 'content': canonical({'requested_scope': 'whole_documented_development_test_environment',
-                    'phase_contract': {'subject': 'source_obligations', 'runtime_evidence': 'required_after_scope_acceptance',
-                                       'readiness_authority': False},
-                    'root_directory': inspection.list_directory(), 'scope_digest': definition.digest(),
-                    'shard_files': self.file_list(material.paths),
-                    'criterion_index': [_compact(c) for c in definition.criteria],
+                {'role': 'user', 'content': agent_context(
+                    {'requested_scope': 'whole_documented_development_test_environment',
+                     'phase_contract': {'subject': 'source_obligations', 'runtime_evidence': 'required_after_scope_acceptance',
+                                        'readiness_authority': False},
+                     'scope_digest': definition.digest(),
+                     'criterion_index': [_compact(c) for c in definition.criteria]}, {
+                    'root_directory': inspection.list_directory(), 'shard_files': self.file_list(material.paths),
                     'scope_criteria': [c.model_dump(mode='json') for c in criteria],
                     'mandatory_evidence': evidence, 'assigned_findings': records,
                     'cited_files': sorted({path for c in criteria for path in c.sources}
@@ -698,7 +717,7 @@ class ShardedScope:
                     'investigation_evidence': investigation_evidence(inspection=inspection, bindings=bindings,
                         results=self.budget.scope_investigation_results),
                     'review_resolution': {'unread_available_source': 'inspect', 'actionable_findings': 'revise',
-                                          'unable_to_judge': 'indeterminate'}}).decode()}]
+                                          'unable_to_judge': 'indeterminate'}})}]
 
     def _validate_part(self, data: dict[str, Any], *, inspection: SourceInspection, definition: ScopeDefinition,
                        material: ReviewMaterial) -> tuple[ScopeAssessmentProposal, dict[str, str]]:
@@ -861,14 +880,16 @@ class ShardedScope:
                     if path in budget.scope_inputs and path not in inspection.inputs}
         evidence = await prepare_mandatory_evidence(inspection, expected, phase='scope_revision')
         messages = [{'role': 'system', 'content': SOURCE_NAVIGATION + SHARD_REVISION_PREAMBLE + REVISION_INSTRUCTIONS + PHASE_CONTRACT},
-                    {'role': 'user', 'content': canonical({'requested_scope': 'whole_documented_development_test_environment',
-                        'root_directory': inspection.list_directory(), 'inventory_digest': inspection.inventory_digest,
-                        'scope_base_digest': base.digest(), 'criterion_index': [_compact(c) for c in base.criteria],
-                        'scope_criteria': [c.model_dump(mode='json') for c in concerned], 'spine_evidence': spine,
+                    {'role': 'user', 'content': agent_context(
+                        {'requested_scope': 'whole_documented_development_test_environment',
+                         'inventory_digest': inspection.inventory_digest,
+                         'scope_base_digest': base.digest(), 'criterion_index': [_compact(c) for c in base.criteria],
+                         'spine_evidence': spine}, {'root_directory': inspection.list_directory(),
+                        'scope_criteria': [c.model_dump(mode='json') for c in concerned],
                         'mandatory_evidence': evidence, 'assigned_findings': [r.model_dump(mode='json') for r in records],
                         'required_response_ids': list(ids),
                         'investigation_evidence': investigation_evidence(inspection=inspection, bindings=bindings,
-                            results=budget.scope_investigation_results)}).decode()}]
+                            results=budget.scope_investigation_results)})}]
         result: tuple[ScopeRevision, list[FindingResponse]] = await self.agent_phase(inspection, messages, AgentTask(
             'scope_revision', partial(self._validate_group, inspection=inspection, base=base,
                                       assignment=Assignment(owner, ids, bindings))))

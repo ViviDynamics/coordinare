@@ -99,7 +99,7 @@ async def test_merge_reviewer_judges_root_criteria_in_full():
     [merge] = [json.loads(m[1]['content']) for role, m in router.conversations if role == 'merge']
     root = [c for c in merge['scope_criteria'] if c['sources'] == ['README.md']]
     assert root and root[0]['rationale'] == 'Cited source obligation' and root[0]['usability']
-    assert all('sources' not in entry for entry in merge['criterion_index'])
+    assert all('sources' not in entry for entry in merge['_shared_context']['criterion_index'])
 
 
 class InvestigatingRouter(Router):
