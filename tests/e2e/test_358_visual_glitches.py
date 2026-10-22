@@ -120,7 +120,8 @@ def test_the_more_line_sits_below_whole_cards(
           const more = col.querySelector('.swimlane-more').getBoundingClientRect();
           const cards = [...col.querySelectorAll('.swimlane-col-body > .swimlane-card')]
             .map(c => c.getBoundingClientRect())
-            .filter(r => r.bottom > body.top && r.top < body.bottom)
+            // A card whose top sits on the foot shows nothing; a pixel of slack absorbs sub-pixel layout.
+            .filter(r => r.bottom > body.top + 1 && r.top < body.bottom - 1)
             .map(r => ({top: r.top, bottom: r.bottom}));
           return {body: {top: body.top, bottom: body.bottom}, moreTop: more.top, visible: cards,
                   text: col.querySelector('.swimlane-more').textContent,
