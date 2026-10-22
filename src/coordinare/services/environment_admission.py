@@ -76,6 +76,8 @@ REVISION_LIMIT_GUIDANCE = (
     f'A scope revision may contain at most {MAX_SCOPE_REVISION_CHANGES} combined add and reassess operations. Established criteria are retained '
     'without resubmission: add only genuinely new obligations and reassess only retained unknown or not_applicable '
     'criteria. Submit the most important changes now; further obligations can follow in a later revision.')
+LENGTH_GUIDANCE = ("Shorten this field to at most max_length (characters, or list items for a list): keep it a "
+    "summary and leave the rest of the reply unchanged.")
 REPLY_LENGTH_GUIDANCE = ("Your reply was cut off at the output limit before the envelope was complete. Reason briefly, "
     "keep rationales short, and return the complete envelope.")
 GLOBAL_PART_GUIDANCE = ("This is the global part of a divided manifest. Leave criterion_checks empty: check authors map "
@@ -123,6 +125,18 @@ def _revision_limit(error: Mapping[str, Any], location: list[Any]) -> dict[str, 
     return None
 
 
+def _schema_bounds(code: str, error: Mapping[str, Any], *, guided: bool) -> dict[str, Any]:
+    """The schema's own bound for a size or choice error; the submitted value is never echoed."""
+    context = error.get("ctx") or {}
+    if code in {"string_too_long", "too_long"} and isinstance(context.get("max_length"), int):
+        return {"max_length": context["max_length"], **({} if guided else {"guidance": LENGTH_GUIDANCE})}
+    if code in {"string_too_short", "too_short"} and isinstance(context.get("min_length"), int):
+        return {"min_length": context["min_length"]}
+    if code == "literal_error" and isinstance(context.get("expected"), str):
+        return {"allowed": context["expected"][:512]}
+    return {}
+
+
 def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
     """Do not expose arbitrary keys, candidate values, validator context or prose."""
     allowed_fields = {"requirements", "checks", "install", "services", "activation", "id", "source", "description",
@@ -168,6 +182,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             detail["guidance"] = SOURCE_DISPOSITION_GUIDANCE
         if code == "global_part_invalid":
             detail["guidance"] = GLOBAL_PART_GUIDANCE
+        detail.update(_schema_bounds(code, error, guided="guidance" in detail))
         if code == "runtime_credential_reference":
             detail["guidance"] = CREDENTIAL_GUIDANCE
         if code in LOCAL_CREDENTIAL_GUIDANCE:
