@@ -189,13 +189,15 @@ check("the duration note is plain", SCOPE_NOTE_DURATION, "Only available in the 
 });
 var blocker = { issue_number: 5, title: "Blocking issue", column: "IN_PROGRESS" };
 check("scoped, with blockers elsewhere: the note",
-  dependencyScopeNote({ scope_hidden: ["blocked_by_dependencies"] }, { blocked_by_dependencies: [blocker] }), SCOPE_NOTE_DEPENDENCIES);
+  dependencyScopeNote({ scope_hidden: ["blocked_by_dependencies"], hidden_dependency_blockers: 1 }), SCOPE_NOTE_DEPENDENCIES);
 check("scoped, with no blockers anywhere: no panel",
-  dependencyScopeNote({ scope_hidden: ["blocked_by_dependencies"] }, { blocked_by_dependencies: [] }), "");
-check("scoped, before any snapshot: no panel",
-  dependencyScopeNote({ scope_hidden: ["blocked_by_dependencies"] }, null), "");
+  dependencyScopeNote({ scope_hidden: ["blocked_by_dependencies"], hidden_dependency_blockers: 0 }), "");
+check("scoped, with no count: no panel",
+  dependencyScopeNote({ scope_hidden: ["blocked_by_dependencies"] }), "");
 check("unscoped: no note, the list itself shows",
-  dependencyScopeNote({ blocked_by_dependencies: [blocker] }, { blocked_by_dependencies: [blocker] }), "");
+  dependencyScopeNote({ blocked_by_dependencies: [blocker] }), "");
+check("the symphony scope counts the blockers it hides",
+  symphonyScope({ symphonies: [{ name: "a" }, { name: "b" }], blocked_by_dependencies: [blocker, blocker] }, "a").hidden_dependency_blockers, 2);
 
 console.log(`SUMMARY ${passed} ${failed}`);
 process.exit(failed === 0 ? 0 : 1);
