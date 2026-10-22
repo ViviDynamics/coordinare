@@ -14,6 +14,7 @@ from coordinare_service_inference.environment.models import source_path
 __all__ = ['InventoryEntry', 'SourceInspection']
 
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
+from coordinare.services.environment_evidence import prepare_mandatory_evidence
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -158,8 +159,6 @@ class SourceInspection:
         The daemon reads through a separately bounded verifier (charged to the attempt). The conversation receives
         an index; the agent reads content on demand, and any later read must match the bound digest.
         """
-        from coordinare.services.environment_evidence import prepare_mandatory_evidence
-
         missing = {path: digest for path, digest in expected.items() if self.inputs.get(path) != digest}
         if missing:
             limits = replace(self.limits, max_reads=max(self.limits.max_reads, len(missing)),
