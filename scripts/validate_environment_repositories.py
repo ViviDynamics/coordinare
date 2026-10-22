@@ -90,6 +90,11 @@ class Profile:
     reuse_scope_from: Path | None = None
 
 
+def _profile_record(profile: Profile) -> dict[str, Any]:
+    """The profile as JSON: paths are recorded as strings."""
+    return {key: str(value) if isinstance(value, Path) else value for key, value in asdict(profile).items()}
+
+
 def load_runtime_policy(path: Path) -> dict[str, Any]:
     """Load an explicit platform policy; capability discovery still measures the image."""
     with path.open('rb') as stream:
@@ -633,7 +638,7 @@ async def validate_repository(
         "ready_at_validation": False,
         "live_daemon_exercised": False,
         "outer_retry_loop_exercised": False,
-        "profile": asdict(profile),
+        "profile": _profile_record(profile),
     }
     if chat is None:
         key = os.environ.get(profile.api_key_env)
@@ -910,7 +915,7 @@ def main() -> int:
         args.output / "profile.json",
         {
             "coordinare_commit": revision,
-            "profile": asdict(profile),
+            "profile": _profile_record(profile),
             "snapshots": str(args.snapshots),
             "repositories": args.repositories,
             "org": args.org,
