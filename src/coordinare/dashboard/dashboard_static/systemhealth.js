@@ -75,15 +75,22 @@ function systemHealthRowHtml(row) {
 }
 
 // 271: cached event history statistics on one line in the existing panel.
+// 358: the size and the oldest event read in human units, and a count the payload does not
+// carry is left out rather than shown as a bare word.
 function systemHealthEventStoreHtml(stats) {
   if (!stats) return '';
-  return '<div class="sh-row">Event store: ' + esc(stats.size_bytes) + ' bytes, ' +
-    esc(stats.rows) + ' rows, oldest ' + esc(stats.oldest_ts || 'none') + ', ' +
-    esc(stats.dropped) + ' dropped, ' + esc(stats.pruned) + ' pruned, writer ' +
-    esc(stats.writer_state || 'unknown') + (stats.last_error ? ': ' + esc(stats.last_error) : '') +
-    ', export ' + esc(String(stats.export_dropped || 0)) + ' dropped, ' +
-    esc(String(stats.export_failed || 0)) + ' failed sends' +
-    (stats.export_error ? ', export disabled: ' + esc(stats.export_error) : '') + '</div>';
+  var isCount = function(v) { return typeof v === 'number' && isFinite(v); };
+  var parts = [];
+  if (isCount(stats.size_bytes)) parts.push(esc(fmtBytes(stats.size_bytes)));
+  if (isCount(stats.rows)) parts.push(esc(stats.rows.toLocaleString('en-US')) + ' rows');
+  parts.push('oldest ' + (stats.oldest_ts ? timeHtml(stats.oldest_ts, 'unknown') : 'none'));
+  if (isCount(stats.dropped)) parts.push(esc(String(stats.dropped)) + ' dropped');
+  if (isCount(stats.pruned)) parts.push(esc(String(stats.pruned)) + ' pruned');
+  parts.push('writer ' + esc(stats.writer_state || 'unknown') + (stats.last_error ? ': ' + esc(stats.last_error) : ''));
+  parts.push('export ' + esc(String(stats.export_dropped || 0)) + ' dropped');
+  parts.push(esc(String(stats.export_failed || 0)) + ' failed sends');
+  if (stats.export_error) parts.push('export disabled: ' + esc(stats.export_error));
+  return '<div class="sh-row">Event store: ' + parts.join(', ') + '</div>';
 }
 
 // The whole card: the summary line, and the rows inside it.
