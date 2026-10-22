@@ -164,6 +164,7 @@ class ConsolidationRecord(FindingEvidence):
 
     criterion_id: str = Field(pattern=r'^S[0-9a-f]{16}$')
     member_ids: list[str] = Field(min_length=2, max_length=MAX_SCOPE_CRITERIA)
+    member_descriptions: list[str] = Field(default_factory=list, max_length=MAX_SCOPE_CRITERIA)
 
 
 class ScopeDefinition(FindingEvidence):
