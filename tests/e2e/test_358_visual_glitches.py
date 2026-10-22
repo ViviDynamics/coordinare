@@ -39,7 +39,7 @@ def _strip_geometry(page: Page) -> dict[str, Any]:
           return {columnRight: column.right, stripRight: box.right, stripScroll: strip.scrollWidth,
                   stripClient: strip.clientWidth, buttonRight: button.right,
                   bootWidth: boot.getBoundingClientRect().width, bootTitle: boot.title};
-        }"""
+        }""",
     )
 
 
@@ -84,7 +84,7 @@ def test_a_closed_metrics_card_is_only_as_tall_as_its_summary(
           return {card: card.getBoundingClientRect().height,
                   summary: card.querySelector('summary').getBoundingClientRect().height + chrome,
                   health: document.getElementById('health-card').getBoundingClientRect().height};
-        }"""
+        }""",
     )
     assert heights["card"] <= heights["summary"] + _EDGE_SLACK_PX, heights
 
@@ -124,7 +124,7 @@ def test_the_more_line_sits_below_whole_cards(
           return {body: {top: body.top, bottom: body.bottom}, moreTop: more.top, visible: cards,
                   text: col.querySelector('.swimlane-more').textContent,
                   total: col.querySelectorAll('.swimlane-col-body > .swimlane-card').length};
-        }"""
+        }""",
     )
     assert geometry["moreTop"] >= geometry["body"]["bottom"] - _EDGE_SLACK_PX, geometry
     assert geometry["visible"], geometry
