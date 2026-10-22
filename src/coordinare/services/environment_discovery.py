@@ -9,6 +9,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -98,6 +99,7 @@ from coordinare.services.environment_shard_construction import (
     execution_feedback_by_group,
     global_summary,
     merge_parts,
+    owns,
     part_manifest_view,
     parts_from_manifest,
     review_capacities,
@@ -657,7 +659,7 @@ class _CandidateValidator:
             current = {item["id"] for item in entries if isinstance(item, dict) and isinstance(item.get("id"), str)
                        and item.get("required", True) is True} if isinstance(entries, list) else set()
             if not previous <= current:
-                message = "required obligation removed during repair"
+                message = f"required obligation removed during repair: {', '.join(sorted(previous - current)[:16])}"
                 raise EnvironmentDiscoveryError(message, code="obligation_removed")
             previous.update(current)
         manifest = self.construction.admit(data, self.discovery.inputs)
@@ -887,7 +889,7 @@ async def _discover_attempt(
                     divided_build.route_findings(cast("FindingLedger", assessment.finding_ledger))
                     divided_build.previous = parts_from_manifest(manifest, divided_build.groups)
             except ScopeReopenedError:
-                await _rescope(attempt, divided_build)
+                divided_build = await _rescope(attempt, divided_build)
                 continue
     except EnvironmentDiscoveryError:
         raise
@@ -944,24 +946,27 @@ async def _review(attempt: _Attempt, build: DividedConstruction | None,
     return data, reads
 
 
-async def _rescope(attempt: _Attempt, build: DividedConstruction | None) -> None:
+async def _rescope(attempt: _Attempt, build: DividedConstruction | None) -> DividedConstruction | None:
     """Independent scope review reopened: every author reconstructs against the current criteria."""
     construction = attempt.construction
     attempt.identity.update(construction.context())
     rescoped = construction.require_scope()
-    if build is not None:
-        build.scope = rescoped
     refreshed = await attempt.discovery.bind_verified(rescoped.all_inputs, phase='construction',
                                                       cited_by=scope_citations(rescoped))
     attempt.messages.append({'role': 'user', 'content': _json({**construction.context(),
         'bound_scope_inputs': refreshed, 'instruction': 'Source scope was independently reviewed again. '
         'Reconstruct the complete manifest against every current criterion; required obligations remain fixed.'})})
     attempt.messages[1]['content'] = _json({**json.loads(attempt.messages[1]['content']), **construction.context()})
+    if build is not None:
+        build.scope = rescoped
+        return build
+    # A reopened scope can outgrow one author.
+    return _divided_construction(rescoped, attempt)
 
 
 def _divided_construction(scope: ScopeContract, attempt: _Attempt) -> DividedConstruction | None:
-    """A scope too large for one author is constructed by a global author and parallel check authors."""
-    if not divided(scope):
+    """A sharded scope too large for one author is constructed by a global author and parallel check authors."""
+    if attempt.budget.scope_shards is None or not divided(scope):
         return None
     groups = check_groups(scope)
     options, prior = attempt.options, attempt.prior_manifests
@@ -994,6 +999,8 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
             global_data = await _global_part(attempt)
             parts = await build.author_all(summary=global_summary(global_data), probes=budget.probe_reports)
         else:
+            # A redone group replaces every part authored under it, including earlier split remainders.
+            parts = {prefix: entry for prefix, entry in parts.items() if not any(owns(group.prefix, prefix) for group in redo)}
             parts.update(await build.author_all(summary=global_summary(global_data), probes=budget.probe_reports,
                                                 groups=redo))
         discovery.inputs.update(build.group_inputs)
@@ -1007,9 +1014,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
                 raise
             errors = (_validation_feedback(exc) if isinstance(exc, ValidationError)
                       else [{'location': [], 'code': exc.code, 'guidance': str(exc)}])
-            text = _json(errors) + str(exc)
-            redo = [group for prefix, (group, _part) in parts.items()
-                    if prefix in text or any(_json(criterion) in text for criterion in group.ids)]
+            redo = _attributed(errors, exc, parts)
             for group in redo:
                 build.feedback[group.prefix] = {**build.feedback.get(group.prefix, {}), 'merge_errors': errors}
                 build.previous[group.prefix] = parts[group.prefix][1].model_dump(mode='json')
@@ -1018,6 +1023,8 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
                 _repair(messages, _json({'manifest': global_data}), errors, budget)
                 global_data = None
             continue
+        for entry in build.feedback.values():
+            entry.pop('merge_errors', None)
         return merged
     message = 'divided executable proposal could not be merged'
     raise EnvironmentDiscoveryError(message, code='executable_merge_invalid')
@@ -1040,6 +1047,24 @@ async def _global_part(attempt: _Attempt) -> dict[str, Any]:
     return data
 
 
+GROUP_CHECK_ID = re.compile(r'c[0-9]{2,3}[a-z]*-[A-Za-z0-9_.:-]*')
+
+
+def _attributed(errors: list[dict[str, Any]], exc: Exception,
+                parts: Mapping[str, tuple[CheckGroup, ShardChecks]]) -> list[CheckGroup]:
+    """The groups an error names by a check id they declare or own, or by an assigned criterion id.
+
+    Only the structured feedback and the daemon's own message are read; a validation error's rendering embeds
+    candidate input and would attribute by accident.
+    """
+    text = _json(errors) + (str(exc) if isinstance(exc, EnvironmentDiscoveryError) else '')
+    named = set(GROUP_CHECK_ID.findall(text))
+    return [group for prefix, (group, part) in parts.items()
+            if any(owns(prefix, identifier) for identifier in named)
+            or any(check.id in named for check in part.checks)
+            or any(criterion in text for criterion in group.ids)]
+
+
 MERGE_CORRECTABLE = frozenset({'executable_merge_collision', 'obligation_removed', 'source_identity'})
 
 
@@ -1059,6 +1084,8 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
         owner = GLOBAL_OWNER if group is None else group.prefix
         inspection = _Inspection('review', reviewer.entries if reviewer.entries is not None else reviewer.paths,
                                  reviewer.fetch, reviewer.limits, budget)
+        # The coordinator already verified every manifest input; a part reviewer is not charged to verify them again.
+        inspection.inputs.update(reviewer.inputs)
         cited = ({path for criterion in group.criteria for path in criterion.sources} if group is not None
                  else set(manifest.inputs))
         index = await inspection.bind_verified({path: digest for path, digest in manifest.inputs.items() if path in cited},
@@ -1070,10 +1097,18 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
                         'probe_evidence': budget.probe_reports, 'assigned_findings': mine,
                         'required_decision_ids': owned.get(owner, []), 'findings_capacity': capacities[owner],
                         'finding_responses': [r for r in responses if r.get('finding_id') in owned.get(owner, [])],
-                        **({'untrusted_execution_history': budget.execution_review_evidence} if group is None else {})})}]
-        proposal, inputs = await run_agent(build.context, inspection, messages, AgentTask(
-            'assessment', partial(validate_review_part, inspection=inspection, owned=owned.get(owner, []),
-                                  capacity=capacities[owner]), decision_ids=owned.get(owner, [])))
+                        'untrusted_execution_history': budget.execution_review_evidence})}]
+        validate = partial(validate_review_part, inspection=inspection, owned=owned.get(owner, []), capacity=capacities[owner])
+        key = hashlib.sha256(_json(messages).encode()).hexdigest()
+        saved = saved_part(budget, 'reviews', owner, key)
+        if saved is not None:
+            await inspection.bind_verified(saved['inputs'], phase='review')
+            proposal, inputs = validate(saved['data'])
+            return owner, proposal, inputs
+        proposal, inputs = await run_agent(build.context, inspection, messages,
+                                           AgentTask('assessment', validate, decision_ids=owned.get(owner, [])))
+        save_part(budget, 'reviews', owner, key, data={'assessment': proposal.model_dump(mode='json')}, inputs=inputs)
+        await budget.flush()
         return owner, proposal, inputs
 
     def whole(item: CheckGroup | None, _overflow: ShardOverflowError) -> list[CheckGroup | None]:

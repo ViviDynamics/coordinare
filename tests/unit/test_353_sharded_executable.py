@@ -1,6 +1,7 @@
 """Divided executable construction: a global author, prefixed check authors, a deterministic merge."""
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -150,6 +151,8 @@ class FakeBuild:
     async def author_all(self, *, summary, probes, groups=None):
         asked = list(self.groups if groups is None else groups)
         self.rounds.append([group.prefix for group in asked])
+        self.briefs = getattr(self, 'briefs', [])
+        self.briefs.append(json.loads(json.dumps(self.feedback)))
         return {group.prefix: (group, validate_group(group_reply(group), group=group, summary=summary)) for group in asked}
 
 
@@ -191,8 +194,9 @@ async def test_a_merge_error_naming_one_group_reauthors_only_that_group(monkeypa
     merged, build, phases, _messages = await merge_with(monkeypatch, validate)
     assert phases == [1]
     assert build.rounds == [['c00-', 'c01-'], ['c01-']]
-    assert 'merge_errors' in build.feedback['c01-']
-    assert 'c00-' not in build.feedback
+    assert 'merge_errors' in build.briefs[1]['c01-']
+    assert 'c00-' not in build.briefs[1]
+    assert build.feedback == {'c01-': {}}  # merge errors are cleared once the merge validates
     assert {check['id'] for check in merged['checks']} == {'toolchain', 'c00-0', 'c01-0'}
 
 
@@ -290,7 +294,7 @@ async def test_a_divided_review_gives_each_part_a_fresh_reviewer_and_only_its_ow
     assert [check['id'] for check in seen[2]['part']['checks']] == ['toolchain']
     assert [item['path'] for item in seen[0]['evidence']] == [first.sources[0]]
     assert len(seen[2]['evidence']) == 3
-    assert [entry['history'] for entry in seen] == [False, False, True]
+    assert all(entry['history'] for entry in seen)
     assert combined['verdict'] == 'revise'
     assert set(reads) >= set(manifest.inputs)
 
@@ -352,7 +356,7 @@ async def test_a_restart_reuses_a_check_groups_part_only_for_the_same_brief(monk
     monkeypatch.setattr(construction_module, 'run_agent', agent)
     group = CheckGroup('c00-', (make_criterion(1),))
     budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
-    scope = SimpleNamespace(all_inputs={'src/001.md': 'b' * 64})
+    scope = SimpleNamespace(all_inputs={'src/001.md': 'b' * 64}, definition=SimpleNamespace(criteria=list(group.criteria)))
 
     def builder():
         return DividedConstruction(AgentContext(budget, None, None), [], None, scope, 4)
@@ -402,9 +406,86 @@ def test_a_failed_check_reaches_only_its_group_and_global_failures_stay_global()
     from coordinare.services.environment_shard_construction import execution_feedback_by_group
 
     groups = [CheckGroup('c00-', (make_criterion(1),)), CheckGroup('c01-', (make_criterion(2),))]
-    feedback = {'manifest_digest': 'd' * 64, 'report': {'results': [
-        {'id': 'c01a-0', 'status': 'fail', 'required': True}, {'id': 'c00-0', 'status': 'pass', 'required': True},
-        {'id': 'install-node', 'status': 'fail', 'required': True}]}}
+    # The shape repair_context hands discovery: only non-passing results, under the rejected manifest's digest.
+    feedback = {'rejected_manifest_digest': 'd' * 64, 'results': [
+        {'id': 'c01a-0', 'status': 'fail', 'required': True}, {'id': 'c00-1', 'status': 'skipped', 'required': True},
+        {'id': 'install-node', 'status': 'fail', 'required': True}]}
     routed = execution_feedback_by_group(feedback, groups)
-    assert list(routed) == ['c01-']
+    assert sorted(routed) == ['c00-', 'c01-']
     assert [result['id'] for result in routed['c01-']['untrusted_execution_failures']] == ['c01a-0']
+    assert routed['c00-']['rejected_manifest_digest'] == 'd' * 64
+
+
+def test_a_split_remainder_keeps_the_previous_ids_its_criteria_owned():
+    from coordinare.services.environment_shard_construction import inherit
+
+    first, second = make_criterion(1), make_criterion(2)
+    parent = CheckGroup('c00-', (first, second))
+    previous = {'c00-': {'checks': [{'id': 'c00-shared', 'argv': ['true']}, {'id': 'c00-two', 'argv': ['true']},
+                                    {'id': 'c00-helper', 'argv': ['true']}],
+                         'criterion_checks': {first.id: ['c00-shared'], second.id: ['c00-shared', 'c00-two']}}}
+    left, right = CheckGroup('c00a-', (first,)), CheckGroup('c00b-', (second,))
+    kept_left, kept_right = inherit(previous, left, parent), inherit(previous, right, parent)
+    assert kept_left.own == {'c00-shared', 'c00-helper'} and kept_right.own == {'c00-two'}
+    assert 'c00-shared' in kept_right.siblings
+    reply = {'shard_checks': {'checks': [{'id': 'c00-two', 'argv': ['true']}],
+                              'criterion_checks': {second.id: ['c00-shared', 'c00-two']}}}
+    validate_group(reply, group=right, summary=SUMMARY, inherited=kept_right)
+    with pytest.raises(_ResponseReferenceError):
+        validate_group(reply, group=right, summary=SUMMARY)
+    assert inherit(previous, parent, parent).part == previous['c00-']
+
+
+def test_an_error_is_attributed_by_named_ids_never_by_rendered_candidate_input():
+    group = CheckGroup('c00-', (make_criterion(1),))
+    part = validate_group(group_reply(group), group=group, summary=SUMMARY)
+    parts = {'c00-': (group, part)}
+    named = EnvironmentDiscoveryError('required executable command c00-0 changed after project execution',
+                                      code='obligation_removed')
+    assert discovery_module._attributed([], named, parts) == [group]
+    try:
+        CoverageAssessmentProposal.model_validate({'verdict': 'c00-0'})
+    except ValidationError as exc:
+        assert discovery_module._attributed(_validation_feedback(exc), exc, parts) == []
+
+
+def test_open_findings_are_replaced_each_round_and_execution_failures_kept():
+    from coordinare.services.environment_shard_construction import DividedConstruction
+
+    group = CheckGroup('c00-', (make_criterion(1),))
+    build = DividedConstruction(None, [], None, scope_of(list(group.criteria)), 4)
+    build.feedback = {'c00-': {'untrusted_execution_failures': [{'id': 'c00-0'}], 'open_findings': ['stale']}}
+    build.route_findings(SimpleNamespace(records=[], open_ids=list))
+    assert build.feedback == {'c00-': {'untrusted_execution_failures': [{'id': 'c00-0'}]}}
+
+
+@pytest.mark.asyncio
+async def test_a_redone_group_that_splits_replaces_its_earlier_part(monkeypatch):
+    groups = [CheckGroup('c00-', (make_criterion(1), make_criterion(3))), CheckGroup('c01-', (make_criterion(2),))]
+    build = FakeBuild(groups)
+
+    async def split_on_redo(*, summary, probes, groups=None):
+        if groups is None:
+            return await FakeBuild.author_all(build, summary=summary, probes=probes)
+        halves = [CheckGroup('c00a-', (make_criterion(1),)), CheckGroup('c00b-', (make_criterion(3),))]
+        return {half.prefix: (half, validate_group(group_reply(half), group=half, summary=summary)) for half in halves}
+
+    build.author_all = split_on_redo
+    calls: list[int] = []
+
+    def validate(data):
+        calls.append(1)
+        if len(calls) == 1:
+            raise EnvironmentDiscoveryError('required obligation removed during repair: c00-0', code='obligation_removed')
+        return data
+
+    async def phase(**_kwargs):
+        return global_part(), {}
+
+    monkeypatch.setattr(discovery_module, '_phase', phase)
+    budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
+    attempt = SimpleNamespace(budget=budget, messages=[{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}],
+                              chat=None, discovery=SimpleNamespace(budget=budget, inputs={}, finding_responses=[]),
+                              construction=SimpleNamespace(observe_sources=lambda _inputs: asyncio.sleep(0)))
+    merged = await discovery_module._divided_candidate(build, attempt, validate)
+    assert sorted(merged['criterion_checks'].values()) == [['c00a-0'], ['c00b-0'], ['c01-0']]

@@ -77,7 +77,8 @@ REVISION_LIMIT_GUIDANCE = (
     'without resubmission: add only genuinely new obligations and reassess only retained unknown or not_applicable '
     'criteria. Submit the most important changes now; further obligations can follow in a later revision.')
 GLOBAL_PART_GUIDANCE = ("This is the global part of a divided manifest. Leave criterion_checks empty: check authors map "
-    "criteria. Check ids starting with c, two or three digits and a hyphen are reserved for check authors; rename yours.")
+    "criteria. Check ids of c, two or three digits, optional letters and a hyphen (c00-, c00a-) are reserved for check "
+    "authors; rename yours.")
 CREDENTIAL_GUIDANCE = (
     'Use ${NAME} for every credential. For a credential environment variable named K, its value must be exactly ${K}. '
     'A credential for a service this manifest starts, such as a local test database password, belongs in '
