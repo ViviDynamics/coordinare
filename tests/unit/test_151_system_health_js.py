@@ -1,7 +1,7 @@
 """#151: the System health card's rendering, checked under node, and its wiring into the page.
 
 ``systemhealth.js`` is loaded verbatim with the two helpers it relies on (``esc`` and
-``fmtAge``, sliced from the shipped ``helpers.js``). The node script asserts the one-line
+``fmtAge`` and ``fmtBytes``, sliced from the shipped ``helpers.js``). The node script asserts the one-line
 summary, the open state, the freshness markup and the escaping.
 """
 from __future__ import annotations
@@ -24,6 +24,7 @@ def _sliced_js() -> str:
         shipped_function("helpers", "esc"),
         time_helpers_js(),
         shipped_function("helpers", "fmtAge"),
+        shipped_function("helpers", "fmtBytes"),
         _DASHBOARD_JS_SOURCES["systemhealth"],
     ])
 
