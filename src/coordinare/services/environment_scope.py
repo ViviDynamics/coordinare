@@ -52,7 +52,7 @@ from coordinare.services.environment_findings import (
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_response_schema import (
     constrain_source_criteria,
-    invoke_chat,
+    invoke_recorded,
     response_schema,
 )
 from coordinare.services.environment_scope_investigation import (
@@ -140,8 +140,8 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                 await budget.flush()
                 size = check_evidence_context(messages, max_bytes=inspection.limits.max_review_context_bytes, phase=inspection.name)
                 budget.context_bytes += size
-                raw = budget.record_reply(await invoke_chat(chat, messages, schema=schema,
-                    max_context_bytes=inspection.limits.max_review_context_bytes, context_phase=inspection.name))
+                raw = await invoke_recorded(budget, chat, messages, schema=schema,
+                    max_context_bytes=inspection.limits.max_review_context_bytes, context_phase=inspection.name)
                 try:
                     reply = _decode_reply(raw, inspection.name, inspection.limits)
                     if 'tool' in reply:

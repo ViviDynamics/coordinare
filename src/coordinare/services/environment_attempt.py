@@ -40,6 +40,9 @@ class EnvironmentDiscoveryError(RuntimeError):
         self.code = code
 
 
+CALL_STAT_KEYS = ('calls', 'seconds', 'input_tokens', 'output_tokens', 'cached_tokens', 'length_stops')
+
+
 @dataclass(frozen=True)
 class DiscoveryChatReply:
     text: str
@@ -98,6 +101,8 @@ class AttemptBudget:
     scope_definition: ScopeDefinition | None = field(default=None, repr=False)
     # Sharded discovery: plan digest, completed shard summaries and reviewed shard criteria.
     scope_shards: dict[str, Any] | None = field(default=None, repr=False)
+    # Per-phase call cost: calls, seconds, input/output/cached tokens and length stops.
+    call_stats: dict[str, dict[str, float]] = field(default_factory=dict, repr=False)
     # Divided executable construction: completed global and check-group parts, keyed by what each author was given.
     executable_parts: dict[str, Any] | None = field(default=None, repr=False)
     scope_contract: ScopeContract | None = field(default=None, repr=False)
@@ -169,8 +174,11 @@ class AttemptBudget:
             await self.checkpoint()
         self.check()
 
-    def record_reply(self, reply: str | DiscoveryChatReply) -> str:
+    def record_reply(self, reply: str | DiscoveryChatReply, *, phase: str | None = None,
+                     seconds: float | None = None) -> str:
         self.calls_completed += 1
+        if phase is not None:
+            self._record_call(phase, reply, seconds)
         if isinstance(reply, str):
             return reply
         if not isinstance(reply, DiscoveryChatReply):
@@ -188,6 +196,18 @@ class AttemptBudget:
         if reply.finish_reason in {"stop", "length", "tool_calls", "content_filter", "function_call"}:
             self.finish_reasons[reply.finish_reason] = self.finish_reasons.get(reply.finish_reason, 0) + 1
         return reply.text
+
+    def _record_call(self, phase: str, reply: str | DiscoveryChatReply, seconds: float | None) -> None:
+        """Per-phase cost: where an attempt's time and tokens go, from trusted counters only."""
+        stats = self.call_stats.setdefault(phase[:64], dict.fromkeys(CALL_STAT_KEYS, 0))
+        stats['calls'] += 1
+        stats['seconds'] = round(stats['seconds'] + max(0.0, seconds or 0.0), 3)
+        if isinstance(reply, DiscoveryChatReply):
+            usage = reply.usage or {}
+            for key, names in (('input_tokens', ('input', 'input_tokens')), ('output_tokens', ('output', 'output_tokens')),
+                               ('cached_tokens', ('cache_read',))):
+                stats[key] += sum(value for name in names if type(value := usage.get(name)) is int and 0 <= value <= 10**12)
+            stats['length_stops'] += reply.finish_reason == 'length'
 
     def summary(self) -> dict[str, Any]:
         """Only trusted stages/codes, counters and allowlisted provider metadata escape."""
@@ -207,4 +227,5 @@ class AttemptBudget:
                 "finish_reasons": dict(self.finish_reasons), "metadata_available": self.metadata_available,
                 "transport_fallbacks": self.transport_fallbacks,
                 "shard_agents": self.shard_agents, "shard_schema_repairs": self.shard_schema_repairs,
-                "validation_codes": list(self.validation_codes)}
+                "validation_codes": list(self.validation_codes),
+                "call_stats": {phase: dict(stats) for phase, stats in self.call_stats.items()}}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
 
     from coordinare_service_inference.environment.scope import ScopeContract
 
-    from coordinare.services.environment_attempt import DiscoveryChatReply
+    from coordinare.services.environment_attempt import AttemptBudget, DiscoveryChatReply
 
 
 def _require_scope_mapping(declaration: dict[str, Any], scope: ScopeContract) -> None:
@@ -158,6 +159,16 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
         _require_scope_mapping(declaration, scope_contract)
     definitions = declaration.pop('$defs', {})
     return {'type': 'object', 'anyOf': [*tools, declaration], '$defs': definitions}
+
+
+async def invoke_recorded(budget: AttemptBudget, chat: Callable[..., Awaitable[str | DiscoveryChatReply]],
+                          messages: list[dict[str, str]], *, schema: dict[str, Any], max_context_bytes: int | None,
+                          context_phase: str) -> str:
+    """One model call, timed and recorded against its phase."""
+    started = time.monotonic()
+    reply = await invoke_chat(chat, messages, schema=schema, max_context_bytes=max_context_bytes,
+                              context_phase=context_phase)
+    return budget.record_reply(reply, phase=context_phase, seconds=time.monotonic() - started)
 
 
 async def invoke_chat(chat: Callable[..., Awaitable[str | DiscoveryChatReply]], messages: list[dict[str, str]],
