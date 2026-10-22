@@ -155,6 +155,19 @@ SHARED_CONTEXT_NOTE = (' Context shared by every agent in your role (for example
                        'scope_digest) is under _shared_context; the rest is yours alone. ')
 
 
+def _uninspected_sources_errors(sources: Sequence[str], inputs: Mapping[str, str]) -> list[dict[str, Any]]:
+    """One correction for every uninspected citation, by position (model text is never echoed), with the files
+    the reviewer does hold, which come from the daemon's own verified reads."""
+    invalid = [str(index) for index, path in enumerate(sources) if path not in inputs]
+    if not invalid:
+        return []
+    return [{'code': 'scope_citations_invalid', 'location': ['scope_assessment', 'sources', invalid[0]],
+             'invalid_source_indices': invalid, 'inspected_files': sorted(inputs)[:200],
+             'guidance': 'sources may list only files you hold: those in inspected_files, or files you read with '
+                         'read_files before answering. Every source at invalid_source_indices is uninspected: remove '
+                         'it from sources, or read it first. Keep the rest of your assessment unchanged.'}]
+
+
 def agent_context(shared: Mapping[str, Any], own: Mapping[str, Any]) -> str:
     return str(canonical({SHARED_CONTEXT: dict(shared), **own}).decode())
 
@@ -738,9 +751,7 @@ class ShardedScope:
             raise _ResponseReferenceError([{'code': 'review_findings_invalid', 'location': ['scope_assessment', 'decisions'],
                 'required_decision_ids': list(owned),
                 'guidance': 'Supply exactly one decision for every required_decision_ids entry and no others.'}])
-        errors = [{'code': 'scope_citations_invalid', 'location': ['scope_assessment', 'sources', str(index)],
-                   'guidance': 'Cite only files you inspected in this review.'}
-                  for index, path in enumerate(assessment.sources) if path not in inspection.inputs]
+        errors = _uninspected_sources_errors(assessment.sources, inspection.inputs)
         errors.extend(_decision_reference_errors(assessment, definition=definition))
         errors.extend(_request_rule_errors(assessment, reviewer=self.view(name='scope_review')))
         gaps = any(decision.disposition == 'source_gap' for decision in assessment.decisions)

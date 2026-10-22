@@ -69,3 +69,13 @@ async def test_an_answer_before_holding_evidence_is_corrected():
     assert result == {'shard_summary': {'criteria': []}}
     assert 'evidence_required' in seen[1][-1]['content']
     assert len({conversation[0]['content'] for conversation in seen}) == 1
+
+
+def test_uninspected_review_citations_are_corrected_together_without_echoing_them():
+    from coordinare.services.environment_shard_scope import _uninspected_sources_errors
+
+    held = {'README.md': 'a' * 64, 'Gemfile': 'b' * 64}
+    [error] = _uninspected_sources_errors(['README.md', 'private/guess-1', 'Gemfile', 'private/guess-2'], held)
+    assert error['invalid_source_indices'] == ['1', '3'] and error['inspected_files'] == ['Gemfile', 'README.md']
+    assert 'private/guess' not in json.dumps(error)
+    assert _uninspected_sources_errors(['README.md'], held) == []
