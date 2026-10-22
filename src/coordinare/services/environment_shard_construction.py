@@ -161,7 +161,10 @@ class Inheritance:
 
     part: dict[str, Any] | None = None
     own: frozenset[str] = frozenset()
+    # Previously required own ids the remainder must keep, and sibling ids it may depend on or (if usable) map to.
+    required: frozenset[str] = frozenset()
     siblings: frozenset[str] = frozenset()
+    usable_siblings: frozenset[str] = frozenset()
 
 
 def inherit(previous: Mapping[str, dict[str, Any]], group: CheckGroup, parent: CheckGroup | None) -> Inheritance:
@@ -170,11 +173,10 @@ def inherit(previous: Mapping[str, dict[str, Any]], group: CheckGroup, parent: C
     A check mapped by several criteria, or by none, belongs to the remainder holding the first such criterion in the
     parent's order, so exactly one remainder keeps each previous id and the others may map to it.
     """
-    if group.prefix in previous:
-        return Inheritance(previous[group.prefix])
+    own_part = previous.get(group.prefix)
     base = previous.get(base_prefix(group.prefix))
-    if base is None or parent is None:
-        return Inheritance()
+    if base_prefix(group.prefix) == group.prefix or base is None or parent is None:
+        return Inheritance(own_part)
     mapping: dict[str, list[str]] = base.get('criterion_checks', {})
     declared = [check['id'] for check in base.get('checks', []) if isinstance(check, dict) and 'id' in check]
     owner: dict[str, str] = {}
@@ -185,9 +187,14 @@ def inherit(previous: Mapping[str, dict[str, Any]], group: CheckGroup, parent: C
     for identifier in declared:
         owner.setdefault(identifier, parent.criteria[0].id)
     own = frozenset(identifier for identifier, criterion in owner.items() if criterion in group.ids)
-    part = {'checks': [check for check in base.get('checks', []) if check.get('id') in own],
-            'criterion_checks': {criterion: ids for criterion, ids in mapping.items() if criterion in group.ids}}
-    return Inheritance(part, own, frozenset(declared) - own)
+    checks = {check['id']: check for check in base.get('checks', []) if isinstance(check, dict) and 'id' in check}
+    # A redone remainder starts from its own last part; what it keeps is always derived from the parent's.
+    part = own_part or {'checks': [check for identifier, check in checks.items() if identifier in own],
+                        'criterion_checks': {criterion: ids for criterion, ids in mapping.items() if criterion in group.ids}}
+    siblings = frozenset(declared) - own
+    return Inheritance(part, own, frozenset(identifier for identifier in own if checks[identifier].get('required', True)),
+                       siblings, frozenset(identifier for identifier in siblings if checks[identifier].get('required', True)
+                                           and not checks[identifier].get('scope')))
 
 
 def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[str, Any],
@@ -214,9 +221,14 @@ def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[
                        'missing': sorted(group.ids - mapped)[:32], 'unexpected': sorted(mapped - group.ids)[:32],
                        'guidance': 'Map exactly every assigned criterion id, and no other.'})
 
+    missing = sorted(inherited.required - set(own))
+    if missing:
+        errors.append({'code': 'inherited_check_missing', 'location': ['shard_checks', 'checks'], 'missing': missing[:32],
+                       'guidance': 'Keep every keep_check_ids check that was required; revise it in place, never drop it.'})
+
     def usable(identifier: str) -> bool:
         if identifier in inherited.siblings:
-            return True
+            return identifier in inherited.usable_siblings
         if identifier in own:
             return own[identifier].required and not own[identifier].scope
         item = global_checks.get(identifier)
@@ -350,7 +362,7 @@ class DividedConstruction:
             owner = finding_part(record.proposal.affected_ids, self.groups)
             routed.setdefault(owner, []).append(record.model_dump(mode='json'))
         # Each round's open findings replace the last round's; execution failures stay until the next execution.
-        kept = {prefix: {key: value for key, value in entry.items() if key.startswith('untrusted_execution')}
+        kept = {prefix: {key: value for key, value in entry.items() if key in EXECUTION_FEEDBACK_KEYS}
                 for prefix, entry in self.feedback.items()}
         for prefix, records in routed.items():
             if prefix != GLOBAL_OWNER:
@@ -368,6 +380,9 @@ def save_part(budget: AttemptBudget, kind: str, name: str, key: str, **record: A
     parts = dict(budget.executable_parts or {})
     parts[kind] = {**(parts.get(kind) or {}), name: {'key': key, **record}}
     budget.executable_parts = parts
+
+
+EXECUTION_FEEDBACK_KEYS = frozenset({'untrusted_execution_failures', 'rejected_manifest_digest'})
 
 
 def execution_feedback_by_group(feedback: Mapping[str, Any], groups: Sequence[CheckGroup]) -> dict[str, Any]:
