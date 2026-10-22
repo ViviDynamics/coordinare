@@ -276,6 +276,10 @@ class _EphemeralJob:
     # 132: the job's secret values, known from the payload. Held only for this job's life:
     # they are dropped in cleanup, so a refused dispatch keeps no copy.
     secrets: tuple[str, ...] = ()
+    # Claimed when teardown begins (before any await), so an in-line refusal, a concurrent release and a
+    # failed dispatch never stop the same container twice. A stop that fails is not retried here; startup
+    # reconciliation reaps by label, as before.
+    torn_down: bool = False
 
 
 def _inject_driver_secrets(
@@ -596,13 +600,43 @@ class HTTPPerformerService:
                 )
             except asyncio.CancelledError:
                 job = owner.get("job")
+                if job is not None and job.torn_down:
+                    raise
                 if job is not None:
                     self._active_jobs.setdefault(owner["session_id"], job)
                 confirmed = await self.stop_session_confirmed(owner["session_id"])
                 if not confirmed:
                     logger.warning("http_performer.cancelled_dispatch_cleanup_unconfirmed",
                         session_id=owner["session_id"])
+                    # Unconfirmed is never treated as stopped, but a known container is still stopped by its
+                    # handle (a runtime without find_session or label stops would otherwise stop nothing).
+                    with contextlib.suppress(Exception):
+                        await self._stop_failed_dispatch(owner)
                 raise
+            except Exception:
+                # Expected refusals tear their container down in-line; any other failure once a container
+                # exists still stops it. A teardown failure never replaces the original error.
+                try:
+                    await self._stop_failed_dispatch(owner)
+                except Exception as exc:
+                    logger.warning("http_performer.failed_dispatch_teardown_error", performer_id=self._config.id,
+                                   error=str(exc))
+                raise
+
+    async def _stop_failed_dispatch(self, started: dict[str, Any]) -> None:
+        """Expected refusals tear their container down in-line. Anything else raised once a container
+        exists (a missing file while the payload is built, a fault in the readiness probe, a bug) must
+        still stop it, or every retry of a failing dispatch leaves one more container running."""
+        job: _EphemeralJob | None = started.get("job")
+        if job is None or job.torn_down:
+            return
+        session_id = str(started["session_id"])
+        logger.warning("http_performer.failed_dispatch_teardown", performer_id=self._config.id,
+                       container_id=job.container_id)
+        if session_id in self._active_jobs:
+            await self._cleanup_ephemeral_job_by_id(session_id)
+        else:
+            await self._refuse_job(job)
 
     async def _require_provenance_capability(
         self, payload: JobInitPayload, ready_status: PerformerStatus | None,
@@ -1802,6 +1836,8 @@ class HTTPPerformerService:
                 if started is None:
                     return True
                 handle = started.handle
+            if job is not None:
+                job.torn_down = True  # this confirmed stop owns the container from here
             try:
                 # 132: the full log is read before the stop removes it.
                 if job is not None:
@@ -1857,7 +1893,12 @@ class HTTPPerformerService:
         The stop is in a finally: nothing that happens while the log is read (a
         cancellation, a failure, a slow disk) keeps the container alive. ``collect=False``
         skips the log, which shutdown uses so that every stop happens promptly.
+        Every path that tears a job down (refusal, release, shutdown, a failed dispatch) ends here, so the
+        claim below stops each container at most once.
         """
+        if job.torn_down:
+            return
+        job.torn_down = True
         try:
             await self._capture_run_log(job, collect=collect)
         finally:
