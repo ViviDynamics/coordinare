@@ -106,3 +106,29 @@ def test_bounded_errors_report_the_schema_bound_never_the_submitted_value():
     assert errors['too_short']['min_length'] == 1
     assert "'accept'" in errors['literal_error']['allowed']
     assert 'secret' not in json.dumps(errors)
+
+
+def test_missing_fields_ranges_patterns_and_shard_envelopes_are_named_from_the_schema():
+    from pydantic import Field
+
+    class Part(BaseModel):
+        model_config = ConfigDict(extra='forbid')
+        timeout_seconds: float = Field(gt=0, le=3600)
+        id: str = Field(pattern=r'^[a-z]+$')
+        checks: list[str]
+
+    class Envelope(BaseModel):
+        model_config = ConfigDict(extra='forbid')
+        shard_checks: Part
+        finding_responses: list[str]
+
+    with pytest.raises(ValidationError) as failure:
+        Envelope.model_validate({'shard_checks': {'timeout_seconds': 9999, 'id': 'SECRET!', 'finding_responses': []}})
+    errors = _validation_feedback(failure.value)
+    by_code = {error['code']: error for error in errors}
+    assert by_code['less_than_equal']['at_most'] == 3600
+    assert by_code['string_pattern_mismatch']['pattern'] == '^[a-z]+$'
+    assert {error.get('missing_field') for error in errors if error['code'] == 'missing'} >= {'checks', 'finding_responses'}
+    nested = [error for error in errors if error['code'] == 'extra_forbidden']
+    assert nested and nested[0]['guidance'] == nested_responses_guidance('shard_checks')
+    assert 'SECRET' not in json.dumps(errors)

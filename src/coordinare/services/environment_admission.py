@@ -125,16 +125,31 @@ def _revision_limit(error: Mapping[str, Any], location: list[Any]) -> dict[str, 
     return None
 
 
+NUMERIC_BOUND_CODES = frozenset({"greater_than", "greater_than_equal", "less_than", "less_than_equal"})
+# The schema-owned value a choice or pattern error names: (context key, reported name).
+CHOICE_CONTEXT = {"literal_error": ("expected", "allowed"), "union_tag_not_found": ("expected_tags", "allowed"),
+                  "union_tag_invalid": ("expected_tags", "allowed"), "string_pattern_mismatch": ("pattern", "pattern")}
+
+
 def _schema_bounds(code: str, error: Mapping[str, Any], *, guided: bool) -> dict[str, Any]:
-    """The schema's own bound for a size or choice error; the submitted value is never echoed."""
+    """The schema's own bound for a size, range, choice or missing-field error; submitted values are never echoed."""
     context = error.get("ctx") or {}
+    location = error.get("loc") or ()
+    found: dict[str, Any] = {}
+    if code == "missing" and location and isinstance(location[-1], str):
+        # A missing field is always a declared schema field, so naming it echoes nothing the model wrote.
+        found["missing_field"] = location[-1][:64]
     if code in {"string_too_long", "too_long"} and isinstance(context.get("max_length"), int):
-        return {"max_length": context["max_length"], **({} if guided else {"guidance": LENGTH_GUIDANCE})}
+        found.update({"max_length": context["max_length"], **({} if guided else {"guidance": LENGTH_GUIDANCE})})
     if code in {"string_too_short", "too_short"} and isinstance(context.get("min_length"), int):
-        return {"min_length": context["min_length"]}
-    if code == "literal_error" and isinstance(context.get("expected"), str):
-        return {"allowed": context["expected"][:512]}
-    return {}
+        found["min_length"] = context["min_length"]
+    if code in NUMERIC_BOUND_CODES:
+        found.update({name: context[key] for key, name in (("gt", "greater_than"), ("ge", "at_least"),
+                                                           ("lt", "less_than"), ("le", "at_most"))
+                      if isinstance(context.get(key), int | float)})
+    if code in CHOICE_CONTEXT and isinstance(context.get(CHOICE_CONTEXT[code][0]), str):
+        found[CHOICE_CONTEXT[code][1]] = context[CHOICE_CONTEXT[code][0]][:512]
+    return found
 
 
 def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
@@ -147,7 +162,9 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
                       "finding_responses", "finding_id", "issue", "category", "affected_ids", "duplicate_of", "status",
                       "capability_unavailable", "criteria", "applicability", "usability", "runtime_needs", "scope_assessment", "criterion_checks", "runtime_endpoints", "scope_revision", "base_digest", "add", "reassess", "criterion_id", "criterion",
                       "disposition", "criterion_ids", "gap_kind", "inspection_requests", "covered", "source_correction",
-                      "source_gap", "duplicate", "local_credentials", "name", "purpose", "service"}
+                      "source_gap", "duplicate", "local_credentials", "name", "purpose", "service",
+                      # Envelope keys, so misplaced finding_responses guidance can name the real one.
+                      "shard_summary", "listing_triage", "scope_consolidation", "shard_checks", "verdicts", "groups"}
     result = []
     # The key a misplaced finding_responses was nested under is the envelope's main key, named in the guidance.
     nested_key = next((str(error["loc"][0]) for error in exc.errors(include_url=False, include_input=False)
@@ -164,7 +181,8 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             "probe_id_maps", "probe_cited_question", "probe_required_true", "probe_citations_uninspected",
             "scope_identity_mismatch", "scope_required_check_mapping", "scope_required_service", "scope_id_collision",
             "finding_citations_invalid", "union_tag_not_found", "union_tag_invalid", "global_part_invalid",
-            *LOCAL_CREDENTIAL_GUIDANCE,
+            "greater_than", "greater_than_equal", "less_than", "less_than_equal", "int_parsing", "float_parsing",
+            "bool_parsing", "int_from_float", *LOCAL_CREDENTIAL_GUIDANCE,
         } else "invalid_contract_value"
         scope_locations = {'scope_required_check_mapping': 'criterion_checks', 'scope_identity_mismatch': 'scope_contract_digest',
                            'scope_required_service': 'services', 'scope_id_collision': 'id'}

@@ -72,10 +72,11 @@ async def test_an_answer_before_holding_evidence_is_corrected():
 
 
 def test_uninspected_review_citations_are_corrected_together_without_echoing_them():
-    from coordinare.services.environment_shard_scope import _uninspected_sources_errors
+    from coordinare.services.environment_scope import uninspected_sources_errors
 
     held = {'README.md': 'a' * 64, 'Gemfile': 'b' * 64}
-    [error] = _uninspected_sources_errors(['README.md', 'private/guess-1', 'Gemfile', 'private/guess-2'], held)
+    [error] = uninspected_sources_errors(['README.md', 'private/guess-1', 'Gemfile', 'private/guess-2'], held)
     assert error['invalid_source_indices'] == ['1', '3'] and error['inspected_files'] == ['Gemfile', 'README.md']
+    assert error['location'] == ['scope_assessment', 'sources', '1'] and error['more_inspected_files'] == 0
     assert 'private/guess' not in json.dumps(error)
-    assert _uninspected_sources_errors(['README.md'], held) == []
+    assert uninspected_sources_errors(['README.md'], held) == []
