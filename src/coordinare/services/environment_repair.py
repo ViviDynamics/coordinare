@@ -54,7 +54,7 @@ from coordinare.services.environment_obligations import (
 from coordinare.services.environment_probes import ProbePlan, ProbeReport, bind_probe_report
 from coordinare.services.environment_scope import preserve_scope
 from coordinare.services.environment_scope_investigation import validate_investigation_history
-from coordinare.services.environment_scope_reuse import reusable_scope
+from coordinare.services.environment_scope_reuse import SCOPE_POLICY_VERSION, reusable_scope
 
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import CheckResult
@@ -97,6 +97,7 @@ class RepairJournal(BaseModel):
     # An archived attempt's accepted scope offered for a fresh review, and the record once adopted.
     scope_reuse: dict[str, Any] | None = None
     scope_reused_from: dict[str, Any] | None = None
+    scope_policy_version: str = SCOPE_POLICY_VERSION
     finding_ledger: FindingLedger | None = None
     coverage_manifest: EnvironmentManifest | None = None
     source_owner: str | None = None

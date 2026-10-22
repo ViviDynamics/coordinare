@@ -144,7 +144,9 @@ def validate_triage(data: dict[str, Any], *, shard: Shard,
                            'guidance': 'Use a listed file path or one of its directories, exactly as listed.'})
         if verdict.verdict == 'environment' and path not in shard.paths and path in prefixes:
             files = [listed for listed in shard.paths if listed.startswith(path + '/')]
-            if _expandable(files, entries):
+            # The bound applies to the whole directory: a large one split across listing shards is never expanded piecemeal.
+            whole = [listed for listed in entries if listed.startswith(path + '/')] if entries is not None else files
+            if _expandable(whole, entries):
                 expanded[path] = (files, verdict.rationale)
             else:
                 errors.append(_directory_correction(index, files))

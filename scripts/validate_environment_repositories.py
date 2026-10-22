@@ -655,6 +655,7 @@ async def validate_repository(
         nonlocal calls, review_starts, source_review_starts
         calls += 1
         context = json.loads(messages[1]["content"])
+        context = {**context.pop("_shared_context", {}), **context}  # sharded prompts nest what all agents share
         reviewing = "manifest" in context
         source_reviewing = (context.get("phase_contract", {}).get("subject") == "source_obligations"
                             and "required_decision_ids" in context)

@@ -87,3 +87,21 @@ async def test_a_new_attempt_after_restart_is_offered_the_archived_scope(tmp_pat
     other.bootstrap_commit_sha = COMMIT
     other.environment_attempt_archive = [{'source_commit': COMMIT, 'scope_author_protocol': 4}]
     assert begin_attempt(other, LIMITS, outer_seconds=600).scope_reuse is None
+
+
+@pytest.mark.asyncio
+async def test_a_reused_scope_planned_under_other_limits_is_still_reviewed_afresh():
+    seed = reusable_scope([await accepted_journal()], COMMIT)
+    seed['shards'] = {**(seed['shards'] or {}), 'plan_digest': '0' * 64}
+    router, budget = Router(), fresh_budget()
+    budget.scope_reuse = seed
+    contract = await run(router, budget=budget)
+    assert 'author' not in {role for role, _messages in router.conversations} and router.reviews >= 1
+    assert contract.definition.model_dump(mode='json') == seed['definition']
+
+
+@pytest.mark.asyncio
+async def test_a_scope_written_under_another_policy_is_not_offered():
+    journal = await accepted_journal()
+    assert reusable_scope([{**journal, 'scope_policy_version': '353-scope-v0'}], COMMIT) is None
+    assert reusable_scope([{**journal, 'scope_policy_version': '353-scope-v1'}], COMMIT) is not None

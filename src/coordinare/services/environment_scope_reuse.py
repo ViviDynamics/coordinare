@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from coordinare.services.environment_attempt import AttemptBudget
 
 SCOPE_AUTHOR_PROTOCOL = 4
+SCOPE_POLICY_VERSION = '353-scope-v1'
 # Shard progress that belongs to authoring; review progress is dropped so the review is fresh.
 REVIEW_PROGRESS = frozenset({'reviewed_criteria'})
 
@@ -31,8 +32,10 @@ def inventory_digest(paths: Sequence[str]) -> str:
 def reusable_scope(archive: Sequence[Any], commit: str) -> dict[str, Any] | None:
     """The newest archived attempt's accepted scope for this commit, as a seed for a fresh review."""
     for data in reversed(archive):
+        # Protocol 4 journals that predate the recorded policy version were all written under 353-scope-v1.
         if (not isinstance(data, dict) or data.get('source_commit') != commit
-                or data.get('scope_author_protocol') != SCOPE_AUTHOR_PROTOCOL):
+                or data.get('scope_author_protocol') != SCOPE_AUTHOR_PROTOCOL
+                or data.get('scope_policy_version', SCOPE_POLICY_VERSION) != SCOPE_POLICY_VERSION):
             continue
         try:
             contract = ScopeContract.model_validate(data.get('scope_contract'))

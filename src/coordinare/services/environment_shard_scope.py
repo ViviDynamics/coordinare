@@ -151,6 +151,8 @@ EVIDENCE_FIRST_ERROR: dict[str, Any] = {
 # Canonical JSON sorts keys, and this one sorts first: every agent of a role sends a byte-identical prefix of its
 # context message, which servers that cache prompt prefixes reuse across agents.
 SHARED_CONTEXT = '_shared_context'
+SHARED_CONTEXT_NOTE = (' Context shared by every agent in your role (for example spine_evidence, criterion_index and '
+                       'scope_digest) is under _shared_context; the rest is yours alone. ')
 
 
 def agent_context(shared: Mapping[str, Any], own: Mapping[str, Any]) -> str:
@@ -602,7 +604,8 @@ class ShardedScope:
         for offset in range(0, len(unread), 8):
             evidence.extend(item for item in (await inspection.read_files(unread[offset:offset + 8], navigation=True))['files']
                             if 'error' not in item)
-        messages = [{'role': 'system', 'content': SOURCE_NAVIGATION + SHARD_AUTHOR_INSTRUCTIONS + PHASE_CONTRACT},
+        messages = [{'role': 'system', 'content': SOURCE_NAVIGATION + SHARD_AUTHOR_INSTRUCTIONS + PHASE_CONTRACT
+                     + SHARED_CONTEXT_NOTE},
                     {'role': 'user', 'content': agent_context(
                         {'requested_scope': 'whole_documented_development_test_environment',
                          'phase_contract': {'subject': 'source_obligations',
@@ -698,7 +701,8 @@ class ShardedScope:
         bindings = [binding for binding in _current_investigations(self.budget) if binding.finding_id in owned]
         records = [record.model_dump(mode='json') for record in ledger.records if record.id in owned] if ledger else []
         responses = [response for response in self.budget.scope_responses if response.get('finding_id') in owned]
-        return [{'role': 'system', 'content': SOURCE_NAVIGATION + preamble + REVIEW_INSTRUCTIONS + PHASE_CONTRACT},
+        return [{'role': 'system', 'content': SOURCE_NAVIGATION + preamble + REVIEW_INSTRUCTIONS + PHASE_CONTRACT
+                 + SHARED_CONTEXT_NOTE},
                 {'role': 'user', 'content': agent_context(
                     {'requested_scope': 'whole_documented_development_test_environment',
                      'phase_contract': {'subject': 'source_obligations', 'runtime_evidence': 'required_after_scope_acceptance',
@@ -880,7 +884,8 @@ class ShardedScope:
         expected = {path: budget.scope_inputs[path] for path in sorted(needed)
                     if path in budget.scope_inputs and path not in inspection.inputs}
         evidence = await prepare_mandatory_evidence(inspection, expected, phase='scope_revision')
-        messages = [{'role': 'system', 'content': SOURCE_NAVIGATION + SHARD_REVISION_PREAMBLE + REVISION_INSTRUCTIONS + PHASE_CONTRACT},
+        messages = [{'role': 'system', 'content': SOURCE_NAVIGATION + SHARD_REVISION_PREAMBLE + REVISION_INSTRUCTIONS
+                     + PHASE_CONTRACT + SHARED_CONTEXT_NOTE},
                     {'role': 'user', 'content': agent_context(
                         {'requested_scope': 'whole_documented_development_test_environment',
                          'inventory_digest': inspection.inventory_digest,
@@ -1167,7 +1172,10 @@ async def discover_sharded_scope(request: _Request) -> ScopeContract:
                       max_reads=limits.max_reads)
     saved = budget.scope_shards
     if saved is not None and saved.get('plan_digest') not in (None, plan.digest()):
-        _fail('scope_shard_identity')
+        if budget.scope_reused_from is None or budget.scope_phase != 'review':
+            _fail('scope_shard_identity')
+        # A reused scope planned under other limits keeps its definition; only its shard progress is dropped.
+        budget.scope_shards = None
     scope = ShardedScope(request, entries, plan, limits.agent_concurrency)
     if budget.scope_findings is None:
         budget.scope_findings = FindingLedger(source_commit=request.commit)
