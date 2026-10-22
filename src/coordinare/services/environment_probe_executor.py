@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import structlog
 from coordinare_service_inference.environment.execution_source import (
     source_refusal,
     validate_execution_bundle,
@@ -32,6 +33,7 @@ if TYPE_CHECKING:
     from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
 
 
+log = structlog.get_logger(__name__)
 MAX_WIRE_REPORT_BYTES = 300000
 _ACTIVE_PROBES: set[str] = set()
 RUNTIME_SOURCE = Path(str(environment_probe_runtime.__file__)).read_text()
@@ -127,6 +129,12 @@ async def confirm_probe_cleanup(plan: ProbePlan) -> bool:
     return False if name in _ACTIVE_PROBES else await _bounded_remove(name)
 
 
+def _executor_failed(step: str, code: int, command: Mapping[str, Any], *, output_bytes: int | None = None) -> None:
+    """Which step failed and how, without Docker's error text (it can carry host paths)."""
+    log.warning("environment_probe.executor_failed", step=step, exit_code=code, command_id=command.get("id"),
+                output_bytes=output_bytes)
+
+
 async def _command_container(plan: ProbePlan, roots: tuple[Path, Path], command: dict[str, Any], deadline: float,
                              *, scratch: Path | None = None) -> ProbeCommandResult:
     name = "coordinare-probe-" + plan.digest()[:24]
@@ -134,10 +142,12 @@ async def _command_container(plan: ProbePlan, roots: tuple[Path, Path], command:
     try:
         code, _ = await asyncio.shield(create)
         if code:
+            _executor_failed("create", code, command)
             message = "probe container could not be created"
             raise EnvironmentDiscoveryError(message, code="probe_executor_failed")
         code, _ = await _docker(["docker", "start", name], deadline_seconds=max(0.01, deadline-time.monotonic()))
         if code:
+            _executor_failed("start", code, command)
             message = "probe container could not start"
             raise EnvironmentDiscoveryError(message, code="probe_executor_failed")
         seconds = max(0, deadline-time.monotonic())
@@ -153,6 +163,7 @@ async def _command_container(plan: ProbePlan, roots: tuple[Path, Path], command:
         code, output = await _docker(["docker", "exec", "-i", name, "/usr/local/bin/python", "-I", "-c", RUNTIME_SOURCE],
             stdin=payload, deadline_seconds=seconds+1)
         if code or len(output) > MAX_WIRE_REPORT_BYTES:
+            _executor_failed("runtime", code, command, output_bytes=len(output))
             message = "probe runtime did not return bounded evidence"
             raise EnvironmentDiscoveryError(message, code="probe_executor_failed")
         return ProbeCommandResult.model_validate(json.loads(output)[0])
