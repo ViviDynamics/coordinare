@@ -132,3 +132,18 @@ def test_missing_fields_ranges_patterns_and_shard_envelopes_are_named_from_the_s
     nested = [error for error in errors if error['code'] == 'extra_forbidden']
     assert nested and nested[0]['guidance'] == nested_responses_guidance('shard_checks')
     assert 'SECRET' not in json.dumps(errors)
+
+
+def test_an_over_length_review_rationale_is_cut_with_a_mark_and_nothing_else_changes():
+    from coordinare_service_inference.environment.scope import (
+        bounded_rationale,
+        normalize_source_assessment,
+    )
+
+    long = 'é' + 'evidence ' * 400
+    data = {'scope_assessment': {'verdict': 'revise', 'rationale': long, 'sources': ['README.md'],
+                                 'findings': [{'issue': 'x' * 3000}], 'decisions': []}}
+    normalized = normalize_source_assessment(data)['scope_assessment']
+    assert len(normalized['rationale'].encode()) <= 2048 and normalized['rationale'].endswith(' [truncated]')
+    assert normalized['findings'] == data['scope_assessment']['findings'] and normalized['verdict'] == 'revise'
+    assert bounded_rationale('short') == 'short'

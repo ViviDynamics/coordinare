@@ -270,6 +270,21 @@ _DECISION_BRANCHES: dict[str, type[_SourceDecision]] = {'covered': CoveredDecisi
     'source_correction': SourceCorrectionDecision, 'source_gap': SourceGapDecision, 'duplicate': DuplicateDecision}
 
 
+RATIONALE_LIMIT = 2048
+TRUNCATION_MARK = ' [truncated]'
+
+
+def bounded_rationale(text: str) -> str:
+    """An assessment's explanatory rationale, cut to its limit with an explicit mark.
+
+    The rationale explains a judgment; the verdict, findings, decisions and sources carry it and are never cut.
+    """
+    if len(text) <= RATIONALE_LIMIT and len(text.encode()) <= RATIONALE_LIMIT:
+        return text
+    room = RATIONALE_LIMIT - len(TRUNCATION_MARK.encode())
+    return text.encode()[:room].decode(errors='ignore').rstrip() + TRUNCATION_MARK
+
+
 def normalize_source_assessment(data: object) -> object:
     """Map the flat provider wire decision onto its strict branch.
 
@@ -277,6 +292,9 @@ def normalize_source_assessment(data: object) -> object:
     any populated inapplicable field is kept so strict validation rejects it.
     """
     assessment = data.get('scope_assessment') if isinstance(data, dict) else None
+    if isinstance(data, dict) and isinstance(assessment, dict) and isinstance(assessment.get('rationale'), str):
+        assessment = {**assessment, 'rationale': bounded_rationale(assessment['rationale'])}
+        data = {**data, 'scope_assessment': assessment}
     decisions = assessment.get('decisions') if isinstance(assessment, dict) else None
     if not isinstance(data, dict) or not isinstance(assessment, dict) or not isinstance(decisions, list):
         return data
