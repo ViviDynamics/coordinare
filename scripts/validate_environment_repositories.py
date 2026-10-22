@@ -656,8 +656,10 @@ async def validate_repository(
             raise ValueError("validation chat unavailable")
         from coordinare.services.environment_response_schema import invoke_chat
 
+        started = time.monotonic()
         response = await invoke_chat(selected_chat, messages, schema=response_schema or {},
                                      max_context_bytes=max_context_bytes, context_phase=context_phase)
+        seconds = round(time.monotonic() - started, 3)
         text = response.text if isinstance(response, DiscoveryChatReply) else response
         if profile.save_transcripts:
             _write(
@@ -679,7 +681,11 @@ async def validate_repository(
             repository=snapshot.name,
             stage="review" if reviewing else "discovery",
             call=calls,
+            phase=context_phase,
+            seconds=seconds,
             response_bytes=len(text.encode()),
+            **({"usage": dict(response.usage or {}), "finish_reason": response.finish_reason}
+               if isinstance(response, DiscoveryChatReply) else {}),
         )
         return response
 

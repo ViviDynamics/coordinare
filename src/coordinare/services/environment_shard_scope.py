@@ -57,7 +57,7 @@ from coordinare.services.environment_findings import MAX_FINDINGS, FindingValida
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_response_schema import (
     constrain_source_criteria,
-    invoke_chat,
+    invoke_recorded,
     response_schema,
 )
 from coordinare.services.environment_scope import (
@@ -380,8 +380,8 @@ async def _ask(context: AgentContext, inspection: SourceInspection, messages: li
     try:
         budget.context_bytes += check_evidence_context(messages, max_bytes=limits.max_review_context_bytes,
                                                        phase=inspection.name)
-        return budget.record_reply(await invoke_chat(context.chat, messages, schema=schema,
-            max_context_bytes=limits.max_review_context_bytes, context_phase=inspection.name))
+        return await invoke_recorded(budget, context.chat, messages, schema=schema,
+            max_context_bytes=limits.max_review_context_bytes, context_phase=inspection.name)
     except EnvironmentDiscoveryError as exc:
         if exc.code.endswith('_context_limit'):
             raise ShardOverflowError(None) from None
