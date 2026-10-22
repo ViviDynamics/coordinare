@@ -599,19 +599,7 @@ class HTTPPerformerService:
                     card_context, workspace_info, extra_volumes, run_inputs, owner,
                 )
             except asyncio.CancelledError:
-                job = owner.get("job")
-                if job is not None and job.torn_down:
-                    raise
-                if job is not None:
-                    self._active_jobs.setdefault(owner["session_id"], job)
-                confirmed = await self.stop_session_confirmed(owner["session_id"])
-                if not confirmed:
-                    logger.warning("http_performer.cancelled_dispatch_cleanup_unconfirmed",
-                        session_id=owner["session_id"])
-                    # Unconfirmed is never treated as stopped, but a known container is still stopped by its
-                    # handle (a runtime without find_session or label stops would otherwise stop nothing).
-                    with contextlib.suppress(Exception):
-                        await self._stop_failed_dispatch(owner)
+                await self._stop_cancelled_dispatch(owner)
                 raise
             except Exception:
                 # Expected refusals tear their container down in-line; any other failure once a container
@@ -622,6 +610,21 @@ class HTTPPerformerService:
                     logger.warning("http_performer.failed_dispatch_teardown_error", performer_id=self._config.id,
                                    error=str(exc))
                 raise
+
+    async def _stop_cancelled_dispatch(self, owner: dict[str, Any]) -> None:
+        """A cancelled dispatch's container is stopped and confirmed absent, unless already torn down."""
+        job = owner.get("job")
+        if job is not None and job.torn_down:
+            return
+        if job is not None:
+            self._active_jobs.setdefault(owner["session_id"], job)
+        confirmed = await self.stop_session_confirmed(owner["session_id"])
+        if not confirmed:
+            logger.warning("http_performer.cancelled_dispatch_cleanup_unconfirmed", session_id=owner["session_id"])
+            # Unconfirmed is never treated as stopped, but a known container is still stopped by its
+            # handle (a runtime without find_session or label stops would otherwise stop nothing).
+            with contextlib.suppress(Exception):
+                await self._stop_failed_dispatch(owner)
 
     async def _stop_failed_dispatch(self, started: dict[str, Any]) -> None:
         """Expected refusals tear their container down in-line. Anything else raised once a container
@@ -1836,11 +1839,10 @@ class HTTPPerformerService:
                 if started is None:
                     return True
                 handle = started.handle
-            if job is not None:
-                job.torn_down = True  # this confirmed stop owns the container from here
             try:
-                # 132: the full log is read before the stop removes it.
                 if job is not None:
+                    job.torn_down = True  # this confirmed stop owns the container from here
+                    # 132: the full log is read before the stop removes it.
                     await self._capture_run_log(job)
             finally:
                 await self._runtime.stop(handle)
