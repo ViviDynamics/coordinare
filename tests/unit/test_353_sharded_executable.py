@@ -530,3 +530,25 @@ def test_route_findings_keeps_the_rejected_manifest_digest():
     build.feedback = {'c00-': {'untrusted_execution_failures': [{'id': 'c00-0'}], 'rejected_manifest_digest': 'd' * 64}}
     build.route_findings(SimpleNamespace(records=[], open_ids=list))
     assert build.feedback['c00-']['rejected_manifest_digest'] == 'd' * 64
+
+
+@pytest.mark.asyncio
+async def test_a_merge_repair_asks_the_global_author_for_its_own_envelope(monkeypatch):
+    calls: list[int] = []
+
+    def validate(data):
+        calls.append(1)
+        if len(calls) == 1:
+            raise EnvironmentDiscoveryError('repair must independently read every previous input', code='source_identity')
+        return data
+
+    original = AttemptBudget.__init__
+
+    def stale(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        self.expected_envelope = 'shard_checks'  # as left by the check authors of the previous round
+
+    monkeypatch.setattr(AttemptBudget, '__init__', stale)
+    _merged, _build, _phases, messages = await merge_with(monkeypatch, validate)
+    repair = next(message['content'] for message in messages if 'source_identity' in message['content'])
+    assert '"manifest"' in repair and 'shard_checks' not in repair
