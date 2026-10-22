@@ -76,6 +76,8 @@ REVISION_LIMIT_GUIDANCE = (
     f'A scope revision may contain at most {MAX_SCOPE_REVISION_CHANGES} combined add and reassess operations. Established criteria are retained '
     'without resubmission: add only genuinely new obligations and reassess only retained unknown or not_applicable '
     'criteria. Submit the most important changes now; further obligations can follow in a later revision.')
+GLOBAL_PART_GUIDANCE = ("This is the global part of a divided manifest. Leave criterion_checks empty: check authors map "
+    "criteria. Check ids starting with c, two or three digits and a hyphen are reserved for check authors; rename yours.")
 CREDENTIAL_GUIDANCE = (
     'Use ${NAME} for every credential. For a credential environment variable named K, its value must be exactly ${K}. '
     'A credential for a service this manifest starts, such as a local test database password, belongs in '
@@ -132,7 +134,8 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             "requirement_check_reference", "clean_dependency_install_only", "runtime_credential_reference",
             "probe_id_maps", "probe_cited_question", "probe_required_true", "probe_citations_uninspected",
             "scope_identity_mismatch", "scope_required_check_mapping", "scope_required_service", "scope_id_collision",
-            "finding_citations_invalid", "union_tag_not_found", "union_tag_invalid", *LOCAL_CREDENTIAL_GUIDANCE,
+            "finding_citations_invalid", "union_tag_not_found", "union_tag_invalid", "global_part_invalid",
+            *LOCAL_CREDENTIAL_GUIDANCE,
         } else "invalid_contract_value"
         scope_locations = {'scope_required_check_mapping': 'criterion_checks', 'scope_identity_mismatch': 'scope_contract_digest',
                            'scope_required_service': 'services', 'scope_id_collision': 'id'}
@@ -148,6 +151,8 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
         if code in {"union_tag_not_found", "union_tag_invalid"} or (
                 code == "extra_forbidden" and "scope_assessment" in location and "decisions" in location):
             detail["guidance"] = SOURCE_DISPOSITION_GUIDANCE
+        if code == "global_part_invalid":
+            detail["guidance"] = GLOBAL_PART_GUIDANCE
         if code == "runtime_credential_reference":
             detail["guidance"] = CREDENTIAL_GUIDANCE
         if code in LOCAL_CREDENTIAL_GUIDANCE:
@@ -194,7 +199,7 @@ def explain_rejection(messages: list[dict[str, str]], raw: str, errors: list[dic
                         "Never rename or remove existing required requirement/check/service IDs; revise their definitions in place. "
                         "Use list_files for directories and read_files only for exact file paths from listings. " +
                         ("Use required executable check IDs, not commands or install-only prerequisites. "
-                         if budget.expected_envelope in {"manifest", "assessment"} else
+                         if budget.expected_envelope in {"manifest", "assessment", "shard_checks"} else
                          "Preserve source-defined scope; do not generate commands during source review. "
                          if budget.expected_envelope in {"scope", "scope_revision", "scope_assessment", "shard_summary",
                                                          "listing_triage", "scope_consolidation"} else "") +

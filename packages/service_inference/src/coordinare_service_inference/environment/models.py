@@ -493,6 +493,17 @@ class EnvironmentManifestProposal(StrictModel):
     local_credentials: list[LocalCredential] = Field(default_factory=list, max_length=32)
 
 
+class ShardChecks(StrictModel):
+    """One check author's required checks and criterion mappings, merged by the daemon into one manifest."""
+
+    checks: list[Command] = Field(max_length=1024)
+    criterion_checks: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class ShardChecksEnvelope(StrictModel):
+    shard_checks: ShardChecks
+
+
 class CoverageAssessmentProposal(StrictModel):
     """A judgment about the exact manifest supplied in this isolated conversation."""
 
