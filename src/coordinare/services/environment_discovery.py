@@ -95,6 +95,7 @@ from coordinare.services.environment_shard_construction import (
     check_groups,
     combine_review,
     divided,
+    execution_feedback_by_group,
     global_summary,
     merge_parts,
     part_manifest_view,
@@ -968,7 +969,7 @@ def _divided_construction(scope: ScopeContract, attempt: _Attempt) -> DividedCon
                                 attempt.fetch, scope, attempt.bounds.agent_concurrency,
                                 previous=parts_from_manifest(prior[-1] if prior else None, groups))
     if options.execution_feedback is not None:
-        build.feedback = {group.prefix: {'untrusted_execution_feedback': options.execution_feedback} for group in groups}
+        build.feedback = execution_feedback_by_group(options.execution_feedback, groups)
     messages = attempt.messages
     messages[1]['content'] = _json({**json.loads(messages[1]['content']), 'divided_instruction': GLOBAL_AUTHOR_INSTRUCTION,
         'check_groups': [{'prefix': group.prefix, 'criterion_ids': sorted(group.ids)} for group in groups]})
