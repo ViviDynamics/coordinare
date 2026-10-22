@@ -237,3 +237,18 @@ over-fine criteria before the operator tool's two-hour limit stopped it.
   applicability guarantees and a reviewable record; reviewers given cited-file lists and told to navigate only
   for unlisted references. Builder's call: consolidation runs per chunk in one level.
 - [ ] T109 Independent review, preflight, push, CI and a detached Dettmore rerun, then Elm.
+
+## Approved sharded executable construction and review
+
+Spec: `sharded-executable-amendment.md` (approved 2026-10-22), plan `sharded-executable-plan.md`. Dettmore v3
+accepted 129 criteria, then held at `discovery_context_limit` because construction preloaded every scope input.
+
+- [x] T110 Evidence on demand: executable authors and reviewers get a digest-verified index, not file contents
+  (Phase A); consolidation chunks bounded at 25 criteria (Phase E).
+- [x] T111 Global author plus prefixed check authors per group of at most 25 required criteria, deterministic merge
+  through the unchanged admission, merge errors routed to the group they name (Phase B).
+- [x] T112 Divided review: one fresh reviewer per group and one for the global part, combined into one assessment;
+  coverage findings routed to their group (Phase C).
+- [x] T113 Persisted global and group parts, reused after a restart only for an identical author brief, inputs
+  verified again by digest, budget never renewed (Phase D).
+- [ ] T114 Independent review, preflight, push, CI and a detached Dettmore rerun, then Elm.

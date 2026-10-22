@@ -267,7 +267,8 @@ def finding_owner(record: FindingRecord, definition: ScopeDefinition, plan: Shar
     return MERGE_OWNER
 
 
-Envelope = Literal['shard_summary', 'scope_assessment', 'scope_revision', 'listing_triage', 'scope_consolidation']
+Envelope = Literal['shard_summary', 'scope_assessment', 'scope_revision', 'listing_triage', 'scope_consolidation',
+                   'shard_checks', 'assessment']
 _CORRECTABLE = frozenset({'invalid_json_envelope', 'duplicate_json_key', 'unsupported_envelope',
                           'invalid_tool_arguments', 'scope_citations_invalid'})
 

@@ -75,7 +75,7 @@ class AttemptBudget:
     inspected_bytes: int = 0
     context_bytes: int = 0
     expected_envelope: Literal["source_tool", "probe", "manifest", "assessment", "scope", "scope_assessment", "scope_revision",
-                               "shard_summary", "listing_triage", "scope_consolidation"] = "manifest"
+                               "shard_summary", "listing_triage", "scope_consolidation", "shard_checks"] = "manifest"
     stage: str = "inventory"
     outcome: str = "held"
     error_code: str | None = None
@@ -98,6 +98,8 @@ class AttemptBudget:
     scope_definition: ScopeDefinition | None = field(default=None, repr=False)
     # Sharded discovery: plan digest, completed shard summaries and reviewed shard criteria.
     scope_shards: dict[str, Any] | None = field(default=None, repr=False)
+    # Divided executable construction: completed global and check-group parts, keyed by what each author was given.
+    executable_parts: dict[str, Any] | None = field(default=None, repr=False)
     scope_contract: ScopeContract | None = field(default=None, repr=False)
     scope_findings: FindingLedger | None = field(default=None, repr=False)
     scope_assessment: SourceAssessmentRecord | None = field(default=None, repr=False)
