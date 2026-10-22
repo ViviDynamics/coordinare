@@ -291,6 +291,8 @@ class DividedConstruction:
     feedback: dict[str, Any] = field(default_factory=dict)
     previous: dict[str, dict[str, Any]] = field(default_factory=dict)
     group_inputs: dict[str, str] = field(default_factory=dict)
+    # The global author's last admitted part: the base of its coverage revisions, never the merged manifest.
+    global_part: dict[str, Any] | None = None
 
     @property
     def groups(self) -> list[CheckGroup]:
