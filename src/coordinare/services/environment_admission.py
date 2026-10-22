@@ -76,6 +76,8 @@ REVISION_LIMIT_GUIDANCE = (
     f'A scope revision may contain at most {MAX_SCOPE_REVISION_CHANGES} combined add and reassess operations. Established criteria are retained '
     'without resubmission: add only genuinely new obligations and reassess only retained unknown or not_applicable '
     'criteria. Submit the most important changes now; further obligations can follow in a later revision.')
+REPLY_LENGTH_GUIDANCE = ("Your reply was cut off at the output limit before the envelope was complete. Reason briefly, "
+    "keep rationales short, and return the complete envelope.")
 GLOBAL_PART_GUIDANCE = ("This is the global part of a divided manifest. Leave criterion_checks empty: check authors map "
     "criteria. Check ids of c, two or three digits, optional letters and a hyphen (c00-, c00a-) are reserved for check "
     "authors; rename yours.")
@@ -173,6 +175,10 @@ def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any
 def explain_rejection(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *,
                       can_patch: bool = False) -> None:
     """Return a rejected reply with its errors; callers own how the correction is counted."""
+    if budget.last_finish_reason == 'length':
+        # The reply was cut off at the output limit, usually by long hidden reasoning, not by the envelope itself.
+        errors = [*errors, {'code': 'reply_length_limit', 'location': [],
+                            'guidance': REPLY_LENGTH_GUIDANCE}]
     if budget.scope_contract is not None:
         required_ids = [c.id for c in budget.scope_contract.definition.criteria if c.applicability == 'required']
         for error in errors:

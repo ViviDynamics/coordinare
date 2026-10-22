@@ -25,6 +25,7 @@ from coordinare.services.environment_evidence import check_evidence_context
 from coordinare.services.environment_findings import MAX_FINDINGS
 from coordinare.services.environment_probes import ProbeEnvelope
 from coordinare.services.environment_proposal_patch import PATCH_SCHEMA
+from coordinare.services.model_output_cap import output_token_cap
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -164,11 +165,21 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
 async def invoke_recorded(budget: AttemptBudget, chat: Callable[..., Awaitable[str | DiscoveryChatReply]],
                           messages: list[dict[str, str]], *, schema: dict[str, Any], max_context_bytes: int | None,
                           context_phase: str) -> str:
-    """One model call, timed and recorded against its phase."""
+    """One model call, timed, recorded against its phase, and bounded by the phase's output cap."""
     started = time.monotonic()
-    reply = await invoke_chat(chat, messages, schema=schema, max_context_bytes=max_context_bytes,
-                              context_phase=context_phase)
+    token = output_token_cap.set(OUTPUT_CAPS.get(context_phase))
+    try:
+        reply = await invoke_chat(chat, messages, schema=schema, max_context_bytes=max_context_bytes,
+                                  context_phase=context_phase)
+    finally:
+        output_token_cap.reset(token)
     return budget.record_reply(reply, phase=context_phase, seconds=time.monotonic() - started)
+
+
+# Output caps (including hidden reasoning) where valid replies are far below the global maximum. Observed on
+# Dettmore: triage at most 4,875 tokens. Authors, reviewers and consolidation produce valid replies up to about
+# 26 K tokens, so they keep the configured maximum.
+OUTPUT_CAPS = {'scope_triage': 16384}
 
 
 async def invoke_chat(chat: Callable[..., Awaitable[str | DiscoveryChatReply]], messages: list[dict[str, str]],

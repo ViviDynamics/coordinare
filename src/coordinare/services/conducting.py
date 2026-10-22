@@ -373,11 +373,13 @@ class OpenAiApiBackend:
         # Reasoning models (o-series / gpt-5) reject `max_tokens` and `temperature`
         # and require `max_completion_tokens`. Use the presence of `effort` as the
         # signal: the config layer ties `effort` to reasoning-capable models.
+        from coordinare.services.model_output_cap import capped
+
         if self._effort is not None:
-            payload["max_completion_tokens"] = self._max_tokens
+            payload["max_completion_tokens"] = capped(self._max_tokens)
             payload["reasoning_effort"] = self._effort
         else:
-            payload["max_tokens"] = self._max_tokens
+            payload["max_tokens"] = capped(self._max_tokens)
             if self._temperature is not None:
                 payload["temperature"] = self._temperature
         payload.update(self._response_parameters(response_schema, json_mode, transport))
