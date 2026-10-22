@@ -489,3 +489,44 @@ async def test_a_redone_group_that_splits_replaces_its_earlier_part(monkeypatch)
                               construction=SimpleNamespace(observe_sources=lambda _inputs: asyncio.sleep(0)))
     merged = await discovery_module._divided_candidate(build, attempt, validate)
     assert sorted(merged['criterion_checks'].values()) == [['c00a-0'], ['c00b-0'], ['c01-0']]
+
+
+def test_a_redone_remainder_still_keeps_and_must_keep_its_inherited_ids():
+    from coordinare.services.environment_shard_construction import inherit
+
+    first, second = make_criterion(1), make_criterion(2)
+    parent = CheckGroup('c00-', (first, second))
+    base = {'checks': [{'id': 'c00-one', 'argv': ['true']}, {'id': 'c00-two', 'argv': ['true'], 'scope': ['ci']}],
+            'criterion_checks': {first.id: ['c00-one'], second.id: ['c00-two']}}
+    left = CheckGroup('c00a-', (first,))
+    redone = {'shard_checks': {'checks': [{'id': 'c00-one', 'argv': ['make']}], 'criterion_checks': {first.id: ['c00-one']}}}
+    previous = {'c00-': base, 'c00a-': redone['shard_checks']}
+    kept = inherit(previous, left, parent)
+    assert kept.own == {'c00-one'} and kept.part == redone['shard_checks']
+    validate_group(redone, group=left, summary=SUMMARY, inherited=kept)
+    dropped = {'shard_checks': {'checks': [{'id': 'c00a-new', 'argv': ['true']}], 'criterion_checks': {first.id: ['c00a-new']}}}
+    with pytest.raises(_ResponseReferenceError) as caught:
+        validate_group(dropped, group=left, summary=SUMMARY, inherited=kept)
+    assert 'inherited_check_missing' in {error['code'] for error in caught.value.errors}
+    scoped_sibling = {'shard_checks': {'checks': [{'id': 'c00-one', 'argv': ['true']}],
+                                       'criterion_checks': {first.id: ['c00-two']}}}
+    with pytest.raises(_ResponseReferenceError) as caught:
+        validate_group(scoped_sibling, group=left, summary=SUMMARY, inherited=kept)
+    assert 'criterion_mapping_invalid' in {error['code'] for error in caught.value.errors}
+
+
+def test_group_ids_are_recognised_only_as_whole_ids():
+    group = CheckGroup('c01-', (make_criterion(1),))
+    parts = {'c01-': (group, validate_group(group_reply(group), group=group, summary=SUMMARY))}
+    embedded = EnvironmentDiscoveryError('required executable command svc-c01-ready changed', code='obligation_removed')
+    assert discovery_module._attributed([], embedded, parts) == []
+
+
+def test_route_findings_keeps_the_rejected_manifest_digest():
+    from coordinare.services.environment_shard_construction import DividedConstruction
+
+    group = CheckGroup('c00-', (make_criterion(1),))
+    build = DividedConstruction(None, [], None, scope_of(list(group.criteria)), 4)
+    build.feedback = {'c00-': {'untrusted_execution_failures': [{'id': 'c00-0'}], 'rejected_manifest_digest': 'd' * 64}}
+    build.route_findings(SimpleNamespace(records=[], open_ids=list))
+    assert build.feedback['c00-']['rejected_manifest_digest'] == 'd' * 64

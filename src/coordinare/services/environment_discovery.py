@@ -659,7 +659,7 @@ class _CandidateValidator:
             current = {item["id"] for item in entries if isinstance(item, dict) and isinstance(item.get("id"), str)
                        and item.get("required", True) is True} if isinstance(entries, list) else set()
             if not previous <= current:
-                message = f"required obligation removed during repair: {', '.join(sorted(previous - current)[:16])}"
+                message = f"required obligation removed during repair: {', '.join(sorted(previous - current))}"
                 raise EnvironmentDiscoveryError(message, code="obligation_removed")
             previous.update(current)
         manifest = self.construction.admit(data, self.discovery.inputs)
@@ -1047,7 +1047,7 @@ async def _global_part(attempt: _Attempt) -> dict[str, Any]:
     return data
 
 
-GROUP_CHECK_ID = re.compile(r'c[0-9]{2,3}[a-z]*-[A-Za-z0-9_.:-]*')
+GROUP_CHECK_ID = re.compile(r'(?<![A-Za-z0-9_.:-])c[0-9]{2,3}[a-z]*-[A-Za-z0-9_.:-]*')
 
 
 def _attributed(errors: list[dict[str, Any]], exc: Exception,
