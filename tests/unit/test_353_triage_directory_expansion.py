@@ -59,3 +59,13 @@ def test_a_small_directory_over_the_byte_bound_is_not_expanded():
 def test_without_sizes_a_directory_is_never_expanded():
     with pytest.raises(_ResponseReferenceError):
         validate_triage(reply(('bin', 'environment'), ('config', 'unrelated'), ('README.md', 'unsure')), shard=shard())
+
+
+def test_a_large_directory_split_across_listing_shards_is_never_expanded_piecemeal():
+    files = [f'lib/file{index:03}.rb' for index in range(60)]
+    whole = {path: InventoryEntry(path=path, size=10, mode='100644') for path in files}
+    first = Shard(id='s0', paths=tuple(files[:30]), readable_bytes=0, depth=1)
+    with pytest.raises(_ResponseReferenceError) as caught:
+        validate_triage(reply(('lib', 'environment')), shard=first, entries=whole)
+    [error] = caught.value.errors
+    assert error['code'] == 'triage_environment_directory' and error['directory_files'] == files[:30]
