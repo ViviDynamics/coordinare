@@ -1,6 +1,7 @@
 """358: Dashboard visual glitches, checked in a real browser.
 
-The status strip stays inside the page column with a long env bootstrap message, a
+The status strip stays inside the page column with a long env bootstrap message (wrapping
+below 1200px), a
 closed Metrics card is only as tall as its summary, and a board column's "+N more"
 line never sits on top of a card.
 """
@@ -44,7 +45,7 @@ def _strip_geometry(page: Page) -> dict[str, Any]:
 
 
 @pytest.mark.e2e
-@pytest.mark.parametrize("width", [1280, 1600, 2000])
+@pytest.mark.parametrize("width", [1000, 1100, 1180, 1280, 1600, 2000])
 def test_the_status_strip_stays_in_the_column_with_a_long_bootstrap_message(
     page: Page, live_server_url: str, store: DashboardStore, width: int,
 ) -> None:
