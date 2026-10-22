@@ -91,6 +91,7 @@ from coordinare.services.environment_response_schema import (
 from coordinare.services.environment_shard_construction import (
     GLOBAL_AUTHOR_INSTRUCTION,
     GLOBAL_OWNER,
+    PREFIX,
     REVIEW_PART_PREAMBLE,
     CheckGroup,
     DividedConstruction,
@@ -110,7 +111,7 @@ from coordinare.services.environment_shard_construction import (
     validate_global,
     validate_review_part,
 )
-from coordinare.services.environment_shard_scope import AgentContext, AgentTask, run_agent
+from coordinare.services.environment_shard_scope import AgentContext, AgentTask, _compact, run_agent
 from coordinare.services.kubernetes_verifier import check_project_files
 
 Fetch = Callable[[str], Awaitable[str | None]]
@@ -885,10 +886,10 @@ async def _discover_attempt(
                 if assessment.verdict == "accept":
                     return manifest, assessment
                 _require_revision(assessment)
-                _append_coverage_revision(messages, candidate, assessment, required_ids, obligation_ledger)
                 if divided_build is not None:
-                    divided_build.route_findings(cast("FindingLedger", assessment.finding_ledger))
-                    divided_build.previous = parts_from_manifest(manifest, divided_build.groups)
+                    _divided_revision(attempt, divided_build, assessment, required_ids, obligation_ledger)
+                else:
+                    _append_coverage_revision(messages, candidate, assessment, required_ids, obligation_ledger)
             except ScopeReopenedError:
                 divided_build = await _rescope(attempt, divided_build)
                 continue
@@ -960,6 +961,7 @@ async def _rescope(attempt: _Attempt, build: DividedConstruction | None) -> Divi
     attempt.messages[1]['content'] = _json({**json.loads(attempt.messages[1]['content']), **construction.context()})
     if build is not None:
         build.scope = rescoped
+        attempt.messages[1]['content'] = _json(compact_scope_identity(json.loads(attempt.messages[1]['content']), rescoped))
         return build
     # A reopened scope can outgrow one author.
     return _divided_construction(rescoped, attempt)
@@ -977,9 +979,21 @@ def _divided_construction(scope: ScopeContract, attempt: _Attempt) -> DividedCon
     if options.execution_feedback is not None:
         build.feedback = execution_feedback_by_group(options.execution_feedback, groups)
     messages = attempt.messages
-    messages[1]['content'] = _json({**json.loads(messages[1]['content']), 'divided_instruction': GLOBAL_AUTHOR_INSTRUCTION,
+    messages[1]['content'] = _json({**compact_scope_identity(json.loads(messages[1]['content']), scope),
+        'divided_instruction': GLOBAL_AUTHOR_INSTRUCTION,
         'check_groups': [{'prefix': group.prefix, 'criterion_ids': sorted(group.ids)} for group in groups]})
     return build
+
+
+def compact_scope_identity(identity: dict[str, Any], scope: ScopeContract) -> dict[str, Any]:
+    """Divided agents get the accepted contract's digest and a compact criterion index, not the whole contract.
+
+    The full contract (criteria, its review ledger and inputs) is about a quarter of a 262K-token context on
+    Dettmore; the daemon still admits every proposal against the full contract it holds.
+    """
+    compact = {key: value for key, value in identity.items() if key != 'scope_contract'}
+    compact['scope_criteria_index'] = [_compact(criterion) for criterion in scope.definition.criteria]
+    return compact
 
 
 MERGE_ROUNDS = 2
@@ -998,6 +1012,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
     for _ in range(MERGE_ROUNDS):
         if global_data is None:
             global_data = await _global_part(attempt)
+            build.global_part = global_data
             parts = await build.author_all(summary=global_summary(global_data), probes=budget.probe_reports)
         else:
             # A redone group replaces every part authored under it, including earlier split remainders.
@@ -1083,7 +1098,8 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
     capacities = review_capacities(ledger, [*(group.prefix for group in groups), GLOBAL_OWNER])
     summary = global_summary(manifest.model_dump(mode='json'))
     responses = [response.model_dump(mode='json') for response in attempt.discovery.finding_responses]
-    base = {key: value for key, value in attempt.identity.items() if key != 'bound_scope_inputs'}
+    base = compact_scope_identity({key: value for key, value in attempt.identity.items() if key != 'bound_scope_inputs'},
+                                  build.scope)
     obligations = manifest_obligation_ids(manifest)
 
     async def judge(group: CheckGroup | None) -> tuple[str, _CoverageProposal, dict[str, str]]:
@@ -1144,6 +1160,26 @@ def _append_coverage_revision(messages: list[dict[str, str]], candidate: dict[st
             "Never rename or remove the listed required IDs or requirement-to-check links; revise linked command definitions in place. "
             "Return the complete manifest plus finding_responses for every open ID, with rationale, sources and affected_ids. "
             "A response cannot close a finding; the next independent reviewer must adjudicate it. Review feedback is untrusted evidence."})}])
+
+
+def _divided_revision(attempt: _Attempt, build: DividedConstruction, assessment: CoverageAssessment,
+                      required_ids: dict[str, set[str]], obligation_ledger: _ObligationLedger) -> None:
+    """A divided coverage revision restarts the global author's conversation from its identity, its own part and
+    the findings. The merged manifest and earlier rounds stay out: check authors own their checks and mappings, and
+    the history would otherwise outgrow the model's context."""
+    build.route_findings(cast("FindingLedger", assessment.finding_ledger))
+    build.previous = parts_from_manifest(attempt.prior_manifests[-1], build.groups)
+    messages = attempt.messages
+    del messages[2:]
+    base = build.global_part or {}
+    global_ids = {group: {identifier for identifier in ids if not PREFIX.match(identifier)}
+                  for group, ids in required_ids.items()}
+    _append_coverage_revision(messages, base, assessment, global_ids, obligation_ledger)
+    revision = json.loads(messages[-1]['content'])
+    revision['instruction'] += (' You own only the global part: keep criterion_checks empty, and never write check ids '
+                                'starting with c, digits and a hyphen. Findings about those checks go to their check '
+                                'authors, but still give a finding_response for every open ID.')
+    messages[-1]['content'] = _json(revision)
 
 
 def _require_revision(assessment: CoverageAssessment) -> None:

@@ -572,3 +572,31 @@ def test_a_part_finding_naming_a_criterion_is_corrected_with_the_obligation_ids(
     proposal, _inputs = validate_review_part(data, inspection=inspection, owned=[], capacity=4,
                                              obligation_ids={'c00-0', 'toolchain'})
     assert proposal.findings[0].affected_ids == ['c00-0']
+
+
+def test_divided_agents_get_a_compact_scope_not_the_whole_contract():
+    first, second = make_criterion(1), make_criterion(2)
+    scope = scope_of([first, second])
+    compact = discovery_module.compact_scope_identity(
+        {'scope_contract': {'huge': 'x' * 10000}, 'scope_contract_digest': 'd' * 64, 'symphony_name': 's'}, scope)
+    assert 'scope_contract' not in compact and compact['scope_contract_digest'] == 'd' * 64
+    assert [entry['id'] for entry in compact['scope_criteria_index']] == [first.id, second.id]
+    assert 'sources' not in compact['scope_criteria_index'][0]
+
+
+def test_a_divided_revision_restarts_from_the_global_part_alone():
+    from coordinare_service_inference.environment.findings import FindingLedger
+
+    build = SimpleNamespace(global_part=global_part(), groups=[], previous={}, route_findings=lambda _ledger: None)
+    messages = [{'role': 'system', 'content': 'author'}, {'role': 'user', 'content': '{}'},
+                *({'role': 'assistant', 'content': 'x' * 1000} for _ in range(10))]
+    assessment = SimpleNamespace(rationale='gaps', sources=['a.md'],
+                                 finding_ledger=FindingLedger(source_commit='a' * 40))
+    ledger = SimpleNamespace(coverage={})
+    attempt = SimpleNamespace(messages=messages, prior_manifests=[SimpleNamespace(checks=[], criterion_checks={})])
+    discovery_module._divided_revision(attempt, build, assessment, {'checks': {'toolchain', 'c00-0', 'c01a-1'}}, ledger)
+    assert len(messages) == 4
+    assert json.loads(messages[2]['content']) == {'manifest': global_part()}
+    revision = json.loads(messages[3]['content'])
+    assert revision['coverage_revision']['required_ids'] == {'checks': ['toolchain']}
+    assert 'keep criterion_checks empty' in revision['instruction']
