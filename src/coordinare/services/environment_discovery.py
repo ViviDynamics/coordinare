@@ -1014,12 +1014,16 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
                 raise
             errors = (_validation_feedback(exc) if isinstance(exc, ValidationError)
                       else [{'location': [], 'code': exc.code, 'guidance': str(exc)}])
+            # Recorded so a held attempt shows what the merge rejected.
+            budget.validation_codes.extend(str(error.get('code')) for error in errors)
             redo = _attributed(errors, exc, parts)
             for group in redo:
                 build.feedback[group.prefix] = {**build.feedback.get(group.prefix, {}), 'merge_errors': errors}
                 build.previous[group.prefix] = parts[group.prefix][1].model_dump(mode='json')
             if not redo:
                 # Not attributable to one check group: the global author repairs, and every group re-authors against it.
+                # The correction is for the global author's manifest envelope, whatever the check authors last set.
+                budget.expected_envelope = 'manifest'
                 _repair(messages, _json({'manifest': global_data}), errors, budget)
                 global_data = None
             continue
