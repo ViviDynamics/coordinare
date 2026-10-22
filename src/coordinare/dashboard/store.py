@@ -324,8 +324,10 @@ class DashboardStore:
         sources: list[tuple[Any, Any]] = [
             (daemon.state.get("_board_issue_numbers"), daemon.state.get("_board_titles")),
         ]
-        for sym_state in (daemon.state.get("symphony_states") or {}).values():
-            sources.append((getattr(sym_state, "board_issue_numbers", None), getattr(sym_state, "board_titles", None)))
+        sources.extend(
+            (getattr(sym_state, "board_issue_numbers", None), getattr(sym_state, "board_titles", None))
+            for sym_state in (daemon.state.get("symphony_states") or {}).values()
+        )
         number: Any = None
         title = ""
         for numbers, titles in sources:
