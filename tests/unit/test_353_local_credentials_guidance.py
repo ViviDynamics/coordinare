@@ -9,6 +9,7 @@ from coordinare.services.environment_admission import (
     CREDENTIAL_GUIDANCE,
     NESTED_RESPONSES_GUIDANCE,
     _validation_feedback,
+    nested_responses_guidance,
 )
 from coordinare.services.environment_discovery_prompts import (
     _MANIFEST_INSTRUCTIONS,
@@ -64,4 +65,22 @@ def test_missing_top_level_finding_responses_gets_envelope_guidance():
     with pytest.raises(ValidationError) as failure:
         Envelope.model_validate({'scope': {}})
     [error] = _validation_feedback(failure.value)
-    assert error['location'] == ['finding_responses'] and error['guidance'] == NESTED_RESPONSES_GUIDANCE
+    # Nothing was nested, so the envelope's main key is not known; the guidance never guesses one.
+    assert error['location'] == ['finding_responses'] and error['guidance'] == nested_responses_guidance(None)
+
+
+def test_responses_nested_in_a_revision_are_corrected_with_the_revision_key():
+    class Revision(BaseModel):
+        model_config = ConfigDict(extra='forbid')
+        base_digest: str
+
+    class Envelope(BaseModel):
+        model_config = ConfigDict(extra='forbid')
+        scope_revision: Revision
+        finding_responses: list[str]
+
+    with pytest.raises(ValidationError) as failure:
+        Envelope.model_validate({'scope_revision': {'base_digest': 'x', 'finding_responses': []}})
+    errors = _validation_feedback(failure.value)
+    assert {error['guidance'] for error in errors} == {nested_responses_guidance('scope_revision')}
+    assert '{"scope_revision": {...}, "finding_responses": [...]}' in errors[0]['guidance']

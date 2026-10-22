@@ -98,8 +98,16 @@ LOCAL_CREDENTIAL_GUIDANCE = {
     'local_credential_in_install': ('Install commands and activation cannot use generated credentials; reference the '
                                     'credential only in the service and check commands that need it.'),
 }
-NESTED_RESPONSES_GUIDANCE = ('finding_responses belongs beside scope at the top level of the envelope, never inside scope: '
-                             'return {"scope": {...}, "finding_responses": [...]}.')
+def nested_responses_guidance(key: str | None) -> str:
+    """Names the envelope's own main key, which the misplaced finding_responses was nested under."""
+    if key is None:
+        return ('finding_responses belongs at the top level of the envelope, beside its main key, never nested inside '
+                'it: return {"<main key>": {...}, "finding_responses": [...]}.')
+    return (f'finding_responses belongs beside {key} at the top level of the envelope, never inside {key}: '
+            f'return {{"{key}": {{...}}, "finding_responses": [...]}}.')
+
+
+NESTED_RESPONSES_GUIDANCE = nested_responses_guidance('scope')
 SOURCE_PATH_GUIDANCE = (
     'Each source must be one exact repository-relative file path that you inspected: no directories, ./ prefixes, '
     'trailing slashes, URLs or annotations.')
@@ -127,6 +135,10 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
                       "disposition", "criterion_ids", "gap_kind", "inspection_requests", "covered", "source_correction",
                       "source_gap", "duplicate", "local_credentials", "name", "purpose", "service"}
     result = []
+    # The key a misplaced finding_responses was nested under is the envelope's main key, named in the guidance.
+    nested_key = next((str(error["loc"][0]) for error in exc.errors(include_url=False, include_input=False)
+                       if error["type"] == "extra_forbidden" and tuple(error["loc"][1:2]) == ("finding_responses",)
+                       and error["loc"][0] in allowed_fields), None)
     for error in exc.errors(include_url=False, include_input=False)[:16]:
         location = [part if (isinstance(part, str) and part in allowed_fields) or type(part) is int else "*"
                     for part in error["loc"][:8]]
@@ -160,9 +172,9 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             detail["guidance"] = CREDENTIAL_GUIDANCE
         if code in LOCAL_CREDENTIAL_GUIDANCE:
             detail["guidance"] = LOCAL_CREDENTIAL_GUIDANCE[code]
-        if (code == "extra_forbidden" and location[:2] == ["scope", "finding_responses"]) or (
+        if (code == "extra_forbidden" and location[1:2] == ["finding_responses"] and location[0] != "*") or (
                 code == "missing" and location == ["finding_responses"]):
-            detail["guidance"] = NESTED_RESPONSES_GUIDANCE
+            detail["guidance"] = nested_responses_guidance(nested_key)
         result.append(detail)
     return result
 
