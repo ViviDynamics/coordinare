@@ -178,5 +178,24 @@ check("an option value is escaped", quoted.includes('<option value="a&quot;b">a&
 check("board summary sums the columns of the listed symphonies", symphonyBoardSummary(s.symphonies).TODO, 1);
 check("board summary of nothing is zero", symphonyBoardSummary([]).BLOCKED, 0);
 
+// 358: the scope notes say plainly where the data is, and the dependency panel is shown
+// under a symphony only when the all-symphonies view has blockers to point to.
+check("the dependency note is plain", SCOPE_NOTE_DEPENDENCIES, "Dependency blockers are only available in the all-symphonies view.");
+check("the recent checks note is plain", SCOPE_NOTE_CHECKS, "Recent checks are only available in the all-symphonies view.");
+check("the healthy branches note is plain", SCOPE_NOTE_HEALTHY_BRANCHES, "Healthy branches are only listed in the all-symphonies view.");
+check("the duration note is plain", SCOPE_NOTE_DURATION, "Only available in the all-symphonies view.");
+[SCOPE_NOTE_DEPENDENCIES, SCOPE_NOTE_CHECKS, SCOPE_NOTE_HEALTHY_BRANCHES, SCOPE_NOTE_DURATION].forEach(function(note) {
+  checkTrue("no note says 'for all symphonies only': " + note, note.indexOf("for all symphonies only") === -1);
+});
+var blocker = { issue_number: 5, title: "Blocking issue", column: "IN_PROGRESS" };
+check("scoped, with blockers elsewhere: the note",
+  dependencyScopeNote({ scope_hidden: ["blocked_by_dependencies"] }, { blocked_by_dependencies: [blocker] }), SCOPE_NOTE_DEPENDENCIES);
+check("scoped, with no blockers anywhere: no panel",
+  dependencyScopeNote({ scope_hidden: ["blocked_by_dependencies"] }, { blocked_by_dependencies: [] }), "");
+check("scoped, before any snapshot: no panel",
+  dependencyScopeNote({ scope_hidden: ["blocked_by_dependencies"] }, null), "");
+check("unscoped: no note, the list itself shows",
+  dependencyScopeNote({ blocked_by_dependencies: [blocker] }, { blocked_by_dependencies: [blocker] }), "");
+
 console.log(`SUMMARY ${passed} ${failed}`);
 process.exit(failed === 0 ? 0 : 1);

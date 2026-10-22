@@ -14,6 +14,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from coordinare.dashboard import DashboardStore
+from tests.e2e.test_139_symphony_switcher import _connected, _snapshot, _two_symphonies
 from tests.e2e.test_154_layout import _board
 from tests.e2e.test_266_bootstrap_visibility import _BOOT_BOARD, _boot, _symphony
 from tests.e2e.test_dashboard_browser import _WAIT_LIVE, _WAIT_SSE, _full_snapshot
@@ -131,3 +132,38 @@ def test_the_more_line_sits_below_whole_cards(
         assert card["bottom"] <= geometry["body"]["bottom"] + _EDGE_SLACK_PX, f"a card is cut at the foot: {geometry}"
     # The line counts every card not shown.
     assert geometry["text"] == f"+{geometry['total'] - len(geometry['visible'])} more", geometry
+
+
+@pytest.mark.e2e
+def test_the_scoped_dependency_note_is_one_compact_line(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    _connected(page, live_server_url + "/?symphony=beta-sym")
+    store.broadcaster.broadcast(_snapshot(_two_symphonies(), blocked_by_dependencies=[
+        {"issue_number": 5, "title": "Blocking issue", "column": "IN_PROGRESS", "issue_url": None},
+    ]))
+    card = page.locator("#dependency-blockers-card")
+    expect(card).to_contain_text("Dependency blockers are only available in the all-symphonies view.", timeout=_WAIT_LIVE)
+    expect(card).to_have_class(re.compile(r"\bscope-note-only\b"))
+    heading, note = card.locator("h3").bounding_box(), card.locator("li").bounding_box()
+    assert heading is not None and note is not None
+    # The heading and the note share one line.
+    assert abs(heading["y"] - note["y"]) < heading["height"], (heading, note)
+
+    # Back to every symphony: the full list, and the panel is no longer compact.
+    _connected(page, live_server_url + "/?symphony=")
+    store.broadcaster.broadcast(_snapshot(_two_symphonies(), blocked_by_dependencies=[
+        {"issue_number": 5, "title": "Blocking issue", "column": "IN_PROGRESS", "issue_url": None},
+    ]))
+    expect(card).to_contain_text("Blocking issue", timeout=_WAIT_LIVE)
+    expect(card).not_to_have_class(re.compile(r"\bscope-note-only\b"))
+
+
+@pytest.mark.e2e
+def test_a_scoped_view_with_no_blockers_anywhere_has_no_dependency_panel(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    _connected(page, live_server_url + "/?symphony=beta-sym")
+    store.broadcaster.broadcast(_snapshot(_two_symphonies(), blocked_by_dependencies=[]))
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_LIVE)
+    expect(page.locator("#dependency-blockers-card")).to_be_hidden(timeout=_WAIT_LIVE)
