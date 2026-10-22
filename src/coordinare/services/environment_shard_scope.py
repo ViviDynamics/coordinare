@@ -542,7 +542,7 @@ class ShardedScope:
         chunks: list[tuple[ScopeCriterionProposal, ...]] = [()]
         for criterion in criteria:
             size = sum(len(canonical(item.model_dump(mode='json'))) for item in chunks[-1]) + len(canonical(criterion.model_dump(mode='json')))
-            # Bounded by count as well as bytes: a reply restates each group, so it must fit any model's output cap.
+            # Bounded by count as well as bytes: a reply restates each group, so it must stay within any model's output cap.
             if chunks[-1] and (size > self.plan.share // 2 or len(chunks[-1]) >= CONSOLIDATION_CHUNK):
                 chunks.append(())
             chunks[-1] = (*chunks[-1], criterion)
