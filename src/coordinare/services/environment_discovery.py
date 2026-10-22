@@ -58,6 +58,7 @@ from coordinare.services.environment_evidence import (
 from coordinare.services.environment_findings import (
     FindingValidationError,
     apply_finding_review,
+    manifest_obligation_ids,
     refuse_finding,
     validate_finding_responses,
 )
@@ -1083,6 +1084,7 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
     summary = global_summary(manifest.model_dump(mode='json'))
     responses = [response.model_dump(mode='json') for response in attempt.discovery.finding_responses]
     base = {key: value for key, value in attempt.identity.items() if key != 'bound_scope_inputs'}
+    obligations = manifest_obligation_ids(manifest)
 
     async def judge(group: CheckGroup | None) -> tuple[str, _CoverageProposal, dict[str, str]]:
         owner = GLOBAL_OWNER if group is None else group.prefix
@@ -1102,7 +1104,8 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
                         'required_decision_ids': owned.get(owner, []), 'findings_capacity': capacities[owner],
                         'finding_responses': [r for r in responses if r.get('finding_id') in owned.get(owner, [])],
                         'untrusted_execution_history': budget.execution_review_evidence})}]
-        validate = partial(validate_review_part, inspection=inspection, owned=owned.get(owner, []), capacity=capacities[owner])
+        validate = partial(validate_review_part, inspection=inspection, owned=owned.get(owner, []), capacity=capacities[owner],
+                           obligation_ids=obligations)
         key = hashlib.sha256(_json(messages).encode()).hexdigest()
         saved = saved_part(budget, 'reviews', owner, key)
         if saved is not None:

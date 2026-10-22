@@ -39,7 +39,7 @@ from coordinare.services.environment_shard_scope import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Collection, Mapping, Sequence
 
     from coordinare_service_inference.environment.findings import FindingLedger
     from coordinare_service_inference.environment.inventory import InventoryEntry
@@ -412,8 +412,26 @@ def manifest_digest(data: Mapping[str, Any]) -> str:
 
 # ----- divided review -----
 
+def _finding_reference_errors(proposal: CoverageAssessmentProposal, *, inspection: SourceInspection,
+                              obligation_ids: Collection[str]) -> list[dict[str, Any]]:
+    """The full assessment's finding rules, applied per part so a reviewer can still correct them."""
+    errors: list[dict[str, Any]] = []
+    known = set(obligation_ids)
+    for index, finding in enumerate(proposal.findings):
+        if known and not set(finding.affected_ids) <= known:
+            errors.append({'code': 'review_findings_invalid', 'location': ['assessment', 'findings', str(index), 'affected_ids'],
+                           'obligation_ids': sorted(known)[:300],
+                           'guidance': 'affected_ids must name manifest obligations (requirement, install, check or '
+                                       'service ids) from obligation_ids, never scope criterion ids. Name the check '
+                                       'or requirement that should cover a criterion, or leave affected_ids empty.'})
+        if not set(finding.sources) <= inspection.inputs.keys():
+            errors.append({'code': 'review_citations_invalid', 'location': ['assessment', 'findings', str(index), 'sources'],
+                           'guidance': 'Cite only files indexed in mandatory_evidence or read with tools.'})
+    return errors
+
+
 def validate_review_part(data: dict[str, Any], *, inspection: SourceInspection, owned: Sequence[str],
-                         capacity: int) -> tuple[CoverageAssessmentProposal, dict[str, str]]:
+                         capacity: int, obligation_ids: Collection[str] = ()) -> tuple[CoverageAssessmentProposal, dict[str, str]]:
     proposal = CoverageAssessmentProposal.model_validate(data.get('assessment') if isinstance(data, dict) else data)
     errors: list[dict[str, Any]] = []
     decided = [decision.finding_id for decision in proposal.decisions]
@@ -428,6 +446,7 @@ def validate_review_part(data: dict[str, Any], *, inspection: SourceInspection, 
     if unread:
         errors.append({'code': 'review_citations_invalid', 'location': ['assessment', 'sources'],
                        'guidance': 'Cite only files indexed in mandatory_evidence or read with tools.'})
+    errors.extend(_finding_reference_errors(proposal, inspection=inspection, obligation_ids=obligation_ids))
     opened = any(decision.status == 'open' for decision in proposal.decisions)
     if (proposal.verdict == 'accept' and (proposal.findings or opened)) or (
             proposal.verdict == 'revise' and not proposal.findings and not opened):
