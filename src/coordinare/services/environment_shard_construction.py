@@ -51,7 +51,17 @@ if TYPE_CHECKING:
 
 CHECK_AUTHOR_THRESHOLD = 40
 CHECK_GROUP_SIZE = 25
-PREFIX = re.compile(r'^c[0-9]{2,3}-')
+# A group's prefix, or a split remainder's (c00a-, c00ab-): every check-author id is reserved from the global author.
+PREFIX = re.compile(r'^c[0-9]{2,3}[a-z]*-')
+
+
+def owns(prefix: str, identifier: str) -> bool:
+    """A group owns its own ids and those of every split remainder authored under it."""
+    return re.match(re.escape(prefix[:-1]) + r'[a-z]*-', identifier) is not None
+
+
+def base_prefix(prefix: str) -> str:
+    return re.sub(r'[a-z]+-$', '-', prefix)
 GLOBAL_OWNER = 'global'
 
 GLOBAL_AUTHOR_INSTRUCTION = (
@@ -210,7 +220,7 @@ def parts_from_manifest(manifest: EnvironmentManifest | None, groups: Sequence[C
         return {}
     previous: dict[str, dict[str, Any]] = {}
     for group in groups:
-        checks = [check.model_dump(mode='json') for check in manifest.checks if check.id.startswith(group.prefix)]
+        checks = [check.model_dump(mode='json') for check in manifest.checks if owns(group.prefix, check.id)]
         mapping = {criterion: ids for criterion, ids in manifest.criterion_checks.items() if criterion in group.ids}
         if checks or mapping:
             previous[group.prefix] = {'checks': checks, 'criterion_checks': mapping}
@@ -250,8 +260,8 @@ class DividedConstruction:
             'check_id_prefix': group.prefix,
             'assigned_criteria': [criterion.model_dump(mode='json') for criterion in group.criteria],
             'global_part': dict(summary), 'probe_evidence': list(probes), 'bound_inputs': index,
-            'previous_part': self.previous.get(group.prefix),
-            'untrusted_feedback': self.feedback.get(group.prefix)}).decode()
+            'previous_part': self.previous.get(group.prefix, self.previous.get(base_prefix(group.prefix))),
+            'untrusted_feedback': self.feedback.get(group.prefix, self.feedback.get(base_prefix(group.prefix)))}).decode()
         key = hashlib.sha256(brief.encode()).hexdigest()
         saved = saved_part(self.context.budget, 'groups', group.prefix, key)
         if saved is not None:
@@ -313,10 +323,23 @@ def save_part(budget: AttemptBudget, kind: str, name: str, key: str, **record: A
     budget.executable_parts = parts
 
 
+def execution_feedback_by_group(feedback: Mapping[str, Any], groups: Sequence[CheckGroup]) -> dict[str, Any]:
+    """A failed check reaches the group that owns it; installation and service failures stay with the global author."""
+    results = (feedback.get('report') or {}).get('results') or []
+    routed: dict[str, Any] = {}
+    for group in groups:
+        failed = [result for result in results if isinstance(result, dict) and isinstance(result.get('id'), str)
+                  and owns(group.prefix, result['id']) and result.get('status') == 'fail']
+        if failed:
+            routed[group.prefix] = {'untrusted_execution_failures': failed,
+                                    'manifest_digest': feedback.get('manifest_digest')}
+    return routed
+
+
 def finding_part(affected_ids: Sequence[str], groups: Sequence[CheckGroup]) -> str:
     for identifier in affected_ids:
         for group in groups:
-            if identifier.startswith(group.prefix) or identifier in group.ids:
+            if owns(group.prefix, identifier) or identifier in group.ids:
                 return group.prefix
     return GLOBAL_OWNER
 
@@ -388,12 +411,13 @@ def part_manifest_view(manifest: EnvironmentManifest, group: CheckGroup | None) 
             'checks': [check for check in data['checks'] if not PREFIX.match(check['id'])]}
     mapped = {identifier for criterion in group.ids for identifier in manifest.criterion_checks.get(criterion, [])}
     return {'criterion_checks': {criterion: manifest.criterion_checks.get(criterion, []) for criterion in sorted(group.ids)},
-            'checks': [check for check in data['checks'] if check['id'] in mapped or check['id'].startswith(group.prefix)],
+            'checks': [check for check in data['checks'] if check['id'] in mapped or owns(group.prefix, check['id'])],
             'criteria': [criterion.model_dump(mode='json') for criterion in group.criteria]}
 
 
 __all__ = ['CHECK_AUTHOR_THRESHOLD', 'CHECK_GROUP_SIZE', 'GLOBAL_AUTHOR_INSTRUCTION', 'GLOBAL_OWNER', 'REVIEW_PART_PREAMBLE',
-           'CheckGroup', 'DividedConstruction', 'GlobalRules', 'check_groups', 'combine_review', 'divided',
-           'finding_part', 'global_summary', 'manifest_digest', 'merge_parts', 'part_manifest_view', 'parts_from_manifest',
+           'CheckGroup', 'DividedConstruction', 'GlobalRules', 'base_prefix', 'check_groups', 'combine_review', 'divided',
+           'execution_feedback_by_group', 'finding_part', 'global_summary', 'manifest_digest', 'merge_parts', 'owns',
+           'part_manifest_view', 'parts_from_manifest',
            'review_capacities', 'review_owners', 'save_part', 'saved_part', 'validate_global', 'validate_group',
            'validate_review_part']

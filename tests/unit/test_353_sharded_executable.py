@@ -382,3 +382,29 @@ def test_executable_parts_survive_a_restart_without_renewing_the_budget(tmp_path
     resumed = begin_attempt(cache, LIMITS, outer_seconds=600)
     assert resumed.executable_parts == budget.executable_parts
     assert resumed.calls == budget.calls == 1
+
+
+def test_split_remainders_belong_to_their_group_and_are_reserved_from_the_global_author():
+    from coordinare.services.environment_shard_construction import owns, parts_from_manifest
+
+    assert owns('c00-', 'c00a-build') and owns('c00-', 'c00ab-build') and owns('c00a-', 'c00ab-build')
+    assert not owns('c00-', 'c001-build') and not owns('c00a-', 'c00b-build')
+    with pytest.raises(ValidationError):
+        validate_global(global_part(checks=[{'id': 'c00a-mine', 'argv': ['true']}]))
+    groups = [CheckGroup('c00-', (make_criterion(1),)), CheckGroup('c01-', (make_criterion(2),))]
+    assert finding_part(['c00b-0'], groups) == 'c00-'
+    manifest = SimpleNamespace(checks=[SimpleNamespace(id='c00a-0', model_dump=lambda **_: {'id': 'c00a-0'})],
+                               criterion_checks={})
+    assert parts_from_manifest(manifest, groups) == {'c00-': {'checks': [{'id': 'c00a-0'}], 'criterion_checks': {}}}
+
+
+def test_a_failed_check_reaches_only_its_group_and_global_failures_stay_global():
+    from coordinare.services.environment_shard_construction import execution_feedback_by_group
+
+    groups = [CheckGroup('c00-', (make_criterion(1),)), CheckGroup('c01-', (make_criterion(2),))]
+    feedback = {'manifest_digest': 'd' * 64, 'report': {'results': [
+        {'id': 'c01a-0', 'status': 'fail', 'required': True}, {'id': 'c00-0', 'status': 'pass', 'required': True},
+        {'id': 'install-node', 'status': 'fail', 'required': True}]}}
+    routed = execution_feedback_by_group(feedback, groups)
+    assert list(routed) == ['c01-']
+    assert [result['id'] for result in routed['c01-']['untrusted_execution_failures']] == ['c01a-0']
