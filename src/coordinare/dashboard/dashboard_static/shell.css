@@ -260,6 +260,8 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 @media (min-width: 1100px) {
   .lower-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+/* 358: each panel is as tall as its own content, so a closed Metrics card is only its summary. */
+.lower-row { align-items: start; }
 .panel-summary { cursor: pointer; font-size: 15px; font-weight: 600; color: var(--color-text-primary); list-style-position: inside; }
 #metrics-card[open] > .panel-summary { margin-bottom: var(--space-4); }
 #history-cycles-panel > .panel-summary { font-size: 14px; }
@@ -311,6 +313,12 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .status-headline { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; max-width: 360px; flex-shrink: 0; }
 .status-strip .phase { max-width: 100%; font-size: 14px; }
 .status-desc { display: block; max-width: 100%; flex: none; font-size: 11px; line-height: 16px; }
+/* 358: the strip never grows past the page column. The headline and the env bootstrap item
+   are the parts that give way: each is cut with an ellipsis down to a floor width, and the
+   bootstrap item keeps its full text in its title. At 1280px the fixed parts leave room for both floors. */
+.status-strip { max-width: 100%; min-width: 0; box-sizing: border-box; }
+.status-strip .status-headline { flex: 0 1 auto; min-width: 120px; }
+.status-strip .status-bootstrap { flex: 0 1 auto; min-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 154 review 2: a board column that overflows fades at its foot and says how many cards are below. */
 #swimlane-section .swimlane-col-body { position: relative; }

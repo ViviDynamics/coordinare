@@ -111,7 +111,7 @@ function renderStatusStrip(s, activeSess) {
   if (!bootEl && countsEl && countsEl.parentNode) {
     bootEl = document.createElement('span');
     bootEl.id = 'status-bootstrap';
-    bootEl.className = 'status-counts';
+    bootEl.className = 'status-counts status-bootstrap';
     countsEl.parentNode.insertBefore(bootEl, countsEl.nextSibling);
   }
   if (bootEl) {
