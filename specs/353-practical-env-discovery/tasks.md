@@ -227,3 +227,13 @@ environment verdicts and was stopped before authoring.
   areas recorded as `unread_unsure` and shown to the merge reviewer; inputs no authored shard owns are reviewed by
   the merge reviewer; an unusable triage names every listed file.
 - [ ] T107 Independent review, preflight, push, CI and pinned Elm then Dettmore on GLM.
+
+## Approved scope consolidation and focused review navigation
+
+Spec: `scope-consolidation-amendment.md` (approved 2026-10-21). Dettmore reached source review cleanly with 190
+over-fine criteria before the operator tool's two-hour limit stopped it.
+
+- [x] T108 Granularity guidance for every author; consolidation of scopes over 40 criteria with citation and
+  applicability guarantees and a reviewable record; reviewers given cited-file lists and told to navigate only
+  for unlisted references. Builder's call: consolidation runs per chunk in one level.
+- [ ] T109 Independent review, preflight, push, CI and a detached Dettmore rerun, then Elm.

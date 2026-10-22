@@ -75,7 +75,7 @@ class AttemptBudget:
     inspected_bytes: int = 0
     context_bytes: int = 0
     expected_envelope: Literal["source_tool", "probe", "manifest", "assessment", "scope", "scope_assessment", "scope_revision",
-                               "shard_summary", "listing_triage"] = "manifest"
+                               "shard_summary", "listing_triage", "scope_consolidation"] = "manifest"
     stage: str = "inventory"
     outcome: str = "held"
     error_code: str | None = None

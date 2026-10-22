@@ -302,6 +302,12 @@ REVIEW_INSTRUCTIONS = (
     'covered, source_correction and duplicate decisions and accept verdicts cannot request further inspection. '
     'Return scope_assessment with verdict, rationale, sources, findings, decisions. '
 )
+GRANULARITY_GUIDANCE = (
+    'A criterion is an environment obligation: a tool or service the environment must provide, a dependency set that '
+    'must install, or a documented development or test operation that must succeed, with its observable result. '
+    'The internal behaviour of a script is evidence for an obligation, not an obligation itself; related steps of one '
+    'documented operation form one criterion, at the level a person bootstrapping the repository would check. '
+)
 AUTHOR_INSTRUCTIONS = (
     'Author source-defined obligations for the whole documented development/test environment. '
     'Inspect repository evidence and follow unfamiliar nested entry points before declaring criteria. '
@@ -312,8 +318,10 @@ AUTHOR_INSTRUCTIONS = (
     'and generic runtime_needs. Preserve every established required criterion exactly and add omitted obligations. '
     'Daemon assigns criterion IDs; do not supply them. Return the complete scope and finding_responses '
     'for every open finding, using only retained daemon finding IDs. '
+    + GRANULARITY_GUIDANCE
 )
 REVISION_INSTRUCTIONS = (
+    GRANULARITY_GUIDANCE +
     'Revise source-defined obligations using a scope_revision envelope only; never repeat a complete scope. '
     'Use the exact retained scope_base_digest as base_digest. Submit at most 16 combined add/reassess operations. '
     'add contains complete criterion proposals without IDs; reassess targets only retained unknown/not_applicable '

@@ -17,8 +17,11 @@ from coordinare_service_inference.environment.findings import FindingLedger
 from coordinare_service_inference.environment.inventory import InventoryEntry
 from coordinare_service_inference.environment.scope import (
     MAX_SCOPE_CRITERIA,
+    ConsolidationGroup,
+    ConsolidationRecord,
     ScopeAssessmentEnvelope,
     ScopeAssessmentProposal,
+    ScopeConsolidationEnvelope,
     ScopeCriterion,
     ScopeCriterionProposal,
     ScopeDefinition,
@@ -58,6 +61,7 @@ from coordinare.services.environment_response_schema import (
     response_schema,
 )
 from coordinare.services.environment_scope import (
+    GRANULARITY_GUIDANCE,
     PHASE_CONTRACT,
     REVIEW_INSTRUCTIONS,
     REVISION_INSTRUCTIONS,
@@ -120,6 +124,7 @@ SHARD_SCHEMA_REPAIRS = 2
 SPINE_FRACTION = 4
 MERGE_OWNER = 'merge'
 MIN_SPLIT = 2
+MAX_CRITERION_SOURCES = 32
 
 SHARD_AUTHOR_INSTRUCTIONS = (
     'You author source-defined obligations for ONE shard of a repository too large for one conversation. '
@@ -134,10 +139,25 @@ SHARD_AUTHOR_INSTRUCTIONS = (
     'exact repository paths in cross_references; never guess paths. Put genuine open questions in questions. '
     'An empty criteria list is valid when your shard establishes no environment obligations. '
     'Return {"shard_summary":{"criteria":[...],"cross_references":[...],"questions":[...]}}. '
+    + GRANULARITY_GUIDANCE
+)
+CONSOLIDATION_THRESHOLD = 40
+APPLICABILITY_RANK = {'required': 2, 'unknown': 1, 'not_applicable': 0}
+CONSOLIDATION_INSTRUCTIONS = (
+    'You consolidate a source-defined scope assembled from many per-shard authors, so it states environment '
+    'obligations at the right level. You see criteria only, never file contents. Group criteria that describe the same '
+    'environment obligation, or steps and internals of one documented operation, and give each group one criterion '
+    'that states the obligation and its observable result. A group criterion must cite exactly the union of its '
+    'members\' sources, keep the strongest member applicability (required over unknown over not_applicable), and keep '
+    'every member\'s substance; never drop an obligation to make the scope smaller. Leave distinct obligations out of '
+    'any group. Groups need at least two member ids. Independent reviewers judge the result and can restore anything '
+    'lost. Return {"scope_consolidation":{"groups":[{"member_ids":[...],"criterion":{...}}]}} with no other keys; '
+    'return an empty groups list when nothing should be consolidated. '
 )
 SHARD_REVIEW_PREAMBLE = (
     'You independently review ONE shard of a repository too large for one conversation. shard_files lists every file '
-    'in your shard; read any you need directly with read_files. mandatory_evidence holds your '
+    'in your shard and cited_files every file your criteria and findings cite: read from those lists, and use list_files '
+    'only to resolve a concrete reference that is not listed. mandatory_evidence holds your '
     'shard\'s inspected files and the shared root-level files; root_directory navigates the whole repository so you can '
     'follow references, but read only what judging your shard requires: your reads are limited. scope_criteria are the '
     'current criteria citing your shard and criterion_index names every current criterion. Judge omissions, conflicts '
@@ -146,6 +166,8 @@ SHARD_REVIEW_PREAMBLE = (
 )
 MERGE_REVIEW_PREAMBLE = (
     'You independently review the repository-wide consistency of a scope assembled from per-shard work. '
+    'cited_files lists every file your criteria and findings cite: read from it, and use list_files only to resolve a '
+    'concrete reference that is not listed. '
     'exclusions lists areas left unread because two independent listing triages judged them unrelated to the '
     'environment, and unread_unsure lists areas nobody named as environment and nobody judged unrelated. If any '
     'could define environment obligations, raise an unread_source finding requesting the relevant files. '
@@ -238,7 +260,7 @@ def finding_owner(record: FindingRecord, definition: ScopeDefinition, plan: Shar
     return MERGE_OWNER
 
 
-Envelope = Literal['shard_summary', 'scope_assessment', 'scope_revision', 'listing_triage']
+Envelope = Literal['shard_summary', 'scope_assessment', 'scope_revision', 'listing_triage', 'scope_consolidation']
 _CORRECTABLE = frozenset({'invalid_json_envelope', 'duplicate_json_key', 'unsupported_envelope',
                           'invalid_tool_arguments', 'scope_citations_invalid'})
 
@@ -485,6 +507,42 @@ class ShardedScope:
         self._persist(triage=triage)
         await self.budget.flush()
 
+    # ----- consolidation -----
+
+    async def consolidate(self, criteria: list[ScopeCriterionProposal]) -> tuple[list[ScopeCriterionProposal],
+                                                                                  list[ConsolidationRecord]]:
+        """Fold over-fine criteria into environment obligations; an unusable consolidation leaves the scope as authored."""
+        if len(criteria) <= CONSOLIDATION_THRESHOLD:
+            return criteria, []
+        chunks: list[tuple[ScopeCriterionProposal, ...]] = [()]
+        for criterion in criteria:
+            size = sum(len(canonical(item.model_dump(mode='json'))) for item in chunks[-1]) + len(canonical(criterion.model_dump(mode='json')))
+            if chunks[-1] and size > self.plan.share // 2:
+                chunks.append(())
+            chunks[-1] = (*chunks[-1], criterion)
+
+        def halves(chunk: tuple[ScopeCriterionProposal, ...], _overflow: ShardOverflowError) -> list[tuple[ScopeCriterionProposal, ...]]:
+            return [chunk] if len(chunk) < MIN_SPLIT else [chunk[:len(chunk) // 2], chunk[len(chunk) // 2:]]
+
+        results = await run_pool(chunks, self.consolidate_chunk, budget=self.budget, split=halves, concurrency=self.concurrency)
+        groups = [group for chunk_groups in results for group in chunk_groups]
+        return apply_consolidation(criteria, groups)
+
+    async def consolidate_chunk(self, chunk: tuple[ScopeCriterionProposal, ...]) -> list[ConsolidationGroup]:
+        inspection = SourceInspection({}, self.request.fetch, self.request.limits, self.budget)
+        inspection.name = 'scope_consolidation'
+        messages = [{'role': 'system', 'content': CONSOLIDATION_INSTRUCTIONS + GRANULARITY_GUIDANCE},
+                    {'role': 'user', 'content': canonical({'criteria': [{'id': criterion_id(c), **c.model_dump(mode='json')}
+                                                                        for c in chunk]}).decode()}]
+        try:
+            groups: list[ConsolidationGroup] = await self.agent_phase(inspection, messages, AgentTask(
+                'scope_consolidation', partial(validate_consolidation, criteria=chunk), listing_only=True))
+        except EnvironmentDiscoveryError as exc:
+            if exc.code != 'attempt_schema_limit':
+                raise
+            return []  # Consolidation can only shrink a scope, never block it.
+        return groups
+
     # ----- authoring -----
 
     async def author_shard(self, shard: Shard) -> ShardSummary:
@@ -556,13 +614,14 @@ class ShardedScope:
         criteria = merge_summaries(summaries)
         if not criteria:
             _fail('scope_no_obligations')
+        criteria, consolidated = await self.consolidate(criteria)
         inputs = {path: budget.scope_inputs[path] for summary in summaries for path in summary.inputs}
         # A file read through a reference is no longer excluded, whatever triage said.
         try:
             excluded_areas, unsure_areas = self.unread_records(inputs)
             definition = ScopeDefinition(source_commit=self.request.commit, inventory_digest=self.view(name='scope').inventory_digest,
                 inputs=inputs, criteria=[ScopeCriterion(**c.model_dump(), id=criterion_id(c)) for c in criteria],
-                exclusions=excluded_areas, unread_unsure=unsure_areas)
+                exclusions=excluded_areas, unread_unsure=unsure_areas, consolidated=consolidated)
         except ValidationError:
             _fail('scope_size_limit')  # Never trimmed to fit: the definition, criteria and exclusions stay whole.
         budget.scope_definition = definition
@@ -597,6 +656,8 @@ class ShardedScope:
                     'criterion_index': [_compact(c) for c in definition.criteria],
                     'scope_criteria': [c.model_dump(mode='json') for c in criteria],
                     'mandatory_evidence': evidence, 'assigned_findings': records,
+                    'cited_files': sorted({path for c in criteria for path in c.sources}
+                                          | {path for record in records for path in record['proposal']['sources']}),
                     'required_decision_ids': list(owned), 'finding_responses': responses, 'findings_capacity': capacity,
                     **({'exclusions': [item.model_dump(mode='json') for item in definition.exclusions],
                         'unread_unsure': [item.model_dump(mode='json') for item in definition.unread_unsure]}
@@ -905,6 +966,59 @@ async def _bounded_tool_result(inspection: SourceInspection, reply: dict[str, An
                 'guidance': 'This conversation has no read allowance left for that request. Conclude from the evidence you '
                             'hold; report unread relevant files as findings or open questions rather than guessing.'}
     return await inspection.tool_result(reply)
+
+
+def validate_consolidation(data: dict[str, Any], *, criteria: Sequence[ScopeCriterionProposal]) -> list[ConsolidationGroup]:
+    """Groups keep every member citation and the strongest applicability; each criterion joins at most one group."""
+    by_id = {criterion_id(criterion): criterion for criterion in criteria}
+    groups = ScopeConsolidationEnvelope.model_validate(data).scope_consolidation.groups
+    errors: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, group in enumerate(groups):
+        location = ['scope_consolidation', 'groups', str(index)]
+        unknown = [member for member in group.member_ids if member not in by_id]
+        repeated = [member for member in group.member_ids if member in seen]
+        seen.update(group.member_ids)
+        if unknown or repeated or len(set(group.member_ids)) != len(group.member_ids):
+            errors.append({'code': 'consolidation_members_invalid', 'location': [*location, 'member_ids'],
+                           'guidance': 'Use listed criterion ids, each in at most one group and once per group.'})
+            continue
+        members = [by_id[member] for member in group.member_ids]
+        union = sorted({path for member in members for path in member.sources})
+        if len(union) > MAX_CRITERION_SOURCES:
+            errors.append({'code': 'consolidation_group_too_large', 'location': [*location, 'member_ids'],
+                           'guidance': f'A group may cite at most {MAX_CRITERION_SOURCES} sources; split it into smaller groups.'})
+        elif sorted(group.criterion.sources) != union:
+            errors.append({'code': 'consolidation_sources_invalid', 'location': [*location, 'criterion', 'sources'],
+                           'required_sources': union, 'guidance': 'Cite exactly the union of the members\' sources.'})
+        strongest = max((member.applicability for member in members), key=APPLICABILITY_RANK.__getitem__)
+        if group.criterion.applicability != strongest:
+            errors.append({'code': 'consolidation_applicability_invalid', 'location': [*location, 'criterion', 'applicability'],
+                           'guidance': f'Keep the strongest member applicability: {strongest}.'})
+    if errors:
+        raise _ResponseReferenceError(errors)
+    return list(groups)
+
+
+def apply_consolidation(criteria: Sequence[ScopeCriterionProposal], groups: Sequence[ConsolidationGroup],
+                        ) -> tuple[list[ScopeCriterionProposal], list[ConsolidationRecord]]:
+    """Each group replaces its members where the first member stood; ungrouped criteria are kept unchanged."""
+    group_of = {member: index for index, group in enumerate(groups) for member in group.member_ids}
+    result: dict[str, ScopeCriterionProposal] = {}
+    members: dict[str, list[str]] = {}
+    for criterion in criteria:
+        index = group_of.get(criterion_id(criterion))
+        if index is None:
+            result.setdefault(criterion_id(criterion), criterion)
+            continue
+        group = groups[index]
+        replacement = criterion_id(group.criterion)
+        result.setdefault(replacement, group.criterion)
+        # Identical folded criteria (for example from two chunks) share one record listing every member.
+        known = members.setdefault(replacement, [])
+        known.extend(member for member in group.member_ids if member not in known)
+    records = [ConsolidationRecord(criterion_id=key, member_ids=value) for key, value in members.items()]
+    return list(result.values()), records
 
 
 def combine_revisions(base: ScopeDefinition, results: Sequence[tuple[ScopeRevision, list[FindingResponse]]], *,

@@ -197,7 +197,7 @@ def explain_rejection(messages: list[dict[str, str]], raw: str, errors: list[dic
                          if budget.expected_envelope in {"manifest", "assessment"} else
                          "Preserve source-defined scope; do not generate commands during source review. "
                          if budget.expected_envelope in {"scope", "scope_revision", "scope_assessment", "shard_summary",
-                                                         "listing_triage"} else "") +
+                                                         "listing_triage", "scope_consolidation"} else "") +
                         "Independent review and successful clean execution remain mandatory."})}])
 
 
