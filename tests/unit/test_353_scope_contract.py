@@ -312,7 +312,9 @@ def test_scope_rationale_feedback_reports_length_constraint_without_echoing_text
     with pytest.raises(ValidationError) as failure:
         ScopeAssessmentEnvelope.model_validate(value)
     errors = _validation_feedback(failure.value)
-    assert errors == [{'location': ['scope_assessment', 'rationale'], 'code': 'string_too_long'}]
+    assert [{key: error[key] for key in ('location', 'code', 'max_length')} for error in errors] == [
+        {'location': ['scope_assessment', 'rationale'], 'code': 'string_too_long', 'max_length': 2048}]
+    assert 'at most max_length' in errors[0]['guidance']
     assert 'private-evidence' not in json.dumps(errors)
 
 

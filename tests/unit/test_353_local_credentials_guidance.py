@@ -1,6 +1,8 @@
 """Repair guidance for the credential and envelope mistakes seen in the GLM Elm attempt."""
 from __future__ import annotations
 
+import json
+
 import pytest
 from coordinare_service_inference.environment.models import EnvironmentManifest
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -84,3 +86,23 @@ def test_responses_nested_in_a_revision_are_corrected_with_the_revision_key():
     errors = _validation_feedback(failure.value)
     assert {error['guidance'] for error in errors} == {nested_responses_guidance('scope_revision')}
     assert '{"scope_revision": {...}, "finding_responses": [...]}' in errors[0]['guidance']
+
+
+def test_bounded_errors_report_the_schema_bound_never_the_submitted_value():
+    from typing import Literal
+
+    from pydantic import Field
+
+    class Envelope(BaseModel):
+        model_config = ConfigDict(extra='forbid')
+        verdict: Literal['accept', 'revise']
+        rationale: str = Field(max_length=10)
+        sources: list[str] = Field(min_length=1)
+
+    with pytest.raises(ValidationError) as failure:
+        Envelope.model_validate({'verdict': 'secret-verdict', 'rationale': 'secret-' * 5, 'sources': []})
+    errors = {error['code']: error for error in _validation_feedback(failure.value)}
+    assert errors['string_too_long']['max_length'] == 10
+    assert errors['too_short']['min_length'] == 1
+    assert "'accept'" in errors['literal_error']['allowed']
+    assert 'secret' not in json.dumps(errors)
