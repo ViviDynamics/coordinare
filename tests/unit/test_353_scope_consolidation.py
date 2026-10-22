@@ -119,3 +119,47 @@ async def test_an_unusable_consolidation_leaves_the_scope_as_authored():
     budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
     contract = await run(Many(garbled=True), budget=budget)
     assert len(contract.definition.criteria) == 54 and not contract.definition.consolidated
+
+
+def test_a_group_keeps_every_runtime_need():
+    a = proposal('scripts/a.sh', 'a', runtime_needs=['postgres:16'])
+    b = proposal('scripts/b.sh', 'b')
+    dropped = {**criterion('scripts/a.sh', 'merged'), 'sources': ['scripts/a.sh', 'scripts/b.sh']}
+    with pytest.raises(_ResponseReferenceError) as failure:
+        validate_consolidation({'scope_consolidation': {'groups': [group([a, b], dropped)]}}, criteria=[a, b])
+    assert failure.value.errors[0]['code'] == 'consolidation_runtime_needs_invalid'
+    kept = {**dropped, 'runtime_needs': ['postgres:16']}
+    assert validate_consolidation({'scope_consolidation': {'groups': [group([a, b], kept)]}}, criteria=[a, b])
+
+
+@pytest.mark.asyncio
+async def test_a_consolidation_that_runs_out_of_time_never_blocks_the_scope(monkeypatch):
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+    from coordinare.services.environment_shard_scope import ShardedScope
+
+    async def stalled(self, chunk):
+        raise EnvironmentDiscoveryError('phase deadline', code='scope_phase_deadline')
+    monkeypatch.setattr(ShardedScope, 'consolidate_chunk', stalled)
+    contract = await run(Many())
+    assert len(contract.definition.criteria) == 54 and not contract.definition.consolidated
+
+
+@pytest.mark.asyncio
+async def test_the_merge_reviewer_sees_what_was_folded():
+    router = Many()
+    await run(router)
+    [merge] = [json.loads(m[1]['content']) for role, m in router.conversations if role == 'merge']
+    assert merge['consolidated'] and all(len(item['member_descriptions']) == 6 for item in merge['consolidated'])
+
+
+@pytest.mark.asyncio
+async def test_a_tool_request_from_a_listing_only_agent_is_corrected_not_executed():
+    class Reader(Many):
+        def consolidation(self, messages, user):
+            if len(messages) == 2:
+                return {'tool': 'read_file', 'path': 'README.md'}
+            return super().consolidation(messages, user)
+
+    budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
+    contract = await run(Reader(), budget=budget)
+    assert contract.definition.consolidated and budget.shard_schema_repairs >= 1

@@ -84,3 +84,12 @@ longer approved attempt. This is a run procedure only; the product is unchanged.
 
 Maintainer approval, a short plan, native implementation with independent review, preflight and CI on #355,
 then a detached rerun of Dettmore, then Elm.
+
+## Review fixes (2026-10-21)
+
+- Consolidation never blocks: its own phase deadline, call limit or context overflow leaves the scope as authored. Only the attempt's budget or deadline still ends the attempt.
+- A group must carry exactly the union of its members' runtime needs, as well as their sources and their strongest applicability.
+- The merge reviewer receives the consolidation record, with each folded member's description.
+- A record whose criterion a revision replaced is dropped.
+- A listing-only agent's tool request is corrected, never executed.
+- Builder's call: one chunked consolidation pass, without the cross-chunk second pass. Obligations split across chunks stay unfolded, and nothing is lost. A restart before the definition is written reruns consolidation.
