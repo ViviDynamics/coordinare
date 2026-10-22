@@ -36,21 +36,22 @@ Output tokens dominate the cost, then uncached prefill, then corrections and rew
 
 ## 2. Bounded output per phase
 
-- Each envelope gets an output cap, sent as `max_tokens` / `max_completion_tokens` to transports that accept it. The
-  cap includes hidden reasoning. The caps are four times the largest valid reply observed for that envelope,
-  within the configured global maximum:
+- A phase may carry an output cap, sent as `max_tokens` / `max_completion_tokens`. The cap includes hidden
+  reasoning. A cap is set only where valid replies are far below the global maximum, so no valid reply is cut.
+- **Builder's correction from the data:** the largest valid replies on Dettmore were:
 
-  | Envelope | Cap (tokens) |
+  | Phase | Largest valid reply (tokens) |
   | --- | --- |
-  | `listing_triage` | 8,192 |
-  | `shard_summary` | 16,384 |
-  | `scope_consolidation` | 16,384 |
-  | `scope_assessment` / `assessment` | 16,384 |
-  | `manifest`, global part, `shard_checks` | 32,768 (unchanged) |
+  | Triage | 4,875 |
+  | Authors and tool requests | 12,479 |
+  | Consolidation | 25,840 |
 
-- A `length` stop becomes a correctable rejection. The model is asked to reason briefly and return the envelope.
-  It counts against the agent's existing correction allowance, so a second runaway ends that agent as today.
-- This bounds the worst case of a runaway call to minutes rather than an hour. It changes no acceptance rule.
+  Only triage is capped (16,384). The others keep the configured maximum, because a cap there would also cut
+  valid replies. The runaway consolidation call is addressed by its 25-criterion chunks and by the correction
+  below.
+- A reply cut off at the limit (`length`) is corrected with specific guidance: reason briefly, keep rationales
+  short, return the complete envelope. It counts against the agent's existing correction allowance.
+- This changes no acceptance rule.
 
 ## 3. Stable, cacheable prefixes
 

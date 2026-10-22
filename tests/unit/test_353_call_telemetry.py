@@ -51,3 +51,77 @@ async def test_every_model_call_is_timed_against_its_phase():
     assert text == '{"ok":true}'
     stats = attempt.summary()['call_stats']['shard_summary']
     assert stats['calls'] == 1 and stats['input_tokens'] == 7 and stats['seconds'] >= 0
+
+
+@pytest.mark.asyncio
+async def test_a_phase_cap_bounds_only_its_own_call():
+    from coordinare.services.model_output_cap import capped, output_token_cap
+
+    seen: list[int] = []
+
+    async def chat(messages, **_kwargs):
+        seen.append(capped(32768))
+        return '{}'
+
+    attempt = budget()
+    await invoke_recorded(attempt, chat, [], schema={}, max_context_bytes=None, context_phase='scope_triage')
+    await invoke_recorded(attempt, chat, [], schema={}, max_context_bytes=None, context_phase='discovery')
+    assert seen == [16384, 32768]
+    assert output_token_cap.get() is None
+    assert capped(8192) == 8192
+
+
+@pytest.mark.asyncio
+async def test_the_openai_transport_sends_the_capped_limit(monkeypatch):
+    import httpx
+
+    from coordinare.services.conducting import OpenAiApiBackend
+    from coordinare.services.model_output_cap import output_token_cap
+
+    sent: list[dict] = []
+
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'choices': [{'message': {'content': '{}'}, 'finish_reason': 'stop'}], 'usage': {}}
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, json=None, headers=None):
+            sent.append(json)
+            return Response()
+
+    monkeypatch.setattr(httpx, 'AsyncClient', Client)
+    backend = OpenAiApiBackend(model='m', api_key='k', base_url='http://x/v1', max_tokens=32768)
+    token = output_token_cap.set(16384)
+    try:
+        await backend._post_chat([{'role': 'user', 'content': 'x'}], True)
+    finally:
+        output_token_cap.reset(token)
+    await backend._post_chat([{'role': 'user', 'content': 'x'}], True)
+    assert [payload['max_tokens'] for payload in sent] == [16384, 32768]
+
+
+def test_a_cut_off_reply_is_corrected_with_length_guidance():
+    from coordinare.services.environment_admission import explain_rejection
+
+    attempt = budget()
+    attempt.record_reply(DiscoveryChatReply('{"listing_triage":', finish_reason='length'), phase='scope_triage', seconds=1)
+    messages = [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': '{}'}]
+    explain_rejection(messages, '{"listing_triage":', [{'code': 'invalid_json_envelope', 'location': []}], attempt)
+    assert 'reply_length_limit' in messages[-1]['content']
+    attempt.record_reply(DiscoveryChatReply('{}', finish_reason='stop'), phase='scope_triage', seconds=1)
+    explain_rejection(messages, '{}', [{'code': 'missing', 'location': []}], attempt)
+    assert 'reply_length_limit' not in messages[-1]['content']

@@ -103,6 +103,7 @@ class AttemptBudget:
     scope_shards: dict[str, Any] | None = field(default=None, repr=False)
     # Per-phase call cost: calls, seconds, input/output/cached tokens and length stops.
     call_stats: dict[str, dict[str, float]] = field(default_factory=dict, repr=False)
+    last_finish_reason: str | None = field(default=None, repr=False)
     # Divided executable construction: completed global and check-group parts, keyed by what each author was given.
     executable_parts: dict[str, Any] | None = field(default=None, repr=False)
     scope_contract: ScopeContract | None = field(default=None, repr=False)
@@ -177,6 +178,7 @@ class AttemptBudget:
     def record_reply(self, reply: str | DiscoveryChatReply, *, phase: str | None = None,
                      seconds: float | None = None) -> str:
         self.calls_completed += 1
+        self.last_finish_reason = reply.finish_reason if isinstance(reply, DiscoveryChatReply) else None
         if phase is not None:
             self._record_call(phase, reply, seconds)
         if isinstance(reply, str):
