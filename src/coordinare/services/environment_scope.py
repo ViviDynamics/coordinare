@@ -99,8 +99,8 @@ def _criterion_citation_errors(sources: Sequence[str], inputs: dict[str, str],
     if not invalid:
         return []
     return [{'code': 'scope_citations_invalid', 'location': [*location, invalid[0]],
-        'invalid_source_indices': invalid,
-        'guidance': 'Use read_file or read_files to inspect the referenced file contents before citing them. '
+        'invalid_source_indices': invalid, 'inspected_files': sorted(inputs)[:200],
+        'guidance': 'Cite only files in inspected_files, or use read_file or read_files to inspect a file before citing it. '
                     'A directory listing is navigation evidence, not inspected content. '
                     'All listed source indices are invalid; preserve proposed criteria/revision operations '
                     'while inspecting the files or correcting unsupported citations.'}]
