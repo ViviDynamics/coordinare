@@ -12,6 +12,7 @@ from coordinare_service_inference.environment.scope import (
     MAX_SCOPE_EXCLUSIONS,
     ListingTriageEnvelope,
     ScopeExclusion,
+    TriageVerdict,
 )
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
@@ -21,7 +22,6 @@ from coordinare.services.environment_shards import Shard, plan_shards, readable
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Mapping, Sequence
 
-    from coordinare_service_inference.environment.scope import TriageVerdict
 
 LISTING_OVERHEAD = 48
 TRIAGE_SIDES = ('author', 'review')
@@ -86,7 +86,15 @@ def _without_nulls(data: Any) -> Any:
     return cleaned
 
 
-def validate_triage(data: dict[str, Any], *, shard: Shard) -> dict[str, TriageVerdict]:
+# A directory judged environment is expanded to its files when it is this small; a larger one must be named file
+# by file, and its correction lists the files so the model names what it can see.
+EXPAND_DIRECTORY_FILES = 32
+EXPAND_DIRECTORY_BYTES = 1024 * 1024
+DIRECTORY_LISTING_LIMIT = 200
+
+
+def validate_triage(data: dict[str, Any], *, shard: Shard,
+                    entries: Mapping[str, InventoryEntry] | None = None) -> dict[str, TriageVerdict]:
     """Every listed file covered; verdicts only on listed files or their directories."""
     data = _without_nulls(data)
     if isinstance(data, dict) and data.get('listing_shard') == shard.id:
@@ -101,22 +109,39 @@ def validate_triage(data: dict[str, Any], *, shard: Shard) -> dict[str, TriageVe
     proposal = ListingTriageEnvelope.model_validate(data).listing_triage
     prefixes = {'/'.join(path.split('/')[:index]) for path in shard.paths for index in range(1, path.count('/') + 2)}
     verdicts: dict[str, TriageVerdict] = {}
+    expanded: dict[str, tuple[list[str], str]] = {}
     errors: list[dict[str, Any]] = []
     for index, verdict in enumerate(proposal.verdicts):
         path = verdict.path.rstrip('/')
         if path not in prefixes:
             errors.append({'code': 'triage_path_invalid', 'location': ['listing_triage', 'verdicts', str(index), 'path'],
                            'guidance': 'Use a listed file path or one of its directories, exactly as listed.'})
-        if verdict.verdict == 'environment' and path not in shard.paths:
-            errors.append({'code': 'triage_environment_directory',
-                           'location': ['listing_triage', 'verdicts', str(index), 'path'],
-                           'guidance': 'An environment verdict must name one listed file. Name the specific files in this '
-                                       'directory that define the environment, and judge the directory itself unrelated or '
-                                       'unsure. Keep your other verdicts.'})
+        if verdict.verdict == 'environment' and path not in shard.paths and path in prefixes:
+            files = [listed for listed in shard.paths if listed.startswith(path + '/')]
+            size = sum(entries[listed].size for listed in files if listed in entries) if entries is not None else None
+            if len(files) <= EXPAND_DIRECTORY_FILES and size is not None and size <= EXPAND_DIRECTORY_BYTES:
+                expanded[path] = (files, verdict.rationale)
+            else:
+                errors.append({'code': 'triage_environment_directory',
+                               'location': ['listing_triage', 'verdicts', str(index), 'path'],
+                               'directory_files': files[:DIRECTORY_LISTING_LIMIT],
+                               'more_files': max(0, len(files) - DIRECTORY_LISTING_LIMIT),
+                               'guidance': 'This directory is too large to judge as a whole. An environment verdict must '
+                                           'name files: choose from directory_files the specific files that define the '
+                                           'environment, and judge the directory itself unrelated or unsure. Keep your '
+                                           'other verdicts.'})
         if path in verdicts:
             errors.append({'code': 'triage_path_repeated', 'location': ['listing_triage', 'verdicts', str(index), 'path'],
                            'guidance': 'Give each path exactly one verdict; use a deeper path to override a directory verdict.'})
         verdicts[path] = verdict.model_copy(update={'path': path})
+    for directory, (files, rationale) in expanded.items():
+        # The small directory's files take its verdict unless a deeper verdict already judged them.
+        del verdicts[directory]
+        note = f'Expanded from directory {directory}: '
+        for listed in files:
+            deeper = covering(listed, verdicts)
+            if deeper is None or not deeper.path.startswith(directory + '/'):
+                verdicts[listed] = TriageVerdict(path=listed, verdict='environment', rationale=(note + rationale)[:512])
     uncovered = sorted({path.split('/')[0] if '/' in path else path for path in shard.paths if covering(path, verdicts) is None})
     if uncovered:
         errors.append({'code': 'triage_incomplete', 'location': ['listing_triage', 'verdicts'],

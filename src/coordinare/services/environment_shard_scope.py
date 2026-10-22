@@ -518,7 +518,7 @@ class ShardedScope:
                     {'role': 'user', 'content': canonical(listing_payload(shard, self.entries)).decode()}]
         try:
             verdicts: dict[str, TriageVerdict] = await self.agent_phase(inspection, messages, AgentTask(
-                'listing_triage', partial(validate_triage, shard=shard), listing_only=True))
+                'listing_triage', partial(validate_triage, shard=shard, entries=self.entries), listing_only=True))
         except EnvironmentDiscoveryError as exc:
             if exc.code != 'attempt_schema_limit':
                 raise
