@@ -142,6 +142,7 @@ SHARD_AUTHOR_INSTRUCTIONS = (
     + GRANULARITY_GUIDANCE
 )
 CONSOLIDATION_THRESHOLD = 40
+CONSOLIDATION_CHUNK = 25
 LISTING_ONLY_ERROR: dict[str, Any] = {'code': 'unsupported_envelope', 'location': [],
                                       'guidance': 'Source tools are unavailable to this agent; return only the requested envelope.'}
 # Failures of the consolidation conversation itself; the scope then proceeds as authored.
@@ -526,7 +527,8 @@ class ShardedScope:
         chunks: list[tuple[ScopeCriterionProposal, ...]] = [()]
         for criterion in criteria:
             size = sum(len(canonical(item.model_dump(mode='json'))) for item in chunks[-1]) + len(canonical(criterion.model_dump(mode='json')))
-            if chunks[-1] and size > self.plan.share // 2:
+            # Bounded by count as well as bytes: a reply restates each group, so it must fit any model's output cap.
+            if chunks[-1] and (size > self.plan.share // 2 or len(chunks[-1]) >= CONSOLIDATION_CHUNK):
                 chunks.append(())
             chunks[-1] = (*chunks[-1], criterion)
 
