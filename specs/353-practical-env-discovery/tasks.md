@@ -252,3 +252,17 @@ accepted 129 criteria, then held at `discovery_context_limit` because constructi
 - [x] T113 Persisted global and group parts, reused after a restart only for an identical author brief, inputs
   verified again by digest, budget never renewed (Phase D).
 - [ ] T114 Independent review, preflight, push, CI and a detached Dettmore rerun, then Elm.
+
+## Approved throughput and reliability amendment
+
+Spec: `throughput-amendment.md` (approved 2026-10-22, with one fresh review for a reused scope).
+
+- [x] T115 Per-phase call telemetry: calls, seconds, input/output/cached tokens, length stops.
+- [x] T116 Output caps where valid replies are far below the maximum (triage); cut-off replies corrected with
+  length guidance.
+- [x] T117 Small directories judged environment are expanded to their files; larger ones are corrected with their
+  file listing.
+- [x] T118 One system message per agent conversation; shared context nested first for cross-agent prefix caching.
+- [x] T119 An accepted scope offered to a later attempt on the same commit and inventory, always through a fresh
+  independent review; harness `--reuse-scope-from`.
+- [ ] T120 Independent review, preflight, merge into #355, CI, then measure on the next Dettmore run.

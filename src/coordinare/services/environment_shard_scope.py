@@ -86,6 +86,7 @@ from coordinare.services.environment_scope_investigation import (
     investigation_evidence,
     validate_investigation_responses,
 )
+from coordinare.services.environment_scope_reuse import adopt_reused_scope
 from coordinare.services.environment_shard_triage import (
     LISTING_OVERHEAD,
     TRIAGE_INSTRUCTIONS,
@@ -1150,6 +1151,7 @@ async def discover_source_scope(*, paths: Sequence[str], fetch: Fetch, chat: Cha
                                 **options: Unpack[ScopeRunOptions]) -> ScopeContract:
     """One conversation when the repository fits one share; otherwise the same protocol divided into shards."""
     request = _Request(paths, fetch, chat, commit, options['limits'], options['budget'], entries=options.get('entries'))
+    adopt_reused_scope(request.budget, commit=commit, paths=paths)
     if not _sharded(request):
         return await discover_scope(paths=paths, fetch=fetch, chat=chat, commit=commit, **options)
     _checked_inventory(paths, request.limits)

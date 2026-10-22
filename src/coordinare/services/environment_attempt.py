@@ -104,6 +104,9 @@ class AttemptBudget:
     # Per-phase call cost: calls, seconds, input/output/cached tokens and length stops.
     call_stats: dict[str, dict[str, float]] = field(default_factory=dict, repr=False)
     last_finish_reason: str | None = field(default=None, repr=False)
+    # An earlier attempt's accepted scope offered for a fresh review, and the record of having adopted one.
+    scope_reuse: dict[str, Any] | None = field(default=None, repr=False)
+    scope_reused_from: dict[str, Any] | None = field(default=None, repr=False)
     # Divided executable construction: completed global and check-group parts, keyed by what each author was given.
     executable_parts: dict[str, Any] | None = field(default=None, repr=False)
     scope_contract: ScopeContract | None = field(default=None, repr=False)
@@ -230,4 +233,5 @@ class AttemptBudget:
                 "transport_fallbacks": self.transport_fallbacks,
                 "shard_agents": self.shard_agents, "shard_schema_repairs": self.shard_schema_repairs,
                 "validation_codes": list(self.validation_codes),
-                "call_stats": {phase: dict(stats) for phase, stats in self.call_stats.items()}}
+                "call_stats": {phase: dict(stats) for phase, stats in self.call_stats.items()},
+                "scope_reused_from": self.scope_reused_from}

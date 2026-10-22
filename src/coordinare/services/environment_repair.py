@@ -54,6 +54,7 @@ from coordinare.services.environment_obligations import (
 from coordinare.services.environment_probes import ProbePlan, ProbeReport, bind_probe_report
 from coordinare.services.environment_scope import preserve_scope
 from coordinare.services.environment_scope_investigation import validate_investigation_history
+from coordinare.services.environment_scope_reuse import reusable_scope
 
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import CheckResult
@@ -93,6 +94,9 @@ class RepairJournal(BaseModel):
     scope_shards: dict[str, Any] | None = None
     # Divided executable progress; a part is reused only when its author's complete input digest matches.
     executable_parts: dict[str, Any] | None = None
+    # An archived attempt's accepted scope offered for a fresh review, and the record once adopted.
+    scope_reuse: dict[str, Any] | None = None
+    scope_reused_from: dict[str, Any] | None = None
     finding_ledger: FindingLedger | None = None
     coverage_manifest: EnvironmentManifest | None = None
     source_owner: str | None = None
@@ -241,6 +245,8 @@ def _save_scope_checkpoint(journal: RepairJournal, budget: AttemptBudget) -> Non
     journal.scope_shards = json.loads(json.dumps(budget.scope_shards)) if budget.scope_shards is not None else None
     journal.executable_parts = (json.loads(json.dumps(budget.executable_parts))
                                 if budget.executable_parts is not None else None)
+    journal.scope_reuse = budget.scope_reuse
+    journal.scope_reused_from = budget.scope_reused_from
     try:
         journal.scope_responses = [FindingResponse.model_validate(value) for value in budget.scope_responses]
     except ValidationError:
@@ -379,6 +385,8 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.scope_shards = json.loads(json.dumps(journal.scope_shards)) if journal.scope_shards is not None else None
     budget.executable_parts = (json.loads(json.dumps(journal.executable_parts))
                                if journal.executable_parts is not None else None)
+    budget.scope_reuse = json.loads(json.dumps(journal.scope_reuse)) if journal.scope_reuse is not None else None
+    budget.scope_reused_from = journal.scope_reused_from
     budget.scope_responses = [r.model_dump(mode="json") for r in journal.scope_responses]
     budget.scope_definition = journal.scope_definition.model_copy(deep=True) if journal.scope_definition is not None else None
     budget.scope_contract = journal.scope_contract.model_copy(deep=True) if journal.scope_contract is not None else None
@@ -423,6 +431,9 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
             started_at=now, expires_at=now+seconds, max_calls=limits.max_model_calls,
             max_reads=limits.max_total_reads, max_schema_repairs=limits.max_schema_repairs,
             max_coverage_revisions=limits.max_coverage_revisions, max_execution_repairs=limits.max_execution_repairs)
+        if previous is None:
+            # After an operator restart, an archived attempt's accepted scope is offered for a fresh review.
+            journal.scope_reuse = reusable_scope(cache.environment_attempt_archive, cache.bootstrap_commit_sha)
     else:
         journal = previous
         journal.expires_at = min(journal.expires_at, journal.started_at+seconds)

@@ -86,6 +86,8 @@ class Profile:
     context_tokens: int | None = None
     agent_concurrency: int = 12
     private_service_runtime: dict[str, Any] | None = None
+    # An earlier run's output directory: its accepted scope is offered to a fresh independent review.
+    reuse_scope_from: Path | None = None
 
 
 def load_runtime_policy(path: Path) -> dict[str, Any]:
@@ -572,6 +574,12 @@ async def validate_repository(
         bootstrap_commit_sha=snapshot.commit,
         readme_sha=snapshot.commit,
     )
+    if profile.reuse_scope_from is not None:
+        prior = profile.reuse_scope_from / snapshot.name / "environment-attempt.json"
+        if prior.is_file():
+            # As after an operator restart: the earlier attempt is archived, and begin_attempt offers its
+            # accepted scope for a fresh review when the commit and protocol match.
+            cache.environment_attempt_archive = [json.loads(prior.read_text())]
     settings = EnvCacheConfig(
         manifest_phase_timeout_seconds=profile.phase_timeout,
         manifest_max_schema_repairs=profile.max_schema_repairs,
@@ -867,6 +875,8 @@ def main() -> int:
     parser.add_argument("--approval-timeout", type=float, default=600)
     parser.add_argument("--save-transcripts", action="store_true")
     parser.add_argument("--keep-caches", action="store_true")
+    parser.add_argument("--reuse-scope-from", type=Path, default=None,
+                        help="Earlier run output whose accepted scope is reviewed afresh instead of authored again")
     parser.add_argument('--runtime-policy', type=Path, help='Explicit private-service platform policy JSON; image contents are verified')
     args = parser.parse_args()
     new_profile_directory(args.output)
@@ -892,6 +902,7 @@ def main() -> int:
         context_tokens=args.context_tokens,
         agent_concurrency=args.agent_concurrency,
         private_service_runtime=load_runtime_policy(args.runtime_policy) if args.runtime_policy else None,
+        reuse_scope_from=args.reuse_scope_from,
     )
     revision = subprocess.check_output([shutil.which("git") or "/usr/bin/git", "rev-parse", "HEAD"], text=True).strip()
     _write(
