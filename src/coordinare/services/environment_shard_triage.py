@@ -129,7 +129,7 @@ def validate_triage(data: dict[str, Any], *, shard: Shard,
     extra = sorted(set(data) - {'listing_triage'}) if isinstance(data, dict) else []
     if extra:
         raise _ResponseReferenceError([{'code': 'triage_envelope_invalid', 'location': [],
-            'unexpected_keys': extra[:16],
+            'unexpected_key_count': len(extra),
             'guidance': 'Return exactly one top-level key, listing_triage, holding your verdicts. Do not include schema '
                         'keywords or any other key. Keep your verdicts unchanged.'}])
     proposal = ListingTriageEnvelope.model_validate(data).listing_triage

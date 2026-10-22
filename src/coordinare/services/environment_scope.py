@@ -78,9 +78,27 @@ def _fail(code: str) -> NoReturn:
     raise EnvironmentDiscoveryError(message, code=code) from None
 
 
-def _citation_error(*location: str) -> NoReturn:
-    message = 'scope citation requires inspected file content'
-    raise FindingValidationError(message, code='scope_citations_invalid', location=location) from None
+INSPECTED_FILES_SHOWN = 200
+
+
+def held_files(inputs: Mapping[str, str]) -> dict[str, Any]:
+    """The daemon-verified files an agent holds, bounded, with how many more there are."""
+    return {'inspected_files': sorted(inputs)[:INSPECTED_FILES_SHOWN],
+            'more_inspected_files': max(0, len(inputs) - INSPECTED_FILES_SHOWN)}
+
+
+def uninspected_sources_errors(sources: Sequence[str], inputs: Mapping[str, str], *,
+                               location: Sequence[str] = ('scope_assessment', 'sources'),
+                               code: str = 'scope_citations_invalid') -> list[dict[str, Any]]:
+    """One correction for every uninspected citation, by position (model text is never echoed), with the files
+    the agent does hold, which come from the daemon's own verified reads."""
+    invalid = [str(index) for index, path in enumerate(sources) if path not in inputs]
+    if not invalid:
+        return []
+    return [{'code': code, 'location': [*location, invalid[0]], 'invalid_source_indices': invalid, **held_files(inputs),
+             'guidance': 'Sources may list only files you hold: those in inspected_files, or files you read with '
+                         'read_files before answering. Each source at invalid_source_indices is uninspected: remove it, '
+                         'or read it first. Keep the rest of your reply unchanged.'}]
 
 
 class _ResponseReferenceError(FindingValidationError):
@@ -99,10 +117,10 @@ def _criterion_citation_errors(sources: Sequence[str], inputs: dict[str, str],
     if not invalid:
         return []
     return [{'code': 'scope_citations_invalid', 'location': [*location, invalid[0]],
-        'invalid_source_indices': invalid, 'inspected_files': sorted(inputs)[:200],
+        'invalid_source_indices': invalid, **held_files(inputs),
         'guidance': 'Cite only files in inspected_files, or use read_file or read_files to inspect a file before citing it. '
                     'A directory listing is navigation evidence, not inspected content. '
-                    'All listed source indices are invalid; preserve proposed criteria/revision operations '
+                    'Each source at invalid_source_indices is uninspected; preserve proposed criteria/revision operations '
                     'while inspecting the files or correcting unsupported citations.'}]
 
 
@@ -153,7 +171,7 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                 except ValidationError as exc:
                     errors = _validation_feedback(exc)
                 except PydanticCustomError as exc:
-                    errors = [{'location': ['scope_revision'], 'code': exc.type}]
+                    errors = [{'location': [budget.expected_envelope or 'scope_revision'], 'code': exc.type}]
                 except (_ResponseReferenceError, ScopeInvestigationResponseError) as exc:
                     errors = exc.errors
                 except FindingValidationError as exc:
@@ -239,10 +257,8 @@ def _validate_review(data: dict[str, Any], *, reviewer: SourceInspection, defini
         message = 'every retained finding requires an explicit decision'
         raise FindingValidationError(message,
             code='review_findings_invalid', location=('scope_assessment', 'decisions'))
-    for index, path in enumerate(assessment.sources):
-        if path not in reviewer.inputs:
-            _citation_error('scope_assessment', 'sources', str(index))
-    errors = [*_decision_reference_errors(assessment, definition=definition),
+    errors = [*uninspected_sources_errors(assessment.sources, reviewer.inputs),
+              *_decision_reference_errors(assessment, definition=definition),
               *_request_rule_errors(assessment, reviewer=reviewer)]
     if errors:
         raise _ResponseReferenceError(errors)
