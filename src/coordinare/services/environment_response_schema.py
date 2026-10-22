@@ -163,17 +163,16 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
 
 
 async def invoke_recorded(budget: AttemptBudget, chat: Callable[..., Awaitable[str | DiscoveryChatReply]],
-                          messages: list[dict[str, str]], *, schema: dict[str, Any], max_context_bytes: int | None,
-                          context_phase: str) -> str:
-    """One model call, timed, recorded against its phase, and bounded by the phase's output cap."""
+                          messages: list[dict[str, str]], **request: Any) -> str:
+    """One model call (``invoke_chat``'s keywords), timed, recorded against its phase and bounded by its output cap."""
+    phase = str(request['context_phase'])
     started = time.monotonic()
-    token = output_token_cap.set(OUTPUT_CAPS.get(context_phase))
+    token = output_token_cap.set(OUTPUT_CAPS.get(phase))
     try:
-        reply = await invoke_chat(chat, messages, schema=schema, max_context_bytes=max_context_bytes,
-                                  context_phase=context_phase)
+        reply = await invoke_chat(chat, messages, **request)
     finally:
         output_token_cap.reset(token)
-    return budget.record_reply(reply, phase=context_phase, seconds=time.monotonic() - started)
+    return budget.record_reply(reply, phase=phase, seconds=time.monotonic() - started)
 
 
 # Output caps (including hidden reasoning) where valid replies are far below the global maximum. Observed on
