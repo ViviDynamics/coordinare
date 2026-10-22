@@ -117,7 +117,7 @@ if TYPE_CHECKING:
     from coordinare_service_inference.environment.scope_revision import ScopeRevision
 
     from coordinare.services.environment_attempt import AttemptBudget
-    from coordinare.services.environment_discovery import ChatJson, Fetch
+    from coordinare.services.environment_discovery import ChatJson, DiscoveryLimits, Fetch
     from coordinare.services.environment_scope import ScopeRunOptions
 
 SHARD_SCHEMA_REPAIRS = 2
@@ -322,6 +322,71 @@ def _rejection_errors(exc: Exception, envelope: str) -> list[dict[str, Any]]:
     raise exc
 
 
+@dataclass(frozen=True)
+class AgentContext:
+    budget: AttemptBudget
+    limits: DiscoveryLimits
+    chat: ChatJson
+
+
+async def run_agent(context: AgentContext, inspection: SourceInspection, messages: list[dict[str, str]],
+                    task: AgentTask) -> Any:
+    """One bounded agent conversation; its own correction allowance, the shared call and read budget."""
+    budget, limits = context.budget, context.limits
+    budget.shard_agents += 1
+    base_system = messages[0]['content']
+    corrections = 0
+    try:
+        async with asyncio.timeout_at(min(budget.deadline, time.monotonic() + limits.phase_timeout_seconds)):
+            for _ in range(limits.max_model_calls):
+                schema = task.schema(final=task.listing_only or bool(inspection.inputs))
+                messages[0] = {'role': 'system', 'content': base_system +
+                    '\nReturn one complete envelope matching this schema: ' + canonical(schema).decode()}
+                raw = await _ask(context, inspection, messages, schema)
+                try:
+                    reply = _decode_reply(raw, inspection.name, limits)
+                    if 'tool' in reply and not task.listing_only:
+                        result = await _bounded_tool_result(inspection, reply)
+                        messages.extend([{'role': 'assistant', 'content': raw},
+                                         {'role': 'user', 'content': canonical({'tool_result': result}).decode()}])
+                        continue
+                    # A listing-only agent judges what it was given; a tool request is corrected, never executed.
+                    errors = [dict(LISTING_ONLY_ERROR)] if 'tool' in reply else []
+                    if not errors:
+                        return task.validate(reply)
+                except (ValidationError, PydanticCustomError, FindingValidationError, EnvironmentDiscoveryError) as exc:
+                    errors = _rejection_errors(exc, task.envelope)
+                if corrections >= SHARD_SCHEMA_REPAIRS:
+                    budget.validation_codes.extend(error['code'] for error in errors)
+                    message = 'shard agent exhausted its schema corrections'
+                    raise EnvironmentDiscoveryError(message, code='attempt_schema_limit')
+                corrections += 1
+                budget.shard_schema_repairs += 1
+                budget.expected_envelope = task.envelope
+                explain_rejection(messages, raw, errors, budget)
+            _fail('scope_phase_call_limit')
+    except TimeoutError:
+        budget.check()
+        _fail('scope_phase_deadline')
+
+
+async def _ask(context: AgentContext, inspection: SourceInspection, messages: list[dict[str, str]],
+               schema: dict[str, Any]) -> str:
+    """Charge one call; a conversation outgrowing its context returns its work to the pool for splitting."""
+    budget, limits = context.budget, context.limits
+    budget.reserve_call()
+    await budget.flush()
+    try:
+        budget.context_bytes += check_evidence_context(messages, max_bytes=limits.max_review_context_bytes,
+                                                       phase=inspection.name)
+        return budget.record_reply(await invoke_chat(context.chat, messages, schema=schema,
+            max_context_bytes=limits.max_review_context_bytes, context_phase=inspection.name))
+    except EnvironmentDiscoveryError as exc:
+        if exc.code.endswith('_context_limit'):
+            raise ShardOverflowError(None) from None
+        raise
+
+
 def _restricted(entries: Mapping[str, InventoryEntry], paths: Collection[str]) -> dict[str, InventoryEntry]:
     return {path: entries[path] for path in sorted(paths) if path in entries}
 
@@ -387,58 +452,7 @@ class ShardedScope:
         return split_by_bytes(shard, self.entries)
 
     async def agent_phase(self, inspection: SourceInspection, messages: list[dict[str, str]], task: AgentTask) -> Any:
-        """One shard conversation; its own correction allowance, the shared call and read budget."""
-        budget, limits = self.budget, self.request.limits
-        budget.shard_agents += 1
-        base_system = messages[0]['content']
-        corrections = 0
-        try:
-            async with asyncio.timeout_at(min(budget.deadline, time.monotonic() + limits.phase_timeout_seconds)):
-                for _ in range(limits.max_model_calls):
-                    schema = task.schema(final=task.listing_only or bool(inspection.inputs))
-                    messages[0] = {'role': 'system', 'content': base_system +
-                        '\nReturn one complete envelope matching this schema: ' + canonical(schema).decode()}
-                    raw = await self._ask(inspection, messages, schema)
-                    try:
-                        reply = _decode_reply(raw, inspection.name, limits)
-                        if 'tool' in reply and not task.listing_only:
-                            result = await _bounded_tool_result(inspection, reply)
-                            messages.extend([{'role': 'assistant', 'content': raw},
-                                             {'role': 'user', 'content': canonical({'tool_result': result}).decode()}])
-                            continue
-                        # A listing-only agent judges what it was given; a tool request is corrected, never executed.
-                        errors = [dict(LISTING_ONLY_ERROR)] if 'tool' in reply else []
-                        if not errors:
-                            return task.validate(reply)
-                    except (ValidationError, PydanticCustomError, FindingValidationError, EnvironmentDiscoveryError) as exc:
-                        errors = _rejection_errors(exc, task.envelope)
-                    if corrections >= SHARD_SCHEMA_REPAIRS:
-                        budget.validation_codes.extend(error['code'] for error in errors)
-                        message = 'shard agent exhausted its schema corrections'
-                        raise EnvironmentDiscoveryError(message, code='attempt_schema_limit')
-                    corrections += 1
-                    budget.shard_schema_repairs += 1
-                    budget.expected_envelope = task.envelope
-                    explain_rejection(messages, raw, errors, budget)
-                _fail('scope_phase_call_limit')
-        except TimeoutError:
-            budget.check()
-            _fail('scope_phase_deadline')
-
-    async def _ask(self, inspection: SourceInspection, messages: list[dict[str, str]], schema: dict[str, Any]) -> str:
-        """Charge one call; a conversation outgrowing its context returns its work to the pool for splitting."""
-        budget, limits = self.budget, self.request.limits
-        budget.reserve_call()
-        await budget.flush()
-        try:
-            budget.context_bytes += check_evidence_context(messages, max_bytes=limits.max_review_context_bytes,
-                                                           phase=inspection.name)
-            return budget.record_reply(await invoke_chat(self.request.chat, messages, schema=schema,
-                max_context_bytes=limits.max_review_context_bytes, context_phase=inspection.name))
-        except EnvironmentDiscoveryError as exc:
-            if exc.code.endswith('_context_limit'):
-                raise ShardOverflowError(None) from None
-            raise
+        return await run_agent(AgentContext(self.budget, self.request.limits, self.request.chat), inspection, messages, task)
 
     # ----- triage -----
 
