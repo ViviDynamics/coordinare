@@ -265,8 +265,9 @@ function markBoardOverflow() {
     var body = col.querySelector('.swimlane-col-body');
     // Nothing to measure while the board is hidden (the card detail is open, or another page shows).
     if (!body || body.clientHeight === 0) continue;
-    var height = body.clientHeight;
     var cards = Array.prototype.filter.call(body.children, function(c) { return c.classList.contains('swimlane-card'); });
+    snapBoardColumn(body, cards);
+    var height = body.clientHeight;
     var floor = body.scrollTop + height;
     // A card cut by the foot of the column is still more content below, so it counts too.
     var below = cards.filter(function(c) { return c.offsetTop + c.offsetHeight > floor; }).length;
@@ -286,6 +287,31 @@ function markBoardOverflow() {
       body.addEventListener('scroll', markBoardOverflow);
     }
   }
+}
+
+// 358: a column that scrolls ends on a whole card, so the fade and the "+N more" line sit
+// under the last card shown rather than across one cut in half. The stylesheet's cap is read
+// once per body; the snapped height depends only on the cards, so scrolling never moves it.
+// A pixel of slack matches the overflow test below, which also allows one.
+function snapBoardColumn(body, cards) {
+  if (!body.getAttribute('data-cap-px')) {
+    body.style.maxHeight = '';
+    body.setAttribute('data-cap-px', String(parseFloat(getComputedStyle(body).maxHeight) || 0));
+  }
+  var cap = parseFloat(body.getAttribute('data-cap-px'));
+  if (!(cap > 0)) return;
+  var padBottom = parseFloat(getComputedStyle(body).paddingBottom) || 0;
+  // Bounding rects, not offsetTop: offsets round to whole pixels and a fraction is enough to show a sliver.
+  var origin = body.getBoundingClientRect().top + body.clientTop - body.scrollTop;
+  var bottomOf = function(card) { return card.getBoundingClientRect().bottom - origin; };
+  var fit = 0;
+  for (var i = 0; i < cards.length; i++) {
+    var bottom = bottomOf(cards[i]);
+    if (bottom + padBottom > cap + 1) break;
+    fit = bottom;
+  }
+  var overflows = cards.length > 0 && bottomOf(cards[cards.length - 1]) + padBottom > cap + 1;
+  body.style.maxHeight = overflows && fit > 0 ? (fit + padBottom) + 'px' : '';
 }
 
 // The health dot: takes the reader to the System health card and moves focus there.

@@ -7,12 +7,14 @@ line never sits on top of a card.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
 from playwright.sync_api import Page, expect
 
 from coordinare.dashboard import DashboardStore
+from tests.e2e.test_154_layout import _board
 from tests.e2e.test_266_bootstrap_visibility import _BOOT_BOARD, _boot, _symphony
 from tests.e2e.test_dashboard_browser import _WAIT_LIVE, _WAIT_SSE, _full_snapshot
 
@@ -84,3 +86,48 @@ def test_a_closed_metrics_card_is_only_as_tall_as_its_summary(
         }"""
     )
     assert heights["card"] <= heights["summary"] + _EDGE_SLACK_PX, heights
+
+
+def _crowded_board() -> dict[str, Any]:
+    """A To Do column with 42 cards of mixed heights: one-line and two-line titles."""
+    board = _board()
+    ids = [f"PVTI_Q{i}" for i in range(42)]
+    board["state"]["board_snapshot"]["TODO"] = ids
+    board["state"]["board_titles"].update(
+        {card: ("Tidy" if n % 3 else "Rework the poller so a long title wraps onto a second line") for n, card in enumerate(ids)},
+    )
+    board["state"]["board_issue_numbers"].update({card: 100 + n for n, card in enumerate(ids)})
+    return board
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("width", [1280, 1600, 2000])
+def test_the_more_line_sits_below_whole_cards(
+    page: Page, live_server_url: str, store: DashboardStore, width: int,
+) -> None:
+    page.set_viewport_size({"width": width, "height": 900})
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    store.broadcaster.broadcast(_full_snapshot(phase="idle", phase_label="Idle", symphonies=[_crowded_board()]))
+    todo = page.locator("#swimlane-section .swimlane-col").filter(has_text="To Do")
+    expect(todo.locator(".swimlane-more")).to_have_text(re.compile(r"^\+\d+ more$"), timeout=_WAIT_LIVE)
+
+    geometry = todo.evaluate(
+        """col => {
+          const body = col.querySelector('.swimlane-col-body').getBoundingClientRect();
+          const more = col.querySelector('.swimlane-more').getBoundingClientRect();
+          const cards = [...col.querySelectorAll('.swimlane-col-body > .swimlane-card')]
+            .map(c => c.getBoundingClientRect())
+            .filter(r => r.bottom > body.top && r.top < body.bottom)
+            .map(r => ({top: r.top, bottom: r.bottom}));
+          return {body: {top: body.top, bottom: body.bottom}, moreTop: more.top, visible: cards,
+                  text: col.querySelector('.swimlane-more').textContent,
+                  total: col.querySelectorAll('.swimlane-col-body > .swimlane-card').length};
+        }"""
+    )
+    assert geometry["moreTop"] >= geometry["body"]["bottom"] - _EDGE_SLACK_PX, geometry
+    assert geometry["visible"], geometry
+    for card in geometry["visible"]:
+        assert card["bottom"] <= geometry["body"]["bottom"] + _EDGE_SLACK_PX, f"a card is cut at the foot: {geometry}"
+    # The line counts every card not shown.
+    assert geometry["text"] == f"+{geometry['total'] - len(geometry['visible'])} more", geometry
