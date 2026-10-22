@@ -260,6 +260,8 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 @media (min-width: 1100px) {
   .lower-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+/* 358: each panel is as tall as its own content, so a closed Metrics card is only its summary. */
+.lower-row { align-items: start; }
 .panel-summary { cursor: pointer; font-size: 15px; font-weight: 600; color: var(--color-text-primary); list-style-position: inside; }
 #metrics-card[open] > .panel-summary { margin-bottom: var(--space-4); }
 #history-cycles-panel > .panel-summary { font-size: 14px; }
@@ -270,7 +272,8 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
    The Conductor description is visible text in the strip, cut with an ellipsis. */
 /* The strip is one row: its parts are cut, not wrapped, so the page height does not change with the words. */
 .status-strip { flex-wrap: nowrap; font-size: 11px; gap: var(--space-2) 12px; }
-@media (max-width: 1099px) { .status-strip { flex-wrap: wrap; } }
+/* 358: below 1200px the strip's fixed parts alone are wider than the column, so it wraps there. */
+@media (max-width: 1199px) { .status-strip { flex-wrap: wrap; } }
 .status-strip .phase { font-size: 14px; max-width: 180px; }
 .status-desc { max-width: 160px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .status-counts, .status-muted, .status-freshness, .status-actions { white-space: nowrap; }
@@ -311,12 +314,18 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .status-headline { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; max-width: 360px; flex-shrink: 0; }
 .status-strip .phase { max-width: 100%; font-size: 14px; }
 .status-desc { display: block; max-width: 100%; flex: none; font-size: 11px; line-height: 16px; }
+/* 358: the strip never grows past the page column. The headline and the env bootstrap item
+   are the parts that give way: each is cut with an ellipsis down to a floor width, and the
+   bootstrap item keeps its full text in its title. At 1280px the fixed parts leave room for both floors. */
+.status-strip { max-width: 100%; min-width: 0; box-sizing: border-box; }
+.status-strip .status-headline { flex: 0 1 auto; min-width: 120px; }
+.status-strip .status-bootstrap { flex: 0 1 auto; min-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 154 review 2: a board column that overflows fades at its foot and says how many cards are below. */
 #swimlane-section .swimlane-col-body { position: relative; }
 #swimlane-section .swimlane-col.is-overflowing .swimlane-col-body {
-  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 8px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 8px), transparent);
 }
 .swimlane-more { font-size: 11px; color: var(--color-text-muted); padding: 2px 6px; text-align: center; }
 /* Tighter spacing so the Cards row still clears the fold with the banner and four runs. */
@@ -424,3 +433,9 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
   #sym-stats-content h2 { font-size: 18px; overflow-wrap: anywhere; }
   .sym-stats-section { padding: 12px; }
 }
+
+/* 358: under a symphony the dependency panel is one line: its heading, then the note. */
+#dependency-blockers-card.scope-note-only { padding-top: var(--space-2); padding-bottom: var(--space-2); }
+#dependency-blockers-card.scope-note-only h3 { display: inline; margin: 0 var(--space-3) 0 0; font-size: 13px; }
+#dependency-blockers-card.scope-note-only ul { display: inline; margin: 0; padding: 0; }
+#dependency-blockers-card.scope-note-only li { display: inline; list-style: none; padding: 0; }

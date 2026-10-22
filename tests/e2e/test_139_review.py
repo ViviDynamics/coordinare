@@ -68,7 +68,7 @@ def test_under_a_selected_symphony_the_checks_and_errors_are_its_own(
     expect(page.locator("#cycles-completed")).to_have_text("2")
     expect(page.locator("#error-count")).to_have_text("0")
     # The recent checks are not known per symphony, so the panel says so instead of showing them.
-    expect(page.locator("#history-cycles")).to_contain_text("Recent checks are shown for all symphonies only.")
+    expect(page.locator("#history-cycles")).to_contain_text("Recent checks are only available in the all-symphonies view.")
     expect(page.locator("#health-scope-note")).to_have_text("Covers all symphonies.")
 
 

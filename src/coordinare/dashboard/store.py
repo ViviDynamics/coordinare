@@ -299,6 +299,45 @@ class DashboardStore:
             self._watcher_task = None
 
     @staticmethod
+    def _watched_sessions(daemon: CoordinareDaemon) -> dict[str, Any]:
+        """358: every symphony's sessions, including while one symphony's cycle runs.
+
+        A symphony's cycle swaps ``active_sessions`` down to that symphony's own
+        sessions (``current_symphony`` names it). Read alone, every other symphony's
+        card looked departed and then picked up again when the aggregate returned.
+        The other symphonies' last-known sessions fill the gap; the live map wins.
+        """
+        live = daemon.state.get("active_sessions") or {}
+        current = daemon.state.get("current_symphony")
+        if not current:
+            return live
+        merged: dict[str, Any] = {}
+        for name, sym_state in (daemon.state.get("symphony_states") or {}).items():
+            if name != current:
+                merged.update(getattr(sym_state, "active_sessions", None) or {})
+        merged.update(live)
+        return merged
+
+    @staticmethod
+    def _board_card_label(daemon: CoordinareDaemon, card_id: str) -> tuple[Any, str]:
+        """358: a card's issue number and title from the board maps the daemon holds."""
+        sources: list[tuple[Any, Any]] = [
+            (daemon.state.get("_board_issue_numbers"), daemon.state.get("_board_titles")),
+        ]
+        sources.extend(
+            (getattr(sym_state, "board_issue_numbers", None), getattr(sym_state, "board_titles", None))
+            for sym_state in (daemon.state.get("symphony_states") or {}).values()
+        )
+        number: Any = None
+        title = ""
+        for numbers, titles in sources:
+            if number is None and isinstance(numbers, dict):
+                number = numbers.get(card_id)
+            if not title and isinstance(titles, dict):
+                title = str(titles.get(card_id) or "")
+        return number, title
+
+    @staticmethod
     def _active_sessions_fingerprint(daemon: CoordinareDaemon) -> tuple[Any, ...]:
         """Identity-changing fields for each active session.
 
@@ -309,7 +348,7 @@ class DashboardStore:
         also controls which row offers Cancel, including in single-card mode.
         """
         active_id, _ = resolve_active_card(daemon.state)
-        active = daemon.state.get("active_sessions") or {}
+        active = DashboardStore._watched_sessions(daemon)
         parts: list[tuple[Any, ...]] = []
         for sid in sorted(active.keys()):
             sess = active[sid] or {}
@@ -393,7 +432,7 @@ class DashboardStore:
         _, current_sessions = current
         old = {p[0]: (p[4], p[5]) for p in previous_sessions}
         new = {p[0]: (p[4], p[5]) for p in current_sessions}
-        active = daemon.state.get("active_sessions") or {}
+        active = self._watched_sessions(daemon)
         batch: list[dict[str, Any]] = []
         for sid, (phase, stage) in new.items():
             was = old.get(sid)
@@ -406,11 +445,17 @@ class DashboardStore:
             else:
                 text = f"phase → {phase or 'idle'}"
             card = (active.get(sid) or {}).get("current_card") or {}
+            number, title = card.get("issue_number"), card.get("title", "")
+            if number is None or not title:
+                # 358: a session without its card still has a number on the board.
+                board_number, board_title = self._board_card_label(daemon, sid)
+                number = board_number if number is None else number
+                title = title or board_title
             batch.append({
                 "activity_type": "stage_change",
                 "card_id": sid,
-                "card_number": card.get("issue_number"),
-                "card_title": card.get("title", ""),
+                "card_number": number,
+                "card_title": title,
                 "stage": stage or "",
                 "text": text,
             })
