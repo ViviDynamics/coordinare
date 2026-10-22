@@ -1756,6 +1756,8 @@ class HTTPPerformerService:
                 if started is None:
                     return True
                 handle = started.handle
+            if job is not None:
+                job.torn_down = True  # this confirmed stop owns the container from here
             try:
                 # 132: the full log is read before the stop removes it.
                 if job is not None:
@@ -1811,7 +1813,11 @@ class HTTPPerformerService:
         The stop is in a finally: nothing that happens while the log is read (a
         cancellation, a failure, a slow disk) keeps the container alive. ``collect=False``
         skips the log, which shutdown uses so that every stop happens promptly.
+        Every path that tears a job down (refusal, release, shutdown, a failed dispatch) ends here, so the
+        claim below stops each container at most once.
         """
+        if job.torn_down:
+            return
         job.torn_down = True
         try:
             await self._capture_run_log(job, collect=collect)

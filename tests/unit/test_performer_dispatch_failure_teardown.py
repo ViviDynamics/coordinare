@@ -192,3 +192,39 @@ async def test_a_persistent_performer_has_nothing_to_stop() -> None:
     with pytest.raises(RuntimeError):
         await svc.dispatch_card(CARD, workspace())
     assert runtime.stopped == []
+
+
+async def test_shutdown_racing_a_failed_dispatch_stops_each_container_once() -> None:
+    import asyncio
+
+    class SlowStop(Runtime):
+        async def stop(self, handle: str, **kwargs: Any) -> None:
+            self.stopped.append(handle)
+            await asyncio.sleep(0.2)
+
+    runtime = SlowStop()
+    svc = service(runtime, Client())
+    first = hps._EphemeralJob(container_id="cid-1", endpoint="x", client=cast("Any", Client()), run_id="s1", job_id="j1")
+    second = hps._EphemeralJob(container_id="cid-2", endpoint="x", client=cast("Any", Client()), run_id="s2", job_id="j2")
+    svc._active_jobs.update(s1=first, s2=second)
+    shutdown = asyncio.ensure_future(svc.aclose())
+    await asyncio.sleep(0.05)  # shutdown holds its snapshot and is stopping the first container
+    await svc._stop_failed_dispatch({"job": second, "session_id": "s2"})
+    await shutdown
+    assert sorted(runtime.stopped) == ["cid-1", "cid-2"]
+
+
+async def test_a_teardown_failure_never_replaces_the_original_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = Runtime()
+    svc = service(runtime, Client())
+
+    def missing(*args: Any, **kwargs: Any) -> Any:
+        raise FileNotFoundError(2, "No such file or directory")
+
+    async def broken_teardown(started: dict[str, Any]) -> None:
+        raise RuntimeError("teardown failed")
+
+    monkeypatch.setattr(svc, "_build_job_payload", missing)
+    monkeypatch.setattr(svc, "_stop_failed_dispatch", broken_teardown)
+    with pytest.raises(FileNotFoundError):
+        await svc.dispatch_card(CARD, workspace())
