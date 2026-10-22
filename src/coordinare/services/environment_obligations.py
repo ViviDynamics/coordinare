@@ -103,7 +103,7 @@ def preserve_execution_commands(
             != old.model_dump(exclude={"timeout_seconds"})
             or new.timeout_seconds < old.timeout_seconds
         ):
-            message = "required executable command changed after project execution"
+            message = f"required executable command {old.id} changed after project execution"
             raise EnvironmentDiscoveryError(message, code="obligation_removed")
 
 

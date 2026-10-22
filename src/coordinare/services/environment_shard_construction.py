@@ -69,14 +69,15 @@ GLOBAL_AUTHOR_INSTRUCTION = (
     'services, runtime endpoints, local credentials and any environment-level checks (toolchain usability, service '
     'readiness). Leave criterion_checks empty: check authors map every required criterion to checks under their own '
     'id prefixes, and the daemon merges their checks with your manifest. Never use a check id that starts with c '
-    'followed by digits and a hyphen. Requirements may reference only your own checks. '
+    'followed by digits, optional letters and a hyphen. Requirements may reference only your own checks. '
 )
 CHECK_AUTHOR_INSTRUCTIONS = (
     'You are a check author for one group of required source criteria in a divided environment manifest. The global '
     'environment author already declared installation, activation and services (global_part). For every criterion in '
     'assigned_criteria, write required, unscoped checks that prove its obligation and observable result in the clean '
-    'consumer, and map it in criterion_checks to those checks or to global checks in global_part. Every check id you '
-    'write must start with check_id_prefix. depends_on may name your checks, global checks, or service init, start '
+    'consumer, and map it in criterion_checks to those checks or to global checks in global_part. Every new check id you '
+    'write must start with check_id_prefix; keep every id in keep_check_ids unchanged, and you may map or depend on '
+    'sibling_check_ids, which another author keeps. depends_on may name your checks, global checks, or service init, start '
     'and health ids. You cannot declare installation, services or activation. bound_inputs indexes verified repository '
     'files with the criteria citing each; read the files you need with read_files. Never write literal credentials. '
     'Return {"shard_checks":{"checks":[...],"criterion_checks":{...}}}. '
@@ -101,7 +102,7 @@ class GlobalRules(BaseModel):
         if self.criterion_checks:
             raise PydanticCustomError('global_part_invalid', 'criterion_checks belong to check authors; leave it empty')
         if any(PREFIX.match(identifier) for identifier in self.check_ids):
-            raise PydanticCustomError('global_part_invalid', 'check ids starting with c, digits and a hyphen are reserved')
+            raise PydanticCustomError('global_part_invalid', 'check ids of c, digits, optional letters and a hyphen are reserved')
         return self
 
 
@@ -154,15 +155,52 @@ def global_summary(data: Mapping[str, Any]) -> dict[str, Any]:
             'runtime_endpoints': data.get('runtime_endpoints', [])}
 
 
-def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[str, Any]) -> ShardChecks:
+@dataclass(frozen=True)
+class Inheritance:
+    """What a group's author starts from: its previous part, and for a split remainder the ids it keeps."""
+
+    part: dict[str, Any] | None = None
+    own: frozenset[str] = frozenset()
+    siblings: frozenset[str] = frozenset()
+
+
+def inherit(previous: Mapping[str, dict[str, Any]], group: CheckGroup, parent: CheckGroup | None) -> Inheritance:
+    """An unsplit group keeps its previous part. A split remainder keeps the previous checks its criteria owned.
+
+    A check mapped by several criteria, or by none, belongs to the remainder holding the first such criterion in the
+    parent's order, so exactly one remainder keeps each previous id and the others may map to it.
+    """
+    if group.prefix in previous:
+        return Inheritance(previous[group.prefix])
+    base = previous.get(base_prefix(group.prefix))
+    if base is None or parent is None:
+        return Inheritance()
+    mapping: dict[str, list[str]] = base.get('criterion_checks', {})
+    declared = [check['id'] for check in base.get('checks', []) if isinstance(check, dict) and 'id' in check]
+    owner: dict[str, str] = {}
+    for criterion in parent.criteria:
+        for identifier in mapping.get(criterion.id, []):
+            if identifier in declared:
+                owner.setdefault(identifier, criterion.id)
+    for identifier in declared:
+        owner.setdefault(identifier, parent.criteria[0].id)
+    own = frozenset(identifier for identifier, criterion in owner.items() if criterion in group.ids)
+    part = {'checks': [check for check in base.get('checks', []) if check.get('id') in own],
+            'criterion_checks': {criterion: ids for criterion, ids in mapping.items() if criterion in group.ids}}
+    return Inheritance(part, own, frozenset(declared) - own)
+
+
+def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[str, Any],
+                   inherited: Inheritance | None = None) -> ShardChecks:
     """Own prefix, known dependencies, and exactly the assigned criteria mapped to required unscoped checks."""
+    inherited = inherited or Inheritance()
     part = ShardChecksEnvelope.model_validate(data).shard_checks
     errors: list[dict[str, Any]] = []
     own = {check.id: check for check in part.checks}
     global_checks = {item['id']: item for item in summary['checks'] if item.get('id')}
-    known = set(own) | set(global_checks) | set(summary['readiness_ids'])
+    known = set(own) | set(global_checks) | set(summary['readiness_ids']) | inherited.siblings
     for index, check in enumerate(part.checks):
-        if not check.id.startswith(group.prefix):
+        if not check.id.startswith(group.prefix) and check.id not in inherited.own:
             errors.append({'code': 'check_prefix_invalid', 'location': ['shard_checks', 'checks', str(index), 'id'],
                            'guidance': f'Every check id must start with {group.prefix}.'})
         unknown = [dependency for dependency in check.depends_on if dependency not in known]
@@ -177,6 +215,8 @@ def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[
                        'guidance': 'Map exactly every assigned criterion id, and no other.'})
 
     def usable(identifier: str) -> bool:
+        if identifier in inherited.siblings:
+            return True
         if identifier in own:
             return own[identifier].required and not own[identifier].scope
         item = global_checks.get(identifier)
@@ -256,24 +296,27 @@ class DividedConstruction:
             for path in criterion.sources:
                 cited_by.setdefault(path, []).append(criterion.id)
         index = await inspection.bind_verified(self._citations(group), phase='construction', cited_by=cited_by)
+        parent = next((candidate for candidate in self.groups if candidate.prefix == base_prefix(group.prefix)), None)
+        inherited = inherit(self.previous, group, parent)
         brief = canonical({
             'check_id_prefix': group.prefix,
             'assigned_criteria': [criterion.model_dump(mode='json') for criterion in group.criteria],
             'global_part': dict(summary), 'probe_evidence': list(probes), 'bound_inputs': index,
-            'previous_part': self.previous.get(group.prefix, self.previous.get(base_prefix(group.prefix))),
+            'previous_part': inherited.part, 'keep_check_ids': sorted(inherited.own),
+            'sibling_check_ids': sorted(inherited.siblings),
             'untrusted_feedback': self.feedback.get(group.prefix, self.feedback.get(base_prefix(group.prefix)))}).decode()
+        validate = partial(validate_group, group=group, summary=summary, inherited=inherited)
         key = hashlib.sha256(brief.encode()).hexdigest()
         saved = saved_part(self.context.budget, 'groups', group.prefix, key)
         if saved is not None:
             # A restart reuses the part its author already returned for this exact brief; inputs are verified again.
             await inspection.bind_verified(saved['inputs'], phase='construction')
-            reused = validate_group(saved['data'], group=group, summary=summary)
+            reused = validate(saved['data'])
             self.group_inputs.update(inspection.inputs)
             return reused
         messages = [{'role': 'system', 'content': SOURCE_NAVIGATION + CHECK_AUTHOR_INSTRUCTIONS},
                     {'role': 'user', 'content': brief}]
-        part: ShardChecks = await run_agent(self.context, inspection, messages, AgentTask(
-            'shard_checks', partial(validate_group, group=group, summary=summary)))
+        part: ShardChecks = await run_agent(self.context, inspection, messages, AgentTask('shard_checks', validate))
         self.group_inputs.update(inspection.inputs)
         save_part(self.context.budget, 'groups', group.prefix, key,
                   data={'shard_checks': part.model_dump(mode='json')}, inputs=dict(inspection.inputs))
@@ -306,9 +349,13 @@ class DividedConstruction:
                 continue
             owner = finding_part(record.proposal.affected_ids, self.groups)
             routed.setdefault(owner, []).append(record.model_dump(mode='json'))
+        # Each round's open findings replace the last round's; execution failures stay until the next execution.
+        kept = {prefix: {key: value for key, value in entry.items() if key.startswith('untrusted_execution')}
+                for prefix, entry in self.feedback.items()}
         for prefix, records in routed.items():
             if prefix != GLOBAL_OWNER:
-                self.feedback[prefix] = {'open_findings': records}
+                kept[prefix] = {**kept.get(prefix, {}), 'open_findings': records}
+        self.feedback = {prefix: entry for prefix, entry in kept.items() if entry}
 
 
 def saved_part(budget: AttemptBudget, kind: str, name: str, key: str) -> dict[str, Any] | None:
@@ -325,14 +372,14 @@ def save_part(budget: AttemptBudget, kind: str, name: str, key: str, **record: A
 
 def execution_feedback_by_group(feedback: Mapping[str, Any], groups: Sequence[CheckGroup]) -> dict[str, Any]:
     """A failed check reaches the group that owns it; installation and service failures stay with the global author."""
-    results = (feedback.get('report') or {}).get('results') or []
+    results = feedback.get('results') or []
     routed: dict[str, Any] = {}
     for group in groups:
         failed = [result for result in results if isinstance(result, dict) and isinstance(result.get('id'), str)
-                  and owns(group.prefix, result['id']) and result.get('status') == 'fail']
+                  and owns(group.prefix, result['id']) and result.get('status') != 'pass']
         if failed:
             routed[group.prefix] = {'untrusted_execution_failures': failed,
-                                    'manifest_digest': feedback.get('manifest_digest')}
+                                    'rejected_manifest_digest': feedback.get('rejected_manifest_digest')}
     return routed
 
 
@@ -415,9 +462,34 @@ def part_manifest_view(manifest: EnvironmentManifest, group: CheckGroup | None) 
             'criteria': [criterion.model_dump(mode='json') for criterion in group.criteria]}
 
 
-__all__ = ['CHECK_AUTHOR_THRESHOLD', 'CHECK_GROUP_SIZE', 'GLOBAL_AUTHOR_INSTRUCTION', 'GLOBAL_OWNER', 'REVIEW_PART_PREAMBLE',
-           'CheckGroup', 'DividedConstruction', 'GlobalRules', 'base_prefix', 'check_groups', 'combine_review', 'divided',
-           'execution_feedback_by_group', 'finding_part', 'global_summary', 'manifest_digest', 'merge_parts', 'owns',
-           'part_manifest_view', 'parts_from_manifest',
-           'review_capacities', 'review_owners', 'save_part', 'saved_part', 'validate_global', 'validate_group',
-           'validate_review_part']
+__all__ = [
+    'CHECK_AUTHOR_THRESHOLD',
+    'CHECK_GROUP_SIZE',
+    'GLOBAL_AUTHOR_INSTRUCTION',
+    'GLOBAL_OWNER',
+    'REVIEW_PART_PREAMBLE',
+    'CheckGroup',
+    'DividedConstruction',
+    'GlobalRules',
+    'Inheritance',
+    'base_prefix',
+    'check_groups',
+    'combine_review',
+    'divided',
+    'execution_feedback_by_group',
+    'finding_part',
+    'global_summary',
+    'inherit',
+    'manifest_digest',
+    'merge_parts',
+    'owns',
+    'part_manifest_view',
+    'parts_from_manifest',
+    'review_capacities',
+    'review_owners',
+    'save_part',
+    'saved_part',
+    'validate_global',
+    'validate_group',
+    'validate_review_part',
+]
