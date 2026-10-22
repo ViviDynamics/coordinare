@@ -142,6 +142,11 @@ SHARD_AUTHOR_INSTRUCTIONS = (
     + GRANULARITY_GUIDANCE
 )
 CONSOLIDATION_THRESHOLD = 40
+LISTING_ONLY_ERROR: dict[str, Any] = {'code': 'unsupported_envelope', 'location': [],
+                                      'guidance': 'Source tools are unavailable to this agent; return only the requested envelope.'}
+# Failures of the consolidation conversation itself; the scope then proceeds as authored.
+CONSOLIDATION_SKIPPABLE = frozenset({'attempt_schema_limit', 'scope_phase_deadline', 'scope_phase_call_limit',
+                                     'shard_context_limit'})
 APPLICABILITY_RANK = {'required': 2, 'unknown': 1, 'not_applicable': 0}
 CONSOLIDATION_INSTRUCTIONS = (
     'You consolidate a source-defined scope assembled from many per-shard authors, so it states environment '
@@ -156,8 +161,8 @@ CONSOLIDATION_INSTRUCTIONS = (
 )
 SHARD_REVIEW_PREAMBLE = (
     'You independently review ONE shard of a repository too large for one conversation. shard_files lists every file '
-    'in your shard and cited_files every file your criteria and findings cite: read from those lists, and use list_files '
-    'only to resolve a concrete reference that is not listed. mandatory_evidence holds your '
+    'in your shard and cited_files every file your criteria and findings cite: read from those lists first; use '
+    'list_files to resolve references that are not listed or to look for omissions, not to browse. mandatory_evidence holds your '
     'shard\'s inspected files and the shared root-level files; root_directory navigates the whole repository so you can '
     'follow references, but read only what judging your shard requires: your reads are limited. scope_criteria are the '
     'current criteria citing your shard and criterion_index names every current criterion. Judge omissions, conflicts '
@@ -166,8 +171,9 @@ SHARD_REVIEW_PREAMBLE = (
 )
 MERGE_REVIEW_PREAMBLE = (
     'You independently review the repository-wide consistency of a scope assembled from per-shard work. '
-    'cited_files lists every file your criteria and findings cite: read from it, and use list_files only to resolve a '
-    'concrete reference that is not listed. '
+    'cited_files lists every file your criteria and findings cite: read from it first; use list_files to resolve '
+    'references that are not listed or to look for omissions, not to browse. consolidated lists criteria folded into '
+    'one obligation with the descriptions they replaced: raise a missing_obligation finding if a fold lost one. '
     'exclusions lists areas left unread because two independent listing triages judged them unrelated to the '
     'environment, and unread_unsure lists areas nobody named as environment and nobody judged unrelated. If any '
     'could define environment obligations, raise an unread_source finding requesting the relevant files. '
@@ -394,12 +400,15 @@ class ShardedScope:
                     raw = await self._ask(inspection, messages, schema)
                     try:
                         reply = _decode_reply(raw, inspection.name, limits)
-                        if 'tool' in reply:
+                        if 'tool' in reply and not task.listing_only:
                             result = await _bounded_tool_result(inspection, reply)
                             messages.extend([{'role': 'assistant', 'content': raw},
                                              {'role': 'user', 'content': canonical({'tool_result': result}).decode()}])
                             continue
-                        return task.validate(reply)
+                        # A listing-only agent judges what it was given; a tool request is corrected, never executed.
+                        errors = [dict(LISTING_ONLY_ERROR)] if 'tool' in reply else []
+                        if not errors:
+                            return task.validate(reply)
                     except (ValidationError, PydanticCustomError, FindingValidationError, EnvironmentDiscoveryError) as exc:
                         errors = _rejection_errors(exc, task.envelope)
                     if corrections >= SHARD_SCHEMA_REPAIRS:
@@ -524,7 +533,13 @@ class ShardedScope:
         def halves(chunk: tuple[ScopeCriterionProposal, ...], _overflow: ShardOverflowError) -> list[tuple[ScopeCriterionProposal, ...]]:
             return [chunk] if len(chunk) < MIN_SPLIT else [chunk[:len(chunk) // 2], chunk[len(chunk) // 2:]]
 
-        results = await run_pool(chunks, self.consolidate_chunk, budget=self.budget, split=halves, concurrency=self.concurrency)
+        try:
+            results = await run_pool(chunks, self.consolidate_chunk, budget=self.budget, split=halves,
+                                     concurrency=self.concurrency)
+        except EnvironmentDiscoveryError as exc:
+            if exc.code not in CONSOLIDATION_SKIPPABLE:
+                raise
+            return criteria, []
         groups = [group for chunk_groups in results for group in chunk_groups]
         return apply_consolidation(criteria, groups)
 
@@ -538,8 +553,8 @@ class ShardedScope:
             groups: list[ConsolidationGroup] = await self.agent_phase(inspection, messages, AgentTask(
                 'scope_consolidation', partial(validate_consolidation, criteria=chunk), listing_only=True))
         except EnvironmentDiscoveryError as exc:
-            if exc.code != 'attempt_schema_limit':
-                raise
+            if exc.code not in CONSOLIDATION_SKIPPABLE:
+                raise  # The attempt's own budget or deadline, which ends any phase.
             return []  # Consolidation can only shrink a scope, never block it.
         return groups
 
@@ -660,7 +675,8 @@ class ShardedScope:
                                           | {path for record in records for path in record['proposal']['sources']}),
                     'required_decision_ids': list(owned), 'finding_responses': responses, 'findings_capacity': capacity,
                     **({'exclusions': [item.model_dump(mode='json') for item in definition.exclusions],
-                        'unread_unsure': [item.model_dump(mode='json') for item in definition.unread_unsure]}
+                        'unread_unsure': [item.model_dump(mode='json') for item in definition.unread_unsure],
+                        'consolidated': [item.model_dump(mode='json') for item in definition.consolidated]}
                        if preamble == MERGE_REVIEW_PREAMBLE else {}),
                     'investigation_evidence': investigation_evidence(inspection=inspection, bindings=bindings,
                         results=self.budget.scope_investigation_results),
@@ -934,6 +950,11 @@ class ShardedScope:
         results = await run_pool(work, partial(self.revise_group, base=base, investigator=investigator),
                                  budget=budget, split=halves, concurrency=self.concurrency)
         definition, responses = combine_revisions(base, results, inputs=budget.scope_inputs)
+        if definition.consolidated:
+            # A folded criterion replaced by a revision no longer has a consolidation record.
+            live = {criterion.id for criterion in definition.criteria}
+            definition = ScopeDefinition.model_validate({**definition.model_dump(mode='json'), 'consolidated': [
+                record.model_dump(mode='json') for record in definition.consolidated if record.criterion_id in live]})
         if definition.exclusions or definition.unread_unsure:
             excluded_areas, unsure_areas = self.unread_records(definition.inputs)
             definition = ScopeDefinition.model_validate({**definition.model_dump(mode='json'),
@@ -991,6 +1012,14 @@ def validate_consolidation(data: dict[str, Any], *, criteria: Sequence[ScopeCrit
         elif sorted(group.criterion.sources) != union:
             errors.append({'code': 'consolidation_sources_invalid', 'location': [*location, 'criterion', 'sources'],
                            'required_sources': union, 'guidance': 'Cite exactly the union of the members\' sources.'})
+        needs = sorted({need for member in members for need in member.runtime_needs})
+        if len(needs) > MAX_CRITERION_SOURCES:
+            errors.append({'code': 'consolidation_group_too_large', 'location': [*location, 'criterion', 'runtime_needs'],
+                           'guidance': 'The members need too many runtime needs for one criterion; split the group.'})
+        elif sorted(group.criterion.runtime_needs) != needs:
+            errors.append({'code': 'consolidation_runtime_needs_invalid', 'location': [*location, 'criterion', 'runtime_needs'],
+                           'required_runtime_needs': needs,
+                           'guidance': 'Keep exactly the union of the members\' runtime_needs; never drop an environment need.'})
         strongest = max((member.applicability for member in members), key=APPLICABILITY_RANK.__getitem__)
         if group.criterion.applicability != strongest:
             errors.append({'code': 'consolidation_applicability_invalid', 'location': [*location, 'criterion', 'applicability'],
@@ -1006,6 +1035,7 @@ def apply_consolidation(criteria: Sequence[ScopeCriterionProposal], groups: Sequ
     group_of = {member: index for index, group in enumerate(groups) for member in group.member_ids}
     result: dict[str, ScopeCriterionProposal] = {}
     members: dict[str, list[str]] = {}
+    described: dict[str, list[str]] = {}
     for criterion in criteria:
         index = group_of.get(criterion_id(criterion))
         if index is None:
@@ -1016,8 +1046,11 @@ def apply_consolidation(criteria: Sequence[ScopeCriterionProposal], groups: Sequ
         result.setdefault(replacement, group.criterion)
         # Identical folded criteria (for example from two chunks) share one record listing every member.
         known = members.setdefault(replacement, [])
-        known.extend(member for member in group.member_ids if member not in known)
-    records = [ConsolidationRecord(criterion_id=key, member_ids=value) for key, value in members.items()]
+        if criterion_id(criterion) not in known:
+            known.append(criterion_id(criterion))
+            described.setdefault(replacement, []).append(criterion.description)
+    records = [ConsolidationRecord(criterion_id=key, member_ids=value, member_descriptions=described[key])
+               for key, value in members.items()]
     return list(result.values()), records
 
 
