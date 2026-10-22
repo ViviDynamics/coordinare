@@ -27,6 +27,20 @@ _LONG_REASON = (
 )
 # A pixel of slack for sub-pixel rounding at the column edge.
 _EDGE_SLACK_PX = 1
+# The board re-snaps on a debounced resize; this is comfortably past the debounce.
+_RESIZE_SETTLE_MS = 600
+_COLUMN_GEOMETRY_JS = """col => {
+          const body = col.querySelector('.swimlane-col-body').getBoundingClientRect();
+          const more = col.querySelector('.swimlane-more').getBoundingClientRect();
+          const cards = [...col.querySelectorAll('.swimlane-col-body > .swimlane-card')]
+            .map(c => c.getBoundingClientRect())
+            // A card whose top sits on the foot shows nothing; a pixel of slack absorbs sub-pixel layout.
+            .filter(r => r.bottom > body.top + 1 && r.top < body.bottom - 1)
+            .map(r => ({top: r.top, bottom: r.bottom}));
+          return {body: {top: body.top, bottom: body.bottom}, moreTop: more.top, visible: cards,
+                  text: col.querySelector('.swimlane-more').textContent,
+                  total: col.querySelectorAll('.swimlane-col-body > .swimlane-card').length};
+        }"""
 
 
 def _strip_geometry(page: Page) -> dict[str, Any]:
@@ -114,20 +128,28 @@ def test_the_more_line_sits_below_whole_cards(
     todo = page.locator("#swimlane-section .swimlane-col").filter(has_text="To Do")
     expect(todo.locator(".swimlane-more")).to_have_text(re.compile(r"^\+\d+ more$"), timeout=_WAIT_LIVE)
 
-    geometry = todo.evaluate(
-        """col => {
-          const body = col.querySelector('.swimlane-col-body').getBoundingClientRect();
-          const more = col.querySelector('.swimlane-more').getBoundingClientRect();
-          const cards = [...col.querySelectorAll('.swimlane-col-body > .swimlane-card')]
-            .map(c => c.getBoundingClientRect())
-            // A card whose top sits on the foot shows nothing; a pixel of slack absorbs sub-pixel layout.
-            .filter(r => r.bottom > body.top + 1 && r.top < body.bottom - 1)
-            .map(r => ({top: r.top, bottom: r.bottom}));
-          return {body: {top: body.top, bottom: body.bottom}, moreTop: more.top, visible: cards,
-                  text: col.querySelector('.swimlane-more').textContent,
-                  total: col.querySelectorAll('.swimlane-col-body > .swimlane-card').length};
-        }""",
-    )
+    _assert_whole_cards(todo)
+
+
+@pytest.mark.e2e
+def test_the_column_snaps_again_when_the_window_is_resized(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    page.set_viewport_size({"width": 2000, "height": 900})
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    store.broadcaster.broadcast(_full_snapshot(phase="idle", phase_label="Idle", symphonies=[_crowded_board()]))
+    todo = page.locator("#swimlane-section .swimlane-col").filter(has_text="To Do")
+    expect(todo.locator(".swimlane-more")).to_have_text(re.compile(r"^\+\d+ more$"), timeout=_WAIT_LIVE)
+    _assert_whole_cards(todo)
+    # Narrower columns make taller cards. No snapshot arrives; the resize alone re-snaps the column.
+    page.set_viewport_size({"width": 1200, "height": 900})
+    page.wait_for_timeout(_RESIZE_SETTLE_MS)
+    _assert_whole_cards(todo)
+
+
+def _assert_whole_cards(todo: Any) -> None:
+    geometry = todo.evaluate(_COLUMN_GEOMETRY_JS)
     assert geometry["moreTop"] >= geometry["body"]["bottom"] - _EDGE_SLACK_PX, geometry
     assert geometry["visible"], geometry
     for card in geometry["visible"]:

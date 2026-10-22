@@ -304,14 +304,26 @@ function snapBoardColumn(body, cards) {
   // Bounding rects, not offsetTop: offsets round to whole pixels and a fraction is enough to show a sliver.
   var origin = body.getBoundingClientRect().top + body.clientTop - body.scrollTop;
   var bottomOf = function(card) { return card.getBoundingClientRect().bottom - origin; };
+  // A card is whole when its own bottom is inside the cap; the padding under it may be cut.
   var shown = 0;
   for (var i = 0; i < cards.length; i++) {
     var bottom = bottomOf(cards[i]);
-    if (bottom + padBottom > cap + 1) break;
+    if (bottom > cap + 1) break;
     shown = bottom;
   }
   var overflows = cards.length > 0 && bottomOf(cards[cards.length - 1]) + padBottom > cap + 1;
-  body.style.maxHeight = overflows && shown > 0 ? (shown + padBottom) + 'px' : '';
+  body.style.maxHeight = overflows && shown > 0 ? Math.min(shown + padBottom, cap) + 'px' : '';
+}
+
+// 358: card heights follow the column width, so a resize re-snaps the columns. Debounced, because
+// a drag fires many events and one measure at the end is enough.
+var BOARD_RESIZE_DEBOUNCE_MS = 150;
+var _boardResizeTimer = null;
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('resize', function() {
+    if (_boardResizeTimer) clearTimeout(_boardResizeTimer);
+    _boardResizeTimer = setTimeout(markBoardOverflow, BOARD_RESIZE_DEBOUNCE_MS);
+  });
 }
 
 // The health dot: takes the reader to the System health card and moves focus there.
