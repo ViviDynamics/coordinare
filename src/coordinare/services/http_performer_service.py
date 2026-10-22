@@ -260,7 +260,9 @@ class _EphemeralJob:
     # 132: the job's secret values, known from the payload. Held only for this job's life:
     # they are dropped in cleanup, so a refused dispatch keeps no copy.
     secrets: tuple[str, ...] = ()
-    # Set once the container was stopped, so a failure raised after an in-line refusal does not stop it twice.
+    # Claimed when teardown begins (before any await), so an in-line refusal, a concurrent release and a
+    # failed dispatch never stop the same container twice. A stop that fails is not retried here; startup
+    # reconciliation reaps by label, as before.
     torn_down: bool = False
 
 
@@ -538,8 +540,14 @@ class HTTPPerformerService:
                 return await self._dispatch_card_locked(
                     card_context, workspace_info, extra_volumes, run_inputs, started,
                 )
-            except Exception:
-                await self._stop_failed_dispatch(started)
+            except BaseException:
+                # A cancellation leaks the container as surely as an error does. The teardown is
+                # shielded, and its own failure never replaces the original error.
+                try:
+                    await self._stop_failed_dispatch(started)
+                except Exception as exc:
+                    logger.warning("http_performer.failed_dispatch_teardown_error", performer_id=self._config.id,
+                                   error=str(exc))
                 raise
 
     async def _stop_failed_dispatch(self, started: dict[str, Any]) -> None:
@@ -1804,11 +1812,11 @@ class HTTPPerformerService:
         cancellation, a failure, a slow disk) keeps the container alive. ``collect=False``
         skips the log, which shutdown uses so that every stop happens promptly.
         """
+        job.torn_down = True
         try:
             await self._capture_run_log(job, collect=collect)
         finally:
             await self._stop_job_container(job)
-            job.torn_down = True
             if self._injected_client is None:
                 with contextlib.suppress(Exception):
                     await job.client.aclose()

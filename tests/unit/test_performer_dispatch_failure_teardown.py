@@ -125,3 +125,70 @@ async def test_a_refused_dispatch_is_still_stopped_once_and_returns_its_error() 
     result = await service(runtime, Client(busy)).dispatch_card(CARD, workspace())
     assert result["status"] == "error"
     assert runtime.stopped == ["cid-1"]
+
+
+async def test_a_cancelled_dispatch_stops_the_started_container() -> None:
+    import asyncio
+
+    posted = asyncio.Event()
+
+    async def hang(payload: Any) -> Any:
+        posted.set()
+        await asyncio.sleep(60)
+
+    runtime = Runtime()
+    task = asyncio.ensure_future(service(runtime, Client(hang)).dispatch_card(CARD, workspace()))
+    await asyncio.wait_for(posted.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert runtime.stopped == ["cid-1"]
+
+
+async def test_a_readiness_timeout_is_refused_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def slow(*args: Any, **kwargs: Any) -> None:
+        raise hps.performer_lifecycle.ReadinessTimeoutError("not ready")
+
+    monkeypatch.setattr(hps.performer_lifecycle, "wait_ready", slow)
+    runtime = Runtime()
+    result = await service(runtime, Client()).dispatch_card(CARD, workspace())
+    assert result["status"] == "error"
+    assert runtime.stopped == ["cid-1"]
+
+
+async def test_a_release_during_a_failing_dispatch_does_not_stop_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    class SlowStop(Runtime):
+        async def stop(self, handle: str, **kwargs: Any) -> None:
+            self.stopped.append(handle)
+            await asyncio.sleep(0.2)  # a release still stopping when the dispatch fails
+
+    runtime = SlowStop()
+    svc = service(runtime, Client())
+    releases: list[asyncio.Task[Any]] = []
+
+    async def release_then_fail(session_id: str, *args: Any, **kwargs: Any) -> None:
+        releases.append(asyncio.ensure_future(svc.release_session(session_id)))
+        await asyncio.sleep(0.05)
+        raise RuntimeError("header write failed")
+
+    monkeypatch.setattr(svc, "_transcribes", lambda _session: True)
+    monkeypatch.setattr(svc, "_write_run_header", release_then_fail)
+    with pytest.raises(RuntimeError, match="header write failed"):
+        await svc.dispatch_card(CARD, workspace())
+    await asyncio.gather(*releases)
+    assert runtime.stopped == ["cid-1"]
+
+
+async def test_a_persistent_performer_has_nothing_to_stop() -> None:
+    async def bug(payload: Any) -> Any:
+        raise RuntimeError("unexpected")
+
+    runtime = Runtime()
+    config = PerformerEndpointConfig(id="perf-p", mode="persistent", image="img", roles=["implementer"],
+                                     endpoint="http://127.0.0.1:8080")
+    svc = HTTPPerformerService(config, client=cast("Any", Client(bug)), runtime=cast("Any", runtime))
+    with pytest.raises(RuntimeError):
+        await svc.dispatch_card(CARD, workspace())
+    assert runtime.stopped == []
