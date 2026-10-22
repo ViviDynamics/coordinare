@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from coordinare_service_inference.environment.inventory import InventoryEntry
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
 
 
 MAX_BATCH_FILES = 8
+# Binding is daemon verification, not conversation context: it may cover more bytes than one conversation holds.
+BIND_SOURCE_BYTES = 64 * 1024 * 1024
 
 
 PolicyStatus = Literal['readable', 'too_large', 'link']
@@ -147,6 +150,28 @@ class SourceInspection:
             await asyncio.gather(*tasks, return_exceptions=True)
             if self.retained_inputs is not None and self.budget is not None:
                 await self.budget.flush()
+
+    async def bind_verified(self, expected: Mapping[str, str], *, phase: str,
+                            cited_by: Mapping[str, Sequence[str]] | None = None) -> list[dict[str, Any]]:
+        """Verify inputs by digest and bind them here without loading their contents into the conversation.
+
+        The daemon reads through a separately bounded verifier (charged to the attempt). The conversation receives
+        an index; the agent reads content on demand, and any later read must match the bound digest.
+        """
+        from coordinare.services.environment_evidence import prepare_mandatory_evidence
+
+        missing = {path: digest for path, digest in expected.items() if self.inputs.get(path) != digest}
+        if missing:
+            limits = replace(self.limits, max_reads=max(self.limits.max_reads, len(missing)),
+                             max_source_bytes=max(self.limits.max_source_bytes, BIND_SOURCE_BYTES))
+            verifier = SourceInspection(self.entries if self.entries is not None else self.paths, self.fetch, limits,
+                                        self.budget, retained_inputs=self.retained_inputs)
+            verifier.name = f'{self.name}_binding'
+            for item in await prepare_mandatory_evidence(verifier, missing, phase=phase):
+                self.inputs[item['path']] = item['sha256']
+        return [{'path': path, 'sha256': expected[path],
+                 'bytes': self.entries[path].size if self.entries is not None and path in self.entries else None,
+                 'cited_by': sorted((cited_by or {}).get(path, []))} for path in sorted(expected)]
 
     def policy_status(self, path: str) -> PolicyStatus:
         """Symlinks and files over the per-file limit are listed but never read or followed."""

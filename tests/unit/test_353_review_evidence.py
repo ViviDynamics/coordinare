@@ -34,14 +34,15 @@ async def test_reviewer_receives_all_mandatory_contents_before_first_call():
         if 'manifest' in context:
             review_calls.append(copy.deepcopy(messages))
             evidence = context['mandatory_evidence']
-            assert {item['path']: item['content'] for item in evidence} == files
+            assert {item['path'] for item in evidence} == set(files) and all('content' not in item for item in evidence)
             assert all(item['sha256'] == hashlib.sha256(files[item['path']].encode()).hexdigest() for item in evidence)
             return json.dumps(assessment(candidate()))
         return json.dumps({'tool':'read_files', 'paths':list(files)}) if len(messages) == 2 else json.dumps({'manifest':candidate()})
     manifest, review = await discover_and_review(symphony_name='suite', commit=COMMIT, paths=list(files),
         capabilities=CAPABILITIES, fetch=fetch, chat=chat)
     assert len(review_calls) == 1
-    assert {path: fetched.count(path) for path in files} == {path: (8 if path == PATH else 5) for path in files}
+    # The author's own repeated bindings are verified once per inspection; every role still fetches independently.
+    assert {path: fetched.count(path) for path in files} == {path: (7 if path == PATH else 4) for path in files}
     assert review.inputs == manifest.inputs
 
 
@@ -108,7 +109,7 @@ async def test_revised_candidate_prefetches_expanded_input_set():
         capabilities=CAPABILITIES, fetch=fetch, chat=chat)
     assert review_starts == [{PATH}, {PATH, 'additional'}]
     assert set(review.inputs) == set(files)
-    assert fetched.count(PATH) == 9
+    assert fetched.count(PATH) == 8
     assert fetched.count('additional') == 5
 
 

@@ -163,3 +163,11 @@ async def test_a_tool_request_from_a_listing_only_agent_is_corrected_not_execute
     budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
     contract = await run(Reader(), budget=budget)
     assert contract.definition.consolidated and budget.shard_schema_repairs >= 1
+
+
+@pytest.mark.asyncio
+async def test_consolidation_chunks_hold_at_most_25_criteria():
+    router = Many()
+    await run(router)
+    chunks = [json.loads(m[1]['content'])['criteria'] for role, m in router.conversations if role == 'consolidation']
+    assert chunks and all(len(chunk) <= 25 for chunk in chunks) and sum(len(c) for c in chunks) == 54
