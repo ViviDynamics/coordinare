@@ -279,6 +279,7 @@ async def test_a_divided_review_gives_each_part_a_fresh_reviewer_and_only_its_ow
 
     monkeypatch.setattr(discovery_module, '_Inspection', FreshInspection)
     monkeypatch.setattr(discovery_module, 'run_agent', agent)
+    monkeypatch.setattr(discovery_module, 'manifest_obligation_ids', lambda _manifest: set())
     build = SimpleNamespace(groups=groups, scope=SimpleNamespace(definition=SimpleNamespace(criteria=[first, second])),
                             context=None, concurrency=4)
     manifest = FakeManifest(inputs={first.sources[0]: 'a' * 64, second.sources[0]: 'b' * 64, 'Makefile': 'c' * 64},
@@ -552,3 +553,22 @@ async def test_a_merge_repair_asks_the_global_author_for_its_own_envelope(monkey
     _merged, _build, _phases, messages = await merge_with(monkeypatch, validate)
     repair = next(message['content'] for message in messages if 'source_identity' in message['content'])
     assert '"manifest"' in repair and 'shard_checks' not in repair
+
+
+def test_a_part_finding_naming_a_criterion_is_corrected_with_the_obligation_ids():
+    from coordinare.services.environment_shard_construction import validate_review_part
+
+    finding = {'category': 'coverage', 'issue': 'k3s is not covered', 'sources': ['a.md'],
+               'affected_ids': [make_criterion(1).id]}
+    data = {'assessment': {'findings': [finding], 'decisions': [], 'capability_unavailable': False,
+                           'verdict': 'revise', 'rationale': 'gap', 'sources': ['a.md']}}
+    inspection = SimpleNamespace(inputs={'a.md': 'a' * 64})
+    with pytest.raises(_ResponseReferenceError) as caught:
+        validate_review_part(data, inspection=inspection, owned=[], capacity=4, obligation_ids={'c00-0', 'toolchain'})
+    [error] = caught.value.errors
+    assert error['location'] == ['assessment', 'findings', '0', 'affected_ids']
+    assert error['obligation_ids'] == ['c00-0', 'toolchain'] and make_criterion(1).id not in json.dumps(error)
+    finding['affected_ids'] = ['c00-0']
+    proposal, _inputs = validate_review_part(data, inspection=inspection, owned=[], capacity=4,
+                                             obligation_ids={'c00-0', 'toolchain'})
+    assert proposal.findings[0].affected_ids == ['c00-0']
