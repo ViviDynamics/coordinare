@@ -124,6 +124,18 @@ GRAPH_GUIDANCE = {
                                  'Remove the named ids from depends_on; if a precondition must be verified, do it '
                                  'inside the service command or in a check that depends on the service.'),
     'duplicate_service_ids': 'Each service needs a unique id.',
+    'runtime_env_reserved': ('The private service runtime owns the listed environment variables; remove them from the '
+                             'named command or activation env. Reach Docker through the runtime it provides.'),
+    'duplicate_command_ids': 'Every install, check and service command needs its own id; rename the listed duplicates.',
+    'duplicate_requirement_ids': 'Every requirement needs its own id; rename the listed duplicates.',
+    'service_scope_mismatch': ("All of a service's init, start, health and stop commands share the start command's "
+                               'scope; set the listed commands to it.'),
+    'scope_required_service': ('A required service keeps every lifecycle command required; mark the listed commands '
+                               'required, or make the whole service optional if the scope allows.'),
+    'required_check_missing': 'At least one check must be required.',
+    'requirement_source_uninspected': ("A requirement's source must be a file you inspected; read it, or cite one you "
+                                       'read.'),
+    'empty_reason_missing': 'With no requirements, explain in empty_reason why the environment needs none.',
     'global_obligation_removed': ('Your earlier proposals declared the listed required records; keep each id and revise '
                                   'the record in place. Only an id that reuses a scope criterion id may be renamed.'),
 }
