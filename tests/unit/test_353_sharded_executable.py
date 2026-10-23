@@ -600,3 +600,23 @@ def test_a_divided_revision_restarts_from_the_global_part_alone():
     revision = json.loads(messages[3]['content'])
     assert revision['coverage_revision']['required_ids'] == {'checks': ['toolchain']}
     assert 'keep criterion_checks empty' in revision['instruction']
+
+
+def test_an_id_that_reuses_a_criterion_id_is_never_locked_and_can_be_renamed():
+    criterion = make_criterion(1)
+
+    class RejectedError(Exception):
+        pass
+
+    construction = SimpleNamespace(
+        budget=SimpleNamespace(scope_contract=SimpleNamespace(definition=SimpleNamespace(criteria=[criterion]))),
+        admit=lambda data, inputs: (_ for _ in ()).throw(RejectedError()))
+    validator = discovery_module._CandidateValidator(
+        discovery=SimpleNamespace(inputs={}), construction=construction, required_ids={'requirements': set()},
+        prior_manifests=[], obligation_ledger=discovery_module._ObligationLedger(), budget=SimpleNamespace())
+    with pytest.raises(RejectedError):
+        validator({'requirements': [{'id': criterion.id, 'required': True}, {'id': 'req-node', 'required': True}]})
+    with pytest.raises(RejectedError):  # renaming the colliding id is not "removing a required obligation"
+        validator({'requirements': [{'id': 'req-ruby', 'required': True}, {'id': 'req-node', 'required': True}]})
+    with pytest.raises(EnvironmentDiscoveryError, match='req-node'):  # an ordinary id stays retained
+        validator({'requirements': [{'id': 'req-ruby', 'required': True}]})
