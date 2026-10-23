@@ -1009,7 +1009,8 @@ def compact_scope_identity(identity: dict[str, Any], scope: ScopeContract) -> di
     return compact
 
 
-MERGE_ROUNDS = 2
+# Each merge after the first verifies one correction; v21 needed a group fix, then a global one.
+MERGE_ROUNDS = 3
 
 
 async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
@@ -1090,6 +1091,8 @@ def _attributed(errors: list[dict[str, Any]], exc: Exception,
     Only the structured feedback and the daemon's own message are read; a validation error's rendering embeds
     candidate input and would attribute by accident.
     """
+    if getattr(exc, 'global_owned', False):
+        return []
     text = _json(errors) + (str(exc) if isinstance(exc, EnvironmentDiscoveryError) else '')
     named = set(GROUP_CHECK_ID.findall(text))
     return [group for prefix, (group, part) in parts.items()
