@@ -20,7 +20,7 @@ def test_calls_are_aggregated_per_phase_from_reported_usage():
     attempt.record_reply('{}', phase='discovery', seconds=1.0)
     stats = attempt.summary()['call_stats']
     assert stats['listing_triage'] == {'calls': 2, 'seconds': 3002.5, 'input_tokens': 110, 'output_tokens': 32808,
-                                       'cached_tokens': 60, 'length_stops': 1}
+                                       'cached_tokens': 60, 'length_stops': 1, 'repetition_stops': 0}
     assert stats['discovery']['calls'] == 1 and stats['discovery']['input_tokens'] == 0
 
 
@@ -29,7 +29,7 @@ def test_untrusted_usage_values_are_ignored():
     attempt.record_reply(DiscoveryChatReply('{}', usage={'input_tokens': -5, 'output_tokens': 10**13, 'cache_read': 3}),
                          phase='review', seconds=-1.0)
     assert attempt.summary()['call_stats']['review'] == {'calls': 1, 'seconds': 0.0, 'input_tokens': 0,
-                                                         'output_tokens': 0, 'cached_tokens': 3, 'length_stops': 0}
+                                                         'output_tokens': 0, 'cached_tokens': 3, 'length_stops': 0, 'repetition_stops': 0}
 
 
 def test_a_call_without_a_phase_is_counted_but_not_attributed():

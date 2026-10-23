@@ -24,7 +24,7 @@ from coordinare.services.environment_function_wire import (
     functions,
     load_unique,
 )
-from coordinare.services.model_output_cap import capped
+from coordinare.services.model_output_cap import REPETITION_FINISH, capped, degenerate, repetition_guard
 
 if TYPE_CHECKING:
     from coordinare.config import ProjectConfiguration
@@ -231,6 +231,60 @@ def _openai_usage(data: Any) -> dict[str, int] | None:
     return {"input_tokens": max(prompt - read, 0), "output_tokens": output, "cache_read": read, "cache_write": 0}
 
 
+# A degenerate reply is checked again only after this many new characters.
+REPETITION_CHECK_CHARS = 256
+
+
+async def _streamed_completion(client: Any, url: str, payload: dict[str, Any],
+                               headers: dict[str, str]) -> tuple[Any, dict[str, Any] | None]:
+    """One streamed chat completion, reassembled as the non-streamed shape; None when the stream is malformed."""
+    async with client.stream("POST", url, json=payload, headers=headers) as resp:
+        if resp.status_code >= 400:
+            await resp.aread()
+            return resp, None
+        return resp, await _collect_stream(resp)
+
+
+async def _collect_stream(resp: Any) -> dict[str, Any] | None:
+    """Accumulate content and reasoning deltas; stop reading once either has degenerated into exact repetition.
+
+    Closing the stream early ends generation on the provider, so a looping reply costs seconds, not the cap.
+    """
+    text = thought = ""
+    checked = 0
+    model: str | None = None
+    usage: Any = None
+    finish: str | None = None
+    async for line in resp.aiter_lines():
+        if not line.startswith("data:"):
+            continue
+        body = line[5:].strip()
+        if body == "[DONE]":
+            break
+        try:
+            chunk = json.loads(body)
+        except ValueError:
+            return None
+        if not isinstance(chunk, dict):
+            return None
+        model = chunk.get("model") if isinstance(chunk.get("model"), str) else model
+        usage = chunk.get("usage") if isinstance(chunk.get("usage"), dict) else usage
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") if isinstance(choice, dict) else None
+            if isinstance(delta, dict):
+                text += delta["content"] if isinstance(delta.get("content"), str) else ""
+                reasoning = delta.get("reasoning_content", delta.get("reasoning"))
+                thought += reasoning if isinstance(reasoning, str) else ""
+            if isinstance(choice, dict) and isinstance(choice.get("finish_reason"), str):
+                finish = choice["finish_reason"]
+        if len(text) + len(thought) - checked >= REPETITION_CHECK_CHARS:
+            checked = len(text) + len(thought)
+            if degenerate(text) or degenerate(thought):
+                finish = REPETITION_FINISH
+                break
+    return {"model": model, "usage": usage, "choices": [{"message": {"content": text}, "finish_reason": finish}]}
+
+
 @runtime_checkable
 class ConductingBackend(Protocol):
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]: ...
@@ -387,14 +441,24 @@ class OpenAiApiBackend:
             "Content-Type": "application/json",
         }
 
+        # Streamed only so a degenerate reply can be stopped early; native tool calls stay whole.
+        stream = repetition_guard.get() and not (response_schema is not None
+                                                 and (transport or self._structured_transport) == "tool_call")
+        if stream:
+            payload.update(stream=True, stream_options={"include_usage": True})
         data: Any = None
+        streamed: dict[str, Any] | None = None
         last_error: str | None = None
         for attempt in range(self._MAX_ATTEMPTS):
             try:
                 async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
-                    resp = await client.post(
-                        f"{self._base_url}/chat/completions", json=payload, headers=headers,
-                    )
+                    if stream:
+                        resp, streamed = await _streamed_completion(
+                            client, f"{self._base_url}/chat/completions", payload, headers)
+                    else:
+                        resp = await client.post(
+                            f"{self._base_url}/chat/completions", json=payload, headers=headers,
+                        )
                 # Retry only transient server-side conditions; 4xx auth/bad-
                 # request errors won't recover and burning the budget on them
                 # just delays the eventual empty-string return.
@@ -409,6 +473,10 @@ class OpenAiApiBackend:
                         await asyncio.sleep(self._RETRY_DELAYS_S[attempt])
                         continue
                 resp.raise_for_status()
+                if stream:
+                    data = streamed
+                    last_error = None if streamed is not None else "invalid provider JSON"
+                    break
                 try:
                     data = load_unique(resp.text) if response_schema is not None else resp.json()
                 except (ValueError, RecursionError):
