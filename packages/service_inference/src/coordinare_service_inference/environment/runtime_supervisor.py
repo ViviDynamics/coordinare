@@ -124,6 +124,21 @@ class RuntimeCleanupReport:
         return all((self.qemu_reaped, self.keys_absent, self.listeners_absent, self.artifacts_unchanged))
 
 
+CONSOLE_TAIL_BYTES = 600
+
+
+def console_tail(path: Path) -> str:
+    """The last bytes of the guest console, printable characters only, lines folded; empty when absent."""
+    try:
+        with path.open('rb') as console:
+            console.seek(max(0, path.stat().st_size - CONSOLE_TAIL_BYTES))
+            raw = console.read(CONSOLE_TAIL_BYTES).decode(errors='replace')
+    except OSError:
+        return ''
+    printable = ''.join(character if character.isprintable() or character == '\n' else ' ' for character in raw)
+    return ' | '.join(line.strip() for line in printable.splitlines() if line.strip())[-CONSOLE_TAIL_BYTES:]
+
+
 @dataclass
 class RuntimeLease:
     spec: RuntimeSpec
@@ -167,7 +182,11 @@ class RuntimeLease:
             raise RuntimeError('private runtime scratch ceiling exhausted')
         _scan_active(deadline, stop)
         if self.process is not None and self.process.returncode is not None and not self.clean_shutdown:
-            raise RuntimeError('private runtime guest exited unexpectedly')
+            # The console tail is where an out-of-memory kill or a full disk shows; the work root, and the console
+            # with it, is removed at cleanup, so v30's guest exit left no cause. The caller redacts before keeping it.
+            message = (f'private runtime guest exited unexpectedly (exit {self.process.returncode}); '
+                       f'console tail: {console_tail(self.work_root / "serial.log")}')
+            raise RuntimeError(message)
 
     async def stop_guest(self, *, deadline: float) -> None:
         if self.clean_shutdown:

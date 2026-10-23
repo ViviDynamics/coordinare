@@ -313,6 +313,9 @@ async def _remove_container(name: str) -> bool:
             await proc.wait()
 
 
+INSTALLER_TAIL_BYTES = 2000
+
+
 async def _install(
     snapshot: Snapshot, cache: EnvCacheState, image: str, target: Path, timeout: float,
 ) -> tuple[int, bytes]:
@@ -473,9 +476,19 @@ async def execute_accepted(
     result.update(stage="installer", installer_ran=True, installer_passed=False, clean_consumer_ran=False)
     code, output = await _install(snapshot, cache, image, target, profile.installer_timeout)
     (target / "installer-output.json").write_bytes(output)
+    try:
+        raw = json.loads(output)
+    except ValueError:
+        # The installer crashed before it could report (v30: the private runtime guest exited). Keep a redacted tail
+        # as evidence and hold, instead of failing the whole stage with nothing recorded.
+        from coordinare.lib.redaction import redact_command_text
+
+        tail = redact_command_text(output.decode(errors="replace"))[-INSTALLER_TAIL_BYTES:]
+        result.update(status="held", reason_code="installer_crashed", installer_output_tail=tail)
+        service.on_bootstrap_complete(snapshot.name, False, state)
+        return
     # Failed installer evidence cannot carry a sealed success receipt. Validate it
     # for bounded repair before applying the successful installer admission gate.
-    raw = json.loads(output)
     if code != 0 or any(item.get('required') and item.get('status') == 'fail' for item in raw.get('results', [])):
         from coordinare.services.environment_acceptance import failed_installer_report
 
