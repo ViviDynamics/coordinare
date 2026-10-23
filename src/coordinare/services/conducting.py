@@ -427,16 +427,19 @@ class OpenAiApiBackend:
             payload.update(stream=True, stream_options={"include_usage": True})
         return stream
 
-    async def _send(self, client: Any, payload: dict[str, Any], headers: dict[str, str], *, stream: bool,
-                    strict: bool) -> tuple[Any, Any, str | None]:
-        """One request: the response, its parsed completion, and why the completion could not be parsed."""
-        url = f"{self._base_url}/chat/completions"
-        if stream:
+    @staticmethod
+    async def _request_completion(client: Any, url: str, payload: dict[str, Any], headers: dict[str, str],
+                                  mode: str) -> tuple[Any, Any, str | None]:
+        """One request: the response, its parsed completion, and why the completion could not be parsed.
+
+        ``mode`` is ``stream``, ``strict`` (duplicate keys rejected) or ``plain``.
+        """
+        if mode == "stream":
             resp, streamed = await _streamed_completion(client, url, payload, headers)
             return resp, streamed, None if streamed is not None else "invalid provider JSON"
         resp = await client.post(url, json=payload, headers=headers)
         try:
-            return resp, load_unique(resp.text) if strict else resp.json(), None
+            return resp, load_unique(resp.text) if mode == "strict" else resp.json(), None
         except (ValueError, RecursionError):
             return resp, None, "invalid provider JSON"
 
@@ -473,8 +476,9 @@ class OpenAiApiBackend:
         for attempt in range(self._MAX_ATTEMPTS):
             try:
                 async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
-                    resp, parsed, parse_error = await self._send(client, payload, headers, stream=stream,
-                                                                 strict=response_schema is not None)
+                    resp, parsed, parse_error = await self._request_completion(
+                        client, f"{self._base_url}/chat/completions", payload, headers,
+                        "stream" if stream else "strict" if response_schema is not None else "plain")
                 # Retry only transient server-side conditions; 4xx auth/bad-
                 # request errors won't recover and burning the budget on them
                 # just delays the eventual empty-string return.
