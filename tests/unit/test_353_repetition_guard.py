@@ -103,7 +103,7 @@ async def test_looping_hidden_reasoning_is_stopped_too(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_streamed_reply_is_reassembled_with_its_usage(monkeypatch):
     usage = {'model': 'm', 'choices': [], 'usage': {'prompt_tokens': 10, 'completion_tokens': 4}}
-    frames = sse(delta('{"a":'), delta('1}', finish='stop'), usage) + [b'data: [DONE]\n\n']
+    frames = [*sse(delta('{"a":'), delta('1}', finish='stop'), usage), b'data: [DONE]\n\n']
     backend = backend_with(monkeypatch, frames, [], [])
     token = repetition_guard.set(True)
     try:

@@ -24,7 +24,12 @@ from coordinare.services.environment_function_wire import (
     functions,
     load_unique,
 )
-from coordinare.services.model_output_cap import REPETITION_FINISH, capped, degenerate, repetition_guard
+from coordinare.services.model_output_cap import (
+    REPETITION_FINISH,
+    capped,
+    degenerate,
+    repetition_guard,
+)
 
 if TYPE_CHECKING:
     from coordinare.config import ProjectConfiguration
