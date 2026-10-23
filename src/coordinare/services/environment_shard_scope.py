@@ -7,6 +7,7 @@ finding ledger, journal and acceptance gates are exactly those of the single-con
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import time
 from dataclasses import dataclass, field, replace
@@ -110,6 +111,7 @@ from coordinare.services.environment_shards import (
     spine_paths,
     split_by_bytes,
 )
+from coordinare.services.model_output_cap import REPETITION_FINISH
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping, Sequence
@@ -124,6 +126,9 @@ if TYPE_CHECKING:
     from coordinare.services.environment_scope import ScopeRunOptions
 
 SHARD_SCHEMA_REPAIRS = 2
+# Replies stopped for repetition per conversation, and fresh conversations after one is exhausted.
+AGENT_REPETITION_STOPS = 2
+AGENT_RESTARTS = 1
 SPINE_FRACTION = 4
 MERGE_OWNER = 'merge'
 MIN_SPLIT = 2
@@ -358,38 +363,63 @@ async def run_agent(context: AgentContext, inspection: SourceInspection, message
     schema = task.schema(final=True)
     messages[0] = {'role': 'system', 'content': messages[0]['content'] +
         '\nReturn one complete envelope matching this schema: ' + canonical(schema).decode()}
-    corrections = 0
+    opening = [dict(message) for message in messages]
     try:
         async with asyncio.timeout_at(min(budget.deadline, time.monotonic() + limits.phase_timeout_seconds)):
-            for _ in range(limits.max_model_calls):
-                raw = await _ask(context, inspection, messages, schema)
-                try:
-                    reply = _decode_reply(raw, inspection.name, limits)
-                    if 'tool' in reply and not task.listing_only:
-                        result = await _bounded_tool_result(inspection, reply)
-                        messages.extend([{'role': 'assistant', 'content': raw},
-                                         {'role': 'user', 'content': canonical({'tool_result': result}).decode()}])
-                        continue
-                    # A listing-only agent judges what it was given; a tool request is corrected, never executed.
-                    errors = ([dict(LISTING_ONLY_ERROR)] if 'tool' in reply
-                              else [dict(EVIDENCE_FIRST_ERROR)] if not task.listing_only and not inspection.inputs else [])
-                    if not errors:
-                        return task.validate(reply)
-                except (ValidationError, PydanticCustomError, FindingValidationError, EnvironmentDiscoveryError) as exc:
-                    errors = _rejection_errors(exc, task.envelope)
-                if corrections >= SHARD_SCHEMA_REPAIRS:
-                    budget.validation_codes.extend(error['code'] for error in errors)
-                    message = 'shard agent exhausted its schema corrections'
-                    raise EnvironmentDiscoveryError(message, code='attempt_schema_limit')
-                corrections += 1
-                budget.shard_schema_repairs += 1
-                budget.expected_envelope = task.envelope
-                explain_rejection(messages, raw, errors, budget)
-            _fail('scope_phase_call_limit')
+            for restart in range(AGENT_RESTARTS + 1):
+                if restart:
+                    # A degraded conversation (v31: a verdict of "revise}" wrapped in noise) is not corrected further;
+                    # the agent starts again from its opening messages, keeping the evidence it already read.
+                    messages[:] = [dict(message) for message in opening]
+                    budget.validation_codes.append('agent_restarted')
+                with contextlib.suppress(_AgentExhaustedError):
+                    return await _converse(context, inspection, messages, task, schema)
+            message = 'shard agent exhausted its schema corrections'
+            raise EnvironmentDiscoveryError(message, code='attempt_schema_limit')
     except TimeoutError:
         budget.check()
         _fail('scope_phase_deadline')
 
+
+class _AgentExhaustedError(Exception):
+    """One conversation used its corrections; the agent may start once more."""
+
+
+async def _converse(context: AgentContext, inspection: SourceInspection, messages: list[dict[str, str]],
+                    task: AgentTask, schema: dict[str, Any]) -> Any:
+    """One conversation: schema corrections and repetition stops are each bounded separately."""
+    budget, limits = context.budget, context.limits
+    corrections = repetitions = 0
+    for _ in range(limits.max_model_calls):
+        raw = await _ask(context, inspection, messages, schema)
+        # Read before any other await: the shared budget's last finish reason is still this call's.
+        stopped = budget.last_finish_reason == REPETITION_FINISH
+        try:
+            reply = _decode_reply(raw, inspection.name, limits)
+            if 'tool' in reply and not task.listing_only:
+                result = await _bounded_tool_result(inspection, reply)
+                messages.extend([{'role': 'assistant', 'content': raw},
+                                 {'role': 'user', 'content': canonical({'tool_result': result}).decode()}])
+                continue
+            # A listing-only agent judges what it was given; a tool request is corrected, never executed.
+            errors = ([dict(LISTING_ONLY_ERROR)] if 'tool' in reply
+                      else [dict(EVIDENCE_FIRST_ERROR)] if not task.listing_only and not inspection.inputs else [])
+            if not errors:
+                return task.validate(reply)
+        except (ValidationError, PydanticCustomError, FindingValidationError, EnvironmentDiscoveryError) as exc:
+            errors = _rejection_errors(exc, task.envelope)
+        # A reply the transport stopped for repetition is not a schema mistake: it has its own small allowance.
+        if stopped and repetitions < AGENT_REPETITION_STOPS:
+            repetitions += 1
+        elif corrections >= SHARD_SCHEMA_REPAIRS:
+            budget.validation_codes.extend(error['code'] for error in errors)
+            raise _AgentExhaustedError
+        else:
+            corrections += 1
+            budget.shard_schema_repairs += 1
+        budget.expected_envelope = task.envelope
+        explain_rejection(messages, raw, errors, budget)
+    return _fail('scope_phase_call_limit')
 
 async def _ask(context: AgentContext, inspection: SourceInspection, messages: list[dict[str, str]],
                schema: dict[str, Any]) -> str:
