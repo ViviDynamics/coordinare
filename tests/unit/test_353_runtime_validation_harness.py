@@ -190,3 +190,43 @@ async def test_field_validation_records_failed_installer_before_success_receipt_
     assert cache.environment_attempt['expires_at'] == expires
     assert cache.environment_attempt['rejected'][0]['report']['runtime_artifacts'] is None
     assert not cache.cache_dir_ready
+
+
+@pytest.mark.asyncio
+async def test_an_installer_that_crashes_before_reporting_is_held_with_a_redacted_tail(tmp_path, monkeypatch):
+    """v30: the private runtime guest exited, the installer printed a traceback, and the stage failed with nothing kept."""
+    cache = runtime_cache(tmp_path)
+    manifest = accepted_environment(cache)
+    snapshot = SimpleNamespace(name='sym', commit=manifest.source_commit, verify=AsyncMock())
+    image = cache.environment_capabilities['image_ref']
+    (tmp_path/'execution-approved.json').write_text(json.dumps({'scope': 'environment_validation',
+        'approved': True, 'manifest_digest': manifest.digest(), 'source_commit': snapshot.commit, 'image_ref': image}))
+    crash = (b'Traceback (most recent call last):\n  ...\nRuntimeError: private runtime guest exited unexpectedly '
+             b'(exit 137); console tail: Out of memory: Killed process 4242 | token=ghp_' + b'a' * 36 + b'\n')
+    monkeypatch.setattr(harness, '_install', AsyncMock(return_value=(1, crash)))
+    verifier = AsyncMock()
+    monkeypatch.setattr(harness, 'verify_env_cache_clean', verifier)
+    service = Mock()
+    result = {}
+    await harness.execute_accepted(snapshot, service, {'env_cache': {'sym': cache}}, image=image,
+        target=tmp_path, profile=harness.Profile(model='fixture', base_url='http://localhost:1'), result=result)
+    assert (result['status'], result['reason_code']) == ('held', 'installer_crashed')
+    assert 'Out of memory' in result['installer_output_tail']
+    assert 'ghp_' + 'a' * 36 not in result['installer_output_tail']
+    verifier.assert_not_awaited()
+    service.on_bootstrap_complete.assert_called_once_with('sym', False, {'env_cache': {'sym': cache}})
+
+
+def test_the_guest_console_tail_is_bounded_and_printable(tmp_path):
+    from coordinare_service_inference.environment.runtime_supervisor import (
+        CONSOLE_TAIL_BYTES,
+        console_tail,
+    )
+
+    console = tmp_path/'serial.log'
+    console.write_bytes(b'boot\n' * 400 + b'\x1b[0m[  812.1] Out of memory: Killed process 4242 (ruby)\r\n\x00')
+    tail = console_tail(console)
+    assert tail.endswith('Out of memory: Killed process 4242 (ruby)')
+    assert '\x1b' not in tail and '\x00' not in tail
+    assert len(tail) <= CONSOLE_TAIL_BYTES
+    assert console_tail(tmp_path/'absent.log') == ''
