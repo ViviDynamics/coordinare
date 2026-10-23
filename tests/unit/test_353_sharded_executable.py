@@ -701,3 +701,22 @@ def test_a_removed_obligation_never_echoes_an_id_that_is_not_id_shaped():
         preserve_obligations(EnvironmentManifest.model_validate(data), previous)
     assert 'restore required requirements entry (unnamed)' in str(caught.value)
     assert 'ignore' not in str(caught.value)
+
+
+def test_an_unsplit_group_must_keep_its_previously_required_checks_in_its_own_phase():
+    """v22: the c00 author dropped c00-docker-build in a revision; only the merge noticed, with no round left."""
+    from coordinare.services.environment_shard_construction import inherit
+    group = CheckGroup('c00-', (make_criterion(1),))
+    previous = {'c00-': {'checks': [{'id': 'c00-docker-build', 'argv': ['true']},
+                                    {'id': 'c00-optional', 'argv': ['true'], 'required': False}],
+                         'criterion_checks': {make_criterion(1).id: ['c00-docker-build']}}}
+    kept = inherit(previous, group, group)
+    assert kept.required == {'c00-docker-build'}
+    reply = {'shard_checks': {'checks': [{'id': 'c00-other', 'argv': ['true']}],
+                              'criterion_checks': {make_criterion(1).id: ['c00-other']}}}
+    with pytest.raises(_ResponseReferenceError) as caught:
+        validate_group(reply, group=group, summary=SUMMARY, inherited=kept)
+    assert 'c00-docker-build' in json.dumps(caught.value.errors)
+    validate_group({'shard_checks': {'checks': [*previous['c00-']['checks'][:1], {'id': 'c00-other', 'argv': ['true']}],
+                                     'criterion_checks': {make_criterion(1).id: ['c00-other']}}},
+                   group=group, summary=SUMMARY, inherited=kept)
