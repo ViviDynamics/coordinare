@@ -107,6 +107,9 @@ async def _command(argv: list[str], *, deadline: float, check: bool = True) -> t
             await process.wait()
 
 
+CLEANUP_SECONDS = 60
+
+
 @dataclass(frozen=True)
 class RuntimeCleanupReport:
     qemu_reaped: bool
@@ -196,7 +199,8 @@ class RuntimeLease:
             return False
 
     async def _close_owned(self, *, deadline: float) -> RuntimeCleanupReport:
-        cleanup_deadline = min(deadline, self.deadline, time.monotonic()+15)
+        # A clean guest shutdown (sync, fstrim, poweroff) can take tens of seconds on a loaded or emulated host.
+        cleanup_deadline = min(deadline, self.deadline, time.monotonic()+CLEANUP_SECONDS)
         respected = False
         try:
             with contextlib.suppress(OSError, RuntimeError, ValueError):

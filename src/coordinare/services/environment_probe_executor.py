@@ -61,7 +61,7 @@ def probe_container_argv(plan: ProbePlan, source: Path, cache: Path, *, scratch:
         "--mount", f"type=bind,source={source},target=/repo,readonly",
         "--mount", f"type=bind,source={cache},target=/cache,readonly",
         "--entrypoint", "/usr/local/bin/python", plan.capabilities.image_ref,
-        "-I", "-c", "import time;time.sleep(180)"]
+        "-I", "-c", "import time;time.sleep(600)"]  # outlives a guest's boot, command and teardown
 
 
 async def _collect(process: asyncio.subprocess.Process, stdin: bytes | None) -> bytes:
