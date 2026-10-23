@@ -460,7 +460,13 @@ def validate_scope_mapping(scope: ScopeContract, manifest: EnvironmentManifest) 
         raise PydanticCustomError('scope_id_collision', 'scope, obligation, service and command IDs must be unambiguous')
     required = {c.id for c in checked.definition.criteria if c.applicability == 'required'}
     checks = {c.id: c for c in manifest.checks}
-    if set(manifest.criterion_checks) != required or any(
-            not ids or len(ids) != len(set(ids)) or any(identifier not in checks or not checks[identifier].required
-                or checks[identifier].scope for identifier in ids) for ids in manifest.criterion_checks.values()):
-        raise PydanticCustomError('scope_required_check_mapping', 'every required scope criterion needs required unscoped consumer checks')
+    invalid = sorted(criterion for criterion, ids in manifest.criterion_checks.items() if criterion in required and (
+        not ids or len(ids) != len(set(ids)) or any(identifier not in checks or not checks[identifier].required
+            or checks[identifier].scope for identifier in ids)))
+    missing = sorted(required - set(manifest.criterion_checks))
+    unexpected = len(set(manifest.criterion_checks) - required)
+    if missing or invalid or unexpected:
+        # Criterion ids are the reviewed scope's own; unexpected keys are the author's, so only their count is named.
+        raise PydanticCustomError('scope_required_check_mapping',
+            'every required scope criterion needs required unscoped consumer checks',
+            {'missing_criteria': missing[:64], 'invalid_criteria': invalid[:64], 'unexpected_keys': unexpected})

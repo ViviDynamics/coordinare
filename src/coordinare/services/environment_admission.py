@@ -80,6 +80,9 @@ LENGTH_GUIDANCE = ("Shorten this field to at most max_length (characters, or lis
     "summary and leave the rest of the reply unchanged.")
 REPLY_LENGTH_GUIDANCE = ("Your reply was cut off at the output limit before the envelope was complete. Reason briefly, "
     "keep rationales short, and return the complete envelope.")
+MAPPING_GUIDANCE = ("criterion_checks must map exactly every required scope criterion id: add each in missing_criteria; "
+    "for each in invalid_criteria, map only existing required checks with no scope; drop keys that are not required "
+    "criteria (unexpected_keys counts them).")
 SCOPE_ID_COLLISION_GUIDANCE = ("A requirement, install, check or service id reuses a scope criterion id (S followed by 16 hex "
     "characters). Give each its own descriptive id, such as req-ruby or check-bundle; scope criterion ids appear only "
     "as criterion_checks keys.")
@@ -150,6 +153,9 @@ def _schema_bounds(code: str, error: Mapping[str, Any], *, guided: bool) -> dict
         found.update({name: context[key] for key, name in (("gt", "greater_than"), ("ge", "at_least"),
                                                            ("lt", "less_than"), ("le", "at_most"))
                       if isinstance(context.get(key), int | float)})
+    if code == "scope_required_check_mapping":
+        found.update({key: context[key] for key in ("missing_criteria", "invalid_criteria", "unexpected_keys") if key in context})
+        found["guidance"] = MAPPING_GUIDANCE
     if code in CHOICE_CONTEXT and isinstance(context.get(CHOICE_CONTEXT[code][0]), str):
         found[CHOICE_CONTEXT[code][1]] = context[CHOICE_CONTEXT[code][0]][:512]
     return found

@@ -147,3 +147,30 @@ def test_an_over_length_review_rationale_is_cut_with_a_mark_and_nothing_else_cha
     assert len(normalized['rationale'].encode()) <= 2048 and normalized['rationale'].endswith(' [truncated]')
     assert normalized['findings'] == data['scope_assessment']['findings'] and normalized['verdict'] == 'revise'
     assert bounded_rationale('short') == 'short'
+
+
+def test_an_incomplete_criterion_mapping_names_the_criteria_never_the_authors_keys():
+    from pydantic_core import PydanticCustomError
+
+    class Envelope(BaseModel):
+        model_config = ConfigDict(extra='forbid')
+        criterion_checks: dict
+
+        @classmethod
+        def check(cls, data):
+            raise PydanticCustomError('scope_required_check_mapping', 'mapping',
+                {'missing_criteria': ['S1111111111111111'], 'invalid_criteria': ['S2222222222222222'], 'unexpected_keys': 1})
+
+    from pydantic import model_validator
+
+    class Mapped(Envelope):
+        @model_validator(mode='after')
+        def mapped(self):
+            Envelope.check(None)
+
+    with pytest.raises(ValidationError) as failure:
+        Mapped.model_validate({'criterion_checks': {'author-invented-key': ['x']}})
+    [error] = _validation_feedback(failure.value)
+    assert error['code'] == 'scope_required_check_mapping'
+    assert error['missing_criteria'] == ['S1111111111111111'] and error['invalid_criteria'] == ['S2222222222222222']
+    assert error['unexpected_keys'] == 1 and 'author-invented-key' not in json.dumps(error)

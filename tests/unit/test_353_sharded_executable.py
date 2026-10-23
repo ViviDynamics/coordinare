@@ -61,7 +61,8 @@ def group_reply(group: CheckGroup, **changes: object) -> dict:
 
 
 def test_only_a_scope_beyond_one_authors_share_is_divided_into_groups_of_25():
-    assert not divided(scope_of([make_criterion(index) for index in range(40)]))
+    assert not divided(scope_of([make_criterion(index) for index in range(25)]))
+    assert divided(scope_of([make_criterion(index) for index in range(26)]))
     criteria = [make_criterion(index) for index in range(60)] + [make_criterion(99, applicability='not_applicable')]
     scope = scope_of(criteria)
     assert divided(scope)
