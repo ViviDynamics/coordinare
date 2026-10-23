@@ -315,40 +315,9 @@ class EnvironmentManifest(StrictModel):
             raise ValueError("duplicate command IDs or excessive commands")
         if len({r.id for r in self.requirements}) != len(self.requirements):
             raise ValueError("duplicate requirement IDs")
-        if len({s.id for s in self.services}) != len(self.services):
-            raise ValueError("duplicate service IDs")
-        install_ids = {command.id for command in self.install}
-        for command in commands[len(self.install) :]:
-            if install_ids.intersection(command.depends_on):
-                raise PydanticCustomError("clean_dependency_install_only", "clean execution cannot depend on install-only evidence")
-        graph = {command.id: list(command.depends_on) for command in commands}
+        validate_execution_graph(self.install, self.checks, self.services)
         for service in self.services:
-            stages = [command for command in [service.init, service.start, service.health] if command]
-            for previous, current in pairwise(stages):
-                graph[current.id].append(previous.id)
-        if any(dependency not in graph for deps in graph.values() for dependency in deps):
-            raise ValueError('missing prerequisite')
-        try:
-            tuple(TopologicalSorter(graph).static_order())
-        except CycleError as exc:
-            raise ValueError('cyclic prerequisites') from exc
-        readiness_ids = {command.id for service in self.services
-                         for command in [service.init, service.start, service.health] if command}
-        check_ids = {command.id for command in self.checks}
-        for command in self.install:
-            if set(command.depends_on) - install_ids:
-                raise ValueError('install actions may only depend on install actions')
-        for command in self.checks:
-            if set(command.depends_on) - readiness_ids - check_ids:
-                raise ValueError('checks require consumer-executable prerequisites')
-        for service in self.services:
-            earlier = set(readiness_ids)
             own = [command for command in [service.init, service.start, service.health] if command]
-            earlier.difference_update(command.id for command in own)
-            for command in own:
-                if set(command.depends_on) - earlier:
-                    raise ValueError('service lifecycle depends on unavailable execution phase')
-                earlier.add(command.id)
             if any(command.scope != service.start.scope for command in [*own, service.stop]):
                 raise ValueError('service lifecycle commands must share applicability scope')
         checks = {check.id: check for check in self.checks}
@@ -477,6 +446,57 @@ class VerificationReport(StrictModel):
     def passed(self) -> bool:
         required = [result for result in self.results if result.required]
         return bool(required) and all(result.status == "pass" for result in required)
+
+
+GRAPH_IDS = 8
+
+
+def _graph_error(code: str, message: str, command_id: str, unavailable: set[str]) -> PydanticCustomError:
+    """Names only schema-validated command ids, so a correction can say which edge to remove."""
+    return PydanticCustomError(code, message, {'command_id': command_id, 'unavailable': sorted(unavailable)[:GRAPH_IDS]})
+
+
+def validate_execution_graph(install: list[Command], checks: list[Command], services: list[Service]) -> None:
+    """Prerequisite rules per execution phase; raises a correctable error naming the offending command."""
+    if len({service.id for service in services}) != len(services):
+        raise PydanticCustomError('duplicate_service_ids', 'duplicate service IDs')
+    install_ids = {command.id for command in install}
+    lifecycle = [[command for command in [service.init, service.start, service.health] if command] for service in services]
+    readiness_ids = {command.id for own in lifecycle for command in own}
+    check_ids = {command.id for command in checks}
+    clean = [*checks, *(command for service in services
+                        for command in [service.start, service.health, service.stop, service.init] if command)]
+    for command in clean:
+        if install_ids.intersection(command.depends_on):
+            raise _graph_error('clean_dependency_install_only', 'clean execution cannot depend on install-only evidence',
+                               command.id, install_ids.intersection(command.depends_on))
+    graph = {command.id: list(command.depends_on) for command in [*install, *clean]}
+    for own in lifecycle:
+        for previous, current in pairwise(own):
+            graph[current.id].append(previous.id)
+    for command_id, dependencies in graph.items():
+        if unknown := set(dependencies) - graph.keys():
+            raise _graph_error('missing_prerequisite', 'missing prerequisite', command_id, unknown)
+    try:
+        tuple(TopologicalSorter(graph).static_order())
+    except CycleError as exc:
+        cycle = sorted({str(node) for node in exc.args[1]}) if len(exc.args) > 1 else []
+        raise _graph_error('cyclic_prerequisites', 'cyclic prerequisites', cycle[0] if cycle else '', set(cycle)) from exc
+    for command in install:
+        if outside := set(command.depends_on) - install_ids:
+            raise _graph_error('install_dependency_phase', 'install actions may only depend on install actions',
+                               command.id, outside)
+    for command in checks:
+        if outside := set(command.depends_on) - readiness_ids - check_ids:
+            raise _graph_error('check_dependency_phase', 'checks require consumer-executable prerequisites',
+                               command.id, outside)
+    for own in lifecycle:
+        earlier = readiness_ids - {command.id for command in own}
+        for command in own:
+            if outside := set(command.depends_on) - earlier:
+                raise _graph_error('service_dependency_phase', 'service lifecycle depends on unavailable execution phase',
+                                   command.id, outside)
+            earlier.add(command.id)
 
 
 class EnvironmentManifestProposal(StrictModel):

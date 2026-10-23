@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
 from coordinare_service_inference.environment.scope_revision import MAX_SCOPE_REVISION_CHANGES
@@ -106,6 +107,23 @@ LOCAL_CREDENTIAL_GUIDANCE = {
     'local_credential_in_install': ('Install commands and activation cannot use generated credentials; reference the '
                                     'credential only in the service and check commands that need it.'),
 }
+# Phase rules a dependency edge broke; each names the command and the ids it may not depend on.
+GRAPH_GUIDANCE = {
+    'clean_dependency_install_only': ('Checks and service commands run in a clean consumer without install steps; remove '
+                                      'the install ids from depends_on and rely on activation instead.'),
+    'missing_prerequisite': 'Every depends_on id must be the id of a command declared in this manifest.',
+    'cyclic_prerequisites': 'depends_on edges must not form a cycle; remove one edge between the named commands.',
+    'install_dependency_phase': 'Install commands may depend only on other install commands.',
+    'check_dependency_phase': ('Checks may depend only on other checks or on service init, start and health commands; '
+                               'never on install commands or service stop.'),
+    'service_dependency_phase': ('Service init, start and health may depend only on init, start or health commands of '
+                                 'other services; never on checks or install commands. Their own order is implied. '
+                                 'Remove the named ids from depends_on; if a precondition must be verified, do it '
+                                 'inside the service command or in a check that depends on the service.'),
+    'duplicate_service_ids': 'Each service needs a unique id.',
+}
+
+
 def nested_responses_guidance(key: str | None) -> str:
     """Names the envelope's own main key, which the misplaced finding_responses was nested under."""
     if key is None:
@@ -161,6 +179,21 @@ def _schema_bounds(code: str, error: Mapping[str, Any], *, guided: bool) -> dict
     return found
 
 
+GRAPH_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+
+
+def _graph_ids(error: Mapping[str, Any]) -> dict[str, Any]:
+    """Command ids already passed the schema's id pattern; anything else is dropped, never echoed."""
+    context = error.get("ctx") or {}
+    found: dict[str, Any] = {}
+    if isinstance(context.get("command_id"), str) and GRAPH_ID.fullmatch(context["command_id"]):
+        found["command_id"] = context["command_id"]
+    unavailable = [value for value in context.get("unavailable") or [] if isinstance(value, str) and GRAPH_ID.fullmatch(value)]
+    if unavailable:
+        found["unavailable"] = unavailable[:8]
+    return found
+
+
 def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
     """Do not expose arbitrary keys, candidate values, validator context or prose."""
     allowed_fields = {"requirements", "checks", "install", "services", "activation", "id", "source", "description",
@@ -186,12 +219,12 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
         code = kind if kind in {
             "missing", "extra_forbidden", "string_type", "list_type", "dict_type", "bool_type",
             "literal_error", "int_type", "string_pattern_mismatch", "string_too_short", "string_too_long", "too_short", "too_long",
-            "requirement_check_reference", "clean_dependency_install_only", "runtime_credential_reference",
+            "requirement_check_reference", "runtime_credential_reference",
             "probe_id_maps", "probe_cited_question", "probe_required_true", "probe_citations_uninspected",
             "scope_identity_mismatch", "scope_required_check_mapping", "scope_required_service", "scope_id_collision",
             "finding_citations_invalid", "union_tag_not_found", "union_tag_invalid", "global_part_invalid",
             "greater_than", "greater_than_equal", "less_than", "less_than_equal", "int_parsing", "float_parsing",
-            "bool_parsing", "int_from_float", *LOCAL_CREDENTIAL_GUIDANCE,
+            "bool_parsing", "int_from_float", *LOCAL_CREDENTIAL_GUIDANCE, *GRAPH_GUIDANCE,
         } else "invalid_contract_value"
         scope_locations = {'scope_required_check_mapping': 'criterion_checks', 'scope_identity_mismatch': 'scope_contract_digest',
                            'scope_required_service': 'services', 'scope_id_collision': 'id'}
@@ -216,6 +249,8 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             detail["guidance"] = CREDENTIAL_GUIDANCE
         if code in LOCAL_CREDENTIAL_GUIDANCE:
             detail["guidance"] = LOCAL_CREDENTIAL_GUIDANCE[code]
+        if code in GRAPH_GUIDANCE:
+            detail.update(_graph_ids(error), guidance=GRAPH_GUIDANCE[code])
         if (code == "extra_forbidden" and location[1:2] == ["finding_responses"] and location[0] != "*") or (
                 code == "missing" and location == ["finding_responses"]):
             detail["guidance"] = nested_responses_guidance(nested_key)

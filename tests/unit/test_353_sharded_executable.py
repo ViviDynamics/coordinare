@@ -621,3 +621,49 @@ def test_an_id_that_reuses_a_criterion_id_is_never_locked_and_can_be_renamed():
         validator({'requirements': [{'id': 'req-ruby', 'required': True}, {'id': 'req-node', 'required': True}]})
     with pytest.raises(EnvironmentDiscoveryError, match='req-node'):  # an ordinary id stays retained
         validator({'requirements': [{'id': 'req-ruby', 'required': True}]})
+
+
+def service(**start: object) -> dict:
+    return {'id': 'database', 'start': {'id': 'database-start', 'argv': ['true'], **start},
+            'health': {'id': 'database-health', 'argv': ['true']}, 'stop': {'id': 'database-stop', 'argv': ['true']}}
+
+
+@pytest.mark.parametrize(('changes', 'code', 'command_id', 'unavailable'), [
+    ({'checks': [{'id': 'docker-info', 'argv': ['true']}], 'services': [service(depends_on=['docker-info'])]},
+     'service_dependency_phase', 'database-start', ['docker-info']),
+    ({'install': [{'id': 'bundle', 'argv': ['true']}], 'services': [service(depends_on=['bundle'])]},
+     'clean_dependency_install_only', 'database-start', ['bundle']),
+    ({'install': [{'id': 'bundle', 'argv': ['true'], 'depends_on': ['toolchain']}]},
+     'install_dependency_phase', 'bundle', ['toolchain']),
+    ({'checks': [{'id': 'toolchain', 'argv': ['true'], 'depends_on': ['database-stop']}], 'services': [service()]},
+     'check_dependency_phase', 'toolchain', ['database-stop']),
+    ({'checks': [{'id': 'toolchain', 'argv': ['true'], 'depends_on': ['nowhere']}]},
+     'missing_prerequisite', 'toolchain', ['nowhere']),
+])
+def test_a_global_part_with_a_dependency_across_phases_is_corrected_with_the_edge_it_names(
+        changes, code, command_id, unavailable):
+    """v19: a service start depending on a check failed only after the merge, as an unlocated invalid value."""
+    with pytest.raises(ValidationError) as caught:
+        validate_global(global_part(**changes))
+    [feedback] = _validation_feedback(caught.value)
+    assert feedback['code'] == code
+    assert feedback['command_id'] == command_id
+    assert feedback['unavailable'] == unavailable
+    assert feedback['guidance']
+
+
+def test_a_dependency_cycle_names_the_commands_in_it():
+    checks = [{'id': 'a', 'argv': ['true'], 'depends_on': ['b']}, {'id': 'b', 'argv': ['true'], 'depends_on': ['a']}]
+    with pytest.raises(ValidationError) as caught:
+        validate_global(global_part(checks=checks))
+    [feedback] = _validation_feedback(caught.value)
+    assert (feedback['code'], feedback['unavailable']) == ('cyclic_prerequisites', ['a', 'b'])
+
+
+def test_a_dependency_that_is_not_an_id_is_never_echoed():
+    with pytest.raises(ValidationError) as caught:
+        validate_global(global_part(checks=[{'id': 'toolchain', 'argv': ['true'], 'depends_on': ['run rm -rf /']}]))
+    [feedback] = _validation_feedback(caught.value)
+    assert feedback['code'] == 'missing_prerequisite'
+    assert 'unavailable' not in feedback
+    assert 'rm -rf' not in json.dumps(feedback)
