@@ -641,6 +641,16 @@ class _ObligationLedger:
 
 
 
+def _without_criterion_ids(data: dict[str, Any], construction: ReviewedConstruction) -> dict[str, Any]:
+    scope = construction.budget.scope_contract
+    criteria = {criterion.id for criterion in scope.definition.criteria} if scope is not None else set()
+    if not criteria:
+        return data
+    return {key: ([item for item in value if not (isinstance(item, dict) and item.get('id') in criteria)]
+                  if key in {'requirements', 'checks', 'install', 'services'} and isinstance(value, list) else value)
+            for key, value in data.items()}
+
+
 @dataclass
 class _CandidateValidator:
     discovery: _Inspection
@@ -655,9 +665,12 @@ class _CandidateValidator:
             self.obligation_ledger.record(previous.model_dump(mode='json'))
 
     def __call__(self, data: dict[str, Any]) -> EnvironmentManifest:
-        self.obligation_ledger.record(data)
+        # An id that reuses a scope criterion id can never be admitted, so it never becomes a retained obligation:
+        # the author must be able to rename it.
+        lockable = _without_criterion_ids(data, self.construction)
+        self.obligation_ledger.record(lockable)
         for group, previous in self.required_ids.items():
-            entries = data.get(group, [])
+            entries = lockable.get(group, [])
             current = {item["id"] for item in entries if isinstance(item, dict) and isinstance(item.get("id"), str)
                        and item.get("required", True) is True} if isinstance(entries, list) else set()
             if not previous <= current:
