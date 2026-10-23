@@ -54,6 +54,10 @@ async def _observe_command(data: dict[str, Any], *, environment: dict[str, str],
             await process.wait()
 
 
+class PrivateTeardownError(RuntimeError):
+    """A private guest was not confirmed clean; never reported as an ordinary probe result."""
+
+
 async def observe_private(data: dict[str, Any], *, repo: Path = Path('/repo'),
                           cache: Path = Path('/cache'), scratch: Path = Path('/scratch')) -> list[dict[str, Any]]:
     policy = RuntimePolicy.model_validate(data['runtime'])
@@ -77,5 +81,5 @@ async def observe_private(data: dict[str, Any], *, repo: Path = Path('/repo'),
         finally:
             cleanup = await lease.close(deadline=deadline)
         if not cleanup.confirmed or not cleanup.clean_shutdown or not cleanup.bounds_respected:
-            raise RuntimeError('private preflight teardown is incomplete')
+            raise PrivateTeardownError('private preflight teardown is incomplete')
         return result

@@ -15,7 +15,7 @@ from coordinare_service_inference.environment.models import environment_order
 from coordinare_service_inference.environment.runner import _expand
 
 from .runtime_cli import run_cli
-from .runtime_observation import observe_private
+from .runtime_observation import PrivateTeardownError, observe_private
 
 
 def command_environment(command: dict[str, Any], *, runtime_env: dict[str, str] | None = None,
@@ -92,11 +92,25 @@ def execute(command: dict[str, Any], seconds: float, *, runtime_env: dict[str, s
     return result
 
 
+def _private_results(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """One command's private observation. A guest that cannot start or runs out of time is that command's result,
+    reported by exception class only; an unconfirmed teardown still fails the whole probe."""
+    command_id = data["commands"][0]["id"] if data.get("commands") else "unknown"
+    try:
+        return run_cli(observe_private(data))
+    except PrivateTeardownError:
+        raise
+    except TimeoutError:
+        return [{"id": command_id, "status": "timed_out", "exit_code": None, "output": "", "truncated": False}]
+    except (OSError, RuntimeError, ValueError) as exc:
+        return [{"id": command_id, "status": "execution_error", "exit_code": None,
+                 "output": f"private probe guest unavailable: {type(exc).__name__}", "truncated": False}]
+
+
 def main() -> None:
     data = json.load(sys.stdin)
     if data.get("runtime") is not None:
-        results = run_cli(observe_private(data))
-        sys.stdout.write(json.dumps(results)+"\n")
+        sys.stdout.write(json.dumps(_private_results(data))+"\n")
         return
     deadline = time.monotonic() + min(120, data["seconds"])
     results = []
