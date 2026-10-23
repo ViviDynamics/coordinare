@@ -49,7 +49,7 @@ if TYPE_CHECKING:
     from coordinare.services.environment_attempt import AttemptBudget
     from coordinare.services.environment_discovery import Fetch
 
-CHECK_AUTHOR_THRESHOLD = 40
+CHECK_AUTHOR_THRESHOLD = 25  # more than one check group's share (the approved plan's gate)
 CHECK_GROUP_SIZE = 25
 # A group's prefix, or a split remainder's (c00a-, c00ab-): every check-author id is reserved from the global author.
 PREFIX = re.compile(r'^c[0-9]{2,3}[a-z]*-')
