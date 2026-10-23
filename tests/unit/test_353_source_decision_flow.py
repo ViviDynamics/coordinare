@@ -237,7 +237,7 @@ def test_scope_schema_flat_decision_wire():
     assert properties['sources']['minItems'] == 1
     kinds = next(branch['enum'] for branch in properties['gap_kind']['anyOf'] if branch.get('type') == 'string')
     assert sorted(kinds) == sorted(['missing_obligation', 'unread_source', 'source_conflict', 'unknown_applicability',
-                                    'incomplete_runtime_needs', 'incomplete_success_condition'])
+                                    'incomplete_runtime_needs', 'incomplete_success_condition', 'remote_state'])
     executable = response_schema('assessment', review_decision_ids=['F0001'])
     assert 'disposition' not in json.dumps(executable)
     statuses = {branch['properties']['status']['const'] for branch in executable['$defs']['FindingDecisionProposal']['anyOf']}

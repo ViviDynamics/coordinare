@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from coordinare_service_inference.environment.models import EnvironmentManifest, VerificationReport
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
-from coordinare.services.environment_scope import preserve_scope
+from coordinare.services.environment_scope import preserve_scope, released_criteria
 
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import Command
@@ -114,13 +114,14 @@ def preserve_execution_obligations(manifest: EnvironmentManifest, history: objec
 
 def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentManifest) -> None:
     """A fresh judgment can add coverage, never waive a previously required obligation."""
-    if previous.scope_contract is not None:
-        if manifest.scope_contract is None:
-            message = 'required source scope removed during repair'
-            raise EnvironmentDiscoveryError(message, code='obligation_removed')
-        preserve_scope(previous.scope_contract.definition, manifest.scope_contract.definition)
+    if previous.scope_contract is not None and manifest.scope_contract is None:
+        message = 'required source scope removed during repair'
+        raise EnvironmentDiscoveryError(message, code='obligation_removed')
+    released = released_criteria(manifest.scope_contract.finding_ledger) if manifest.scope_contract is not None else set()
+    if previous.scope_contract is not None and manifest.scope_contract is not None:
+        preserve_scope(previous.scope_contract.definition, manifest.scope_contract.definition, released=released)
     if any(not set(ids) <= set(manifest.criterion_checks.get(identifier, []))
-           for identifier, ids in previous.criterion_checks.items()):
+           for identifier, ids in previous.criterion_checks.items() if identifier not in released):
         message = 'required source criterion coverage removed during repair'
         raise EnvironmentDiscoveryError(message, code='obligation_removed')
     for group in ("requirements", "install", "checks", "services"):

@@ -65,7 +65,7 @@ from coordinare.services.environment_scope_investigation import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 
     from coordinare_service_inference.environment.inventory import InventoryEntry
     from coordinare_service_inference.environment.scope_revision import ScopeRevision
@@ -124,13 +124,21 @@ def _criterion_citation_errors(sources: Sequence[str], inputs: dict[str, str],
                     'while inspecting the files or correcting unsupported citations.'}]
 
 
-def preserve_scope(previous: ScopeDefinition, current: ScopeDefinition) -> None:
+def released_criteria(ledger: FindingLedger | None) -> set[str]:
+    """Required criteria an independent review found satisfiable only by remote service state, outside the scope."""
+    if ledger is None:
+        return set()
+    return {identifier for record in ledger.records if record.proposal.category == 'remote_state'
+            for identifier in record.proposal.affected_ids}
+
+
+def preserve_scope(previous: ScopeDefinition, current: ScopeDefinition, *, released: Collection[str] = ()) -> None:
     if (previous.source_commit, previous.inventory_digest) != (current.source_commit, current.inventory_digest):
         _fail('scope_source_identity')
     if any(current.inputs.get(path) != digest for path, digest in previous.inputs.items()):
         _fail('scope_source_identity')
     current_ids = {c.id for c in current.criteria if c.applicability == 'required'}
-    if not {c.id for c in previous.criteria if c.applicability == 'required'} <= current_ids:
+    if not {c.id for c in previous.criteria if c.applicability == 'required'} - set(released) <= current_ids:
         _fail('scope_obligation_removed')
 
 
@@ -281,6 +289,13 @@ def _validate_review(data: dict[str, Any], *, reviewer: SourceInspection, defini
     return assessment, updated, record
 
 
+REMOTE_STATE_RULE = (
+    'An obligation only an external service\'s state can satisfy is outside the development/test environment: '
+    'settings or data held by a code host (branch protection, required reviews, its CODEOWNERS or rules APIs), a live '
+    'third-party API account, or cloud account state. Mark it not_applicable with a rationale naming the service. '
+    'Everything the repository itself installs, builds, starts or caches (tools, services, container images, '
+    'advisory databases) stays required, even when installation fetches it from the network. '
+)
 REVIEW_INSTRUCTIONS = (
     'Independently review source-defined scope, not an executable candidate. You have no author conversation. '
     'Follow development/test entry points and nested references; independently check omissions and conflicts. '
@@ -316,6 +331,9 @@ REVIEW_INSTRUCTIONS = (
     'Never re-request a path already reported absent; use its listed candidates. '
     'Requests delegate unread exact paths/cursors to the author; sources remains independently inspected file citations. '
     'covered, source_correction and duplicate decisions and accept verdicts cannot request further inspection. '
+    'A required criterion that only external service state can satisfy is a finding with category remote_state and '
+    'gap_kind remote_state, whose affected_ids name those criteria; the author may then reassess them as not_applicable. '
+    + REMOTE_STATE_RULE +
     'Return scope_assessment with verdict, rationale, sources, findings, decisions. '
 )
 GRANULARITY_GUIDANCE = (
@@ -323,6 +341,7 @@ GRANULARITY_GUIDANCE = (
     'must install, or a documented development or test operation that must succeed, with its observable result. '
     'The internal behaviour of a script is evidence for an obligation, not an obligation itself; related steps of one '
     'documented operation form one criterion, at the level a person bootstrapping the repository would check. '
+    + REMOTE_STATE_RULE
 )
 AUTHOR_INSTRUCTIONS = (
     'Author source-defined obligations for the whole documented development/test environment. '
@@ -341,7 +360,8 @@ REVISION_INSTRUCTIONS = (
     'Revise source-defined obligations using a scope_revision envelope only; never repeat a complete scope. '
     'Use the exact retained scope_base_digest as base_digest. Submit at most 16 combined add/reassess operations. '
     'add contains complete criterion proposals without IDs; reassess targets only retained unknown/not_applicable '
-    'criterion_id values and supplies a complete criterion proposal. No deletion or required criterion edits. '
+    'criterion_id values and supplies a complete criterion proposal. No deletion or required criterion edits, except '
+    'that a required criterion named by a remote_state finding may be reassessed as not_applicable. '
     'Empty arrays may defend an existing definition; respond to every open daemon finding ID. '
     'affected_ids may reference retained current criterion IDs or be empty for new/reassessed criteria; '
     'never invent IDs or cite replaced IDs. Inspect source evidence, not runtime/image convenience. '
@@ -483,7 +503,7 @@ def _validate_author(data: dict[str, Any], *, author: SourceInspection, commit: 
     definition = ScopeDefinition(source_commit=commit, inventory_digest=author.inventory_digest, inputs=dict(author.inputs),
         criteria=[ScopeCriterion(**c.model_dump(), id=criterion_id(c)) for c in envelope.scope.criteria])
     if budget.scope_definition is not None:
-        preserve_scope(budget.scope_definition, definition)
+        preserve_scope(budget.scope_definition, definition, released=released_criteria(ledger))
     budget.scope_responses = _validate_responses(envelope.finding_responses, ledger=ledger,
         inputs=author.inputs, definition=definition)
     return definition
@@ -575,14 +595,15 @@ def _validate_revision(data: dict[str, Any], *, author: SourceInspection, commit
     if errors:
         raise _ResponseReferenceError(errors)
     try:
-        definition = apply_scope_revision(base, envelope.scope_revision, inspected_inputs=dict(author.inputs))
+        definition = apply_scope_revision(base, envelope.scope_revision, inspected_inputs=dict(author.inputs),
+                                          releasable=released_criteria(ledger))
     except PydanticCustomError as exc:
         if exc.type == 'scope_revision_target':
             errors = _reassessment_target_errors(base, envelope.scope_revision)
             if errors:
                 raise _ResponseReferenceError(errors) from None
         raise
-    preserve_scope(base, definition)
+    preserve_scope(base, definition, released=released_criteria(ledger))
     try:
         responses = _validate_responses(envelope.finding_responses, ledger=ledger,
             inputs=author.inputs, definition=definition)
