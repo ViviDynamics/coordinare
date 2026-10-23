@@ -244,7 +244,7 @@ async def _streamed_completion(client: Any, url: str, payload: dict[str, Any],
                                headers: dict[str, str]) -> tuple[Any, dict[str, Any] | None]:
     """One streamed chat completion, reassembled as the non-streamed shape; None when the stream is malformed."""
     async with client.stream("POST", url, json=payload, headers=headers) as resp:
-        if resp.status_code >= 400:
+        if resp.is_error:
             await resp.aread()
             return resp, None
         return resp, await _collect_stream(resp)
@@ -419,6 +419,27 @@ class OpenAiApiBackend:
                 "name": "coordinare_environment_response", "strict": True, "schema": schema}}}
         return {"response_format": {"type": "json_object"}} if json_mode else {}
 
+    def _streams(self, payload: dict[str, Any], response_schema: dict[str, Any] | None, transport: str | None) -> bool:
+        """Streamed only so a degenerate reply can be stopped early; native tool calls stay whole."""
+        stream = repetition_guard.get() and not (response_schema is not None
+                                                 and (transport or self._structured_transport) == "tool_call")
+        if stream:
+            payload.update(stream=True, stream_options={"include_usage": True})
+        return stream
+
+    async def _send(self, client: Any, payload: dict[str, Any], headers: dict[str, str], *, stream: bool,
+                    strict: bool) -> tuple[Any, Any, str | None]:
+        """One request: the response, its parsed completion, and why the completion could not be parsed."""
+        url = f"{self._base_url}/chat/completions"
+        if stream:
+            resp, streamed = await _streamed_completion(client, url, payload, headers)
+            return resp, streamed, None if streamed is not None else "invalid provider JSON"
+        resp = await client.post(url, json=payload, headers=headers)
+        try:
+            return resp, load_unique(resp.text) if strict else resp.json(), None
+        except (ValueError, RecursionError):
+            return resp, None, "invalid provider JSON"
+
     async def _post_chat(self, messages: list[dict[str, str]], json_mode: bool, *, response_schema: dict[str, Any] | None = None,
                          transport: str | None = None) -> ModelReply:
         """The HTTP send with its retries. Failures come back as ``error``, never raised."""
@@ -446,24 +467,14 @@ class OpenAiApiBackend:
             "Content-Type": "application/json",
         }
 
-        # Streamed only so a degenerate reply can be stopped early; native tool calls stay whole.
-        stream = repetition_guard.get() and not (response_schema is not None
-                                                 and (transport or self._structured_transport) == "tool_call")
-        if stream:
-            payload.update(stream=True, stream_options={"include_usage": True})
+        stream = self._streams(payload, response_schema, transport)
         data: Any = None
-        streamed: dict[str, Any] | None = None
         last_error: str | None = None
         for attempt in range(self._MAX_ATTEMPTS):
             try:
                 async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
-                    if stream:
-                        resp, streamed = await _streamed_completion(
-                            client, f"{self._base_url}/chat/completions", payload, headers)
-                    else:
-                        resp = await client.post(
-                            f"{self._base_url}/chat/completions", json=payload, headers=headers,
-                        )
+                    resp, parsed, parse_error = await self._send(client, payload, headers, stream=stream,
+                                                                 strict=response_schema is not None)
                 # Retry only transient server-side conditions; 4xx auth/bad-
                 # request errors won't recover and burning the budget on them
                 # just delays the eventual empty-string return.
@@ -478,14 +489,7 @@ class OpenAiApiBackend:
                         await asyncio.sleep(self._RETRY_DELAYS_S[attempt])
                         continue
                 resp.raise_for_status()
-                if stream:
-                    data = streamed
-                    last_error = None if streamed is not None else "invalid provider JSON"
-                    break
-                try:
-                    data = load_unique(resp.text) if response_schema is not None else resp.json()
-                except (ValueError, RecursionError):
-                    last_error = "invalid provider JSON"
+                data, last_error = parsed, parse_error or last_error
                 break
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = type(exc).__name__

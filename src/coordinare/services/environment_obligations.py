@@ -125,6 +125,14 @@ def _ids(identifiers: set[str]) -> str:
     return ', '.join(sorted(_id(identifier) for identifier in identifiers))
 
 
+def _preserve_criterion_checks(manifest: EnvironmentManifest, previous: EnvironmentManifest, released: set[str]) -> None:
+    for identifier, ids in sorted(previous.criterion_checks.items()):
+        if identifier not in released and (lost := set(ids) - set(manifest.criterion_checks.get(identifier, []))):
+            message = (f'required source criterion coverage removed during repair: criterion_checks for {_id(identifier)} '
+                       f'must still include {_ids(lost)}')
+            raise EnvironmentDiscoveryError(message, code='obligation_removed')
+
+
 def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentManifest) -> None:
     """A fresh judgment can add coverage, never waive a previously required obligation."""
     if previous.scope_contract is not None and manifest.scope_contract is None:
@@ -133,11 +141,7 @@ def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentMan
     released = released_criteria(manifest.scope_contract.finding_ledger) if manifest.scope_contract is not None else set()
     if previous.scope_contract is not None and manifest.scope_contract is not None:
         preserve_scope(previous.scope_contract.definition, manifest.scope_contract.definition, released=released)
-    for identifier, ids in sorted(previous.criterion_checks.items()):
-        if identifier not in released and (lost := set(ids) - set(manifest.criterion_checks.get(identifier, []))):
-            message = (f'required source criterion coverage removed during repair: criterion_checks for {_id(identifier)} '
-                       f'must still include {_ids(lost)}')
-            raise EnvironmentDiscoveryError(message, code='obligation_removed')
+    _preserve_criterion_checks(manifest, previous, released)
     for group in ("requirements", "install", "checks", "services"):
         current = {item.id: item for item in getattr(manifest, group) if item.required}
         for old in getattr(previous, group):
