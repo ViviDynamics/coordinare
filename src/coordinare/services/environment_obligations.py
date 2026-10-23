@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
 from coordinare_service_inference.environment.models import EnvironmentManifest, VerificationReport
@@ -112,6 +113,18 @@ def preserve_execution_obligations(manifest: EnvironmentManifest, history: objec
         preserve_execution_commands(manifest, previous)
 
 
+SAFE_ID = re.compile(r'[A-Za-z0-9_.:-]{1,128}')
+
+
+def _id(identifier: str) -> str:
+    """Only id-shaped values are named, so a free-form id the model wrote is never echoed."""
+    return identifier if SAFE_ID.fullmatch(identifier) else '(unnamed)'
+
+
+def _ids(identifiers: set[str]) -> str:
+    return ', '.join(sorted(_id(identifier) for identifier in identifiers))
+
+
 def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentManifest) -> None:
     """A fresh judgment can add coverage, never waive a previously required obligation."""
     if previous.scope_contract is not None and manifest.scope_contract is None:
@@ -120,10 +133,11 @@ def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentMan
     released = released_criteria(manifest.scope_contract.finding_ledger) if manifest.scope_contract is not None else set()
     if previous.scope_contract is not None and manifest.scope_contract is not None:
         preserve_scope(previous.scope_contract.definition, manifest.scope_contract.definition, released=released)
-    if any(not set(ids) <= set(manifest.criterion_checks.get(identifier, []))
-           for identifier, ids in previous.criterion_checks.items() if identifier not in released):
-        message = 'required source criterion coverage removed during repair'
-        raise EnvironmentDiscoveryError(message, code='obligation_removed')
+    for identifier, ids in sorted(previous.criterion_checks.items()):
+        if identifier not in released and (lost := set(ids) - set(manifest.criterion_checks.get(identifier, []))):
+            message = (f'required source criterion coverage removed during repair: criterion_checks for {_id(identifier)} '
+                       f'must still include {_ids(lost)}')
+            raise EnvironmentDiscoveryError(message, code='obligation_removed')
     for group in ("requirements", "install", "checks", "services"):
         current = {item.id: item for item in getattr(manifest, group) if item.required}
         for old in getattr(previous, group):
@@ -131,14 +145,14 @@ def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentMan
                 continue
             new = current.get(old.id)
             if new is None:
-                message = "required obligation removed during repair"
-                raise EnvironmentDiscoveryError(message, code="obligation_removed")
-            if group == "requirements" and not set(old.checks) <= set(new.checks):
-                message = "required obligation coverage removed"
-                raise EnvironmentDiscoveryError(message, code="obligation_removed")
+                message = f"required obligation removed during repair: restore required {group} entry {_id(old.id)}"
+                raise EnvironmentDiscoveryError(message, code="obligation_removed", global_owned=group != "checks")
+            if group == "requirements" and (lost := set(old.checks) - set(new.checks)):
+                message = f"required obligation coverage removed: requirement {_id(old.id)} must still list checks {_ids(lost)}"
+                raise EnvironmentDiscoveryError(message, code="obligation_removed", global_owned=True)
             if group in {"checks", "install"} and old.scope != new.scope:
-                message = "required obligation scope changed"
-                raise EnvironmentDiscoveryError(message, code="obligation_removed")
+                message = f"required obligation scope changed: {group} entry {_id(old.id)} must keep its previous scope"
+                raise EnvironmentDiscoveryError(message, code="obligation_removed", global_owned=group != "checks")
             if group == "services":
                 for phase in ("init", "start", "health", "stop"):
                     before, after = getattr(old, phase), getattr(new, phase)
@@ -148,5 +162,6 @@ def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentMan
                         or before.scope != after.scope
                         or (before.required and not after.required)
                     ):
-                        message = "required service obligation changed"
-                        raise EnvironmentDiscoveryError(message, code="obligation_removed")
+                        message = (f"required service obligation changed: service {_id(old.id)} must keep its required "
+                                   f"{phase} command {_id(before.id)} with its previous scope")
+                        raise EnvironmentDiscoveryError(message, code="obligation_removed", global_owned=True)

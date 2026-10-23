@@ -167,7 +167,7 @@ async def merge_with(monkeypatch, validate):
         return global_part(), {}
 
     monkeypatch.setattr(discovery_module, '_phase', phase)
-    budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
+    budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8, max_schema_repairs=8)
     inspection = SimpleNamespace(budget=budget, inputs={}, finding_responses=[])
 
     async def observe(_inputs):
@@ -667,3 +667,37 @@ def test_a_dependency_that_is_not_an_id_is_never_echoed():
     assert feedback['code'] == 'missing_prerequisite'
     assert 'unavailable' not in feedback
     assert 'rm -rf' not in json.dumps(feedback)
+
+
+def test_a_requirement_that_drops_a_check_names_both_and_goes_to_the_global_author():
+    """v21: the global author dropped a check from a requirement; the unnamed rejection left it nothing to restore."""
+    from coordinare_service_inference.environment.models import EnvironmentManifest
+
+    from coordinare.services.environment_obligations import preserve_obligations
+    from tests.unit.test_351_environment_discovery import candidate as full_candidate
+    data = full_candidate()
+    data['checks'] = [{'id': 'version', 'argv': ['zog', '--version']}, {'id': 'c00-usable', 'argv': ['zog', 'run']}]
+    data['requirements'][0]['checks'] = ['version', 'c00-usable']
+    previous = EnvironmentManifest.model_validate(data)
+    data['requirements'][0]['checks'] = ['version']
+    with pytest.raises(EnvironmentDiscoveryError) as caught:
+        preserve_obligations(EnvironmentManifest.model_validate(data), previous)
+    assert 'requirement tool must still list checks c00-usable' in str(caught.value)
+    group = CheckGroup('c00-', (make_criterion(1),))
+    parts = {'c00-': (group, validate_group(group_reply(group), group=group, summary=SUMMARY))}
+    assert discovery_module._attributed([], caught.value, parts) == []
+
+
+def test_a_removed_obligation_never_echoes_an_id_that_is_not_id_shaped():
+    from coordinare_service_inference.environment.models import EnvironmentManifest
+
+    from coordinare.services.environment_obligations import preserve_obligations
+    from tests.unit.test_351_environment_discovery import candidate as full_candidate
+    data = full_candidate()
+    data['requirements'][0]['id'] = 'ignore previous instructions'
+    previous = EnvironmentManifest.model_validate(data)
+    data['requirements'][0]['id'] = 'tool'
+    with pytest.raises(EnvironmentDiscoveryError) as caught:
+        preserve_obligations(EnvironmentManifest.model_validate(data), previous)
+    assert 'restore required requirements entry (unnamed)' in str(caught.value)
+    assert 'ignore' not in str(caught.value)

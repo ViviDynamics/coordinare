@@ -35,9 +35,11 @@ REPAIR_COUNTERS = {"schema": "schema_repairs", "coverage": "coverage_revisions",
 class EnvironmentDiscoveryError(RuntimeError):
     """Discovery cannot establish an accepted, evidence-bound environment."""
 
-    def __init__(self, message: str, *, code: str = "environment_discovery_held") -> None:
+    def __init__(self, message: str, *, code: str = "environment_discovery_held", global_owned: bool = False) -> None:
         super().__init__(message)
         self.code = code
+        # Set when only the global author's records can fix it, even though the message names check ids.
+        self.global_owned = global_owned
 
 
 CALL_STAT_KEYS = ('calls', 'seconds', 'input_tokens', 'output_tokens', 'cached_tokens', 'length_stops')
