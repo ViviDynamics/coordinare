@@ -720,3 +720,22 @@ def test_an_unsplit_group_must_keep_its_previously_required_checks_in_its_own_ph
     validate_group({'shard_checks': {'checks': [*previous['c00-']['checks'][:1], {'id': 'c00-other', 'argv': ['true']}],
                                      'criterion_checks': {make_criterion(1).id: ['c00-other']}}},
                    group=group, summary=SUMMARY, inherited=kept)
+
+
+@pytest.mark.asyncio
+async def test_when_the_global_author_repairs_every_group_revises_its_own_last_part(monkeypatch):
+    """v23: a global repair made every group start over, renaming checks the obligation ledger had locked."""
+    calls: list[int] = []
+
+    def validate(data):
+        calls.append(1)
+        if len(calls) == 1:
+            message = 'repair must independently read every previous input'
+            raise EnvironmentDiscoveryError(message, code='source_identity')
+        return data
+
+    _merged, build, phases, _messages = await merge_with(monkeypatch, validate)
+    assert phases == [1, 1]
+    assert set(build.previous) == {'c00-', 'c01-'}
+    assert [check['id'] for check in build.previous['c00-']['checks']] == [
+        check['id'] for check in group_reply(build.groups[0])['shard_checks']['checks']]

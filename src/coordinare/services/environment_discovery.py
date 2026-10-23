@@ -1051,7 +1051,10 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
                 build.feedback[group.prefix] = {**build.feedback.get(group.prefix, {}), 'merge_errors': errors}
                 build.previous[group.prefix] = parts[group.prefix][1].model_dump(mode='json')
             if not redo:
-                # Not attributable to one check group: the global author repairs, and every group re-authors against it.
+                # Not attributable to one check group: the global author repairs, and every group re-authors against it,
+                # revising its own last part in place. Starting over renamed v23's checks after their ids were locked.
+                for prefix, (_group, part) in parts.items():
+                    build.previous[prefix] = part.model_dump(mode='json')
                 # The correction is for the global author's manifest envelope, whatever the check authors last set.
                 budget.expected_envelope = 'manifest'
                 _repair(messages, _json({'manifest': global_data}), errors, budget)
