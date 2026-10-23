@@ -24,6 +24,7 @@ from coordinare.services.environment_function_wire import (
     functions,
     load_unique,
 )
+from coordinare.services.environment_proposal_patch import text_schema
 from coordinare.services.model_output_cap import (
     REPETITION_FINISH,
     capped,
@@ -568,7 +569,7 @@ class OpenAiApiBackend:
         response_schema = canonical_schema
         if canonical_schema is not None:
             if text_mode:
-                instruction += "\n\nAuthoritative logical response schema for this request:\n" + json.dumps(canonical_schema)
+                instruction += "\n\nAuthoritative logical response schema for this request:\n" + json.dumps(text_schema(canonical_schema))
             messages = [dict(message) for message in messages]
             if messages and messages[0]["role"] == "system":
                 messages[0]["content"] += "\n\n" + instruction
