@@ -19,9 +19,10 @@ from coordinare_service_inference.environment.models import (
     EnvironmentManifestProposal,
     ShardChecks,
     ShardChecksEnvelope,
+    validate_execution_graph,
 )
 from coordinare_service_inference.environment.scope import canonical
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 from pydantic_core import PydanticCustomError
 
 from coordinare.services.environment_agent_pool import ShardOverflowError, run_pool
@@ -109,6 +110,11 @@ class GlobalRules(BaseModel):
 def validate_global(data: dict[str, Any]) -> dict[str, Any]:
     """Full proposal validation, then the global author's own rules; both raise correctable validation errors."""
     proposal = EnvironmentManifestProposal.model_validate(data)
+    try:
+        validate_execution_graph(proposal.install, proposal.checks, proposal.services)
+    except PydanticCustomError as exc:
+        raise ValidationError.from_exception_data('EnvironmentManifestProposal', [
+            {'type': exc, 'loc': (), 'input': None}]) from exc
     GlobalRules.model_validate({'criterion_checks': dict(proposal.criterion_checks),
                                 'check_ids': [check.id for check in proposal.checks]})
     return data
