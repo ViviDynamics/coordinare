@@ -291,8 +291,10 @@ def _validate_review(data: dict[str, Any], *, reviewer: SourceInspection, defini
 
 REMOTE_STATE_RULE = (
     'An obligation only an external service\'s state can satisfy is outside the development/test environment: '
-    'settings or data held by a code host (branch protection, required reviews, its CODEOWNERS or rules APIs), a live '
-    'third-party API account, or cloud account state. Mark it not_applicable with a rationale naming the service. '
+    'settings or data held by a code host (branch protection, required reviews, its CODEOWNERS or rules APIs, '
+    'scheduled automation such as Dependabot), a live third-party API account, cloud account state, or any check '
+    'that needs a configured token, credential or authenticated session to reach such a service. Mark it '
+    'not_applicable with a rationale naming the service; installing the client tool itself stays required. '
     'Everything the repository itself installs, builds, starts or caches (tools, services, container images, '
     'advisory databases) stays required, even when installation fetches it from the network. '
 )
@@ -331,8 +333,10 @@ REVIEW_INSTRUCTIONS = (
     'Never re-request a path already reported absent; use its listed candidates. '
     'Requests delegate unread exact paths/cursors to the author; sources remains independently inspected file citations. '
     'covered, source_correction and duplicate decisions and accept verdicts cannot request further inspection. '
-    'A required criterion that only external service state can satisfy is a finding with category remote_state and '
-    'gap_kind remote_state, whose affected_ids name those criteria; the author may then reassess them as not_applicable. '
+    'Before any verdict, check every required criterion against the remote-state rule below: a required criterion '
+    'that needs a token, credential, authenticated session or an external service\'s settings or behaviour is a '
+    'finding with category remote_state and gap_kind remote_state, whose affected_ids name those criteria; the author '
+    'may then reassess them as not_applicable. Accept only when no required criterion fails this check. '
     + REMOTE_STATE_RULE +
     'Return scope_assessment with verdict, rationale, sources, findings, decisions. '
 )
