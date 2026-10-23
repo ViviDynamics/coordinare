@@ -174,7 +174,8 @@ class Inheritance:
 
 
 def inherit(previous: Mapping[str, dict[str, Any]], group: CheckGroup, parent: CheckGroup | None) -> Inheritance:
-    """An unsplit group keeps its previous part. A split remainder keeps the previous checks its criteria owned.
+    """An unsplit group keeps its previous part and its required checks. A split remainder keeps the previous checks
+    its criteria owned.
 
     A check mapped by several criteria, or by none, belongs to the remainder holding the first such criterion in the
     parent's order, so exactly one remainder keeps each previous id and the others may map to it.
@@ -182,7 +183,11 @@ def inherit(previous: Mapping[str, dict[str, Any]], group: CheckGroup, parent: C
     own_part = previous.get(group.prefix)
     base = previous.get(base_prefix(group.prefix))
     if base_prefix(group.prefix) == group.prefix or base is None or parent is None:
-        return Inheritance(own_part)
+        # An unsplit group keeps its previously required checks, as the attempt's obligation ledger already does;
+        # v22's c00 author dropped one in a revision and the merge could only report it afterwards.
+        kept = [check for check in (own_part or {}).get('checks', []) if isinstance(check, dict) and 'id' in check]
+        return Inheritance(own_part, frozenset(check['id'] for check in kept),
+                           frozenset(check['id'] for check in kept if check.get('required', True)))
     mapping: dict[str, list[str]] = base.get('criterion_checks', {})
     declared = [check['id'] for check in base.get('checks', []) if isinstance(check, dict) and 'id' in check]
     owner: dict[str, str] = {}
