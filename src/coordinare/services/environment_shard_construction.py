@@ -70,7 +70,8 @@ GLOBAL_AUTHOR_INSTRUCTION = (
     'services, runtime endpoints, local credentials and any environment-level checks (toolchain usability, service '
     'readiness). Leave criterion_checks empty: check authors map every required criterion to checks under their own '
     'id prefixes, and the daemon merges their checks with your manifest. Never use a check id that starts with c '
-    'followed by digits, optional letters and a hyphen. Requirements may reference only your own checks. '
+    'followed by digits, optional letters and a hyphen, or a scope criterion id (S followed by 16 hex characters) as '
+    'any record id. Requirements may reference only your own checks. '
 )
 CHECK_AUTHOR_INSTRUCTIONS = (
     'You are a check author for one group of required source criteria in a divided environment manifest. The global '

@@ -89,7 +89,8 @@ MAPPING_GUIDANCE = ("criterion_checks must map exactly every required scope crit
     "criteria (unexpected_keys counts them).")
 SCOPE_ID_COLLISION_GUIDANCE = ("A requirement, install, check or service id reuses a scope criterion id (S followed by 16 hex "
     "characters). Give each its own descriptive id, such as req-ruby or check-bundle; scope criterion ids appear only "
-    "as criterion_checks keys.")
+    "as criterion_checks keys. When unavailable lists them, rename exactly those records and leave every other record "
+    "and id unchanged.")
 GLOBAL_PART_GUIDANCE = ("This is the global part of a divided manifest. Leave criterion_checks empty: check authors map "
     "criteria. Check ids of c, two or three digits, optional letters and a hyphen (c00-, c00a-) are reserved for check "
     "authors; rename yours.")
@@ -260,7 +261,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
         if code == "global_part_invalid":
             detail["guidance"] = GLOBAL_PART_GUIDANCE
         if code == "scope_id_collision":
-            detail["guidance"] = SCOPE_ID_COLLISION_GUIDANCE
+            detail.update(_graph_ids(error), guidance=SCOPE_ID_COLLISION_GUIDANCE)
         detail.update(_schema_bounds(code, error, guided="guidance" in detail))
         if code == "runtime_credential_reference":
             detail["guidance"] = CREDENTIAL_GUIDANCE

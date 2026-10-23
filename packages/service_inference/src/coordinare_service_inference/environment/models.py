@@ -7,10 +7,9 @@ import json
 import platform as runtime_platform
 import re
 from collections import Counter
-from collections.abc import Iterable
 from graphlib import CycleError, TopologicalSorter
 from itertools import pairwise
-from typing import Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -39,6 +38,9 @@ from .runtime import (
     RuntimeSpec,
 )
 from .scope import ScopeContract, validate_scope_mapping
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
 EXECUTION_PATH_PATTERN = r"^(?:/|\{(?:cache|repo|scratch)\}|\$\{[A-Za-z_][A-Za-z0-9_]*\})(?:[^\x00-\x1f\x7f\\]*)$"
