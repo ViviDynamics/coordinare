@@ -773,7 +773,8 @@ def test_the_global_author_hears_of_a_criterion_id_and_a_dropped_obligation_in_i
     """v25: both surfaced only at the merge, one per round, until the rounds ran out."""
     criterion = make_criterion(1)
     merge = discovery_module._CandidateValidator.__new__(discovery_module._CandidateValidator)
-    merge.construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=scope_of([criterion])))
+    merge.construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=scope_of([criterion])),
+                                         capabilities=SimpleNamespace(runtime=None))
     merge.required_ids = {'requirements': set(), 'checks': {'toolchain', 'c00-owned'}, 'install': set(),
                           'services': {'maxio-mock'}}
     check = discovery_module._global_rules(merge)
@@ -790,3 +791,26 @@ def test_the_global_author_hears_of_a_criterion_id_and_a_dropped_obligation_in_i
 
 def test_without_the_attempt_validator_the_global_part_keeps_only_its_own_rules():
     assert discovery_module._global_rules(lambda data: data) is validate_global
+
+
+
+@pytest.mark.parametrize(('changes', 'code', 'command_id', 'unavailable'), [
+    ({'activation': {'env': {'DOCKER_CONFIG': '{scratch}/docker'}}}, 'runtime_env_reserved', 'activation', ['DOCKER_CONFIG']),
+    ({'services': [{**service(), 'stop': {'id': 'database-stop', 'argv': ['true'], 'required': False}}]},
+     'scope_required_service', 'database', ['database-stop']),
+    ({'services': [{**service(), 'health': {'id': 'database-health', 'argv': ['true'], 'scope': ['ci']}}]},
+     'service_scope_mismatch', 'database', ['database-health']),
+    ({'checks': [{'id': 'toolchain', 'argv': ['true']}, {'id': 'toolchain', 'argv': ['false']}]},
+     'duplicate_command_ids', None, ['toolchain']),
+])
+def test_record_rules_reach_the_global_author_in_its_own_phase_with_the_ids_they_name(changes, code, command_id, unavailable):
+    """v28: DOCKER_CONFIG in activation and an optional stop on a required service reached the merge unlocated."""
+    merge = discovery_module._CandidateValidator.__new__(discovery_module._CandidateValidator)
+    merge.construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=None),
+                                         capabilities=SimpleNamespace(runtime=object()))
+    merge.required_ids = {}
+    with pytest.raises(ValidationError) as caught:
+        discovery_module._global_rules(merge)(global_part(**changes))
+    [feedback] = _validation_feedback(caught.value)
+    assert (feedback['code'], feedback.get('command_id'), feedback['unavailable']) == (code, command_id, unavailable)
+    assert feedback['guidance']

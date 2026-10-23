@@ -21,8 +21,10 @@ from coordinare_service_inference.environment.models import (
     Command,
     CoverageAssessment,
     EnvironmentManifest,
+    EnvironmentManifestProposal,
     ExecutionCapabilities,
     Requirement,
+    validate_records,
 )
 from coordinare_service_inference.environment.models import (
     CoverageAssessmentProposal as _CoverageProposal,
@@ -1091,6 +1093,14 @@ def _global_rules(merge: Callable[[dict[str, Any]], Any] | None) -> Callable[[di
 
     def check(data: dict[str, Any]) -> dict[str, Any]:
         validate_global(data)
+        proposal = EnvironmentManifestProposal.model_validate(data)
+        try:
+            # v28 set DOCKER_CONFIG in activation, which the private runtime owns; the merge reported it unlocated.
+            validate_records(proposal.install, proposal.checks, proposal.services, proposal.requirements,
+                             proposal.activation.env, runtime=merge.construction.capabilities.runtime is not None)
+        except PydanticCustomError as exc:
+            raise ValidationError.from_exception_data('EnvironmentManifestProposal',
+                                                      [{'type': exc, 'loc': (), 'input': None}]) from exc
         scope = merge.construction.budget.scope_contract
         criteria = {criterion.id for criterion in scope.definition.criteria} if scope is not None else set()
         records = {key: [item for item in data.get(key) or [] if isinstance(item, dict)] for key in GLOBAL_RECORDS}

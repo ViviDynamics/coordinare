@@ -307,32 +307,23 @@ class EnvironmentManifest(StrictModel):
             commands.extend([service.start, service.health, service.stop])
             if service.init:
                 commands.append(service.init)
-        if self.runtime is not None and any(RUNTIME_OWNED_ENV & variables.keys()
-                for variables in [self.activation.env, *(command.env for command in commands)]):
-            raise ValueError("private runtime control environment cannot be overridden")
-        ids = [command.id for command in commands]
-        if len(ids) != len(set(ids)) or len(commands) > 4096:
-            raise ValueError("duplicate command IDs or excessive commands")
-        if len({r.id for r in self.requirements}) != len(self.requirements):
-            raise ValueError("duplicate requirement IDs")
+        validate_records(self.install, self.checks, self.services, self.requirements, self.activation.env,
+                         runtime=self.runtime is not None, reviewed_scope=self.schema_version == 3)
         validate_execution_graph(self.install, self.checks, self.services)
-        for service in self.services:
-            own = [command for command in [service.init, service.start, service.health] if command]
-            if any(command.scope != service.start.scope for command in [*own, service.stop]):
-                raise ValueError('service lifecycle commands must share applicability scope')
         checks = {check.id: check for check in self.checks}
         if not any(check.required for check in self.checks):
-            raise ValueError("at least one required baseline check is mandatory")
+            raise PydanticCustomError("required_check_missing", "at least one required baseline check is mandatory")
         for requirement in self.requirements:
             if requirement.source not in self.inputs:
-                raise ValueError("requirement source was not inspected")
+                raise _graph_error("requirement_source_uninspected", "requirement source was not inspected",
+                                   requirement.id, set())
             for check_id in requirement.checks:
                 if check_id not in checks or (
                     requirement.required and not checks[check_id].required
                 ):
                     raise PydanticCustomError("requirement_check_reference", "requirement must reference required executable checks")
         if not self.requirements and not (self.empty_reason and self.empty_reason.strip()):
-            raise ValueError("empty environment requires justification")
+            raise PydanticCustomError("empty_reason_missing", "empty environment requires justification")
         self._validate_local_credentials(commands)
         return self
 
@@ -449,11 +440,42 @@ class VerificationReport(StrictModel):
 
 
 GRAPH_IDS = 8
+MAX_COMMANDS = 4096
 
 
 def _graph_error(code: str, message: str, command_id: str, unavailable: set[str]) -> PydanticCustomError:
     """Names only schema-validated command ids, so a correction can say which edge to remove."""
     return PydanticCustomError(code, message, {'command_id': command_id, 'unavailable': sorted(unavailable)[:GRAPH_IDS]})
+
+
+def validate_records(install: list[Command], checks: list[Command], services: list[Service],
+                     requirements: list[Requirement], activation_env: dict[str, str], *, runtime: bool,
+                     reviewed_scope: bool = True) -> None:
+    """Rules on records and their ids that one author can break alone; each names the records it rejects."""
+    commands = [*install, *checks, *(command for service in services
+                                     for command in [service.start, service.health, service.stop, service.init] if command)]
+    if runtime:
+        for command in commands:
+            if reserved := RUNTIME_OWNED_ENV & command.env.keys():
+                raise _graph_error('runtime_env_reserved', 'private runtime control environment cannot be overridden',
+                                   command.id, set(reserved))
+        if reserved := RUNTIME_OWNED_ENV & activation_env.keys():
+            raise _graph_error('runtime_env_reserved', 'private runtime control environment cannot be overridden',
+                               'activation', set(reserved))
+    ids = [command.id for command in commands]
+    if (repeated := {identifier for identifier in ids if ids.count(identifier) > 1}) or len(commands) > MAX_COMMANDS:
+        raise _graph_error('duplicate_command_ids', 'duplicate command IDs or excessive commands', '', repeated)
+    names = [requirement.id for requirement in requirements]
+    if repeated := {identifier for identifier in names if names.count(identifier) > 1}:
+        raise _graph_error('duplicate_requirement_ids', 'duplicate requirement IDs', '', repeated)
+    for service in services:
+        lifecycle = [command for command in [service.init, service.start, service.health, service.stop] if command]
+        if differing := {command.id for command in lifecycle if command.scope != service.start.scope}:
+            raise _graph_error('service_scope_mismatch', 'service lifecycle commands must share applicability scope',
+                               service.id, differing)
+        if reviewed_scope and service.required and (optional := {command.id for command in lifecycle if not command.required}):
+            raise _graph_error('scope_required_service', 'required service lifecycle cannot be optional',
+                               service.id, optional)
 
 
 def validate_execution_graph(install: list[Command], checks: list[Command], services: list[Service]) -> None:
