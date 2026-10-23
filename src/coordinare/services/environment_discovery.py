@@ -28,7 +28,7 @@ from coordinare_service_inference.environment.models import (
     CoverageAssessmentProposal as _CoverageProposal,
 )
 from pydantic import TypeAdapter, ValidationError
-from pydantic_core import PydanticCustomError
+from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from coordinare.services.environment_admission import (
     _checked_inventory,
@@ -1086,7 +1086,7 @@ def _global_rules(merge: Callable[[dict[str, Any]], Any] | None) -> Callable[[di
         scope = merge.construction.budget.scope_contract
         criteria = {criterion.id for criterion in scope.definition.criteria} if scope is not None else set()
         records = {key: [item for item in data.get(key) or [] if isinstance(item, dict)] for key in GLOBAL_RECORDS}
-        errors: list[dict[str, Any]] = []
+        errors: list[InitErrorDetails] = []
         if any(item.get('id') in criteria for items in records.values() for item in items):
             errors.append({'type': PydanticCustomError('scope_id_collision', 'record id reuses a scope criterion id'),
                            'loc': (), 'input': None})
