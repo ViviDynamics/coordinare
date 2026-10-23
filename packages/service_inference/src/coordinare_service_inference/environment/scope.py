@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
 from pydantic import Field, field_validator, model_serializer, model_validator
@@ -23,7 +24,6 @@ from .findings import (
     validate_finding_ledger,
 )
 from .scope_investigation import ScopeInspectionRequest, unique_requests
-
 
 MAX_SCOPE_CRITERIA = 512
 MAX_SCOPE_FINDINGS = 128
@@ -457,7 +457,9 @@ def validate_scope_mapping(scope: ScopeContract, manifest: EnvironmentManifest) 
     identifiers = [*(c.id for c in checked.definition.criteria), *(r.id for r in manifest.requirements),
                    *(s.id for s in manifest.services), *(c.id for c in commands)]
     if len(identifiers) != len(set(identifiers)):
-        raise PydanticCustomError('scope_id_collision', 'scope, obligation, service and command IDs must be unambiguous')
+        repeated = sorted(identifier for identifier, count in Counter(identifiers).items() if count > 1)
+        raise PydanticCustomError('scope_id_collision', 'scope, obligation, service and command IDs must be unambiguous',
+                                  {'unavailable': repeated[:16]})
     required = {c.id for c in checked.definition.criteria if c.applicability == 'required'}
     checks = {c.id: c for c in manifest.checks}
     invalid = sorted(criterion for criterion, ids in manifest.criterion_checks.items() if criterion in required and (

@@ -1105,9 +1105,11 @@ def _global_rules(merge: Callable[[dict[str, Any]], Any] | None) -> Callable[[di
         criteria = {criterion.id for criterion in scope.definition.criteria} if scope is not None else set()
         records = {key: [item for item in data.get(key) or [] if isinstance(item, dict)] for key in GLOBAL_RECORDS}
         errors: list[InitErrorDetails] = []
-        if any(item.get('id') in criteria for items in records.values() for item in items):
-            errors.append({'type': PydanticCustomError('scope_id_collision', 'record id reuses a scope criterion id'),
-                           'loc': (), 'input': None})
+        # Named, so the author renames exactly these: v29's author, told only that some id collided, rewrote its
+        # whole part and dropped a dozen required ids. Criterion ids are the daemon's own, never model text.
+        if colliding := sorted({item['id'] for items in records.values() for item in items if item.get('id') in criteria}):
+            errors.append({'type': PydanticCustomError('scope_id_collision', 'record id reuses a scope criterion id',
+                                                       {'unavailable': colliding[:16]}), 'loc': (), 'input': None})
         missing = sorted(identifier for key, previous in merge.required_ids.items() if key in records
                          for identifier in previous - {item.get('id') for item in records[key] if item.get('required', True)}
                          if not PREFIX.match(identifier))

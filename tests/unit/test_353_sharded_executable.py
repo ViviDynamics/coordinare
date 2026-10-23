@@ -783,7 +783,8 @@ def test_the_global_author_hears_of_a_criterion_id_and_a_dropped_obligation_in_i
     feedback = {item['code']: item for item in _validation_feedback(caught.value)}
     assert set(feedback) == {'scope_id_collision', 'global_obligation_removed'}
     assert feedback['global_obligation_removed']['unavailable'] == ['maxio-mock', 'toolchain']
-    assert criterion.id not in json.dumps(feedback)
+    # v29: the colliding records are named, so only they are renamed; criterion ids are the daemon's own.
+    assert feedback['scope_id_collision']['unavailable'] == [criterion.id]
     kept = global_part(services=[{'id': 'maxio-mock', 'start': {'id': 'm-start', 'argv': ['true']},
                                   'health': {'id': 'm-health', 'argv': ['true']}, 'stop': {'id': 'm-stop', 'argv': ['true']}}])
     assert check(kept) == kept
