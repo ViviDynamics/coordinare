@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from coordinare_service_inference.environment.findings import finding_summary
 
+from coordinare.services.model_output_cap import REPETITION_FINISH
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
@@ -42,7 +44,7 @@ class EnvironmentDiscoveryError(RuntimeError):
         self.global_owned = global_owned
 
 
-CALL_STAT_KEYS = ('calls', 'seconds', 'input_tokens', 'output_tokens', 'cached_tokens', 'length_stops')
+CALL_STAT_KEYS = ('calls', 'seconds', 'input_tokens', 'output_tokens', 'cached_tokens', 'length_stops', 'repetition_stops')
 
 
 @dataclass(frozen=True)
@@ -200,7 +202,7 @@ class AttemptBudget:
             if (key in {"input", "output", "input_tokens", "output_tokens", "cache_read", "cache_write"}
                     and type(value) is int and 0 <= value <= 10**12):
                 self.usage[key] = self.usage.get(key, 0) + value
-        if reply.finish_reason in {"stop", "length", "tool_calls", "content_filter", "function_call"}:
+        if reply.finish_reason in {"stop", "length", "tool_calls", "content_filter", "function_call", REPETITION_FINISH}:
             self.finish_reasons[reply.finish_reason] = self.finish_reasons.get(reply.finish_reason, 0) + 1
         return reply.text
 
@@ -215,6 +217,7 @@ class AttemptBudget:
                                ('cached_tokens', ('cache_read',))):
                 stats[key] += sum(value for name in names if type(value := usage.get(name)) is int and 0 <= value <= 10**12)
             stats['length_stops'] += reply.finish_reason == 'length'
+            stats['repetition_stops'] = stats.get('repetition_stops', 0) + (reply.finish_reason == REPETITION_FINISH)
 
     def summary(self) -> dict[str, Any]:
         """Only trusted stages/codes, counters and allowlisted provider metadata escape."""

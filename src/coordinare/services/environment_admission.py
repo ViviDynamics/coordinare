@@ -10,6 +10,7 @@ from coordinare_service_inference.environment.scope_revision import MAX_SCOPE_RE
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 from coordinare.services.environment_discovery_prompts import correction_instruction
 from coordinare.services.environment_proposal_patch import MAX_PATH_DEPTH, PATCH_INSTRUCTION
+from coordinare.services.model_output_cap import REPETITION_FINISH
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -81,6 +82,8 @@ LENGTH_GUIDANCE = ("Shorten this field to at most max_length (characters, or lis
     "summary and leave the rest of the reply unchanged.")
 REPLY_LENGTH_GUIDANCE = ("Your reply was cut off at the output limit before the envelope was complete. Reason briefly, "
     "keep rationales short, and return the complete envelope.")
+REPETITION_GUIDANCE = ("Your reply was stopped because it began repeating the same text. Reason briefly, write each "
+    "record once, and return the complete envelope.")
 MAPPING_GUIDANCE = ("criterion_checks must map exactly every required scope criterion id: add each in missing_criteria; "
     "for each in invalid_criteria, map only existing required checks with no scope; drop keys that are not required "
     "criteria (unexpected_keys counts them).")
@@ -270,6 +273,8 @@ def explain_rejection(messages: list[dict[str, str]], raw: str, errors: list[dic
         # The reply was cut off at the output limit, usually by long hidden reasoning, not by the envelope itself.
         errors = [*errors, {'code': 'reply_length_limit', 'location': [],
                             'guidance': REPLY_LENGTH_GUIDANCE}]
+    if budget.last_finish_reason == REPETITION_FINISH:
+        errors = [*errors, {'code': 'reply_repetition', 'location': [], 'guidance': REPETITION_GUIDANCE}]
     if budget.scope_contract is not None:
         required_ids = [c.id for c in budget.scope_contract.definition.criteria if c.applicability == 'required']
         for error in errors:
