@@ -353,8 +353,16 @@ def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
         if exc.code not in {'invalid_json_envelope', 'duplicate_json_key', 'invalid_proposal_patch'}:
             raise
         error: dict[str, Any] = {"location": [], "code": exc.code,
-            "guidance": "Return one JSON object with unique keys at every level; assessment must occur exactly once and contain an object, never a boolean."}
+            "guidance": (f"Return one JSON object with unique keys at every level and nothing after it; "
+                         f"{budget.expected_envelope or 'its main key'} must occur exactly once and contain an object, "
+                         "never a boolean.")}
         can_patch = base is not None
+        if can_patch and exc.code == 'invalid_json_envelope' and '"repair_proposal"' in raw[:256]:
+            # A correction that could not even be parsed is not retried as another patch: v26's author failed the
+            # same nested patch until its repairs ran out. The complete envelope has no value_json layer.
+            error['guidance'] += (' Your correction could not be parsed; return the complete corrected declaration in '
+                                  'the expected envelope instead of another correction.')
+            can_patch = False
         if exc.code == 'invalid_proposal_patch':
             error.update(max_changes=MAX_CHANGES, max_path_depth=MAX_PATH_DEPTH,
                 guidance=(f'Use 1 to {MAX_CHANGES} correction records, existing parent paths of depth at most {MAX_PATH_DEPTH}, '

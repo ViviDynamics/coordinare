@@ -352,3 +352,81 @@ async def test_repair_feedback_path_can_be_applied_directly_to_complete_declarat
     manifest, accepted = await run(replies, budget=budget)
     assert manifest.checks[0].env == {}
     assert accepted.manifest_digest == manifest.digest() and budget.schema_repairs == 1
+
+
+@pytest.mark.asyncio
+async def test_a_plain_value_record_corrects_a_field_without_encoding_it_again():
+    """v26: a shell command inside value_json is quoted three levels deep; the author never closed one."""
+    from tests.unit.test_351_environment_discovery import PATH
+
+    invalid = candidate()
+    invalid["requirements"][0]["checks"] = ["missing"]
+    replies = Replies([{"tool": "read_file", "path": PATH}, {"manifest": invalid},
+                       {"tool": "repair_proposal", "changes": [{"path": ["manifest", "requirements", 0, "checks"],
+                                                                 "value": ["version"]}]},
+                       {"tool": "read_file", "path": PATH}, assessment(candidate())])
+    manifest, _review = await run(replies, budget=AttemptBudget())
+    assert manifest.requirements[0].checks == ["version"]
+
+
+def test_a_record_with_both_value_forms_is_rejected():
+    from coordinare.services.environment_proposal_patch import apply_patch
+
+    request = {"tool": "repair_proposal", "changes": [{"path": ["manifest", "x"], "value": 1, "value_json": "1"}]}
+    with pytest.raises(EnvironmentDiscoveryError):
+        apply_patch({"manifest": {"x": 0}}, request, max_bytes=1024)
+
+
+def test_only_a_prompt_described_schema_offers_plain_values():
+    from coordinare.services.environment_proposal_patch import PATCH_SCHEMA, text_schema
+    from coordinare.services.environment_response_schema import response_schema
+
+    def records(schema):
+        [patch] = [tool for tool in schema["anyOf"] if tool.get("properties", {}).get("tool") == {"const": "repair_proposal"}]
+        return patch["properties"]["changes"]["items"]
+
+    schema = response_schema("manifest", allow_patch=True)
+    assert set(records(schema)["properties"]) == {"path", "value_json"}
+    assert set(records(text_schema(schema))["properties"]) == {"path", "value_json", "value"}
+    assert records(text_schema(schema))["required"] == ["path"]
+    assert "value" not in PATCH_SCHEMA["properties"]["changes"]["items"]["properties"]
+
+
+class RawReplies(Replies):
+    async def __call__(self, messages):
+        self.messages.append(copy.deepcopy(messages))
+        value = next(self.values)
+        return value if isinstance(value, str) else json.dumps(value)
+
+
+@pytest.mark.asyncio
+async def test_an_unparseable_correction_is_answered_by_asking_for_the_complete_declaration():
+    from tests.unit.test_351_environment_discovery import PATH
+
+    invalid = candidate()
+    invalid["requirements"][0]["checks"] = ["missing"]
+    broken = '{"tool":"repair_proposal","changes":[{"path":["manifest","checks",0,"argv"],"value_json":"[\\"sh\\",\\"-c'
+    replies = RawReplies([{"tool": "read_file", "path": PATH}, {"manifest": invalid}, broken, {"manifest": candidate()},
+                          {"tool": "read_file", "path": PATH}, assessment(candidate())])
+    await run(replies, budget=AttemptBudget(max_schema_repairs=4))
+    correction = json.loads(replies.messages[3][-1]["content"])
+    assert "complete corrected declaration" in correction["validation_errors"][0]["guidance"]
+    assert "repair_proposal" not in correction["instruction"].split("When supplied")[0]
+
+
+@pytest.mark.asyncio
+async def test_the_prompt_only_transport_describes_plain_values_to_the_model(monkeypatch):
+    from coordinare.services.conducting import ModelReply, OpenAiApiBackend
+    from coordinare.services.environment_response_schema import response_schema
+
+    sent = []
+
+    async def reply(messages, json_mode, *, response_schema=None, transport=None):
+        sent.append(messages[0]["content"])
+        return ModelReply(text='{"manifest": {}}')
+
+    backend = OpenAiApiBackend(model="m", api_key="k", base_url="http://x/v1", structured_transport="json_object")
+    monkeypatch.setattr(backend, "_chat_reply", reply)
+    await backend.chat_json_with_metadata([{"role": "user", "content": "x"}],
+                                          response_schema=response_schema("manifest", allow_patch=True))
+    assert '"value": {"description"' in sent[0]
