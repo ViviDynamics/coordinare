@@ -989,6 +989,7 @@ def _divided_construction(scope: ScopeContract, attempt: _Attempt) -> DividedCon
     build = DividedConstruction(AgentContext(attempt.budget, attempt.bounds, attempt.chat), options.entries or attempt.inventory,
                                 attempt.fetch, scope, attempt.bounds.agent_concurrency,
                                 previous=parts_from_manifest(prior[-1] if prior else None, groups))
+    build.obligations = dict(build.previous)
     if options.execution_feedback is not None:
         build.feedback = execution_feedback_by_group(options.execution_feedback, groups)
     messages = attempt.messages
@@ -1188,6 +1189,7 @@ def _divided_revision(attempt: _Attempt, build: DividedConstruction, assessment:
     the history would otherwise outgrow the model's context."""
     build.route_findings(cast("FindingLedger", assessment.finding_ledger))
     build.previous = parts_from_manifest(attempt.prior_manifests[-1], build.groups)
+    build.obligations = dict(build.previous)
     messages = attempt.messages
     del messages[2:]
     base = build.global_part or {}
