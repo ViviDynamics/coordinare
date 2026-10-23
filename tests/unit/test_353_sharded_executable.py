@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from coordinare_service_inference.environment.models import CoverageAssessmentProposal, ShardChecks
@@ -21,6 +22,7 @@ from coordinare.services.environment_scope import _ResponseReferenceError
 from coordinare.services.environment_shard_construction import (
     GLOBAL_OWNER,
     CheckGroup,
+    Inheritance,
     check_groups,
     combine_review,
     divided,
@@ -739,3 +741,29 @@ async def test_when_the_global_author_repairs_every_group_revises_its_own_last_p
     assert set(build.previous) == {'c00-', 'c01-'}
     assert [check['id'] for check in build.previous['c00-']['checks']] == [
         check['id'] for check in group_reply(build.groups[0])['shard_checks']['checks']]
+
+
+def test_a_group_keeps_every_mapping_the_reviewed_manifest_made_and_hears_all_lost_ones_at_once():
+    """v24: c01 dropped c01-qa-boot from one criterion per round; each merge reported only the first."""
+    from dataclasses import replace
+
+    first, second = make_criterion(1), make_criterion(2)
+    group = CheckGroup('c01-', (first, second))
+    checks = [{'id': 'c01-qa-boot', 'argv': ['true']}, {'id': 'c01-other', 'argv': ['true']}]
+    kept = replace(Inheritance(), mapped={first.id: frozenset({'c01-qa-boot'}), second.id: frozenset({'c01-qa-boot'})})
+    reply = {'shard_checks': {'checks': checks, 'criterion_checks': {first.id: ['c01-other'], second.id: ['c01-other']}}}
+    with pytest.raises(_ResponseReferenceError) as caught:
+        validate_group(reply, group=group, summary=SUMMARY, inherited=kept)
+    [error] = [error for error in caught.value.errors if error['code'] == 'inherited_mapping_missing']
+    assert error['missing'] == {first.id: ['c01-qa-boot'], second.id: ['c01-qa-boot']}
+    reply['shard_checks']['criterion_checks'] = {first.id: ['c01-qa-boot', 'c01-other'], second.id: ['c01-qa-boot']}
+    validate_group(reply, group=group, summary=SUMMARY, inherited=kept)
+
+
+def test_lost_criterion_mappings_are_all_named_in_one_rejection():
+    from coordinare.services.environment_obligations import _preserve_criterion_checks
+    previous = SimpleNamespace(criterion_checks={'S0000000000000001': ['c01-qa-boot'], 'S0000000000000002': ['c01-qa-boot']})
+    current = SimpleNamespace(criterion_checks={'S0000000000000001': [], 'S0000000000000002': []})
+    with pytest.raises(EnvironmentDiscoveryError) as caught:
+        _preserve_criterion_checks(cast('Any', current), cast('Any', previous), set())
+    assert 'S0000000000000001 must still include c01-qa-boot; S0000000000000002 must still include c01-qa-boot' in str(caught.value)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Self
 
@@ -30,7 +30,7 @@ from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_discovery_prompts import SOURCE_NAVIGATION
 from coordinare.services.environment_findings import MAX_FINDINGS
 from coordinare.services.environment_inspection import SourceInspection
-from coordinare.services.environment_scope import _ResponseReferenceError
+from coordinare.services.environment_scope import _ResponseReferenceError, released_criteria
 from coordinare.services.environment_shard_scope import (
     MIN_SPLIT,
     AgentContext,
@@ -171,6 +171,8 @@ class Inheritance:
     required: frozenset[str] = frozenset()
     siblings: frozenset[str] = frozenset()
     usable_siblings: frozenset[str] = frozenset()
+    # Per assigned criterion, the checks a reviewed manifest mapped to it: obligations a revision keeps.
+    mapped: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
 
 def inherit(previous: Mapping[str, dict[str, Any]], group: CheckGroup, parent: CheckGroup | None) -> Inheritance:
@@ -236,6 +238,13 @@ def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[
     if missing:
         errors.append({'code': 'inherited_check_missing', 'location': ['shard_checks', 'checks'], 'missing': missing[:32],
                        'guidance': 'Keep every keep_check_ids check that was required; revise it in place, never drop it.'})
+    unmapped = {criterion: sorted(ids - set(part.criterion_checks.get(criterion, [])))
+                for criterion, ids in sorted(inherited.mapped.items()) if ids - set(part.criterion_checks.get(criterion, []))}
+    if unmapped:
+        errors.append({'code': 'inherited_mapping_missing', 'location': ['shard_checks', 'criterion_checks'],
+                       'missing': dict(list(unmapped.items())[:32]),
+                       'guidance': ('Each listed criterion must still map every listed check, as the reviewed manifest '
+                                    'did: add checks to a criterion, never remove one.')})
 
     def usable(identifier: str) -> bool:
         if identifier in inherited.siblings:
@@ -301,6 +310,8 @@ class DividedConstruction:
     concurrency: int
     feedback: dict[str, Any] = field(default_factory=dict)
     previous: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # The last reviewed manifest's parts: unlike ``previous``, never replaced by a part the merge rejected.
+    obligations: dict[str, dict[str, Any]] = field(default_factory=dict)
     group_inputs: dict[str, str] = field(default_factory=dict)
     # The global author's last admitted part: the base of its coverage revisions, never the merged manifest.
     global_part: dict[str, Any] | None = None
@@ -313,6 +324,14 @@ class DividedConstruction:
         cited = {path for criterion in group.criteria for path in criterion.sources}
         return {path: digest for path, digest in self.scope.all_inputs.items() if path in cited}
 
+    def _kept_mappings(self, group: CheckGroup) -> dict[str, frozenset[str]]:
+        reviewed = self.obligations.get(group.prefix) or self.obligations.get(base_prefix(group.prefix))
+        if not reviewed:
+            return {}
+        released = released_criteria(self.scope.finding_ledger)
+        return {criterion: frozenset(ids) for criterion, ids in (reviewed.get('criterion_checks') or {}).items()
+                if criterion in group.ids and criterion not in released and ids}
+
     async def author(self, group: CheckGroup, *, summary: Mapping[str, Any], probes: Sequence[Any]) -> ShardChecks:
         inspection = SourceInspection(self.entries, self.fetch, self.context.limits, self.context.budget)
         inspection.name = 'executable_checks'
@@ -322,7 +341,7 @@ class DividedConstruction:
                 cited_by.setdefault(path, []).append(criterion.id)
         index = await inspection.bind_verified(self._citations(group), phase='construction', cited_by=cited_by)
         parent = next((candidate for candidate in self.groups if candidate.prefix == base_prefix(group.prefix)), None)
-        inherited = inherit(self.previous, group, parent)
+        inherited = replace(inherit(self.previous, group, parent), mapped=self._kept_mappings(group))
         brief = canonical({
             'check_id_prefix': group.prefix,
             'assigned_criteria': [criterion.model_dump(mode='json') for criterion in group.criteria],

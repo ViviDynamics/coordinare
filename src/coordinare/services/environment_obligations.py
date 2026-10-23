@@ -126,11 +126,13 @@ def _ids(identifiers: set[str]) -> str:
 
 
 def _preserve_criterion_checks(manifest: EnvironmentManifest, previous: EnvironmentManifest, released: set[str]) -> None:
-    for identifier, ids in sorted(previous.criterion_checks.items()):
-        if identifier not in released and (lost := set(ids) - set(manifest.criterion_checks.get(identifier, []))):
-            message = (f'required source criterion coverage removed during repair: criterion_checks for {_id(identifier)} '
-                       f'must still include {_ids(lost)}')
-            raise EnvironmentDiscoveryError(message, code='obligation_removed')
+    # Every lost mapping at once: one per merge round left v24's author fixing them one criterion at a time.
+    lost = [f'{_id(identifier)} must still include {_ids(missing)}'
+            for identifier, ids in sorted(previous.criterion_checks.items())
+            if identifier not in released and (missing := set(ids) - set(manifest.criterion_checks.get(identifier, [])))]
+    if lost:
+        message = f"required source criterion coverage removed during repair: criterion_checks for {'; '.join(lost[:16])}"
+        raise EnvironmentDiscoveryError(message, code='obligation_removed')
 
 
 def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentManifest) -> None:
