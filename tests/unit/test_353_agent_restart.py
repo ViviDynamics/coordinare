@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import pytest
 
-from coordinare.services.environment_attempt import AttemptBudget, DiscoveryChatReply, EnvironmentDiscoveryError
+from coordinare.services.environment_attempt import (
+    AttemptBudget,
+    DiscoveryChatReply,
+    EnvironmentDiscoveryError,
+)
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_shard_scope import AgentContext, AgentTask, run_agent
 from tests.unit.test_353_shard_scope import LIMITS
