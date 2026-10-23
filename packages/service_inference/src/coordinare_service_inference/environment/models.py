@@ -6,6 +6,8 @@ import hashlib
 import json
 import platform as runtime_platform
 import re
+from collections import Counter
+from collections.abc import Iterable
 from graphlib import CycleError, TopologicalSorter
 from itertools import pairwise
 from typing import Any, Literal, Self
@@ -448,6 +450,10 @@ def _graph_error(code: str, message: str, command_id: str, unavailable: set[str]
     return PydanticCustomError(code, message, {'command_id': command_id, 'unavailable': sorted(unavailable)[:GRAPH_IDS]})
 
 
+def _repeated(identifiers: Iterable[str]) -> set[str]:
+    return {identifier for identifier, count in Counter(identifiers).items() if count > 1}
+
+
 def validate_records(install: list[Command], checks: list[Command], services: list[Service],
                      requirements: list[Requirement], activation_env: dict[str, str], *, runtime: bool,
                      reviewed_scope: bool = True) -> None:
@@ -462,11 +468,9 @@ def validate_records(install: list[Command], checks: list[Command], services: li
         if reserved := RUNTIME_OWNED_ENV & activation_env.keys():
             raise _graph_error('runtime_env_reserved', 'private runtime control environment cannot be overridden',
                                'activation', set(reserved))
-    ids = [command.id for command in commands]
-    if (repeated := {identifier for identifier in ids if ids.count(identifier) > 1}) or len(commands) > MAX_COMMANDS:
+    if (repeated := _repeated(command.id for command in commands)) or len(commands) > MAX_COMMANDS:
         raise _graph_error('duplicate_command_ids', 'duplicate command IDs or excessive commands', '', repeated)
-    names = [requirement.id for requirement in requirements]
-    if repeated := {identifier for identifier in names if names.count(identifier) > 1}:
+    if repeated := _repeated(requirement.id for requirement in requirements):
         raise _graph_error('duplicate_requirement_ids', 'duplicate requirement IDs', '', repeated)
     for service in services:
         lifecycle = [command for command in [service.init, service.start, service.health, service.stop] if command]
