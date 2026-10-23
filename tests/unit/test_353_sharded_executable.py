@@ -767,3 +767,26 @@ def test_lost_criterion_mappings_are_all_named_in_one_rejection():
     with pytest.raises(EnvironmentDiscoveryError) as caught:
         _preserve_criterion_checks(cast('Any', current), cast('Any', previous), set())
     assert 'S0000000000000001 must still include c01-qa-boot; S0000000000000002 must still include c01-qa-boot' in str(caught.value)
+
+
+def test_the_global_author_hears_of_a_criterion_id_and_a_dropped_obligation_in_its_own_phase():
+    """v25: both surfaced only at the merge, one per round, until the rounds ran out."""
+    criterion = make_criterion(1)
+    merge = discovery_module._CandidateValidator.__new__(discovery_module._CandidateValidator)
+    merge.construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=scope_of([criterion])))
+    merge.required_ids = {'requirements': set(), 'checks': {'toolchain', 'c00-owned'}, 'install': set(),
+                          'services': {'maxio-mock'}}
+    check = discovery_module._global_rules(merge)
+    with pytest.raises(ValidationError) as caught:
+        check(global_part(checks=[{'id': criterion.id, 'argv': ['true']}]))
+    feedback = {item['code']: item for item in _validation_feedback(caught.value)}
+    assert set(feedback) == {'scope_id_collision', 'global_obligation_removed'}
+    assert feedback['global_obligation_removed']['unavailable'] == ['maxio-mock', 'toolchain']
+    assert criterion.id not in json.dumps(feedback)
+    kept = global_part(services=[{'id': 'maxio-mock', 'start': {'id': 'm-start', 'argv': ['true']},
+                                  'health': {'id': 'm-health', 'argv': ['true']}, 'stop': {'id': 'm-stop', 'argv': ['true']}}])
+    assert check(kept) == kept
+
+
+def test_without_the_attempt_validator_the_global_part_keeps_only_its_own_rules():
+    assert discovery_module._global_rules(lambda data: data) is validate_global

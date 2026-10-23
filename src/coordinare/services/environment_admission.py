@@ -124,6 +124,8 @@ GRAPH_GUIDANCE = {
                                  'Remove the named ids from depends_on; if a precondition must be verified, do it '
                                  'inside the service command or in a check that depends on the service.'),
     'duplicate_service_ids': 'Each service needs a unique id.',
+    'global_obligation_removed': ('Your earlier proposals declared the listed required records; keep each id and revise '
+                                  'the record in place. Only an id that reuses a scope criterion id may be renamed.'),
 }
 
 

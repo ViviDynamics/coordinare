@@ -28,6 +28,7 @@ from coordinare_service_inference.environment.models import (
     CoverageAssessmentProposal as _CoverageProposal,
 )
 from pydantic import TypeAdapter, ValidationError
+from pydantic_core import PydanticCustomError
 
 from coordinare.services.environment_admission import (
     _checked_inventory,
@@ -1026,7 +1027,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
     redo: list[CheckGroup] = []
     for _ in range(MERGE_ROUNDS):
         if global_data is None:
-            global_data = await _global_part(attempt)
+            global_data = await _global_part(attempt, validate)
             build.global_part = global_data
             parts = await build.author_all(summary=global_summary(global_data), probes=budget.probe_reports)
         else:
@@ -1068,17 +1069,52 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
     raise EnvironmentDiscoveryError(message, code='executable_merge_invalid')
 
 
-async def _global_part(attempt: _Attempt) -> dict[str, Any]:
+GLOBAL_RECORDS = ('requirements', 'checks', 'install', 'services')
+
+
+def _global_rules(merge: Callable[[dict[str, Any]], Any] | None) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """The global part's own rules, plus the merge's id rules it alone can break, checked while it can still fix them.
+
+    v25 spent all three merge rounds on a criterion id reused as a record id and then on two required ids the
+    renaming dropped; both are now corrections during the global author's own phase.
+    """
+    if not isinstance(merge, _CandidateValidator):
+        return validate_global
+
+    def check(data: dict[str, Any]) -> dict[str, Any]:
+        validate_global(data)
+        scope = merge.construction.budget.scope_contract
+        criteria = {criterion.id for criterion in scope.definition.criteria} if scope is not None else set()
+        records = {key: [item for item in data.get(key) or [] if isinstance(item, dict)] for key in GLOBAL_RECORDS}
+        errors: list[dict[str, Any]] = []
+        if any(item.get('id') in criteria for items in records.values() for item in items):
+            errors.append({'type': PydanticCustomError('scope_id_collision', 'record id reuses a scope criterion id'),
+                           'loc': (), 'input': None})
+        missing = sorted(identifier for key, previous in merge.required_ids.items() if key in records
+                         for identifier in previous - {item.get('id') for item in records[key] if item.get('required', True)}
+                         if not PREFIX.match(identifier))
+        if missing:
+            errors.append({'type': PydanticCustomError('global_obligation_removed', 'required records removed',
+                                                       {'unavailable': missing[:16]}), 'loc': (), 'input': None})
+        if errors:
+            raise ValidationError.from_exception_data('EnvironmentManifestProposal', errors)
+        return data
+
+    return check
+
+
+async def _global_part(attempt: _Attempt, merge: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
     """The global author's part; after a restart, the part it already returned for this exact conversation."""
     budget, discovery = attempt.budget, attempt.discovery
+    validate = _global_rules(merge)
     key = hashlib.sha256(_json(attempt.messages).encode()).hexdigest()
     saved = saved_part(budget, 'global', 'global', key)
     if saved is not None:
         await discovery.bind_verified(saved['inputs'], phase='construction')
         discovery.finding_responses = TypeAdapter(list[FindingResponse]).validate_python(saved['finding_responses'])
-        return validate_global(saved['data'])
+        return validate(saved['data'])
     data, _ = await _phase(inspection=discovery, chat=attempt.chat, budget=budget, messages=attempt.messages,
-                           validate=validate_global)
+                           validate=validate)
     save_part(budget, 'global', 'global', key, data=data, inputs=dict(discovery.inputs),
               finding_responses=[response.model_dump(mode='json') for response in discovery.finding_responses])
     await budget.flush()
