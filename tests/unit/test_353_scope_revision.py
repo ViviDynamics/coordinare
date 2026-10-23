@@ -196,3 +196,32 @@ def test_revision_envelope_is_required_strict_and_rejects_model_ids():
     ):
         with pytest.raises(ValidationError):
             ScopeRevisionEnvelope.model_validate(invalid)
+
+
+def test_only_a_required_criterion_released_as_remote_state_can_leave_the_required_set():
+    from coordinare.services.environment_scope import preserve_scope, released_criteria
+
+    model, merge = revision_api()
+    base = definition({**criterion(), "description": "Branch protection is verifiable through an authorized gh session"})
+    target = base.criteria[0]
+    remote = {**target.model_dump(exclude={"id"}), "applicability": "not_applicable",
+              "rationale": "Branch protection is GitHub repository state, outside the environment."}
+    revision = model.model_validate(delta(base, reassess=[{"criterion_id": target.id, "criterion": remote}]))
+    with pytest.raises(PydanticCustomError):
+        merge(base, revision, inspected_inputs=dict(base.inputs))
+    released = merge(base, revision, inspected_inputs=dict(base.inputs), releasable={target.id})
+    assert released.criteria[0].applicability == "not_applicable"
+    still_required = model.model_validate(delta(base, reassess=[{"criterion_id": target.id, "criterion": {
+        **remote, "applicability": "required"}}]))
+    with pytest.raises(PydanticCustomError):
+        merge(base, still_required, inspected_inputs=dict(base.inputs), releasable={target.id})
+    with pytest.raises(Exception, match="scope_obligation_removed"):
+        preserve_scope(base, released)
+    preserve_scope(base, released, released={target.id})
+    from types import SimpleNamespace
+
+    def record(category, affected):
+        return SimpleNamespace(proposal=SimpleNamespace(category=category, affected_ids=affected))
+
+    ledger = SimpleNamespace(records=[record("remote_state", [target.id]), record("coverage", ["S0000000000000000"])])
+    assert released_criteria(ledger) == {target.id} and released_criteria(None) == set()

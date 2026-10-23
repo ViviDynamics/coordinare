@@ -52,7 +52,7 @@ from coordinare.services.environment_obligations import (
     preserve_obligations,
 )
 from coordinare.services.environment_probes import ProbePlan, ProbeReport, bind_probe_report
-from coordinare.services.environment_scope import preserve_scope
+from coordinare.services.environment_scope import preserve_scope, released_criteria
 from coordinare.services.environment_scope_investigation import validate_investigation_history
 from coordinare.services.environment_scope_reuse import SCOPE_POLICY_VERSION, reusable_scope
 
@@ -231,7 +231,7 @@ def _save_scope_checkpoint(journal: RepairJournal, budget: AttemptBudget) -> Non
     if journal.scope_definition is not None:
         if budget.scope_definition is None:
             _refuse('established scope cannot be removed', code='scope_obligation_removed')
-        preserve_scope(journal.scope_definition, budget.scope_definition)
+        preserve_scope(journal.scope_definition, budget.scope_definition, released=released_criteria(budget.scope_findings))
     if any(budget.scope_inputs.get(path) != digest for path, digest in journal.scope_inputs.items()):
         _refuse('scope read history cannot be replaced', code='scope_source_identity')
     if (budget.scope_investigations[:len(journal.scope_investigations)] != journal.scope_investigations

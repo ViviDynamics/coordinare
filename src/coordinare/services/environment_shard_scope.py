@@ -78,6 +78,7 @@ from coordinare.services.environment_scope import (
     conclude_review,
     discover_scope,
     preserve_scope,
+    released_criteria,
     run_scope,
     uninspected_sources_errors,
 )
@@ -911,7 +912,8 @@ class ShardedScope:
         if errors:
             raise _ResponseReferenceError(errors)
         try:
-            definition = apply_scope_revision(base, revision, inspected_inputs=dict(self.budget.scope_inputs))
+            definition = apply_scope_revision(base, revision, inspected_inputs=dict(self.budget.scope_inputs),
+                                              releasable=released_criteria(self.budget.scope_findings))
         except PydanticCustomError as exc:
             if exc.type == 'scope_revision_target' and (target_errors := _reassessment_target_errors(base, revision)):
                 raise _ResponseReferenceError(target_errors) from None
@@ -992,7 +994,8 @@ class ShardedScope:
 
         results = await run_pool(work, partial(self.revise_group, base=base, investigator=investigator),
                                  budget=budget, split=halves, concurrency=self.concurrency)
-        definition, responses = combine_revisions(base, results, inputs=budget.scope_inputs)
+        definition, responses = combine_revisions(base, results, inputs=budget.scope_inputs,
+                                                  releasable=released_criteria(budget.scope_findings))
         if definition.consolidated:
             # A folded criterion replaced by a revision no longer has a consolidation record.
             live = {criterion.id for criterion in definition.criteria}
@@ -1003,7 +1006,7 @@ class ShardedScope:
             definition = ScopeDefinition.model_validate({**definition.model_dump(mode='json'),
                 'exclusions': [item.model_dump(mode='json') for item in excluded_areas],
                 'unread_unsure': [item.model_dump(mode='json') for item in unsure_areas]})
-        preserve_scope(base, definition)
+        preserve_scope(base, definition, released=released_criteria(budget.scope_findings))
         try:
             budget.scope_responses = _validate_responses(responses, ledger=ledger, inputs=dict(budget.scope_inputs),
                                                          definition=definition)
@@ -1098,7 +1101,7 @@ def apply_consolidation(criteria: Sequence[ScopeCriterionProposal], groups: Sequ
 
 
 def combine_revisions(base: ScopeDefinition, results: Sequence[tuple[ScopeRevision, list[FindingResponse]]], *,
-                      inputs: Mapping[str, str]) -> tuple[ScopeDefinition, list[FindingResponse]]:
+                      inputs: Mapping[str, str], releasable: Collection[str] = ()) -> tuple[ScopeDefinition, list[FindingResponse]]:
     """Apply every group's revision in order. Identical additions collapse; a response naming a criterion another
     group reassessed follows it to its replacement. Genuinely conflicting reassessments hold."""
     definition, responses, replaced = base, [], {}
@@ -1112,7 +1115,8 @@ def combine_revisions(base: ScopeDefinition, results: Sequence[tuple[ScopeRevisi
             _fail('scope_size_limit')  # Obligations are never dropped or folded to fit.
         change = revision.model_copy(update={'base_digest': definition.digest(), 'add': additions, 'reassess': reassess})
         try:
-            definition = apply_scope_revision(definition, change, inspected_inputs=dict(inputs))
+            definition = apply_scope_revision(definition, change, inspected_inputs=dict(inputs),
+                                              releasable=releasable)
         except (PydanticCustomError, ValidationError):
             _fail('scope_revision_conflict')
         replaced.update({item.criterion_id: criterion_id(item.criterion) for item in revision.reassess})
