@@ -62,6 +62,14 @@ def _constant(_value: str) -> None:
     raise ValueError(message)
 
 
+def _index(node: Any, part: Any) -> Any:
+    """A digit string naming an array entry can only mean that index (v27 wrote "17" for 17): a string is otherwise
+    never valid on an array, so reading it as the index changes no correction's meaning."""
+    if isinstance(node, list) and isinstance(part, str) and part.isascii() and part.isdecimal():
+        return int(part)
+    return part
+
+
 def _replace(target: dict[str, Any], change: Any, roots: set[str]) -> None:
     if not isinstance(change, dict) or set(change) not in ({'path', 'value_json'}, {'path', 'value'}):
         message = 'invalid correction record'
@@ -72,7 +80,8 @@ def _replace(target: dict[str, Any], change: Any, roots: set[str]) -> None:
         message = 'invalid correction path'
         raise ValueError(message)
     node: Any = target
-    for part in path[:-1]:
+    for raw in path[:-1]:
+        part = _index(node, raw)
         if isinstance(node, list):
             if type(part) is not int or not 0 <= part < len(node):
                 message = 'invalid correction index'
@@ -81,7 +90,7 @@ def _replace(target: dict[str, Any], change: Any, roots: set[str]) -> None:
             message = 'invalid correction parent'
             raise TypeError(message)
         node = node[part]
-    key = path[-1]
+    key = _index(node, path[-1])
     if isinstance(node, list):
         if type(key) is not int or not 0 <= key < len(node):
             message = 'invalid correction index'

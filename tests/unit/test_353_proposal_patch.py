@@ -430,3 +430,24 @@ async def test_the_prompt_only_transport_describes_plain_values_to_the_model(mon
     await backend.chat_json_with_metadata([{"role": "user", "content": "x"}],
                                           response_schema=response_schema("manifest", allow_patch=True))
     assert '"value": {"description"' in sent[0]
+
+
+def test_a_digit_string_index_on_an_array_means_that_entry_and_nowhere_else():
+    """v27: the author wrote "17" for checks[17]; both its value and value_json corrections were rejected."""
+    from coordinare.services.environment_proposal_patch import apply_patch
+
+    base = {"manifest": {"checks": [{"id": "a", "depends_on": ["x"]}], "env": {"0": "kept"}}}
+    request = {"tool": "repair_proposal", "changes": [{"path": ["manifest", "checks", "0", "depends_on"], "value": []},
+                                                      {"path": ["manifest", "env", "0"], "value": "set"}]}
+    patched = apply_patch(base, request, max_bytes=4096)
+    assert patched["manifest"]["checks"][0]["depends_on"] == []
+    assert patched["manifest"]["env"] == {"0": "set"}
+    with pytest.raises(EnvironmentDiscoveryError):
+        apply_patch(base, {"tool": "repair_proposal", "changes": [{"path": ["manifest", "checks", "-1"], "value": {}}]},
+                    max_bytes=4096)
+
+
+def test_a_probe_without_its_fixed_schema_version_is_still_a_version_1_probe():
+    from coordinare.services.environment_probes import ProbeRequest
+
+    assert ProbeRequest.model_fields["schema_version"].default == 1

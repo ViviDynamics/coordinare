@@ -33,7 +33,8 @@ class ProbeBase(BaseModel):
 
 
 class ProbeRequest(ProbeBase):
-    schema_version: Literal[1]
+    # A fixed constant: an omitted one is not worth a correction (v27 spent a schema repair on it).
+    schema_version: Literal[1] = 1
     execution_context: Literal['outer', 'private_service'] = Field(default='outer',
         description='Use outer tools by default; private_service explicitly requests the configured platform-only runtime, never an installed project cache.')
     commands: list[ProbeCommand] = Field(min_length=1, max_length=16)
