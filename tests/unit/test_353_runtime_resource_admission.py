@@ -25,8 +25,8 @@ def test_admission_refuses_unmeasured_or_different_kernel_controls(tmp_path, mon
     spec = spec.model_copy(update={'policy': spec.policy.model_copy(update={'identity': identity})})
     if fault == 'config':
         bundle.write_text(contents.model_copy(update={'guest_image': '/changed'}).model_dump_json())
-    monkeypatch.setattr(supervisor, 'BUNDLE_PATH', bundle)
-    monkeypatch.setattr(supervisor, 'inspect_bundle', lambda **kwargs: spec.policy.identity.model_dump(
+    monkeypatch.setattr(supervisor, 'bundle_path', lambda guest_platform: bundle)
+    monkeypatch.setattr(supervisor, 'inspect_bundle', lambda metadata, **kwargs: spec.policy.identity.model_dump(
         exclude={'schema_version', 'carrier_image', 'carrier_platform'}))
     monkeypatch.setattr(supervisor.platform, 'system', lambda: 'Linux')
     monkeypatch.setattr(supervisor.platform, 'machine', lambda: 'aarch64')

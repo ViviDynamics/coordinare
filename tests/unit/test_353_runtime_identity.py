@@ -254,12 +254,15 @@ async def test_runtime_resolution_requires_actual_bundle_identity(monkeypatch):
     from coordinare.models.env_cache import EnvCacheState
     from coordinare.services import environment_capabilities as resolver
 
+    # The carrier's own guest is the default for a repository without a platform requirement.
     policy = RuntimePolicy.model_validate(policy_data())
+    native = policy.identity.model_copy(update={'guest_platform': 'linux/aarch64'})
+    policy = policy.model_copy(update={'identity': native})
     actual = policy.identity.model_dump(exclude={'schema_version', 'carrier_image', 'carrier_platform'})
     async def image_identity(image):
         return IMAGE, 'linux/aarch64'
-    async def bundle_identity(image):
-        assert image == IMAGE
+    async def bundle_identity(image, guest_platform):
+        assert image == IMAGE and guest_platform == 'linux/aarch64'
         return actual
     monkeypatch.setattr(resolver, '_docker_identity', image_identity)
     monkeypatch.setattr(resolver, '_inspect_runtime_bundle', bundle_identity)
@@ -308,7 +311,7 @@ async def test_cancelled_bundle_inspection_removes_its_daemon_side_container(mon
     async def spawn(*args, **kwargs):
         return Process('run' if args[1] == 'run' else 'rm' if args[1] == 'rm' else 'inspect')
     monkeypatch.setattr(resolver.asyncio, 'create_subprocess_exec', spawn)
-    task = asyncio.create_task(resolver._inspect_runtime_bundle(IMAGE))
+    task = asyncio.create_task(resolver._inspect_runtime_bundle(IMAGE, 'linux/aarch64'))
     await started.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

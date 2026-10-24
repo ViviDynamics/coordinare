@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from .runtime import RuntimeArtifactReceipt, RuntimeIdentity, RuntimeSpec
-from .runtime_bundle import BUNDLE_PATH, RuntimeBundleInputs, inspect_bundle, read_bundle
+from .runtime_bundle import RuntimeBundleInputs, bundle_path, inspect_bundle, read_bundle
 from .runtime_cleanup import remove_control_material, remove_owned_tree
 from .runtime_guest import cloud_configuration, host_kvm_usable, qemu_arguments
 from .runtime_io import RuntimeIOStoppedError as RuntimeScanStoppedError
@@ -284,11 +284,12 @@ def _admit(spec: RuntimeSpec, *, repo: Path, cache: Path, scratch: Path, readonl
     if actual != spec.policy.identity.carrier_platform or platform.system() != 'Linux':
         raise ValueError('private runtime carrier platform differs')
     require_runtime_resources(spec.policy.resources)
-    observed = inspect_bundle(deadline=deadline, stop=stop)
+    metadata = bundle_path(spec.policy.identity.guest_platform)
+    observed = inspect_bundle(metadata, deadline=deadline, stop=stop)
     expected = spec.policy.identity.model_dump(exclude={'schema_version', 'carrier_image', 'carrier_platform'})
     if observed != expected:
         raise ValueError('private runtime bundle identity differs')
-    bundle = read_bundle(BUNDLE_PATH, deadline=deadline, stop=stop)
+    bundle = read_bundle(metadata, deadline=deadline, stop=stop)
     if bundle.digest() != spec.policy.identity.configuration_sha256:
         raise ValueError('private runtime bundle configuration differs')
     roots = [repo.resolve(strict=True), cache.resolve(strict=True), scratch.resolve(strict=True)]
