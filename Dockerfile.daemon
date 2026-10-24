@@ -54,6 +54,15 @@ COPY packages ./packages
 # install fails with "Forced include not found" unless they are here first.
 COPY config.example*.yaml config.minimal.yaml ./
 
+# 358: the release version, passed by main-branch-build.yml. The editable install
+# below reads its version from src/coordinare/_version.py, which the source tree
+# leaves at 0.1.0, so the image stamps it first with the writer the release wheels
+# use. Empty (a local build) keeps the source version.
+ARG COORDINARE_VERSION=
+COPY scripts/release_packages.py /tmp/release_packages.py
+RUN if [ -n "$COORDINARE_VERSION" ]; then python /tmp/release_packages.py --version "$COORDINARE_VERSION" --stamp /app; fi \
+    && rm /tmp/release_packages.py
+
 # Resolve deps into a project-local .venv so runtime uses the lock.
 RUN uv sync --frozen --no-dev \
     # World-readable so the chart can run this as an arbitrary non-root UID.

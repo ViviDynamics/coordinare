@@ -171,5 +171,26 @@ checkAbsent('export failures cannot inject markup', systemHealthEventStoreHtml({
 checkContains('disabled export is visible', systemHealthEventStoreHtml({export_error: 'invalid protocol'}), 'export disabled: invalid protocol');
 checkAbsent('export errors cannot inject markup', systemHealthEventStoreHtml({export_error: hostile}), '<img');
 
+// 358: the event store row reads in human units and leaves no empty slots.
+const liveStore = systemHealthEventStoreHtml({size_bytes: 545460224, rows: 123456, oldest_ts: agoMs(3 * 86400000),
+  dropped: 2, pruned: 40, writer_state: 'idle', export_dropped: 0, export_failed: 0});
+checkContains('the size is in human units', liveStore, 'Event store: 520.2 MB');
+checkAbsent('the raw byte count is not shown', liveStore, '545460224');
+checkContains('the row count is grouped', liveStore, '123,456 rows');
+checkMatches('the oldest event is an age with the exact time on hover', liveStore, /oldest <time title="[^"]+" data-rel-iso="[^"]+">3d ago<\/time>/);
+checkContains('known drop and prune counts are shown', liveStore, '2 dropped, 40 pruned');
+checkContains('the writer state follows', liveStore, 'writer idle');
+const sparseStore = systemHealthEventStoreHtml({size_bytes: 2048, rows: 0, oldest_ts: null, writer_state: 'idle'});
+checkContains('a missing drop count leaves no dangling word', sparseStore, 'oldest none, writer idle');
+checkAbsent('a missing prune count leaves no dangling word', sparseStore, 'pruned');
+checkAbsent('no doubled separators', sparseStore, ', ,');
+checkContains('no oldest event says so', sparseStore, 'oldest none');
+checkContains('a small store is in kilobytes', sparseStore, 'Event store: 2 KB, 0 rows');
+const emptyStore = systemHealthEventStoreHtml({});
+checkAbsent('an empty payload names no size', emptyStore, 'undefined');
+checkAbsent('an empty payload has no leading comma', emptyStore, 'Event store: ,');
+checkContains('a gigabyte store is in gigabytes', systemHealthEventStoreHtml({size_bytes: 5 * 1073741824}), 'Event store: 5.0 GB');
+checkAbsent('a hostile size cannot inject markup', systemHealthEventStoreHtml({size_bytes: hostile, rows: hostile, dropped: hostile}), '<img');
+
 console.log(`SUMMARY ${passed} ${failed}`);
 process.exit(failed === 0 ? 0 : 1);

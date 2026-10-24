@@ -55,7 +55,7 @@ def test_the_history_page_does_not_show_the_dashboards_checks_under_any_symphony
 
     # The Dashboard panel keeps its scope note; the History page shows its own listing instead.
     expect(page.locator("#history-cycles")).to_contain_text(
-        "Recent checks are shown for all symphonies only.", timeout=_WAIT_LIVE,
+        "Recent checks are only available in the all-symphonies view.", timeout=_WAIT_LIVE,
     )
     expect(page.locator("#history-page-section")).not_to_contain_text("Merging")
 
@@ -187,7 +187,7 @@ def test_the_performers_page_labels_busy_counts_as_shared(
 
 
 @pytest.mark.e2e
-def test_the_dependency_note_says_blockers_are_shown_for_all_symphonies(
+def test_the_dependency_note_says_blockers_are_in_the_all_symphonies_view(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     _connected(page, live_server_url + _BETA_URL)
@@ -196,6 +196,6 @@ def test_the_dependency_note_says_blockers_are_shown_for_all_symphonies(
     ]))
 
     expect(page.locator("#dependency-blockers-list")).to_contain_text(
-        "Dependency blockers are shown for all symphonies only.", timeout=_WAIT_LIVE,
+        "Dependency blockers are only available in the all-symphonies view.", timeout=_WAIT_LIVE,
     )
     expect(page.locator("#dependency-blockers-list")).not_to_contain_text("Blocking issue")

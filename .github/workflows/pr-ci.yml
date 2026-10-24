@@ -465,11 +465,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-
+      # No setup-python here: its CPython builds now target the runner's Ubuntu and link OpenSSL 3.3, which this
+      # noble container lacks, so ssl failed to import. uv uses the container's own Python 3.12 (or a standalone
+      # build with OpenSSL bundled), so the interpreter always matches the container's libraries.
       - name: Setup uv
         uses: astral-sh/setup-uv@v7
 

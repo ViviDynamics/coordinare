@@ -811,7 +811,9 @@ jobs:
           REGISTRY=$(cat registry-daemon)
           VERSION=${{ needs.create-tag.outputs.version }}
 
-          docker build -t "${REGISTRY}:${VERSION}" -f Dockerfile.daemon .
+          # 358: stamp the release version into the image, so its header and
+          # metrics report the tag rather than the source tree's 0.1.0.
+          docker build --build-arg "COORDINARE_VERSION=${VERSION}" -t "${REGISTRY}:${VERSION}" -f Dockerfile.daemon .
           docker push "${REGISTRY}:${VERSION}"
           echo "Pushed ${REGISTRY}:${VERSION}"
 
