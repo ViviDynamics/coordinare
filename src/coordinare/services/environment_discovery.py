@@ -1208,6 +1208,12 @@ def _attributed(errors: list[dict[str, Any]], exc: Exception,
 MERGE_CORRECTABLE = frozenset({'executable_merge_collision', 'obligation_removed', 'source_identity', *REPAIR_CORRECTABLE})
 
 
+def review_part_messages(system: str, shared: Mapping[str, Any], own: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Each review part's conversation: the system prompt, then one user message of the material every part shares
+    followed by the part's own. Serialized JSON never holds a raw newline, so the two objects are one line each."""
+    return [{'role': 'system', 'content': system}, {'role': 'user', 'content': _json(shared) + '\n' + _json(own)}]
+
+
 async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifest: EnvironmentManifest,
                           reviewer: _Inspection) -> tuple[dict[str, Any], dict[str, str]]:
     """One fresh reviewer per check group and one for the global part, combined into one assessment."""
@@ -1233,13 +1239,12 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
         index = await inspection.bind_verified({path: digest for path, digest in manifest.inputs.items() if path in cited},
                                                phase='review', cited_by=scope_citations(build.scope))
         mine = [record.model_dump(mode='json') for record in ledger.records if record.id in owned.get(owner, [])]
-        messages = [{'role': 'system', 'content': SOURCE_TOOLS + REVIEW_PART_PREAMBLE + EXECUTABLE_REVIEW_INSTRUCTIONS},
-                    {'role': 'user', 'content': _json({**base, 'manifest_digest': manifest.digest(),
-                        'part': part_manifest_view(manifest, group), 'global_part': summary, 'mandatory_evidence': index,
-                        'probe_evidence': budget.probe_reports, 'assigned_findings': mine,
-                        'required_decision_ids': owned.get(owner, []), 'findings_capacity': capacities[owner],
-                        'finding_responses': [r for r in responses if r.get('finding_id') in owned.get(owner, [])],
-                        'untrusted_execution_history': budget.execution_review_evidence})}]
+        messages = review_part_messages(SOURCE_TOOLS + REVIEW_PART_PREAMBLE + EXECUTABLE_REVIEW_INSTRUCTIONS,
+            {**base, 'manifest_digest': manifest.digest(), 'global_part': summary, 'probe_evidence': budget.probe_reports,
+             'untrusted_execution_history': budget.execution_review_evidence},
+            {'part': part_manifest_view(manifest, group), 'mandatory_evidence': index, 'assigned_findings': mine,
+             'required_decision_ids': owned.get(owner, []), 'findings_capacity': capacities[owner],
+             'finding_responses': [r for r in responses if r.get('finding_id') in owned.get(owner, [])]})
         validate = partial(validate_review_part, inspection=inspection, owned=owned.get(owner, []), capacity=capacities[owner],
                            known=ReviewIds(obligations, [record.id for record in ledger.records]))
         key = hashlib.sha256(_json(messages).encode()).hexdigest()
