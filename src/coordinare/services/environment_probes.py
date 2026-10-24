@@ -150,9 +150,19 @@ def validate_saved_probe_reports(reports: list[dict[str, Any]], source_commit: s
         raise EnvironmentDiscoveryError(message, code="probe_report_invalid")
 
 
+def _names_cache(plan: ProbePlan, cache_path: str) -> bool:
+    """A probe command that reads the cache, by its template or its mount path, sees a relocation."""
+    text = json.dumps(plan.request.model_dump(mode="json")["commands"], sort_keys=True)
+    return "{cache}" in text or (bool(cache_path) and cache_path in text)
+
+
 def select_current_probe_reports(reports: list[dict[str, Any]], source_commit: str,
-                                 capabilities: ExecutionCapabilities, *, allow_cache_relocation: bool = False) -> list[dict[str, Any]]:
-    """Retain history externally, but never deliver old-cache observations as current."""
+                                 capabilities: ExecutionCapabilities, *, allow_cache_relocation: bool = False,
+                                 reuse_unreferenced: bool = False) -> list[dict[str, Any]]:
+    """Retain history externally, but never deliver old-cache observations as current.
+
+    A cache-only relocation keeps an observation when ``reuse_unreferenced`` is set and no probe command names the cache.
+    """
     selected = []
     for data in reports:
         try:
@@ -171,6 +181,8 @@ def select_current_probe_reports(reports: list[dict[str, Any]], source_commit: s
                 != capabilities.model_dump(exclude={'cache_mount_path'})):
             message = 'saved probe runtime differs from current capabilities'
             raise EnvironmentDiscoveryError(message, code='probe_report_invalid')
+        elif reuse_unreferenced and not _names_cache(report.plan, observed.cache_mount_path):
+            selected.append(data)
     return selected
 
 

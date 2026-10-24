@@ -337,7 +337,10 @@ on the model backend.
 Schema corrections, coverage revisions and executable repairs default to two each.
 Their independent configurable ranges are zero to eight, zero to eight and zero to
 two respectively (`manifest_max_schema_repairs`, `manifest_max_coverage_revisions`,
-`manifest_max_execution_repairs`). All categories share the original
+`manifest_max_execution_repairs`). An execution repair defaults to a delta: only the records the failed
+execution implicates are re-authored, as changed and added records, and an unchanged record keeps its standing. If the
+delta cannot be admitted or is not accepted by review, the full repair runs while budget remains. Set
+`manifest_delta_repair: false` to use the full repair for every execution repair. All categories share the original
 aggregate deadline, model-call and source-read limits. A new candidate, new reviewer,
 cache generation or daemon restart never renews them. The old `manifest_max_repairs`
 configuration is a deprecated alias supplying all three limits; combining it with any
