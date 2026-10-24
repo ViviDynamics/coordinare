@@ -154,13 +154,12 @@ def test_changed_ids_names_changed_added_and_removed_records():
 
 # --- triage ---------------------------------------------------------------------------------------------------------
 
-def test_the_v40_gen0_failure_closes_over_every_install_that_depends_on_the_shared_prerequisite():
+def test_the_v40_gen0_failure_triages_to_its_install_and_prerequisite_only():
     manifest, report = load_gen0()
     triage = triage_failure(manifest, report)
 
     assert triage.roots == {"install-helm-gh": "command"}
-    # install-apt-prereqs is the failed command's prerequisite; every install depends on it, so each joins the closure.
-    assert triage.closure_ids == tuple(sorted(item.id for item in load_gen0()[0].install))
+    assert triage.closure_ids == ("install-apt-prereqs", "install-helm-gh")
     assert triage.touched_parts == ("global",)
     assert triage.manifest_digest == manifest.digest()
 
