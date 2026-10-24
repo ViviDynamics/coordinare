@@ -104,6 +104,14 @@ def _replace(target: dict[str, Any], change: Any, roots: set[str]) -> None:
                  else json.loads(change['value_json'], object_pairs_hook=_unique, parse_constant=_constant))
 
 
+def _apply_record(target: dict[str, Any], change: Any, roots: set[str], *, probe: bool) -> None:
+    if probe and (not isinstance(change, dict) or not isinstance(change.get('path'), list)
+                  or change['path'][:2] not in [['probe', 'citations'], ['probe', 'questions']]):
+        message = 'probe corrections may change evidence only'
+        raise ValueError(message)
+    _replace(target, change, roots)
+
+
 def _apply(base: dict[str, Any] | None, request: dict[str, Any], max_bytes: int) -> dict[str, Any]:
     if base is None:
         message = 'no unambiguous proposal to correct'
@@ -115,21 +123,40 @@ def _apply(base: dict[str, Any] | None, request: dict[str, Any], max_bytes: int)
         raise ValueError(message)
     target = copy.deepcopy(base)
     roots = {'probe'} if 'probe' in base else ({'manifest', 'finding_responses'} if 'manifest' in base else {'assessment'})
-    for change in changes:
-        if 'probe' in base and (not isinstance(change, dict) or not isinstance(change.get('path'), list)
-                or change['path'][:2] not in [['probe', 'citations'], ['probe', 'questions']]):
-            message = 'probe corrections may change evidence only'
-            raise ValueError(message)
-        _replace(target, change, roots)
+    for index, change in enumerate(changes):
+        try:
+            _apply_record(target, change, roots, probe='probe' in base)
+        except (KeyError, IndexError, TypeError, ValueError, RecursionError) as exc:
+            raise _RecordError(index, exc) from exc
     if len(json.dumps(target, ensure_ascii=False, allow_nan=False).encode()) > max_bytes:
         message = 'corrected declaration exceeds bound'
         raise ValueError(message)
     return target
 
 
+class _RecordError(Exception):
+    """Which correction record failed; ``reason`` is one of this module's own messages, never the model's text."""
+
+    def __init__(self, index: int, cause: Exception) -> None:
+        super().__init__(index)
+        self.index = index
+        own = str(cause) if isinstance(cause, (ValueError, TypeError)) and str(cause) in OWN_REASONS else None
+        self.reason = own or ('replacement value is not one complete JSON value' if isinstance(cause, ValueError)
+                              else 'path does not name an existing field or entry')
+
+
+# v34's author was told only that a correction failed, and sent another that failed the same way.
+OWN_REASONS = frozenset({'invalid correction record', 'invalid correction path', 'invalid correction index',
+                         'invalid correction parent', 'invalid correction key', 'probe corrections may change evidence only',
+                         'duplicate replacement JSON key', 'nonfinite replacement JSON value'})
+
+
 def apply_patch(base: dict[str, Any] | None, request: dict[str, Any], *, max_bytes: int) -> dict[str, Any]:
     try:
         result = _apply(base, request, max_bytes)
+    except _RecordError as exc:
+        message = f'proposal correction record {exc.index} is invalid: {exc.reason}'
+        raise EnvironmentDiscoveryError(message, code='invalid_proposal_patch') from None
     except (KeyError, IndexError, TypeError, ValueError, RecursionError):
         message = 'proposal correction is invalid or exceeds its bound'
         raise EnvironmentDiscoveryError(message, code='invalid_proposal_patch') from None

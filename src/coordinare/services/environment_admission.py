@@ -266,7 +266,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
         if code == "runtime_credential_reference":
             detail["guidance"] = CREDENTIAL_GUIDANCE
         if code in LOCAL_CREDENTIAL_GUIDANCE:
-            detail["guidance"] = LOCAL_CREDENTIAL_GUIDANCE[code]
+            detail.update(_graph_ids(error), guidance=LOCAL_CREDENTIAL_GUIDANCE[code])
         if code in GRAPH_GUIDANCE:
             detail.update(_graph_ids(error), guidance=GRAPH_GUIDANCE[code])
         if (code == "extra_forbidden" and location[1:2] == ["finding_responses"] and location[0] != "*") or (

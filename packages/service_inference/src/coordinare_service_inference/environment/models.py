@@ -334,17 +334,22 @@ class EnvironmentManifest(StrictModel):
     def _validate_local_credentials(self, commands: list[Command]) -> None:
         names = [credential.name for credential in self.local_credentials]
         service_ids = {service.id for service in self.services}
-        if len(names) != len(set(names)) or any(c.service not in service_ids for c in self.local_credentials):
-            raise PydanticCustomError("local_credential_invalid",
-                                      "local credentials need unique names and a service this manifest starts")
+        # Each rule names the credentials and the command it rejects (v34's author, told neither, repeated both).
+        invalid = {name for name, count in Counter(names).items() if count > 1}
+        invalid |= {c.name for c in self.local_credentials if c.service not in service_ids}
+        if invalid:
+            raise _graph_error("local_credential_invalid",
+                               "local credentials need unique names and a service this manifest starts", "", invalid)
         if not names:
             return
         # Activation also applies to install commands, so it cannot carry generated credentials either.
-        installed = {name for command in self.install for name in _references(command)}
-        installed |= {name for text in self.activation.env.values() for name in _CREDENTIAL_REFERENCE.findall(text)}
-        if set(names) & installed:
-            raise PydanticCustomError("local_credential_in_install",
-                                      "install commands and activation cannot use generated credentials")
+        for command in self.install:
+            if leaked := set(names) & _references(command):
+                raise _graph_error("local_credential_in_install",
+                                   "install commands and activation cannot use generated credentials", command.id, leaked)
+        if leaked := set(names) & {name for text in self.activation.env.values() for name in _CREDENTIAL_REFERENCE.findall(text)}:
+            raise _graph_error("local_credential_in_install",
+                               "install commands and activation cannot use generated credentials", "activation", leaked)
         consumers = commands[len(self.install):]
         used = {name for command in consumers for name in _references(command)}
         # Data that stores a per-run value lives in {scratch}; {cache} reaches tools only through activation PATH.
@@ -354,11 +359,11 @@ class EnvironmentManifest(StrictModel):
             texts = [*command.argv, command.cwd, *(value for key, value in command.env.items() if key != "PATH")]
             via_activation = any(re.search(r"\$(?:\{" + re.escape(key) + r"\}|" + re.escape(key) + r"(?![A-Za-z0-9_]))", text)
                                  for key in cached for text in texts)
-            if set(names) & _references(command) and (via_activation or any("{cache}" in text for text in texts)):
-                raise PydanticCustomError("local_credential_cache_data",
-                                          "commands using generated credentials cannot reference {cache}")
-        if set(names) - used:
-            raise PydanticCustomError("local_credential_unused", "every local credential must be referenced as ${NAME}")
+            if (referenced := set(names) & _references(command)) and (via_activation or any("{cache}" in text for text in texts)):
+                raise _graph_error("local_credential_cache_data",
+                                   "commands using generated credentials cannot reference {cache}", command.id, referenced)
+        if unused := set(names) - used:
+            raise _graph_error("local_credential_unused", "every local credential must be referenced as ${NAME}", "", unused)
 
     def digest(self) -> str:
         return hashlib.sha256(self.canonical_json().encode()).hexdigest()

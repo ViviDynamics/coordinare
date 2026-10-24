@@ -367,6 +367,9 @@ def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
                                   'the expected envelope instead of another correction.')
             can_patch = False
         if exc.code == 'invalid_proposal_patch':
+            # The failing record and the daemon's own reason, when one record is at fault.
+            if (found := re.fullmatch(r'proposal correction record (\d+) is invalid: (.+)', str(exc))) is not None:
+                error.update(record=int(found[1]), reason=found[2])
             error.update(max_changes=MAX_CHANGES, max_path_depth=MAX_PATH_DEPTH,
                 guidance=(f'Use 1 to {MAX_CHANGES} correction records, existing parent paths of depth at most {MAX_PATH_DEPTH}, '
                     'and unique valid JSON replacement values. A complete base declaration is required. '
