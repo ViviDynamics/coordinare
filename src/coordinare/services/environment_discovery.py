@@ -6,6 +6,7 @@ The model receives read-only JSON tools; it never executes commands here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import hashlib
 import json
@@ -57,6 +58,7 @@ from coordinare.services.environment_delta import (
     DeltaPlan,
     changed_ids,
     dependency_digest,
+    proposal_of,
     standing_view,
 )
 from coordinare.services.environment_delta_schema import ManifestDelta, apply_delta
@@ -1185,16 +1187,10 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
     redo: list[CheckGroup] = []
     for _ in range(MERGE_ROUNDS):
         if global_data is None:
-            global_data = await _global_part(attempt, validate, None if plan is None else plan.base_global(build.groups))
-            build.global_part = global_data
-            if plan is None:
-                parts = await build.author_all(summary=global_summary(global_data), probes=budget.probe_reports)
-            else:
-                # A delta repair authors only the touched groups; every other group carries its failed part.
-                touched = [group for group in build.groups if plan.group_touched(group)]
-                authored = (await build.author_all(summary=global_summary(global_data), probes=budget.probe_reports, groups=touched)
-                            if touched else {})
-                parts = {**_carried_parts(plan, build.groups), **authored}
+            # A delta repair authors only the touched groups; every other group carries its failed part.
+            groups = build.groups if plan is None else [group for group in build.groups if plan.group_touched(group)]
+            global_data, authored = await _global_and_groups(build, attempt, validate, _speculative_base(build, attempt), groups)
+            parts = authored if plan is None else {**_carried_parts(plan, build.groups), **authored}
         else:
             # A redone group replaces every part authored under it, including earlier split remainders.
             parts = {prefix: entry for prefix, entry in parts.items() if not any(owns(group.prefix, prefix) for group in redo)}
@@ -1236,6 +1232,59 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
         return merged
     message = 'divided executable proposal could not be merged'
     raise EnvironmentDiscoveryError(message, code='executable_merge_invalid')
+
+
+def _speculative_base(build: DividedConstruction, attempt: _Attempt) -> dict[str, Any] | None:
+    """The global part the check groups may start from before the global author returns: the failed part of a
+    repair, the part the last round admitted, or the prior manifest's global declaration. None on a first generation."""
+    if attempt.delta is not None:
+        return attempt.delta.base_global(build.groups)
+    if build.global_part is not None:
+        return build.global_part
+    if not attempt.prior_manifests:
+        return None
+    data = proposal_of(attempt.prior_manifests[-1])
+    data['checks'] = [check for check in data['checks'] if not any(owns(group.prefix, check['id']) for group in build.groups)]
+    data['criterion_checks'] = {}
+    return data
+
+
+async def _global_and_groups(build: DividedConstruction, attempt: _Attempt, validate: Callable[[dict[str, Any]], Any],
+                             base: dict[str, Any] | None, groups: Sequence[CheckGroup],
+                             ) -> tuple[dict[str, Any], dict[str, tuple[CheckGroup, ShardChecks]]]:
+    """The global part and the given groups' parts, with the groups started while the global author still runs.
+
+    A group started from the base part keeps its part when the same group admission accepts it under the new global
+    summary, which is what it would have met after the global author. Only the groups it rejects are authored again, from
+    the new summary; the merge and every admission rule run as before. The global and the groups together stay within the
+    configured concurrency.
+    """
+    budget, plan = attempt.budget, attempt.delta
+    delta_base = None if plan is None else plan.base_global(build.groups)
+    if base is None or not groups or build.concurrency <= 1:
+        global_data = await _global_part(attempt, validate, delta_base)
+        build.global_part = global_data
+        if not groups:
+            return global_data, {}
+        return global_data, await build.author_all(summary=global_summary(global_data), probes=budget.probe_reports, groups=groups)
+    racing = asyncio.ensure_future(build.author_all(summary=global_summary(base), probes=budget.probe_reports, groups=groups,
+                                                    concurrency=build.concurrency - 1))
+    try:
+        global_data = await _global_part(attempt, validate, delta_base)
+    except BaseException:
+        racing.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await racing
+        raise
+    build.global_part = global_data
+    summary = global_summary(global_data)
+    authored = await racing
+    stale = [group for group, part in authored.values() if not build.admits(group, part, summary=summary)]
+    if not stale:
+        return global_data, authored
+    stale_prefixes = {group.prefix for group in stale}
+    kept = {prefix: entry for prefix, entry in authored.items() if prefix not in stale_prefixes}
+    return global_data, {**kept, **await build.author_all(summary=summary, probes=budget.probe_reports, groups=stale)}
 
 
 GLOBAL_RECORDS = ('requirements', 'checks', 'install', 'services')
