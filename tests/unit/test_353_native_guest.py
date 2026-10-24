@@ -112,8 +112,7 @@ def test_a_guest_without_a_foreign_interpreter_registers_nothing():
     assert 'binfmt_misc/register' not in _script(None)
 
 
-def test_dockerfile_selects_the_native_guest_and_the_pinned_alpine_images():
+def test_dockerfile_pins_both_alpine_images_by_sha512():
     text = DOCKERFILE.read_text()
-    assert 'qemu-efi-aarch64' in text and 'qemu-system-x86' in text and 'qemu-user-static' in text
-    assert 'uname -m' in text and 'ARG PLATFORM_GUEST_SHA512_AARCH64' in text
+    assert 'ARG PLATFORM_GUEST_SHA512_AARCH64' in text and 'ARG PLATFORM_GUEST_SHA512_X86_64' in text
     assert 'd13783e02020662cdd8e88359654881a178948a851207baa94dd57b3c69dd1fd6f1a3dacec2165ec557ff2eb7451caaf0f15f5efca561abe24473b26169c4c41' in text

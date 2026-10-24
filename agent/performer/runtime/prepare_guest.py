@@ -65,6 +65,7 @@ def platform_script(arch: str, foreign: str) -> str:
 def build_guest(url: str, expected: str, root: Path, arch: str) -> None:
     profile = GUESTS[arch]
     foreign = FOREIGN[arch]
+    root.mkdir(parents=True, exist_ok=True)
     target = root/'platform.qcow2'
     if target.exists():
         raise ValueError('platform guest output must be fresh')
@@ -132,7 +133,7 @@ def main() -> None:
     parser.add_argument('--url', required=True)
     parser.add_argument('--sha512', required=True)
     parser.add_argument('--arch', required=True, choices=sorted(GUESTS))
-    parser.add_argument('--root', type=Path, default=Path('/opt/coordinare-runtime'))
+    parser.add_argument('--root', type=Path, required=True, help='per-guest directory, e.g. /opt/coordinare-runtime/aarch64')
     args = parser.parse_args()
     build_guest(args.url, args.sha512, args.root, args.arch)
 

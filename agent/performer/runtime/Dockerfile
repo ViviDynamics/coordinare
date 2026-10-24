@@ -1,16 +1,11 @@
 # Optional platform image. BASE_IMAGE must be explicitly pinned by the operator.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
-# The platform guest matches this carrier's CPU, so it runs without emulation. The other CPU is reached through a static
-# user-mode interpreter (qemu-user-static) that the guest keeps, not through a second full-system guest.
-RUN set -eu; \
-    case "$(uname -m)" in \
-      x86_64) guest='qemu-system-x86' ;; \
-      aarch64) guest='qemu-system-arm qemu-efi-aarch64' ;; \
-      *) echo 'unsupported carrier architecture' >&2; exit 1 ;; \
-    esac; \
-    apt-get update && apt-get install -y --no-install-recommends \
-    openssh-client qemu-utils genisoimage qemu-user-static $guest \
+# Both platform guests are prepared here, each with its own pinned image and bundle, so a repository's guest choice
+# never needs a network or a rebuild. Each guest runs on its own CPU when the carrier matches; the other CPU is reached
+# through a static user-mode interpreter (qemu-user-static) that every guest keeps.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssh-client qemu-utils genisoimage qemu-user-static qemu-system-x86 qemu-system-arm qemu-efi-aarch64 \
     docker-cli docker-compose docker-buildx \
     && rm -rf /var/lib/apt/lists/*
 COPY agent/performer/runtime/prepare_guest.py /opt/coordinare-runtime/prepare_guest.py
@@ -20,14 +15,12 @@ ARG PLATFORM_GUEST_SHA512_X86_64=2853e42ba2696ee0e23bcdae6a640b8f84f9ce51de4cf4c
 ARG PLATFORM_GUEST_URL_AARCH64=https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/alpine-3.23.6-aarch64-uefi-cloudinit-r1.qcow2
 ARG PLATFORM_GUEST_SHA512_AARCH64=d13783e02020662cdd8e88359654881a178948a851207baa94dd57b3c69dd1fd6f1a3dacec2165ec557ff2eb7451caaf0f15f5efca561abe24473b26169c4c41
 # Preparation sees no consumer source and pulls no project/container images.
-RUN set -eu; \
-    case "$(uname -m)" in \
-      x86_64) url="$PLATFORM_GUEST_URL_X86_64"; sha="$PLATFORM_GUEST_SHA512_X86_64" ;; \
-      aarch64) url="$PLATFORM_GUEST_URL_AARCH64"; sha="$PLATFORM_GUEST_SHA512_AARCH64" ;; \
-      *) echo 'unsupported carrier architecture' >&2; exit 1 ;; \
-    esac; \
-    setpriv --bounding-set=-all --no-new-privs python /opt/coordinare-runtime/prepare_guest.py \
-    --arch "$(uname -m)" --url "$url" --sha512 "$sha"
+RUN setpriv --bounding-set=-all --no-new-privs python /opt/coordinare-runtime/prepare_guest.py \
+    --arch x86_64 --url "$PLATFORM_GUEST_URL_X86_64" --sha512 "$PLATFORM_GUEST_SHA512_X86_64" \
+    --root /opt/coordinare-runtime/x86_64
+RUN setpriv --bounding-set=-all --no-new-privs python /opt/coordinare-runtime/prepare_guest.py \
+    --arch aarch64 --url "$PLATFORM_GUEST_URL_AARCH64" --sha512 "$PLATFORM_GUEST_SHA512_AARCH64" \
+    --root /opt/coordinare-runtime/aarch64
 # Keep platform preparation cached when trusted application code changes.
 COPY packages/service_inference/ /opt/coordinare-service-inference/
 RUN pip install --no-cache-dir --no-deps /opt/coordinare-service-inference
