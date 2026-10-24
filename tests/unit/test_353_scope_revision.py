@@ -196,3 +196,58 @@ def test_revision_envelope_is_required_strict_and_rejects_model_ids():
     ):
         with pytest.raises(ValidationError):
             ScopeRevisionEnvelope.model_validate(invalid)
+
+
+def test_only_a_required_criterion_released_as_remote_state_can_leave_the_required_set():
+    from coordinare.services.environment_scope import preserve_scope, released_criteria
+
+    model, merge = revision_api()
+    base = definition({**criterion(), "description": "Branch protection is verifiable through an authorized gh session"})
+    target = base.criteria[0]
+    remote = {**target.model_dump(exclude={"id"}), "applicability": "not_applicable",
+              "rationale": "Branch protection is GitHub repository state, outside the environment."}
+    revision = model.model_validate(delta(base, reassess=[{"criterion_id": target.id, "criterion": remote}]))
+    with pytest.raises(PydanticCustomError):
+        merge(base, revision, inspected_inputs=dict(base.inputs))
+    released = merge(base, revision, inspected_inputs=dict(base.inputs), releasable={target.id})
+    assert released.criteria[0].applicability == "not_applicable"
+    still_required = model.model_validate(delta(base, reassess=[{"criterion_id": target.id, "criterion": {
+        **remote, "applicability": "required"}}]))
+    with pytest.raises(PydanticCustomError):
+        merge(base, still_required, inspected_inputs=dict(base.inputs), releasable={target.id})
+    with pytest.raises(Exception, match="scope_obligation_removed"):
+        preserve_scope(base, released)
+    preserve_scope(base, released, released={target.id})
+    from types import SimpleNamespace
+
+    def record(category, affected):
+        return SimpleNamespace(proposal=SimpleNamespace(category=category, affected_ids=affected))
+
+    ledger = SimpleNamespace(records=[record("remote_state", [target.id]), record("coverage", ["S0000000000000000"])])
+    assert released_criteria(ledger) == {target.id} and released_criteria(None) == set()
+
+
+def test_a_criterion_needing_the_network_on_every_run_is_released_like_remote_state():
+    """Maintainer decision 2026-10-24: Dettmore's dev compose stack runs apt-get on every start; v38's reviewers kept
+    finding residual network fetches in offline workarounds for it."""
+    from types import SimpleNamespace
+
+    from coordinare_service_inference.environment.findings import FindingProposal
+
+    from coordinare.services.environment_scope import (
+        GRANULARITY_GUIDANCE,
+        REVIEW_INSTRUCTIONS,
+        RUNTIME_NETWORK_RULE,
+        released_criteria,
+    )
+
+    def record(category, affected):
+        return SimpleNamespace(proposal=SimpleNamespace(category=category, affected_ids=affected))
+
+    ledger = SimpleNamespace(records=[record("runtime_network", ["S0000000000000001"]),
+                                      record("remote_state", ["S0000000000000002"]),
+                                      record("execution_definition", ["S0000000000000003"])])
+    assert released_criteria(ledger) == {"S0000000000000001", "S0000000000000002"}
+    assert RUNTIME_NETWORK_RULE in REVIEW_INSTRUCTIONS and RUNTIME_NETWORK_RULE in GRANULARITY_GUIDANCE
+    assert "installing the tools it uses" in RUNTIME_NETWORK_RULE
+    assert "runtime_network" in FindingProposal.model_json_schema()["properties"]["category"]["enum"]

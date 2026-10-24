@@ -330,3 +330,14 @@ def test_repaired_cache_cannot_retire_probe_evidence_for_other_runtime_changes()
         'install_network': 'disabled' if previous.capabilities.install_network == 'enabled' else 'enabled'})
     with pytest.raises(EnvironmentDiscoveryError):
         select_current_probe_reports([report_data(previous)], COMMIT, changed, allow_cache_relocation=True)
+
+
+def test_an_execution_repair_relocates_the_cache_even_when_nothing_was_executed():
+    """v36: an installer that failed its template preflight left no executed manifest, and the repair then held."""
+    from types import SimpleNamespace
+
+    from coordinare.services.environment_discovery import _execution_repair
+
+    assert _execution_repair(SimpleNamespace(previous_manifest=object(), execution_feedback={'results': []}))
+    assert not _execution_repair(SimpleNamespace(previous_manifest=None, execution_feedback=None))
+    assert not _execution_repair(SimpleNamespace(previous_manifest=object(), execution_feedback=None))

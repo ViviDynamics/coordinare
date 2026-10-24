@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Literal
 from .runtime import RuntimeArtifactReceipt, RuntimeIdentity, RuntimeSpec
 from .runtime_bundle import BUNDLE_PATH, RuntimeBundleInputs, inspect_bundle, read_bundle
 from .runtime_cleanup import remove_control_material, remove_owned_tree
-from .runtime_guest import cloud_configuration, qemu_arguments
+from .runtime_guest import cloud_configuration, host_kvm_usable, qemu_arguments
 from .runtime_io import RuntimeIOStoppedError as RuntimeScanStoppedError
 from .runtime_io import digest_file as _digest
 from .runtime_io import run_io, settle
@@ -107,6 +107,9 @@ async def _command(argv: list[str], *, deadline: float, check: bool = True) -> t
             await process.wait()
 
 
+CLEANUP_SECONDS = 60
+
+
 @dataclass(frozen=True)
 class RuntimeCleanupReport:
     qemu_reaped: bool
@@ -119,6 +122,21 @@ class RuntimeCleanupReport:
     @property
     def confirmed(self) -> bool:
         return all((self.qemu_reaped, self.keys_absent, self.listeners_absent, self.artifacts_unchanged))
+
+
+CONSOLE_TAIL_BYTES = 600
+
+
+def console_tail(path: Path) -> str:
+    """The last bytes of the guest console, printable characters only, lines folded; empty when absent."""
+    try:
+        with path.open('rb') as console:
+            console.seek(max(0, path.stat().st_size - CONSOLE_TAIL_BYTES))
+            raw = console.read(CONSOLE_TAIL_BYTES).decode(errors='replace')
+    except OSError:
+        return ''
+    printable = ''.join(character if character.isprintable() or character == '\n' else ' ' for character in raw)
+    return ' | '.join(line.strip() for line in printable.splitlines() if line.strip())[-CONSOLE_TAIL_BYTES:]
 
 
 @dataclass
@@ -164,7 +182,11 @@ class RuntimeLease:
             raise RuntimeError('private runtime scratch ceiling exhausted')
         _scan_active(deadline, stop)
         if self.process is not None and self.process.returncode is not None and not self.clean_shutdown:
-            raise RuntimeError('private runtime guest exited unexpectedly')
+            # The console tail is where an out-of-memory kill or a full disk shows; the work root, and the console
+            # with it, is removed at cleanup, so v30's guest exit left no cause. The caller redacts before keeping it.
+            message = (f'private runtime guest exited unexpectedly (exit {self.process.returncode}); '
+                       f'console tail: {console_tail(self.work_root / "serial.log")}')
+            raise RuntimeError(message)
 
     async def stop_guest(self, *, deadline: float) -> None:
         if self.clean_shutdown:
@@ -196,7 +218,8 @@ class RuntimeLease:
             return False
 
     async def _close_owned(self, *, deadline: float) -> RuntimeCleanupReport:
-        cleanup_deadline = min(deadline, self.deadline, time.monotonic()+15)
+        # A clean guest shutdown (sync, fstrim, poweroff) can take tens of seconds on a loaded or emulated host.
+        cleanup_deadline = min(deadline, self.deadline, time.monotonic()+CLEANUP_SECONDS)
         respected = False
         try:
             with contextlib.suppress(OSError, RuntimeError, ValueError):
@@ -310,7 +333,8 @@ async def _prepare_control(lease: RuntimeLease, *, repo: Path) -> list[str]:
     await _command(['genisoimage', '-quiet', '-output', str(work/'seed.iso'), '-volid', 'cidata', '-joliet', '-rock',
                     str(work/'user-data'), str(work/'meta-data')], deadline=lease.deadline)
     return qemu_arguments(lease.spec, lease.bundle, disk=work/'working.qcow2', seed=work/'seed.iso',
-                          repo=repo, cache=lease.cache, scratch=lease.scratch, control=guest_control, install=lease.install)
+                          repo=repo, cache=lease.cache, scratch=lease.scratch, control=guest_control, install=lease.install,
+                          carrier_platform=lease.spec.policy.identity.carrier_platform, kvm_usable=host_kvm_usable())
 
 
 async def open_runtime(spec: RuntimeSpec, *, artifacts: RuntimeArtifactReceipt | None,

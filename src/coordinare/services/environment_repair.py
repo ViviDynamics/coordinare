@@ -19,6 +19,7 @@ from coordinare_service_inference.environment.findings import (
 from coordinare_service_inference.environment.models import (
     EnvironmentManifest,
     ExecutionCapabilities,
+    VerificationReport,
 )
 from coordinare_service_inference.environment.scope import (
     ScopeContract,
@@ -41,6 +42,7 @@ from coordinare.services.environment_acceptance import (
 )
 from coordinare.services.environment_attempt import (
     MAX_ATTEMPT_SECONDS,
+    MAX_SHARDED_ATTEMPT_SECONDS,
     REPAIR_LIMITS,
     AttemptBudget,
     EnvironmentDiscoveryError,
@@ -51,8 +53,10 @@ from coordinare.services.environment_obligations import (
     preserve_obligations,
 )
 from coordinare.services.environment_probes import ProbePlan, ProbeReport, bind_probe_report
-from coordinare.services.environment_scope import preserve_scope
+from coordinare.services.environment_repair_triage import RepairTriage, triage_failure
+from coordinare.services.environment_scope import preserve_scope, released_criteria
 from coordinare.services.environment_scope_investigation import validate_investigation_history
+from coordinare.services.environment_scope_reuse import SCOPE_POLICY_VERSION, reusable_scope
 
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import CheckResult
@@ -88,6 +92,14 @@ class RepairJournal(BaseModel):
     scope_contract: ScopeContract | None = None
     scope_findings: FindingLedger | None = None
     scope_assessment: SourceAssessmentRecord | None = None
+    # Sharded discovery progress; validated against the recomputed shard plan when resumed.
+    scope_shards: dict[str, Any] | None = None
+    # Divided executable progress; a part is reused only when its author's complete input digest matches.
+    executable_parts: dict[str, Any] | None = None
+    # An archived attempt's accepted scope offered for a fresh review, and the record once adopted.
+    scope_reuse: dict[str, Any] | None = None
+    scope_reused_from: dict[str, Any] | None = None
+    scope_policy_version: str = SCOPE_POLICY_VERSION
     finding_ledger: FindingLedger | None = None
     coverage_manifest: EnvironmentManifest | None = None
     source_owner: str | None = None
@@ -117,12 +129,43 @@ class RepairJournal(BaseModel):
     status: Literal['discovering', 'executing', 'repair_pending', 'held', 'ready'] = 'discovering'
     target: ExecutionCapabilities | None = None
     rejected: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
+    # The pending repair's failure triage, stored before any author call; absent in journals written earlier.
+    repair_triage: dict[str, Any] | None = None
+    # A delta repair fell back to the full repair; an old journal has none, so it keeps the delta default.
+    delta_fallback: bool = False
+    # Triage was impossible (no failed result): the full repair runs for this generation.
+    repair_triage_unavailable: bool = False
     last_error: str | None = None
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
 def _refuse(message: str, *, code: str = 'execution_repair_held') -> NoReturn:
     raise EnvironmentDiscoveryError(message, code=code)
+
+
+def _triage_or_none(entry: dict[str, Any]) -> RepairTriage | None:
+    """The daemon's triage of one rejected execution; None when it has no failed result, so the full repair runs instead."""
+    manifest = EnvironmentManifest.model_validate(entry['manifest'])
+    data = dict(entry['report'])
+    data.pop('passed', None)
+    try:
+        return triage_failure(manifest, VerificationReport.model_validate(data))
+    except ValueError:
+        return None
+
+
+def repair_triage_for(journal: RepairJournal) -> RepairTriage | None:
+    """The pending repair's stored triage, derived from the rejected execution when the journal predates storing it."""
+    if journal.repair_triage_unavailable:
+        return None
+    if journal.repair_triage is not None:
+        try:
+            return RepairTriage.model_validate(journal.repair_triage)
+        except ValidationError:
+            _refuse('environment repair triage is invalid')
+    if not journal.generation or not journal.rejected:
+        return None
+    return _triage_or_none(journal.rejected[-1])
 
 
 def journal_for(cache: EnvCacheState) -> RepairJournal:
@@ -142,7 +185,7 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
         journal = RepairJournal.model_validate(data)
     except (TypeError, ValueError, ValidationError):
         _refuse('environment repair journal is invalid')
-    if not 0 < journal.expires_at - journal.started_at <= MAX_ATTEMPT_SECONDS:
+    if not 0 < journal.expires_at - journal.started_at <= MAX_SHARDED_ATTEMPT_SECONDS:
         _refuse('environment repair deadline is invalid')
     if journal.finding_ledger is not None and journal.finding_ledger.source_commit != journal.source_commit:
         _refuse('finding ledger source differs from attempt', code='source_identity')
@@ -221,7 +264,7 @@ def _save_scope_checkpoint(journal: RepairJournal, budget: AttemptBudget) -> Non
     if journal.scope_definition is not None:
         if budget.scope_definition is None:
             _refuse('established scope cannot be removed', code='scope_obligation_removed')
-        preserve_scope(journal.scope_definition, budget.scope_definition)
+        preserve_scope(journal.scope_definition, budget.scope_definition, released=released_criteria(budget.scope_findings))
     if any(budget.scope_inputs.get(path) != digest for path, digest in journal.scope_inputs.items()):
         _refuse('scope read history cannot be replaced', code='scope_source_identity')
     if (budget.scope_investigations[:len(journal.scope_investigations)] != journal.scope_investigations
@@ -233,6 +276,11 @@ def _save_scope_checkpoint(journal: RepairJournal, budget: AttemptBudget) -> Non
     journal.scope_phase = budget.scope_phase
     journal.scope_revision_base_digest = budget.scope_revision_base_digest
     journal.scope_inputs = dict(budget.scope_inputs)
+    journal.scope_shards = json.loads(json.dumps(budget.scope_shards)) if budget.scope_shards is not None else None
+    journal.executable_parts = (json.loads(json.dumps(budget.executable_parts))
+                                if budget.executable_parts is not None else None)
+    journal.scope_reuse = budget.scope_reuse
+    journal.scope_reused_from = budget.scope_reused_from
     try:
         journal.scope_responses = [FindingResponse.model_validate(value) for value in budget.scope_responses]
     except ValidationError:
@@ -315,7 +363,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
         parsed = RepairJournal.model_validate(normalized)
     except ValidationError:
         _refuse("malformed environment journal requires reconciliation before reset")
-    if not 0 < parsed.expires_at - parsed.started_at <= MAX_ATTEMPT_SECONDS:
+    if not 0 < parsed.expires_at - parsed.started_at <= MAX_SHARDED_ATTEMPT_SECONDS:
         _refuse("invalid environment deadline requires reconciliation before reset")
     uncertain = (data.get("source_owner") is not None or data.get("probe_owner") is not None or data.get("probe_plan") is not None
         or data.get("status") == "executing" or data.get("last_error") == "cleanup_unconfirmed"
@@ -368,6 +416,11 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.scope_phase = journal.scope_phase
     budget.scope_revision_base_digest = journal.scope_revision_base_digest
     budget.scope_inputs = dict(journal.scope_inputs)
+    budget.scope_shards = json.loads(json.dumps(journal.scope_shards)) if journal.scope_shards is not None else None
+    budget.executable_parts = (json.loads(json.dumps(journal.executable_parts))
+                               if journal.executable_parts is not None else None)
+    budget.scope_reuse = json.loads(json.dumps(journal.scope_reuse)) if journal.scope_reuse is not None else None
+    budget.scope_reused_from = journal.scope_reused_from
     budget.scope_responses = [r.model_dump(mode="json") for r in journal.scope_responses]
     budget.scope_definition = journal.scope_definition.model_copy(deep=True) if journal.scope_definition is not None else None
     budget.scope_contract = journal.scope_contract.model_copy(deep=True) if journal.scope_contract is not None else None
@@ -376,6 +429,8 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.finding_ledger = journal.finding_ledger.model_copy(deep=True) if journal.finding_ledger is not None else None
     budget.coverage_manifest = journal.coverage_manifest.model_copy(deep=True) if journal.coverage_manifest is not None else None
     budget.executed_manifests = executed_manifests(journal.rejected, source_commit=journal.source_commit)
+    budget.repair_triage = repair_triage_for(journal)
+    budget.delta_fallback = journal.delta_fallback
     budget.execution_review_evidence = [{"manifest_digest": entry["manifest_digest"],
         "manifest": entry["manifest"], "results": [{key: result.get(key) for key in
         ("id", "status", "required", "exit_code", "duration_seconds")} for result in entry["report"]["results"]]}
@@ -401,8 +456,8 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
     previous = journal_for(cache) if cache.environment_attempt is not None else None
     if previous is not None and (previous.last_error == "cleanup_unconfirmed" or previous.status == "executing" or previous.probe_owner is not None or previous.source_owner is not None):
         _refuse("environment repair requires confirmed cleanup of interrupted execution")
-    seconds = min(limits.attempt_timeout_seconds, outer_seconds if outer_seconds > 0 else MAX_ATTEMPT_SECONDS,
-                  MAX_ATTEMPT_SECONDS)
+    ceiling = MAX_SHARDED_ATTEMPT_SECONDS if limits.shard_context_tokens else MAX_ATTEMPT_SECONDS
+    seconds = min(limits.attempt_timeout_seconds, outer_seconds if outer_seconds > 0 else ceiling, ceiling)
     if not isinstance(cache.bootstrap_commit_sha, str):
         _refuse("environment repair requires an immutable source commit")
     if previous is None or previous.source_commit != cache.bootstrap_commit_sha or previous.status == 'ready':
@@ -412,6 +467,9 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
             started_at=now, expires_at=now+seconds, max_calls=limits.max_model_calls,
             max_reads=limits.max_total_reads, max_schema_repairs=limits.max_schema_repairs,
             max_coverage_revisions=limits.max_coverage_revisions, max_execution_repairs=limits.max_execution_repairs)
+        if previous is None:
+            # After an operator restart, an archived attempt's accepted scope is offered for a fresh review.
+            journal.scope_reuse = reusable_scope(cache.environment_attempt_archive, cache.bootstrap_commit_sha)
     else:
         journal = previous
         journal.expires_at = min(journal.expires_at, journal.started_at+seconds)
@@ -469,6 +527,7 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
     journal.schema_repairs = max(journal.schema_repairs, budget.schema_repairs)
     journal.coverage_revisions = max(journal.coverage_revisions, budget.coverage_revisions)
     journal.execution_repairs = max(journal.execution_repairs, budget.execution_repairs)
+    journal.delta_fallback = journal.delta_fallback or budget.delta_fallback
     if executing:
         capabilities = ExecutionCapabilities.model_validate(cache.environment_capabilities)
         if journal.target is not None and (
@@ -614,6 +673,12 @@ def prepare_repair(cache: EnvCacheState) -> tuple[EnvironmentManifest, dict[str,
     previous = EnvironmentManifest.model_validate(entry['manifest'])
     journal.generation = len(journal.rejected)
     journal.generation_nonce = uuid.uuid4().hex[:12]
+    # Persisted before any author call, so a restart resumes the same closure. Without one the full repair runs.
+    triage = _triage_or_none(entry)
+    journal.repair_triage = triage.model_dump(mode='json') if triage is not None else None
+    journal.repair_triage_unavailable = triage is None
+    # Each generation starts from delta repair again; a fallback applies to the generation that needed it.
+    journal.delta_fallback = False
     journal.status = 'discovering'
     new_path = cache.cache_dir.parent / _generation(journal)
     if new_path.exists() or new_path.is_symlink():

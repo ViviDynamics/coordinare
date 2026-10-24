@@ -71,7 +71,7 @@ class Profile:
     max_tokens: int = 32768
     effort: str | None = None
     phase_timeout: float = 120
-    attempt_timeout: float = 600
+    attempt_timeout: float | None = None
     execute: bool = False
     approval_timeout: float = 600
     installer_timeout: float = 900
@@ -81,8 +81,18 @@ class Profile:
     max_coverage_revisions: int = 2
     max_execution_repairs: int = 2
     max_review_context_bytes: int = 1024 * 1024
-    max_total_reads: int = 512
+    max_total_reads: int | None = None
+    max_model_calls: int | None = None
+    context_tokens: int | None = None
+    agent_concurrency: int = 12
     private_service_runtime: dict[str, Any] | None = None
+    # An earlier run's output directory: its accepted scope is offered to a fresh independent review.
+    reuse_scope_from: Path | None = None
+
+
+def _profile_record(profile: Profile) -> dict[str, Any]:
+    """The profile as JSON: paths are recorded as strings."""
+    return {key: str(value) if isinstance(value, Path) else value for key, value in asdict(profile).items()}
 
 
 def load_runtime_policy(path: Path) -> dict[str, Any]:
@@ -280,6 +290,19 @@ def _event(**fields: Any) -> None:
     sys.stdout.flush()
 
 
+def command_timing(phase: str, repository: str, evidence: Any) -> float:
+    """Emit each executed command's guest wall clock as an event; returns the phase total in seconds."""
+    total = 0.0
+    for item in evidence.get("results", []) if isinstance(evidence, dict) else []:
+        if item.get("status") == "not_run":
+            continue
+        seconds = float(item.get("duration_seconds") or 0)
+        total += seconds
+        _event(repository=repository, stage=f"{phase}_command", command=item.get("id"),
+               status=item.get("status"), seconds=round(seconds, 3))
+    return round(total, 3)
+
+
 async def _bounded_wait(process: asyncio.subprocess.Process, timeout: float) -> int:
     try:
         return await asyncio.wait_for(process.wait(), timeout)
@@ -301,6 +324,9 @@ async def _remove_container(name: str) -> bool:
         if proc.returncode is None:
             proc.kill()
             await proc.wait()
+
+
+INSTALLER_TAIL_BYTES = 2000
 
 
 async def _install(
@@ -461,11 +487,31 @@ async def execute_accepted(
     result.pop("clean_consumer_detail", None)
     result.pop("clean_consumer_passed", None)
     result.update(stage="installer", installer_ran=True, installer_passed=False, clean_consumer_ran=False)
-    code, output = await _install(snapshot, cache, image, target, profile.installer_timeout)
+    started = time.monotonic()
+    try:
+        code, output = await _install(snapshot, cache, image, target, profile.installer_timeout)
+    except TimeoutError:
+        # v39's install outlived the private guest's lifetime; name it instead of an unexplained stage failure.
+        result.update(status="held", reason_code="installer_timeout",
+                      installer_seconds=round(time.monotonic() - started, 1))
+        service.on_bootstrap_complete(snapshot.name, False, state)
+        return
+    result["installer_seconds"] = round(time.monotonic() - started, 1)
+    _event(repository=snapshot.name, stage="installer", seconds=result["installer_seconds"])
     (target / "installer-output.json").write_bytes(output)
+    try:
+        raw = json.loads(output)
+    except ValueError:
+        # The installer crashed before it could report (v30: the private runtime guest exited). Keep a redacted tail
+        # as evidence and hold, instead of failing the whole stage with nothing recorded.
+        from coordinare.lib.redaction import redact_command_text
+
+        tail = redact_command_text(output.decode(errors="replace"))[-INSTALLER_TAIL_BYTES:]
+        result.update(status="held", reason_code="installer_crashed", installer_output_tail=tail)
+        service.on_bootstrap_complete(snapshot.name, False, state)
+        return
     # Failed installer evidence cannot carry a sealed success receipt. Validate it
     # for bounded repair before applying the successful installer admission gate.
-    raw = json.loads(output)
     if code != 0 or any(item.get('required') and item.get('status') == 'fail' for item in raw.get('results', [])):
         from coordinare.services.environment_acceptance import failed_installer_report
 
@@ -479,6 +525,7 @@ async def execute_accepted(
     )
     evidence = {**report.model_dump(mode='json'), 'image_ref':image}
     result['installer_evidence'] = evidence
+    result['installer_command_seconds'] = command_timing("installer", snapshot.name, evidence)
     result['execution_source'] = cache.environment_execution_source
     if not result["installer_passed"]:
         evidence = {**report.model_dump(mode="json"), "image_ref": image}
@@ -489,12 +536,16 @@ async def execute_accepted(
     # _install returns only after the outer writer's removal is confirmed.
     admit_installer_runtime(cache, report.model_dump(mode='json'), cleanup_confirmed=True)
     result.update(stage="clean_consumer", clean_consumer_ran=True)
+    clean_started = time.monotonic()
     passed, detail = await verify_env_cache_clean(
         state,
         snapshot.name,
         SimpleNamespace(_config=SimpleNamespace(image=image)),
         performer_mounts=(target,),
     )
+    result["clean_consumer_seconds"] = round(time.monotonic() - clean_started, 1)
+    result["clean_consumer_command_seconds"] = command_timing("clean_consumer", snapshot.name, cache.environment_verification)
+    _event(repository=snapshot.name, stage="clean_consumer", seconds=result["clean_consumer_seconds"])
     result.update(
         clean_consumer_passed=passed,
         clean_consumer_detail=detail,
@@ -569,15 +620,25 @@ async def validate_repository(
         bootstrap_commit_sha=snapshot.commit,
         readme_sha=snapshot.commit,
     )
+    if profile.reuse_scope_from is not None:
+        prior = profile.reuse_scope_from / snapshot.name / "environment-attempt.json"
+        if prior.is_file():
+            # As after an operator restart: the earlier attempt is archived, and begin_attempt offers its
+            # accepted scope for a fresh review when the commit and protocol match.
+            cache.environment_attempt_archive = [json.loads(prior.read_text())]
     settings = EnvCacheConfig(
         manifest_phase_timeout_seconds=profile.phase_timeout,
-        manifest_attempt_timeout_seconds=profile.attempt_timeout,
         manifest_max_schema_repairs=profile.max_schema_repairs,
         manifest_max_coverage_revisions=profile.max_coverage_revisions,
         manifest_max_execution_repairs=profile.max_execution_repairs,
         manifest_max_review_context_bytes=profile.max_review_context_bytes,
-        manifest_max_total_reads=profile.max_total_reads,
+        manifest_shard_context_tokens=profile.context_tokens,
+        manifest_agent_concurrency=profile.agent_concurrency,
         private_service_runtime=profile.private_service_runtime,
+        # Unset budgets take product defaults: the sharded budget when sharding is enabled.
+        **{name: value for name, value in (("manifest_attempt_timeout_seconds", profile.attempt_timeout),
+            ("manifest_max_total_reads", profile.max_total_reads), ("manifest_max_model_calls", profile.max_model_calls))
+           if value is not None},
     )
     global_config = SimpleNamespace(
         performer_image=image,
@@ -586,7 +647,8 @@ async def validate_repository(
         env_cache_root=output,
         state_file_path=output.parent / "daemon-state" / (snapshot.name + ".json"),
         env_cache=settings,
-        bootstrap_max_seconds=3600,
+        # The outer wall clock never undercuts a sharded attempt's longer ceiling.
+        bootstrap_max_seconds=int(max(3600, settings.manifest_attempt_timeout_seconds)),
         github_org=snapshot.org,
         project_name=snapshot.name,
         env_bootstrap_max_attempts=3,
@@ -617,7 +679,7 @@ async def validate_repository(
         "ready_at_validation": False,
         "live_daemon_exercised": False,
         "outer_retry_loop_exercised": False,
-        "profile": asdict(profile),
+        "profile": _profile_record(profile),
     }
     if chat is None:
         key = os.environ.get(profile.api_key_env)
@@ -639,6 +701,7 @@ async def validate_repository(
         nonlocal calls, review_starts, source_review_starts
         calls += 1
         context = json.loads(messages[1]["content"])
+        context = {**context.pop("_shared_context", {}), **context}  # sharded prompts nest what all agents share
         reviewing = "manifest" in context
         source_reviewing = (context.get("phase_contract", {}).get("subject") == "source_obligations"
                             and "required_decision_ids" in context)
@@ -648,8 +711,10 @@ async def validate_repository(
             raise ValueError("validation chat unavailable")
         from coordinare.services.environment_response_schema import invoke_chat
 
+        started = time.monotonic()
         response = await invoke_chat(selected_chat, messages, schema=response_schema or {},
                                      max_context_bytes=max_context_bytes, context_phase=context_phase)
+        seconds = round(time.monotonic() - started, 3)
         text = response.text if isinstance(response, DiscoveryChatReply) else response
         if profile.save_transcripts:
             _write(
@@ -671,7 +736,11 @@ async def validate_repository(
             repository=snapshot.name,
             stage="review" if reviewing else "discovery",
             call=calls,
+            phase=context_phase,
+            seconds=seconds,
             response_bytes=len(text.encode()),
+            **({"usage": dict(response.usage or {}), "finish_reason": response.finish_reason}
+               if isinstance(response, DiscoveryChatReply) else {}),
         )
         return response
 
@@ -803,6 +872,26 @@ def _aggregate_read_allowance(value: str) -> int:
         raise argparse.ArgumentTypeError(message) from None
 
 
+def _config_value(field: str, value: str) -> Any:
+    try:
+        return getattr(EnvCacheConfig(**{field: int(value)}), field)
+    except ValueError:
+        message = f'{field} must satisfy the configured finite product bounds'
+        raise argparse.ArgumentTypeError(message) from None
+
+
+def _model_call_allowance(value: str) -> int:
+    return int(_config_value('manifest_max_model_calls', value))
+
+
+def _context_tokens(value: str) -> int:
+    return int(_config_value('manifest_shard_context_tokens', value))
+
+
+def _agent_concurrency(value: str) -> int:
+    return int(_config_value('manifest_agent_concurrency', value))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repositories", nargs="+")
@@ -819,16 +908,22 @@ def main() -> int:
     parser.add_argument("--effort")
     parser.add_argument("--structured-transport", choices=["json_schema", "tool_call", "json_object"], default="json_schema")
     parser.add_argument("--phase-timeout", type=float, default=120)
-    parser.add_argument("--attempt-timeout", type=float, default=600)
+    parser.add_argument("--attempt-timeout", type=float, default=None)
     parser.add_argument("--max-schema-repairs", type=int, choices=range(REPAIR_LIMITS["schema"] + 1), default=2)
     parser.add_argument("--max-coverage-revisions", type=int, choices=range(REPAIR_LIMITS["coverage"] + 1), default=2)
     parser.add_argument("--max-execution-repairs", type=int, choices=range(REPAIR_LIMITS["execution"] + 1), default=2)
     parser.add_argument("--max-review-context-bytes", type=int, default=1024 * 1024)
-    parser.add_argument("--max-total-reads", type=_aggregate_read_allowance, default=512)
+    parser.add_argument("--max-total-reads", type=_aggregate_read_allowance, default=None)
+    parser.add_argument("--max-model-calls", type=_model_call_allowance, default=None)
+    parser.add_argument("--context-tokens", type=_context_tokens, default=None,
+                        help="Model context size; enables sharded source discovery for repositories larger than one share")
+    parser.add_argument("--agent-concurrency", type=_agent_concurrency, default=12)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--approval-timeout", type=float, default=600)
     parser.add_argument("--save-transcripts", action="store_true")
     parser.add_argument("--keep-caches", action="store_true")
+    parser.add_argument("--reuse-scope-from", type=Path, default=None,
+                        help="Earlier run output whose accepted scope is reviewed afresh instead of authored again")
     parser.add_argument('--runtime-policy', type=Path, help='Explicit private-service platform policy JSON; image contents are verified')
     args = parser.parse_args()
     new_profile_directory(args.output)
@@ -850,14 +945,18 @@ def main() -> int:
         max_execution_repairs=args.max_execution_repairs,
         max_review_context_bytes=args.max_review_context_bytes,
         max_total_reads=args.max_total_reads,
+        max_model_calls=args.max_model_calls,
+        context_tokens=args.context_tokens,
+        agent_concurrency=args.agent_concurrency,
         private_service_runtime=load_runtime_policy(args.runtime_policy) if args.runtime_policy else None,
+        reuse_scope_from=args.reuse_scope_from,
     )
     revision = subprocess.check_output([shutil.which("git") or "/usr/bin/git", "rev-parse", "HEAD"], text=True).strip()
     _write(
         args.output / "profile.json",
         {
             "coordinare_commit": revision,
-            "profile": asdict(profile),
+            "profile": _profile_record(profile),
             "snapshots": str(args.snapshots),
             "repositories": args.repositories,
             "org": args.org,

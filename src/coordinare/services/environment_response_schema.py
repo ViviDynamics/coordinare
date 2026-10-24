@@ -2,13 +2,22 @@
 from __future__ import annotations
 
 import inspect
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from coordinare_service_inference.environment.scope import ScopeAssessmentEnvelope, ScopeEnvelope
+from coordinare_service_inference.environment.models import ShardChecksEnvelope
+from coordinare_service_inference.environment.scope import (
+    ListingTriageEnvelope,
+    ScopeAssessmentEnvelope,
+    ScopeConsolidationEnvelope,
+    ScopeEnvelope,
+    ShardSummaryEnvelope,
+)
 from coordinare_service_inference.environment.scope_revision import ScopeRevisionEnvelope
 
+from coordinare.services.environment_delta_schema import MANIFEST_DELTA_ENVELOPE
 from coordinare.services.environment_discovery_prompts import (
     _MANIFEST_ENVELOPE,
     assessment_envelope_schema,
@@ -17,13 +26,14 @@ from coordinare.services.environment_evidence import check_evidence_context
 from coordinare.services.environment_findings import MAX_FINDINGS
 from coordinare.services.environment_probes import ProbeEnvelope
 from coordinare.services.environment_proposal_patch import PATCH_SCHEMA
+from coordinare.services.model_output_cap import output_token_cap, repetition_guard
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
     from coordinare_service_inference.environment.scope import ScopeContract
 
-    from coordinare.services.environment_attempt import DiscoveryChatReply
+    from coordinare.services.environment_attempt import AttemptBudget, DiscoveryChatReply
 
 
 def _require_scope_mapping(declaration: dict[str, Any], scope: ScopeContract) -> None:
@@ -129,7 +139,11 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
         tools.append(PATCH_SCHEMA)
     final: dict[str, Callable[[], dict[str, Any]]] = {'probe': ProbeEnvelope.model_json_schema, 'manifest': _MANIFEST_ENVELOPE.model_json_schema,
              'assessment': assessment_envelope_schema, 'scope': ScopeEnvelope.model_json_schema,
-             'scope_assessment': ScopeAssessmentEnvelope.model_json_schema, 'scope_revision': ScopeRevisionEnvelope.model_json_schema}
+             'scope_assessment': ScopeAssessmentEnvelope.model_json_schema, 'scope_revision': ScopeRevisionEnvelope.model_json_schema,
+             'shard_summary': ShardSummaryEnvelope.model_json_schema,
+             'listing_triage': ListingTriageEnvelope.model_json_schema,
+             'scope_consolidation': ScopeConsolidationEnvelope.model_json_schema,
+             'shard_checks': ShardChecksEnvelope.model_json_schema, 'manifest_delta': MANIFEST_DELTA_ENVELOPE.model_json_schema}
     if phase == 'source_tool':
         return {'type': 'object', 'anyOf': tools}
     declaration = final[phase]()
@@ -147,6 +161,29 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
         _require_scope_mapping(declaration, scope_contract)
     definitions = declaration.pop('$defs', {})
     return {'type': 'object', 'anyOf': [*tools, declaration], '$defs': definitions}
+
+
+async def invoke_recorded(budget: AttemptBudget, chat: Callable[..., Awaitable[str | DiscoveryChatReply]],
+                          messages: list[dict[str, str]], **request: Any) -> str:
+    """One model call (``invoke_chat``'s keywords), timed, recorded against its phase and bounded by its output cap."""
+    phase = str(request['context_phase'])
+    started = time.monotonic()
+    token = output_token_cap.set(OUTPUT_CAPS.get(phase))
+    guard = repetition_guard.set(True)
+    try:
+        reply = await invoke_chat(chat, messages, **request)
+    finally:
+        repetition_guard.reset(guard)
+        output_token_cap.reset(token)
+    return budget.record_reply(reply, phase=phase, seconds=time.monotonic() - started)
+
+
+# Output caps (including hidden reasoning) where valid replies are far below the global maximum: a backstop for
+# repetition the stream guard cannot see. Largest valid replies on Dettmore at low effort (v5 to v21): triage
+# 4,875; scope authoring, review and revision 4,147; executable review 11,494; check authors 14,969. The
+# executable author ('discovery') writes whole manifests of about 17 K and keeps the configured maximum.
+OUTPUT_CAPS = {'scope_triage': 16384, 'scope_shard_author': 12288, 'scope_shard_review': 12288,
+               'scope_merge_review': 12288, 'scope_revision': 12288, 'review': 24576, 'executable_checks': 24576}
 
 
 async def invoke_chat(chat: Callable[..., Awaitable[str | DiscoveryChatReply]], messages: list[dict[str, str]],

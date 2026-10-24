@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, Literal, get_args
+from typing import Any, ClassVar, Literal, Self, get_args
 from urllib.parse import urlparse
 
 import structlog
@@ -1086,6 +1086,12 @@ class ServiceInferenceConfig(BaseModel):
     web_search_enabled: bool = False
 
 
+ONE_HOUR_SECONDS = 3600
+# Maintainer ruling for sharded source discovery (issue 353): calls, reads and the attempt deadline.
+SHARDED_BUDGET_DEFAULTS = {"manifest_max_model_calls": 1024, "manifest_max_total_reads": 8192,
+                           "manifest_attempt_timeout_seconds": 4 * 3600.0}
+
+
 class EnvCacheConfig(BaseModel):
     """Env-cache bootstrap configuration (spec 063+).
 
@@ -1113,15 +1119,40 @@ class EnvCacheConfig(BaseModel):
     manifest_max_file_bytes: int = Field(default=256 * 1024, ge=1, le=4 * 1024 * 1024)
     manifest_max_source_bytes: int = Field(default=4 * 1024 * 1024, ge=1, le=16 * 1024 * 1024)
     manifest_max_inventory_entries: int = Field(default=100_000, ge=1, le=1_000_000)
-    manifest_phase_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
-    manifest_attempt_timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
+    # Over one hour only for sharded discovery, whose attempts may run up to four hours.
+    manifest_phase_timeout_seconds: float = Field(default=120.0, gt=0, le=4 * 3600)
+    # Up to one hour; sharded discovery (manifest_shard_context_tokens set) may run up to four.
+    manifest_attempt_timeout_seconds: float = Field(default=600.0, gt=0, le=4 * 3600)
     manifest_max_model_calls: int = Field(default=128, ge=1, le=4096)
     manifest_max_total_reads: int = Field(default=512, ge=1, le=8192)
     manifest_max_review_context_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)
+    # Sharded source discovery: the model context size that sets each agent's share (unset keeps one conversation).
+    manifest_shard_context_tokens: int | None = Field(default=None, ge=8192, le=4_000_000)
+    manifest_agent_concurrency: int = Field(default=12, ge=1, le=16)
     manifest_max_repairs: int | None = Field(default=None, ge=0, le=2, exclude=True)
     manifest_max_schema_repairs: int = Field(default=2, ge=0, le=REPAIR_LIMITS["schema"])
     manifest_max_coverage_revisions: int = Field(default=2, ge=0, le=REPAIR_LIMITS["coverage"])
     manifest_max_execution_repairs: int = Field(default=2, ge=0, le=REPAIR_LIMITS["execution"])
+    # An execution repair re-authors only its failure closure (changed and added records). False restores the full repair.
+    manifest_delta_repair: bool = True
+
+    @model_validator(mode="after")
+    def _attempt_ceiling(self) -> Self:
+        if self.manifest_shard_context_tokens is None and self.manifest_attempt_timeout_seconds > ONE_HOUR_SECONDS:
+            message = "attempts over one hour require sharded discovery (manifest_shard_context_tokens)"
+            raise ValueError(message)
+        if self.manifest_shard_context_tokens is None and self.manifest_phase_timeout_seconds > ONE_HOUR_SECONDS:
+            message = "phases over one hour require sharded discovery (manifest_shard_context_tokens)"
+            raise ValueError(message)
+        return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sharded_budget_defaults(cls, data: Any) -> Any:
+        """Sharded discovery gets the maintainer's larger shared budget unless a value is set explicitly."""
+        if not isinstance(data, dict) or data.get("manifest_shard_context_tokens") is None:
+            return data
+        return {**SHARDED_BUDGET_DEFAULTS, **data}
 
     @model_validator(mode="before")
     @classmethod

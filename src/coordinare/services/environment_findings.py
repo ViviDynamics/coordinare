@@ -47,6 +47,11 @@ def _ids(manifest: EnvironmentManifest) -> set[str]:
     return ids
 
 
+def manifest_obligation_ids(manifest: EnvironmentManifest) -> set[str]:
+    """The ids an executable finding may name."""
+    return _ids(manifest)
+
+
 def validate_finding_responses(responses: list[FindingResponse], *, ledger: FindingLedger,
                                inspected: Mapping[str, str], manifest: EnvironmentManifest) -> None:
     ids = [response.finding_id for response in responses]

@@ -213,7 +213,9 @@ async def test_canonical_json_http_request_delivers_the_current_scope_bound_sche
     marker = 'Authoritative logical response schema for this request:\n'
     assert marker in system
     delivered = json.loads(system.split(marker, 1)[1])
-    assert delivered == schema
+    # The prompt-only transport describes the patch tool with plain values as well (v26); otherwise identical.
+    from coordinare.services.environment_proposal_patch import text_schema
+    assert delivered == text_schema(schema)
     mapping = delivered['$defs']['EnvironmentManifestProposal']['properties']['criterion_checks']
     assert mapping['required'] == [identifier]
     assert messages == original_messages

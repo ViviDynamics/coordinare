@@ -1,6 +1,6 @@
 # Sharded executable construction and review
 
-Issue #353; PR #354. Status: written proposal for maintainer review. Companion to
+Issue #353; PR #354. Status: approved by the maintainer on 2026-10-22 (full amendment). Companion to
 [sharded-discovery-amendment.md](sharded-discovery-amendment.md).
 
 ## Intent

@@ -18,7 +18,11 @@ Commit = Annotated[str, Field(pattern=r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$')]
 FindingId = Annotated[str, Field(pattern=r'^F[0-9]{4}$')]
 MAX_LEDGER_FINDINGS = 128
 LEDGER_MAX_BYTES = 512*1024
-Category = Literal['coverage', 'capability', 'activation', 'service_lifecycle', 'execution_definition']
+# remote_state: an obligation only an external service's state can satisfy, outside the environment's scope.
+# runtime_network: an obligation whose own documented procedure fetches from the network every time it runs,
+# which an offline clean verification cannot exercise.
+Category = Literal['coverage', 'capability', 'activation', 'service_lifecycle', 'execution_definition', 'remote_state',
+                   'runtime_network']
 
 
 class FindingEvidence(BaseModel):

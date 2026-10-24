@@ -72,6 +72,9 @@ def _wire_assessment(phase, count=2):
     if phase == 'scope_assessment':
         data.pop('capability_unavailable')
         data['decisions'] = [source_decision(decision) for decision in data['decisions']]
+    else:
+        # Strict wires require every property; with no repair scope the rulings list is empty.
+        data['criterion_rulings'] = []
     return data
 
 

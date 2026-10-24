@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
-from coordinare_service_inference.environment.models import EnvironmentManifest, VerificationReport
+from coordinare_service_inference.environment.models import (
+    EnvironmentManifest,
+    VerificationReport,
+    content_key,
+)
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
-from coordinare.services.environment_scope import preserve_scope
+from coordinare.services.environment_repair_triage import ACTIVATION
+from coordinare.services.environment_scope import preserve_scope, released_criteria
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from coordinare_service_inference.environment.models import Command
+
+    from coordinare.services.environment_repair_triage import RepairTriage
 
 
 def _required_execution_commands(manifest: EnvironmentManifest) -> list[Command]:
@@ -103,7 +113,7 @@ def preserve_execution_commands(
             != old.model_dump(exclude={"timeout_seconds"})
             or new.timeout_seconds < old.timeout_seconds
         ):
-            message = "required executable command changed after project execution"
+            message = f"required executable command {old.id} changed after project execution"
             raise EnvironmentDiscoveryError(message, code="obligation_removed")
 
 
@@ -112,40 +122,165 @@ def preserve_execution_obligations(manifest: EnvironmentManifest, history: objec
         preserve_execution_commands(manifest, previous)
 
 
+SAFE_ID = re.compile(r'[A-Za-z0-9_.:-]{1,128}')
+
+
+def _id(identifier: str) -> str:
+    """Only id-shaped values are named, so a free-form id the model wrote is never echoed."""
+    return identifier if SAFE_ID.fullmatch(identifier) else '(unnamed)'
+
+
+def _ids(identifiers: set[str]) -> str:
+    return ', '.join(sorted(_id(identifier) for identifier in identifiers))
+
+
+def duplicate_aliases(previous: EnvironmentManifest, candidate: EnvironmentManifest) -> dict[str, str]:
+    """Dropped command id -> the kept command that replaces it: an identical argv, cwd, env and scope under another id.
+
+    The kept copy must take over the dropped one's obligations: required if the dropped one was, every dependency it had,
+    and at least its timeout. A correction that merges duplicates this way keeps every obligation.
+    """
+    before, after = _commands(previous), _commands(candidate)
+    aliases: dict[str, str] = {}
+    for identifier, old in before.items():
+        if identifier in after:
+            continue
+        for new in after.values():
+            if (content_key(new) == content_key(old) and (new.required or not old.required)
+                    and set(old.depends_on) <= set(new.depends_on) and new.timeout_seconds >= old.timeout_seconds):
+                aliases[identifier] = new.id
+                break
+    return aliases
+
+
+def _preserve_criterion_checks(manifest: EnvironmentManifest, previous: EnvironmentManifest, released: set[str],
+                               aliases: Mapping[str, str] | None = None) -> None:
+    # Every lost mapping at once: one per merge round left v24's author fixing them one criterion at a time.
+    aliases = aliases or {}
+    lost = [f'{_id(identifier)} must still include {_ids(missing)}'
+            for identifier, ids in sorted(previous.criterion_checks.items())
+            if identifier not in released and (missing := {item for item in ids if item not in _mapped(manifest, identifier)
+                                                         and aliases.get(item) not in _mapped(manifest, identifier)})]
+    if lost:
+        message = f"required source criterion coverage removed during repair: criterion_checks for {'; '.join(lost[:16])}"
+        raise EnvironmentDiscoveryError(message, code='obligation_removed')
+
+
+def _mapped(manifest: EnvironmentManifest, criterion: str) -> list[str]:
+    return list(manifest.criterion_checks.get(criterion, []))
+
+
 def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentManifest) -> None:
     """A fresh judgment can add coverage, never waive a previously required obligation."""
-    if previous.scope_contract is not None:
-        if manifest.scope_contract is None:
-            message = 'required source scope removed during repair'
-            raise EnvironmentDiscoveryError(message, code='obligation_removed')
-        preserve_scope(previous.scope_contract.definition, manifest.scope_contract.definition)
-    if any(not set(ids) <= set(manifest.criterion_checks.get(identifier, []))
-           for identifier, ids in previous.criterion_checks.items()):
-        message = 'required source criterion coverage removed during repair'
+    aliases = duplicate_aliases(previous, manifest)
+    if previous.scope_contract is not None and manifest.scope_contract is None:
+        message = 'required source scope removed during repair'
         raise EnvironmentDiscoveryError(message, code='obligation_removed')
+    released = released_criteria(manifest.scope_contract.finding_ledger) if manifest.scope_contract is not None else set()
+    if previous.scope_contract is not None and manifest.scope_contract is not None:
+        preserve_scope(previous.scope_contract.definition, manifest.scope_contract.definition, released=released)
+    _preserve_criterion_checks(manifest, previous, released, aliases)
     for group in ("requirements", "install", "checks", "services"):
         current = {item.id: item for item in getattr(manifest, group) if item.required}
         for old in getattr(previous, group):
             if not old.required:
                 continue
             new = current.get(old.id)
+            if new is None and aliases.get(old.id) not in current:
+                message = f"required obligation removed during repair: restore required {group} entry {_id(old.id)}"
+                raise EnvironmentDiscoveryError(message, code="obligation_removed", global_owned=group != "checks")
             if new is None:
-                message = "required obligation removed during repair"
-                raise EnvironmentDiscoveryError(message, code="obligation_removed")
-            if group == "requirements" and not set(old.checks) <= set(new.checks):
-                message = "required obligation coverage removed"
-                raise EnvironmentDiscoveryError(message, code="obligation_removed")
+                continue  # Merged into an identical kept command, which the alias rule already checked.
+            if group == "requirements" and (lost := {item for item in old.checks if item not in new.checks
+                                                     and aliases.get(item) not in new.checks}):
+                message = f"required obligation coverage removed: requirement {_id(old.id)} must still list checks {_ids(lost)}"
+                raise EnvironmentDiscoveryError(message, code="obligation_removed", global_owned=True)
             if group in {"checks", "install"} and old.scope != new.scope:
-                message = "required obligation scope changed"
-                raise EnvironmentDiscoveryError(message, code="obligation_removed")
+                message = f"required obligation scope changed: {group} entry {_id(old.id)} must keep its previous scope"
+                raise EnvironmentDiscoveryError(message, code="obligation_removed", global_owned=group != "checks")
             if group == "services":
                 for phase in ("init", "start", "health", "stop"):
                     before, after = getattr(old, phase), getattr(new, phase)
                     if before is not None and (
                         after is None
-                        or before.id != after.id
+                        or (before.id != after.id and aliases.get(before.id) != after.id)
                         or before.scope != after.scope
                         or (before.required and not after.required)
                     ):
-                        message = "required service obligation changed"
-                        raise EnvironmentDiscoveryError(message, code="obligation_removed")
+                        message = (f"required service obligation changed: service {_id(old.id)} must keep its required "
+                                   f"{phase} command {_id(before.id)} with its previous scope")
+                        raise EnvironmentDiscoveryError(message, code="obligation_removed", global_owned=True)
+
+
+REPAIR_OUTSIDE_CLOSURE = "repair_outside_closure"
+REPAIR_TRIAGE_STALE = "repair_triage_stale"
+REPAIR_CORRECTABLE = frozenset({REPAIR_OUTSIDE_CLOSURE})
+_PHASES = ("init", "start", "health", "stop")
+
+
+def _commands(manifest: EnvironmentManifest) -> dict[str, Command]:
+    commands = {command.id: command for command in [*manifest.install, *manifest.checks]}
+    for service in manifest.services:
+        commands.update({command.id: command for command in (getattr(service, phase) for phase in _PHASES) if command is not None})
+    return commands
+
+
+def _service_shape(service: Any) -> dict[str, Any]:
+    """A service's own declaration; its lifecycle commands are compared as command records."""
+    phases = {phase: (command.id if (command := getattr(service, phase)) is not None else None) for phase in _PHASES}
+    return {**service.model_dump(mode="json", exclude=set(_PHASES)), **phases}
+
+
+def _grown(old: Sequence[str], new: Sequence[str], added: set[str]) -> bool:
+    """Entries may be added, and only added records may be the additions; nothing established may leave."""
+    return set(old) <= set(new) and set(new) - set(old) <= added
+
+
+def guard_repair_diff(candidate: EnvironmentManifest, previous: EnvironmentManifest, triage: RepairTriage) -> None:
+    """Every record outside the triage closure keeps its established content; added records are judged by review.
+
+    Freezing is by the failure closure, not by execution: a record a preflight stopped before it ran is frozen too.
+    Corrections name only safe ids, never model text.
+    """
+    if previous.digest() != triage.manifest_digest:
+        message = "repair triage was computed for another manifest"
+        raise EnvironmentDiscoveryError(message, code=REPAIR_TRIAGE_STALE)
+    closure = set(triage.closure_ids)
+    before, after = _commands(previous), _commands(candidate)
+    added = set(after) - set(before)
+    aliases = duplicate_aliases(previous, candidate)
+    # A dropped command that an identical kept one replaces is not a frozen record that changed or vanished.
+    frozen = {identifier for identifier, command in before.items() if identifier not in closure and (
+        (identifier not in after and aliases.get(identifier) not in after)
+        or (identifier in after and after[identifier].model_dump(mode="json") != command.model_dump(mode="json")))}
+    members = {service.id: {c.id for c in (getattr(service, phase) for phase in _PHASES) if c is not None}
+               for service in previous.services}
+    current_services = {service.id: service for service in candidate.services}
+    for service in previous.services:
+        if members[service.id] & closure:
+            continue
+        if service.id not in current_services or _service_shape(current_services[service.id]) != _service_shape(service):
+            frozen.add(service.id)
+    current_requirements = {requirement.id: requirement for requirement in candidate.requirements}
+    for requirement in previous.requirements:
+        if requirement.id in triage.requirement_ids:
+            continue
+        new = current_requirements.get(requirement.id)
+        if (new is None or new.model_dump(mode="json", exclude={"checks"}) != requirement.model_dump(mode="json", exclude={"checks"})
+                or not _grown([aliases.get(item, item) for item in requirement.checks], new.checks, added)):
+            frozen.add(requirement.id)
+    for criterion, identifiers in previous.criterion_checks.items():
+        if criterion in triage.criterion_ids:
+            continue
+        if criterion not in candidate.criterion_checks or not _grown([aliases.get(item, item) for item in identifiers],
+                                                                     candidate.criterion_checks[criterion], added):
+            frozen.add(criterion)
+    if ACTIVATION not in closure:
+        old, new = previous.activation, candidate.activation
+        if new.path[:len(old.path)] != old.path or any(new.env.get(key) != value for key, value in old.env.items()):
+            frozen.add(ACTIVATION)
+    if frozen:
+        message = (f"repair may change only its failure closure; frozen records were changed or removed: "
+                   f"{_ids(set(sorted(frozen)[:16]))}. "
+                   "Restore each listed record exactly as it was, and add new records for any new obligation.")
+        raise EnvironmentDiscoveryError(message, code=REPAIR_OUTSIDE_CLOSURE)

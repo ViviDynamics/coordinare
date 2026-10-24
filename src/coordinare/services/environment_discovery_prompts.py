@@ -145,9 +145,11 @@ class DiscoveryPrompts:
             known_ids = [record.id for record in ledger.records] if ledger else []
             finding_rule = ('Only respond to these daemon-assigned coverage finding IDs: ' + json.dumps(known_ids) +
                 '. Probe observations are not coverage findings. ' + ('finding_responses MUST be [] because no finding IDs exist. ' if not known_ids else ''))
-            guidance = ('Current phase: manifest_construction. ' + finding_rule + _MANIFEST_INSTRUCTIONS +
+            # The per-round finding list comes last so the instructions before it stay a cacheable prefix across rounds.
+            guidance = ('Current phase: manifest_construction. ' + _MANIFEST_INSTRUCTIONS +
                 (PATCH_INSTRUCTION + json.dumps(PATCH_SCHEMA) if repairing else
-                 'Return exactly the complete envelope matching this schema: ' + json.dumps(_MANIFEST_ENVELOPE.model_json_schema())))
+                 'Return exactly the complete envelope matching this schema: ' + json.dumps(_MANIFEST_ENVELOPE.model_json_schema())) +
+                ' ' + finding_rule.rstrip())
         messages[0] = {"role": "system", "content": SOURCE_TOOLS + guidance}
 
 
@@ -160,9 +162,18 @@ def correction_instruction(envelope: str) -> str:
             'Citations and questions must each contain exactly the unique command IDs; citations must be nonempty '
             'and questions nonblank, at most 512 characters. Do not add root schema_version or return a list or manifest. ',
         "manifest": 'Return exactly {"manifest":{...},"finding_responses":[...]} matching the manifest envelope, never a bare proposal. ',
+        "manifest_delta": 'Return exactly {"manifest_delta":{...},"finding_responses":[...]} with only the changed and added records, never the unchanged ones. ',
         "scope": 'Return exactly {"scope":{"criteria":[...]},"finding_responses":[...]} with complete source obligations, never executable commands. ',
         "scope_revision": 'Return exactly {"scope_revision":{"base_digest":"retained definition digest","add":[],"reassess":[]},"finding_responses":[...]} with at most 16 combined additions/reassessments. Never return a complete scope or commands. Preserve the attempted scope_revision operations while correcting finding responses; do not abandon additions/reassessments merely to repair stale affected_ids. Nothing from the rejected proposal has been committed. Use [] for affected_ids of new/reassessed criteria, not their replaced IDs. ' ,
         "scope_assessment": 'Return exactly {"scope_assessment":{...}} with verdict, sources, rationale, findings and decisions. ',
+        "shard_checks": 'Return exactly {"shard_checks":{"checks":[...],"criterion_checks":{...}}} with every check id '
+            'starting with your assigned prefix and every assigned criterion mapped. ',
+        "scope_consolidation": 'Return exactly {"scope_consolidation":{"groups":[{"member_ids":[...],"criterion":{...}}]}} '
+            'with at least two member ids per group; criterion sources are exactly the union of the members\' sources. ',
+        "listing_triage": 'Return exactly {"listing_triage":{"verdicts":[{"path":...,"verdict":...,"rationale":...}]}} '
+            'covering every listed file with a directory or file verdict. ',
+        "shard_summary": 'Return exactly {"shard_summary":{"criteria":[...],"cross_references":[...],"questions":[...]}} '
+            'with source obligations evidenced by your shard, never executable commands. ',
         "assessment": 'Return exactly {"assessment":{...}} matching the review envelope. ',
     }[envelope]
 

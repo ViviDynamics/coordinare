@@ -152,7 +152,7 @@ def test_template_preflight_keeps_aggregate_output_bounded(monkeypatch):
     from tests.unit.test_351_environment_runner import contract
 
     monkeypatch.delenv('MISSING', raising=False)
-    manifest = contract([{'id': f'check-{index}', 'argv': ['echo', '${MISSING}']} for index in range(1250)])
+    manifest = contract([{'id': f'check-{index}', 'argv': ['echo', '${MISSING}', str(index)]} for index in range(1250)])
     report = _template_preflight(manifest, {'repo': '/repo', 'cache': '/cache', 'scratch': '/scratch'},
                                  install=True, scope='', secret_names=())
     assert report is not None and not report.passed
