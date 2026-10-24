@@ -19,16 +19,17 @@ from pathlib import Path
 # interpreter that the guest keeps and that binfmt_misc registers at boot (see runtime_guest.binfmt_entry).
 GUESTS = {
     'x86_64': {'platform': 'linux/x86_64', 'emulator': '/usr/bin/qemu-system-x86_64',
-               'firmware': '/usr/share/seabios/bios-256k.bin', 'machine': [], 'packages': 'qemu-system-x86_64 seabios'},
+               'firmware': '/usr/share/seabios/bios-256k.bin', 'machine': [], 'console': '/dev/ttyS0',
+               'packages': 'qemu-system-x86_64 seabios'},
     'aarch64': {'platform': 'linux/aarch64', 'emulator': '/usr/bin/qemu-system-aarch64',
                 'firmware': '/usr/share/qemu-efi-aarch64/QEMU_EFI.fd', 'machine': ['-M', 'virt', '-cpu', 'cortex-a72'],
-                'packages': ''},
+                'console': '/dev/ttyAMA0', 'packages': ''},
 }
 FOREIGN = {'x86_64': 'aarch64', 'aarch64': 'x86_64'}
 INTERPRETER_DIR = '/usr/local/lib/coordinare'
 
 PLATFORM_SCRIPT = '''#!/bin/sh
-exec >/dev/ttyS0 2>&1
+exec >@CONSOLE@ 2>&1
 set -eu
 trap 'status=$?; if [ $status -ne 0 ]; then echo COORDINARE_PLATFORM_FAILED:$status; poweroff -f; fi' EXIT
 mount -t tmpfs -o mode=1777,size=512m tmpfs /tmp
@@ -56,7 +57,8 @@ poweroff
 
 
 def platform_script(arch: str, foreign: str) -> str:
-    return (PLATFORM_SCRIPT.replace('@PACKAGES@', GUESTS[arch]['packages']).replace('@INTERPRETER_DIR@', INTERPRETER_DIR)
+    return (PLATFORM_SCRIPT.replace('@CONSOLE@', GUESTS[arch]['console']).replace('@PACKAGES@', GUESTS[arch]['packages'])
+            .replace('@INTERPRETER_DIR@', INTERPRETER_DIR)
             .replace('@FOREIGN@', foreign))
 
 

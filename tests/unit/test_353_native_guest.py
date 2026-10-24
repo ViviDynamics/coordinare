@@ -9,7 +9,6 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from coordinare_service_inference.environment.runtime_guest import (
     binfmt_entry,
     cloud_configuration,
@@ -55,6 +54,7 @@ def test_the_prepared_guest_and_the_runtime_agree_on_each_architecture_and_firmw
     assert prepare.GUESTS['aarch64']['firmware'] == '/usr/share/qemu-efi-aarch64/QEMU_EFI.fd'
     assert prepare.GUESTS['aarch64']['machine'] == ['-M', 'virt', '-cpu', 'cortex-a72']
     assert prepare.GUESTS['x86_64']['firmware'] == '/usr/share/seabios/bios-256k.bin'
+    assert prepare.GUESTS['aarch64']['console'] == '/dev/ttyAMA0' and prepare.GUESTS['x86_64']['console'] == '/dev/ttyS0'
 
 
 def test_the_arm_guest_does_not_carry_an_x86_system_emulator():
@@ -62,6 +62,7 @@ def test_the_arm_guest_does_not_carry_an_x86_system_emulator():
     arm = prepare.platform_script('aarch64', 'qemu-x86_64-static')
     assert 'qemu-system-x86_64' not in arm and 'seabios' not in arm
     assert 'qemu-system-x86_64 seabios' in prepare.platform_script('x86_64', 'qemu-aarch64-static')
+    assert prepare.platform_script('aarch64', 'qemu-x86_64-static').startswith('#!/bin/sh\nexec >/dev/ttyAMA0 2>&1\n')
 
 
 def test_the_prepared_guest_keeps_the_other_architecture_as_a_static_interpreter():
