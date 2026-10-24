@@ -89,12 +89,66 @@ Reading these numbers:
   guest runs natively and the x86 guest could never use KVM. It is not demonstrated here, because this host has no
   `/dev/kvm`.
 
-Decision point for the maintainer: a repository that explicitly requires amd64 images (the pinned Elm amd64 component)
-will build more slowly on this Mac under the native default than under the pre-change x86 guest. Options are to accept
-that, to keep an operator-selected x86_64 guest on arm64 carriers for such repositories (not built here), or to measure
-the Elm build itself before choosing. This amendment does not make that choice.
+Resolved by the maintainer (round 2, below): the guest is chosen per repository, not for the whole deployment.
+
+## Per-repository guest choice (round 2)
+
+Maintainer decisions: (1) the guest architecture is chosen per repository. The native guest is the default; the other
+CPU's full-system guest is used only when the repository explicitly requires that platform. (2) The guest vCPU count
+rises to 8; memory is unchanged.
+
+1. **Both guests are prepared in every carrier image.** `/opt/coordinare-runtime/<cpu>/` holds each guest's pinned
+   image, `bundle.json` and `upstream.json`. The Dockerfile installs both system emulators and both static interpreters
+   on either carrier, so either guest can boot anywhere the image runs. Each guest has its own identity digest.
+   Preparation: the x86_64 guest took 133 s and the aarch64 guest 143 s inside the image build. The image grew from
+   5.97 GB (one arm guest) to 6.87 GB (both guests, both system emulators).
+2. **Selection is deterministic and happens before discovery, from the pinned source only.** After the pinned
+   inventory is read, `guest_selection.pinned_requirements` reads only candidate files (Dockerfiles, compose files,
+   CI workflows, Makefiles, `.sh` files and `bin/`), each under 256 KiB, never symlinks, and never a model. An explicit
+   requirement is a literal Linux platform in `--platform`/`--platform=`, a `platform:` key, or
+   `DOCKER_DEFAULT_PLATFORM`. Comments, variables, pip tags and documentation do not count. The result (required
+   platforms, triggering paths, unsupported literals) is stored on the cache state (`environment_guest`), written to the
+   attempt record (`diagnostics.guest`) and logged as `env_cache.guest_selected`. Paths only; no file content.
+3. **The guest is bound into the runtime identity.** `RuntimePolicy` gains an optional `alternate_identity` (the other
+   CPU's guest of the same carrier). `RuntimePolicy.for_guest` returns the policy holding exactly the selected identity,
+   so capabilities, probes, approvals, execution and the clean consumer all see one guest. Capability resolution
+   derives the guest from the stored requirements, so clean verification reproduces the decision; a requirement with no
+   configured identity is refused. A repository with no requirement gets the carrier's guest and does not need the
+   alternate.
+4. **Binfmt is registered in both guests.** An incidental foreign image runs through user-mode emulation in the native
+   guest, slowly but correctly.
+5. **vCPUs.** No product default exists: `RuntimeResources.cpus` is required in each operator policy, and the evidence
+   policies (Dettmore v19-v40) set 2. `-smp` already follows `policy.resources.cpus`. The operator's policy must be
+   raised to 8; memory is unchanged at 4096 MiB (2048 MiB to the guest).
+
+Boot check from the two-guest image, 8 vCPUs, 2048 MiB to the guest (`boot` mode, one run each): the aarch64 guest
+reached dockerd in 132.3 s, and an incidental `--platform linux/amd64` container ran through binfmt (`uname -m` x86_64);
+the x86_64 guest reached dockerd in 86.1 s. Both `qemu` argument lists carry `-smp 8 -m 2048`. The workload timings
+above were measured at 4 vCPUs and have not been repeated at 8.
+
+### What the pinned snapshots select
+
+Read-only evaluation at each snapshot's pinned HEAD (`git archive` of candidate files only):
+
+- Dettmore (`bf498e84`): **linux/x86_64**, so the foreign guest. Triggers: `.github/workflows/main-branch-build.yml` and
+  `.github/workflows/pull-request-build.yml`, each with `docker buildx build --platform linux/amd64` in a "Build and push
+  amd64" step (and the arm64 counterpart). These are release-publish steps, not development or test requirements. Under
+  the rule as the maintainer stated it (buildx invocations in CI count), the amd64 publish makes the repository
+  foreign. If publish-only steps should not count, that is a rule change; this round does not make it.
+- Elm (`bc224a78`): **linux/x86_64**, so the foreign guest. Triggers: `compose.full.yaml` (service `platform: linux/amd64`)
+  and `guest-image/Dockerfile` (`FROM --platform=linux/amd64` on two stages). These name the amd64 component the
+  environment runs.
+
+Both snapshots therefore run in the x86_64 guest on this arm64 carrier. That is the case where the measured slowdown
+applies (about 4.6 times for an amd64 build through binfmt, versus the pre-change x86 guest on this host).
 
 ## Not proven
+
+- Discovery end to end on Dettmore or Elm with a configured two-identity policy. The selection and binding are unit-tested;
+  the snapshots were evaluated read only.
+- The workload timings at 8 vCPUs, and whether 8 vCPUs changes the 4.6x foreign-build ratio.
+- Operator configs. Any policy with only the x86 identity on an arm carrier is now refused for a repository without a
+  requirement until its native identity is added. The v41 policy is not touched by this change.
 
 - KVM. This host has no `/dev/kvm`, so the KVM branch of `qemu_arguments` (`-cpu host`) has no runtime evidence.
 - `-cpu cortex-a72` against `-cpu max`. The model was kept; `max` was not measured.

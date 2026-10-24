@@ -748,6 +748,7 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             environment_attempt=get("environment_attempt"),
             environment_attempt_archive=get("environment_attempt_archive") or [],
             environment_capabilities=get("environment_capabilities"),
+            environment_guest=get("environment_guest"),
             environment_runtime_artifacts=get("environment_runtime_artifacts"),
             environment_source_owner=get("environment_source_owner"),
             environment_execution_source=get("environment_execution_source"),
@@ -1083,6 +1084,7 @@ def _rehydrate_reviewed_environment(live: EnvCacheState, persisted: EnvCacheStat
     live.environment_source_owner = persisted.environment_source_owner
     live.environment_execution_source = persisted.environment_execution_source
     live.environment_capabilities = persisted.environment_capabilities
+    live.environment_guest = persisted.environment_guest
     live.environment_runtime_artifacts = persisted.environment_runtime_artifacts
     live.environment_manifest = persisted.environment_manifest
     live.environment_assessment = persisted.environment_assessment

@@ -26,6 +26,7 @@ from coordinare_service_inference.environment.execution_source import (
     ExecutionSourceError,
     bundle_inventory,
 )
+from coordinare_service_inference.environment.guest_selection import pinned_requirements
 from coordinare_service_inference.manual_override import SERVICES_SUBDIR
 
 from coordinare.lib.redaction import redact_state_value
@@ -2484,6 +2485,7 @@ class EnvCacheService:
             message = "environment discovery requires an immutable source commit"
             raise EnvironmentDiscoveryError(message)
         cache_state.environment_capabilities = None
+        cache_state.environment_guest = None
         cache_state.environment_runtime_artifacts = None
         cache_state.environment_manifest = None
         cache_state.environment_assessment = None
@@ -2531,19 +2533,6 @@ class EnvCacheService:
         attempt_timer = asyncio.timeout_at(budget.deadline)
         try:
             async with attempt_timer:
-                budget.stage = "capabilities"
-                if capabilities is None:
-                    from coordinare.services.environment_capabilities import (
-                        resolve_execution_capabilities,
-                    )
-
-                    capability_state = dict(self._kubernetes_state)
-                    capability_state.setdefault("coordinare_config", self._coordinare_config)
-                    capability_state.setdefault("env_cache", {symphony_name: cache_state})
-                    capabilities = await resolve_execution_capabilities(capability_state, symphony_name)
-                from coordinare.services.environment_capabilities import require_cache_mount
-
-                require_cache_mount(capabilities, cache_mount_path)
                 budget.stage = 'execution_source'
                 await budget.flush()
                 prepare_source = getattr(github_service, 'prepare_execution_source', None)
@@ -2557,6 +2546,27 @@ class EnvCacheService:
                 budget.stage = "inventory"
                 paths, entries = await _pinned_inventory(github_service, github_org, repo,
                     limit=limits.max_inventory_entries, bundle=source_bundle)
+                # The guest is decided from the pinned source before any capability, probe or model step.
+                budget.stage = "guest"
+                guest_requirements = await asyncio.to_thread(pinned_requirements, source_bundle.payload_path, paths)
+                cache_state.environment_guest = guest_requirements
+                budget.guest = dict(guest_requirements)
+                budget.stage = "capabilities"
+                if capabilities is None:
+                    from coordinare.services.environment_capabilities import (
+                        resolve_execution_capabilities,
+                    )
+
+                    capability_state = dict(self._kubernetes_state)
+                    capability_state.setdefault("coordinare_config", self._coordinare_config)
+                    capability_state.setdefault("env_cache", {symphony_name: cache_state})
+                    capabilities = await resolve_execution_capabilities(capability_state, symphony_name)
+                budget.guest = {**budget.guest, "guest_platform": (
+                    capabilities.runtime.identity.guest_platform if capabilities.runtime is not None else capabilities.platform)}
+                logger.info("env_cache.guest_selected", symphony=symphony_name, **budget.guest)
+                from coordinare.services.environment_capabilities import require_cache_mount
+
+                require_cache_mount(capabilities, cache_mount_path)
                 from coordinare.services.environment_probe_service import (
                     ProbeServiceContext,
                     run_owned_probe,
