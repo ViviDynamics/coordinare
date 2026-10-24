@@ -51,6 +51,7 @@ from coordinare.services.environment_attempt import (
     AttemptBudget,
     DiscoveryChatReply,
     EnvironmentDiscoveryError,
+    failure_detail,
 )
 from coordinare.services.environment_capabilities import platform_roles
 from coordinare.services.environment_construction import ReviewedConstruction, ScopeReopenedError
@@ -837,8 +838,8 @@ async def discover_and_review(
     except EnvironmentDiscoveryError as exc:
         budget.error_code = exc.code
         raise
-    except (ValueError, TypeError):
-        budget.error_code = "invalid_contract"
+    except (ValueError, TypeError) as exc:
+        budget.error_code, budget.error_detail = "invalid_contract", failure_detail(exc)
         message = "environment discovery/review contract is malformed or unsupported"
         raise EnvironmentDiscoveryError(message, code="invalid_contract") from None
     except asyncio.CancelledError:
@@ -1031,7 +1032,8 @@ async def _discover_attempt(
                 continue
     except EnvironmentDiscoveryError:
         raise
-    except (ValidationError, ValueError, TypeError):
+    except (ValidationError, ValueError, TypeError) as exc:
+        budget.error_detail = failure_detail(exc)
         message = "environment discovery/review contract is malformed or unsupported"
         raise EnvironmentDiscoveryError(message, code="invalid_contract") from None
     except Exception:

@@ -2605,6 +2605,9 @@ class EnvCacheService:
             source_temporary.cleanup()
             release_execution_source(cache_state, identity=cache_state.environment_execution_source)
             save_attempt(cache_state, budget)
+            # The terminal hold (status, last_error) must reach the snapshot, not only memory; the original error still wins.
+            with contextlib.suppress(EnvironmentDiscoveryError):
+                await self._checkpoint_environment_attempt(cache_state, budget)
             logger.info("env_cache.manifest_attempt", symphony=symphony_name, **budget.summary())
         activation = render_activate(manifest, cache_mount_path=cache_mount_path)
         verification = render_verify(manifest, cache_mount_path=cache_mount_path)

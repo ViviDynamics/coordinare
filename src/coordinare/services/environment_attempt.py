@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import traceback
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -59,6 +60,13 @@ class DiscoveryChatReply:
     transport_fallback: str | None = None
 
 
+def failure_detail(exc: BaseException) -> str:
+    """Exception class and innermost frame (file and function): names the producer without echoing its message."""
+    frame = traceback.extract_tb(exc.__traceback__)[-1:]
+    where = f"{frame[0].filename.rsplit('/', 1)[-1]}:{frame[0].name}:{frame[0].lineno}" if frame else "none"
+    return f"{type(exc).__name__} at {where}"
+
+
 @dataclass
 class AttemptBudget:
     """One monotonic budget across inspection, malformed proposals and fresh reviews."""
@@ -88,6 +96,8 @@ class AttemptBudget:
     stage: str = "inventory"
     outcome: str = "held"
     error_code: str | None = None
+    # The class and innermost frame behind an invalid_contract hold: never the message, which can carry model text.
+    error_detail: str | None = None
     usage: dict[str, int] = field(default_factory=dict)
     # The pre-discovery guest decision: required platforms, triggering paths, and the guest chosen for this environment.
     guest: dict[str, Any] | None = None
@@ -236,7 +246,7 @@ class AttemptBudget:
                 **{"scope_" + key: value for key, value in finding_summary(self.scope_findings).items()},
                 "scope_criterion_count": len(self.scope_definition.criteria) if self.scope_definition is not None else 0,
                 "scope_review_count": len(self.scope_findings.reviews) if self.scope_findings is not None else 0,
-                "scope_contract_digest": self.scope_contract.digest() if self.scope_contract is not None else None, "stage": self.stage, "outcome": self.outcome, "error_code": self.error_code, "guest": self.guest,
+                "scope_contract_digest": self.scope_contract.digest() if self.scope_contract is not None else None, "stage": self.stage, "outcome": self.outcome, "error_code": self.error_code, "error_detail": self.error_detail, "guest": self.guest,
                 "elapsed_seconds": round(time.monotonic() - self.started, 3),
                 "probe_batches": self.probe_batches, "max_probe_batches": MAX_PROBE_BATCHES, "calls": self.calls, "calls_completed": self.calls_completed, "reads": self.reads,
                 "repairs": self.repairs, **{name: getattr(self, name) for counter in REPAIR_COUNTERS.values()
