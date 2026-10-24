@@ -209,7 +209,9 @@ def test_a_run_written_between_pages_is_neither_skipped_nor_repeated(root: Path)
         _write(root, f"base{index}", CARD_A, mtime=EPOCH + index)
     first = list_history(root, _query(limit=3), _usage(root))
     second = list_history(root, _query(limit=3, cursor=first["next_cursor"]), _usage(root))
-    _write(root, "fresh", CARD_A, mtime=time.time_ns())  # written now, so newer than page one's anchor
+    # Written now, so newer than page one's anchor. os.utime takes seconds: nanoseconds here named a year past
+    # what newer kernels accept (EOVERFLOW on the Ubuntu 26 runners).
+    _write(root, "fresh", CARD_A, mtime=int(time.time()) + 5)
     third = list_history(root, _query(limit=3, cursor=second["next_cursor"]), _usage(root))
     listed = _runs(first) + _runs(second) + _runs(third)
     assert "fresh" not in listed

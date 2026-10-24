@@ -321,6 +321,8 @@ function symphonyScope(s, choice) {
     'last_cycle_duration_seconds', 'session_stats'];
   scoped.backend_ui_url = null;
   scoped.blocked_by_dependencies = [];
+  // 358: how many blockers the all-symphonies view holds, so the scope note can say whether there is anything to see there.
+  scoped.hidden_dependency_blockers = Array.isArray(s.blocked_by_dependencies) ? s.blocked_by_dependencies.length : 0;
   scoped.cycle_history = [];
   scoped.last_cycle_duration_seconds = null;
   scoped.last_rebase_round = symphonyRebaseAttention(s, s.last_rebase_round);
@@ -407,10 +409,19 @@ function symphonyNumber(value) {
 // The notes under the panels: what is known for every symphony, and what is not known per symphony.
 var SCOPE_NOTE_SHARED = 'Covers all symphonies.';
 var SCOPE_NOTE_CAPACITY = 'Capacity and busy counts are shared by all symphonies.';
-var SCOPE_NOTE_CHECKS = 'Recent checks are shown for all symphonies only.';
-var SCOPE_NOTE_DEPENDENCIES = 'Dependency blockers are shown for all symphonies only.';
-var SCOPE_NOTE_HEALTHY_BRANCHES = 'Healthy branches are shown for all symphonies only.';
-var SCOPE_NOTE_DURATION = 'Shown for all symphonies only.';
+var SCOPE_NOTE_CHECKS = 'Recent checks are only available in the all-symphonies view.';
+var SCOPE_NOTE_DEPENDENCIES = 'Dependency blockers are only available in the all-symphonies view.';
+var SCOPE_NOTE_HEALTHY_BRANCHES = 'Healthy branches are only listed in the all-symphonies view.';
+var SCOPE_NOTE_DURATION = 'Only available in the all-symphonies view.';
+
+// 358: the dependency panel's note under a symphony. Blockers are not known per symphony, so the
+// note points to the all-symphonies view, and only when that view has blockers to show (scopedView
+// counts them): a panel holding nothing but the note, with nothing behind it, is noise.
+function dependencyScopeNote(s) {
+  var hidden = s && Array.isArray(s.scope_hidden) ? s.scope_hidden : [];
+  if (hidden.indexOf('blocked_by_dependencies') === -1) return '';
+  return s.hidden_dependency_blockers > 0 ? SCOPE_NOTE_DEPENDENCIES : '';
+}
 
 // Writes the notes for one snapshot: the dashboard panels and the History page share the
 // recent-checks note, so a panel the scope hides says the same thing wherever it is.
@@ -434,8 +445,11 @@ function applyScopeNotes(s) {
   var depList = document.getElementById('dependency-blockers-list');
   var depCard = document.getElementById('dependency-blockers-card');
   if (depList && depCard && hidden.indexOf('blocked_by_dependencies') !== -1) {
-    depCard.style.display = '';
-    depList.innerHTML = '<li class="empty-state">' + SCOPE_NOTE_DEPENDENCIES + '</li>';
+    // 358: one compact line (the heading and the note), or no panel at all.
+    var depNote = dependencyScopeNote(s);
+    depCard.style.display = depNote ? '' : 'none';
+    depCard.classList.toggle('scope-note-only', !!depNote);
+    depList.innerHTML = depNote ? '<li class="empty-state">' + depNote + '</li>' : '';
   }
   var rebaseList = document.getElementById('rebase-status-list');
   var rebaseCard = document.getElementById('rebase-status-card');

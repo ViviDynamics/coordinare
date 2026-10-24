@@ -150,6 +150,8 @@ function renderState(s) {
     }
   }
   var depList = document.getElementById('dependency-blockers-list');
+  // 358: applyScopeNotes makes the panel a compact note under a symphony; every render starts full.
+  depCard.classList.remove('scope-note-only');
   if (s.blocked_by_dependencies && s.blocked_by_dependencies.length > 0) {
     depCard.style.display = '';
     depList.innerHTML = s.blocked_by_dependencies.map(function(d) {

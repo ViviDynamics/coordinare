@@ -27,6 +27,20 @@ def normalize_version(version: str) -> str:
     return ".".join(str(int(component)) for component in version.split("."))
 
 
+def stamp_version_module(root: Path, version: str) -> str:
+    """Write the release version into a source tree's ``_version.py`` and return it.
+
+    The wheel's hatch version is read from that file, so this is what an install from
+    the tree reports. The daemon image calls it before ``uv sync`` (issue 358).
+    """
+    version = normalize_version(version)
+    (root / "src/coordinare/_version.py").write_text(
+        f'from __future__ import annotations\n\n__version__ = "{version}"\n',
+        encoding="utf-8",
+    )
+    return version
+
+
 def prepare_projects(root: Path, stage: Path, version: str, repository: str) -> list[Path]:
     """Stage tagged distributions without modifying source metadata or locks."""
     tag = version
@@ -55,10 +69,7 @@ def prepare_projects(root: Path, stage: Path, version: str, repository: str) -> 
         if name == "coordinare":
             metadata += '\n[tool.hatch.metadata]\nallow-direct-references = true\n'
             metadata = metadata.replace('dynamic = ["version"]', f'version = "{version}"', 1)
-            (destination / "src/coordinare/_version.py").write_text(
-                f'from __future__ import annotations\n\n__version__ = "{version}"\n',
-                encoding="utf-8",
-            )
+            stamp_version_module(destination, version)
         metadata, replacements = re.subn(r'^version = "[^"]+"$', f'version = "{version}"', metadata, count=1, flags=re.MULTILINE)
         if replacements != 1:
             raise ValueError(f"Missing static version in {source}")
@@ -82,9 +93,15 @@ def copy_installer(root: Path, output: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build all Python release assets from the release tag")
     parser.add_argument("--version", required=True)
-    parser.add_argument("--repository", required=True)
+    parser.add_argument("--repository")
     parser.add_argument("--output", type=Path, default=Path("dist"))
+    parser.add_argument("--stamp", type=Path, metavar="ROOT", help="only write the version into ROOT/src/coordinare/_version.py")
     args = parser.parse_args()
+    if args.stamp is not None:
+        print(stamp_version_module(args.stamp, args.version))
+        return
+    if args.repository is None:
+        parser.error("the following arguments are required: --repository")
     root = Path(__file__).resolve().parents[1]
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
