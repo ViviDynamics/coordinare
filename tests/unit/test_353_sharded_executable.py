@@ -149,9 +149,14 @@ class FakeBuild:
         self.feedback: dict = {}
         self.previous: dict = {}
         self.group_inputs: dict = {}
+        self.global_part: dict | None = None
+        self.concurrency = 12
         self.rounds: list[list[str]] = []
 
-    async def author_all(self, *, summary, probes, groups=None):
+    def admits(self, group, part, *, summary):
+        return True
+
+    async def author_all(self, *, summary, probes, groups=None, concurrency=None):
         asked = list(self.groups if groups is None else groups)
         self.rounds.append([group.prefix for group in asked])
         self.briefs = getattr(self, 'briefs', [])
@@ -177,7 +182,7 @@ async def merge_with(monkeypatch, validate):
 
     messages = [{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}]
     attempt = SimpleNamespace(budget=budget, discovery=inspection, messages=messages, chat=None, delta=None,
-                              construction=SimpleNamespace(observe_sources=observe))
+                              prior_manifests=[], construction=SimpleNamespace(observe_sources=observe))
     merged = await discovery_module._divided_candidate(build, attempt, validate)
     return merged, build, phases, messages
 
@@ -473,9 +478,12 @@ async def test_a_redone_group_that_splits_replaces_its_earlier_part(monkeypatch)
     groups = [CheckGroup('c00-', (make_criterion(1), make_criterion(3))), CheckGroup('c01-', (make_criterion(2),))]
     build = FakeBuild(groups)
 
-    async def split_on_redo(*, summary, probes, groups=None):
-        if groups is None:
-            return await FakeBuild.author_all(build, summary=summary, probes=probes)
+    rounds: list[int] = []
+
+    async def split_on_redo(*, summary, probes, groups=None, concurrency=None):
+        rounds.append(1)
+        if len(rounds) == 1:
+            return await FakeBuild.author_all(build, summary=summary, probes=probes, groups=groups)
         halves = [CheckGroup('c00a-', (make_criterion(1),)), CheckGroup('c00b-', (make_criterion(3),))]
         return {half.prefix: (half, validate_group(group_reply(half), group=half, summary=summary)) for half in halves}
 
@@ -494,7 +502,7 @@ async def test_a_redone_group_that_splits_replaces_its_earlier_part(monkeypatch)
     monkeypatch.setattr(discovery_module, '_phase', phase)
     budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
     attempt = SimpleNamespace(budget=budget, delta=None, messages=[{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}],
-                              chat=None, discovery=SimpleNamespace(budget=budget, inputs={}, finding_responses=[]),
+                              chat=None, prior_manifests=[], discovery=SimpleNamespace(budget=budget, inputs={}, finding_responses=[]),
                               construction=SimpleNamespace(observe_sources=lambda _inputs: asyncio.sleep(0)))
     merged = await discovery_module._divided_candidate(build, attempt, validate)
     assert sorted(merged['criterion_checks'].values()) == [['c00a-0'], ['c00b-0'], ['c01-0']]
