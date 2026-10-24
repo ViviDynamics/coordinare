@@ -463,8 +463,31 @@ def _finding_reference_errors(proposal: CoverageAssessmentProposal, *, inspectio
     return errors
 
 
+def _decision_errors(proposal: CoverageAssessmentProposal, *, inspection: SourceInspection,
+                     retained_ids: Collection[str]) -> list[dict[str, Any]]:
+    """The combined review's decision rules, per part: v33 held when a part's duplicate decision stayed open and only
+    the combined assessment, which no reviewer can correct, rejected it."""
+    errors: list[dict[str, Any]] = []
+    retained = set(retained_ids)
+    for index, decision in enumerate(proposal.decisions):
+        location = ['assessment', 'decisions', str(index)]
+        if decision.duplicate_of is not None and decision.status != 'resolved':
+            errors.append({'code': 'review_findings_invalid', 'location': [*location, 'status'],
+                           'guidance': 'A duplicate entry must use status resolved; its original finding remains '
+                                       'independently blocking.'})
+        if decision.duplicate_of is not None and (decision.duplicate_of not in retained
+                                                  or decision.duplicate_of == decision.finding_id):
+            errors.append({'code': 'review_findings_invalid', 'location': [*location, 'duplicate_of'],
+                           'guidance': 'duplicate_of must name another retained finding ID, never itself or a new finding.'})
+        if not set(decision.sources) <= inspection.inputs.keys():
+            errors.append({'code': 'review_citations_invalid', 'location': [*location, 'sources'],
+                           'guidance': 'Cite only files indexed in mandatory_evidence or read with tools.'})
+    return errors
+
+
 def validate_review_part(data: dict[str, Any], *, inspection: SourceInspection, owned: Sequence[str],
-                         capacity: int, obligation_ids: Collection[str] = ()) -> tuple[CoverageAssessmentProposal, dict[str, str]]:
+                         capacity: int, obligation_ids: Collection[str] = (),
+                         retained_ids: Collection[str] = ()) -> tuple[CoverageAssessmentProposal, dict[str, str]]:
     proposal = CoverageAssessmentProposal.model_validate(data.get('assessment') if isinstance(data, dict) else data)
     errors: list[dict[str, Any]] = []
     decided = [decision.finding_id for decision in proposal.decisions]
@@ -480,6 +503,7 @@ def validate_review_part(data: dict[str, Any], *, inspection: SourceInspection, 
         errors.append({'code': 'review_citations_invalid', 'location': ['assessment', 'sources'],
                        'guidance': 'Cite only files indexed in mandatory_evidence or read with tools.'})
     errors.extend(_finding_reference_errors(proposal, inspection=inspection, obligation_ids=obligation_ids))
+    errors.extend(_decision_errors(proposal, inspection=inspection, retained_ids=retained_ids))
     opened = any(decision.status == 'open' for decision in proposal.decisions)
     if (proposal.verdict == 'accept' and (proposal.findings or opened)) or (
             proposal.verdict == 'revise' and not proposal.findings and not opened):

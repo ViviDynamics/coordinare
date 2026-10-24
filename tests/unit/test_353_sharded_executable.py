@@ -815,3 +815,24 @@ def test_record_rules_reach_the_global_author_in_its_own_phase_with_the_ids_they
     [feedback] = _validation_feedback(caught.value)
     assert (feedback['code'], feedback.get('command_id'), feedback['unavailable']) == (code, command_id, unavailable)
     assert feedback['guidance']
+
+
+def test_a_part_duplicate_decision_left_open_is_corrected_by_its_reviewer():
+    """v33: an open duplicate decision reached the combined review, which no reviewer can correct, and held."""
+    from coordinare.services.environment_shard_construction import validate_review_part
+
+    decision = {'finding_id': 'F0002', 'status': 'open', 'rationale': 'Same gap as F0001', 'sources': ['a.md'],
+                'duplicate_of': 'F0001'}
+    data = {'assessment': {'findings': [], 'decisions': [decision], 'capability_unavailable': False,
+                           'verdict': 'revise', 'rationale': 'gap', 'sources': ['a.md']}}
+    inspection = SimpleNamespace(inputs={'a.md': 'a' * 64})
+    with pytest.raises(_ResponseReferenceError) as caught:
+        validate_review_part(data, inspection=inspection, owned=['F0002'], capacity=4, retained_ids=['F0001', 'F0002'])
+    assert [error['location'] for error in caught.value.errors] == [['assessment', 'decisions', '0', 'status']]
+    decision['duplicate_of'] = 'F0009'
+    with pytest.raises(_ResponseReferenceError) as caught:
+        validate_review_part(data, inspection=inspection, owned=['F0002'], capacity=4, retained_ids=['F0001', 'F0002'])
+    assert ['assessment', 'decisions', '0', 'duplicate_of'] in [error['location'] for error in caught.value.errors]
+    decision.update(status='resolved', duplicate_of='F0001')
+    data['assessment']['verdict'] = 'accept'
+    validate_review_part(data, inspection=inspection, owned=['F0002'], capacity=4, retained_ids=['F0001', 'F0002'])
