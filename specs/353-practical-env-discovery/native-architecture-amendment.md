@@ -130,17 +130,24 @@ above were measured at 4 vCPUs and have not been repeated at 8.
 
 Read-only evaluation at each snapshot's pinned HEAD (`git archive` of candidate files only):
 
-- Dettmore (`bf498e84`): **linux/x86_64**, so the foreign guest. Triggers: `.github/workflows/main-branch-build.yml` and
-  `.github/workflows/pull-request-build.yml`, each with `docker buildx build --platform linux/amd64` in a "Build and push
-  amd64" step (and the arm64 counterpart). These are release-publish steps, not development or test requirements. Under
-  the rule as the maintainer stated it (buildx invocations in CI count), the amd64 publish makes the repository
-  foreign. If publish-only steps should not count, that is a rule change; this round does not make it.
-- Elm (`bc224a78`): **linux/x86_64**, so the foreign guest. Triggers: `compose.full.yaml` (service `platform: linux/amd64`)
-  and `guest-image/Dockerfile` (`FROM --platform=linux/amd64` on two stages). These name the amd64 component the
-  environment runs.
+- Dettmore (`bf498e84`): **linux/aarch64**, the native guest. Its amd64 build steps in `main-branch-build.yml` and
+  `pull-request-build.yml` are publish-only (`--push` inside `nick-fields/retry`'s `with.command`), so they are excluded
+  and named in `excluded_publish_steps`. The publish decision is made per step from the parsed YAML: a buildx or build
+  with `--push` or `--output type=registry`, a step that runs `docker push`, or `docker/build-push-action` with
+  `push: true`. A step is excluded only when it also names a Linux platform.
+- Elm (`bc224a78`): **linux/x86_64**, the foreign guest. Triggers: `compose.full.yaml` (service `platform: linux/amd64`)
+  and `guest-image/Dockerfile` (`FROM --platform=linux/amd64` on two stages). Its `cd.yml` publish step names no
+  platform, so it is not recorded.
 
-Both snapshots therefore run in the x86_64 guest on this arm64 carrier. That is the case where the measured slowdown
-applies (about 4.6 times for an amd64 build through binfmt, versus the pre-change x86 guest on this host).
+Elm therefore runs in the x86_64 guest on this arm64 carrier, the case where the measured slowdown applies (about 4.6
+times for an amd64 build through binfmt, versus the pre-change x86 guest on this host). Dettmore runs natively.
+
+Publish-only CI steps (decided per step) are not a dev/test requirement, per the maintainer's decision of round 3.
+Dockerfiles, compose files, scripts, Makefiles and non-publishing CI steps still count. A CI step that cannot be
+classified counts and is listed in `unclassified_ci`. A workflow that does not parse counts whole.
+
+vCPUs: no product default was changed. The count comes from each operator's policy (`resources.cpus`), and the
+operator's run profile sets 8.
 
 ## Not proven
 

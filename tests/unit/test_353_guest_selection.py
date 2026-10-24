@@ -86,5 +86,6 @@ def test_pinned_requirements_read_only_candidate_files_inside_the_tree(tmp_path)
     (tmp_path / 'big.sh').write_text('x' * (300 * 1024) + '\n--platform linux/amd64\n')
     (tmp_path / 'link.sh').symlink_to(tmp_path / 'Dockerfile')
     record = pinned_requirements(tmp_path, ['Dockerfile', 'docs/a.md', 'big.sh', 'link.sh'])
-    assert record == {'required': [X86], 'triggers': ['Dockerfile'], 'unsupported': []}
+    assert record == {'required': [X86], 'triggers': ['Dockerfile'], 'unsupported': [], 'excluded_publish_steps': [],
+                      'unclassified_ci': []}
     assert [path for path, _ in read_candidates(tmp_path, ['Dockerfile', 'link.sh', 'big.sh'])] == ['Dockerfile']

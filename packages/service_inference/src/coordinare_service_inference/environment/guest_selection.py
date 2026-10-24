@@ -1,14 +1,17 @@
-"""Per-repository guest choice from the pinned source alone: native unless an explicit requirement names the other CPU.
+"""Per-repository guest choice from the pinned source alone: native unless a dev/test requirement names the other CPU.
 
 Explicit means a literal platform in a build, run, pull or compose invocation: ``--platform linux/amd64`` (or ``=``),
 ``platform: linux/amd64`` in YAML, or ``DOCKER_DEFAULT_PLATFORM``. A variable, a comment or a non-Linux platform never
-counts. No model reads or weighs these files; the caller supplies only candidate paths and their pinned text.
+counts. In GitHub workflows the decision is per step: a publish-only step (a push to a registry) is excluded and named,
+an unclassifiable step counts and is named. No model reads or weighs these files.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+import yaml
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -19,7 +22,7 @@ MAX_TRIGGERS = 32
 MAX_FILE_BYTES = 256 * 1024
 _PLATFORM = r'[A-Za-z0-9_.:/-]+'
 _FLAG = re.compile(r'--platform(?:=|\s+)(' + _PLATFORM + r'(?:,' + _PLATFORM + r')*)')
-_KEY = re.compile(r'^\s*(?:-\s+)?platform\s*:\s*["\']?(' + _PLATFORM + r'(?:,' + _PLATFORM + r')*)["\']?\s*$', re.MULTILINE)
+_KEY = re.compile(r'^\s*(?:-\s+)?platforms?\s*:\s*["\']?(' + _PLATFORM + r'(?:,' + _PLATFORM + r')*)["\']?\s*$', re.MULTILINE)
 _DEFAULT = re.compile(r'DOCKER_DEFAULT_PLATFORM\s*[:=]\s*["\']?(' + _PLATFORM + r')')
 _COMPOSE = re.compile(r'(?:docker-)?compose[^/]*\.ya?ml')
 
@@ -31,6 +34,8 @@ class GuestSelection:
     required: tuple[str, ...]
     triggers: tuple[str, ...]
     unsupported: tuple[str, ...]
+    excluded: tuple[str, ...] = ()
+    unclassified: tuple[str, ...] = ()
 
 
 def candidate(path: str) -> bool:
@@ -58,22 +63,98 @@ def _literals(path: str, text: str) -> list[str]:
     return found
 
 
+_PUBLISH = re.compile(r'--push\b|--output[= ]+type=registry|\bdocker (?:manifest )?push\b')
+_BUILD_PUSH = 'docker/build-push-action'
+
+
+def _shell(step: dict[str, Any]) -> str:
+    """The commands a step runs: its run script, or the command or script an action such as retry is given."""
+    with_ = step.get('with') if isinstance(step.get('with'), dict) else {}
+    return '\n'.join(part for part in (step.get('run'), with_.get('command'), with_.get('script')) if isinstance(part, str))
+
+
+def _publishes(step: dict[str, Any]) -> bool | None:
+    """True for a publish-only step, False for one that does not publish, None when the step cannot be classified."""
+    uses = step.get('uses')
+    if isinstance(uses, str) and uses.startswith(_BUILD_PUSH):
+        push = (step.get('with') if isinstance(step.get('with'), dict) else {}).get('push')
+        if push is None or push is False or push == 'false':
+            return False
+        return True if push is True or push == 'true' else None
+    return bool(_PUBLISH.search(_shell(step)))
+
+
+def _named(value: str) -> bool:
+    return value.startswith('linux/') and value.split('/', 1)[1] in ARCHITECTURES
+
+
+def _dump(value: Any) -> str:
+    return yaml.safe_dump(value, sort_keys=True)
+
+
+def scan_units(path: str, text: str) -> tuple[list[str], list[str], list[str]]:
+    """Texts to scan for platforms, the excluded publish steps, and the unclassified CI units (each counted)."""
+    if not path.startswith(('.github/workflows/',)):
+        return [text], [], []
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError:
+        document = None
+    jobs = document.get('jobs') if isinstance(document, dict) else None
+    if not isinstance(jobs, dict):
+        return [text], [], [path]
+    units = [_dump({key: value for key, value in document.items() if key != 'jobs'})]
+    excluded: list[str] = []
+    unclassified: list[str] = []
+    for job_id, job in jobs.items():
+        if not isinstance(job, dict):
+            unclassified.append(f'{path} {job_id}')
+            units.append(_dump(job))
+            continue
+        units.append(_dump({key: value for key, value in job.items() if key != 'steps'}))
+        steps = job.get('steps') if isinstance(job.get('steps'), list) else []
+        for index, step in enumerate(steps):
+            if not isinstance(step, dict):
+                unclassified.append(f'{path} {job_id}/{index}')
+                units.append(_dump(step))
+                continue
+            label = f'{path} {job_id}/{step["name"] if isinstance(step.get("name"), str) else index}'
+            unit = _shell(step) + '\n' + _dump({key: value for key, value in step.items() if key != 'run'})
+            verdict = _publishes(step)
+            if verdict is None:
+                unclassified.append(label)
+            if verdict:
+                # Only a publish step that names a platform is decision-relevant, so only it is recorded.
+                if any(_named(value) for value in _literals(path, unit)):
+                    excluded.append(label)
+                continue
+            units.append(unit)
+    return units, excluded[:MAX_TRIGGERS], unclassified[:MAX_TRIGGERS]
+
+
 def select(files: Iterable[tuple[str, str]]) -> GuestSelection:
     """Explicit Linux platforms named by the given (path, pinned text) pairs; triggers are the files naming one."""
     required: set[str] = set()
     triggers: set[str] = set()
     unsupported: set[str] = set()
+    excluded: list[str] = []
+    unclassified: list[str] = []
     for path, text in sorted(files):
         if not candidate(path):
             continue
-        for value in _literals(path, text):
-            if value.startswith('linux/') and value.split('/', 1)[1] in ARCHITECTURES:
-                required.add(ARCHITECTURES[value.split('/', 1)[1]])
-                triggers.add(path)
-            elif value.startswith('linux/') or '/' in value:
-                unsupported.add(value[:64])
+        units, skipped, unknown = scan_units(path, text)
+        excluded += skipped
+        unclassified += unknown
+        for unit in units:
+            for value in _literals(path, unit):
+                if value.startswith('linux/') and value.split('/', 1)[1] in ARCHITECTURES:
+                    required.add(ARCHITECTURES[value.split('/', 1)[1]])
+                    triggers.add(path)
+                elif value.startswith('linux/') or '/' in value:
+                    unsupported.add(value[:64])
     return GuestSelection(required=tuple(sorted(required)), triggers=tuple(sorted(triggers))[:MAX_TRIGGERS],
-                          unsupported=tuple(sorted(unsupported))[:MAX_TRIGGERS])
+                          unsupported=tuple(sorted(unsupported))[:MAX_TRIGGERS], excluded=tuple(excluded[:MAX_TRIGGERS]),
+                          unclassified=tuple(unclassified[:MAX_TRIGGERS]))
 
 
 def read_candidates(root: Path, paths: Iterable[str]) -> list[tuple[str, str]]:
@@ -93,7 +174,8 @@ def pinned_requirements(root: Path, paths: Iterable[str]) -> dict[str, list[str]
     """The durable record of a selection: platforms, the paths that named them, and unsupported literals."""
     selection = select(read_candidates(root, paths))
     return {'required': list(selection.required), 'triggers': list(selection.triggers),
-            'unsupported': list(selection.unsupported)}
+            'unsupported': list(selection.unsupported), 'excluded_publish_steps': list(selection.excluded),
+            'unclassified_ci': list(selection.unclassified)}
 
 
 def guest_for(carrier: str, required: Iterable[str]) -> str:
