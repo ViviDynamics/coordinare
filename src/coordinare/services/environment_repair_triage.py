@@ -8,9 +8,9 @@ and requirements linked to any of those records. Every other record is frozen by
 Criterion ownership is not recorded in the manifest (groups come from the reviewed scope), so ``touched_parts`` names
 the owners of the closure's records only; a linked criterion belongs to the group that owns it in the scope.
 
-Clean-phase roots (checks, services, activation) cannot depend on install commands, so depends_on never names the
-installer that produced what they read. For those roots every install command joins the closure as a candidate
-producer. An install-rooted failure keeps the depends_on closure alone.
+Clean-phase roots (checks, services, activation) and roots of class capability, service or activation_path cannot
+depend on install commands, so depends_on never names the installer that produced what they read. For those roots every
+install command joins the closure as a candidate producer. Any other install-rooted failure keeps the depends_on closure.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from collections import defaultdict
 from itertools import pairwise
 from typing import TYPE_CHECKING, Literal
 
+from coordinare_service_inference.environment.static_rules import connectivity_probe
 from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
@@ -35,8 +36,8 @@ RootClass = Literal["command", "activation_path", "service", "capability", "netw
 GLOBAL = "global"
 ACTIVATION = "activation"
 LIFECYCLE = ("init", "start", "health", "stop")
+WIDENING = frozenset({"capability", "service", "activation_path"})
 _CHECK_GROUP = re.compile(r"^(c[0-9]{2,3})[a-z]*-")
-_CONNECTIVITY = re.compile(r"\b(?:curl|wget)\b[^;&|]*?(?:\s-I\b|\s--head\b|/dev/null)|\bping\s|\bnc\s+-[A-Za-z]*z\b")
 _MISSING_EXECUTABLE = re.compile(r"not found|No such file or directory", re.IGNORECASE)
 
 
@@ -53,11 +54,6 @@ class RepairTriage(BaseModel):
     requirement_ids: tuple[str, ...]
     touched_parts: tuple[str, ...]
     digest: str
-
-
-def is_connectivity_gate(command: Command) -> bool:
-    """An install that only tests reachability (a HEAD request, a download to /dev/null, ping or nc -z)."""
-    return _CONNECTIVITY.search(" ".join(command.argv)) is not None
 
 
 def part_of(identifier: str) -> str:
@@ -91,7 +87,7 @@ def _prerequisites(manifest: EnvironmentManifest, records: dict[str, tuple[Comma
 def _root_class(command: Command, kind: str, service: str | None, output: str) -> RootClass:
     if service is not None:
         return "service"
-    if kind == "install" and is_connectivity_gate(command):
+    if kind == "install" and connectivity_probe(command):
         return "network_gate"
     if _MISSING_EXECUTABLE.search(output):
         return "capability"
@@ -146,8 +142,9 @@ def triage_failure(manifest: EnvironmentManifest, report: VerificationReport) ->
         if service is not None:
             seeds |= members[service]
     closure = _closure(seeds, _prerequisites(manifest, records))
-    clean_root = any(identifier == ACTIVATION or (identifier in records and records[identifier][2] != "install")
-                     for identifier in roots)
+    # A capability, service or activation root may be an install's missing product, which no depends_on edge names.
+    clean_root = any(root_class in WIDENING or (identifier in records and records[identifier][2] != "install")
+                     for identifier, root_class in roots.items())
     if clean_root:
         closure |= {identifier for identifier, (_command, _service, kind) in records.items() if kind == "install"}
         closure = _closure(closure, _prerequisites(manifest, records))

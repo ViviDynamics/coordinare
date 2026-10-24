@@ -14,10 +14,10 @@ from coordinare_service_inference.environment.models import (
     VerificationReport,
 )
 from coordinare_service_inference.environment.runtime import RuntimeSpec
+from coordinare_service_inference.environment.static_rules import connectivity_probe
 
 from coordinare.services.environment_repair_triage import (
     RepairTriage,
-    is_connectivity_gate,
     triage_failure,
 )
 from tests.unit.env_manifest_fixture import reviewed_metadata
@@ -128,7 +128,7 @@ def test_roots_are_classified_by_what_failed():
     assert triage.roots["install-binary"] == "capability"
     assert triage.roots["docker-start"] == "service"
     assert triage.roots["check-plain"] == "command"
-    assert is_connectivity_gate(manifest.install[0]) and not is_connectivity_gate(manifest.install[1])
+    assert connectivity_probe(manifest.install[0]) and not connectivity_probe(manifest.install[1])
 
 
 def test_activation_failure_is_an_activation_path_root():
