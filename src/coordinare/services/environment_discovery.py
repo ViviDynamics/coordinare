@@ -31,6 +31,7 @@ from coordinare_service_inference.environment.models import (
 from coordinare_service_inference.environment.models import (
     CoverageAssessmentProposal as _CoverageProposal,
 )
+from coordinare_service_inference.environment.static_rules import validate_static_rules
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
@@ -713,6 +714,11 @@ class _CandidateValidator:
                 raise EnvironmentDiscoveryError(message, code="obligation_removed")
             previous.update(current)
         manifest = self.construction.admit(data, self.discovery.inputs)
+        try:
+            validate_static_rules(manifest.install, manifest.activation)
+        except PydanticCustomError as exc:
+            raise ValidationError.from_exception_data('EnvironmentManifestProposal',
+                                                      [{'type': exc, 'loc': (), 'input': None}]) from exc
         for prior in self.prior_manifests:
             _preserve_obligations(manifest, prior)
             if any(manifest.inputs.get(path) != digest for path, digest in prior.inputs.items()):

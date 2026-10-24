@@ -22,6 +22,7 @@ from coordinare_service_inference.environment.models import (
     validate_execution_graph,
 )
 from coordinare_service_inference.environment.scope import canonical
+from coordinare_service_inference.environment.static_rules import validate_static_rules
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 from pydantic_core import PydanticCustomError
 
@@ -119,6 +120,7 @@ def validate_global(data: dict[str, Any]) -> dict[str, Any]:
     proposal = EnvironmentManifestProposal.model_validate(data)
     try:
         validate_execution_graph(proposal.install, proposal.checks, proposal.services)
+        validate_static_rules(proposal.install, proposal.activation)
     except PydanticCustomError as exc:
         raise ValidationError.from_exception_data('EnvironmentManifestProposal', [
             {'type': exc, 'loc': (), 'input': None}]) from exc
