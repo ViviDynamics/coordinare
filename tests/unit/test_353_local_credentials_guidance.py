@@ -174,3 +174,15 @@ def test_an_incomplete_criterion_mapping_names_the_criteria_never_the_authors_ke
     assert error['code'] == 'scope_required_check_mapping'
     assert error['missing_criteria'] == ['S1111111111111111'] and error['invalid_criteria'] == ['S2222222222222222']
     assert error['unexpected_keys'] == 1 and 'author-invented-key' not in json.dumps(error)
+
+
+def test_local_credential_errors_name_the_credentials_and_command_they_reject():
+    """v34: told neither the credential nor the command, the author repeated each mistake."""
+    [error] = feedback(manifest(local_credentials=[CREDENTIAL, {**CREDENTIAL, 'name': 'UNUSED'}]))
+    assert error['unavailable'] == ['UNUSED']
+    [error] = feedback(manifest(local_credentials=[{**CREDENTIAL, 'service': 'missing'}]))
+    assert (error['code'], error['unavailable']) == ('local_credential_invalid', ['PGPASSWORD'])
+    install = {'id': 'seed-db', 'argv': ['sh', '-c', 'echo ${PGPASSWORD}']}
+    [error] = feedback(manifest(install=[install]))
+    assert (error['code'], error['command_id'], error['unavailable']) == (
+        'local_credential_in_install', 'seed-db', ['PGPASSWORD'])

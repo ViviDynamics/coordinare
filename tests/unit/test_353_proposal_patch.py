@@ -451,3 +451,20 @@ def test_a_probe_without_its_fixed_schema_version_is_still_a_version_1_probe():
     from coordinare.services.environment_probes import ProbeRequest
 
     assert ProbeRequest.model_fields["schema_version"].default == 1
+
+
+def test_a_rejected_correction_names_its_record_and_the_daemon_reason_never_the_model_text():
+    """v34: told only that a correction failed, the author sent another that failed the same way."""
+    from coordinare.services.environment_proposal_patch import apply_patch
+
+    base = {"manifest": {"checks": [{"id": "a"}]}}
+    request = {"tool": "repair_proposal", "changes": [{"path": ["manifest", "checks", 0, "id"], "value": "b"},
+                                                      {"path": ["manifest", "checks", 7, "id"], "value": "c"}]}
+    with pytest.raises(EnvironmentDiscoveryError) as caught:
+        apply_patch(base, request, max_bytes=4096)
+    assert str(caught.value) == "proposal correction record 1 is invalid: invalid correction index"
+    request["changes"][1] = {"path": ["manifest", "secret-token-xyz", "id"], "value": "c"}
+    with pytest.raises(EnvironmentDiscoveryError) as caught:
+        apply_patch(base, request, max_bytes=4096)
+    assert "secret-token-xyz" not in str(caught.value)
+    assert str(caught.value).endswith("path does not name an existing field or entry")
