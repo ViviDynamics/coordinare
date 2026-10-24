@@ -246,8 +246,9 @@ async def test_overfull_field_patch_reports_limits_and_can_replace_common_array(
 
     valid = candidate()
     valid["install"] = [{"id": "install-dev", "argv": ["true"]}]
+    # Identical argv is a duplicate, so each check differs in its env; the common array is still what is replaced.
     valid["checks"] = [
-        {"id": f"version-{index}", "argv": ["zog", "--version"], "required": True}
+        {"id": f"version-{index}", "argv": ["zog", "--version"], "env": {"ZOG_CHECK": str(index)}, "required": True}
         for index in range(22)
     ]
     valid["requirements"][0]["checks"] = [check["id"] for check in valid["checks"]]

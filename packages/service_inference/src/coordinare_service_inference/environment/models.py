@@ -463,6 +463,31 @@ def _repeated(identifiers: Iterable[str]) -> set[str]:
     return {identifier for identifier, count in Counter(identifiers).items() if count > 1}
 
 
+MAX_DUPLICATE_PAIRS = 32
+
+
+def duplicate_content_pairs(commands: Iterable[Command]) -> list[list[str]]:
+    """Each later command repeating an earlier one's argv, cwd, env and scope, paired with that earlier copy."""
+    first: dict[str, str] = {}
+    pairs: list[list[str]] = []
+    for command in commands:
+        key = json.dumps([command.argv, command.cwd, sorted(command.env.items()), sorted(command.scope)], ensure_ascii=False)
+        if key in first:
+            pairs.append([first[key], command.id])
+        else:
+            first[key] = command.id
+    return pairs
+
+
+def validate_unique_content(commands: Iterable[Command]) -> None:
+    """One obligation is one command: an identical copy under another id is rejected, listing every pair."""
+    if pairs := duplicate_content_pairs(commands):
+        raise PydanticCustomError("duplicate_command_content",
+                                  "identical commands repeat an earlier command's argv, cwd, env and scope; "
+                                  "keep one and remove the rest",
+                                  {"pairs": pairs[:MAX_DUPLICATE_PAIRS]})
+
+
 def validate_records(install: list[Command], checks: list[Command], services: list[Service],
                      requirements: list[Requirement], activation_env: dict[str, str], *, runtime: bool,
                      reviewed_scope: bool = True) -> None:
@@ -479,6 +504,8 @@ def validate_records(install: list[Command], checks: list[Command], services: li
                                'activation', set(reserved))
     if (repeated := _repeated(command.id for command in commands)) or len(commands) > MAX_COMMANDS:
         raise _graph_error('duplicate_command_ids', 'duplicate command IDs or excessive commands', '', repeated)
+    validate_unique_content(install)
+    validate_unique_content(checks)
     if repeated := _repeated(requirement.id for requirement in requirements):
         raise _graph_error('duplicate_requirement_ids', 'duplicate requirement IDs', '', repeated)
     for service in services:
@@ -576,6 +603,11 @@ class ShardChecks(StrictModel):
 
     checks: list[Command] = Field(max_length=1024)
     criterion_checks: dict[str, list[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def unique_content(self) -> Self:
+        validate_unique_content(self.checks)
+        return self
 
 
 class ShardChecksEnvelope(StrictModel):

@@ -57,7 +57,8 @@ SUMMARY = {'checks': [{'id': 'toolchain', 'required': True, 'scope': []},
 
 
 def group_reply(group: CheckGroup, **changes: object) -> dict:
-    checks = [{'id': f'{group.prefix}{index}', 'argv': ['true']} for index in range(len(group.criteria))]
+    checks = [{'id': f'{group.prefix}{index}', 'argv': ['check', f'{group.prefix}{index}']}
+              for index in range(len(group.criteria))]
     mapping = {criterion.id: [f'{group.prefix}{index}'] for index, criterion in enumerate(group.criteria)}
     return {'shard_checks': {'checks': checks, 'criterion_checks': mapping, **changes}}
 
@@ -713,12 +714,12 @@ def test_an_unsplit_group_must_keep_its_previously_required_checks_in_its_own_ph
                          'criterion_checks': {make_criterion(1).id: ['c00-docker-build']}}}
     kept = inherit(previous, group, group)
     assert kept.required == {'c00-docker-build'}
-    reply = {'shard_checks': {'checks': [{'id': 'c00-other', 'argv': ['true']}],
+    reply = {'shard_checks': {'checks': [{'id': 'c00-other', 'argv': ['check', 'c00-other']}],
                               'criterion_checks': {make_criterion(1).id: ['c00-other']}}}
     with pytest.raises(_ResponseReferenceError) as caught:
         validate_group(reply, group=group, summary=SUMMARY, inherited=kept)
     assert 'c00-docker-build' in json.dumps(caught.value.errors)
-    validate_group({'shard_checks': {'checks': [*previous['c00-']['checks'][:1], {'id': 'c00-other', 'argv': ['true']}],
+    validate_group({'shard_checks': {'checks': [*previous['c00-']['checks'][:1], {'id': 'c00-other', 'argv': ['check', 'c00-other']}],
                                      'criterion_checks': {make_criterion(1).id: ['c00-other']}}},
                    group=group, summary=SUMMARY, inherited=kept)
 
@@ -748,7 +749,7 @@ def test_a_group_keeps_every_mapping_the_reviewed_manifest_made_and_hears_all_lo
 
     first, second = make_criterion(1), make_criterion(2)
     group = CheckGroup('c01-', (first, second))
-    checks = [{'id': 'c01-qa-boot', 'argv': ['true']}, {'id': 'c01-other', 'argv': ['true']}]
+    checks = [{'id': 'c01-qa-boot', 'argv': ['check', 'c01-qa-boot']}, {'id': 'c01-other', 'argv': ['check', 'c01-other']}]
     kept = replace(Inheritance(), mapped={first.id: frozenset({'c01-qa-boot'}), second.id: frozenset({'c01-qa-boot'})})
     reply = {'shard_checks': {'checks': checks, 'criterion_checks': {first.id: ['c01-other'], second.id: ['c01-other']}}}
     with pytest.raises(_ResponseReferenceError) as caught:
