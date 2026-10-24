@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 from coordinare_service_inference.environment.models import ExecutionCapabilities
 from coordinare_service_inference.environment.runtime import RuntimeIdentity, RuntimePolicy
+from coordinare_service_inference.environment.runtime_guest import foreign_platforms
 
 from coordinare.services.environment_acceptance import (
     accepted_environment,
@@ -56,6 +57,14 @@ async def _docker_identity(image: str) -> tuple[str, str]:
         raise EnvironmentCapabilityError(message) from exc
     else:
         return pinned, f"{os_name}/{machine}"
+
+
+def platform_roles(capabilities: ExecutionCapabilities) -> dict[str, Any]:
+    """Where each kind of work runs; installs and checks always run on the carrier's own CPU, never through emulation."""
+    runtime = capabilities.runtime
+    daemon = runtime.identity.guest_platform if runtime is not None else capabilities.platform
+    return {"install_and_check_platform": capabilities.platform, "container_daemon_platform": daemon,
+            "emulated_platforms": list(foreign_platforms(daemon)) if runtime is not None else []}
 
 
 def _refuse_runtime(message: str) -> NoReturn:

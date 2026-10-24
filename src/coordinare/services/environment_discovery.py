@@ -51,6 +51,7 @@ from coordinare.services.environment_attempt import (
     DiscoveryChatReply,
     EnvironmentDiscoveryError,
 )
+from coordinare.services.environment_capabilities import platform_roles
 from coordinare.services.environment_construction import ReviewedConstruction, ScopeReopenedError
 from coordinare.services.environment_delta import (
     DELTA_FALLBACK,
@@ -971,6 +972,7 @@ async def _discover_attempt(
                 "root_directory": discovery.list_directory(),
                 "inventory_digest": hashlib.sha256(_json(inventory).encode()).hexdigest(),
                 "execution_capabilities": capabilities.model_dump(), "capabilities_digest": capabilities.digest(),
+                "platform_roles": platform_roles(capabilities),
                 "execution_rules": "{cache} persists across jobs and is read-only in clean verification; "
                 "{repo} is disposable pinned source, {scratch} is fresh writable storage. "
                 "They may have different absolute paths in installer, verifier and consumer. "

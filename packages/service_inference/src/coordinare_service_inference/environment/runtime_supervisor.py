@@ -328,7 +328,7 @@ async def _prepare_control(lease: RuntimeLease, *, repo: Path) -> list[str]:
     (work/'docker').mkdir()
     (work/'docker/config.json').write_text('{"auths":{}}\n')
     (work/'user-data').write_text(cloud_configuration(repo=repo, cache=lease.cache,
-        scratch=lease.scratch, readonly=not lease.install))
+        scratch=lease.scratch, readonly=not lease.install, guest_platform=lease.bundle.guest_platform))
     (work/'meta-data').write_text('instance-id: coordinare-' + lease.owner_id + '\n')
     await _command(['genisoimage', '-quiet', '-output', str(work/'seed.iso'), '-volid', 'cidata', '-joliet', '-rock',
                     str(work/'user-data'), str(work/'meta-data')], deadline=lease.deadline)

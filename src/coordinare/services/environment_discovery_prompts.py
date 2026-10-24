@@ -65,6 +65,9 @@ _MANIFEST_INSTRUCTIONS = (
     'Use the fixed scope_contract supplied by the daemon: criterion_checks maps every required criterion ID '
     'to required unscoped consumer checks. Never return scope_contract, scope_contract_digest or change source obligations. '
     'runtime_endpoints declares bounded loopback forwards only when an explicit private platform policy is configured. '
+    'Architecture: installs and checks run natively on platform_roles.install_and_check_platform, so download release '
+    'artifacts for that platform. A container image for another platform runs only through emulated_platforms, which is '
+    'slower; request one only when the repository explicitly requires it. '
 
     'Discover the project environment from arbitrary repository evidence, including '
     'documentation, build/test entry points, automation and nested subprojects. '

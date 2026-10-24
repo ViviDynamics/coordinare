@@ -13,7 +13,32 @@ if TYPE_CHECKING:
     from .runtime_bundle import RuntimeBundleInputs
 
 
-def cloud_configuration(*, repo: Path, cache: Path, scratch: Path, readonly: bool) -> str:
+INTERPRETER_DIR = '/usr/local/lib/coordinare'
+# Each emulated platform's guest keeps the static user-mode interpreter of the other CPU, prepared with the guest image.
+_ELF_HEADER = bytes([0x7F, 0x45, 0x4C, 0x46, 2, 1, 1, 0]) + bytes(8) + bytes([2, 0])
+_ELF_MASK = bytes([0xFF] * 7 + [0xFC] + [0xFF] * 8 + [0xFE, 0xFF, 0xFF, 0xFF])
+_ELF_MACHINE = {'x86_64': bytes([0x3E, 0x00]), 'aarch64': bytes([0xB7, 0x00])}
+FOREIGN_PLATFORMS = {'linux/aarch64': ('linux/x86_64',), 'linux/x86_64': ('linux/aarch64',)}
+
+
+def foreign_platforms(guest_platform: str) -> tuple[str, ...]:
+    """Platforms a guest runs through user-mode emulation; an install or check never implies one of these."""
+    return FOREIGN_PLATFORMS.get(guest_platform, ())
+
+
+def binfmt_entry(guest_platform: str) -> str | None:
+    """The kernel registration for the guest's foreign interpreter; the F flag holds it open, so no container path matters."""
+    foreign = foreign_platforms(guest_platform)
+    if not foreign:
+        return None
+    arch = foreign[0].rsplit('/', 1)[-1]
+    magic = _ELF_HEADER + _ELF_MACHINE[arch]
+    escape = ''.join(f'\\x{byte:02x}' for byte in magic)
+    mask = ''.join(f'\\x{byte:02x}' for byte in _ELF_MASK)
+    return f':qemu-{arch}:M::{escape}:{mask}:{INTERPRETER_DIR}/qemu-{arch}-static:OCF'
+
+
+def cloud_configuration(*, repo: Path, cache: Path, scratch: Path, readonly: bool, guest_platform: str | None = None) -> str:
     mounts = []
     for tag, path, ro in [('repo', str(repo), False), ('cache', str(cache), readonly),
                           ('scratch', str(scratch), False), ('control', '/run/coordinare-runtime-control', True)]:
@@ -22,7 +47,7 @@ def cloud_configuration(*, repo: Path, cache: Path, scratch: Path, readonly: boo
     script = '\n'.join([
         '#!/bin/sh', 'set -eu', 'exec >>/var/log/coordinare-runtime.log 2>&1',
         'mount -t tmpfs -o mode=1777,size=512m tmpfs /tmp', 'modprobe 9pnet_virtio', *mounts,
-        'rc-service cgroups start', 'rc-service docker start', 'rc-service sshd stop || true',
+        'rc-service cgroups start', *_binfmt(guest_platform), 'rc-service docker start', 'rc-service sshd stop || true',
         'passwd -d root', 'mkdir -p /run/sshd /run/coordinare-runtime-ssh',
         'chmod 700 /run/coordinare-runtime-ssh',
         'cp /run/coordinare-runtime-control/host-key /run/coordinare-runtime-ssh/host-key',
@@ -34,6 +59,15 @@ def cloud_configuration(*, repo: Path, cache: Path, scratch: Path, readonly: boo
     ])
     return '#cloud-config\n' + json.dumps({'users': [], 'ssh_pwauth': False, 'disable_root': False, 'ssh_genkeytypes': [],
                                           'runcmd': [script]}) + '\n'
+
+
+def _binfmt(guest_platform: str | None) -> list[str]:
+    entry = binfmt_entry(guest_platform) if guest_platform is not None else None
+    if entry is None:
+        return []
+    # Registration is best effort: a kernel without binfmt_misc leaves the native platform usable and the foreign one absent.
+    return ['modprobe binfmt_misc 2>/dev/null || true', 'mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || true',
+            f'printf %s {shlex.quote(entry)} > /proc/sys/fs/binfmt_misc/register 2>/dev/null || echo coordinare: foreign platform emulation unavailable']
 
 
 # The guest's RAM is unreclaimable QEMU memory inside the container's memory limit, and the guest fills it with file
