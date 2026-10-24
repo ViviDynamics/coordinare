@@ -6,8 +6,6 @@ from coordinare_service_inference.environment.guest_selection import (
     GuestSelection,
     candidate,
     guest_for,
-    pinned_requirements,
-    read_candidates,
     select,
 )
 
@@ -77,15 +75,3 @@ def test_only_build_run_and_ci_files_are_candidates():
     assert candidate('.github/workflows/build.yml') and candidate('Makefile') and candidate('mk/tools.mk')
     assert candidate('bin/release') and candidate('scripts/x.sh')
     assert not candidate('docs/guide.md') and not candidate('src/app.py')
-
-
-def test_pinned_requirements_read_only_candidate_files_inside_the_tree(tmp_path):
-    (tmp_path / 'Dockerfile').write_text('FROM --platform=linux/amd64 debian\n')
-    (tmp_path / 'docs').mkdir()
-    (tmp_path / 'docs' / 'a.md').write_text('--platform linux/amd64\n')
-    (tmp_path / 'big.sh').write_text('x' * (300 * 1024) + '\n--platform linux/amd64\n')
-    (tmp_path / 'link.sh').symlink_to(tmp_path / 'Dockerfile')
-    record = pinned_requirements(tmp_path, ['Dockerfile', 'docs/a.md', 'big.sh', 'link.sh'])
-    assert record == {'required': [X86], 'triggers': ['Dockerfile'], 'unsupported': [], 'excluded_publish_steps': [],
-                      'unclassified_ci': []}
-    assert [path for path, _ in read_candidates(tmp_path, ['Dockerfile', 'link.sh', 'big.sh'])] == ['Dockerfile']

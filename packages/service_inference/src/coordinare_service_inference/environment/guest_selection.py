@@ -13,9 +13,13 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from .execution_source import ExecutionSourceError, bundle_texts
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
+
+    from .execution_source import ExecutionSourceIdentity
 
 ARCHITECTURES = {'amd64': 'linux/x86_64', 'x86_64': 'linux/x86_64', 'arm64': 'linux/aarch64', 'aarch64': 'linux/aarch64'}
 MAX_TRIGGERS = 32
@@ -157,22 +161,18 @@ def select(files: Iterable[tuple[str, str]]) -> GuestSelection:
                           unclassified=tuple(unclassified[:MAX_TRIGGERS]))
 
 
-def read_candidates(root: Path, paths: Iterable[str]) -> list[tuple[str, str]]:
-    """Candidate files of the pinned tree, as text; symlinks, special files and oversize files are never read."""
-    found: list[tuple[str, str]] = []
-    for path in sorted(paths):
-        if not candidate(path):
-            continue
-        target = root / path
-        if target.is_symlink() or not target.is_file() or target.stat().st_size > MAX_FILE_BYTES:
-            continue
-        found.append((path, target.read_text(encoding='utf-8', errors='replace')))
-    return found
+def pinned_requirements(bundle: Path, paths: Iterable[str], *, expected: ExecutionSourceIdentity) -> dict[str, list[str]]:
+    """The durable record of a selection, from the packed pinned source the daemon stage holds.
 
-
-def pinned_requirements(root: Path, paths: Iterable[str]) -> dict[str, list[str]]:
-    """The durable record of a selection: platforms, the paths that named them, and unsupported literals."""
-    selection = select(read_candidates(root, paths))
+    Candidate files are read from the archive itself (exact pinned bytes, no network). A selection never scans less than
+    it was given: candidates that exist but cannot be read, or exceed the bound, hold the attempt with a named code.
+    """
+    names = sorted(path for path in paths if candidate(path))
+    texts, oversize = bundle_texts(bundle, names, expected=expected, limit=MAX_FILE_BYTES)
+    if oversize or (names and not texts):
+        message = 'guest selection could not read the pinned build files'
+        raise ExecutionSourceError(message, code='guest_selection_unreadable')
+    selection = select(texts.items())
     return {'required': list(selection.required), 'triggers': list(selection.triggers),
             'unsupported': list(selection.unsupported), 'excluded_publish_steps': list(selection.excluded),
             'unclassified_ci': list(selection.unclassified)}

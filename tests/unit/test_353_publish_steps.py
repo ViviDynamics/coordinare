@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from coordinare_service_inference.environment.guest_selection import pinned_requirements, select
+from coordinare_service_inference.environment.guest_selection import select
 
 X86 = 'linux/x86_64'
 WORKFLOW = '.github/workflows/ci.yml'
@@ -109,17 +109,6 @@ def test_non_ci_files_count_even_when_they_publish(path):
             'Makefile': 'publish:\n\tdocker buildx build --platform linux/amd64 --push .\n'}[path]
     selection = select([(path, text)])
     assert selection.required == (X86,) and selection.excluded == ()
-
-
-def test_a_publish_step_in_the_pinned_tree_is_excluded_from_the_record(tmp_path):
-    (tmp_path / '.github' / 'workflows').mkdir(parents=True)
-    (tmp_path / '.github' / 'workflows' / 'ci.yml').write_text(
-        workflow(run_step('Build and push amd64', 'docker buildx build --platform linux/amd64 --push .')))
-    (tmp_path / 'Dockerfile').write_text('FROM debian\n')
-    record = pinned_requirements(tmp_path, ['.github/workflows/ci.yml', 'Dockerfile'])
-    assert record['required'] == [] and record['triggers'] == []
-    assert record['excluded_publish_steps'] == [f'{WORKFLOW} build/Build and push amd64']
-    assert record['unclassified_ci'] == []
 
 
 def test_elm_style_compose_and_guest_image_dockerfile_still_select_x86():

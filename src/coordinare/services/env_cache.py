@@ -2548,7 +2548,8 @@ class EnvCacheService:
                     limit=limits.max_inventory_entries, bundle=source_bundle)
                 # The guest is decided from the pinned source before any capability, probe or model step.
                 budget.stage = "guest"
-                guest_requirements = await asyncio.to_thread(pinned_requirements, source_bundle.payload_path, paths)
+                guest_requirements = await asyncio.to_thread(
+                    pinned_requirements, source_bundle.payload_path, paths, expected=source_bundle.identity)
                 cache_state.environment_guest = guest_requirements
                 budget.guest = dict(guest_requirements)
                 budget.stage = "capabilities"
