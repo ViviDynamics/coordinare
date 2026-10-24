@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 from coordinare_service_inference.environment import models as env
+from coordinare_service_inference.environment.findings import FindingLedger
 from pydantic_core import PydanticCustomError
 
 from coordinare.services import environment_discovery as discovery_module
@@ -73,12 +75,14 @@ async def test_a_delta_that_changes_nothing_is_a_delta_failure_and_never_proceed
 
 # 2. closure and dependency standing ----------------------------------------------------------------------------------
 
-def test_a_dependent_of_a_prerequisite_joins_the_closure_when_the_root_is_an_install():
+def test_a_dependent_of_a_root_joins_the_closure_but_a_dependent_of_a_prerequisite_does_not():
     manifest = build(install=[cmd("inst-r", ["make", "r"], depends_on=["inst-x"]), cmd("inst-x", ["make", "x"]),
-                              cmd("inst-d", ["make", "d"], depends_on=["inst-x"])])
+                              cmd("inst-d", ["make", "d"], depends_on=["inst-r"]),
+                              cmd("inst-e", ["make", "e"], depends_on=["inst-x"])])
     triage = triage_of(manifest, failed=["inst-r"])
 
     assert {"inst-r", "inst-x", "inst-d"} <= set(triage.closure_ids)
+    assert "inst-e" not in triage.closure_ids
 
 
 def chain(*, pre_env=None, pre_argv=("pre",)):
@@ -278,3 +282,62 @@ def test_one_services_own_lifecycle_phases_may_share_content():
     service = env.Service.model_validate({"id": "db", "start": cmd("db-start", ["true"]), "health": cmd("db-health", ["true"]),
                                           "stop": cmd("db-stop", ["db", "stop"])})
     env.validate_records([], [env.Command.model_validate(cmd("check-a", ["a"]))], [service], [], {}, runtime=False)
+
+
+class _CountingInspection:
+    def __init__(self, *_args):
+        self.inputs: dict[str, str] = {}
+
+    async def bind_verified(self, expected, **_kwargs):
+        self.inputs.update(expected)
+        return [{"path": path} for path in expected]
+
+
+@pytest.mark.asyncio
+async def test_a_part_is_judged_again_when_a_prerequisite_it_reads_changes(monkeypatch):
+    from coordinare.services import environment_discovery as discovery
+    from tests.unit.test_353_delta_repair import FakeCriterion
+
+    def manifest_with(env):
+        base = build(checks=[cmd("c00-pre", ["pre"], **({"env": env} if env else {})),
+                             cmd("c01-mid", ["mid"], depends_on=["c00-pre"])])
+        return base.model_copy(update={"criterion_checks": {"S1": ["c00-pre"], "S2": ["c01-mid"]}})
+
+    first = manifest_with(None)
+    source = sorted(first.inputs)[0]
+    criteria = [FakeCriterion(id="S1", description="one", applicability="required", sources=[source], prefix="c00-"),
+                FakeCriterion(id="S2", description="two", applicability="required", sources=[source], prefix="c01-")]
+    groups = [CheckGroup("c00-", (criteria[0],)), CheckGroup("c01-", (criteria[1],))]
+    budget = AttemptBudget(max_calls=64, max_reads=64, max_coverage_revisions=4)
+    budget.finding_ledger = FindingLedger(source_commit=first.source_commit)
+    calls: list[str] = []
+
+    async def agent(_context, inspection, messages, task):
+        # A group part is named by its criterion; the global part has no criterion mapping in its view.
+        own = json.loads(messages[1]["content"].split("\n")[1])
+        calls.append(",".join(sorted(own["part"].get("criterion_checks", {}))) or "global")
+        from tests.unit.test_353_delta_repair import assessment
+        reply = {"assessment": {**assessment("accept", sorted(inspection.inputs)).model_dump(mode="json"), "criterion_rulings": []}}
+        return task.validate(reply)
+
+    monkeypatch.setattr(discovery, "_Inspection", _CountingInspection)
+    monkeypatch.setattr(discovery, "run_agent", agent)
+    monkeypatch.setattr(discovery, "manifest_obligation_ids", lambda _manifest: set())
+    build_stub = SimpleNamespace(groups=groups, scope=SimpleNamespace(definition=SimpleNamespace(criteria=criteria)),
+                                 context=None, concurrency=4)
+    attempt = SimpleNamespace(budget=budget, delta=None, identity={"symphony_name": "suite"},
+                              discovery=SimpleNamespace(finding_responses=[]))
+    reviewer = SimpleNamespace(entries=None, paths=[], fetch=None, limits=None, inputs={})
+
+    await discovery._divided_review(build_stub, attempt, first, reviewer)
+    assert sorted(calls) == ["S1", "S2", "global"]  # each part judged once
+
+    calls.clear()
+    await discovery._divided_review(build_stub, attempt, first, reviewer)
+    assert calls == []  # unchanged content keeps its standing
+
+    calls.clear()
+    changed = manifest_with({"MODE": "2"})  # only the prerequisite of c01's check changes
+    await discovery._divided_review(build_stub, attempt, changed, reviewer)
+    # c00 changed its own check; c01 is re-judged through its dependency digest although its own check is unchanged.
+    assert sorted(calls) == ["S1", "S2"]

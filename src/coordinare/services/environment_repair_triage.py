@@ -109,14 +109,13 @@ def _reach(seeds: set[str], neighbours: dict[str, set[str]]) -> set[str]:
 
 
 def _closure(seeds: set[str], edges: dict[str, set[str]]) -> set[str]:
-    """Seeds and their prerequisites, then everything that depends on any of those. Prerequisites of dependents are not
-    pulled in, but dependents of prerequisites are: a shared prerequisite changes every record that reads it."""
+    """Seeds, their prerequisites, and what depends on the seeds. Prerequisites of dependents are not pulled in, and neither
+    are dependents of prerequisites: a part that reads a shared prerequisite is re-judged through its dependency digest."""
     dependents: dict[str, set[str]] = defaultdict(set)
     for child, parents in edges.items():
         for parent in parents:
             dependents[parent].add(child)
-    ancestors = _reach(seeds, edges)
-    return ancestors | _reach(ancestors, dependents)
+    return _reach(seeds, edges) | _reach(seeds, dependents)
 
 
 def depends_on_closure(manifest: EnvironmentManifest, identifiers: Iterable[str]) -> dict[str, dict[str, Any]]:

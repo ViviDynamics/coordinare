@@ -68,16 +68,15 @@ def test_single_failing_install_closes_over_its_prerequisites_and_dependents_onl
     assert triage.touched_parts == ("global",)
 
 
-def test_dependents_of_a_root_and_of_its_ancestors_are_included_but_not_the_ancestors_of_those_dependents():
+def test_dependents_of_a_root_are_included_but_not_dependents_of_its_ancestors():
     manifest = build(
         install=[cmd("install-base", ["make", "base"]), cmd("install-a", ["make", "a"], depends_on=["install-base"]),
-                 cmd("install-b", ["make", "b"], depends_on=["install-base"]),
-                 cmd("install-c", ["make", "c"], depends_on=["install-b"])],
+                 cmd("install-b", ["make", "b"], depends_on=["install-base"])],
     )
     triage = triage_failure(manifest, report(manifest, ["install-a"]))
 
-    # A changed shared prerequisite changes every record that reads it, so its dependents join the closure.
-    assert triage.closure_ids == ("install-a", "install-b", "install-base", "install-c")
+    assert triage.closure_ids == ("install-a", "install-base")
+    assert "install-b" not in triage.closure_ids
 
 
 def test_service_failure_takes_its_whole_lifecycle_unit_and_its_criteria():
@@ -205,8 +204,8 @@ def test_v40_gen0_replay_closes_over_the_failing_helm_install_only():
     triage = triage_failure(manifest, run)
 
     assert triage.roots == {"install-helm-gh": "command"}
-    # Every install depends on install-apt-prereqs, so the shared prerequisite's dependents are the whole install set.
-    assert triage.closure_ids == tuple(sorted(item.id for item in manifest.install))
+    assert triage.closure_ids == ("install-apt-prereqs", "install-helm-gh")
     assert triage.touched_parts == ("global",)
     assert triage.criterion_ids == () and triage.requirement_ids == ()
     assert len(triage.consequences) == sum(1 for result in run.results if result.status == "not_run")
+    assert len(triage.closure_ids) <= 3
