@@ -74,3 +74,19 @@ async def test_a_second_exhausted_conversation_holds_the_attempt():
     with pytest.raises(EnvironmentDiscoveryError) as caught:
         await agent([READ, BAD, BAD, BAD, BAD, BAD, BAD])
     assert caught.value.code == 'attempt_schema_limit'
+
+
+def test_each_execution_repair_brings_the_probe_batch_its_relocated_cache_needs():
+    """v40: the second permitted execution repair held at once; the initial probe and the first repair had used both."""
+    budget = AttemptBudget(max_calls=8, max_reads=8)
+    budget.reserve_probe_batch()
+    budget.reserve_probe_batch()
+    with pytest.raises(EnvironmentDiscoveryError) as caught:
+        budget.reserve_probe_batch()
+    assert caught.value.code == 'attempt_probe_limit'
+    budget.execution_repairs = 1
+    budget.reserve_probe_batch()
+    budget.execution_repairs = 2
+    budget.reserve_probe_batch()
+    with pytest.raises(EnvironmentDiscoveryError):
+        budget.reserve_probe_batch()
