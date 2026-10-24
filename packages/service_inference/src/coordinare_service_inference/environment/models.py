@@ -314,6 +314,8 @@ class EnvironmentManifest(StrictModel):
         validate_records(self.install, self.checks, self.services, self.requirements, self.activation.env,
                          runtime=self.runtime is not None, reviewed_scope=self.schema_version == 3)
         validate_execution_graph(self.install, self.checks, self.services)
+        if self.schema_version == 3:
+            validate_shell_locals(commands, [*self.activation.env, *(c.name for c in self.local_credentials)])
         checks = {check.id: check for check in self.checks}
         if not any(check.required for check in self.checks):
             raise PydanticCustomError("required_check_missing", "at least one required baseline check is mandatory")
@@ -487,6 +489,29 @@ def validate_records(install: list[Command], checks: list[Command], services: li
         if reviewed_scope and service.required and (optional := {command.id for command in lifecycle if not command.required}):
             raise _graph_error('scope_required_service', 'required service lifecycle cannot be optional',
                                service.id, optional)
+
+
+_TEMPLATE_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_SHELL_ASSIGNMENT = re.compile(r"(?:(?<![A-Za-z0-9_$.{/-])([A-Za-z_][A-Za-z0-9_]*)=|\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b"
+                               r"|\bread\s+(?:-[a-z]+\s+)*([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def validate_shell_locals(commands: Iterable[Command], declared: Iterable[str]) -> None:
+    """A ${NAME} for a variable the command itself assigns is a shell variable the runner would refuse as a template.
+
+    The runner expands every ${NAME} from its environment before a command runs, and refuses names it lacks. Three
+    Dettmore runs (v37 to v40) lost an execution repair to ${HA} and ${GHV} assigned in the same command. Names a
+    command does not assign (such as runtime credentials) are never flagged here.
+    """
+    known = set(declared)
+    for command in commands:
+        text = "\n".join(command.argv)
+        # NAME=${NAME} passes a runtime value through to a child process; only other assignments make NAME local.
+        assigned = {name for match in _SHELL_ASSIGNMENT.finditer(text) for name in match.groups()
+                    if name and not text.startswith("${" + name + "}", match.end())}
+        if local := ({name for name in _TEMPLATE_REFERENCE.findall(text)} & assigned) - known - set(command.env):
+            raise _graph_error('shell_local_template_reference',
+                               'a variable the command assigns is referenced as a ${NAME} template', command.id, local)
 
 
 def validate_execution_graph(install: list[Command], checks: list[Command], services: list[Service]) -> None:
