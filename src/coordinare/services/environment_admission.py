@@ -137,6 +137,9 @@ GRAPH_GUIDANCE = {
     'requirement_source_uninspected': ("A requirement's source must be a file you inspected; read it, or cite one you "
                                        'read.'),
     'empty_reason_missing': 'With no requirements, explain in empty_reason why the environment needs none.',
+    'shell_local_template_reference': ('The named command assigns the listed variables itself, so reference them as $NAME '
+                                       '(no braces): ${NAME} is a template the runner fills from its environment '
+                                       'before the command runs, and it refuses names it does not have.'),
     'record_id_collision': ('Each listed id is used by more than one record. Rename the requirement that shares it '
                             '(for example req-<id>) and keep the check, install and service command ids unchanged.'),
     'global_obligation_removed': ('Your earlier proposals declared the listed required records; keep each id and revise '
