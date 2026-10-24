@@ -471,6 +471,7 @@ dependencies = [
     { name = "anthropic" },
     { name = "jinja2" },
     { name = "pydantic" },
+    { name = "pyyaml" },
     { name = "stamina" },
     { name = "structlog" },
 ]
@@ -480,6 +481,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.40" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "pydantic", specifier = ">=2.9" },
+    { name = "pyyaml", specifier = ">=6" },
     { name = "stamina", specifier = ">=24.2.0,<25" },
     { name = "structlog", specifier = ">=24.1" },
 ]
