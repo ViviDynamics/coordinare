@@ -124,11 +124,15 @@ def _criterion_citation_errors(sources: Sequence[str], inputs: dict[str, str],
                     'while inspecting the files or correcting unsupported citations.'}]
 
 
+RELEASE_CATEGORIES = frozenset({'remote_state', 'runtime_network'})
+
+
 def released_criteria(ledger: FindingLedger | None) -> set[str]:
-    """Required criteria an independent review found satisfiable only by remote service state, outside the scope."""
+    """Required criteria an independent review released from the offline environment's scope: satisfiable only by
+    remote service state, or verifiable only with network access every time they run."""
     if ledger is None:
         return set()
-    return {identifier for record in ledger.records if record.proposal.category == 'remote_state'
+    return {identifier for record in ledger.records if record.proposal.category in RELEASE_CATEGORIES
             for identifier in record.proposal.affected_ids}
 
 
@@ -298,6 +302,15 @@ REMOTE_STATE_RULE = (
     'Everything the repository itself installs, builds, starts or caches (tools, services, container images, '
     'advisory databases) stays required, even when installation fetches it from the network. '
 )
+# Maintainer decision 2026-10-24: like remote state, an obligation that needs the network on every run is outside
+# what an offline clean verification can prove (Dettmore's dev compose stack runs apt-get on every start).
+RUNTIME_NETWORK_RULE = (
+    'An obligation whose own documented procedure fetches from the network every time it runs is outside what an '
+    'offline clean verification can prove: for example a compose service whose command runs apt-get or a package '
+    'install at every start, or a stack whose start builds images from source. Mark it not_applicable with a '
+    'rationale naming the network step in the cited source; installing the tools it uses (Docker, Compose) and '
+    'everything installation can build, fetch or cache in advance stays required. '
+)
 REVIEW_INSTRUCTIONS = (
     'Independently review source-defined scope, not an executable candidate. You have no author conversation. '
     'Follow development/test entry points and nested references; independently check omissions and conflicts. '
@@ -337,7 +350,9 @@ REVIEW_INSTRUCTIONS = (
     'that needs a token, credential, authenticated session or an external service\'s settings or behaviour is a '
     'finding with category remote_state and gap_kind remote_state, whose affected_ids name those criteria; the author '
     'may then reassess them as not_applicable. Accept only when no required criterion fails this check. '
-    + REMOTE_STATE_RULE +
+    'Likewise, a required criterion whose documented procedure needs the network every time it runs is a finding '
+    'with category runtime_network and gap_kind runtime_network naming those criteria. '
+    + REMOTE_STATE_RULE + RUNTIME_NETWORK_RULE +
     'Return scope_assessment with verdict, rationale, sources, findings, decisions. '
 )
 GRANULARITY_GUIDANCE = (
@@ -345,7 +360,7 @@ GRANULARITY_GUIDANCE = (
     'must install, or a documented development or test operation that must succeed, with its observable result. '
     'The internal behaviour of a script is evidence for an obligation, not an obligation itself; related steps of one '
     'documented operation form one criterion, at the level a person bootstrapping the repository would check. '
-    + REMOTE_STATE_RULE
+    + REMOTE_STATE_RULE + RUNTIME_NETWORK_RULE
 )
 AUTHOR_INSTRUCTIONS = (
     'Author source-defined obligations for the whole documented development/test environment. '
@@ -365,7 +380,7 @@ REVISION_INSTRUCTIONS = (
     'Use the exact retained scope_base_digest as base_digest. Submit at most 16 combined add/reassess operations. '
     'add contains complete criterion proposals without IDs; reassess targets only retained unknown/not_applicable '
     'criterion_id values and supplies a complete criterion proposal. No deletion or required criterion edits, except '
-    'that a required criterion named by a remote_state finding may be reassessed as not_applicable. '
+    'that a required criterion named by a remote_state or runtime_network finding may be reassessed as not_applicable. '
     'Empty arrays may defend an existing definition; respond to every open daemon finding ID. '
     'affected_ids may reference retained current criterion IDs or be empty for new/reassessed criteria; '
     'never invent IDs or cite replaced IDs. Inspect source evidence, not runtime/image convenience. '
