@@ -434,8 +434,19 @@ class DividedConstruction:
         await self.context.budget.flush()
         return part
 
+    def admits(self, group: CheckGroup, part: ShardChecks, *, summary: Mapping[str, Any]) -> bool:
+        """Whether a part authored from an earlier global summary passes the same admission under the final one."""
+        parent = next((candidate for candidate in self.groups if candidate.prefix == base_prefix(group.prefix)), None)
+        inherited = replace(inherit(self.previous, group, parent), mapped=self._kept_mappings(group))
+        try:
+            validate_group({'shard_checks': part.model_dump(mode='json')}, group=group, summary=summary, inherited=inherited)
+        except _ResponseReferenceError:
+            return False
+        return True
+
     async def author_all(self, *, summary: Mapping[str, Any], probes: Sequence[Any],
-                         groups: Sequence[CheckGroup] | None = None) -> dict[str, tuple[CheckGroup, ShardChecks]]:
+                         groups: Sequence[CheckGroup] | None = None,
+                         concurrency: int | None = None) -> dict[str, tuple[CheckGroup, ShardChecks]]:
         """Author every group (or only the named ones); keyed by the prefix each part was authored under."""
         async def one(group: CheckGroup) -> tuple[CheckGroup, ShardChecks]:
             return group, await self.author(group, summary=summary, probes=probes)
@@ -449,7 +460,7 @@ class DividedConstruction:
                     for suffix, part in (('a', group.criteria[:middle]), ('b', group.criteria[middle:]))]
 
         authored = await run_pool(list(self.groups if groups is None else groups), one, budget=self.context.budget,
-                                  split=unsplittable, concurrency=self.concurrency)
+                                  split=unsplittable, concurrency=self.concurrency if concurrency is None else concurrency)
         return {group.prefix: (group, part) for group, part in authored}
 
     def route_findings(self, ledger: FindingLedger) -> None:
