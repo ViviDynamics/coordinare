@@ -1,6 +1,6 @@
 # Contract: Dispatch Payload (Coordinare → Performer)
 
-**Last updated**: 2026-04-06
+**Last updated**: 2026-10-20
 **Boundary**: `AgentService.dispatch_card()` → wire (subprocess stdin) → `Score(**payload)` in performer
 
 ## Overview
@@ -176,6 +176,46 @@ When adding a new field to the dispatch payload:
 | `environment_manifest` | object or null | Daemon-owned accepted requirements and executable actions. |
 | `environment_assessment` | object or null | Independent coverage acceptance bound to the manifest. |
 | `environment_manifest_digest` | string | Canonical identity shared by installer and consumer. |
-| `environment_verification_image` | string or null | Required immutable image identity for cache consumers. |
-| `environment_verification_platform` | string or null | Required verified OS/architecture, matched to the performer status. |
+| `environment_verification_image` | string or null | Expected immutable installer target for bootstrap; clean-verified identity for consumers. |
+| `environment_verification_platform` | string or null | Expected installer OS/architecture for bootstrap; verified consumer platform, matched to runtime status. |
 | `environment_secret_names` | string array | Names for output redaction; values use the secret channel. |
+
+### Reviewed environment identity extensions (353)
+
+These are nested members of the registered `environment_manifest` and
+`environment_assessment` objects, not additional top-level Score fields.
+
+| Field | Type | Required | Set by | Used by |
+|-------|------|----------|--------|---------|
+| `capabilities_digest` | string or null | yes for new acceptance | daemon discovery/review | daemon reuse/dispatch, performer contract validation |
+| `inventory_digest` | string or null | yes for new acceptance | daemon inventory/review | daemon inventory invalidation, performer contract validation |
+
+Legacy null identity members parse for migration but cannot authorize readiness.
+Actual capability descriptions stay daemon-side; dispatch carries their digest through
+the accepted manifest. Existing manifest digest covers both extensions.
+
+### Complete execution source (353)
+
+| Field | Type | Required | Set by | Used by |
+|-------|------|----------|--------|---------|
+| `environment_execution_source` | compact version1 identity object | for reviewed environment dispatch | daemon validated pinned provider source | performer installer checkout preflight; source-bound execution reports |
+
+Includes source_commit, tree_digest, file_count and expanded_bytes. Contains no source bytes, paths to temporary artifacts, credentials or full entry inventory. Missing legacy identity requires normal rebuild/reverification, never relabeling old evidence.
+
+
+### Reviewed runtime receipt and original expiry (353)
+
+These top-level fields are declared on `Score` and pass through dispatch metadata;
+they are controller/runtime inputs, not model prompt instructions.
+
+| Field | Type | Required | Set by | Used by |
+|-------|------|----------|--------|---------|
+| `environment_runtime_artifacts` | object or null | for a reviewed private-runtime consumer; null on initial bootstrap dispatch | daemon `dispatch_performer` from the cache's admitted installer receipt | performer `open_score_runtime` and contract execution validate the sealed artifacts against the exact manifest, complete source and runtime digests before clean startup |
+| `environment_attempt_expires_at` | positive finite float or null (UTC epoch seconds) | for reviewed private-runtime bootstrap; null on consumer dispatch | daemon `dispatch_performer` from the original attempt journal expiry | performer `open_score_runtime` converts remaining wall time to a monotonic bound and takes the minimum with the runtime policy deadline; missing/expired bootstrap expiry cannot create a new allowance |
+
+The receipt contains schema version, manifest/source/runtime digests, `sealed: true`
+and bounded cache artifact names, hashes and sizes. It carries no source bytes or
+credentials. The installer seals and reports its receipt after successful checks
+and quiescence; the daemon must admit that evidence before consumer dispatch.
+Neither a receipt nor an expiry authorizes failed or unrun required checks.
+The contract roundtrip tests retain both fields through `AgentService` and `Score`.

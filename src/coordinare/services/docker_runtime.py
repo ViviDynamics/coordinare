@@ -28,6 +28,8 @@ from coordinare.services.run_log import LOG_CHUNK_BYTES
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import AsyncGenerator
 
+    from coordinare_service_inference.environment.runtime import RuntimePolicy
+
     from coordinare.models.performer_endpoint import PerformerEndpointConfig
     from coordinare.services.run_log import RunLogIO
 
@@ -51,13 +53,17 @@ class DockerRuntime:
         *,
         extra_labels: dict[str, str] | None = None,
         backend: str | None = None,
+        runtime_policy: RuntimePolicy | None = None,
     ) -> StartedPerformer:
+        config = await self._pinned(config)
+        runtime_kwargs = {"runtime_policy": runtime_policy} if runtime_policy is not None else {}
         started = await performer_lifecycle.start_ephemeral(
-            await self._pinned(config),
+            config,
             extra_labels=extra_labels,
             backend=backend,
+            **runtime_kwargs,
         )
-        return StartedPerformer(handle=started.container_id, endpoint=started.endpoint)
+        return StartedPerformer(handle=started.container_id, endpoint=started.endpoint, image_ref=config.image)
 
     async def _pinned(
         self, config: PerformerEndpointConfig,

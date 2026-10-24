@@ -32,6 +32,7 @@ from coordinare.services.activity_log import ActivityLog
 from coordinare.services.block_cause import block_cause
 from coordinare.services.bootstrap_status import symphony_view
 from coordinare.services.config_seed import recovery_health_row
+from coordinare.services.environment_findings import coverage_summary
 from coordinare.services.merge_review_gate import merge_review_view
 from coordinare.services.observer import OBSERVER_RECENT_VERDICTS
 from coordinare.services.run_log import RunLogCollector
@@ -1356,7 +1357,7 @@ class DashboardStore:
                 "bootstrap_in_flight": bool(getattr(cache, "bootstrap_in_flight", False)),
                 "cache_dir_ready": bool(getattr(cache, "cache_dir_ready", False)),
                 "last_bootstrap_succeeded": getattr(cache, "last_bootstrap_succeeded", None),
-                "environment_assessment": getattr(cache, "environment_assessment", None),
+                "environment_assessment": coverage_summary(getattr(cache, "environment_assessment", None)),
                 "environment_verification": getattr(cache, "environment_verification", None),
                 # 156: clipped where the snapshot is built, so no bootstrap error reaches the page unbounded.
                 "last_bootstrap_error": (

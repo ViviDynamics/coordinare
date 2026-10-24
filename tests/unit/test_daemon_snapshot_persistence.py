@@ -16,21 +16,30 @@ from unittest.mock import AsyncMock
 import pytest
 
 from coordinare.daemon import CoordinareDaemon
-from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
+from tests.unit.env_manifest_fixture import (
+    record_verified_cache_fixture,
+    reviewed_cache,
+    verification_output,
+)
 from tests.unit.env_mount_stub import mount_config
 
 
 @pytest.fixture(autouse=True)
-def _accepted_verification_sources(monkeypatch):
+def _accepted_verification_sources(monkeypatch, tmp_path):
     """These tests cover verifier outcomes and persistence, with pinned inputs supplied."""
+    from tests.unit.env_manifest_fixture import patch_clean_source_transport
+    patch_clean_source_transport(monkeypatch, tmp_path)
     monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",
         AsyncMock(return_value={"tools.plan": "baseline"}))
-    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files: "")
+    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files, **kwargs: "")
+    monkeypatch.setattr("coordinare.services.environment_capabilities._docker_identity",
+        AsyncMock(return_value=("trusted/global@sha256:" + "a" * 64, "linux/x86_64")))
 
 
 def _daemon() -> CoordinareDaemon:
     daemon = CoordinareDaemon(AsyncMock(), max_cycles=1, sleep_func=AsyncMock())
-    daemon._state["coordinare_config"] = mount_config()
+    daemon._state["snapshot_checkpoint_fn"] = AsyncMock()
+    daemon._state["coordinare_config"] = mount_config(performer_image="trusted/global@sha256:" + "a" * 64)
     return daemon
 
 
@@ -126,23 +135,24 @@ def _ready_state(cache_dir, verify_text):
     ))
 
 
-def _docker_answers(run_rc: int):
+def _docker_answers(run_rc: int, manifest):
     """218: the daemon probe (docker version) answers 0; the verify run answers ``run_rc``."""
     async def _fake(*argv, **_kwargs):
-        return _FakeProc(0 if "version" in argv else run_rc)
+        return _FakeProc(0 if "version" in argv or "rm" in argv else run_rc, manifest)
 
     return _fake
 
 
 class _FakeProc:
-    def __init__(self, rc: int) -> None:
+    def __init__(self, rc: int, manifest) -> None:
         self.returncode = rc
+        self.manifest = manifest
 
     async def wait(self):
         return self.returncode
 
     async def communicate(self, input: bytes | None = None):
-        return (verification_output(), None)
+        return (verification_output(self.manifest), None)
 
 
 @pytest.mark.asyncio
@@ -164,7 +174,7 @@ async def test_clean_verify_passes_on_zero_exit(tmp_path, monkeypatch) -> None:
     cache.mkdir()
     daemon._state["env_cache"] = {"sym": _ready_state(cache, "#!/bin/sh\nexit 0\n")}
     svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img@sha256:" + "a" * 64))
-    monkeypatch.setattr("asyncio.create_subprocess_exec", _docker_answers(0))
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _docker_answers(0, daemon._state["env_cache"]["sym"].environment_manifest))
     _res, _detail = await daemon._verify_env_cache_clean("sym", svc)
     assert _res is True
 
@@ -178,7 +188,7 @@ async def test_clean_verify_fails_on_nonzero_exit(tmp_path, monkeypatch) -> None
     cache.mkdir()
     daemon._state["env_cache"] = {"sym": _ready_state(cache, "#!/bin/sh\nexit 1\n")}
     svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img@sha256:" + "a" * 64))
-    monkeypatch.setattr("asyncio.create_subprocess_exec", _docker_answers(1))
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _docker_answers(1, daemon._state["env_cache"]["sym"].environment_manifest))
     _res, _detail = await daemon._verify_env_cache_clean("sym", svc)
     assert _res is False
     assert isinstance(_detail, str)
@@ -215,6 +225,7 @@ async def test_bootstrap_completion_flushes_snapshot_to_disk(tmp_path) -> None:
     svc = EnvCacheService(
         mount_config(env_bootstrap_max_attempts=3),
     )
+    record_verified_cache_fixture(daemon._state["env_cache"]["sym"])
     svc.on_bootstrap_complete("sym", success=True, state=daemon._state)
     # Drain the flush task scheduled by the completion handler.
     pending = set(svc._notify_tasks)

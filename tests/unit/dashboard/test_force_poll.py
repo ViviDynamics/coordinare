@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import time
 from unittest.mock import MagicMock
 
@@ -94,10 +95,27 @@ class TestForcePollEndpoint202:
         """SC-001: trigger endpoint must respond in < 50 ms."""
         daemon = _make_daemon(cycle_active=False)
         client = _make_client(daemon)
+        collections: list[float] = []
+        started: dict[int, float] = {}
+        def observe_gc(phase: str, info: dict[str, int]) -> None:
+            generation = info['generation']
+            if phase == 'start':
+                started[generation] = time.perf_counter()
+            elif generation in started:
+                duration = (time.perf_counter()-started.pop(generation))*1000
+                if len(collections) < 8:
+                    collections.append(duration)
+        gc.callbacks.append(observe_gc)
+        cpu_start = time.process_time()
         t0 = time.perf_counter()
-        client.post("/api/force-poll")
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-        assert elapsed_ms < 50, f"Response took {elapsed_ms:.1f} ms (budget: 50 ms)"
+        try:
+            client.post("/api/force-poll")
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            cpu_ms = (time.process_time()-cpu_start)*1000
+        finally:
+            gc.callbacks.remove(observe_gc)
+        assert elapsed_ms < 50, (f"Response took {elapsed_ms:.1f} ms (budget: 50 ms); "
+                                 f"process CPU: {cpu_ms:.1f} ms; observed GC durations: {collections!r} ms")
 
 
 # ---------------------------------------------------------------------------

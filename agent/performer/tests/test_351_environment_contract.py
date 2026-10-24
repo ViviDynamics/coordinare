@@ -9,6 +9,8 @@ from performer import main
 from performer.models import Score, Stand
 from performer.workflows.bootstrap_environment import BootstrapEnvironment
 
+from .source_contract_fixture import bind_checkout_contract, current_manifest_fixture, current_review_fixture
+
 
 def test_bootstrap_admission_rejects_missing_review(tmp_path):
     payload = SimpleNamespace(role="env_bootstrap", env_cache_path=str(tmp_path), metadata={}, env_provenance=None, bootstrap_scripts=None)
@@ -34,6 +36,7 @@ def contract_score(tmp_path, *, failed=False):
     from coordinare_service_inference.environment.models import EnvironmentManifest
 
     manifest = EnvironmentManifest.model_validate({
+        "inventory_digest": "d" * 64, "capabilities_digest": "c" * 64,
         "schema_version": 1, "symphony_name": "example", "source_commit": "a" * 40,
         "inputs": {"tools.plan": "a" * 64}, "requirements": [],
         "install": [{"id": "install", "argv": ["python3", "-c", "from pathlib import Path; Path('installed').touch(); Path('alien/bin').mkdir(parents=True, exist_ok=True)"]}],
@@ -41,11 +44,36 @@ def contract_score(tmp_path, *, failed=False):
         "activation": {"path": ["{cache}/alien/bin"], "env": {"ALIEN_HOME": "{cache}/alien"}},
         "services": [], "empty_reason": "Baseline image suffices", "policy_version": "351-v1",
     })
-    review = {"schema_version": 1, "manifest_digest": manifest.digest(), "source_commit": "a" * 40,
+    review = {"inventory_digest": "d" * 64, "capabilities_digest": "c" * 64, "schema_version": 1, "manifest_digest": manifest.digest(), "source_commit": "a" * 40,
               "verdict": "accept", "rationale": "Inspected setup instructions", "sources": ["tools.plan"], "inputs": dict(manifest.inputs), "policy_version": "351-v1"}
     return Score(title="bootstrap", repo_url="https://github.com/a/b", branch="main", role="env_bootstrap",
-                 env_cache_path=str(tmp_path), environment_manifest=manifest.model_dump(),
-                 environment_assessment=review, environment_manifest_digest=manifest.digest())
+                 env_cache_path=str(tmp_path),
+                 **bind_checkout_contract({'environment_assessment':review,
+                     'environment_manifest':manifest.model_dump(), 'environment_manifest_digest':manifest.digest()}, tmp_path))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mutation', ['legacy', 'missing', 'digest', 'unreviewed'])
+async def test_performer_rejects_invalid_findings_before_install_commands(tmp_path, mutation):
+    from performer.environment_contract import execute_contract
+
+    score = contract_score(tmp_path)
+    review = score.environment_assessment
+    if mutation == 'legacy':
+        review.update(schema_version=1, policy_version='351-v1')
+        review.pop('finding_ledger')
+        review.pop('finding_ledger_digest')
+    elif mutation == 'missing':
+        review.pop('finding_ledger')
+    elif mutation == 'digest':
+        review['finding_ledger_digest'] = 'f' * 64
+    else:
+        from coordinare_service_inference.environment.findings import FindingLedger
+        ledger = FindingLedger(source_commit=score.environment_manifest['source_commit'])
+        review.update(finding_ledger=ledger.model_dump(), finding_ledger_digest=ledger.digest())
+    with pytest.raises(ValueError):
+        await execute_contract(score, Stand(path=tmp_path, branch='main'), install=True)
+    assert not (tmp_path / 'installed').exists()
 
 
 @pytest.mark.parametrize("mutation", ["digest", "commit", "verdict", "source"])
@@ -133,13 +161,14 @@ async def test_consumer_activation_uses_manifest_without_ruby_inference(tmp_path
 
 @pytest.mark.asyncio
 async def test_frozen_artifacts_cannot_be_modified_by_install(tmp_path):
-    from coordinare_service_inference.environment.models import EnvironmentManifest
 
     score = contract_score(tmp_path)
     score.environment_manifest["install"][0]["argv"] = ["python3", "-c", "from pathlib import Path; Path('verify.sh').write_text('forged')"]
-    manifest = EnvironmentManifest.model_validate(score.environment_manifest)
+    manifest = current_manifest_fixture(score.environment_manifest)
+    score.environment_manifest = manifest.model_dump()
     score.environment_manifest_digest = manifest.digest()
     score.environment_assessment["manifest_digest"] = manifest.digest()
+    score.environment_assessment = current_review_fixture(manifest, score.environment_assessment)
     score.verify_provided = True
     (tmp_path / "verify.sh").write_text("trusted")
     environment = BootstrapEnvironment(Stand(path=tmp_path, branch="main"), score)
@@ -164,6 +193,9 @@ async def test_workflow_installs_without_model_and_reports_parent_evidence(tmp_p
     assert report["environment_verification"]["passed"] is True
     assert report["environment_verification"]["manifest_digest"] == score.environment_manifest_digest
     assert toolkit.metrics.agent_turns == 0
+    evidence = report["environment_verification"]
+    assert [item["id"] for item in evidence["results"]] == ["install", "check"]
+    assert all(item["exit_code"] == 0 for item in evidence["results"])
 
 
 @pytest.mark.asyncio
@@ -209,7 +241,7 @@ def test_review_requires_independent_input_identity_ledger(tmp_path):
 
     score = contract_score(tmp_path)
     score.environment_assessment.pop("inputs")
-    with pytest.raises(ValueError, match="source identities"):
+    with pytest.raises(ValueError, match="source identities|review schema"):
         accepted_manifest(score)
 
 
@@ -232,8 +264,8 @@ async def test_bootstrap_checkout_is_pinned_to_reviewed_commit(tmp_path, monkeyp
     monkeypatch.setattr(workspace.tempfile, "mkdtemp", temporary)
     stand = await workspace.clone_repository(score)
     try:
-        assert ["git", "fetch", "origin", "a" * 40] in commands
-        assert ["git", "checkout", "--detach", "a" * 40] in commands
+        assert ["git", "fetch", "origin", score.environment_manifest["source_commit"]] in commands
+        assert ["git", "checkout", "--detach", score.environment_manifest["source_commit"]] in commands
         assert not any("push" in command for command in commands)
     finally:
         await close_environment(stand)
@@ -282,7 +314,6 @@ async def test_failed_consumer_preflight_removes_clone(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_consumer_holds_declared_service_until_job_cleanup(tmp_path):
-    from coordinare_service_inference.environment.models import EnvironmentManifest
 
     from performer.environment_contract import close_environment, prepare_environment
 
@@ -295,9 +326,11 @@ async def test_consumer_holds_declared_service_until_job_cleanup(tmp_path):
     score.environment_manifest["services"] = [{"id": "unfamiliar", "start": {"id": "start", "argv": ["touch", str(marker)]},
         "health": {"id": "health", "argv": ["test", "-f", str(marker)]},
         "stop": {"id": "stop", "argv": ["rm", "-f", str(marker)]}}]
-    manifest = EnvironmentManifest.model_validate(score.environment_manifest)
+    manifest = current_manifest_fixture(score.environment_manifest)
+    score.environment_manifest = manifest.model_dump()
     score.environment_manifest_digest = manifest.digest()
     score.environment_assessment["manifest_digest"] = manifest.digest()
+    score.environment_assessment = current_review_fixture(manifest, score.environment_assessment)
     stand = Stand(path=tmp_path, branch="main")
     await prepare_environment(score, stand)
     try:
@@ -319,7 +352,6 @@ def test_invalid_contract_error_does_not_expose_manifest_values(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["implementing", "env_bootstrap"])
 async def test_required_scoped_failure_cannot_hide_behind_baseline(tmp_path, role):
-    from coordinare_service_inference.environment.models import EnvironmentManifest
 
     from performer.environment_contract import execute_contract
 
@@ -328,9 +360,11 @@ async def test_required_scoped_failure_cannot_hide_behind_baseline(tmp_path, rol
     score.environment_manifest["checks"] = [
         {"id": "baseline", "argv": ["true"]},
         {"id": "scoped-failure", "argv": ["false"], "scope": ["implementing"]}]
-    manifest = EnvironmentManifest.model_validate(score.environment_manifest)
+    manifest = current_manifest_fixture(score.environment_manifest)
+    score.environment_manifest = manifest.model_dump()
     score.environment_manifest_digest = manifest.digest()
     score.environment_assessment["manifest_digest"] = manifest.digest()
+    score.environment_assessment = current_review_fixture(manifest, score.environment_assessment)
     (tmp_path / "alien/bin").mkdir(parents=True)
     result = await execute_contract(score, Stand(path=tmp_path, branch="main"))
     assert result["passed"] is False
@@ -360,15 +394,16 @@ async def test_cancelled_proxy_setup_closes_consumer_lifecycle(tmp_path, monkeyp
 
 @pytest.mark.asyncio
 async def test_known_dispatch_secret_names_redact_unfamiliar_credentials(tmp_path, monkeypatch):
-    from coordinare_service_inference.environment.models import EnvironmentManifest
 
     from performer.environment_contract import execute_contract
 
     score = contract_score(tmp_path)
     score.environment_manifest["checks"] = [{"id": "print", "argv": ["python3", "-c", "import os; print(os.environ['FIXTURE_DSN'])"]}]
-    manifest = EnvironmentManifest.model_validate(score.environment_manifest)
+    manifest = current_manifest_fixture(score.environment_manifest)
+    score.environment_manifest = manifest.model_dump()
     score.environment_manifest_digest = manifest.digest()
     score.environment_assessment["manifest_digest"] = manifest.digest()
+    score.environment_assessment = current_review_fixture(manifest, score.environment_assessment)
     score = Score.model_validate({**score.model_dump(), "environment_secret_names": ["FIXTURE_DSN"]})
     monkeypatch.setenv("FIXTURE_DSN", "opaque-sensitive-connection-value")
     (tmp_path / "alien/bin").mkdir(parents=True)
@@ -410,3 +445,127 @@ def test_consumer_rejects_mutable_source_commit(tmp_path):
     score.environment_assessment["manifest_digest"] = digest
     with pytest.raises(ValueError):
         accepted_manifest(score)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mutation', ['missing', 'tree', 'tracked_contents'])
+async def test_installer_requires_actual_complete_source_before_commands(tmp_path, mutation):
+    from performer.environment_contract import execute_contract
+
+    score = contract_score(tmp_path)
+    if mutation == 'missing':
+        score.environment_execution_source = None
+    elif mutation == 'tree':
+        score.environment_execution_source['tree_digest'] = '0'*64
+    else:
+        (tmp_path/'tools.plan').write_text('changed after review')
+    with pytest.raises(ValueError):
+        await execute_contract(score, Stand(path=tmp_path, branch='main'), install=True)
+    assert not (tmp_path/'installed').exists()
+
+
+@pytest.mark.asyncio
+async def test_ordinary_service_stop_failure_is_rejected_after_cleanup(tmp_path):
+    import sys
+
+    from performer.environment_contract import EnvironmentReadinessError, close_environment, prepare_environment
+
+    score = contract_score(tmp_path)
+    score.role = "implementing"
+    marker = tmp_path / "service-alive"
+    data = {**score.environment_manifest, "install": [], "checks": [{"id": "check", "argv": ["true"]}],
+        "activation": {"path": [], "env": {}}, "services": [{"id": "ordinary", "required": True,
+        "start": {"id": "start", "argv": [sys.executable, "-c", "import pathlib;pathlib.Path('service-alive').touch()"]},
+        "health": {"id": "health", "argv": [sys.executable, "-c", "import pathlib,time; p=pathlib.Path('service-alive');\nfor _ in range(100):\n if p.exists(): break\n time.sleep(.01)\nassert p.exists()"]},
+        "stop": {"id": "stop", "argv": [sys.executable, "-c", "import pathlib;pathlib.Path('service-alive').unlink();p=pathlib.Path('stop-count');n=int(p.read_text())+1 if p.exists() else 1;p.write_text(str(n));raise SystemExit(1 if n>1 else 0)"]}}]}
+    manifest = current_manifest_fixture(data)
+    score.environment_manifest = manifest.model_dump()
+    score.environment_manifest_digest = manifest.digest()
+    score.environment_assessment = current_review_fixture(manifest,
+        {**score.environment_assessment, "manifest_digest": manifest.digest()})
+    stand = Stand(path=tmp_path, branch="main")
+    await prepare_environment(score, stand)
+    assert (tmp_path / 'stop-count').read_text() == '1'
+    assert marker.exists()
+    with pytest.raises(EnvironmentReadinessError, match="required service failed"):
+        await close_environment(stand)
+    assert not marker.exists()
+    assert (tmp_path / 'stop-count').read_text() == '2'
+    assert stand.environment_runtime is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('identity', ['manifest_digest', 'execution_source_digest', 'platform', 'runtime_digest'])
+async def test_installer_evidence_cannot_be_reused_for_different_execution_identity(tmp_path, identity):
+    from performer.environment_contract import execute_contract
+
+    score = contract_score(tmp_path)
+    stand = Stand(path=tmp_path, branch='main')
+    await execute_contract(score, stand, install=True)
+    setattr(stand.environment_installation_report, identity, 'f' * 64)
+    with pytest.raises(ValueError, match='installer execution identity differs'):
+        await execute_contract(score, stand)
+
+
+@pytest.mark.asyncio
+async def test_final_verification_cannot_waive_original_install_failure(tmp_path):
+    from performer.environment_contract import execute_contract
+
+    score = contract_score(tmp_path)
+    manifest = current_manifest_fixture({**score.environment_manifest,
+        'install': [{'id': 'install', 'argv': ['false']}],
+        'checks': [{'id': 'check', 'argv': ['true']}], 'activation': {'path': [], 'env': {}}})
+    score.environment_manifest = manifest.model_dump()
+    score.environment_manifest_digest = manifest.digest()
+    score.environment_assessment = current_review_fixture(manifest,
+        {**score.environment_assessment, 'manifest_digest': manifest.digest()})
+    stand = Stand(path=tmp_path, branch='main')
+    assert not (await execute_contract(score, stand, install=True))['passed']
+    final = await execute_contract(score, stand)
+    assert not final['passed']
+    assert [item['status'] for item in final['environment_verification']['results']] == ['fail', 'pass']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('workflow', ['', 'env_bootstrap'])
+async def test_reviewed_dispatch_uses_deterministic_workflow_without_repair(tmp_path, monkeypatch, workflow):
+    import asyncio
+    import json
+    from unittest.mock import AsyncMock
+
+    from performer.config import Settings
+    from performer.protocol import PerformerMessage
+    from performer.environment_contract import close_environment
+
+    score = contract_score(tmp_path, failed=True)
+    score.workflow = workflow
+    stand = Stand(path=tmp_path, branch='main')
+    monkeypatch.setattr(main, 'clone_repository', AsyncMock(return_value=stand))
+    monkeypatch.setattr(main, '_launch_dispatch_proxy', AsyncMock(return_value=None))
+    monkeypatch.setattr(main, 'get_head_sha', AsyncMock(return_value=score.environment_manifest['source_commit']))
+    monkeypatch.setattr(main, '_snapshot_pr_comment_baseline', AsyncMock())
+    monkeypatch.setattr(main, 'get_backend', lambda *args: pytest.fail('reviewed bootstrap must not start a model backend'))
+    monkeypatch.setattr('performer.backends.get_backend', lambda *args: pytest.fail('reviewed workflow must not request an agent turn'))
+    message = PerformerMessage(action='dispatch', payload=score.model_dump())
+    perf = None
+    try:
+        _, perf = await main.handle_dispatch(message, Settings())
+        await asyncio.wait_for(perf.backend._task, timeout=10)
+        report = json.loads(perf.backend.get_status().output)['env_bootstrap_run']
+        assert perf.score.workflow == 'env_bootstrap'
+        assert report['status'] == 'error'
+        assert report['repairs'] == 0
+        assert perf.backend.metrics.agent_turns == 0
+        assert report['environment_verification']['manifest_digest'] == score.environment_manifest_digest
+    finally:
+        if perf is not None:
+            await perf.backend.stop()
+        await close_environment(stand)
+
+
+def test_reviewed_bootstrap_rejects_alternate_workflow(tmp_path):
+    score = contract_score(tmp_path)
+    score.workflow = 'custom'
+    with pytest.raises(ValueError, match='requires the env_bootstrap workflow'):
+        main._require_dispatch_environment(score)
+    assert score.workflow == 'custom'
