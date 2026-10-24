@@ -290,6 +290,19 @@ def _event(**fields: Any) -> None:
     sys.stdout.flush()
 
 
+def command_timing(phase: str, repository: str, evidence: Any) -> float:
+    """Emit each executed command's guest wall clock as an event; returns the phase total in seconds."""
+    total = 0.0
+    for item in evidence.get("results", []) if isinstance(evidence, dict) else []:
+        if item.get("status") == "not_run":
+            continue
+        seconds = float(item.get("duration_seconds") or 0)
+        total += seconds
+        _event(repository=repository, stage=f"{phase}_command", command=item.get("id"),
+               status=item.get("status"), seconds=round(seconds, 3))
+    return round(total, 3)
+
+
 async def _bounded_wait(process: asyncio.subprocess.Process, timeout: float) -> int:
     try:
         return await asyncio.wait_for(process.wait(), timeout)
@@ -483,6 +496,8 @@ async def execute_accepted(
                       installer_seconds=round(time.monotonic() - started, 1))
         service.on_bootstrap_complete(snapshot.name, False, state)
         return
+    result["installer_seconds"] = round(time.monotonic() - started, 1)
+    _event(repository=snapshot.name, stage="installer", seconds=result["installer_seconds"])
     (target / "installer-output.json").write_bytes(output)
     try:
         raw = json.loads(output)
@@ -510,6 +525,7 @@ async def execute_accepted(
     )
     evidence = {**report.model_dump(mode='json'), 'image_ref':image}
     result['installer_evidence'] = evidence
+    result['installer_command_seconds'] = command_timing("installer", snapshot.name, evidence)
     result['execution_source'] = cache.environment_execution_source
     if not result["installer_passed"]:
         evidence = {**report.model_dump(mode="json"), "image_ref": image}
@@ -520,12 +536,16 @@ async def execute_accepted(
     # _install returns only after the outer writer's removal is confirmed.
     admit_installer_runtime(cache, report.model_dump(mode='json'), cleanup_confirmed=True)
     result.update(stage="clean_consumer", clean_consumer_ran=True)
+    clean_started = time.monotonic()
     passed, detail = await verify_env_cache_clean(
         state,
         snapshot.name,
         SimpleNamespace(_config=SimpleNamespace(image=image)),
         performer_mounts=(target,),
     )
+    result["clean_consumer_seconds"] = round(time.monotonic() - clean_started, 1)
+    result["clean_consumer_command_seconds"] = command_timing("clean_consumer", snapshot.name, cache.environment_verification)
+    _event(repository=snapshot.name, stage="clean_consumer", seconds=result["clean_consumer_seconds"])
     result.update(
         clean_consumer_passed=passed,
         clean_consumer_detail=detail,

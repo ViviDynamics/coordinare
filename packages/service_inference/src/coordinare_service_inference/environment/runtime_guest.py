@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 from typing import TYPE_CHECKING
 
@@ -46,18 +47,32 @@ def guest_memory_mib(resources: RuntimeResources) -> int:
     return max(256, resources.memory_mib // 2)
 
 
+def host_kvm_usable(device: str = '/dev/kvm') -> bool:
+    return os.access(device, os.R_OK | os.W_OK)
+
+
+def accelerator_arguments(*, kvm: bool) -> list[str]:
+    """QEMU tries -accel options in order, so KVM is attempted first and TCG remains the fallback."""
+    tcg = ['-accel', f'tcg,tb-size={TCG_CACHE_MIB}']
+    return ['-accel', 'kvm', *tcg] if kvm else tcg
+
+
 def qemu_arguments(spec: RuntimeSpec, bundle: RuntimeBundleInputs, *, disk: Path, seed: Path,
-                   repo: Path, cache: Path, scratch: Path, control: Path, install: bool) -> list[str]:
+                   repo: Path, cache: Path, scratch: Path, control: Path, install: bool,
+                   carrier_platform: str | None = None, kvm_usable: bool = False) -> list[str]:
     forwarding = [f'hostfwd=tcp:127.0.0.1:{spec.policy.control_port}-:22']
     forwarding.extend(f'hostfwd=tcp:127.0.0.1:{port.outer_port}-:{port.guest_port}' for port in spec.endpoints)
-    arguments = [bundle.emulator, '-accel', f'tcg,tb-size={TCG_CACHE_MIB}', '-m', str(guest_memory_mib(spec.policy.resources)),
+    # KVM only helps a guest of the carrier's own architecture; a cross-architecture guest stays on TCG.
+    kvm = kvm_usable and carrier_platform == bundle.guest_platform
+    arguments = [bundle.emulator, *accelerator_arguments(kvm=kvm), '-m', str(guest_memory_mib(spec.policy.resources)),
                  '-smp', str(spec.policy.resources.cpus), '-bios', bundle.firmware,
                  '-drive', f'file={disk},format=qcow2,if=virtio,discard=unmap',
                  '-drive', f'file={seed},format=raw,media=cdrom,if=virtio,readonly=on',
                  '-netdev', 'user,id=net0,restrict=' + ('off' if install else 'on') + ',' + ','.join(forwarding),
                  '-device', 'virtio-net-pci,netdev=net0,romfile=', '-nographic', '-no-reboot']
     if bundle.guest_platform == 'linux/aarch64':
-        arguments += ['-M', 'virt', '-cpu', 'cortex-a72']
+        # KVM cannot emulate a different CPU model, so a same-architecture guest runs the host's own.
+        arguments += ['-M', 'virt', '-cpu', 'host' if kvm else 'cortex-a72']
     for tag, path, readonly in [('repo', repo, False), ('cache', cache, not install),
                                  ('scratch', scratch, False), ('control', control, True)]:
         # QEMU's comma-delimited option syntax escapes literal commas by doubling.
