@@ -148,6 +148,12 @@ GRAPH_GUIDANCE = {
                             '(for example req-<id>) and keep the check, install and service command ids unchanged.'),
     'global_obligation_removed': ('Your earlier proposals declared the listed required records; keep each id and revise '
                                   'the record in place. Only an id that reuses a scope criterion id may be renamed.'),
+    'connectivity_gate': ('The named command depends on an install that only tests reachability. Remove the listed ids '
+                          'from its depends_on: a command that needs the network fails on its own, and a gate only '
+                          'stops every install that depends on it.'),
+    'activation_path_uncreated': ('Each listed activation path entry (its 0-based position in activation.path) is not '
+                                  'created or populated by any install command. Have an install command create that '
+                                  'path or a directory it lives in, or remove the entry.'),
 }
 
 
