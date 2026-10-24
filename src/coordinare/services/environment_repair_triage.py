@@ -99,12 +99,12 @@ def _root_class(command: Command, kind: str, service: str | None, output: str) -
 def _reach(seeds: set[str], neighbours: dict[str, set[str]]) -> set[str]:
     """Every node reachable from the seeds along one edge direction, seeds included."""
     reached = set(seeds)
-    pending = list(seeds)
-    while pending:
-        for node in neighbours.get(pending.pop(), set()):
+    frontier = list(seeds)
+    while frontier:
+        for node in neighbours.get(frontier.pop(), set()):
             if node not in reached:
                 reached.add(node)
-                pending.append(node)
+                frontier.append(node)
     return reached
 
 
