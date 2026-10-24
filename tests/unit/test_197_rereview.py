@@ -22,6 +22,17 @@ from coordinare.start_checks import validate_expanded_secrets
 from tests.unit.test_252_secret_placeholders import _WALKED, _doc_for
 from tests.utils.smoke_release import release_script_env
 
+
+@pytest.fixture(autouse=True)
+def _ample_docker_disk(monkeypatch):
+    """These tests fake Docker, so its disk check measured the runner's own temporary directory; the Ubuntu 26
+    runners have less than the full image's 10 GiB free there. No test here exercises the disk check."""
+    import shutil
+
+    real = shutil.disk_usage
+    monkeypatch.setattr(docker_setup.shutil, "disk_usage",
+                        lambda path: real(path)._replace(free=64 * 1024 ** 3))
+
 ROOT = Path(__file__).resolve().parents[2]
 UNSET = "COORDINARE_197_MISSING_SECRET"
 
