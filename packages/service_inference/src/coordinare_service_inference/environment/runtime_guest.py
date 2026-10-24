@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from .runtime import RuntimeSpec
+    from .runtime import RuntimeResources, RuntimeSpec
     from .runtime_bundle import RuntimeBundleInputs
 
 
@@ -35,11 +35,22 @@ def cloud_configuration(*, repo: Path, cache: Path, scratch: Path, readonly: boo
                                           'runcmd': [script]}) + '\n'
 
 
+# The guest's RAM is unreclaimable QEMU memory inside the container's memory limit, and the guest fills it with file
+# cache during a long install. It gets half the limit, so QEMU's own overhead (its translation cache, capped here) and
+# the container-side install (compilers, gem and npm builds) always keep the other half. v30 and v32 gave the guest all
+# but 512 MiB, and the container's limit killed QEMU partway through installation.
+TCG_CACHE_MIB = 256
+
+
+def guest_memory_mib(resources: RuntimeResources) -> int:
+    return max(256, resources.memory_mib // 2)
+
+
 def qemu_arguments(spec: RuntimeSpec, bundle: RuntimeBundleInputs, *, disk: Path, seed: Path,
                    repo: Path, cache: Path, scratch: Path, control: Path, install: bool) -> list[str]:
     forwarding = [f'hostfwd=tcp:127.0.0.1:{spec.policy.control_port}-:22']
     forwarding.extend(f'hostfwd=tcp:127.0.0.1:{port.outer_port}-:{port.guest_port}' for port in spec.endpoints)
-    arguments = [bundle.emulator, '-accel', 'tcg', '-m', str(max(128, spec.policy.resources.memory_mib - 512)),
+    arguments = [bundle.emulator, '-accel', f'tcg,tb-size={TCG_CACHE_MIB}', '-m', str(guest_memory_mib(spec.policy.resources)),
                  '-smp', str(spec.policy.resources.cpus), '-bios', bundle.firmware,
                  '-drive', f'file={disk},format=qcow2,if=virtio,discard=unmap',
                  '-drive', f'file={seed},format=raw,media=cdrom,if=virtio,readonly=on',
