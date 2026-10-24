@@ -288,6 +288,10 @@ async def _collect_stream(resp: Any) -> dict[str, Any] | None:
             if degenerate(text) or degenerate(thought):
                 finish = REPETITION_FINISH
                 break
+    # A provider may close a looping stream itself, without a finish reason, before the next check (v33: a reply of
+    # blank lines); the final text is checked once more so that stop is still recognised as repetition.
+    if finish is None and (degenerate(text) or degenerate(thought)):
+        finish = REPETITION_FINISH
     return {"model": model, "usage": usage, "choices": [{"message": {"content": text}, "finish_reason": finish}]}
 
 

@@ -139,3 +139,17 @@ def test_a_stopped_reply_is_corrected_with_repetition_guidance_and_counted():
     explain_rejection(messages, '{"a":', [{'code': 'invalid_json_envelope', 'location': []}], budget)
     assert 'reply_repetition' in messages[-1]['content']
     assert '1 | 1' not in messages[-1]['content']
+
+
+@pytest.mark.asyncio
+async def test_a_stream_the_provider_closes_mid_loop_is_still_a_repetition_stop(monkeypatch):
+    """v33: a reply of blank lines ended without a finish reason before the guard's next check."""
+    # The first frame is checked and not yet degenerate; the last adds too little to be checked inside the stream.
+    frames = sse(delta('{"shard_checks":{"checks":[' + '\n \n' * 620), delta('\n \n' * 70))
+    backend = backend_with(monkeypatch, frames, [], [])
+    token = repetition_guard.set(True)
+    try:
+        reply = await backend._post_chat([{'role': 'user', 'content': 'x'}], True)
+    finally:
+        repetition_guard.reset(token)
+    assert reply.finish_reason == 'repetition'
