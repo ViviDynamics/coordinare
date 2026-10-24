@@ -153,6 +153,10 @@ GRAPH_GUIDANCE = {
     'connectivity_gate': ('The named command depends on an install that only tests reachability. Remove the listed ids '
                           'from its depends_on: a command that needs the network fails on its own, and a gate only '
                           'stops every install that depends on it.'),
+    'foreign_architecture_artifact': ('The named command downloads a release artifact built for another CPU architecture '
+                                      'than the install platform in execution_capabilities.platform. Download the artifact '
+                                      'for that platform instead; request a foreign platform only when the repository '
+                                      'explicitly requires one.'),
     'activation_path_uncreated': ('Each listed activation path entry (its 0-based position in activation.path) is not '
                                   'created or populated by any install command. Have an install command create that '
                                   'path or a directory it lives in, or remove the entry.'),

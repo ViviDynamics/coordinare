@@ -741,7 +741,7 @@ class _CandidateValidator:
             previous.update(current)
         manifest = self.construction.admit(data, self.discovery.inputs)
         try:
-            validate_static_rules(manifest.install, manifest.activation)
+            validate_static_rules(manifest.install, manifest.activation, self.construction.capabilities.platform)
         except PydanticCustomError as exc:
             raise ValidationError.from_exception_data('EnvironmentManifestProposal',
                                                       [{'type': exc, 'loc': (), 'input': None}]) from exc
@@ -1257,6 +1257,7 @@ def _global_rules(merge: Callable[[dict[str, Any]], Any] | None) -> Callable[[di
             # v28 set DOCKER_CONFIG in activation, which the private runtime owns; the merge reported it unlocated.
             validate_records(proposal.install, proposal.checks, proposal.services, proposal.requirements,
                              proposal.activation.env, runtime=merge.construction.capabilities.runtime is not None)
+            validate_static_rules(proposal.install, proposal.activation, merge.construction.capabilities.platform)
             validate_shell_locals([*proposal.install, *proposal.checks, *(command for service in proposal.services
                                    for command in (service.init, service.start, service.health, service.stop) if command)],
                                   [*proposal.activation.env, *(c.name for c in proposal.local_credentials)])
