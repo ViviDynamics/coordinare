@@ -74,9 +74,8 @@ def test_only_a_scope_beyond_one_authors_share_is_divided_into_groups_of_25():
     assert all(criterion.applicability == 'required' for group in groups for criterion in group.criteria)
 
 
-@pytest.mark.parametrize('changes', [{'criterion_checks': {'S0000000000000000': ['toolchain']}},
-                                     {'checks': [{'id': 'c00-mine', 'argv': ['true']}]}])
-def test_the_global_author_cannot_map_criteria_or_take_a_check_author_prefix(changes):
+@pytest.mark.parametrize('changes', [{'checks': [{'id': 'c00-mine', 'argv': ['true']}]}])
+def test_the_global_author_cannot_take_a_check_author_prefix(changes):
     with pytest.raises(ValidationError) as caught:
         validate_global(global_part(**changes))
     [feedback] = _validation_feedback(caught.value)
@@ -852,3 +851,11 @@ def test_a_requirement_sharing_a_check_id_is_its_own_correction_and_never_locked
     construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=None))
     lockable = discovery_module._without_criterion_ids(global_part(requirements=[requirement]), construction)
     assert lockable['requirements'] == [] and lockable['checks'] == []
+
+
+
+@pytest.mark.parametrize('mapping', [{'S0000000000000000': ['toolchain']}, [], None])
+def test_the_global_parts_criterion_mappings_are_set_aside_not_corrected(mapping):
+    """v37: the repair's global author spent its last schema repairs on criterion_checks alone."""
+    data = global_part(criterion_checks=mapping)
+    assert validate_global(data)['criterion_checks'] == {}

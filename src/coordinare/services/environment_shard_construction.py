@@ -109,7 +109,13 @@ class GlobalRules(BaseModel):
 
 
 def validate_global(data: dict[str, Any]) -> dict[str, Any]:
-    """Full proposal validation, then the global author's own rules; both raise correctable validation errors."""
+    """Full proposal validation, then the global author's own rules; both raise correctable validation errors.
+
+    The global part never maps criteria (check authors map every one), so whatever it puts in criterion_checks is set
+    aside here rather than corrected: v37's execution repair spent its last schema repairs on that field alone.
+    """
+    if isinstance(data, dict) and 'criterion_checks' in data:
+        data['criterion_checks'] = {}
     proposal = EnvironmentManifestProposal.model_validate(data)
     try:
         validate_execution_graph(proposal.install, proposal.checks, proposal.services)
