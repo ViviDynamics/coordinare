@@ -7,15 +7,23 @@ pipeline, including the closure guard. A patch never removes a record: an omitte
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from coordinare.services.environment_delta_schema import RECORD_GROUPS
-from coordinare.services.environment_repair_triage import ACTIVATION, GLOBAL, RepairTriage, part_of
+from coordinare.services.environment_repair_triage import (
+    ACTIVATION,
+    GLOBAL,
+    RepairTriage,
+    depends_on_closure,
+    part_of,
+)
 from coordinare.services.environment_shard_construction import CheckGroup, owns, parts_from_manifest
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
     from coordinare_service_inference.environment.models import EnvironmentManifest
 
@@ -61,7 +69,8 @@ class DeltaPlan:
         return self.triage.digest
 
     def group_touched(self, group: CheckGroup) -> bool:
-        return group.prefix in self.touched
+        """A group is touched when a closure check is one it owns, including the split remainders under its prefix."""
+        return any(owns(group.prefix, identifier) for identifier in self.closure)
 
     def brief(self, *, divided: bool) -> dict[str, Any]:
         """What a repair author is shown: the failure's roots and consequences, and the closure records and criteria."""
@@ -114,12 +123,33 @@ class DeltaPlan:
         return {criterion: list(ids) for criterion, ids in sorted(self.base.criterion_checks.items()) if criterion in wanted}
 
 
+TOP_LEVEL = ("activation", "runtime_endpoints", "local_credentials", "empty_reason")
+TOP_LEVEL_DEFAULTS: dict[str, Any] = {"activation": {"path": [], "env": {}}, "runtime_endpoints": [],
+                                     "local_credentials": [], "empty_reason": None}
+
+
 def changed_ids(base: EnvironmentManifest, candidate: Mapping[str, Any]) -> dict[str, list[str]]:
-    """Which records differ from the base by id: changed, added and removed. Used to scope the review."""
+    """Which records differ from the base: changed, added and removed by id, and changed top-level fields by name.
+
+    Top-level fields (activation, runtime endpoints, local credentials, empty reason) are named in ``changed`` so the
+    repair scope tells the reviewer about them as it does about records.
+    """
     before = {item.id: _record_dump(item) for group in RECORD_GROUPS for item in getattr(base, group)}
     after = {item["id"]: item for group in RECORD_GROUPS for item in candidate.get(group) or [] if isinstance(item, dict)}
     changed = sorted(identifier for identifier in before if identifier in after and after[identifier] != before[identifier])
-    return {"changed": changed, "added": sorted(set(after) - set(before)), "removed": sorted(set(before) - set(after))}
+    base_fields = proposal_of(base)
+    changed += [name for name in TOP_LEVEL if candidate.get(name) is not None
+                and candidate[name] != base_fields.get(name, TOP_LEVEL_DEFAULTS[name])]
+    return {"changed": sorted(changed), "added": sorted(set(after) - set(before)), "removed": sorted(set(before) - set(after))}
+
+
+def dependency_digest(manifest: EnvironmentManifest, identifiers: Iterable[str]) -> str:
+    """A digest of the full records of ``identifiers`` and of everything they transitively depend on.
+
+    A part's standing depends on this: a changed prerequisite changes what its checks test, even when the checks are not.
+    """
+    records = depends_on_closure(manifest, identifiers)
+    return hashlib.sha256(json.dumps(records, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
 def standing_view(shared: Mapping[str, Any]) -> dict[str, Any]:

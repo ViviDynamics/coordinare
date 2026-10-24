@@ -466,12 +466,17 @@ def _repeated(identifiers: Iterable[str]) -> set[str]:
 MAX_DUPLICATE_PAIRS = 32
 
 
+def content_key(command: Command) -> str:
+    """What makes two commands one obligation: argv, cwd, env and scope. Timeout, dependencies and required do not."""
+    return json.dumps([command.argv, command.cwd, sorted(command.env.items()), sorted(command.scope)], ensure_ascii=False)
+
+
 def duplicate_content_pairs(commands: Iterable[Command]) -> list[list[str]]:
     """Each later command repeating an earlier one's argv, cwd, env and scope, paired with that earlier copy."""
     first: dict[str, str] = {}
     pairs: list[list[str]] = []
     for command in commands:
-        key = json.dumps([command.argv, command.cwd, sorted(command.env.items()), sorted(command.scope)], ensure_ascii=False)
+        key = content_key(command)
         if key in first:
             pairs.append([first[key], command.id])
         else:
@@ -506,6 +511,15 @@ def validate_records(install: list[Command], checks: list[Command], services: li
         raise _graph_error('duplicate_command_ids', 'duplicate command IDs or excessive commands', '', repeated)
     validate_unique_content(install)
     validate_unique_content(checks)
+    # A lifecycle command repeated under another service repeats its obligation; one service's own phases may share content.
+    owner = {command.id: service.id for service in services
+             for command in [service.init, service.start, service.health, service.stop] if command}
+    lifecycle = [command for service in services for command in [service.init, service.start, service.health, service.stop] if command]
+    if pairs := [pair for pair in duplicate_content_pairs(lifecycle) if owner[pair[0]] != owner[pair[1]]]:
+        raise PydanticCustomError("duplicate_command_content",
+                                  "identical commands repeat an earlier command's argv, cwd, env and scope; "
+                                  "keep one and remove the rest",
+                                  {"pairs": pairs[:MAX_DUPLICATE_PAIRS]})
     if repeated := _repeated(requirement.id for requirement in requirements):
         raise _graph_error('duplicate_requirement_ids', 'duplicate requirement IDs', '', repeated)
     for service in services:
@@ -614,6 +628,14 @@ class ShardChecksEnvelope(StrictModel):
     shard_checks: ShardChecks
 
 
+class CriterionRulingProposal(StrictModel):
+    """A reviewer's ruling on one criterion a repair touched; the daemon names which criteria need one."""
+
+    criterion_id: str = Field(min_length=1, max_length=128)
+    verdict: Literal["accept", "revise"]
+    rationale: str = Field(min_length=1, max_length=2048)
+
+
 class CoverageAssessmentProposal(StrictModel):
     """A judgment about the exact manifest supplied in this isolated conversation."""
 
@@ -623,6 +645,8 @@ class CoverageAssessmentProposal(StrictModel):
     verdict: Literal["accept", "revise", "indeterminate"]
     rationale: str = Field(min_length=1)
     sources: list[str] = Field(min_length=1)
+    # Required, one per daemon-named criterion, only when a repair scope is present (validated by discovery).
+    criterion_rulings: list[CriterionRulingProposal] = Field(default_factory=list, max_length=MAX_LEDGER_FINDINGS)
 
 
 def validate_current_coverage(manifest: EnvironmentManifest, assessment: CoverageAssessment) -> None:

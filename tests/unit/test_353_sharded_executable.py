@@ -254,6 +254,9 @@ class FakeManifest(SimpleNamespace):
     def model_dump(self, **_kwargs):
         return {'checks': self.checks, 'requirements': [], 'install': [], 'activation': {}, 'services': []}
 
+    install: list = ()
+    services: list = ()
+
 
 @pytest.mark.asyncio
 async def test_a_divided_review_gives_each_part_a_fresh_reviewer_and_only_its_own_findings(monkeypatch):
@@ -283,6 +286,8 @@ async def test_a_divided_review_gives_each_part_a_fresh_reviewer_and_only_its_ow
     monkeypatch.setattr(discovery_module, '_Inspection', FreshInspection)
     monkeypatch.setattr(discovery_module, 'run_agent', agent)
     monkeypatch.setattr(discovery_module, 'manifest_obligation_ids', lambda _manifest: set())
+    # The fake manifest carries plain check dicts, not command records; the dependency digest has its own tests.
+    monkeypatch.setattr(discovery_module, 'dependency_digest', lambda _manifest, _ids: 'x' * 64)
     build = SimpleNamespace(groups=groups, scope=SimpleNamespace(definition=SimpleNamespace(criteria=[first, second])),
                             context=None, concurrency=4)
     manifest = FakeManifest(inputs={first.sources[0]: 'a' * 64, second.sources[0]: 'b' * 64, 'Makefile': 'c' * 64},

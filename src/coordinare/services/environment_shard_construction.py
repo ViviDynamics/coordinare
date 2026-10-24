@@ -553,10 +553,12 @@ def _decision_errors(proposal: CoverageAssessmentProposal, *, inspection: Source
 
 @dataclass(frozen=True)
 class ReviewIds:
-    """What a review part may name: the manifest's obligation ids and the ledger's retained finding ids."""
+    """What a review part may name: the manifest's obligation ids, the ledger's retained finding ids, and, for a repair, the
+    criteria whose part needs one ruling each (``rulings`` is None when the part is not a repair's)."""
 
     obligations: Collection[str] = ()
     retained: Collection[str] = ()
+    rulings: Sequence[str] | None = None
 
 
 NO_REVIEW_IDS = ReviewIds()
@@ -571,6 +573,12 @@ def validate_review_part(data: dict[str, Any], *, inspection: SourceInspection, 
         errors.append({'code': 'review_findings_invalid', 'location': ['assessment', 'decisions'],
                        'required_decision_ids': list(owned),
                        'guidance': 'Decide exactly every required_decision_ids entry and no others.'})
+    if known.rulings is not None:
+        ruled = [ruling.criterion_id for ruling in proposal.criterion_rulings]
+        if len(ruled) != len(set(ruled)) or set(ruled) != set(known.rulings):
+            errors.append({'code': 'review_rulings_invalid', 'location': ['assessment', 'criterion_rulings'],
+                           'required_criterion_ids': list(known.rulings),
+                           'guidance': 'Give exactly one criterion_rulings entry per required_criterion_ids id and no others.'})
     if len(proposal.findings) > capacity:
         errors.append({'code': 'review_findings_limit', 'location': ['assessment', 'findings'], 'findings_capacity': capacity,
                        'guidance': 'Report at most findings_capacity new findings; return indeterminate if more must block.'})
