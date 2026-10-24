@@ -1,0 +1,1873 @@
+{
+  "manifest": {
+    "activation": {
+      "env": {
+        "BUNDLE_PATH": "{cache}/bundle",
+        "DATABASE_HOST": "127.0.0.1",
+        "DATABASE_PORT": "5432",
+        "DATABASE_USERNAME": "postgres",
+        "LD_LIBRARY_PATH": "{cache}/pgroot/usr/lib/x86_64-linux-gnu:{cache}/pgroot/usr/lib/postgresql/17/lib",
+        "RBENV_ROOT": "{cache}/rbenv"
+      },
+      "path": [
+        "{cache}/rbenv/shims",
+        "{cache}/rbenv/bin",
+        "{cache}/bin",
+        "{cache}/pgroot/usr/lib/postgresql/17/bin"
+      ]
+    },
+    "checks": [
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; RUBY=$(ruby --version); echo $RUBY; echo $RUBY | grep -F 3.4.2; gem --version; bundle --version"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [],
+        "env": {},
+        "id": "check-ruby-pinned",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 120.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "bundle check"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [],
+        "env": {},
+        "id": "check-bundle-repo",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "cd {cache} && BUNDLE_GEMFILE={cache}/Gemfile bundle check"
+        ],
+        "cwd": "{cache}",
+        "depends_on": [],
+        "env": {},
+        "id": "check-bundle-cache-root",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -tAc 'SELECT version();' | grep -F 'PostgreSQL 17'"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [],
+        "env": {},
+        "id": "check-postgres-up",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 60.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -c 'CREATE EXTENSION IF NOT EXISTS vector;' && psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -tAc \"SELECT extname FROM pg_extension WHERE extname='vector';\" | grep -q vector"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-postgres-up"
+        ],
+        "env": {},
+        "id": "check-pgvector-available",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 60.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "docker info --format '{{.ServerVersion}}'"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [],
+        "env": {},
+        "id": "check-docker-daemon",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 60.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "docker compose version"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [],
+        "env": {},
+        "id": "check-docker-compose-plugin",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 60.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "docker image inspect pgvector/pgvector:pg17 ruby:3.4.2 node:22-bookworm-slim axllent/mailpit@sha256:74d609a42ec279aa63c6b4622a6fa9b5408d1ad5b1d76a1c4be40a265ce0863d clamav/clamav:latest"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-docker-daemon"
+        ],
+        "env": {},
+        "id": "check-docker-images",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 120.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "docker image inspect platform:build"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-docker-daemon"
+        ],
+        "env": {},
+        "id": "check-prebuilt-images",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 60.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "node --version | grep -F v22. && npm --version"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [],
+        "env": {},
+        "id": "check-node22",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 60.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "helm version --short"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [],
+        "env": {},
+        "id": "check-helm",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 60.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "gh --version | head -n1; jq --version; git --version"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [],
+        "env": {},
+        "id": "check-skill-tools",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 60.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "test -f repo.env || cp repo.env.example repo.env; grep -q '^VIVI_REPO=' repo.env && grep -q '^VIVI_DEFAULT_BRANCH=' repo.env"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [],
+        "env": {},
+        "id": "check-repo-env",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 60.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "test -d {cache}/npm-cache/_cacache && test -d {cache}/node_modules && echo npm-cache-present"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [],
+        "env": {},
+        "id": "check-npm-cache",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 60.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; test -f repo.env || cp repo.env.example repo.env; . .agents/skills/ci-safety/scripts/_lib.sh; cd \"$(git rev-parse --show-toplevel)\" && vivi_load_env; test -n \"$VIVI_ROOT\"; test -n \"$VIVI_REPO\"; test -n \"$VIVI_DEFAULT_BRANCH\"; test -n \"$VIVI_MERGE_FLAGS\"; echo repo.env loaded"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-repo-env",
+          "check-skill-tools"
+        ],
+        "env": {},
+        "id": "c00-repo-env-vivi-load-env",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 60.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; for f in .agents/skills/ci-safety/scripts/_lib.sh .agents/skills/merge-pr/scripts/_lib.sh; do test -f \"$f\"; for fn in vivi_load_env vivi_require vivi_die vivi_gh; do grep -q \"$fn\" \"$f\"; done; done; echo skill _lib.sh helpers present"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [],
+        "env": {},
+        "id": "c00-skill-lib-helpers",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 60.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; test -f repo.env || cp repo.env.example repo.env; CI=1 .agents/skills/ci-safety/scripts/check-wiring > /tmp/wiring.json; cat /tmp/wiring.json; grep -q '\"ok\":true' /tmp/wiring.json"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-repo-env",
+          "check-skill-tools"
+        ],
+        "env": {},
+        "id": "c00-check-wiring-ok",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 120.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; mv repo.env /tmp/repo.env.bak; set +e; out=$(env -u GH_TOKEN -u GITHUB_TOKEN .agents/skills/ci-safety/scripts/check-wiring 2>&1); rc=$?; mv /tmp/repo.env.bak repo.env; echo \"$out\"; test $rc -eq 2; echo \"$out\" | grep -q 'repo.env'"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c00-check-wiring-ok"
+        ],
+        "env": {},
+        "id": "c00-check-wiring-failure",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 120.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; test -f repo.env || cp repo.env.example repo.env; git fetch origin main 2>/dev/null || true; .agents/skills/merge-pr/scripts/quality-guard > /tmp/qg.json; cat /tmp/qg.json; grep -q '\"state\":\"clean\"' /tmp/qg.json"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c00-repo-env-vivi-load-env"
+        ],
+        "env": {},
+        "id": "c00-quality-guard-local-clean",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; cp .rspec /tmp/rspec.bak; printf '# quality-guard probe\\n' >> .rspec; set +e; out=$(.agents/skills/merge-pr/scripts/quality-guard); rc=$?; mv /tmp/rspec.bak .rspec; echo \"$out\"; test $rc -eq 1; echo \"$out\" | grep -q '\"state\":\"blocked\"'"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c00-quality-guard-local-clean"
+        ],
+        "env": {},
+        "id": "c00-quality-guard-blocked",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; bin/rails db:prepare"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-bundle-repo",
+          "check-postgres-up",
+          "check-pgvector-available"
+        ],
+        "env": {},
+        "id": "c00-db-prepare",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 900.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; bin/setup --skip-server"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-ruby-pinned",
+          "check-bundle-repo",
+          "check-postgres-up",
+          "check-pgvector-available"
+        ],
+        "env": {},
+        "id": "c00-bin-setup",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 1800.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; bundle exec rspec"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c00-db-prepare"
+        ],
+        "env": {},
+        "id": "c00-rspec-full",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 3600.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; bundle exec rspec spec/seeds/database_seeds_spec.rb"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c00-db-prepare"
+        ],
+        "env": {},
+        "id": "c00-rspec-seeds-spec",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 1800.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; bundle exec cucumber"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c00-db-prepare"
+        ],
+        "env": {},
+        "id": "c00-cucumber-suite",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 3600.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; BILLING_PROVIDER=fake bin/qa-cucumber features/sign_in.feature"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c00-db-prepare"
+        ],
+        "env": {},
+        "id": "c00-cucumber-qa-runner",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 1800.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; bin/rails db:seed; bin/rails db:seed"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c00-db-prepare"
+        ],
+        "env": {},
+        "id": "c00-seeds-idempotent",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 1200.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; bin/rails db:seed:qa"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c00-db-prepare"
+        ],
+        "env": {},
+        "id": "c00-qa-seed",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 600.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; out=$(bin/demo-magic-link); echo \"$out\"; echo \"$out\" | grep -q '/auth/magic_link'"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c00-seeds-idempotent"
+        ],
+        "env": {},
+        "id": "c00-demo-magic-link",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; bin/rubocop; bin/brakeman --no-pager; bin/bundler-audit; bin/importmap audit"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-bundle-repo"
+        ],
+        "env": {},
+        "id": "c00-static-analysis",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 1800.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; bin/rubycritic; test -s tmp/rubycritic/overview.html"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-bundle-repo"
+        ],
+        "env": {},
+        "id": "c00-rubycritic",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 1800.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; node --test docs/design/estimator-editor/*.test.mjs docs/design/estimator-editor/complex/model.test.mjs; node --check docs/design/estimator-editor/app.mjs; node --check docs/design/estimator-editor/complex/app.mjs"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-node22"
+        ],
+        "env": {},
+        "id": "c00-node-estimator-tests",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 600.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; rm -rf node_modules; npm ci --offline --cache {cache}/npm-cache; npm run build:css --offline; test -s app/assets/builds/active_admin.css; test $(wc -c < app/assets/builds/active_admin.css) -gt 10000; ! grep -q '@import \"tailwindcss\"' app/assets/builds/active_admin.css"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-node22",
+          "check-npm-cache"
+        ],
+        "env": {},
+        "id": "c00-css-build",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 900.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; grep -qE '^[[:space:]]*build:' compose.qa.yaml; grep -q 'context: [.]' compose.qa.yaml; grep -q 'image:' compose.qa.yaml; echo 'QA compose builds resolve to the prebuilt platform:build image verified by check-prebuilt-images'"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-prebuilt-images"
+        ],
+        "env": {},
+        "id": "c00-qa-compose-no-build",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 60.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; helm lint chart --strict"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-helm"
+        ],
+        "env": {},
+        "id": "c00-helm-lint",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; docker run --rm -v \"{repo}:/scan:ro\" clamav/clamav:latest clamscan --infected --recursive --exclude=.git /scan | tee /tmp/clam.out; grep -q 'Infected files: 0' /tmp/clam.out"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-docker-daemon",
+          "check-docker-images"
+        ],
+        "env": {},
+        "id": "c00-clamav-scan",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 3600.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; docker compose -f compose.qa.yaml -p qare-shard up -d --wait web; rc=$?; docker compose -f compose.qa.yaml -p qare-shard down -v || true; exit $rc"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c00-qa-compose-no-build",
+          "check-docker-daemon",
+          "check-docker-compose-plugin",
+          "check-docker-images",
+          "check-prebuilt-images"
+        ],
+        "env": {},
+        "id": "c00-qa-compose-up",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 1800.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; DATABASE_HOST=127.0.0.1 DATABASE_PORT=5432 DATABASE_USERNAME=postgres bin/rails runner 'puts Rails.env' | grep -qx development"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-ruby-pinned",
+          "check-bundle-repo",
+          "postgres-start"
+        ],
+        "env": {},
+        "id": "c01-rails-boot",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; RAILS_ENV=qa DATABASE_HOST=127.0.0.1 DATABASE_PORT=5432 DATABASE_USERNAME=postgres bin/rails runner 'puts Rails.env' | grep -qx qa"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c01-rails-boot"
+        ],
+        "env": {},
+        "id": "c01-rails-boot-qa",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; DATABASE_HOST=127.0.0.1 DATABASE_PORT=5432 DATABASE_USERNAME=postgres bin/rails db:drop db:prepare && psql -h 127.0.0.1 -p 5432 -U postgres -d platform_development -tAc \"SELECT extname FROM pg_extension\" | grep -qx vector && psql -h 127.0.0.1 -p 5432 -U postgres -d platform_development -tAc \"SELECT extname FROM pg_extension\" | grep -qx pgcrypto"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c01-rails-boot",
+          "check-pgvector-available"
+        ],
+        "env": {},
+        "id": "c01-db-schema-load",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; DATABASE_HOST=127.0.0.1 DATABASE_PORT=5432 DATABASE_USERNAME=postgres bundle exec rspec spec/deployment/database_baseline_spec.rb"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c01-db-schema-load"
+        ],
+        "env": {},
+        "id": "c01-db-baseline-spec",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; export DATABASE_HOST=127.0.0.1 DATABASE_PORT=5432 DATABASE_USERNAME=postgres; bin/rails db:seed && bin/rails db:seed && psql -h 127.0.0.1 -p 5432 -U postgres -d platform_development -tAc \"SELECT count(*) FROM billing_dunning_schedules WHERE key = 'maxio-standard'\" | grep -qx 1"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c01-db-schema-load"
+        ],
+        "env": {},
+        "id": "c01-seeds-idempotent",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; RAILS_ENV=test SEED_DEMO=1 DATABASE_HOST=127.0.0.1 DATABASE_PORT=5432 DATABASE_USERNAME=postgres bin/rails db:seed"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c01-db-schema-load"
+        ],
+        "env": {},
+        "id": "c01-seeds-demo",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; DATABASE_HOST=127.0.0.1 DATABASE_PORT=5432 DATABASE_USERNAME=postgres bin/rails runner 's = MaxioMock::Server.new; s.load_catalog(Rails.root.join(\"spec/fixtures/billing/maxio_catalog.yml\")); raise \"catalog\" unless s.subscriptions.length == 2; sub = s.subscriptions.find { |x| x[:id] == 98765 }; raise \"98765\" unless sub && sub[:status] == \"active\"'"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c01-rails-boot"
+        ],
+        "env": {},
+        "id": "c01-maxio-mock-catalog",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; DATABASE_HOST=127.0.0.1 DATABASE_PORT=5432 DATABASE_USERNAME=postgres bin/maxio-mock & MPID=$!; sleep 8; code=$(curl -sf http://127.0.0.1:4569/healthz); kill $MPID; echo \"$code\" | grep -qi ok"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c01-maxio-mock-catalog"
+        ],
+        "env": {},
+        "id": "c01-maxio-mock-serve",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 120.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; test -s vendor/javascript/@maxio-com--self-service.js && grep -q 1.17.2 vendor/javascript/MAXIO_README.md"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-bundle-repo"
+        ],
+        "env": {},
+        "id": "c01-vendor-self-service",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 30.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; docker build -t c01-platform:smoke ."
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "check-docker-daemon",
+          "check-docker-images",
+          "check-docker-compose-plugin"
+        ],
+        "env": {},
+        "id": "c01-docker-image-build",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 3600.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; docker compose -f docker-compose.yml -p c01-smoke up -d --build --quiet-pull; trap 'docker compose -f docker-compose.yml -p c01-smoke down -v -f' EXIT; for i in $(seq 1 120); do if curl -sf -o /dev/null http://127.0.0.1:3000/; then echo web-up; docker compose -f docker-compose.yml -p c01-smoke ps | grep -F c01-smoke-worker-1; exit 0; fi; sleep 5; done; echo web-never-healthy; exit 1"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "c01-docker-image-build"
+        ],
+        "env": {},
+        "id": "c01-compose-smoke",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 1800.0
+      }
+    ],
+    "criterion_checks": {
+      "S06e1f2c4b1ca3570": [
+        "c01-seeds-idempotent"
+      ],
+      "S137eb0df4316de64": [
+        "check-docker-daemon",
+        "check-docker-images",
+        "check-node22",
+        "c00-clamav-scan",
+        "c00-helm-lint",
+        "c00-db-prepare",
+        "c00-rspec-full",
+        "c00-cucumber-suite",
+        "check-repo-env",
+        "c00-check-wiring-ok",
+        "c00-quality-guard-local-clean"
+      ],
+      "S302ff0e2e3379eae": [
+        "c01-seeds-demo",
+        "c01-seeds-idempotent"
+      ],
+      "S32d9955d8cd371df": [
+        "c01-compose-smoke"
+      ],
+      "S32ec7993adfdf89c": [
+        "c00-rspec-full",
+        "c00-rspec-seeds-spec"
+      ],
+      "S33cc7809cb9f3169": [
+        "check-ruby-pinned",
+        "check-postgres-up",
+        "check-pgvector-available",
+        "check-docker-compose-plugin",
+        "c00-db-prepare",
+        "c00-bin-setup"
+      ],
+      "S386bb454bcacb927": [
+        "c01-maxio-mock-serve",
+        "c01-maxio-mock-catalog"
+      ],
+      "S4151285a64555467": [
+        "c01-vendor-self-service"
+      ],
+      "S42b163c6bc1f9746": [
+        "c00-static-analysis",
+        "c00-rubycritic"
+      ],
+      "S44e33a321ff03959": [
+        "c01-rails-boot"
+      ],
+      "S472e0f6d117c17af": [
+        "c01-maxio-mock-serve",
+        "c01-maxio-mock-catalog"
+      ],
+      "S4a4a7efcdf77492c": [
+        "check-repo-env",
+        "c00-repo-env-vivi-load-env"
+      ],
+      "S51c14fe7922aa9f7": [
+        "check-skill-tools",
+        "c00-repo-env-vivi-load-env"
+      ],
+      "S539574fae3cc425f": [
+        "check-helm",
+        "c00-helm-lint"
+      ],
+      "S5d55624e091d252f": [
+        "c01-docker-image-build",
+        "c01-compose-smoke",
+        "check-docker-images"
+      ],
+      "S5d804715467f771a": [
+        "check-node22",
+        "check-npm-cache",
+        "c00-css-build"
+      ],
+      "S5da52376c5120384": [
+        "c00-cucumber-suite",
+        "c00-cucumber-qa-runner"
+      ],
+      "S5da6e80daf2ec38c": [
+        "c01-rails-boot-qa"
+      ],
+      "S5f82d860cf9e7408": [
+        "c01-maxio-mock-catalog"
+      ],
+      "S66ab936d00518773": [
+        "check-docker-images",
+        "check-docker-daemon"
+      ],
+      "S6715a6143e3c6360": [
+        "c00-quality-guard-local-clean",
+        "c00-quality-guard-blocked"
+      ],
+      "S77cec4a87cd3af5e": [
+        "c00-seeds-idempotent"
+      ],
+      "S79b2db9825fccc4c": [
+        "c00-seeds-idempotent",
+        "c00-qa-seed",
+        "c00-demo-magic-link"
+      ],
+      "S8dcb3400411deb6b": [
+        "c00-skill-lib-helpers",
+        "c00-repo-env-vivi-load-env"
+      ],
+      "S935099d5b2f04420": [
+        "check-docker-compose-plugin",
+        "check-docker-images",
+        "check-prebuilt-images",
+        "c00-qa-compose-no-build",
+        "c00-qa-compose-up"
+      ],
+      "S937aa7e89414b871": [
+        "check-ruby-pinned",
+        "check-bundle-repo",
+        "check-bundle-cache-root",
+        "c00-db-prepare"
+      ],
+      "S9b613da6d2bccb8b": [
+        "c00-db-prepare",
+        "c00-rspec-full"
+      ],
+      "Sa454c6515e4adcd9": [
+        "c00-db-prepare",
+        "c00-rspec-seeds-spec"
+      ],
+      "Saaa45b451da6736d": [
+        "c01-rails-boot",
+        "check-ruby-pinned"
+      ],
+      "Sae35efa6ce7585fd": [
+        "check-ruby-pinned",
+        "check-bundle-repo",
+        "c00-bin-setup"
+      ],
+      "Sae493b392dbfddb8": [
+        "c01-db-schema-load",
+        "check-postgres-up",
+        "check-pgvector-available"
+      ],
+      "Saf74c63785e79220": [
+        "c01-db-schema-load",
+        "check-postgres-up",
+        "check-pgvector-available"
+      ],
+      "Scf85503f6c036df6": [
+        "check-node22",
+        "c00-node-estimator-tests"
+      ],
+      "Sd190d8ab51abce8c": [
+        "c00-check-wiring-ok"
+      ],
+      "Sd7a7bcd618824fc9": [
+        "c00-seeds-idempotent",
+        "c00-db-prepare"
+      ],
+      "Sde16af6ab56276c7": [
+        "c01-maxio-mock-serve",
+        "c01-maxio-mock-catalog"
+      ],
+      "Se712560cd09783a6": [
+        "c00-check-wiring-ok",
+        "c00-check-wiring-failure"
+      ],
+      "Se77f4f42543db16c": [
+        "c00-cucumber-suite"
+      ],
+      "Se7c95462fcb99beb": [
+        "check-node22",
+        "check-npm-cache",
+        "c00-css-build",
+        "c00-node-estimator-tests"
+      ],
+      "Se8f2c51d5d3db44a": [
+        "check-repo-env",
+        "c00-repo-env-vivi-load-env"
+      ],
+      "Sf1a063e5963c98a2": [
+        "c01-db-baseline-spec",
+        "check-pgvector-available"
+      ]
+    },
+    "empty_reason": null,
+    "inputs": {
+      ".agents/skills/ci-safety/SKILL.md": "1956a8bc4fee8c580735c3899c101c7003ea0782533c3ec621800db45ff920ac",
+      ".agents/test-commands.md": "61ec0472a208bf201aead0fa62771219ccd34d2ac54c75968ff3662c92911342",
+      "Dockerfile": "b2c30f6f96863e59343a5610d3c3779e3630ceedfc55647e16d0cb94e0f0fc3e",
+      "README.md": "2e56f7d71c3a1b5503213b2542509070811c148c70c96d93df3eae898edac1b2",
+      "docker-compose.dev.yml": "70307ed67be4a7953a23d21a4223195c383e32dd7d1b3985b527a12b1dbff472",
+      "package.json": "b0b5e53a8c14db60b76f8528a406588a8b09bfb9efd548eacc28f8e7ef169e5c",
+      "repo.env.example": "7db67295484afb72db96b00a14a72c0894d3945afe4db911b6b3703811b8a4a2"
+    },
+    "install": [
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git curl ca-certificates wget build-essential libssl-dev libreadline-dev zlib1g-dev libyaml-dev libffi-dev pkg-config xz-utils gnupg"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [],
+        "env": {},
+        "id": "install-apt-prereqs",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 1200.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; export RBENV_ROOT={cache}/rbenv; mkdir -p {cache}/bin; if [ ! -x {cache}/rbenv/versions/3.4.2/bin/ruby ]; then if [ ! -d $RBENV_ROOT ]; then git clone --depth 1 https://github.com/rbenv/rbenv.git $RBENV_ROOT && mkdir -p $RBENV_ROOT/plugins && git clone --depth 1 https://github.com/rbenv/ruby-build.git $RBENV_ROOT/plugins/ruby-build; fi; export PATH=$RBENV_ROOT/bin:$RBENV_ROOT/shims:$PATH; rbenv install 3.4.2; fi; export PATH=$RBENV_ROOT/bin:$RBENV_ROOT/shims:$PATH; rbenv global 3.4.2; ruby --version"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "install-apt-prereqs"
+        ],
+        "env": {},
+        "id": "install-ruby",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 1800.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; export PATH={cache}/rbenv/shims:{cache}/rbenv/bin:$PATH BUNDLE_PATH={cache}/bundle; cd {repo}; bundle install; cp Gemfile Gemfile.lock {cache}/; bundle check"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "install-ruby"
+        ],
+        "env": {},
+        "id": "install-bundle",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 1800.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; mkdir -p {cache}/bin; ARCH=$(uname -m); case $ARCH in x86_64) HA=amd64;; aarch64) HA=arm64;; *) HA=amd64;; esac; if [ ! -x {cache}/bin/helm ]; then curl -fsSL https://get.helm.sh/helm-v3.16.4-linux-$HA.tar.gz -o /tmp/helm.tgz && tar -xzOf /tmp/helm.tgz linux-$HA/helm > {cache}/bin/helm && chmod +x {cache}/bin/helm; fi; GHV=2.42.0; if [ ! -x {cache}/bin/gh ]; then curl -fsSL https://github.com/cli/cli/releases/download/v$GHV/gh_${GHV}_linux_${HA}.tar.gz -o /tmp/gh.tgz && tar -xzf /tmp/gh.tgz -C /tmp && cp /tmp/gh_${GHV}_linux_$HA/bin/gh {cache}/bin/gh && chmod +x {cache}/bin/gh; fi; {cache}/bin/helm version --short; {cache}/bin/gh --version"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "install-apt-prereqs"
+        ],
+        "env": {},
+        "id": "install-helm-gh",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 600.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; mkdir -p {cache}/bin; if [ ! -x {cache}/bin/dockerd ]; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends docker.io containerd runc; cp /usr/bin/dockerd /usr/bin/containerd /usr/bin/runc {cache}/bin/ 2>/dev/null; cp /usr/bin/containerd-shim* {cache}/bin/ 2>/dev/null || true; fi; {cache}/bin/dockerd --version"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "install-apt-prereqs"
+        ],
+        "env": {},
+        "id": "install-docker-engine",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 900.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; export PATH={cache}/bin:{cache}/dockertool/usr/bin:$PATH; mkdir -p {cache}/docker/data; dockerd --data-root={cache}/docker/data & DPID=$!; for i in $(seq 1 60); do docker info >/dev/null 2>&1 && break; sleep 2; done; docker pull pgvector/pgvector:pg17; docker pull ruby:3.4.2; docker pull node:22-bookworm-slim; docker pull axllent/mailpit@sha256:74d609a42ec279aa63c6b4622a6fa9b5408d1ad5b1d76a1c4be40a265ce0863d; docker pull clamav/clamav:latest; kill $DPID 2>/dev/null || true"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "install-docker-engine"
+        ],
+        "env": {},
+        "id": "install-pull-images",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 1800.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; export PATH={cache}/bin:{cache}/dockertool/usr/bin:$PATH; mkdir -p {cache}/docker/data; dockerd --data-root={cache}/docker/data & DPID=$!; for i in $(seq 1 60); do docker info >/dev/null 2>&1 && break; sleep 2; done; docker build -t platform:build .; docker compose -f docker-compose.yml build; docker compose -f compose.qa.yaml build; docker image inspect platform:build; kill $DPID 2>/dev/null || true"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "install-pull-images",
+          "install-npm"
+        ],
+        "env": {},
+        "id": "install-build-images",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 3600.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; CODENAME=$(. /etc/os-release && echo $VERSION_CODENAME); curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg; echo \"deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt $CODENAME-pgdg main\" > /etc/apt/sources.list.d/pgdg.list; mkdir -p /tmp/debs; apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends -o Dir::Cache::archives=/tmp/debs --download-only postgresql-17 postgresql-contrib postgresql-17-pgvector; rm -rf {cache}/pgroot; for f in /tmp/debs/*.deb; do dpkg -x $f {cache}/pgroot; done; {cache}/pgroot/usr/lib/postgresql/17/bin/postgres --version"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "install-apt-prereqs"
+        ],
+        "env": {},
+        "id": "install-pg",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 1200.0
+      },
+      {
+        "argv": [
+          "bash",
+          "-c",
+          "set -e; cd {repo}; npm ci --cache {cache}/npm-cache; rm -rf {cache}/node_modules; cp -a node_modules {cache}/node_modules; ls {cache}/node_modules >/dev/null"
+        ],
+        "cwd": "{repo}",
+        "depends_on": [
+          "install-apt-prereqs"
+        ],
+        "env": {},
+        "id": "install-npm",
+        "required": true,
+        "scope": [],
+        "timeout_seconds": 1200.0
+      }
+    ],
+    "policy_version": "353-scope-v1",
+    "requirements": [
+      {
+        "checks": [
+          "check-ruby-pinned"
+        ],
+        "description": "A host Ruby toolchain at the pinned version 3.4.2 that runs plain `ruby` in non-interactive shells (shims on PATH), so bin/setup and the Rails toolchain work.",
+        "id": "req-ruby-pinned",
+        "required": true,
+        "source": "README.md"
+      },
+      {
+        "checks": [
+          "check-bundle-repo",
+          "check-bundle-cache-root"
+        ],
+        "description": "The Gemfile/Gemfile.lock dependency set is installed into the persistent bundle at {cache}/bundle and `bundle check` succeeds both from the repository and from the cache root with the vendored Gemfile (BUNDLE_GEMFILE), per the environment bootstrap contract.",
+        "id": "req-bundle-gemset",
+        "required": true,
+        "source": "README.md"
+      },
+      {
+        "checks": [
+          "check-postgres-up",
+          "check-pgvector-available"
+        ],
+        "description": "A PostgreSQL 17 server with the pgvector 'vector' extension reachable at 127.0.0.1:5432 (trust auth, user postgres) so migrations and schema load can apply.",
+        "id": "req-postgres-pgvector",
+        "required": true,
+        "source": "README.md"
+      },
+      {
+        "checks": [
+          "check-docker-daemon",
+          "check-docker-compose-plugin",
+          "check-docker-images",
+          "check-prebuilt-images"
+        ],
+        "description": "A Docker engine with the compose plugin must be running so the documented dev, QA and smoke compose stacks can be orchestrated. Required base images (pgvector pg17, ruby:3.4.2, node:22-bookworm-slim, the pinned mailpit digest, and clamav/clamav:latest used by the CI virus scan) are pre-pulled during install into the cache-backed Docker data-root ({cache}/docker/data) and asserted by check-docker-images. The project images (Dockerfile, docker-compose.yml and compose.qa.yaml builds) are pre-built during install by install-build-images into the same persisted layer cache and platform:build is asserted by check-prebuilt-images, so clean-verification builds and compose boots are layer-cached and offline-capable.",
+        "id": "req-docker-compose",
+        "required": true,
+        "source": "docker-compose.dev.yml"
+      },
+      {
+        "checks": [
+          "check-node22"
+        ],
+        "description": "Node.js 22 and npm must be usable for the frontend asset operations (npm ci, build:css, build:flow_canvas), with the npm dependency set pre-provisioned offline via the persisted npm cache and node_modules in {cache}.",
+        "id": "req-node22",
+        "required": true,
+        "source": "Dockerfile"
+      },
+      {
+        "checks": [
+          "check-helm"
+        ],
+        "description": "The helm CLI must be available so `helm lint chart --strict` can run against the repository chart.",
+        "id": "req-helm",
+        "required": true,
+        "source": ".agents/test-commands.md"
+      },
+      {
+        "checks": [
+          "check-skill-tools"
+        ],
+        "description": "gh, jq and git executables must be present on PATH as required by the repository's skill scripts.",
+        "id": "req-skill-tools",
+        "required": true,
+        "source": ".agents/skills/ci-safety/SKILL.md"
+      },
+      {
+        "checks": [
+          "check-repo-env"
+        ],
+        "description": "A repo.env file at the repository root, created from repo.env.example, must exist with the required VIVI_* keys (VIVI_REPO, VIVI_DEFAULT_BRANCH) for the skill scripts.",
+        "id": "req-repo-env",
+        "required": true,
+        "source": "repo.env.example"
+      },
+      {
+        "checks": [
+          "check-npm-cache"
+        ],
+        "description": "Offline npm provisioning: the npm download cache ({cache}/npm-cache) and a persisted node_modules tree ({cache}/node_modules) must exist so npm ci / asset builds can run without network during clean verification.",
+        "id": "req-npm-offline",
+        "required": true,
+        "source": "package.json"
+      }
+    ],
+    "runtime": {
+      "endpoints": [],
+      "policy": {
+        "control_port": 2222,
+        "identity": {
+          "carrier_image": "127.0.0.1:55727/coordinare-env-validation-da8284598594@sha256:649a6b8c56a855ad764a1fe3f8604eef50732424eff4385ee293c3c6fa2379bf",
+          "carrier_platform": "linux/aarch64",
+          "configuration_sha256": "dd08b6e17cfb86e6256340e5f44ba6e0f4847f8df423049180beb469b717269b",
+          "emulator_sha256": "475472547d6acf47fe8903dd0812e667f904e10e924339f509631624ba9e8c3a",
+          "firmware_sha256": "fc6d2ea888862e6b26d53fb877ab712324726eb8f44eb6baf076c64a31f1c3fb",
+          "guest_base_sha256": "814548a0120b1db7e2a4c1322bcc59d7388f5cacadcfb0b8c80e673d2573485b",
+          "guest_platform": "linux/x86_64",
+          "schema_version": 1
+        },
+        "kind": "private_service_guest",
+        "max_endpoints": 16,
+        "resources": {
+          "cache_bytes": 8589934592,
+          "cpus": 2,
+          "max_seconds": 3600,
+          "memory_mib": 4096,
+          "reserve_bytes": 17179869184,
+          "scratch_bytes": 17179869184
+        },
+        "schema_version": 1
+      },
+      "schema_version": 1
+    },
+    "schema_version": 3,
+    "services": [
+      {
+        "health": {
+          "argv": [
+            "bash",
+            "-c",
+            "set -e; pg_isready -h 127.0.0.1 -p 5432 -U postgres; psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -c 'CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto;'; for DB in platform_development platform_test platform_qa; do psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='$DB'\" | grep -q 1 || psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -c \"CREATE DATABASE $DB\"; done"
+          ],
+          "cwd": "{repo}",
+          "depends_on": [],
+          "env": {},
+          "id": "postgres-health",
+          "required": true,
+          "scope": [],
+          "timeout_seconds": 120.0
+        },
+        "id": "postgres",
+        "init": {
+          "argv": [
+            "bash",
+            "-c",
+            "set -e; export PATH={cache}/pgroot/usr/lib/postgresql/17/bin:$PATH LD_LIBRARY_PATH={cache}/pgroot/usr/lib/x86_64-linux-gnu:{cache}/pgroot/usr/lib/postgresql/17/lib; ln -sfn {cache}/pgroot/usr/lib/postgresql/17 /usr/lib/postgresql/17; mkdir -p /usr/share/postgresql && ln -sfn {cache}/pgroot/usr/share/postgresql/17 /usr/share/postgresql/17; mkdir -p {scratch}/pgsock; if [ ! -s {scratch}/pgdata/PG_VERSION ]; then initdb -D {scratch}/pgdata -U postgres -A trust --encoding=UTF8; fi"
+          ],
+          "cwd": "{repo}",
+          "depends_on": [],
+          "env": {},
+          "id": "postgres-init",
+          "required": true,
+          "scope": [],
+          "timeout_seconds": 300.0
+        },
+        "required": true,
+        "start": {
+          "argv": [
+            "bash",
+            "-c",
+            "export PATH={cache}/pgroot/usr/lib/postgresql/17/bin:$PATH LD_LIBRARY_PATH={cache}/pgroot/usr/lib/x86_64-linux-gnu:{cache}/pgroot/usr/lib/postgresql/17/lib; exec pg_ctl -D {scratch}/pgdata -w -o '-p 5432 -k {scratch}/pgsock -c listen_addresses=127.0.0.1' start"
+          ],
+          "cwd": "{repo}",
+          "depends_on": [],
+          "env": {},
+          "id": "postgres-start",
+          "required": true,
+          "scope": [],
+          "timeout_seconds": 120.0
+        },
+        "stop": {
+          "argv": [
+            "bash",
+            "-c",
+            "export PATH={cache}/pgroot/usr/lib/postgresql/17/bin:$PATH LD_LIBRARY_PATH={cache}/pgroot/usr/lib/x86_64-linux-gnu:{cache}/pgroot/usr/lib/postgresql/17/lib; pg_ctl -D {scratch}/pgdata -m fast stop || true"
+          ],
+          "cwd": "{repo}",
+          "depends_on": [],
+          "env": {},
+          "id": "postgres-stop",
+          "required": true,
+          "scope": [],
+          "timeout_seconds": 120.0
+        }
+      },
+      {
+        "health": {
+          "argv": [
+            "bash",
+            "-c",
+            "export PATH={cache}/bin:{cache}/dockertool/usr/bin:$PATH; docker info --format 'up'"
+          ],
+          "cwd": "{repo}",
+          "depends_on": [],
+          "env": {},
+          "id": "docker-health",
+          "required": true,
+          "scope": [],
+          "timeout_seconds": 60.0
+        },
+        "id": "docker",
+        "init": null,
+        "required": true,
+        "start": {
+          "argv": [
+            "bash",
+            "-c",
+            "export PATH={cache}/bin:{cache}/dockertool/usr/bin:$PATH; mkdir -p {cache}/docker/data; exec dockerd --data-root={cache}/docker/data"
+          ],
+          "cwd": "{repo}",
+          "depends_on": [],
+          "env": {},
+          "id": "docker-start",
+          "required": true,
+          "scope": [],
+          "timeout_seconds": 120.0
+        },
+        "stop": {
+          "argv": [
+            "bash",
+            "-c",
+            "pkill -TERM dockerd || true; pkill -TERM containerd || true"
+          ],
+          "cwd": "{repo}",
+          "depends_on": [],
+          "env": {},
+          "id": "docker-stop",
+          "required": true,
+          "scope": [],
+          "timeout_seconds": 60.0
+        }
+      }
+    ],
+    "source_commit": "bf498e843ba58362dc6abe122b91129f7c66351f",
+    "symphony_name": "dettmore-platform"
+  },
+  "provenance": "Trimmed from the v40 Dettmore gen0 rejected execution (environment-attempt.json, rejected[0]). scope_contract and passing evidence removed; records and results are verbatim.",
+  "report": {
+    "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+    "platform": "linux/aarch64",
+    "results": [
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "install-apt-prereqs",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "install-ruby",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "install-bundle",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "context": "",
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "install-helm-gh",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "output": "unresolved environment reference in command template; use {cache}, {repo}, {scratch} for execution roots. ${NAME} requires a runtime environment variable; use $name for shell-local variables assigned inside the command.",
+        "required": true,
+        "status": "fail"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "install-docker-engine",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "install-pull-images",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "install-build-images",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "install-pg",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "install-npm",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "check-ruby-pinned",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "check-bundle-repo",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "check-bundle-cache-root",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "check-postgres-up",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "check-pgvector-available",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "check-docker-daemon",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "check-docker-compose-plugin",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "check-docker-images",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "check-prebuilt-images",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "check-node22",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "check-helm",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "check-skill-tools",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "check-repo-env",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "check-npm-cache",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-repo-env-vivi-load-env",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-skill-lib-helpers",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-check-wiring-ok",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-check-wiring-failure",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-quality-guard-local-clean",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-quality-guard-blocked",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-db-prepare",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-bin-setup",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-rspec-full",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-rspec-seeds-spec",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-cucumber-suite",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-cucumber-qa-runner",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-seeds-idempotent",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-qa-seed",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-demo-magic-link",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-static-analysis",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-rubycritic",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-node-estimator-tests",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-css-build",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-qa-compose-no-build",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-helm-lint",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-clamav-scan",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c00-qa-compose-up",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c01-rails-boot",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c01-rails-boot-qa",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c01-db-schema-load",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c01-db-baseline-spec",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c01-seeds-idempotent",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c01-seeds-demo",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c01-maxio-mock-catalog",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c01-maxio-mock-serve",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c01-vendor-self-service",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c01-docker-image-build",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "c01-compose-smoke",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "postgres-init",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "postgres-start",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "postgres-health",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "postgres-stop",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "docker-start",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "docker-health",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      },
+      {
+        "duration_seconds": 0.0,
+        "exit_code": null,
+        "id": "docker-stop",
+        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "required": true,
+        "status": "not_run"
+      }
+    ],
+    "scope": ""
+  }
+}

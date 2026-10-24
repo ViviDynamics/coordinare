@@ -24,6 +24,8 @@ if TYPE_CHECKING:
         ScopeInspectionResult,
     )
 
+    from coordinare.services.environment_repair_triage import RepairTriage
+
 
 MAX_ATTEMPT_SECONDS = 3600
 # Maintainer ruling (issue 353): sharded discovery on a self-hosted model may run up to four hours.
@@ -119,6 +121,8 @@ class AttemptBudget:
     coverage_manifest: EnvironmentManifest | None = field(default=None, repr=False)
     executed_manifests: list[EnvironmentManifest] = field(default_factory=list, repr=False)
     execution_review_evidence: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    # The failed execution's triage while a repair is pending; its closure is the only part a repair may change.
+    repair_triage: RepairTriage | None = field(default=None, repr=False)
     checkpoint: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:

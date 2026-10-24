@@ -19,6 +19,7 @@ from coordinare_service_inference.environment.findings import (
 from coordinare_service_inference.environment.models import (
     EnvironmentManifest,
     ExecutionCapabilities,
+    VerificationReport,
 )
 from coordinare_service_inference.environment.scope import (
     ScopeContract,
@@ -52,6 +53,7 @@ from coordinare.services.environment_obligations import (
     preserve_obligations,
 )
 from coordinare.services.environment_probes import ProbePlan, ProbeReport, bind_probe_report
+from coordinare.services.environment_repair_triage import RepairTriage, triage_failure
 from coordinare.services.environment_scope import preserve_scope, released_criteria
 from coordinare.services.environment_scope_investigation import validate_investigation_history
 from coordinare.services.environment_scope_reuse import SCOPE_POLICY_VERSION, reusable_scope
@@ -127,12 +129,37 @@ class RepairJournal(BaseModel):
     status: Literal['discovering', 'executing', 'repair_pending', 'held', 'ready'] = 'discovering'
     target: ExecutionCapabilities | None = None
     rejected: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
+    # The pending repair's failure triage, stored before any author call; absent in journals written earlier.
+    repair_triage: dict[str, Any] | None = None
     last_error: str | None = None
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
 def _refuse(message: str, *, code: str = 'execution_repair_held') -> NoReturn:
     raise EnvironmentDiscoveryError(message, code=code)
+
+
+def _triage_of(entry: dict[str, Any]) -> RepairTriage:
+    """The daemon's triage of one rejected execution; deterministic, so a stored triage can be checked by recomputing it."""
+    manifest = EnvironmentManifest.model_validate(entry['manifest'])
+    data = dict(entry['report'])
+    data.pop('passed', None)
+    try:
+        return triage_failure(manifest, VerificationReport.model_validate(data))
+    except ValueError:
+        _refuse('execution repair triage is unavailable')
+
+
+def repair_triage_for(journal: RepairJournal) -> RepairTriage | None:
+    """The pending repair's stored triage, derived from the rejected execution when the journal predates storing it."""
+    if journal.repair_triage is not None:
+        try:
+            return RepairTriage.model_validate(journal.repair_triage)
+        except ValidationError:
+            _refuse('environment repair triage is invalid')
+    if not journal.generation or not journal.rejected:
+        return None
+    return _triage_of(journal.rejected[-1])
 
 
 def journal_for(cache: EnvCacheState) -> RepairJournal:
@@ -396,6 +423,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.finding_ledger = journal.finding_ledger.model_copy(deep=True) if journal.finding_ledger is not None else None
     budget.coverage_manifest = journal.coverage_manifest.model_copy(deep=True) if journal.coverage_manifest is not None else None
     budget.executed_manifests = executed_manifests(journal.rejected, source_commit=journal.source_commit)
+    budget.repair_triage = repair_triage_for(journal)
     budget.execution_review_evidence = [{"manifest_digest": entry["manifest_digest"],
         "manifest": entry["manifest"], "results": [{key: result.get(key) for key in
         ("id", "status", "required", "exit_code", "duration_seconds")} for result in entry["report"]["results"]]}
@@ -637,6 +665,8 @@ def prepare_repair(cache: EnvCacheState) -> tuple[EnvironmentManifest, dict[str,
     previous = EnvironmentManifest.model_validate(entry['manifest'])
     journal.generation = len(journal.rejected)
     journal.generation_nonce = uuid.uuid4().hex[:12]
+    # Persisted before any author call, so a restart resumes the same closure.
+    journal.repair_triage = _triage_of(entry).model_dump(mode='json')
     journal.status = 'discovering'
     new_path = cache.cache_dir.parent / _generation(journal)
     if new_path.exists() or new_path.is_symlink():
