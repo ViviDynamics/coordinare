@@ -231,6 +231,7 @@ def _openai_usage(data: Any) -> dict[str, int] | None:
     completion_tokens = usage.get("completion_tokens")
     details = usage.get("prompt_tokens_details")
     cached = details.get("cached_tokens") if isinstance(details, dict) else None
+    cached = usage.get("cache_read_input_tokens") if cached is None else cached
     prompt = prompt_tokens if isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool) else 0
     output = completion_tokens if isinstance(completion_tokens, int) and not isinstance(completion_tokens, bool) else 0
     read = cached if isinstance(cached, int) and not isinstance(cached, bool) else 0

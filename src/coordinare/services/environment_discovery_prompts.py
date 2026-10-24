@@ -145,9 +145,11 @@ class DiscoveryPrompts:
             known_ids = [record.id for record in ledger.records] if ledger else []
             finding_rule = ('Only respond to these daemon-assigned coverage finding IDs: ' + json.dumps(known_ids) +
                 '. Probe observations are not coverage findings. ' + ('finding_responses MUST be [] because no finding IDs exist. ' if not known_ids else ''))
-            guidance = ('Current phase: manifest_construction. ' + finding_rule + _MANIFEST_INSTRUCTIONS +
+            # The per-round finding list comes last so the instructions before it stay a cacheable prefix across rounds.
+            guidance = ('Current phase: manifest_construction. ' + _MANIFEST_INSTRUCTIONS +
                 (PATCH_INSTRUCTION + json.dumps(PATCH_SCHEMA) if repairing else
-                 'Return exactly the complete envelope matching this schema: ' + json.dumps(_MANIFEST_ENVELOPE.model_json_schema())))
+                 'Return exactly the complete envelope matching this schema: ' + json.dumps(_MANIFEST_ENVELOPE.model_json_schema())) +
+                ' ' + finding_rule.rstrip())
         messages[0] = {"role": "system", "content": SOURCE_TOOLS + guidance}
 
 
