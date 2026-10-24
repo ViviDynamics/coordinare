@@ -12,7 +12,7 @@ import hashlib
 import re
 from dataclasses import dataclass, field, replace
 from functools import partial
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 
 from coordinare_service_inference.environment.models import (
     CoverageAssessmentProposal,
@@ -28,6 +28,7 @@ from pydantic_core import PydanticCustomError
 
 from coordinare.services.environment_agent_pool import ShardOverflowError, run_pool
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.environment_delta_schema import apply_group_delta
 from coordinare.services.environment_discovery_prompts import SOURCE_NAVIGATION
 from coordinare.services.environment_findings import MAX_FINDINGS
 from coordinare.services.environment_inspection import SourceInspection
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
     from coordinare_service_inference.environment.scope import ScopeContract, ScopeCriterion
 
     from coordinare.services.environment_attempt import AttemptBudget
+    from coordinare.services.environment_delta import DeltaPlan
     from coordinare.services.environment_discovery import Fetch
 
 CHECK_AUTHOR_THRESHOLD = 25  # more than one check group's share (the approved plan's gate)
@@ -84,6 +86,13 @@ CHECK_AUTHOR_INSTRUCTIONS = (
     'and health ids. You cannot declare installation, services or activation. bound_inputs indexes verified repository '
     'files with the criteria citing each; read the files you need with read_files. Never write literal credentials. '
     'Return {"shard_checks":{"checks":[...],"criterion_checks":{...}}}. '
+)
+DELTA_CHECK_INSTRUCTION = (
+    'This is a repair. A previous execution failed in the closure_checks, closure_criteria and untrusted_feedback shown, '
+    'and only those checks may change. Return {"shard_checks":{"checks":[...],"criterion_checks":{...}}} listing ONLY '
+    'the checks you change or add, and only the criterion_checks entries whose mapping you change. Omit every other check; '
+    'they are kept unchanged. Keep every id in keep_check_ids, never rename a check, and add a new id only for a new '
+    'obligation. Read the bound_inputs you need with read_files. Never write literal credentials. '
 )
 REVIEW_PART_PREAMBLE = (
     'You independently review ONE part of a divided executable manifest: for a check group, its assigned criteria and '
@@ -324,6 +333,8 @@ class DividedConstruction:
     group_inputs: dict[str, str] = field(default_factory=dict)
     # The global author's last admitted part: the base of its coverage revisions, never the merged manifest.
     global_part: dict[str, Any] | None = None
+    # Delta repair: the failed accepted manifest's closure. A touched group is authored as changed and added checks.
+    delta: DeltaPlan | None = None
 
     @property
     def groups(self) -> list[CheckGroup]:
@@ -341,7 +352,54 @@ class DividedConstruction:
         return {criterion: frozenset(ids) for criterion, ids in (reviewed.get('criterion_checks') or {}).items()
                 if criterion in group.ids and criterion not in released and ids}
 
+    async def author_delta(self, group: CheckGroup, *, summary: Mapping[str, Any], probes: Sequence[Any]) -> ShardChecks:
+        """A touched group's author sees only its closure: changed and added checks, returned as a patch and applied to
+        the failed accepted part. The saved patch is keyed by the triage digest, so a restart reuses it."""
+        plan = cast('DeltaPlan', self.delta)
+        inspection = SourceInspection(self.entries, self.fetch, self.context.limits, self.context.budget)
+        inspection.name = 'executable_checks'
+        assigned = [criterion for criterion in group.criteria if criterion.id in plan.triage.criterion_ids]
+        cited_by: dict[str, list[str]] = {}
+        for criterion in assigned:
+            for path in criterion.sources:
+                cited_by.setdefault(path, []).append(criterion.id)
+        index = await inspection.bind_verified({path: digest for path, digest in self._citations(group).items()
+                                                if path in cited_by}, phase='construction', cited_by=cited_by)
+        parent = next((candidate for candidate in self.groups if candidate.prefix == base_prefix(group.prefix)), None)
+        inherited = replace(inherit(self.previous, group, parent), mapped=self._kept_mappings(group))
+        brief = canonical({
+            'check_id_prefix': group.prefix, 'delta_instruction': DELTA_CHECK_INSTRUCTION,
+            'closure_checks': plan.closure_checks(group), 'closure_criteria': plan.closure_criteria(frozenset(group.ids)),
+            'assigned_criteria': [criterion.model_dump(mode='json') for criterion in assigned],
+            'global_part': dict(summary), 'probe_evidence': list(probes), 'bound_inputs': index,
+            'untrusted_feedback': self.feedback.get(group.prefix, self.feedback.get(base_prefix(group.prefix)))}).decode()
+        captured: dict[str, Any] = {}
+
+        def validate(reply: dict[str, Any]) -> ShardChecks:
+            patch = ShardChecksEnvelope.model_validate(reply).shard_checks.model_dump(mode='json')
+            captured['patch'] = patch
+            applied = {'shard_checks': apply_group_delta(plan.base_group(group), patch)}
+            return validate_group(applied, group=group, summary=summary, inherited=inherited)
+
+        key = plan.digest
+        saved = saved_part(self.context.budget, 'delta', group.prefix, key)
+        if saved is not None:
+            await inspection.bind_verified(saved['inputs'], phase='construction')
+            reused = validate(saved['data'])
+            self.group_inputs.update(inspection.inputs)
+            return reused
+        messages = [{'role': 'system', 'content': SOURCE_NAVIGATION + CHECK_AUTHOR_INSTRUCTIONS},
+                    {'role': 'user', 'content': brief}]
+        part: ShardChecks = await run_agent(self.context, inspection, messages, AgentTask('shard_checks', validate))
+        self.group_inputs.update(inspection.inputs)
+        save_part(self.context.budget, 'delta', group.prefix, key, data={'shard_checks': captured['patch']},
+                  inputs=dict(inspection.inputs))
+        await self.context.budget.flush()
+        return part
+
     async def author(self, group: CheckGroup, *, summary: Mapping[str, Any], probes: Sequence[Any]) -> ShardChecks:
+        if self.delta is not None and self.delta.group_touched(group):
+            return await self.author_delta(group, summary=summary, probes=probes)
         inspection = SourceInspection(self.entries, self.fetch, self.context.limits, self.context.budget)
         inspection.name = 'executable_checks'
         cited_by: dict[str, list[str]] = {}

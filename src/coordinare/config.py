@@ -1133,6 +1133,8 @@ class EnvCacheConfig(BaseModel):
     manifest_max_schema_repairs: int = Field(default=2, ge=0, le=REPAIR_LIMITS["schema"])
     manifest_max_coverage_revisions: int = Field(default=2, ge=0, le=REPAIR_LIMITS["coverage"])
     manifest_max_execution_repairs: int = Field(default=2, ge=0, le=REPAIR_LIMITS["execution"])
+    # An execution repair re-authors only its failure closure (changed and added records). False restores the full repair.
+    manifest_delta_repair: bool = True
 
     @model_validator(mode="after")
     def _attempt_ceiling(self) -> Self:

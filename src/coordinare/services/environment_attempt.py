@@ -83,8 +83,8 @@ class AttemptBudget:
     mandatory_inputs_delivered: int = 0
     inspected_bytes: int = 0
     context_bytes: int = 0
-    expected_envelope: Literal["source_tool", "probe", "manifest", "assessment", "scope", "scope_assessment", "scope_revision",
-                               "shard_summary", "listing_triage", "scope_consolidation", "shard_checks"] = "manifest"
+    expected_envelope: Literal["source_tool", "probe", "manifest", "manifest_delta", "assessment", "scope", "scope_assessment",
+                               "scope_revision", "shard_summary", "listing_triage", "scope_consolidation", "shard_checks"] = "manifest"
     stage: str = "inventory"
     outcome: str = "held"
     error_code: str | None = None
@@ -123,6 +123,9 @@ class AttemptBudget:
     execution_review_evidence: list[dict[str, Any]] = field(default_factory=list, repr=False)
     # The failed execution's triage while a repair is pending; its closure is the only part a repair may change.
     repair_triage: RepairTriage | None = field(default=None, repr=False)
+    # Whether this attempt authors a delta, and whether a delta already fell back to the full repair (persisted).
+    repair_delta: bool = field(default=False, repr=False)
+    delta_fallback: bool = False
     checkpoint: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:

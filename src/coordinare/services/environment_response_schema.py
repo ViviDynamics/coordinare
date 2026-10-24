@@ -17,6 +17,7 @@ from coordinare_service_inference.environment.scope import (
 )
 from coordinare_service_inference.environment.scope_revision import ScopeRevisionEnvelope
 
+from coordinare.services.environment_delta_schema import MANIFEST_DELTA_ENVELOPE
 from coordinare.services.environment_discovery_prompts import (
     _MANIFEST_ENVELOPE,
     assessment_envelope_schema,
@@ -142,7 +143,7 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
              'shard_summary': ShardSummaryEnvelope.model_json_schema,
              'listing_triage': ListingTriageEnvelope.model_json_schema,
              'scope_consolidation': ScopeConsolidationEnvelope.model_json_schema,
-             'shard_checks': ShardChecksEnvelope.model_json_schema}
+             'shard_checks': ShardChecksEnvelope.model_json_schema, 'manifest_delta': MANIFEST_DELTA_ENVELOPE.model_json_schema}
     if phase == 'source_tool':
         return {'type': 'object', 'anyOf': tools}
     declaration = final[phase]()

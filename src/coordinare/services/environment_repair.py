@@ -131,6 +131,8 @@ class RepairJournal(BaseModel):
     rejected: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
     # The pending repair's failure triage, stored before any author call; absent in journals written earlier.
     repair_triage: dict[str, Any] | None = None
+    # A delta repair fell back to the full repair; an old journal has none, so it keeps the delta default.
+    delta_fallback: bool = False
     last_error: str | None = None
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
@@ -424,6 +426,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.coverage_manifest = journal.coverage_manifest.model_copy(deep=True) if journal.coverage_manifest is not None else None
     budget.executed_manifests = executed_manifests(journal.rejected, source_commit=journal.source_commit)
     budget.repair_triage = repair_triage_for(journal)
+    budget.delta_fallback = journal.delta_fallback
     budget.execution_review_evidence = [{"manifest_digest": entry["manifest_digest"],
         "manifest": entry["manifest"], "results": [{key: result.get(key) for key in
         ("id", "status", "required", "exit_code", "duration_seconds")} for result in entry["report"]["results"]]}
@@ -520,6 +523,7 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
     journal.schema_repairs = max(journal.schema_repairs, budget.schema_repairs)
     journal.coverage_revisions = max(journal.coverage_revisions, budget.coverage_revisions)
     journal.execution_repairs = max(journal.execution_repairs, budget.execution_repairs)
+    journal.delta_fallback = journal.delta_fallback or budget.delta_fallback
     if executing:
         capabilities = ExecutionCapabilities.model_validate(cache.environment_capabilities)
         if journal.target is not None and (

@@ -1,0 +1,127 @@
+"""Delta repair: an execution repair re-authors only the closure of its failure, as changed and added records.
+
+The failed accepted manifest is the base. A touched author returns the records it changes or adds; the daemon applies
+them to the base by id, so every untouched record carries over unchanged. The result then passes the full admission
+pipeline, including the closure guard. A patch never removes a record: an omitted base record is kept.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from coordinare.services.environment_delta_schema import RECORD_GROUPS
+from coordinare.services.environment_repair_triage import ACTIVATION, GLOBAL, RepairTriage, part_of
+from coordinare.services.environment_shard_construction import CheckGroup, owns, parts_from_manifest
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from coordinare_service_inference.environment.models import EnvironmentManifest
+
+# Failures a delta repair does not correct in place: the full repair runs instead while budget remains.
+DELTA_FALLBACK = frozenset({"attempt_schema_limit", "repair_delta_rejected", "executable_merge_invalid", "repair_triage_stale"})
+# Proposal fields a manifest's standing review depends on; provenance and cache-only facts never change a judgment.
+STANDING_EXCLUDED = frozenset({"manifest_digest", "probe_evidence", "untrusted_execution_history",
+                               "execution_capabilities", "capabilities_digest"})
+_PROPOSAL_FIELDS = ("runtime_endpoints", "criterion_checks", "requirements", "install", "checks", "activation", "services",
+                    "empty_reason", "local_credentials")
+
+
+def proposal_of(manifest: EnvironmentManifest) -> dict[str, Any]:
+    """The model-owned proposal fields of a manifest, as the authors and the admission rules see them."""
+    return dict(manifest.model_dump(mode="json", include=set(_PROPOSAL_FIELDS)))
+
+
+def _record_dump(item: Any) -> dict[str, Any]:
+    return dict(item.model_dump(mode="json"))
+
+
+def _lifecycle(service: Any) -> set[str]:
+    return {command.id for command in (service.init, service.start, service.health, service.stop) if command is not None}
+
+
+@dataclass(frozen=True)
+class DeltaPlan:
+    """The failed accepted manifest and the closure a repair may change, fixed before any author is called."""
+
+    base: EnvironmentManifest
+    triage: RepairTriage
+
+    @property
+    def closure(self) -> frozenset[str]:
+        return frozenset(self.triage.closure_ids)
+
+    @property
+    def touched(self) -> frozenset[str]:
+        return frozenset(self.triage.touched_parts)
+
+    @property
+    def digest(self) -> str:
+        return self.triage.digest
+
+    def group_touched(self, group: CheckGroup) -> bool:
+        return group.prefix in self.touched
+
+    def brief(self, *, divided: bool) -> dict[str, Any]:
+        """What a repair author is shown: the failure's roots and consequences, and the closure records and criteria."""
+        return {'rejected_manifest_digest': self.base.digest(), 'roots': self.triage.roots,
+                'consequences': list(self.triage.consequences)[:64], 'touched_parts': list(self.triage.touched_parts),
+                'criterion_ids': list(self.triage.criterion_ids), 'requirement_ids': list(self.triage.requirement_ids),
+                'closure_records': self.closure_global() if divided else self.closure_records(),
+                'closure_criteria': self.closure_criteria()}
+
+    def base_proposal(self) -> dict[str, Any]:
+        return proposal_of(self.base)
+
+    def base_global(self, groups: list[CheckGroup]) -> dict[str, Any]:
+        """The global part's base: checks that no check group owns, and no criterion mappings."""
+        data = self.base_proposal()
+        data["checks"] = [check for check in data["checks"] if not any(owns(group.prefix, check["id"]) for group in groups)]
+        data["criterion_checks"] = {}
+        return data
+
+    def base_group(self, group: CheckGroup) -> dict[str, Any] | None:
+        return parts_from_manifest(self.base, [group]).get(group.prefix)
+
+    def closure_records(self, owner: str | None = None) -> dict[str, Any]:
+        """Closure records by id. ``owner`` selects one part (a check group prefix, or GLOBAL for everything else); None
+        selects all. A service stands for its lifecycle commands: it is in the closure when one of them is."""
+        def mine(identifier: str) -> bool:
+            if owner is None:
+                return True
+            return part_of(identifier) == GLOBAL if owner == GLOBAL else owns(owner, identifier)
+
+        records: dict[str, Any] = {}
+        records.update({check.id: _record_dump(check) for check in self.base.checks if check.id in self.closure and mine(check.id)})
+        if owner is None or owner == GLOBAL:
+            records.update({item.id: _record_dump(item) for item in [*self.base.install, *self.base.requirements]
+                            if item.id in self.closure or item.id in self.triage.requirement_ids})
+            records.update({service.id: _record_dump(service) for service in self.base.services
+                            if service.id in self.closure or self.closure.intersection(_lifecycle(service))})
+            if ACTIVATION in self.closure:
+                records[ACTIVATION] = _record_dump(self.base.activation)
+        return records
+
+    def closure_global(self) -> dict[str, Any]:
+        return self.closure_records(GLOBAL)
+
+    def closure_checks(self, group: CheckGroup) -> list[dict[str, Any]]:
+        return list(self.closure_records(group.prefix).values())
+
+    def closure_criteria(self, criteria: frozenset[str] | None = None) -> dict[str, list[str]]:
+        wanted = set(self.triage.criterion_ids) if criteria is None else set(criteria)
+        return {criterion: list(ids) for criterion, ids in sorted(self.base.criterion_checks.items()) if criterion in wanted}
+
+
+def changed_ids(base: EnvironmentManifest, candidate: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Which records differ from the base by id: changed, added and removed. Used to scope the review."""
+    before = {item.id: _record_dump(item) for group in RECORD_GROUPS for item in getattr(base, group)}
+    after = {item["id"]: item for group in RECORD_GROUPS for item in candidate.get(group) or [] if isinstance(item, dict)}
+    changed = sorted(identifier for identifier in before if identifier in after and after[identifier] != before[identifier])
+    return {"changed": changed, "added": sorted(set(after) - set(before)), "removed": sorted(set(before) - set(after))}
+
+
+def standing_view(shared: Mapping[str, Any]) -> dict[str, Any]:
+    """The review context a part's standing depends on: no probe history, execution history or cache path."""
+    return {key: value for key, value in shared.items() if key not in STANDING_EXCLUDED}

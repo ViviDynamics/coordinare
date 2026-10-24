@@ -176,7 +176,7 @@ async def merge_with(monkeypatch, validate):
         return None
 
     messages = [{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}]
-    attempt = SimpleNamespace(budget=budget, discovery=inspection, messages=messages, chat=None,
+    attempt = SimpleNamespace(budget=budget, discovery=inspection, messages=messages, chat=None, delta=None,
                               construction=SimpleNamespace(observe_sources=observe))
     merged = await discovery_module._divided_candidate(build, attempt, validate)
     return merged, build, phases, messages
@@ -288,7 +288,7 @@ async def test_a_divided_review_gives_each_part_a_fresh_reviewer_and_only_its_ow
     manifest = FakeManifest(inputs={first.sources[0]: 'a' * 64, second.sources[0]: 'b' * 64, 'Makefile': 'c' * 64},
                             checks=[{'id': 'toolchain'}, {'id': 'c00-0'}, {'id': 'c01-0'}],
                             criterion_checks={first.id: ['c00-0'], second.id: ['c01-0']})
-    attempt = SimpleNamespace(budget=budget, identity={'bound_scope_inputs': ['dropped'], 'symphony_name': 'suite'},
+    attempt = SimpleNamespace(budget=budget, delta=None, identity={'bound_scope_inputs': ['dropped'], 'symphony_name': 'suite'},
                               discovery=SimpleNamespace(finding_responses=[]))
     reviewer = SimpleNamespace(entries=None, paths=[], fetch=None, limits=None, inputs={'Makefile': 'c' * 64})
     combined, reads = await discovery_module._divided_review(build, attempt, manifest, reviewer)
@@ -488,7 +488,7 @@ async def test_a_redone_group_that_splits_replaces_its_earlier_part(monkeypatch)
 
     monkeypatch.setattr(discovery_module, '_phase', phase)
     budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
-    attempt = SimpleNamespace(budget=budget, messages=[{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}],
+    attempt = SimpleNamespace(budget=budget, delta=None, messages=[{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}],
                               chat=None, discovery=SimpleNamespace(budget=budget, inputs={}, finding_responses=[]),
                               construction=SimpleNamespace(observe_sources=lambda _inputs: asyncio.sleep(0)))
     merged = await discovery_module._divided_candidate(build, attempt, validate)
