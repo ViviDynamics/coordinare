@@ -201,7 +201,8 @@ class ScopeDefinition(FindingEvidence):
 
 
 SourceGapKind = Literal['missing_obligation', 'unread_source', 'source_conflict', 'unknown_applicability',
-                        'incomplete_runtime_needs', 'incomplete_success_condition', 'remote_state']
+                        'incomplete_runtime_needs', 'incomplete_success_condition', 'remote_state',
+                        'runtime_network']
 
 
 def _unique_ids(value: list[str]) -> list[str]:

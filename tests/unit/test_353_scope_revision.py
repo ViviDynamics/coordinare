@@ -225,3 +225,29 @@ def test_only_a_required_criterion_released_as_remote_state_can_leave_the_requir
 
     ledger = SimpleNamespace(records=[record("remote_state", [target.id]), record("coverage", ["S0000000000000000"])])
     assert released_criteria(ledger) == {target.id} and released_criteria(None) == set()
+
+
+def test_a_criterion_needing_the_network_on_every_run_is_released_like_remote_state():
+    """Maintainer decision 2026-10-24: Dettmore's dev compose stack runs apt-get on every start; v38's reviewers kept
+    finding residual network fetches in offline workarounds for it."""
+    from types import SimpleNamespace
+
+    from coordinare_service_inference.environment.findings import FindingProposal
+
+    from coordinare.services.environment_scope import (
+        GRANULARITY_GUIDANCE,
+        REVIEW_INSTRUCTIONS,
+        RUNTIME_NETWORK_RULE,
+        released_criteria,
+    )
+
+    def record(category, affected):
+        return SimpleNamespace(proposal=SimpleNamespace(category=category, affected_ids=affected))
+
+    ledger = SimpleNamespace(records=[record("runtime_network", ["S0000000000000001"]),
+                                      record("remote_state", ["S0000000000000002"]),
+                                      record("execution_definition", ["S0000000000000003"])])
+    assert released_criteria(ledger) == {"S0000000000000001", "S0000000000000002"}
+    assert RUNTIME_NETWORK_RULE in REVIEW_INSTRUCTIONS and RUNTIME_NETWORK_RULE in GRANULARITY_GUIDANCE
+    assert "installing the tools it uses" in RUNTIME_NETWORK_RULE
+    assert "runtime_network" in FindingProposal.model_json_schema()["properties"]["category"]["enum"]

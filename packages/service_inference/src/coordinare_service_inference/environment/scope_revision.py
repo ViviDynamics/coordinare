@@ -52,7 +52,8 @@ def apply_scope_revision(base: ScopeDefinition, revision: ScopeRevision, *,
     replacements: dict[str, ScopeCriterion] = {}
     for change in revision.reassess:
         retained = previous.get(change.criterion_id)
-        # A required criterion is reassessed only when an independent review released it as remote state, and only
+        # A required criterion is reassessed only when an independent review released it (remote state or a
+        # procedure that needs the network every time it runs), and only
         # out of the required set; every other required criterion stays fixed.
         released = change.criterion_id in releasable and change.criterion.applicability != 'required'
         if (retained is None or (retained.applicability == 'required' and not released)
