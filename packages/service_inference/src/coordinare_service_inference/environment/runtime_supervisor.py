@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Literal
 from .runtime import RuntimeArtifactReceipt, RuntimeIdentity, RuntimeSpec
 from .runtime_bundle import BUNDLE_PATH, RuntimeBundleInputs, inspect_bundle, read_bundle
 from .runtime_cleanup import remove_control_material, remove_owned_tree
-from .runtime_guest import cloud_configuration, qemu_arguments
+from .runtime_guest import cloud_configuration, host_kvm_usable, qemu_arguments
 from .runtime_io import RuntimeIOStoppedError as RuntimeScanStoppedError
 from .runtime_io import digest_file as _digest
 from .runtime_io import run_io, settle
@@ -333,7 +333,8 @@ async def _prepare_control(lease: RuntimeLease, *, repo: Path) -> list[str]:
     await _command(['genisoimage', '-quiet', '-output', str(work/'seed.iso'), '-volid', 'cidata', '-joliet', '-rock',
                     str(work/'user-data'), str(work/'meta-data')], deadline=lease.deadline)
     return qemu_arguments(lease.spec, lease.bundle, disk=work/'working.qcow2', seed=work/'seed.iso',
-                          repo=repo, cache=lease.cache, scratch=lease.scratch, control=guest_control, install=lease.install)
+                          repo=repo, cache=lease.cache, scratch=lease.scratch, control=guest_control, install=lease.install,
+                          carrier_platform=lease.spec.policy.identity.carrier_platform, kvm_usable=host_kvm_usable())
 
 
 async def open_runtime(spec: RuntimeSpec, *, artifacts: RuntimeArtifactReceipt | None,
