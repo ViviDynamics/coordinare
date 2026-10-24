@@ -230,3 +230,22 @@ def test_the_guest_console_tail_is_bounded_and_printable(tmp_path):
     assert '\x1b' not in tail and '\x00' not in tail
     assert len(tail) <= CONSOLE_TAIL_BYTES
     assert console_tail(tmp_path/'absent.log') == ''
+
+
+@pytest.mark.asyncio
+async def test_an_installer_that_outlives_its_deadline_is_held_as_a_timeout(tmp_path, monkeypatch):
+    """v39: the install outlived the guest's 30-minute lifetime and the stage failed with nothing recorded."""
+    cache = runtime_cache(tmp_path)
+    manifest = accepted_environment(cache)
+    snapshot = SimpleNamespace(name='sym', commit=manifest.source_commit, verify=AsyncMock())
+    image = cache.environment_capabilities['image_ref']
+    (tmp_path/'execution-approved.json').write_text(json.dumps({'scope': 'environment_validation',
+        'approved': True, 'manifest_digest': manifest.digest(), 'source_commit': snapshot.commit, 'image_ref': image}))
+    monkeypatch.setattr(harness, '_install', AsyncMock(side_effect=TimeoutError('installer original deadline exhausted')))
+    service = Mock()
+    result = {}
+    await harness.execute_accepted(snapshot, service, {'env_cache': {'sym': cache}}, image=image,
+        target=tmp_path, profile=harness.Profile(model='fixture', base_url='http://localhost:1'), result=result)
+    assert (result['status'], result['reason_code']) == ('held', 'installer_timeout')
+    assert result['installer_seconds'] >= 0
+    service.on_bootstrap_complete.assert_called_once_with('sym', False, {'env_cache': {'sym': cache}})

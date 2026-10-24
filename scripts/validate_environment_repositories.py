@@ -474,7 +474,15 @@ async def execute_accepted(
     result.pop("clean_consumer_detail", None)
     result.pop("clean_consumer_passed", None)
     result.update(stage="installer", installer_ran=True, installer_passed=False, clean_consumer_ran=False)
-    code, output = await _install(snapshot, cache, image, target, profile.installer_timeout)
+    started = time.monotonic()
+    try:
+        code, output = await _install(snapshot, cache, image, target, profile.installer_timeout)
+    except TimeoutError:
+        # v39's install outlived the private guest's lifetime; name it instead of an unexplained stage failure.
+        result.update(status="held", reason_code="installer_timeout",
+                      installer_seconds=round(time.monotonic() - started, 1))
+        service.on_bootstrap_complete(snapshot.name, False, state)
+        return
     (target / "installer-output.json").write_bytes(output)
     try:
         raw = json.loads(output)
