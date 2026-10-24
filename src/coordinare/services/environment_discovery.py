@@ -69,6 +69,8 @@ from coordinare.services.environment_findings import (
 )
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_obligations import (
+    REPAIR_CORRECTABLE,
+    guard_repair_diff,
     preserve_execution_commands,
 )
 from coordinare.services.environment_obligations import (
@@ -391,6 +393,8 @@ def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
 
 
 def _declaration_feedback(exc: EnvironmentDiscoveryError, inspection: _Inspection, budget: AttemptBudget) -> list[dict[str, Any]]:
+    if exc.code in REPAIR_CORRECTABLE:
+        return [{"location": [], "code": exc.code, "guidance": str(exc)}]
     if exc.code not in {"review_citations_invalid", "review_findings_invalid", "finding_response_ids_invalid"}:
         raise exc
     if exc.code == 'finding_response_ids_invalid':
@@ -720,6 +724,8 @@ class _CandidateValidator:
                 raise EnvironmentDiscoveryError(message, code="source_identity")
         for executed in self.budget.executed_manifests:
             preserve_execution_commands(manifest, executed)
+        if self.budget.repair_triage is not None and self.prior_manifests:
+            guard_repair_diff(manifest, self.prior_manifests[0], self.budget.repair_triage)
         validate_finding_responses(self.discovery.finding_responses, ledger=cast("FindingLedger", self.budget.finding_ledger),
                                    inspected=self.discovery.inputs, manifest=manifest)
         check_project_files(self.discovery.source_files)
@@ -1199,7 +1205,7 @@ def _attributed(errors: list[dict[str, Any]], exc: Exception,
             or any(criterion in text for criterion in group.ids)]
 
 
-MERGE_CORRECTABLE = frozenset({'executable_merge_collision', 'obligation_removed', 'source_identity'})
+MERGE_CORRECTABLE = frozenset({'executable_merge_collision', 'obligation_removed', 'source_identity', *REPAIR_CORRECTABLE})
 
 
 async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifest: EnvironmentManifest,
