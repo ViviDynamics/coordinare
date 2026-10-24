@@ -454,11 +454,14 @@ def validate_scope_mapping(scope: ScopeContract, manifest: EnvironmentManifest) 
         if service.required and any(not c.required for c in lifecycle):
             raise PydanticCustomError('scope_required_service', 'required service lifecycle cannot be optional')
         commands.extend(lifecycle)
-    identifiers = [*(c.id for c in checked.definition.criteria), *(r.id for r in manifest.requirements),
-                   *(s.id for s in manifest.services), *(c.id for c in commands)]
-    if len(identifiers) != len(set(identifiers)):
-        repeated = sorted(identifier for identifier, count in Counter(identifiers).items() if count > 1)
+    records = [*(r.id for r in manifest.requirements), *(s.id for s in manifest.services), *(c.id for c in commands)]
+    criteria = {c.id for c in checked.definition.criteria}
+    if reused := sorted(criteria.intersection(records)):
         raise PydanticCustomError('scope_id_collision', 'scope, obligation, service and command IDs must be unambiguous',
+                                  {'unavailable': reused[:16]})
+    # v35: a requirement and a check shared ids; reported as a criterion collision, the author renamed the checks.
+    if repeated := sorted(identifier for identifier, count in Counter(records).items() if count > 1):
+        raise PydanticCustomError('record_id_collision', 'requirement, service and command IDs must be unambiguous',
                                   {'unavailable': repeated[:16]})
     required = {c.id for c in checked.definition.criteria if c.applicability == 'required'}
     checks = {c.id: c for c in manifest.checks}
