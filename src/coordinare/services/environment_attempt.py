@@ -145,7 +145,9 @@ class AttemptBudget:
 
     def reserve_probe_batch(self) -> None:
         self.check()
-        if self.probe_batches >= MAX_PROBE_BATCHES:
+        # An execution repair relocates its cache and must observe it with a fresh probe batch, so each repair
+        # brings one: with a fixed two, v40's second permitted execution repair could never start.
+        if self.probe_batches >= MAX_PROBE_BATCHES + self.execution_repairs:
             message = "environment probe batch limit exceeded"
             raise EnvironmentDiscoveryError(message, code="attempt_probe_limit")
         self.probe_batches += 1
