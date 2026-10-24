@@ -137,6 +137,8 @@ GRAPH_GUIDANCE = {
     'requirement_source_uninspected': ("A requirement's source must be a file you inspected; read it, or cite one you "
                                        'read.'),
     'empty_reason_missing': 'With no requirements, explain in empty_reason why the environment needs none.',
+    'record_id_collision': ('Each listed id is used by more than one record. Rename the requirement that shares it '
+                            '(for example req-<id>) and keep the check, install and service command ids unchanged.'),
     'global_obligation_removed': ('Your earlier proposals declared the listed required records; keep each id and revise '
                                   'the record in place. Only an id that reuses a scope criterion id may be renamed.'),
 }

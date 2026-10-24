@@ -836,3 +836,19 @@ def test_a_part_duplicate_decision_left_open_is_corrected_by_its_reviewer():
     decision.update(status='resolved', duplicate_of='F0001')
     data['assessment']['verdict'] = 'accept'
     validate_review_part(data, inspection=inspection, owned=['F0002'], capacity=4, known=ReviewIds(retained=['F0001', 'F0002']))
+
+
+def test_a_requirement_sharing_a_check_id_is_its_own_correction_and_never_locked():
+    """v35: a requirement and a check shared ids; called a criterion collision, the author renamed the checks."""
+    merge = discovery_module._CandidateValidator.__new__(discovery_module._CandidateValidator)
+    merge.construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=None), capabilities=SimpleNamespace(runtime=None))
+    merge.required_ids = {}
+    requirement = {'id': 'toolchain', 'description': 'zog 7', 'source': 'README.md', 'checks': ['toolchain']}
+    with pytest.raises(ValidationError) as caught:
+        discovery_module._global_rules(merge)(global_part(requirements=[requirement]))
+    [feedback] = _validation_feedback(caught.value)
+    assert (feedback['code'], feedback['unavailable']) == ('record_id_collision', ['toolchain'])
+    assert 'Rename the requirement' in feedback['guidance']
+    construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=None))
+    lockable = discovery_module._without_criterion_ids(global_part(requirements=[requirement]), construction)
+    assert lockable['requirements'] == [] and lockable['checks'] == []

@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
@@ -657,13 +658,31 @@ class _ObligationLedger:
 
 
 def _without_criterion_ids(data: dict[str, Any], construction: ReviewedConstruction) -> dict[str, Any]:
+    """Records whose ids can never be admitted are never locked as obligations, so their author can rename them.
+
+    That is an id reusing a scope criterion id, or one shared by two records (v35: a requirement and a check).
+    """
     scope = construction.budget.scope_contract
-    criteria = {criterion.id for criterion in scope.definition.criteria} if scope is not None else set()
-    if not criteria:
+    excluded = {criterion.id for criterion in scope.definition.criteria} if scope is not None else set()
+    excluded |= {identifier for identifier, count in Counter(_record_ids(data)).items() if count > 1}
+    if not excluded:
         return data
-    return {key: ([item for item in value if not (isinstance(item, dict) and item.get('id') in criteria)]
+    return {key: ([item for item in value if not (isinstance(item, dict) and item.get('id') in excluded)]
                   if key in {'requirements', 'checks', 'install', 'services'} and isinstance(value, list) else value)
             for key, value in data.items()}
+
+
+def _record_ids(data: Mapping[str, Any]) -> list[str]:
+    """Every requirement, service and command id a declaration uses, with repeats."""
+    ids: list[object] = []
+    for key in ('requirements', 'install', 'checks', 'services'):
+        for item in data.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            ids.append(item.get('id'))
+            ids.extend((item.get(phase) or {}).get('id') for phase in ('init', 'start', 'health', 'stop')
+                       if key == 'services' and isinstance(item.get(phase), dict))
+    return [identifier for identifier in ids if isinstance(identifier, str)]
 
 
 @dataclass
@@ -1114,6 +1133,9 @@ def _global_rules(merge: Callable[[dict[str, Any]], Any] | None) -> Callable[[di
         if colliding := sorted({item['id'] for items in records.values() for item in items if item.get('id') in criteria}):
             errors.append({'type': PydanticCustomError('scope_id_collision', 'record id reuses a scope criterion id',
                                                        {'unavailable': colliding[:16]}), 'loc': (), 'input': None})
+        if shared := sorted(identifier for identifier, count in Counter(_record_ids(data)).items() if count > 1):
+            errors.append({'type': PydanticCustomError('record_id_collision', 'record ids must be unambiguous',
+                                                       {'unavailable': shared[:16]}), 'loc': (), 'input': None})
         missing = sorted(identifier for key, previous in merge.required_ids.items() if key in records
                          for identifier in previous - {item.get('id') for item in records[key] if item.get('required', True)}
                          if not PREFIX.match(identifier))
