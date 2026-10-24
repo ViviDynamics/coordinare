@@ -485,9 +485,19 @@ def _decision_errors(proposal: CoverageAssessmentProposal, *, inspection: Source
     return errors
 
 
+@dataclass(frozen=True)
+class ReviewIds:
+    """What a review part may name: the manifest's obligation ids and the ledger's retained finding ids."""
+
+    obligations: Collection[str] = ()
+    retained: Collection[str] = ()
+
+
+NO_REVIEW_IDS = ReviewIds()
+
+
 def validate_review_part(data: dict[str, Any], *, inspection: SourceInspection, owned: Sequence[str],
-                         capacity: int, obligation_ids: Collection[str] = (),
-                         retained_ids: Collection[str] = ()) -> tuple[CoverageAssessmentProposal, dict[str, str]]:
+                         capacity: int, known: ReviewIds = NO_REVIEW_IDS) -> tuple[CoverageAssessmentProposal, dict[str, str]]:
     proposal = CoverageAssessmentProposal.model_validate(data.get('assessment') if isinstance(data, dict) else data)
     errors: list[dict[str, Any]] = []
     decided = [decision.finding_id for decision in proposal.decisions]
@@ -502,8 +512,8 @@ def validate_review_part(data: dict[str, Any], *, inspection: SourceInspection, 
     if unread:
         errors.append({'code': 'review_citations_invalid', 'location': ['assessment', 'sources'],
                        'guidance': 'Cite only files indexed in mandatory_evidence or read with tools.'})
-    errors.extend(_finding_reference_errors(proposal, inspection=inspection, obligation_ids=obligation_ids))
-    errors.extend(_decision_errors(proposal, inspection=inspection, retained_ids=retained_ids))
+    errors.extend(_finding_reference_errors(proposal, inspection=inspection, obligation_ids=known.obligations))
+    errors.extend(_decision_errors(proposal, inspection=inspection, retained_ids=known.retained))
     opened = any(decision.status == 'open' for decision in proposal.decisions)
     if (proposal.verdict == 'accept' and (proposal.findings or opened)) or (
             proposal.verdict == 'revise' and not proposal.findings and not opened):
@@ -563,6 +573,7 @@ __all__ = [
     'DividedConstruction',
     'GlobalRules',
     'Inheritance',
+    'ReviewIds',
     'base_prefix',
     'check_groups',
     'combine_review',

@@ -559,7 +559,7 @@ async def test_a_merge_repair_asks_the_global_author_for_its_own_envelope(monkey
 
 
 def test_a_part_finding_naming_a_criterion_is_corrected_with_the_obligation_ids():
-    from coordinare.services.environment_shard_construction import validate_review_part
+    from coordinare.services.environment_shard_construction import ReviewIds, validate_review_part
 
     finding = {'category': 'coverage', 'issue': 'k3s is not covered', 'sources': ['a.md'],
                'affected_ids': [make_criterion(1).id]}
@@ -567,13 +567,13 @@ def test_a_part_finding_naming_a_criterion_is_corrected_with_the_obligation_ids(
                            'verdict': 'revise', 'rationale': 'gap', 'sources': ['a.md']}}
     inspection = SimpleNamespace(inputs={'a.md': 'a' * 64})
     with pytest.raises(_ResponseReferenceError) as caught:
-        validate_review_part(data, inspection=inspection, owned=[], capacity=4, obligation_ids={'c00-0', 'toolchain'})
+        validate_review_part(data, inspection=inspection, owned=[], capacity=4, known=ReviewIds(obligations={'c00-0', 'toolchain'}))
     [error] = caught.value.errors
     assert error['location'] == ['assessment', 'findings', '0', 'affected_ids']
     assert error['obligation_ids'] == ['c00-0', 'toolchain'] and make_criterion(1).id not in json.dumps(error)
     finding['affected_ids'] = ['c00-0']
     proposal, _inputs = validate_review_part(data, inspection=inspection, owned=[], capacity=4,
-                                             obligation_ids={'c00-0', 'toolchain'})
+                                             known=ReviewIds(obligations={'c00-0', 'toolchain'}))
     assert proposal.findings[0].affected_ids == ['c00-0']
 
 
@@ -819,7 +819,7 @@ def test_record_rules_reach_the_global_author_in_its_own_phase_with_the_ids_they
 
 def test_a_part_duplicate_decision_left_open_is_corrected_by_its_reviewer():
     """v33: an open duplicate decision reached the combined review, which no reviewer can correct, and held."""
-    from coordinare.services.environment_shard_construction import validate_review_part
+    from coordinare.services.environment_shard_construction import ReviewIds, validate_review_part
 
     decision = {'finding_id': 'F0002', 'status': 'open', 'rationale': 'Same gap as F0001', 'sources': ['a.md'],
                 'duplicate_of': 'F0001'}
@@ -827,12 +827,12 @@ def test_a_part_duplicate_decision_left_open_is_corrected_by_its_reviewer():
                            'verdict': 'revise', 'rationale': 'gap', 'sources': ['a.md']}}
     inspection = SimpleNamespace(inputs={'a.md': 'a' * 64})
     with pytest.raises(_ResponseReferenceError) as caught:
-        validate_review_part(data, inspection=inspection, owned=['F0002'], capacity=4, retained_ids=['F0001', 'F0002'])
+        validate_review_part(data, inspection=inspection, owned=['F0002'], capacity=4, known=ReviewIds(retained=['F0001', 'F0002']))
     assert [error['location'] for error in caught.value.errors] == [['assessment', 'decisions', '0', 'status']]
     decision['duplicate_of'] = 'F0009'
     with pytest.raises(_ResponseReferenceError) as caught:
-        validate_review_part(data, inspection=inspection, owned=['F0002'], capacity=4, retained_ids=['F0001', 'F0002'])
+        validate_review_part(data, inspection=inspection, owned=['F0002'], capacity=4, known=ReviewIds(retained=['F0001', 'F0002']))
     assert ['assessment', 'decisions', '0', 'duplicate_of'] in [error['location'] for error in caught.value.errors]
     decision.update(status='resolved', duplicate_of='F0001')
     data['assessment']['verdict'] = 'accept'
-    validate_review_part(data, inspection=inspection, owned=['F0002'], capacity=4, retained_ids=['F0001', 'F0002'])
+    validate_review_part(data, inspection=inspection, owned=['F0002'], capacity=4, known=ReviewIds(retained=['F0001', 'F0002']))

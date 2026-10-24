@@ -98,6 +98,7 @@ from coordinare.services.environment_shard_construction import (
     REVIEW_PART_PREAMBLE,
     CheckGroup,
     DividedConstruction,
+    ReviewIds,
     check_groups,
     combine_review,
     divided,
@@ -1197,7 +1198,7 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
                         'finding_responses': [r for r in responses if r.get('finding_id') in owned.get(owner, [])],
                         'untrusted_execution_history': budget.execution_review_evidence})}]
         validate = partial(validate_review_part, inspection=inspection, owned=owned.get(owner, []), capacity=capacities[owner],
-                           obligation_ids=obligations, retained_ids=[record.id for record in ledger.records])
+                           known=ReviewIds(obligations, [record.id for record in ledger.records]))
         key = hashlib.sha256(_json(messages).encode()).hexdigest()
         saved = saved_part(budget, 'reviews', owner, key)
         if saved is not None:
