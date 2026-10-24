@@ -59,14 +59,39 @@ class RuntimeEndpoint(RuntimeContract):
 
 
 class RuntimePolicy(RuntimeContract):
-    """Resolved before discovery, independently of future project endpoint requests."""
+    """Resolved before discovery, independently of future project endpoint requests.
+
+    ``identity`` is the guest a repository without an explicit platform requirement gets (the carrier's own CPU);
+    ``alternate_identity`` is the other CPU's guest, used only when the pinned source explicitly requires that platform.
+    """
 
     schema_version: Literal[1]
     kind: Literal['private_service_guest']
     identity: RuntimeIdentity
+    alternate_identity: RuntimeIdentity | None = None
     resources: RuntimeResources
     control_port: int = Field(gt=0, le=65535)
     max_endpoints: int = Field(ge=0, le=64)
+
+    @model_validator(mode='after')
+    def alternate_is_the_other_cpu(self) -> Self:
+        alternate = self.alternate_identity
+        if alternate is None:
+            return self
+        if (alternate.guest_platform == self.identity.guest_platform
+                or (alternate.carrier_image, alternate.carrier_platform) != (self.identity.carrier_image, self.identity.carrier_platform)):
+            raise ValueError('alternate guest must be the other CPU of the same carrier')
+        return self
+
+    def for_guest(self, guest_platform: str) -> RuntimePolicy:
+        """The policy whose single identity is the requested guest; the alternate is never part of a selected policy."""
+        if self.identity.guest_platform == guest_platform:
+            identity = self.identity
+        elif self.alternate_identity is not None and self.alternate_identity.guest_platform == guest_platform:
+            identity = self.alternate_identity
+        else:
+            raise ValueError('runtime policy has no identity for the requested guest')
+        return self.model_copy(update={'identity': identity, 'alternate_identity': None})
 
 
 class RuntimeSpec(RuntimeContract):

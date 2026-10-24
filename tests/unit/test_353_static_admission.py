@@ -125,8 +125,8 @@ def test_guidance_names_the_rule_without_echoing_model_text():
 def test_the_candidate_validator_admits_a_connectivity_gate_only_as_a_correctable_error():
     gate = install('install-connectivity-probe', GATE_SCRIPT)
     apt = install('install-apt-prereqs', 'apt-get update', depends_on=['install-connectivity-probe'])
-    construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=None), admit=lambda data, inputs: SimpleNamespace(
-        install=[gate, apt], activation=Activation()))
+    construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=None), capabilities=SimpleNamespace(platform='linux/x86_64'),
+        admit=lambda data, inputs: SimpleNamespace(install=[gate, apt], activation=Activation()))
     validator = discovery_module._CandidateValidator(
         discovery=SimpleNamespace(inputs={}), construction=construction, required_ids={}, prior_manifests=[],
         obligation_ledger=discovery_module._ObligationLedger(), budget=SimpleNamespace())

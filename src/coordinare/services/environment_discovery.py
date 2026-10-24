@@ -52,6 +52,7 @@ from coordinare.services.environment_attempt import (
     DiscoveryChatReply,
     EnvironmentDiscoveryError,
 )
+from coordinare.services.environment_capabilities import platform_roles
 from coordinare.services.environment_construction import ReviewedConstruction, ScopeReopenedError
 from coordinare.services.environment_delta import (
     DELTA_FALLBACK,
@@ -743,7 +744,7 @@ class _CandidateValidator:
             previous.update(current)
         manifest = self.construction.admit(data, self.discovery.inputs)
         try:
-            validate_static_rules(manifest.install, manifest.activation)
+            validate_static_rules(manifest.install, manifest.activation, self.construction.capabilities.platform)
         except PydanticCustomError as exc:
             raise ValidationError.from_exception_data('EnvironmentManifestProposal',
                                                       [{'type': exc, 'loc': (), 'input': None}]) from exc
@@ -973,6 +974,7 @@ async def _discover_attempt(
                 "root_directory": discovery.list_directory(),
                 "inventory_digest": hashlib.sha256(_json(inventory).encode()).hexdigest(),
                 "execution_capabilities": capabilities.model_dump(), "capabilities_digest": capabilities.digest(),
+                "platform_roles": platform_roles(capabilities),
                 "execution_rules": "{cache} persists across jobs and is read-only in clean verification; "
                 "{repo} is disposable pinned source, {scratch} is fresh writable storage. "
                 "They may have different absolute paths in installer, verifier and consumer. "
@@ -1306,6 +1308,7 @@ def _global_rules(merge: Callable[[dict[str, Any]], Any] | None) -> Callable[[di
             # v28 set DOCKER_CONFIG in activation, which the private runtime owns; the merge reported it unlocated.
             validate_records(proposal.install, proposal.checks, proposal.services, proposal.requirements,
                              proposal.activation.env, runtime=merge.construction.capabilities.runtime is not None)
+            validate_static_rules(proposal.install, proposal.activation, merge.construction.capabilities.platform)
             validate_shell_locals([*proposal.install, *proposal.checks, *(command for service in proposal.services
                                    for command in (service.init, service.start, service.health, service.stop) if command)],
                                   [*proposal.activation.env, *(c.name for c in proposal.local_credentials)])

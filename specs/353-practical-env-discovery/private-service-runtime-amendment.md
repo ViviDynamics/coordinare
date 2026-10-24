@@ -97,7 +97,9 @@ Verify immutable artifact hashes and that cache writes fail from both sides.
 
 Prove the mixed-architecture facility required by pinned Elm's explicit amd64
 component. Test an amd64 guest on the actual arm64 carrier first; an arm64 guest
-with guest-internal emulation is an alternative requiring measured proof. No
+with guest-internal emulation is an alternative requiring measured proof.
+[Superseded by native-architecture-amendment.md: the guest now matches the carrier
+CPU, and the other CPU runs through user-mode emulation inside it.] No
 architecture is selected solely because a tool exists. Also measure any nested
 guest-tool requirement before declaring it usable. No deployment/hardware operation
 is authorized by this plan.

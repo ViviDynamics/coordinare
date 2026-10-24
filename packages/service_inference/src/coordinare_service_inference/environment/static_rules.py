@@ -84,12 +84,45 @@ def _related(path: str, mention: str) -> bool:
     return mention == path or mention.startswith(path + "/") or path.startswith(mention + "/")
 
 
-def validate_static_rules(install: Sequence[Command], activation: Activation) -> None:
+_ARCHITECTURE = re.compile(r"(?<![a-z0-9])(amd64|x86_64|x64|arm64|aarch64)(?![a-z0-9])")
+_CANONICAL = {"amd64": "x86_64", "x86_64": "x86_64", "x64": "x86_64", "arm64": "aarch64", "aarch64": "aarch64"}
+_FETCH = frozenset({"curl", "wget", "aria2c"})
+# A command that detects the running CPU chooses its artifact at run time; only a fixed download is judged.
+_DETECTS = re.compile(r"\bcase\b|\buname\b|--print-architecture")
+
+
+def _names(words: list[str]) -> set[str]:
+    return {_CANONICAL[match.group(1)] for word in words for match in _ARCHITECTURE.finditer(word)}
+
+
+def foreign_artifact(command: Command, platform: str) -> bool:
+    """A fixed download of a release artifact named for another CPU than the install platform.
+
+    A segment that names the install platform's architecture is never judged, and neither is a command that detects
+    the running CPU; an image platform flag such as --platform linux/amd64 is not a fetch.
+    """
+    native = platform.rsplit("/", 1)[-1]
+    text = _script(command.argv)
+    if _DETECTS.search(text):
+        return False
+    try:
+        segments = [words for words in (shlex.split(part) for part in _SEPARATOR.split(text)) if words]
+    except ValueError:
+        return False
+    return any((words[0] in _FETCH or (words[0] == "gh" and "download" in words))
+               and (names := _names(words)) and native not in names for words in segments)
+
+
+def validate_static_rules(install: Sequence[Command], activation: Activation, platform: str | None = None) -> None:
     """Raises the first correctable static error; each names its record ids (activation entries by position)."""
     gates = {command.id for command in install if connectivity_probe(command)}
     for command in install:
         if hit := gates & set(command.depends_on):
             raise _graph_error("connectivity_gate", "a reachability test cannot be a prerequisite", command.id, hit)
+    for command in install if platform is not None else ():
+        if foreign_artifact(command, platform):
+            raise _graph_error("foreign_architecture_artifact", "a release artifact is built for another CPU architecture",
+                               command.id, set())
     mentioned = _mentions(install)
     uncreated = {f"activation-path-{index}" for index, path in enumerate(activation.path)
                  if not _templated(path) and not any(_related(path, mention) for mention in mentioned)}

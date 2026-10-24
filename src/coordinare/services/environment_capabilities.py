@@ -6,8 +6,10 @@ import json
 import uuid
 from typing import TYPE_CHECKING, Any, NoReturn
 
+from coordinare_service_inference.environment.guest_selection import guest_for
 from coordinare_service_inference.environment.models import ExecutionCapabilities
 from coordinare_service_inference.environment.runtime import RuntimeIdentity, RuntimePolicy
+from coordinare_service_inference.environment.runtime_guest import foreign_platforms
 
 from coordinare.services.environment_acceptance import (
     accepted_environment,
@@ -58,6 +60,14 @@ async def _docker_identity(image: str) -> tuple[str, str]:
         return pinned, f"{os_name}/{machine}"
 
 
+def platform_roles(capabilities: ExecutionCapabilities) -> dict[str, Any]:
+    """Where each kind of work runs; installs and checks always run on the carrier's own CPU, never through emulation."""
+    runtime = capabilities.runtime
+    daemon = runtime.identity.guest_platform if runtime is not None else capabilities.platform
+    return {"install_and_check_platform": capabilities.platform, "container_daemon_platform": daemon,
+            "emulated_platforms": list(foreign_platforms(daemon)) if runtime is not None else []}
+
+
 def _refuse_runtime(message: str) -> NoReturn:
     raise EnvironmentCapabilityError(message) from None
 
@@ -83,8 +93,8 @@ async def _remove_runtime_inspector(name: str) -> None:
         _refuse_runtime("private runtime inspection cleanup is unconfirmed")
 
 
-async def _inspect_runtime_bundle(image: str) -> dict[str, str]:
-    """Hash the immutable carrier's platform bundle with no project or network."""
+async def _inspect_runtime_bundle(image: str, guest_platform: str) -> dict[str, str]:
+    """Hash the immutable carrier's platform bundle for one guest, with no project or network."""
     name = "coordinare-runtime-inspect-" + uuid.uuid4().hex
     proc = None
     try:
@@ -93,7 +103,7 @@ async def _inspect_runtime_bundle(image: str) -> dict[str, str]:
             "--label", "coordinare.runtime.inspection=true",
             "--security-opt", "no-new-privileges", "--memory", "128m", "--memory-swap", "128m",
             "--cpus", "1", "--pids-limit", "32", "--read-only", "--entrypoint", "python",
-            image, "-m", "coordinare_service_inference.environment.runtime_bundle",
+            image, "-m", "coordinare_service_inference.environment.runtime_bundle", guest_platform,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
@@ -113,11 +123,14 @@ async def _inspect_runtime_bundle(image: str) -> dict[str, str]:
         await _remove_runtime_inspector(name)
 
 
-async def _with_private_runtime(target: ExecutionCapabilities, runtime: Any) -> ExecutionCapabilities:
+async def _with_private_runtime(target: ExecutionCapabilities, runtime: Any, guest_platform: str) -> ExecutionCapabilities:
     try:
-        policy = RuntimePolicy.model_validate(runtime)
+        policy = RuntimePolicy.model_validate(runtime).for_guest(guest_platform)
+    except ValueError:
+        _refuse_runtime("private runtime has no configured guest for the repository's platform requirement")
+    try:
         actual = RuntimeIdentity.model_validate({
-            **await _inspect_runtime_bundle(target.image_ref), "schema_version": 1,
+            **await _inspect_runtime_bundle(target.image_ref, guest_platform), "schema_version": 1,
             "carrier_image": target.image_ref, "carrier_platform": target.platform,
         })
     except ValueError:
@@ -173,7 +186,9 @@ async def resolve_execution_capabilities(state: Mapping[str, Any], symphony_name
     target = ExecutionCapabilities(schema_version=1, image_ref=image, platform=platform,
         cache_mount_path=f"{root}/{cache.sanitised_name}", install_network="enabled", verify_network="disabled")
     if runtime is not None:
-        target = await _with_private_runtime(target, runtime)
+        # Derived from the pinned source's recorded requirements, so probes, approvals, execution and clean verification agree.
+        required = (getattr(cache, "environment_guest", None) or {}).get("required") or []
+        target = await _with_private_runtime(target, runtime, guest_for(target.platform, required))
     await _check_bootstrap_target(state, symphony_name, target)
     return target
 
