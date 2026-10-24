@@ -56,6 +56,7 @@ from coordinare.services.environment_delta import (
     DELTA_FALLBACK,
     DeltaPlan,
     changed_ids,
+    dependency_digest,
     standing_view,
 )
 from coordinare.services.environment_delta_schema import ManifestDelta, apply_delta
@@ -304,7 +305,8 @@ async def _probe_reply(data: dict[str, Any], raw: str, messages: list[dict[str, 
 
 
 def _normalize_review(reply: dict[str, Any], name: str) -> dict[str, Any]:
-    if name == "review" and set(reply) == {"verdict", "rationale", "sources", "findings", "decisions", "capability_unavailable"}:
+    if name == "review" and set(reply) <= {"verdict", "rationale", "sources", "findings", "decisions", "capability_unavailable",
+                                          "criterion_rulings"} and {"verdict", "rationale", "sources"} <= set(reply):
         try:
             _CoverageProposal.model_validate(reply)
         except ValidationError:
@@ -606,7 +608,9 @@ def _validated_assessment(
         raise EnvironmentDiscoveryError(message)
     updated = apply_finding_review(ledger or FindingLedger(source_commit=manifest.source_commit),
         manifest=manifest, proposal=proposal, reviewer_inputs=reviewer_reads)
-    return CoverageAssessment.model_validate({**proposal.model_dump(exclude={'findings', 'decisions', 'capability_unavailable'}),
+    # Rulings are a review-part judgment checked before admission; the stored assessment keeps its own schema.
+    return CoverageAssessment.model_validate({**proposal.model_dump(exclude={'findings', 'decisions', 'capability_unavailable',
+                                                                              'criterion_rulings'}),
         "schema_version": 2, "policy_version": "353-findings-v1",
         "finding_ledger": updated.model_dump(mode='json'), "finding_ledger_digest": updated.digest(), "symphony_name": manifest.symphony_name,
         "source_commit": manifest.source_commit, "manifest_digest": manifest.digest(),
@@ -800,12 +804,14 @@ async def discover_and_review(
         max_coverage_revisions=bounds.max_coverage_revisions, max_execution_repairs=bounds.max_execution_repairs)
     try:
         async with asyncio.timeout_at(budget.deadline):
+            history = list(budget.probe_reports)
             budget.repair_delta = _delta_repair(configured, bounds, budget)
             # Journal history remains append-only. A prepared execution repair may retire old-cache observations,
             # then must spend a fresh probe batch; a delta repair keeps those no command reads, unless a capability failed.
-            budget.probe_reports = select_current_probe_reports(budget.probe_reports, commit, capabilities,
+            budget.probe_reports = select_current_probe_reports(history, commit, capabilities,
                 allow_cache_relocation=_execution_repair(configured),
                 reuse_unreferenced=budget.repair_delta and not _capability_root(budget.repair_triage))
+            selected = len(budget.probe_reports)
             try:
                 result = await _discover_attempt(source_identity=(symphony_name, commit), paths=paths,
                     fetch=fetch, chat=chat, options=replace(configured, budget=budget))
@@ -814,6 +820,9 @@ async def discover_and_review(
                     raise
                 # The delta could not be admitted or reviewed: the full repair is the backstop while budget remains.
                 budget.repair_delta, budget.delta_fallback, budget.error_code = False, True, None
+                # The full repair must not inherit a cache-only reuse decided for the delta.
+                budget.probe_reports = select_current_probe_reports(history + budget.probe_reports[selected:], commit,
+                    capabilities, allow_cache_relocation=_execution_repair(configured), reuse_unreferenced=False)
                 result = await _discover_attempt(source_identity=(symphony_name, commit), paths=paths,
                     fetch=fetch, chat=chat, options=replace(configured, budget=budget))
             budget.outcome = "accepted"
@@ -1053,12 +1062,18 @@ def _delta_plan(discovery: _Inspection, budget: AttemptBudget, prior_manifests: 
 
 async def _author_candidate(attempt: _Attempt, divided_build: DividedConstruction | None,
                             validate: Callable[[dict[str, Any]], Any]) -> dict[str, Any]:
-    if divided_build is not None:
-        return await _divided_candidate(divided_build, attempt, validate)
-    if attempt.delta is not None:
-        return await _delta_candidate(attempt, validate)
-    candidate, _ = await _phase(inspection=attempt.discovery, chat=attempt.chat, budget=attempt.budget,
-                                messages=attempt.messages, validate=validate)
+    if divided_build is None and attempt.delta is None:
+        candidate, _ = await _phase(inspection=attempt.discovery, chat=attempt.chat, budget=attempt.budget,
+                                    messages=attempt.messages, validate=validate)
+        return candidate
+    candidate = (await _divided_candidate(divided_build, attempt, validate) if divided_build is not None
+                 else await _delta_candidate(attempt, validate))
+    plan = attempt.delta
+    if plan is not None and not any(changed_ids(plan.base, candidate).values()) and (
+            candidate.get('criterion_checks') or {}) == (plan.base_proposal().get('criterion_checks') or {}):
+        # A delta that changes nothing would execute the failed manifest again: it is a delta failure, not a repair.
+        message = "delta repair changed no record"
+        raise EnvironmentDiscoveryError(message, code="repair_delta_rejected")
     return candidate
 
 
@@ -1354,13 +1369,18 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
         own: dict[str, Any] = {'part': part_manifest_view(manifest, group), 'mandatory_evidence': index, 'assigned_findings': mine,
              'required_decision_ids': owned.get(owner, []), 'findings_capacity': capacities[owner],
              'finding_responses': [r for r in responses if r.get('finding_id') in owned.get(owner, [])]}
+        # A part's standing also depends on every record its checks depend on, not only on its own records.
+        own['dependency_digest'] = dependency_digest(manifest, _dependency_ids(manifest, own['part'], group))
+        rulings: list[str] | None = None
         if (scope := _declared_scope(attempt.delta, manifest, group)) is not None:
+            rulings = sorted({*scope['criteria'], *scope['touched_criteria']})
             own['repair_scope'] = scope
-            own['repair_rule'] = ('This is a repair. Rule on every record named in repair_scope and on every criterion in its '
-                                  'touched_criteria or criteria; an unchanged record keeps the standing it had.')
+            own['required_criterion_ids'] = rulings
+            own['repair_rule'] = ('This is a repair. Rule on every record named in repair_scope: give exactly one criterion_rulings '
+                                  'entry per required_criterion_ids id and no others. An unchanged record keeps its standing.')
         messages = review_part_messages(system, shared, own)
         validate = partial(validate_review_part, inspection=inspection, owned=owned.get(owner, []), capacity=capacities[owner],
-                           known=ReviewIds(obligations, [record.id for record in ledger.records]))
+                           known=ReviewIds(obligations, [record.id for record in ledger.records], rulings))
         # Standing: a part with unchanged content keeps its reviewed verdict, without a new judgment.
         key = hashlib.sha256(_json(review_part_messages(system, standing_view(shared), own)).encode()).hexdigest()
         saved = saved_part(budget, 'reviews', owner, key)
@@ -1382,6 +1402,16 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
     for _owner, _proposal, inputs in parts:
         reads.update(inputs)
     return combine_review([(owner, proposal) for owner, proposal, _inputs in parts], ledger), reads
+
+
+def _dependency_ids(manifest: EnvironmentManifest, part: Mapping[str, Any], group: CheckGroup | None) -> list[str]:
+    """The commands a part's standing rests on: its checks, and for the global part every install and service command."""
+    ids = [check['id'] for check in part.get('checks', [])]
+    if group is None:
+        ids += [command.id for command in manifest.install]
+        ids += [command.id for service in manifest.services for command in (service.init, service.start, service.health, service.stop)
+                if command is not None]
+    return ids
 
 
 def _declared_scope(plan: DeltaPlan | None, manifest: EnvironmentManifest, group: CheckGroup | None) -> dict[str, Any] | None:

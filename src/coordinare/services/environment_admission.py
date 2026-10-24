@@ -129,9 +129,11 @@ GRAPH_GUIDANCE = {
     'runtime_env_reserved': ('The private service runtime owns the listed environment variables; remove them from the '
                              'named command or activation env. Reach Docker through the runtime it provides.'),
     'duplicate_command_ids': 'Every install, check and service command needs its own id; rename the listed duplicates.',
-    'duplicate_command_content': ('Each listed pair runs the same argv, cwd, env and scope under two ids. Keep the first id '
-                                  'and delete the second, and map its criteria to the kept check; a command that needs '
-                                  'different behaviour must differ in argv, cwd, env or scope.'),
+    'duplicate_command_content': ('Each listed pair runs the same argv, cwd, env and scope under two ids. Keep one of the '
+                                  'two (keep the required one if only one is required) and give it the union of both '
+                                  'depends_on lists, the larger timeout_seconds, and required if either was required. Remap '
+                                  "the dropped id's criteria to the kept id and rewrite depends_on entries that named the "
+                                  'dropped id. A command that needs different behaviour must differ in argv, cwd, env or scope.'),
     'duplicate_requirement_ids': 'Every requirement needs its own id; rename the listed duplicates.',
     'service_scope_mismatch': ("All of a service's init, start, health and stop commands share the start command's "
                                'scope; set the listed commands to it.'),

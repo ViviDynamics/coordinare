@@ -20,12 +20,14 @@ import json
 import re
 from collections import defaultdict
 from itertools import pairwise
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from coordinare_service_inference.environment.static_rules import connectivity_probe
 from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from coordinare_service_inference.environment.models import (
         Command,
         EnvironmentManifest,
@@ -107,12 +109,21 @@ def _reach(seeds: set[str], neighbours: dict[str, set[str]]) -> set[str]:
 
 
 def _closure(seeds: set[str], edges: dict[str, set[str]]) -> set[str]:
-    """Seeds, their prerequisites, and what depends on the seeds. Prerequisites of dependents are not pulled in."""
+    """Seeds and their prerequisites, then everything that depends on any of those. Prerequisites of dependents are not
+    pulled in, but dependents of prerequisites are: a shared prerequisite changes every record that reads it."""
     dependents: dict[str, set[str]] = defaultdict(set)
     for child, parents in edges.items():
         for parent in parents:
             dependents[parent].add(child)
-    return _reach(seeds, edges) | _reach(seeds, dependents)
+    ancestors = _reach(seeds, edges)
+    return ancestors | _reach(ancestors, dependents)
+
+
+def depends_on_closure(manifest: EnvironmentManifest, identifiers: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """Full records of the given commands and every command they transitively depend on, by id."""
+    records = _records(manifest)
+    reached = _reach({identifier for identifier in identifiers if identifier in records}, _prerequisites(manifest, records))
+    return {identifier: records[identifier][0].model_dump(mode="json") for identifier in sorted(reached)}
 
 
 def triage_failure(manifest: EnvironmentManifest, report: VerificationReport) -> RepairTriage:

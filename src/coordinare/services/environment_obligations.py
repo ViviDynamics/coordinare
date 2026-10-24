@@ -6,14 +6,18 @@ import json
 import re
 from typing import TYPE_CHECKING, Any
 
-from coordinare_service_inference.environment.models import EnvironmentManifest, VerificationReport
+from coordinare_service_inference.environment.models import (
+    EnvironmentManifest,
+    VerificationReport,
+    content_key,
+)
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_repair_triage import ACTIVATION
 from coordinare.services.environment_scope import preserve_scope, released_criteria
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from coordinare_service_inference.environment.models import Command
 
@@ -130,35 +134,65 @@ def _ids(identifiers: set[str]) -> str:
     return ', '.join(sorted(_id(identifier) for identifier in identifiers))
 
 
-def _preserve_criterion_checks(manifest: EnvironmentManifest, previous: EnvironmentManifest, released: set[str]) -> None:
+def duplicate_aliases(previous: EnvironmentManifest, candidate: EnvironmentManifest) -> dict[str, str]:
+    """Dropped command id -> the kept command that replaces it: an identical argv, cwd, env and scope under another id.
+
+    The kept copy must take over the dropped one's obligations: required if the dropped one was, every dependency it had,
+    and at least its timeout. A correction that merges duplicates this way keeps every obligation.
+    """
+    before, after = _commands(previous), _commands(candidate)
+    aliases: dict[str, str] = {}
+    for identifier, old in before.items():
+        if identifier in after:
+            continue
+        for new in after.values():
+            if (content_key(new) == content_key(old) and (new.required or not old.required)
+                    and set(old.depends_on) <= set(new.depends_on) and new.timeout_seconds >= old.timeout_seconds):
+                aliases[identifier] = new.id
+                break
+    return aliases
+
+
+def _preserve_criterion_checks(manifest: EnvironmentManifest, previous: EnvironmentManifest, released: set[str],
+                               aliases: Mapping[str, str] | None = None) -> None:
     # Every lost mapping at once: one per merge round left v24's author fixing them one criterion at a time.
+    aliases = aliases or {}
     lost = [f'{_id(identifier)} must still include {_ids(missing)}'
             for identifier, ids in sorted(previous.criterion_checks.items())
-            if identifier not in released and (missing := set(ids) - set(manifest.criterion_checks.get(identifier, [])))]
+            if identifier not in released and (missing := {item for item in ids if item not in _mapped(manifest, identifier)
+                                                         and aliases.get(item) not in _mapped(manifest, identifier)})]
     if lost:
         message = f"required source criterion coverage removed during repair: criterion_checks for {'; '.join(lost[:16])}"
         raise EnvironmentDiscoveryError(message, code='obligation_removed')
 
 
+def _mapped(manifest: EnvironmentManifest, criterion: str) -> list[str]:
+    return list(manifest.criterion_checks.get(criterion, []))
+
+
 def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentManifest) -> None:
     """A fresh judgment can add coverage, never waive a previously required obligation."""
+    aliases = duplicate_aliases(previous, manifest)
     if previous.scope_contract is not None and manifest.scope_contract is None:
         message = 'required source scope removed during repair'
         raise EnvironmentDiscoveryError(message, code='obligation_removed')
     released = released_criteria(manifest.scope_contract.finding_ledger) if manifest.scope_contract is not None else set()
     if previous.scope_contract is not None and manifest.scope_contract is not None:
         preserve_scope(previous.scope_contract.definition, manifest.scope_contract.definition, released=released)
-    _preserve_criterion_checks(manifest, previous, released)
+    _preserve_criterion_checks(manifest, previous, released, aliases)
     for group in ("requirements", "install", "checks", "services"):
         current = {item.id: item for item in getattr(manifest, group) if item.required}
         for old in getattr(previous, group):
             if not old.required:
                 continue
             new = current.get(old.id)
-            if new is None:
+            if new is None and aliases.get(old.id) not in current:
                 message = f"required obligation removed during repair: restore required {group} entry {_id(old.id)}"
                 raise EnvironmentDiscoveryError(message, code="obligation_removed", global_owned=group != "checks")
-            if group == "requirements" and (lost := set(old.checks) - set(new.checks)):
+            if new is None:
+                continue  # Merged into an identical kept command, which the alias rule already checked.
+            if group == "requirements" and (lost := {item for item in old.checks if item not in new.checks
+                                                     and aliases.get(item) not in new.checks}):
                 message = f"required obligation coverage removed: requirement {_id(old.id)} must still list checks {_ids(lost)}"
                 raise EnvironmentDiscoveryError(message, code="obligation_removed", global_owned=True)
             if group in {"checks", "install"} and old.scope != new.scope:
@@ -169,7 +203,7 @@ def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentMan
                     before, after = getattr(old, phase), getattr(new, phase)
                     if before is not None and (
                         after is None
-                        or before.id != after.id
+                        or (before.id != after.id and aliases.get(before.id) != after.id)
                         or before.scope != after.scope
                         or (before.required and not after.required)
                     ):
@@ -214,8 +248,11 @@ def guard_repair_diff(candidate: EnvironmentManifest, previous: EnvironmentManif
     closure = set(triage.closure_ids)
     before, after = _commands(previous), _commands(candidate)
     added = set(after) - set(before)
+    aliases = duplicate_aliases(previous, candidate)
+    # A dropped command that an identical kept one replaces is not a frozen record that changed or vanished.
     frozen = {identifier for identifier, command in before.items() if identifier not in closure and (
-        identifier not in after or after[identifier].model_dump(mode="json") != command.model_dump(mode="json"))}
+        (identifier not in after and aliases.get(identifier) not in after)
+        or (identifier in after and after[identifier].model_dump(mode="json") != command.model_dump(mode="json")))}
     members = {service.id: {c.id for c in (getattr(service, phase) for phase in _PHASES) if c is not None}
                for service in previous.services}
     current_services = {service.id: service for service in candidate.services}
@@ -230,12 +267,13 @@ def guard_repair_diff(candidate: EnvironmentManifest, previous: EnvironmentManif
             continue
         new = current_requirements.get(requirement.id)
         if (new is None or new.model_dump(mode="json", exclude={"checks"}) != requirement.model_dump(mode="json", exclude={"checks"})
-                or not _grown(requirement.checks, new.checks, added)):
+                or not _grown([aliases.get(item, item) for item in requirement.checks], new.checks, added)):
             frozen.add(requirement.id)
     for criterion, identifiers in previous.criterion_checks.items():
         if criterion in triage.criterion_ids:
             continue
-        if criterion not in candidate.criterion_checks or not _grown(identifiers, candidate.criterion_checks[criterion], added):
+        if criterion not in candidate.criterion_checks or not _grown([aliases.get(item, item) for item in identifiers],
+                                                                     candidate.criterion_checks[criterion], added):
             frozen.add(criterion)
     if ACTIVATION not in closure:
         old, new = previous.activation, candidate.activation

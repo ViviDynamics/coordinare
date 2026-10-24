@@ -133,6 +133,8 @@ class RepairJournal(BaseModel):
     repair_triage: dict[str, Any] | None = None
     # A delta repair fell back to the full repair; an old journal has none, so it keeps the delta default.
     delta_fallback: bool = False
+    # Triage was impossible (no failed result): the full repair runs for this generation.
+    repair_triage_unavailable: bool = False
     last_error: str | None = None
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
@@ -141,19 +143,21 @@ def _refuse(message: str, *, code: str = 'execution_repair_held') -> NoReturn:
     raise EnvironmentDiscoveryError(message, code=code)
 
 
-def _triage_of(entry: dict[str, Any]) -> RepairTriage:
-    """The daemon's triage of one rejected execution; deterministic, so a stored triage can be checked by recomputing it."""
+def _triage_or_none(entry: dict[str, Any]) -> RepairTriage | None:
+    """The daemon's triage of one rejected execution; None when it has no failed result, so the full repair runs instead."""
     manifest = EnvironmentManifest.model_validate(entry['manifest'])
     data = dict(entry['report'])
     data.pop('passed', None)
     try:
         return triage_failure(manifest, VerificationReport.model_validate(data))
     except ValueError:
-        _refuse('execution repair triage is unavailable')
+        return None
 
 
 def repair_triage_for(journal: RepairJournal) -> RepairTriage | None:
     """The pending repair's stored triage, derived from the rejected execution when the journal predates storing it."""
+    if journal.repair_triage_unavailable:
+        return None
     if journal.repair_triage is not None:
         try:
             return RepairTriage.model_validate(journal.repair_triage)
@@ -161,7 +165,7 @@ def repair_triage_for(journal: RepairJournal) -> RepairTriage | None:
             _refuse('environment repair triage is invalid')
     if not journal.generation or not journal.rejected:
         return None
-    return _triage_of(journal.rejected[-1])
+    return _triage_or_none(journal.rejected[-1])
 
 
 def journal_for(cache: EnvCacheState) -> RepairJournal:
@@ -669,8 +673,12 @@ def prepare_repair(cache: EnvCacheState) -> tuple[EnvironmentManifest, dict[str,
     previous = EnvironmentManifest.model_validate(entry['manifest'])
     journal.generation = len(journal.rejected)
     journal.generation_nonce = uuid.uuid4().hex[:12]
-    # Persisted before any author call, so a restart resumes the same closure.
-    journal.repair_triage = _triage_of(entry).model_dump(mode='json')
+    # Persisted before any author call, so a restart resumes the same closure. Without one the full repair runs.
+    triage = _triage_or_none(entry)
+    journal.repair_triage = triage.model_dump(mode='json') if triage is not None else None
+    journal.repair_triage_unavailable = triage is None
+    # Each generation starts from delta repair again; a fallback applies to the generation that needed it.
+    journal.delta_fallback = False
     journal.status = 'discovering'
     new_path = cache.cache_dir.parent / _generation(journal)
     if new_path.exists() or new_path.is_symlink():

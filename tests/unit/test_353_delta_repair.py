@@ -154,12 +154,13 @@ def test_changed_ids_names_changed_added_and_removed_records():
 
 # --- triage ---------------------------------------------------------------------------------------------------------
 
-def test_the_v40_gen0_failure_triages_to_its_install_and_prerequisite_only():
+def test_the_v40_gen0_failure_closes_over_every_install_that_depends_on_the_shared_prerequisite():
     manifest, report = load_gen0()
     triage = triage_failure(manifest, report)
 
     assert triage.roots == {"install-helm-gh": "command"}
-    assert triage.closure_ids == ("install-apt-prereqs", "install-helm-gh")
+    # install-apt-prereqs is the failed command's prerequisite; every install depends on it, so each joins the closure.
+    assert triage.closure_ids == tuple(sorted(item.id for item in load_gen0()[0].install))
     assert triage.touched_parts == ("global",)
     assert triage.manifest_digest == manifest.digest()
 
@@ -327,7 +328,7 @@ async def test_replay_v40_delta_authors_only_the_closure_and_adds_no_duplicate_c
     # Admission of the closure: the guard passes for the delta and names the frozen record for an out-of-closure edit.
     guard_repair_diff(merged, manifest, triage)
     outside = copy.deepcopy(candidate)
-    outside["install"][-1]["argv"] = ["make", "changed-outside"]
+    outside["checks"][-1]["argv"] = ["make", "changed-outside"]  # checks are outside every install closure
     with pytest.raises(EnvironmentDiscoveryError) as caught:
         guard_repair_diff(as_manifest(outside, manifest), manifest, triage)
     assert caught.value.code == "repair_outside_closure"
@@ -390,7 +391,12 @@ async def test_replay_v40_review_judges_only_the_changed_part_and_carries_the_re
         counter.calls["review"] += 1
         shared, own = (json.loads(line) for line in messages[1]["content"].split("\n"))
         seen.append({"own": own, "shared": shared})
-        return assessment("accept", sorted(inspection.inputs)), {**inspection.inputs}
+        # As the real runner does: the reply goes through the task's validation, rulings included when a scope is present.
+        rulings = [{"criterion_id": item, "verdict": "accept", "rationale": "covered"}
+                   for item in own.get("required_criterion_ids", [])]
+        reply = {"assessment": {**assessment("accept", sorted(inspection.inputs)).model_dump(mode="json"),
+                                "criterion_rulings": rulings}}
+        return task.validate(reply)
 
     monkeypatch.setattr(discovery_module, "_Inspection", FreshInspection)
     monkeypatch.setattr(discovery_module, "run_agent", agent)
