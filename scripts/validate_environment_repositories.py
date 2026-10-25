@@ -702,11 +702,9 @@ async def validate_repository(
                        max_context_bytes: int | None = None, context_phase: str = "discovery") -> str | DiscoveryChatReply:
         nonlocal calls, review_starts, source_review_starts
         calls += 1
-        context = json.loads(messages[1]["content"])
-        context = {**context.pop("_shared_context", {}), **context}  # sharded prompts nest what all agents share
-        reviewing = "manifest" in context
-        source_reviewing = (context.get("phase_contract", {}).get("subject") == "source_obligations"
-                            and "required_decision_ids" in context)
+        call_number = calls
+        reviewing = context_phase == 'review'
+        source_reviewing = context_phase in {'scope_review', 'scope_shard_review', 'scope_merge_review'}
         source_review_starts += int(source_reviewing and len(messages) == 2)
         review_starts += int(reviewing and len(messages) == 2)
         if selected_chat is None:
@@ -720,8 +718,10 @@ async def validate_repository(
         text = response.text if isinstance(response, DiscoveryChatReply) else response
         if profile.save_transcripts:
             _write(
-                output / f"chat-{calls:03}.json",
+                output / f"chat-{call_number:03}.json",
                 {
+                    "call": call_number,
+                    "phase": context_phase,
                     "messages": messages,
                     "response_schema": response_schema,
                     "wire_response": response.wire_text if isinstance(response, DiscoveryChatReply) else None,
@@ -737,7 +737,7 @@ async def validate_repository(
         _event(
             repository=snapshot.name,
             stage="review" if reviewing else "discovery",
-            call=calls,
+            call=call_number,
             phase=context_phase,
             seconds=seconds,
             response_bytes=len(text.encode()),

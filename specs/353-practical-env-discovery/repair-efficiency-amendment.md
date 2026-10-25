@@ -141,3 +141,7 @@ Dettmore v45 exhausted schema corrections when its final `value` was a JSON-enco
 ## Conversation correction context
 
 Dettmore v45 also exposed shared reply metadata leaking between concurrent authors: a global manifest correction was labelled `shard_checks`, and its field correction path was omitted. Corrections now receive immutable conversation context containing the requested envelope, patch permission and that reply's finish reason. Envelope and finish metadata are captured before awaited operations; parallel authors continue to share the same resource counters and limits. Deterministic overlap tests and saved-feedback replay must pass locally before another live validation run.
+
+## Validation recorder concurrency
+
+Each validation call reserves its transcript and event ID before awaiting a reply. Concurrent completions cannot overwrite each other's transcript; saved records include the call ID and trusted phase. Independent review invocation counters use the orchestration phase rather than inspecting prompt JSON, including divided source and executable reviews. Continuations do not start another invocation. These counters report that review was attempted; they never establish acceptance or readiness.
