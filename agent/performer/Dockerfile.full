@@ -1,6 +1,9 @@
 ARG BASE_IMAGE=coordinare-performer:base
 FROM $BASE_IMAGE
 
+# Build-only: extra tools must preserve the base image's locked runtime.
+ARG PIP_CONSTRAINT=/opt/performer-constraints.txt
+
 # Install Playwright + Chromium for browser automation.
 # Retry the browser download: cdn.playwright.dev intermittently times out
 # ("Download failure, code=1") and would otherwise fail the whole image build —
@@ -25,7 +28,7 @@ RUN pip install --no-cache-dir \
     pylint \
     pytest \
     ruff \
-    semgrep
+    "semgrep>=1.182.1"
 
 # Node.js tools (installed globally via npm)
 RUN npm install -g \
