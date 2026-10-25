@@ -376,6 +376,11 @@ class OidcFlow:
             claims = jwt.decode(
                 token, key, algorithms=["RS256"],
                 audience=self.config.client_id, issuer=discovery["issuer"],
+                options={
+                    "verify_signature": True, "verify_aud": True,
+                    "verify_iss": True, "verify_exp": True,
+                    "require": ["exp", "iss", "aud", "sub", "iat"],
+                },
             )
         except jwt.PyJWTError as exc:
             _log.info("dashboard_oidc.id_token_refused", error=type(exc).__name__)

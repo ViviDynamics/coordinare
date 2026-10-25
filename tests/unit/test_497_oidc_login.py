@@ -6,6 +6,8 @@ from unittest.mock import MagicMock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+import jwt
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -17,6 +19,7 @@ from tests.unit.dashboard.oidc_double import (
     CLIENT_ID,
     CLIENT_SECRET,
     ISSUER,
+    KID,
     ProviderDouble,
 )
 
@@ -127,6 +130,44 @@ def test_nonce_mismatch_is_refused():
         )
         assert response.status_code == 403
         assert response.cookies.get("coordinare_session") is None
+
+
+@pytest.mark.parametrize("invalid", [
+    "unsigned", "forged_signature", "wrong_audience", "wrong_issuer",
+    "expired", "missing_expiry",
+])
+def test_invalid_id_token_is_refused_without_session(invalid: str):
+    class InvalidTokenProvider(ProviderDouble):
+        def id_token(self, **overrides: Any) -> str:
+            overrides.update({
+                "wrong_audience": {"aud": "another-client"},
+                "wrong_issuer": {"iss": "https://untrusted.example"},
+                "expired": {"exp": 1},
+            }.get(invalid, {}))
+            token = super().id_token(**overrides)
+            if invalid == "forged_signature":
+                # A different RSA key, but the trusted provider's key id.
+                attacker = ProviderDouble(id_nonce=self.id_nonce)
+                return attacker.id_token()
+            if invalid in {"unsigned", "missing_expiry"}:
+                claims = jwt.decode(token, options={"verify_signature": False})
+                if invalid == "unsigned":
+                    return jwt.encode(claims, None, algorithm="none", headers={"kid": KID})
+                del claims["exp"]
+                return jwt.encode(claims, self._key, algorithm="RS256", headers={"kid": KID})
+            return token
+
+    double = InvalidTokenProvider()
+    with TestClient(_app(_flow(double)), base_url=BASE) as client:
+        double.id_nonce = parse_qs(urlparse(_login_redirect(client)).query)["nonce"][0]
+        code = double.issue_code()
+        response = client.get(
+            f"/oidc/callback?code={code}&state={_state_cookie(client)}",
+            follow_redirects=False,
+        )
+        assert response.status_code == 403, response.text
+        assert response.cookies.get("coordinare_session") is None
+        assert client.get("/api/personas", follow_redirects=False).status_code == 401
 
 
 def test_expired_state_cookie_is_refused():

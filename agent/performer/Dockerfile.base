@@ -50,6 +50,18 @@ RUN python -m pip install --no-cache-dir --no-deps \
 
 # Install shared service_inference package first (performer depends on it).
 # Build context must be repo root so we can reach ../../packages/.
+# Export the reviewed runtime lock before pip installs any project packages.
+# Keep the constraints file for later installs in the full image as well.
+RUN pip install --no-cache-dir uv==0.13.5
+COPY agent/performer/pyproject.toml agent/performer/uv.lock /tmp/performer-lock/
+RUN uv export --project /tmp/performer-lock --frozen --no-dev --no-emit-local \
+        --no-hashes --output-file /opt/performer-constraints.txt \
+    && pip install --no-cache-dir -r /opt/performer-constraints.txt \
+    && rm -rf /tmp/performer-lock
+# Build-only: project commands inside a running performer must resolve their
+# own dependencies without inheriting the performer's package constraints.
+ARG PIP_CONSTRAINT=/opt/performer-constraints.txt
+
 WORKDIR /pkgs/service_inference
 COPY packages/service_inference/pyproject.toml ./
 COPY packages/service_inference/src/ ./src/
