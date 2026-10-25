@@ -462,8 +462,10 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     for kind, name in REPAIR_COUNTERS.items():
         if getattr(journal, name) > getattr(journal, "max_" + name):
             _refuse(f"environment {name} limit exceeded after configuration change", code=HOLD_CODES[kind])
-    for name in REPAIR_COUNTERS.values():
-        setattr(budget, name, getattr(journal, name))
+    budget.schema_repairs = journal.schema_repairs
+    budget.coverage_revisions = journal.coverage_revisions
+    budget.scope_revisions = journal.scope_revisions
+    budget.execution_repairs = journal.execution_repairs
     return budget
 
 

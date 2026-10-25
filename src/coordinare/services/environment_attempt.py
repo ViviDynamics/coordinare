@@ -201,7 +201,14 @@ class AttemptBudget:
         if getattr(self, counter) >= getattr(self, "max_" + counter):
             message = f"environment discovery {kind} repair limit exceeded"
             raise EnvironmentDiscoveryError(message, code=HOLD_CODES[kind])
-        setattr(self, counter, getattr(self, counter) + 1)
+        if kind == "schema":
+            self.schema_repairs += 1
+        elif kind == "coverage":
+            self.coverage_revisions += 1
+        elif kind == "scope":
+            self.scope_revisions += 1
+        else:
+            self.execution_repairs += 1
 
     async def flush(self) -> None:
         """Persist reservations before calling a model, source reader or executor."""
