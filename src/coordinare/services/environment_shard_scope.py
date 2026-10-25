@@ -793,7 +793,7 @@ class ShardedScope:
         wanted.update(binding.request.path for binding in _current_investigations(self.budget)
                       if binding.finding_id in owned and binding.request.operation == 'read_file')
         expected = {path: digest for path, digest in self.budget.scope_inputs.items()
-                    if path in wanted and (path in definition.inputs or path in self.plan.spine or path not in self.plan.owners)}
+                    if path in wanted}
         expected.update({path: digest for path, digest in definition.inputs.items() if path in paths})
         return await prepare_mandatory_evidence(inspection, dict(sorted(expected.items())), phase='scope_review')
 
@@ -829,7 +829,9 @@ class ShardedScope:
         """Shards owning a retained finding, changed criteria or an input no reviewer has read; others carry forward."""
         reviewed = (self.budget.scope_shards or {}).get('reviewed_criteria', {})
         authored = set((self.budget.scope_shards or {}).get('authored', []))
-        unread = {self.work.owners.get(path) for path, digest in definition.inputs.items() if carried.get(path) != digest}
+        # Construction and repair can retain evidence after the definition was authored.
+        inputs = {**definition.inputs, **self.budget.scope_inputs}
+        unread = {self.work.owners.get(path) for path, digest in inputs.items() if carried.get(path) != digest}
         # A release request is judged by the reviewer of the shard that owns the criterion.
         requested = {criterion_owner(c, self.work) for c in definition.criteria if c.id in self.budget.release_requests}
         targets = []
@@ -851,12 +853,13 @@ class ShardedScope:
         previous = budget.scope_assessment.reviewer_inputs if budget.scope_assessment is not None else {}
         targets = self._review_targets(definition, owned, previous)
         # Inputs no authored shard owns (files read through references) get their own reviewers, never one merge reviewer.
-        unowned = {path: self.entries[path] for path in definition.inputs
+        inputs = {**definition.inputs, **budget.scope_inputs}
+        unowned = {path: self.entries[path] for path in inputs
                    if path not in self.work.owners and path not in self.plan.spine and path in self.entries}
         referenced = [Shard(id=f'{shard.id}.x', paths=shard.paths, readable_bytes=shard.readable_bytes, depth=shard.depth)
                       for shard in plan_shards(unowned, share=self.plan.share, spine=(), max_file_bytes=self.request.limits.max_file_bytes,
                                                max_files=max(1, self.request.limits.max_reads // 2 - len(self.plan.spine)))
-                      if any(previous.get(path) != definition.inputs[path] for path in shard.paths)]
+                      if any(previous.get(path) != inputs[path] for path in shard.paths)]
         targets = [*targets, *referenced]
         target_paths = {path for shard in targets for path in shard.paths}
         carried = {path: digest for path, digest in previous.items() if path not in target_paths}

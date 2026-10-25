@@ -145,3 +145,8 @@ Dettmore v45 also exposed shared reply metadata leaking between concurrent autho
 ## Validation recorder concurrency
 
 Each validation call reserves its transcript and event ID before awaiting a reply. Concurrent completions cannot overwrite each other's transcript; saved records include the call ID and trusted phase. Independent review invocation counters use the orchestration phase rather than inspecting prompt JSON, including divided source and executable reviews. Continuations do not start another invocation. These counters report that review was attempted; they never establish acceptance or readiness.
+
+
+### Retained source evidence reaches review
+
+Source review plans include every retained input, including evidence discovered during construction or repair after the scope definition was authored. Unread inputs schedule their owning reviewers or bounded reference reviewers, and those reviewers receive the verified contents as mandatory evidence. A completed review therefore covers the newly retained files and does not reopen for the same unreviewed input. Required criteria, finding decisions, source identities and revision budgets remain unchanged.
