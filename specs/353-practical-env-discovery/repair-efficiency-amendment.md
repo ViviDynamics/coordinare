@@ -133,3 +133,7 @@ content. Merge-time checks are unchanged. The concurrency cap stays as configure
 ## Independent revision budgets
 
 Maintainer decision, 2026-10-25: allow eight scope revisions and eight executable revisions independently in sharded discovery. Scope reviews that request revision, including sharded reviews, and runtime release reopenings consume `max_scope_revisions` (default eight); executable review revisions and `observe_sources` reopenings consume the existing `max_coverage_revisions` budget. Exhaustion holds with `attempt_scope_revision_limit` or `attempt_coverage_limit` respectively. Diagnostics persist both counters and maxima. Older journals charge their shared count to both budgets and preserve their maximum. Deadlines, calls, reads, execution repair limits and cleanup requirements remain unchanged.
+
+## Activation environment correction encoding
+
+Dettmore v45 exhausted schema corrections when its final `value` was a JSON-encoded activation environment object instead of a plain object. The patch reader accepts one extra JSON layer only at `manifest.activation.env`, when replacing an existing object with an object, as required by that field's schema. Every other path retains literal `value` semantics, including individual environment entries. Malformed JSON, duplicate keys, nonfinite values and other JSON types receive no conversion. The corrected declaration still passes all existing admission rules, and budgets remain unchanged.

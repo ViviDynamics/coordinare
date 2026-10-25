@@ -70,6 +70,23 @@ def _index(node: Any, part: Any) -> Any:
     return part
 
 
+def _plain_value(value: Any, previous: Any, path: list[Any]) -> Any:
+    """Decode one extra JSON layer only for the activation environment container.
+
+    Its schema requires an object. A prior invalid value elsewhere establishes no type: an environment
+    entry may legitimately be corrected from an object to a JSON-looking literal string.
+    """
+    if path == ['manifest', 'activation', 'env'] and isinstance(value, str) and type(previous) is dict:
+        try:
+            decoded = json.loads(value, object_pairs_hook=_unique, parse_constant=_constant)
+        except (ValueError, RecursionError):
+            pass
+        else:
+            if type(decoded) is dict:
+                return decoded
+    return copy.deepcopy(value)
+
+
 def _replace(target: dict[str, Any], change: Any, roots: set[str]) -> None:
     if not isinstance(change, dict) or set(change) not in ({'path', 'value_json'}, {'path', 'value'}):
         message = 'invalid correction record'
@@ -100,7 +117,7 @@ def _replace(target: dict[str, Any], change: Any, roots: set[str]) -> None:
         raise TypeError(message)
     # A plain value was parsed with the reply itself, which already rejects duplicate keys; the corrected
     # declaration's size check rejects non-finite numbers.
-    node[key] = (copy.deepcopy(change['value']) if 'value' in change
+    node[key] = (_plain_value(change['value'], node.get(key) if isinstance(node, dict) else node[key], path) if 'value' in change
                  else json.loads(change['value_json'], object_pairs_hook=_unique, parse_constant=_constant))
 
 
