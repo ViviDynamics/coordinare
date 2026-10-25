@@ -1,6 +1,6 @@
 # Dependency Licence Audit
 
-**Feature**: 142-license-and-legal-posture | **Audit date**: 2026-10-11
+**Feature**: 142-license-and-legal-posture | **Audit date**: 2026-10-24
 **Enforces**: FR-018, FR-019, FR-019a, FR-020 | **Contract**: [accepted-licenses.md](./contracts/accepted-licenses.md)
 
 ## How this was produced
@@ -17,19 +17,23 @@ Licence field precedence: `License-Expression` (PEP 639 SPDX), then a short free
 
 | Verdict | Count |
 |---|---|
-| Tier 1, permitted | 80 |
+| Tier 1, permitted | 81 |
 | Tier 2, permitted with rationale | 4 |
 | Tier 3, rejected | 0 |
-| Platform-conditional, not verifiable here | 6 |
+| Platform-conditional, not verifiable here | 9 |
 | Redistributed in the performer image | 1 |
 
 **No distributed dependency carries a licence incompatible with ELv2 distribution.**
+
+The conditional count includes the three optional OTLP packages recorded below.
+Versions separated by `/` are distinct versions in the two lockfiles; licence
+fields reflect installed metadata in this audit environment.
 
 ## Tier 2: permitted, each with a written rationale
 
 Weak-copyleft packages. Per the contract, each needs its own rationale recording that it is redistributed unmodified and how it is consumed. An exception without a rationale fails the check, which is what stops this list decaying into a second allowlist nobody has thought about.
 
-### `certifi` 2026.1.4
+### `certifi` 2026.10.23
 
 - **Licence**: `MPL-2.0` (via `License`)
 - **Consumed as**: import
@@ -84,48 +88,49 @@ Reachable only through marker-gated edges, so absent from this environment and *
 | Package | Version | Licence | Metadata field |
 |---|---|---|---|
 | `aiohappyeyeballs` | 2.6.1 | `PSF-2.0` | `License` |
-| `aiohttp` | 3.14.3 | `Apache-2.0 AND MIT` | `License` |
+| `aiohttp` | 3.14.5 | `Apache-2.0 AND MIT` | `License-Expression` |
 | `aiosignal` | 1.4.0 | `Apache 2.0` | `License` |
-| `aiosmtplib` | 5.1.0 | `MIT` | `License` |
+| `aiosmtplib` | 5.1.3 | `MIT` | `License` |
 | `annotated-doc` | 0.0.4 | `MIT` | `License-Expression` |
 | `annotated-types` | 0.7.0 | `MIT License` | `Classifier` |
-| `anthropic` | 0.79.0 | `MIT` | `License` |
-| `anyio` | 4.12.1 | `MIT` | `License-Expression` |
-| `attrs` | 25.4.0 | `MIT` | `License-Expression` |
+| `anthropic` | 0.104.0 / 0.79.0 | `MIT` | `License` |
+| `anyio` | 4.14.2 / 4.15.1 | `MIT` | `License-Expression` |
+| `attrs` | 25.4.0 / 26.1.0 | `MIT` | `License-Expression` |
 | `backoff` | 2.2.1 | `MIT` | `License` |
 | `charset-normalizer` | 3.4.4 | `MIT` | `License` |
-| `click` | 8.3.1 | `BSD-3-Clause` | `License-Expression` |
+| `click` | 8.4.2 / 8.5.0 | `BSD-3-Clause` | `License-Expression` |
 | `distro` | 1.9.0 | `Apache License, Version 2.0` | `License` |
-| `docstring-parser` | 0.17.0 | `MIT` | `License` |
+| `docstring-parser` | 0.17.0 / 0.18.0 | `MIT` | `License` |
 | `durationpy` | 0.11 | `MIT` | `License` |
-| `fastapi` | 0.129.0 | `MIT` | `License-Expression` |
+| `fastapi` | 0.136.1 | `MIT` | `License-Expression` |
 | `frozenlist` | 1.8.0 | `Apache-2.0` | `License` |
 | `gql` | 4.0.0 | `MIT` | `License` |
-| `graphql-core` | 3.2.7 | `MIT license` | `License` |
+| `graphql-core` | 3.2.13 | `MIT license` | `License` |
 | `h11` | 0.16.0 | `MIT` | `License` |
 | `httpcore` | 1.0.9 | `BSD-3-Clause` | `License-Expression` |
 | `httpx` | 0.28.1 | `BSD-3-Clause` | `License` |
 | `httpx2` | 2.13.1 | `BSD-3-Clause` | `License-Expression` |
-| `idna` | 3.11 | `BSD-3-Clause` | `License-Expression` |
+| `idna` | 3.20 | `BSD-3-Clause` | `License-Expression` |
 | `jinja2` | 3.1.6 | `BSD License` | `Classifier` |
-| `jiter` | 0.13.0 | `MIT License` | `Classifier` |
+| `jiter` | 0.13.0 / 0.15.0 | `MIT License` | `Classifier` |
 | `jsonpatch` | 1.33 | `Modified BSD License` | `License` |
 | `jsonpointer` | 3.0.0 | `Modified BSD License` | `License` |
 | `jsonschema` | 4.26.0 | `MIT` | `License-Expression` |
 | `jsonschema-specifications` | 2025.9.1 | `MIT` | `License-Expression` |
 | `kubernetes` | 36.0.3 | `Apache License Version 2.0` | `License` |
-| `langchain-core` | 1.2.13 | `MIT` | `License` |
-| `langgraph` | 1.0.8 | `MIT` | `License-Expression` |
-| `langgraph-checkpoint` | 4.0.0 | `MIT` | `License-Expression` |
-| `langgraph-checkpoint-postgres` | 3.0.4 | `MIT` | `License-Expression` |
-| `langgraph-prebuilt` | 1.0.7 | `MIT` | `License-Expression` |
-| `langgraph-sdk` | 0.3.6 | `MIT` | `License-Expression` |
-| `langsmith` | 0.7.3 | `MIT` | `License` |
+| `langchain-core` | 1.7.0 | `MIT` | `License` |
+| `langchain-protocol` | 0.0.20 | `MIT` | `License` |
+| `langgraph` | 1.2.17 | `MIT` | `License-Expression` |
+| `langgraph-checkpoint` | 4.3.0 | `MIT` | `License-Expression` |
+| `langgraph-checkpoint-postgres` | 3.2.0 | `MIT` | `License-Expression` |
+| `langgraph-prebuilt` | 1.1.1 | `MIT` | `License-Expression` |
+| `langgraph-sdk` | 0.4.9 | `MIT` | `License-Expression` |
+| `langsmith` | 0.14.12 | `MIT` | `License` |
 | `markupsafe` | 3.0.3 | `BSD-3-Clause` | `License-Expression` |
 | `mcp` | 2.3.0 | `MIT` | `License` |
 | `mcp-types` | 2.3.0 | `MIT` | `License` |
-| `multidict` | 6.7.1 | `Apache License 2.0` | `License` |
-| `oauthlib` | 3.3.1 | `BSD-3-Clause` | `License` |
+| `multidict` | 6.9.1 | `Apache License 2.0` | `License` |
+| `oauthlib` | 4.0.0 | `BSD-3-Clause` | `License` |
 | `opentelemetry-api` | 1.45.1 | `Apache-2.0` | `License-Expression` |
 | `ormsgpack` | 1.12.2 | `Apache-2.0 OR MIT` | `License-Expression` |
 | `packaging` | 26.0 | `Apache-2.0 OR BSD-2-Clause` | `License-Expression` |
@@ -134,34 +139,34 @@ Reachable only through marker-gated edges, so absent from this environment and *
 | `psutil` | 7.2.2 | `BSD-3-Clause` | `License` |
 | `pydantic` | 2.12.5 | `MIT` | `License-Expression` |
 | `pydantic-core` | 2.41.5 | `MIT` | `License-Expression` |
-| `pydantic-settings` | 2.13.0 | `MIT` | `License-Expression` |
-| `pyjwt` | 2.12.1 | `MIT` | `License-Expression` |
+| `pydantic-settings` | 2.16.1 | `MIT` | `License-Expression` |
+| `pyjwt` | 2.15.1 | `MIT` | `License-Expression` |
 | `python-dateutil` | 2.9.0.post0 | `Apache-2.0 OR BSD-3-Clause` | `verified` |
-| `python-dotenv` | 1.2.1 | `BSD-3-Clause` | `License-Expression` |
+| `python-dotenv` | 1.2.4 | `BSD-3-Clause` | `License` |
 | `python-multipart` | 0.0.32 | `Apache-2.0` | `License-Expression` |
 | `pyyaml` | 6.0.3 | `MIT` | `License` |
 | `referencing` | 0.37.0 | `MIT` | `License-Expression` |
-| `rpds-py` | 0.30.0 | `MIT` | `License-Expression` |
-| `requests` | 2.32.5 | `Apache-2.0` | `License` |
+| `requests` | 2.34.2 | `Apache-2.0` | `License` |
 | `requests-oauthlib` | 2.0.0 | `ISC` | `License` |
 | `requests-toolbelt` | 1.0.0 | `Apache 2.0` | `License` |
+| `rpds-py` | 0.30.0 | `MIT` | `License-Expression` |
 | `six` | 1.17.0 | `MIT` | `License` |
 | `slack-sdk` | 3.40.0 | `MIT` | `License` |
 | `sniffio` | 1.3.1 | `MIT OR Apache-2.0` | `License` |
 | `sse-starlette` | 3.5.0 | `BSD-3-Clause` | `License-Expression` |
 | `stamina` | 24.3.0 | `MIT` | `License-Expression` |
-| `starlette` | 0.52.1 | `BSD-3-Clause` | `License-Expression` |
+| `starlette` | 1.3.1 | `BSD-3-Clause` | `License-Expression` |
 | `structlog` | 25.5.0 | `MIT OR Apache-2.0` | `License-Expression` |
 | `tenacity` | 9.1.4 | `Apache 2.0` | `License` |
-| `typing-extensions` | 4.15.0 | `PSF-2.0` | `License-Expression` |
+| `typing-extensions` | 4.15.0 / 4.16.0 | `PSF-2.0` | `License-Expression` |
 | `typing-inspection` | 0.4.2 | `MIT` | `License-Expression` |
-| `urllib3` | 2.6.3 | `MIT` | `License-Expression` |
+| `urllib3` | 2.8.0 | `MIT` | `License-Expression` |
 | `uuid-utils` | 0.14.0 | `BSD License` | `Classifier` |
-| `uvicorn` | 0.40.0 | `BSD-3-Clause` | `License-Expression` |
+| `uvicorn` | 0.40.0 / 0.46.0 | `BSD-3-Clause` | `License-Expression` |
 | `websocket-client` | 1.9.0 | `Apache-2.0` | `License` |
 | `websockets` | 16.0 | `BSD-3-Clause` | `License-Expression` |
 | `xxhash` | 3.6.0 | `BSD` | `License` |
-| `yarl` | 1.22.0 | `Apache-2.0` | `License` |
+| `yarl` | 1.25.1 | `Apache-2.0` | `License` |
 | `zstandard` | 0.25.0 | `BSD-3-Clause` | `License-Expression` |
 
 ## Standing limitations
