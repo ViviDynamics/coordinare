@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from coordinare_service_inference.environment.models import MAX_DUPLICATE_PAIRS
@@ -309,50 +310,63 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
     return result
 
 
-def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *, can_patch: bool = False) -> None:
-    explain_rejection(messages, raw, errors, budget, can_patch=can_patch)
+@dataclass(frozen=True)
+class CorrectionContext:
+    """The requesting conversation owns its reply format and patch permission."""
+
+    envelope: str
+    can_patch: bool = False
+    finish_reason: str | None = None
+
+
+def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *,
+            context: CorrectionContext | None = None) -> None:
+    explain_rejection(messages, raw, errors, budget, context=context)
     budget.reserve_repair("schema")
 
 
 def explain_rejection(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *,
-                      can_patch: bool = False) -> None:
+                      context: CorrectionContext | None = None) -> None:
     """Return a rejected reply with its errors; callers own how the correction is counted."""
-    if budget.last_finish_reason == 'length':
+    # Parallel conversations share counters, but each owns the format requested for its reply.
+    context = context or CorrectionContext(budget.expected_envelope, finish_reason=budget.last_finish_reason)
+    envelope, can_patch = context.envelope, context.can_patch
+    if context.finish_reason == 'length':
         # The reply was cut off at the output limit, usually by long hidden reasoning, not by the envelope itself.
         errors = [*errors, {'code': 'reply_length_limit', 'location': [],
                             'guidance': REPLY_LENGTH_GUIDANCE}]
-    if budget.last_finish_reason == REPETITION_FINISH:
+    if context.finish_reason == REPETITION_FINISH:
         errors = [*errors, {'code': 'reply_repetition', 'location': [], 'guidance': REPETITION_GUIDANCE}]
     if budget.scope_contract is not None:
         required_ids = [c.id for c in budget.scope_contract.definition.criteria if c.applicability == 'required']
         for error in errors:
             if error['code'] == 'scope_required_check_mapping':
                 error['required_criterion_ids'] = required_ids
-    if budget.expected_envelope == 'scope_assessment' and budget.scope_findings is not None:
+    if envelope == 'scope_assessment' and budget.scope_findings is not None:
         for error in errors:
             if error['code'] == 'review_findings_invalid' and error['location'] == ['scope_assessment', 'decisions']:
                 error.setdefault('required_decision_ids', [record.id for record in budget.scope_findings.records])
-    if can_patch and budget.expected_envelope in {'manifest', 'assessment'}:
+    if can_patch and envelope in {'manifest', 'assessment'}:
         for error in errors:
             location = error['location']
             if location and '*' not in location:
-                root = budget.expected_envelope
+                root = envelope
                 path = location if location[0] in {'manifest', 'finding_responses', 'assessment'} else [root, *location]
                 if len(path) <= MAX_PATH_DEPTH:
                     error['correction_path'] = path
     budget.validation_codes.extend(error["code"] for error in errors)
     messages.extend([{"role": "assistant", "content": raw},
                      {"role": "user", "content": _json({"validation_errors": errors,
-                        "expected_envelope": budget.expected_envelope,
-                        "instruction": (PATCH_INSTRUCTION if can_patch else correction_instruction(budget.expected_envelope)) +
+                        "expected_envelope": envelope,
+                        "instruction": (PATCH_INSTRUCTION if can_patch else correction_instruction(envelope)) +
                         "When supplied, copy correction_path exactly into the patch path; location is a diagnostic field path. "
                         "Preserve every required obligation and inspected input. "
                         "Never rename or remove existing required requirement/check/service IDs; revise their definitions in place. "
                         "Use list_files for directories and read_files only for exact file paths from listings. " +
                         ("Use required executable check IDs, not commands or install-only prerequisites. "
-                         if budget.expected_envelope in {"manifest", "manifest_delta", "assessment", "shard_checks"} else
+                         if envelope in {"manifest", "manifest_delta", "assessment", "shard_checks"} else
                          "Preserve source-defined scope; do not generate commands during source review. "
-                         if budget.expected_envelope in {"scope", "scope_revision", "scope_assessment", "shard_summary",
+                         if envelope in {"scope", "scope_revision", "scope_assessment", "shard_summary",
                                                          "listing_triage", "scope_consolidation"} else "") +
                         "Independent review and successful clean execution remain mandatory."})}])
 

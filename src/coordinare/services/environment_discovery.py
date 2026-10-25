@@ -38,6 +38,7 @@ from pydantic import TypeAdapter, ValidationError
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from coordinare.services.environment_admission import (
+    CorrectionContext,
     _checked_inventory,
     _decode_reply,
     _repair,
@@ -278,6 +279,7 @@ class _Inspection(SourceInspection):
 
 async def _probe_reply(data: dict[str, Any], raw: str, messages: list[dict[str, str]], inspection: _Inspection,
                        budget: AttemptBudget) -> bool:
+    finish_reason = budget.last_finish_reason
     if inspection.probe is None:
         message = "probe executor is unavailable"
         raise EnvironmentDiscoveryError(message, code="probe_executor_unavailable")
@@ -302,8 +304,7 @@ async def _probe_reply(data: dict[str, Any], raw: str, messages: list[dict[str, 
             can_patch = getattr(inspection, 'probe_repair', None) is not None
         else:
             can_patch = True
-        budget.expected_envelope = 'probe'
-        _repair(messages, raw, errors, budget, can_patch=can_patch)
+        _repair(messages, raw, errors, budget, context=CorrectionContext('probe', can_patch, finish_reason))
         return False
     messages.extend([{"role":"assistant", "content":raw},
         {"role":"user", "content":_json({"probe_result":report.model_dump(mode="json"),
@@ -369,7 +370,10 @@ def _validate_phase_declaration(inspection: _Inspection, reply: dict[str, Any],
 
 
 def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
-                 messages: list[dict[str, str]], budget: AttemptBudget) -> dict[str, Any] | None:
+                 messages: list[dict[str, str]], *,
+                 expected_envelope: str | None = None) -> dict[str, Any] | None:
+    budget = cast('AttemptBudget', inspection.budget)
+    envelope = expected_envelope or ('probe' if base is not None and 'probe' in base else _declared_key(inspection))
     reply = None
     try:
         reply = _normalize_review(_decode_reply(raw, inspection.name, inspection.limits), inspection.name)
@@ -389,7 +393,7 @@ def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
             raise
         error: dict[str, Any] = {"location": [], "code": exc.code,
             "guidance": (f"Return one JSON object with unique keys at every level and nothing after it; "
-                         f"{budget.expected_envelope or 'its main key'} must occur exactly once and contain an object, "
+                         f"{envelope} must occur exactly once and contain an object, "
                          "never a boolean.")}
         can_patch = base is not None
         if can_patch and exc.code == 'invalid_json_envelope' and '"repair_proposal"' in raw[:256]:
@@ -414,7 +418,7 @@ def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
                 error['guidance'] = ('Too many correction records. Return the complete corrected declaration in the expected envelope, '
                     'not another patch or a partial batch. Preserve every unrelated record and required obligation.')
                 can_patch = False
-        _repair(messages, raw, [error], budget, can_patch=can_patch)
+        _repair(messages, raw, [error], budget, context=CorrectionContext(envelope, can_patch, budget.last_finish_reason))
         return None
     else:
         return reply
@@ -449,7 +453,8 @@ def _admit_declaration(inspection: _Inspection, reply: dict[str, Any], validate:
         errors = _declaration_feedback(exc, inspection, budget)
     else:
         return True
-    _repair(messages, raw, errors, budget, can_patch=True)
+    _repair(messages, raw, errors, budget,
+            context=CorrectionContext(_declared_key(inspection), True, budget.last_finish_reason))
     return False
 
 
@@ -494,9 +499,12 @@ async def _phase(
                 await budget.flush()
                 budget.context_bytes += sum(len(message["content"].encode()) for message in messages)
                 _admit_phase_context(inspection, budget, messages, can_patch=repair_base is not None)
-                raw = await invoke_recorded(budget, chat, messages, schema=_phase_schema(inspection, repair_base),
+                schema = _phase_schema(inspection, repair_base)
+                expected_envelope = budget.expected_envelope
+                raw = await invoke_recorded(budget, chat, messages, schema=schema,
                     max_context_bytes=inspection.limits.max_review_context_bytes, context_phase=inspection.name)
-                reply = _phase_reply(raw, inspection, repair_base, messages, budget)
+                finish_reason = budget.last_finish_reason
+                reply = _phase_reply(raw, inspection, repair_base, messages, expected_envelope=expected_envelope)
                 if reply is None:
                     continue
                 if set(reply) == {"probe"} and inspection.name == "discovery":
@@ -518,7 +526,8 @@ async def _phase(
                 except EnvironmentDiscoveryError as exc:
                     if exc.code not in {"unsupported_envelope", "invalid_tool_arguments"}:
                         raise
-                    _repair(messages, raw, [{"location": [], "code": exc.code}], budget)
+                    _repair(messages, raw, [{"location": [], "code": exc.code}], budget,
+                            context=CorrectionContext(expected_envelope, finish_reason=finish_reason))
                     continue
                 messages.append({"role": "assistant", "content": raw})
                 messages.append({"role": "user", "content": _json({"tool_result": result})})
@@ -1280,8 +1289,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
                 for prefix, (_group, part) in parts.items():
                     build.previous[prefix] = part.model_dump(mode='json')
                 # The correction is for the global author's manifest envelope, whatever the check authors last set.
-                budget.expected_envelope = 'manifest'
-                _repair(messages, _json({'manifest': global_data}), errors, budget)
+                _repair(messages, _json({'manifest': global_data}), errors, budget, context=CorrectionContext('manifest'))
                 global_data = None
             continue
         for entry in build.feedback.values():

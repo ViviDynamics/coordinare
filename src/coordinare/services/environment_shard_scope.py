@@ -42,6 +42,7 @@ from pydantic import ValidationError
 from pydantic_core import PydanticCustomError
 
 from coordinare.services.environment_admission import (
+    CorrectionContext,
     _checked_inventory,
     _decode_reply,
     _validation_feedback,
@@ -393,7 +394,8 @@ async def _converse(context: AgentContext, inspection: SourceInspection, message
     for _ in range(limits.max_model_calls):
         raw = await _ask(context, inspection, messages, schema)
         # Read before any other await: the shared budget's last finish reason is still this call's.
-        stopped = budget.last_finish_reason == REPETITION_FINISH
+        finish_reason = budget.last_finish_reason
+        stopped = finish_reason == REPETITION_FINISH
         try:
             reply = _decode_reply(raw, inspection.name, limits)
             if 'tool' in reply and not task.listing_only:
@@ -417,8 +419,8 @@ async def _converse(context: AgentContext, inspection: SourceInspection, message
         else:
             corrections += 1
             budget.shard_schema_repairs += 1
-        budget.expected_envelope = task.envelope
-        explain_rejection(messages, raw, errors, budget)
+        explain_rejection(messages, raw, errors, budget,
+                          context=CorrectionContext(task.envelope, finish_reason=finish_reason))
     return _fail('scope_phase_call_limit')
 
 async def _ask(context: AgentContext, inspection: SourceInspection, messages: list[dict[str, str]],

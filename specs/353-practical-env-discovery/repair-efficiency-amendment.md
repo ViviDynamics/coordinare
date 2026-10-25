@@ -137,3 +137,7 @@ Maintainer decision, 2026-10-25: allow eight scope revisions and eight executabl
 ## Activation environment correction encoding
 
 Dettmore v45 exhausted schema corrections when its final `value` was a JSON-encoded activation environment object instead of a plain object. The patch reader accepts one extra JSON layer only at `manifest.activation.env`, when replacing an existing object with an object, as required by that field's schema. Every other path retains literal `value` semantics, including individual environment entries. Malformed JSON, duplicate keys, nonfinite values and other JSON types receive no conversion. The corrected declaration still passes all existing admission rules, and budgets remain unchanged.
+
+## Conversation correction context
+
+Dettmore v45 also exposed shared reply metadata leaking between concurrent authors: a global manifest correction was labelled `shard_checks`, and its field correction path was omitted. Corrections now receive immutable conversation context containing the requested envelope, patch permission and that reply's finish reason. Envelope and finish metadata are captured before awaited operations; parallel authors continue to share the same resource counters and limits. Deterministic overlap tests and saved-feedback replay must pass locally before another live validation run.

@@ -32,6 +32,7 @@ from pydantic import ValidationError
 from pydantic_core import PydanticCustomError
 
 from coordinare.services.environment_admission import (
+    CorrectionContext,
     _checked_inventory,
     _decode_reply,
     _repair,
@@ -157,8 +158,6 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
         async with asyncio.timeout_at(min(budget.deadline, time.monotonic()+inspection.limits.phase_timeout_seconds)):
             for _ in range(inspection.limits.max_model_calls):
                 exposed = 'source_tool' if not inspection.inputs else envelope
-                budget.expected_envelope = ('source_tool' if not inspection.inputs else
-                                            envelope)
                 decision_ids = ([record.id for record in budget.scope_findings.records]
                     if exposed == 'scope_assessment' and budget.scope_findings is not None else None)
                 schema = response_schema(exposed, review_decision_ids=decision_ids)
@@ -172,6 +171,7 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                 budget.context_bytes += size
                 raw = await invoke_recorded(budget, chat, messages, schema=schema,
                     max_context_bytes=inspection.limits.max_review_context_bytes, context_phase=inspection.name)
+                finish_reason = budget.last_finish_reason
                 try:
                     reply = _decode_reply(raw, inspection.name, inspection.limits)
                     if 'tool' in reply:
@@ -183,7 +183,7 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                 except ValidationError as exc:
                     errors = _validation_feedback(exc)
                 except PydanticCustomError as exc:
-                    errors = [{'location': [budget.expected_envelope or 'scope_revision'], 'code': exc.type}]
+                    errors = [{'location': [exposed], 'code': exc.type}]
                 except (_ResponseReferenceError, ScopeInvestigationResponseError) as exc:
                     errors = exc.errors
                 except FindingValidationError as exc:
@@ -196,7 +196,7 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
                                         'scope_response_ids_invalid', 'scope_investigation_response_invalid'}:
                         raise
                     errors = [{'location': [], 'code': exc.code}]
-                _repair(messages, raw, errors, budget)
+                _repair(messages, raw, errors, budget, context=CorrectionContext(exposed, finish_reason=finish_reason))
             _fail("scope_phase_call_limit")
     except TimeoutError:
         budget.check()
