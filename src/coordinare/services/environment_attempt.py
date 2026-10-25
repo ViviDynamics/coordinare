@@ -120,6 +120,8 @@ class AttemptBudget:
     scope_author_protocol: Literal[4] = 4
     scope_phase: Literal["initial", "investigation", "revision", "review", "accepted"] = "initial"
     scope_revision_base_digest: str | None = None
+    # Required criteria an executable review asked to release as a per-run network fetch, pending the scope review.
+    release_requests: list[str] = field(default_factory=list, repr=False)
     scope_definition: ScopeDefinition | None = field(default=None, repr=False)
     # Sharded discovery: plan digest, completed shard summaries and reviewed shard criteria.
     scope_shards: dict[str, Any] | None = field(default=None, repr=False)

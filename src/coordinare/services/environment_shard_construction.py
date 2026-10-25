@@ -76,6 +76,11 @@ GLOBAL_AUTHOR_INSTRUCTION = (
     'followed by digits, optional letters and a hyphen, or a scope criterion id (S followed by 16 hex characters) as '
     'any record id. Requirements may reference only your own checks. '
 )
+# A check verifies what installation persisted; it never rebuilds or re-fetches it, since clean verification is offline.
+INSTALL_ARTIFACT_RULE = (
+    'A check consumes an artifact that installation persisted (an image, tool, package or cache entry) by inspecting or '
+    'running it; it never rebuilds that artifact from source or pulls it again, because clean verification has no network. '
+)
 CHECK_AUTHOR_INSTRUCTIONS = (
     'You are a check author for one group of required source criteria in a divided environment manifest. The global '
     'environment author already declared installation, activation and services (global_part). For every criterion in '
@@ -85,6 +90,7 @@ CHECK_AUTHOR_INSTRUCTIONS = (
     'sibling_check_ids, which another author keeps. depends_on may name your checks, global checks, or service init, start '
     'and health ids. You cannot declare installation, services or activation. bound_inputs indexes verified repository '
     'files with the criteria citing each; read the files you need with read_files. Never write literal credentials. '
+    + INSTALL_ARTIFACT_RULE +
     'Return {"shard_checks":{"checks":[...],"criterion_checks":{...}}}. '
 )
 DELTA_CHECK_INSTRUCTION = (
@@ -469,8 +475,8 @@ class DividedConstruction:
         for record in ledger.records:
             if record.id not in ledger.open_ids():
                 continue
-            owner = finding_part(record.proposal.affected_ids, self.groups)
-            routed.setdefault(owner, []).append(record.model_dump(mode='json'))
+            for owner in finding_parts(record.proposal.affected_ids, self.groups):
+                routed.setdefault(owner, []).append(record.model_dump(mode='json'))
         # Each round's open findings replace the last round's; execution failures stay until the next execution.
         kept = {prefix: {key: value for key, value in entry.items() if key in EXECUTION_FEEDBACK_KEYS}
                 for prefix, entry in self.feedback.items()}
@@ -508,12 +514,15 @@ def execution_feedback_by_group(feedback: Mapping[str, Any], groups: Sequence[Ch
     return routed
 
 
-def finding_part(affected_ids: Sequence[str], groups: Sequence[CheckGroup]) -> str:
+def finding_parts(affected_ids: Sequence[str], groups: Sequence[CheckGroup]) -> list[str]:
+    """Every part whose records a finding names: each check group owning a named id, and the global part for an id no
+    group owns. A finding about two groups reaches both, so neither keeps a part the finding still concerns."""
+    parts: list[str] = []
     for identifier in affected_ids:
-        for group in groups:
-            if owns(group.prefix, identifier) or identifier in group.ids:
-                return group.prefix
-    return GLOBAL_OWNER
+        owner = next((group.prefix for group in groups if owns(group.prefix, identifier) or identifier in group.ids), GLOBAL_OWNER)
+        if owner not in parts:
+            parts.append(owner)
+    return parts or [GLOBAL_OWNER]
 
 
 def manifest_digest(data: Mapping[str, Any]) -> str:
@@ -614,8 +623,14 @@ def combine_review(parts: Sequence[tuple[str, CoverageAssessmentProposal]], ledg
     verdicts = [proposal.verdict for _owner, proposal in parts]
     verdict = 'indeterminate' if 'indeterminate' in verdicts else 'accept' if set(verdicts) == {'accept'} else 'revise'
     order = {record.id: index for index, record in enumerate(ledger.records)}
-    decisions = sorted((decision.model_dump(mode='json') for _owner, proposal in parts for decision in proposal.decisions),
-                       key=lambda decision: order.get(decision['finding_id'], 0))
+    # A finding several parts decide is open while any of them keeps it open; otherwise its first resolution stands.
+    chosen: dict[str, dict[str, Any]] = {}
+    for _owner, proposal in parts:
+        for decision in proposal.decisions:
+            data = decision.model_dump(mode='json')
+            if data['finding_id'] not in chosen or (data['status'] == 'open' and chosen[data['finding_id']]['status'] != 'open'):
+                chosen[data['finding_id']] = data
+    decisions = sorted(chosen.values(), key=lambda decision: order.get(decision['finding_id'], 0))
     findings = [finding.model_dump(mode='json') for _owner, proposal in parts for finding in proposal.findings]
     sources = sorted({path for _owner, proposal in parts for path in proposal.sources})
     summary = 'Divided executable review: ' + '; '.join(f'{owner} {proposal.verdict}' for owner, proposal in parts)
@@ -627,7 +642,8 @@ def combine_review(parts: Sequence[tuple[str, CoverageAssessmentProposal]], ledg
 def review_owners(ledger: FindingLedger, groups: Sequence[CheckGroup]) -> dict[str, list[str]]:
     owned: dict[str, list[str]] = {}
     for record in ledger.records:
-        owned.setdefault(finding_part(record.proposal.affected_ids, groups), []).append(record.id)
+        for owner in finding_parts(record.proposal.affected_ids, groups):
+            owned.setdefault(owner, []).append(record.id)
     return owned
 
 
@@ -664,7 +680,7 @@ __all__ = [
     'combine_review',
     'divided',
     'execution_feedback_by_group',
-    'finding_part',
+    'finding_parts',
     'global_summary',
     'inherit',
     'manifest_digest',

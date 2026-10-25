@@ -110,6 +110,7 @@ from coordinare.services.environment_response_schema import (
     invoke_recorded,
     response_schema,
 )
+from coordinare.services.environment_scope import RELEASE_CATEGORIES
 from coordinare.services.environment_shard_construction import (
     GLOBAL_AUTHOR_INSTRUCTION,
     GLOBAL_OWNER,
@@ -931,6 +932,37 @@ async def _prepare_finding_context(discovery: _Inspection, budget: AttemptBudget
         'finding_ledger': budget.finding_ledger.model_dump(mode='json'), 'mandatory_finding_evidence': finding_evidence})
 
 
+def release_requests(ledger: FindingLedger, manifest: EnvironmentManifest, scope: ScopeContract) -> list[str]:
+    """Required criteria an open runtime_network or remote_state executable finding asks to release: those it names, and
+    those mapped to a check it names. Only identifiers the scope already holds, so model text is never echoed."""
+    required = {criterion.id for criterion in scope.definition.criteria if criterion.applicability == 'required'}
+    mapped: dict[str, set[str]] = {}
+    for criterion, checks in manifest.criterion_checks.items():
+        for check in checks:
+            mapped.setdefault(check, set()).add(criterion)
+    open_ids = set(ledger.open_ids())
+    named: set[str] = set()
+    for record in ledger.records:
+        if record.id not in open_ids or record.proposal.category not in RELEASE_CATEGORIES:
+            continue
+        named.update(identifier for identifier in record.proposal.affected_ids if identifier in required)
+        named.update(criterion for identifier in record.proposal.affected_ids for criterion in mapped.get(identifier, ())
+                     if criterion in required)
+    return sorted(named)
+
+
+async def _reopen_for_release(attempt: _Attempt, criteria: list[str]) -> None:
+    """The reviewed scope is reopened so its independent reviewer rules on the release; the reviewer alone can grant it."""
+    budget = attempt.budget
+    budget.release_requests = sorted(set(budget.release_requests) | set(criteria))
+    budget.scope_contract = None
+    budget.scope_phase = "review"
+    budget.scope_revision_base_digest = None
+    await budget.flush()
+    await attempt.construction.prepare()
+    raise ScopeReopenedError
+
+
 async def _checkpoint_finding_review(budget: AttemptBudget, assessment: CoverageAssessment,
                                      assessment_data: dict[str, Any]) -> None:
     budget.finding_ledger = assessment.finding_ledger
@@ -987,7 +1019,9 @@ async def _discover_attempt(
                 "argv executes a program without a shell. Shell builtins require explicit bash -c. "
                 "Commands run in separate processes: source/cd/export do not persist. "
                 "Required checks must verify installed state without installer-only prerequisites. "
-                "Clean verification has no network. Return declarations only; the daemon owns all provenance fields. "
+                "Clean verification has no network. A check consumes an artifact that installation persisted (an image, tool, package "
+                "or cache entry) by inspecting or running it; it never rebuilds that artifact from source or pulls it again. "
+                "Return declarations only; the daemon owns all provenance fields. "
                 "Never rename or remove existing required requirement/check/service IDs during repairs; "
                 "revise their definitions in place and add new IDs for additional obligations."}
     messages = [
@@ -1005,7 +1039,7 @@ async def _discover_attempt(
 
     validate_candidate = _CandidateValidator(discovery, construction, required_ids, prior_manifests, obligation_ledger, budget)
     attempt = _Attempt(options, budget, bounds, chat, fetch, inventory, construction, discovery, identity, messages,
-                       prior_manifests, delta)
+                       prior_manifests, delta, required_ids, obligation_ledger)
     divided_build = _divided_construction(scope, attempt)
 
     try:
@@ -1022,11 +1056,7 @@ async def _discover_attempt(
                 await _checkpoint_finding_review(budget, assessment, assessment_data)
                 if assessment.verdict == "accept":
                     return manifest, assessment
-                _require_revision(assessment)
-                if divided_build is not None:
-                    _divided_revision(attempt, divided_build, assessment, required_ids, obligation_ledger)
-                else:
-                    _append_coverage_revision(messages, candidate, assessment, required_ids, obligation_ledger)
+                await _revise(attempt, divided_build, candidate, assessment)
             except ScopeReopenedError:
                 divided_build = await _rescope(attempt, divided_build)
                 continue
@@ -1057,6 +1087,8 @@ class _Attempt:
     messages: list[dict[str, str]]
     prior_manifests: list[EnvironmentManifest]
     delta: DeltaPlan | None = None
+    required_ids: dict[str, set[str]] = field(default_factory=dict)
+    obligation_ledger: _ObligationLedger = field(default_factory=_ObligationLedger)
 
 
 def _delta_plan(discovery: _Inspection, budget: AttemptBudget, prior_manifests: list[EnvironmentManifest]) -> DeltaPlan | None:
@@ -1090,6 +1122,18 @@ async def _require_delta_accepted(delta: DeltaPlan | None, budget: AttemptBudget
         await budget.flush()
         message = "delta repair was not accepted by independent review"
         raise EnvironmentDiscoveryError(message, code="repair_delta_rejected")
+
+
+async def _revise(attempt: _Attempt, build: DividedConstruction | None, candidate: dict[str, Any],
+                  assessment: CoverageAssessment) -> None:
+    """Routes a rejected review back to its authors; a release it asks for also reopens the reviewed scope."""
+    _require_revision(assessment)
+    if build is not None:
+        _divided_revision(attempt, build, assessment, attempt.required_ids, attempt.obligation_ledger)
+    else:
+        _append_coverage_revision(attempt.messages, candidate, assessment, attempt.required_ids, attempt.obligation_ledger)
+    if released := release_requests(attempt.budget.finding_ledger, attempt.prior_manifests[-1], attempt.construction.require_scope()):
+        await _reopen_for_release(attempt, released)
 
 
 async def _review(attempt: _Attempt, build: DividedConstruction | None,

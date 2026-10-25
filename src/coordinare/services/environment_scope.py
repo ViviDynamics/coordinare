@@ -353,6 +353,10 @@ REVIEW_INSTRUCTIONS = (
     'Likewise, a required criterion whose documented procedure needs the network every time it runs is a finding '
     'with category runtime_network and gap_kind runtime_network naming those criteria. '
     + REMOTE_STATE_RULE + RUNTIME_NETWORK_RULE +
+    'release_requests lists required criteria that an executable review could not verify offline. Judge each one by the '
+    'two rules above: raise a runtime_network or remote_state finding naming it only when its own documented procedure '
+    'genuinely fetches from the network or needs external state every time it runs. Otherwise raise nothing for it, and it '
+    'stays required. A criterion already reassessed as not_applicable needs no finding. '
     'Return scope_assessment with verdict, rationale, sources, findings, decisions. '
 )
 GRANULARITY_GUIDANCE = (
@@ -432,6 +436,8 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
                     'review_resolution': {'unread_available_source': 'inspect',
                         'actionable_findings': 'revise', 'unable_to_judge': 'indeterminate'}} if review else {}),
                 'finding_responses': responses or [],
+                **({'release_requests': sorted(inspection.budget.release_requests)}
+                   if inspection.budget is not None and inspection.budget.release_requests else {}),
                 'investigation_evidence': investigation_evidence(inspection=inspection,
                     bindings=_current_investigations(inspection.budget),
                     results=inspection.budget.scope_investigation_results) if inspection.budget is not None else []}).decode()}]
@@ -676,6 +682,7 @@ async def _accept_scope(budget: AttemptBudget, *, definition: ScopeDefinition, r
         raise
     budget.scope_contract = contract
     budget.scope_phase = 'accepted'
+    budget.release_requests = []
     await budget.flush()
     return contract
 

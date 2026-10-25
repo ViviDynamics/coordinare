@@ -733,6 +733,7 @@ class ShardedScope:
         bindings = [binding for binding in _current_investigations(self.budget) if binding.finding_id in owned]
         records = [record.model_dump(mode='json') for record in ledger.records if record.id in owned] if ledger else []
         responses = [response for response in self.budget.scope_responses if response.get('finding_id') in owned]
+        released = [c.id for c in criteria if c.id in self.budget.release_requests]
         return [{'role': 'system', 'content': SOURCE_NAVIGATION + preamble + REVIEW_INSTRUCTIONS + PHASE_CONTRACT
                  + SHARED_CONTEXT_NOTE},
                 {'role': 'user', 'content': agent_context(
@@ -747,6 +748,7 @@ class ShardedScope:
                     'cited_files': sorted({path for c in criteria for path in c.sources}
                                           | {path for record in records for path in record['proposal']['sources']}),
                     'required_decision_ids': list(owned), 'finding_responses': responses, 'findings_capacity': capacity,
+                    'release_requests': released,
                     **({'exclusions': [item.model_dump(mode='json') for item in definition.exclusions],
                         'unread_unsure': [item.model_dump(mode='json') for item in definition.unread_unsure],
                         'consolidated': [item.model_dump(mode='json') for item in definition.consolidated]}
@@ -826,11 +828,13 @@ class ShardedScope:
         reviewed = (self.budget.scope_shards or {}).get('reviewed_criteria', {})
         authored = set((self.budget.scope_shards or {}).get('authored', []))
         unread = {self.work.owners.get(path) for path, digest in definition.inputs.items() if carried.get(path) != digest}
+        # A release request is judged by the reviewer of the shard that owns the criterion.
+        requested = {criterion_owner(c, self.work) for c in definition.criteria if c.id in self.budget.release_requests}
         targets = []
         for shard in self.work.shards:
             current = _fingerprints([c for c in definition.criteria if criterion_owner(c, self.work) == shard.id])
             first = shard.id in authored and shard.id not in reviewed
-            if first or shard.id in owned or shard.id in unread or reviewed.get(shard.id, []) != current:
+            if first or shard.id in owned or shard.id in unread or shard.id in requested or reviewed.get(shard.id, []) != current:
                 targets.append(shard)
         return targets
 

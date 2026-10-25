@@ -26,7 +26,7 @@ from coordinare.services.environment_shard_construction import (
     check_groups,
     combine_review,
     divided,
-    finding_part,
+    finding_parts,
     merge_parts,
     validate_global,
     validate_group,
@@ -123,9 +123,9 @@ def test_the_merge_unions_parts_and_refuses_to_choose_between_collisions():
 
 def test_findings_route_to_the_group_whose_checks_or_criteria_they_name():
     groups = [CheckGroup('c00-', (make_criterion(1),)), CheckGroup('c01-', (make_criterion(2),))]
-    assert finding_part(['c01-0'], groups) == 'c01-'
-    assert finding_part([make_criterion(1).id], groups) == 'c00-'
-    assert finding_part(['install-node'], groups) == GLOBAL_OWNER
+    assert finding_parts(['c01-0'], groups) == ['c01-']
+    assert finding_parts([make_criterion(1).id], groups) == ['c00-']
+    assert finding_parts(['install-node'], groups) == [GLOBAL_OWNER]
 
 
 def assessment(verdict: str) -> CoverageAssessmentProposal:
@@ -411,7 +411,7 @@ def test_split_remainders_belong_to_their_group_and_are_reserved_from_the_global
     with pytest.raises(ValidationError):
         validate_global(global_part(checks=[{'id': 'c00a-mine', 'argv': ['true']}]))
     groups = [CheckGroup('c00-', (make_criterion(1),)), CheckGroup('c01-', (make_criterion(2),))]
-    assert finding_part(['c00b-0'], groups) == 'c00-'
+    assert finding_parts(['c00b-0'], groups) == ['c00-']
     manifest = SimpleNamespace(checks=[SimpleNamespace(id='c00a-0', model_dump=lambda **_: {'id': 'c00a-0'})],
                                criterion_checks={})
     assert parts_from_manifest(manifest, groups) == {'c00-': {'checks': [{'id': 'c00a-0'}], 'criterion_checks': {}}}

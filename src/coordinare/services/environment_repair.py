@@ -84,6 +84,7 @@ class RepairJournal(BaseModel):
     scope_author_protocol: Literal[4]
     scope_phase: Literal["initial", "investigation", "revision", "review", "accepted"] = "initial"
     scope_revision_base_digest: Digest | None = None
+    release_requests: list[str] = Field(default_factory=list, max_length=MAX_LEDGER_FINDINGS)
     scope_investigations: list[ScopeInspectionBinding] = Field(default_factory=list, max_length=256)
     scope_investigation_results: list[ScopeInspectionResult] = Field(default_factory=list, max_length=256)
     scope_inputs: dict[str, Digest] = Field(default_factory=dict)
@@ -275,6 +276,7 @@ def _save_scope_checkpoint(journal: RepairJournal, budget: AttemptBudget) -> Non
     journal.scope_author_protocol = budget.scope_author_protocol
     journal.scope_phase = budget.scope_phase
     journal.scope_revision_base_digest = budget.scope_revision_base_digest
+    journal.release_requests = list(budget.release_requests)
     journal.scope_inputs = dict(budget.scope_inputs)
     journal.scope_shards = json.loads(json.dumps(budget.scope_shards)) if budget.scope_shards is not None else None
     journal.executable_parts = (json.loads(json.dumps(budget.executable_parts))
@@ -415,6 +417,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.scope_author_protocol = journal.scope_author_protocol
     budget.scope_phase = journal.scope_phase
     budget.scope_revision_base_digest = journal.scope_revision_base_digest
+    budget.release_requests = list(journal.release_requests)
     budget.scope_inputs = dict(journal.scope_inputs)
     budget.scope_shards = json.loads(json.dumps(journal.scope_shards)) if journal.scope_shards is not None else None
     budget.executable_parts = (json.loads(json.dumps(journal.executable_parts))

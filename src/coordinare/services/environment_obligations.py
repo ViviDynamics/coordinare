@@ -166,6 +166,15 @@ def _preserve_criterion_checks(manifest: EnvironmentManifest, previous: Environm
         raise EnvironmentDiscoveryError(message, code='obligation_removed')
 
 
+def _released_checks(previous: EnvironmentManifest, released: set[str]) -> set[str]:
+    """Checks whose every criterion mapping is released: a release retires them with their criteria, and no other."""
+    mapped: dict[str, set[str]] = {}
+    for criterion, identifiers in previous.criterion_checks.items():
+        for identifier in identifiers:
+            mapped.setdefault(identifier, set()).add(criterion)
+    return {identifier for identifier, criteria in mapped.items() if criteria <= released}
+
+
 def _mapped(manifest: EnvironmentManifest, criterion: str) -> list[str]:
     return list(manifest.criterion_checks.get(criterion, []))
 
@@ -180,19 +189,21 @@ def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentMan
     if previous.scope_contract is not None and manifest.scope_contract is not None:
         preserve_scope(previous.scope_contract.definition, manifest.scope_contract.definition, released=released)
     _preserve_criterion_checks(manifest, previous, released, aliases)
+    retired = _released_checks(previous, released)
     for group in ("requirements", "install", "checks", "services"):
         current = {item.id: item for item in getattr(manifest, group) if item.required}
         for old in getattr(previous, group):
             if not old.required:
                 continue
             new = current.get(old.id)
-            if new is None and aliases.get(old.id) not in current:
+            # A check retired with the released criterion it alone served may leave.
+            if new is None and aliases.get(old.id) not in current and not (group == "checks" and old.id in retired):
                 message = f"required obligation removed during repair: restore required {group} entry {_id(old.id)}"
                 raise EnvironmentDiscoveryError(message, code="obligation_removed", global_owned=group != "checks")
             if new is None:
                 continue  # Merged into an identical kept command, which the alias rule already checked.
             if group == "requirements" and (lost := {item for item in old.checks if item not in new.checks
-                                                     and aliases.get(item) not in new.checks}):
+                                                     and aliases.get(item) not in new.checks and item not in retired}):
                 message = f"required obligation coverage removed: requirement {_id(old.id)} must still list checks {_ids(lost)}"
                 raise EnvironmentDiscoveryError(message, code="obligation_removed", global_owned=True)
             if group in {"checks", "install"} and old.scope != new.scope:
