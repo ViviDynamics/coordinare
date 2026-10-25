@@ -312,18 +312,18 @@ class _FakeResp:
 class TestParseOwnerRepo:
     def test_https_url_with_git_suffix(self):
         assert persona_bench._parse_owner_repo(
-            "https://github.com/ViviDynamics/conductor-bench.git",
-        ) == ("ViviDynamics", "conductor-bench")
+            "https://github.com/ExampleOrg/sample-bench.git",
+        ) == ("ExampleOrg", "sample-bench")
 
     def test_https_url_without_git_suffix(self):
         assert persona_bench._parse_owner_repo(
-            "https://github.com/ViviDynamics/conductor-bench",
-        ) == ("ViviDynamics", "conductor-bench")
+            "https://github.com/ExampleOrg/sample-bench",
+        ) == ("ExampleOrg", "sample-bench")
 
     def test_ssh_url(self):
         assert persona_bench._parse_owner_repo(
-            "git@github.com:ViviDynamics/conductor-bench.git",
-        ) == ("ViviDynamics", "conductor-bench")
+            "git@github.com:ExampleOrg/sample-bench.git",
+        ) == ("ExampleOrg", "sample-bench")
 
     def test_token_embedded_https(self):
         assert persona_bench._parse_owner_repo(

@@ -1,6 +1,6 @@
 """383: a card must not be lost because the model wrote a long sentence.
 
-Measured on the website symphony, 2026-09-12: eight "String should have at most
+Measured on the sampleweb symphony, 2026-09-12: eight "String should have at most
 500 characters" violations in one night, three of them escalating through
 BACKEND_FORMAT_ERROR and the bounded retries to a blocked card. The offending
 field was TestObservation.summary -- prose that nothing branches on.

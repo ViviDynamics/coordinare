@@ -541,7 +541,7 @@ def validate_shell_locals(commands: Iterable[Command], declared: Iterable[str]) 
     """A ${NAME} for a variable the command itself assigns is a shell variable the runner would refuse as a template.
 
     The runner expands every ${NAME} from its environment before a command runs, and refuses names it lacks. Three
-    Dettmore runs (v37 to v40) lost an execution repair to ${HA} and ${GHV} assigned in the same command. Names a
+    Regression runs lost an execution repair to ${HA} and ${GHV} assigned in the same command. Names a
     command does not assign (such as runtime credentials) are never flagged here.
     """
     known = set(declared)

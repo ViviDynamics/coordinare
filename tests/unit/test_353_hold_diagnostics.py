@@ -20,7 +20,7 @@ async def test_an_invalid_contract_hold_names_the_exception_and_frame_but_not_it
     budget = AttemptBudget()
     with pytest.raises(EnvironmentDiscoveryError) as held:
         await discovery_module.discover_and_review(
-            symphony_name='dettmore-platform', commit='a' * 40, paths=['README.md'], fetch=None,
+            symphony_name='sampleapp-platform', commit='a' * 40, paths=['README.md'], fetch=None,
             chat=lambda *_a, **_k: None, budget=budget, capabilities=object(), require_preflight=False)
 
     assert held.value.code == 'invalid_contract'

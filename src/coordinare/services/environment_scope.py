@@ -303,7 +303,7 @@ REMOTE_STATE_RULE = (
     'advisory databases) stays required, even when installation fetches it from the network. '
 )
 # Maintainer decision 2026-10-24: like remote state, an obligation that needs the network on every run is outside
-# what an offline clean verification can prove (Dettmore's dev compose stack runs apt-get on every start).
+# what an offline clean verification can prove (a documented development stack runs apt-get on every start).
 RUNTIME_NETWORK_RULE = (
     'An obligation whose own documented procedure fetches from the network every time it runs is outside what an '
     'offline clean verification can prove: for example a compose service whose command runs apt-get or a package '

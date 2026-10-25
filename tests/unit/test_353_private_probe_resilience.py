@@ -1,5 +1,5 @@
 """A private probe guest that cannot start or runs out of time is that command's result, not the attempt's end;
-an unconfirmed teardown still fails the probe (Dettmore v9 and v15 held at probe_executor_failed)."""
+an unconfirmed teardown still fails the probe (SampleApp v9 and v15 held at probe_executor_failed)."""
 from __future__ import annotations
 
 import pytest

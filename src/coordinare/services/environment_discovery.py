@@ -1229,7 +1229,7 @@ def compact_scope_identity(identity: dict[str, Any], scope: ScopeContract) -> di
     """Divided agents get the accepted contract's digest and a compact criterion index, not the whole contract.
 
     The full contract (criteria, its review ledger and inputs) is about a quarter of a 262K-token context on
-    Dettmore; the daemon still admits every proposal against the full contract it holds.
+    a large repository; the daemon still admits every proposal against the full contract it holds.
     """
     compact = {key: value for key, value in identity.items() if key != 'scope_contract'}
     compact['scope_criteria_index'] = [_compact(criterion) for criterion in scope.definition.criteria]

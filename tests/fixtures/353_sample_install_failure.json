@@ -669,7 +669,7 @@
         "argv": [
           "bash",
           "-c",
-          "set -e; export DATABASE_HOST=127.0.0.1 DATABASE_PORT=5432 DATABASE_USERNAME=postgres; bin/rails db:seed && bin/rails db:seed && psql -h 127.0.0.1 -p 5432 -U postgres -d platform_development -tAc \"SELECT count(*) FROM billing_dunning_schedules WHERE key = 'maxio-standard'\" | grep -qx 1"
+          "set -e; export DATABASE_HOST=127.0.0.1 DATABASE_PORT=5432 DATABASE_USERNAME=postgres; bin/rails db:seed && bin/rails db:seed && psql -h 127.0.0.1 -p 5432 -U postgres -d platform_development -tAc \"SELECT count(*) FROM billing_dunning_schedules WHERE key = 'billingvendor-standard'\" | grep -qx 1"
         ],
         "cwd": "{repo}",
         "depends_on": [
@@ -701,14 +701,14 @@
         "argv": [
           "bash",
           "-c",
-          "set -e; DATABASE_HOST=127.0.0.1 DATABASE_PORT=5432 DATABASE_USERNAME=postgres bin/rails runner 's = MaxioMock::Server.new; s.load_catalog(Rails.root.join(\"spec/fixtures/billing/maxio_catalog.yml\")); raise \"catalog\" unless s.subscriptions.length == 2; sub = s.subscriptions.find { |x| x[:id] == 98765 }; raise \"98765\" unless sub && sub[:status] == \"active\"'"
+          "set -e; DATABASE_HOST=127.0.0.1 DATABASE_PORT=5432 DATABASE_USERNAME=postgres bin/rails runner 's = BillingVendorMock::Server.new; s.load_catalog(Rails.root.join(\"spec/fixtures/billing/billingvendor_catalog.yml\")); raise \"catalog\" unless s.subscriptions.length == 2; sub = s.subscriptions.find { |x| x[:id] == 98765 }; raise \"98765\" unless sub && sub[:status] == \"active\"'"
         ],
         "cwd": "{repo}",
         "depends_on": [
           "c01-rails-boot"
         ],
         "env": {},
-        "id": "c01-maxio-mock-catalog",
+        "id": "c01-billingvendor-mock-catalog",
         "required": true,
         "scope": [],
         "timeout_seconds": 300.0
@@ -717,14 +717,14 @@
         "argv": [
           "bash",
           "-c",
-          "set -e; DATABASE_HOST=127.0.0.1 DATABASE_PORT=5432 DATABASE_USERNAME=postgres bin/maxio-mock & MPID=$!; sleep 8; code=$(curl -sf http://127.0.0.1:4569/healthz); kill $MPID; echo \"$code\" | grep -qi ok"
+          "set -e; DATABASE_HOST=127.0.0.1 DATABASE_PORT=5432 DATABASE_USERNAME=postgres bin/billingvendor-mock & MPID=$!; sleep 8; code=$(curl -sf http://127.0.0.1:4569/healthz); kill $MPID; echo \"$code\" | grep -qi ok"
         ],
         "cwd": "{repo}",
         "depends_on": [
-          "c01-maxio-mock-catalog"
+          "c01-billingvendor-mock-catalog"
         ],
         "env": {},
-        "id": "c01-maxio-mock-serve",
+        "id": "c01-billingvendor-mock-serve",
         "required": true,
         "scope": [],
         "timeout_seconds": 120.0
@@ -733,7 +733,7 @@
         "argv": [
           "bash",
           "-c",
-          "set -e; test -s vendor/javascript/@maxio-com--self-service.js && grep -q 1.17.2 vendor/javascript/MAXIO_README.md"
+          "set -e; test -s vendor/javascript/@billingvendor-com--self-service.js && grep -q 1.17.2 vendor/javascript/BILLINGVENDOR_README.md"
         ],
         "cwd": "{repo}",
         "depends_on": [
@@ -817,8 +817,8 @@
         "c00-bin-setup"
       ],
       "S386bb454bcacb927": [
-        "c01-maxio-mock-serve",
-        "c01-maxio-mock-catalog"
+        "c01-billingvendor-mock-serve",
+        "c01-billingvendor-mock-catalog"
       ],
       "S4151285a64555467": [
         "c01-vendor-self-service"
@@ -831,8 +831,8 @@
         "c01-rails-boot"
       ],
       "S472e0f6d117c17af": [
-        "c01-maxio-mock-serve",
-        "c01-maxio-mock-catalog"
+        "c01-billingvendor-mock-serve",
+        "c01-billingvendor-mock-catalog"
       ],
       "S4a4a7efcdf77492c": [
         "check-repo-env",
@@ -864,7 +864,7 @@
         "c01-rails-boot-qa"
       ],
       "S5f82d860cf9e7408": [
-        "c01-maxio-mock-catalog"
+        "c01-billingvendor-mock-catalog"
       ],
       "S66ab936d00518773": [
         "check-docker-images",
@@ -938,8 +938,8 @@
         "c00-db-prepare"
       ],
       "Sde16af6ab56276c7": [
-        "c01-maxio-mock-serve",
-        "c01-maxio-mock-catalog"
+        "c01-billingvendor-mock-serve",
+        "c01-billingvendor-mock-catalog"
       ],
       "Se712560cd09783a6": [
         "c00-check-wiring-ok",
@@ -1345,19 +1345,19 @@
         }
       }
     ],
-    "source_commit": "bf498e843ba58362dc6abe122b91129f7c66351f",
-    "symphony_name": "dettmore-platform"
+    "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "symphony_name": "sampleapp-platform"
   },
-  "provenance": "Trimmed from the v40 Dettmore gen0 rejected execution (environment-attempt.json, rejected[0]). scope_contract and passing evidence removed; records and results are verbatim.",
+  "provenance": "Anonymized application installation failure. Dependency and failure relationships are preserved.",
   "report": {
-    "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+    "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
     "platform": "linux/aarch64",
     "results": [
       {
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "install-apt-prereqs",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1365,7 +1365,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "install-ruby",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1373,7 +1373,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "install-bundle",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1382,7 +1382,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "install-helm-gh",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "output": "unresolved environment reference in command template; use {cache}, {repo}, {scratch} for execution roots. ${NAME} requires a runtime environment variable; use $name for shell-local variables assigned inside the command.",
         "required": true,
         "status": "fail"
@@ -1391,7 +1391,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "install-docker-engine",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1399,7 +1399,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "install-pull-images",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1407,7 +1407,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "install-build-images",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1415,7 +1415,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "install-pg",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1423,7 +1423,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "install-npm",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1431,7 +1431,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "check-ruby-pinned",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1439,7 +1439,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "check-bundle-repo",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1447,7 +1447,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "check-bundle-cache-root",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1455,7 +1455,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "check-postgres-up",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1463,7 +1463,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "check-pgvector-available",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1471,7 +1471,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "check-docker-daemon",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1479,7 +1479,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "check-docker-compose-plugin",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1487,7 +1487,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "check-docker-images",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1495,7 +1495,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "check-prebuilt-images",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1503,7 +1503,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "check-node22",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1511,7 +1511,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "check-helm",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1519,7 +1519,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "check-skill-tools",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1527,7 +1527,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "check-repo-env",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1535,7 +1535,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "check-npm-cache",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1543,7 +1543,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-repo-env-vivi-load-env",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1551,7 +1551,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-skill-lib-helpers",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1559,7 +1559,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-check-wiring-ok",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1567,7 +1567,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-check-wiring-failure",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1575,7 +1575,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-quality-guard-local-clean",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1583,7 +1583,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-quality-guard-blocked",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1591,7 +1591,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-db-prepare",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1599,7 +1599,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-bin-setup",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1607,7 +1607,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-rspec-full",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1615,7 +1615,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-rspec-seeds-spec",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1623,7 +1623,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-cucumber-suite",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1631,7 +1631,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-cucumber-qa-runner",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1639,7 +1639,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-seeds-idempotent",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1647,7 +1647,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-qa-seed",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1655,7 +1655,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-demo-magic-link",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1663,7 +1663,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-static-analysis",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1671,7 +1671,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-rubycritic",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1679,7 +1679,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-node-estimator-tests",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1687,7 +1687,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-css-build",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1695,7 +1695,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-qa-compose-no-build",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1703,7 +1703,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-helm-lint",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1711,7 +1711,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-clamav-scan",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1719,7 +1719,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c00-qa-compose-up",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1727,7 +1727,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c01-rails-boot",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1735,7 +1735,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c01-rails-boot-qa",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1743,7 +1743,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c01-db-schema-load",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1751,7 +1751,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c01-db-baseline-spec",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1759,7 +1759,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c01-seeds-idempotent",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1767,23 +1767,23 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c01-seeds-demo",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
       {
         "duration_seconds": 0.0,
         "exit_code": null,
-        "id": "c01-maxio-mock-catalog",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "id": "c01-billingvendor-mock-catalog",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
       {
         "duration_seconds": 0.0,
         "exit_code": null,
-        "id": "c01-maxio-mock-serve",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "id": "c01-billingvendor-mock-serve",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1791,7 +1791,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c01-vendor-self-service",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1799,7 +1799,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c01-docker-image-build",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1807,7 +1807,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "c01-compose-smoke",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1815,7 +1815,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "postgres-init",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1823,7 +1823,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "postgres-start",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1831,7 +1831,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "postgres-health",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1839,7 +1839,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "postgres-stop",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1847,7 +1847,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "docker-start",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1855,7 +1855,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "docker-health",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       },
@@ -1863,7 +1863,7 @@
         "duration_seconds": 0.0,
         "exit_code": null,
         "id": "docker-stop",
-        "manifest_digest": "93baa7a227e4434b5c7dec583f6475a8ceaf596d59a4cf6b281ca2f391d0f817",
+        "manifest_digest": "a043e9aed5f9ca1aa5ced4c424fcb20ad85e24c226a8db5e741c9c3a2246ecaa",
         "required": true,
         "status": "not_run"
       }

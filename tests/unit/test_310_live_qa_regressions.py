@@ -37,7 +37,7 @@ function setInterval(fn, ms) { assert.equal(fn, afTick); assert.equal(ms, 5000);
 def test_symphony_snapshot_carries_bootstrap_state(ready, success, in_flight):
     cache = SimpleNamespace(cache_dir_ready=ready, last_bootstrap_succeeded=success,
                             bootstrap_in_flight=in_flight, last_bootstrap_error='failed' if success is False else None)
-    daemon = SimpleNamespace(state={'symphony_configs': {'website': SimpleNamespace()}, 'env_cache': {'website': cache}})
+    daemon = SimpleNamespace(state={'symphony_configs': {'sampleweb': SimpleNamespace()}, 'env_cache': {'sampleweb': cache}})
     entry, = DashboardStore._build_symphonies_data(daemon)
     assert entry['cache_dir_ready'] is ready
     assert entry['last_bootstrap_succeeded'] is success

@@ -46,7 +46,7 @@ def test_http_protobuf_round_trip_or_missing_extra_error() -> None:
 
 @pytest.mark.parametrize("endpoint", ["http://collector:4317", "https://collector:4317"])
 def test_grpc_uses_rpc_timeout_metadata_and_security(endpoint: str) -> None:
-    config = OtlpConfig(endpoint=endpoint, protocol="grpc", insecure=endpoint.startswith("http://"), headers={"Authorization": "Bearer secret", "x-tenant": "garden"})
+    config = OtlpConfig(endpoint=endpoint, protocol="grpc", insecure=endpoint.startswith("http://"), headers={"Authorization": "Bearer secret", "x-tenant": "samplehost"})
     if otlp_wire._logs_proto is None:
         with pytest.raises(ValueError, match=r"coordinare\[otlp\]"):
             otlp_wire.OtlpWire(config, None)
@@ -65,7 +65,7 @@ def test_grpc_uses_rpc_timeout_metadata_and_security(endpoint: str) -> None:
         call = channel.unary_unary.return_value
         assert call.call_args.kwargs == {
             "timeout": config.timeout_seconds,
-            "metadata": [("authorization", "Bearer secret"), ("x-tenant", "garden")],
+            "metadata": [("authorization", "Bearer secret"), ("x-tenant", "samplehost")],
         }
         assert channel.unary_unary.call_args.args[0] == otlp_wire.GRPC_METHOD
         serializers = channel.unary_unary.call_args.kwargs

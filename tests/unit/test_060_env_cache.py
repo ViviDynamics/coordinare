@@ -2107,7 +2107,7 @@ def test_env_bootstrap_persona_preserves_declared_install_contract() -> None:
     persona = payload.persona.lower()
     assert "declared install actions" in persona
     assert "install in place" in persona
-    assert "/devenv/website" in persona
+    assert "/devenv/sampleweb" in persona
     assert "do not infer a different toolchain" in persona
     assert "required failure or unrun check cannot be waived" in persona
     assert "read-only at the same absolute path" in persona
@@ -2129,9 +2129,9 @@ def test_env_bootstrap_persona_defers_activation_when_coordinare_owns_it() -> No
 
 def _bootstrap_card_context(**extra) -> dict:
     ctx = {
-        "symphony_org": "ViviDynamics",
-        "symphony_repo": "website",
-        "cache_mount_path": "/devenv/website",
+        "symphony_org": "ExampleOrg",
+        "symphony_repo": "sampleweb",
+        "cache_mount_path": "/devenv/sampleweb",
         "env_spec_files": ["README.md"],
         "env_spec_contents": {"README.md": "Install Ruby 3.4.2 and Chrome."},
         "backend": "opencode",
@@ -2660,7 +2660,7 @@ class TestWriteServiceScripts:
         pg = ServiceEntry(
             name="postgres", binary="postgres", version=None, data_dir="/tmp/pg",
             port=45432, why_needed="db", sources=["config/database.yml"], kind="postgres",
-            init=ServiceInit(superuser="systemuser", databases=["website_test"],
+            init=ServiceInit(superuser="systemuser", databases=["sampleweb_test"],
                              password_env_var="POSTGRESQL_PASSWORD"),
         )
         redis = ServiceEntry(
@@ -2671,7 +2671,7 @@ class TestWriteServiceScripts:
         return [pg, redis]
 
     def test_writes_start_stop_health_scripts(self, tmp_path: Path) -> None:
-        ok = write_service_scripts(tmp_path, self._pg_redis_models(), symphony="website", performer_mounts=())
+        ok = write_service_scripts(tmp_path, self._pg_redis_models(), symphony="sampleweb", performer_mounts=())
         assert ok is True
         svc = tmp_path / "services"
         for name in ("services-start.sh", "services-stop.sh", "services-health.sh"):
@@ -2689,7 +2689,7 @@ class TestWriteServiceScripts:
         # suffix via load_prior_manifest). A second coordinare writer with a different
         # agent_version/cache_inputs made the suffix oscillate → the dispatch gate
         # held every card forever (readme_sha != last_seen_spec_sha).
-        write_service_scripts(tmp_path, self._pg_redis_models(), symphony="website", performer_mounts=())
+        write_service_scripts(tmp_path, self._pg_redis_models(), symphony="sampleweb", performer_mounts=())
         assert not (tmp_path / "services" / "services.json").exists()
         assert (tmp_path / "services" / "services-start.sh").is_file()
 

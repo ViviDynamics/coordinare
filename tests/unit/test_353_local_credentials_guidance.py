@@ -1,4 +1,4 @@
-"""Repair guidance for the credential and envelope mistakes seen in the GLM Elm attempt."""
+"""Repair guidance for the credential and envelope mistakes seen in the GLM SampleDatabase attempt."""
 from __future__ import annotations
 
 import json

@@ -39,12 +39,12 @@ def test_a_branch_that_needs_an_outside_approver_is_named_in_the_status(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     rows = [
-        _row("garden", merge_review={"state": "external_review_required", "message": _EXTERNAL}),
+        _row("samplehost", merge_review={"state": "external_review_required", "message": _EXTERNAL}),
         _row("clear-sym", merge_review={"state": "clear", "message": "main needs no approving review."}),
     ]
     _open_with(page, live_server_url, store, rows)
 
-    expect(_cell(page, "garden", _STATUS)).to_contain_text(_EXTERNAL)
+    expect(_cell(page, "samplehost", _STATUS)).to_contain_text(_EXTERNAL)
     expect(_cell(page, "clear-sym", _STATUS)).not_to_contain_text("someone other than")
 
 
@@ -52,10 +52,10 @@ def test_a_branch_that_needs_an_outside_approver_is_named_in_the_status(
 def test_an_unreadable_branch_protection_is_said_in_plain_words(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    rows = [_row("garden", merge_review={"state": "unreadable", "message": _UNREADABLE})]
+    rows = [_row("samplehost", merge_review={"state": "unreadable", "message": _UNREADABLE})]
     _open_with(page, live_server_url, store, rows)
 
-    expect(_cell(page, "garden", _STATUS)).to_contain_text("could not read branch protection on main")
+    expect(_cell(page, "samplehost", _STATUS)).to_contain_text("could not read branch protection on main")
 
 
 @pytest.mark.e2e

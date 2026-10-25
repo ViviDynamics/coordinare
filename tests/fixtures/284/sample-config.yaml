@@ -22,8 +22,8 @@ dashboard_host: 0.0.0.0
 dashboard_oidc:
   client_id: conductor-dashboard
   client_secret: ${COORDINARE_OIDC_CLIENT_SECRET}
-  discovery_url: https://auth.vividynamics.com/application/o/conductor-dashboard/.well-known/openid-configuration
-  redirect_url: https://coordinare.vividynamics.com/oidc/callback
+  discovery_url: https://auth.example.test/application/o/conductor-dashboard/.well-known/openid-configuration
+  redirect_url: https://coordinare.example.test/oidc/callback
   session_hours: 12
 dashboard_port: 8090
 dispatcher_dedup:
@@ -37,7 +37,7 @@ env_cache_root: /var/lib/coordinare/env-caches
 github_app_id: 3288112
 github_auth: app
 github_installation_id: 121709627
-github_org: ViviDynamics
+github_org: ExampleOrg
 github_private_key_path: /etc/coordinare/github-app/private-key.pem
 github_token: ""
 health_check_port: 8080
@@ -92,8 +92,8 @@ performer_endpoints:
     LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
     LITELLM_PROXY_AUTH_TOKEN: ${LITELLM_MASTER_KEY}
     LITELLM_PROXY_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
-  id: garden-codex
-  image: ghcr.io/vividynamics/coordinare-performer-full:2026.10.137
+  id: sample-codex
+  image: ghcr.io/example-org/coordinare-performer-full:2026.10.137
   mode: ephemeral
   roles:
   - architect
@@ -112,8 +112,8 @@ performer_endpoints:
     LITELLM_PROXY_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
     SELFHOSTED_HEALTH_TIMEOUT: "120"
     SELFHOSTED_ROUTING_CONFIG: /devenv/assessor-routing/routing.yaml
-  id: garden-ephemeral
-  image: ghcr.io/vividynamics/coordinare-performer-full:2026.10.137
+  id: sample-ephemeral
+  image: ghcr.io/example-org/coordinare-performer-full:2026.10.137
   mode: ephemeral
   roles:
   - assessor
@@ -137,8 +137,8 @@ performer_endpoints:
     LITELLM_PROXY_AUTH_TOKEN: ${LITELLM_MASTER_KEY}
     LITELLM_PROXY_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
     OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
-  id: garden-bootstrap
-  image: ghcr.io/vividynamics/coordinare-performer-full:2026.10.137
+  id: sample-bootstrap
+  image: ghcr.io/example-org/coordinare-performer-full:2026.10.137
   mode: ephemeral
   readiness_timeout_s: 300
   roles:
@@ -195,18 +195,18 @@ stuck_alerts:
 symphonies:
 - enabled: false
   github_project_number: 14
-  name: dettmore-platform
+  name: sampleapp-platform
   overrides:
-    assignee_filter: ViviDynamics-AIR
-    project_name: dettmore-platform
+    assignee_filter: ExampleOrg-AIR
+    project_name: sampleapp-platform
 - enabled: true
   github_project_number: 16
-  name: conductor-e2e
+  name: sample-integration
   overrides:
-    assignee_filter: ViviDynamics-AIR
-    project_name: conductor-e2e-sample
+    assignee_filter: ExampleOrg-AIR
+    project_name: integration-sample
 trusted_dashboard_hosts:
 - coordinare.default.svc.cluster.local
 - coordinare.default
 - coordinare
-- coordinare.vividynamics.com
+- coordinare.example.test

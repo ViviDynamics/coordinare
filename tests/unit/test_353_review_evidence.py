@@ -165,7 +165,7 @@ async def test_cancelled_review_preparation_drains_source_reads():
 
 
 @pytest.mark.asyncio
-async def test_elm_sequence_schema_then_two_coverage_revisions():
+async def test_sampledb_sequence_schema_then_two_coverage_revisions():
     discovery_outputs = [None, 'schema_invalid', 'valid', 'valid', 'valid']
     review_count = 0
     budget = AttemptBudget()

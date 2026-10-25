@@ -324,8 +324,8 @@ class TestPodManifest:
             _config(
                 volumes=[
                     VolumeMount(
-                        host_path="/var/lib/coordinare/devenv/website",
-                        container_path="/devenv/website",
+                        host_path="/var/lib/coordinare/devenv/sampleweb",
+                        container_path="/devenv/sampleweb",
                         mode="ro",
                     ),
                 ],
@@ -1005,16 +1005,16 @@ class TestTheCacheMountMirrorsTheDockerPath:
         )
 
     def test_a_bootstrap_mount_is_read_write_at_its_own_subpath(self) -> None:
-        manifest = self._built([self._mount("website", "rw")])
+        manifest = self._built([self._mount("sampleweb", "rw")])
         mounts = manifest["spec"]["containers"][0]["volumeMounts"]
 
         assert len(mounts) == 1
-        assert mounts[0]["mountPath"] == "/devenv/website"
-        assert mounts[0]["subPath"] == "website"
+        assert mounts[0]["mountPath"] == "/devenv/sampleweb"
+        assert mounts[0]["subPath"] == "sampleweb"
         assert not mounts[0].get("readOnly", False)
 
     def test_a_consumer_mount_is_read_only(self) -> None:
-        mounts = self._built([self._mount("website", "ro")])["spec"]["containers"][0]["volumeMounts"]
+        mounts = self._built([self._mount("sampleweb", "ro")])["spec"]["containers"][0]["volumeMounts"]
 
         assert mounts[0]["readOnly"] is True, (
             "a consumer holding a read-write mount is how two performers end up "
@@ -1022,23 +1022,23 @@ class TestTheCacheMountMirrorsTheDockerPath:
         )
 
     def test_one_symphony_cannot_reach_another_through_its_mount(self) -> None:
-        mounts = self._built([self._mount("website", "ro")])["spec"]["containers"][0]["volumeMounts"]
+        mounts = self._built([self._mount("sampleweb", "ro")])["spec"]["containers"][0]["volumeMounts"]
 
-        assert mounts[0]["subPath"] == "website"
+        assert mounts[0]["subPath"] == "sampleweb"
         assert all(m["mountPath"] != "/devenv" for m in mounts), (
             "mounting the claim root exposes every symphony's cache to every performer"
         )
 
     def test_several_symphonies_each_get_their_own_subpath(self) -> None:
         mounts = self._built(
-            [self._mount("website", "ro"), self._mount("inhouse", "ro")],
+            [self._mount("sampleweb", "ro"), self._mount("inhouse", "ro")],
         )["spec"]["containers"][0]["volumeMounts"]
 
-        assert {m["subPath"] for m in mounts} == {"website", "inhouse"}
+        assert {m["subPath"] for m in mounts} == {"sampleweb", "inhouse"}
         assert len({m["name"] for m in mounts}) == 1, "one claim, several subpaths"
 
     def test_the_claim_is_declared_once_however_many_mounts(self) -> None:
-        manifest = self._built([self._mount("website", "ro"), self._mount("inhouse", "ro")])
+        manifest = self._built([self._mount("sampleweb", "ro"), self._mount("inhouse", "ro")])
         volumes = manifest["spec"]["volumes"]
 
         assert len(volumes) == 1
@@ -1046,7 +1046,7 @@ class TestTheCacheMountMirrorsTheDockerPath:
 
     def test_no_claim_means_no_mounts_and_no_failure(self) -> None:
         """Spec 146 FR-012: a cluster with no cache runs cold, not broken."""
-        manifest = self._built([self._mount("website", "ro")], cache_claim=None)
+        manifest = self._built([self._mount("sampleweb", "ro")], cache_claim=None)
 
         assert "volumeMounts" not in manifest["spec"]["containers"][0]
         assert "volumes" not in manifest["spec"]
@@ -1069,10 +1069,10 @@ class TestTheCacheMountMirrorsTheDockerPath:
             container_path="/workspace",
             mode="rw",
         )
-        manifest = self._built([workspace, self._mount("website", "ro")])
+        manifest = self._built([workspace, self._mount("sampleweb", "ro")])
         mounts = manifest["spec"]["containers"][0]["volumeMounts"]
 
-        assert [m["mountPath"] for m in mounts] == ["/devenv/website"], (
+        assert [m["mountPath"] for m in mounts] == ["/devenv/sampleweb"], (
             "a non-devenv volume was mounted onto the shared NFS claim"
         )
 
@@ -1118,7 +1118,7 @@ class TestTheCacheMountCannotBeTalkedIntoTheWrongPlace:
         """
         mounts = self._built(
             [
-                self._vol("/var/lib/coordinare/devenv/website", "/devenv/website"),
+                self._vol("/var/lib/coordinare/devenv/sampleweb", "/devenv/sampleweb"),
                 self._vol("/etc/secrets", "/secrets"),
             ],
             devenv_root="/",
@@ -1141,14 +1141,14 @@ class TestTheCacheMountCannotBeTalkedIntoTheWrongPlace:
         """
         mounts = self._built(
             [
-                self._vol("/var/lib/coordinare/devenv/website", "/devenv/website", "ro"),
-                self._vol("/mnt/other/website", "/devenv/website-2", "rw"),
+                self._vol("/var/lib/coordinare/devenv/sampleweb", "/devenv/sampleweb", "ro"),
+                self._vol("/mnt/other/sampleweb", "/devenv/sampleweb-2", "rw"),
             ],
         )["spec"]["containers"][0]["volumeMounts"]
 
         by_path = {m["mountPath"]: m for m in mounts}
-        assert by_path["/devenv/website"]["subPath"] == "website"
-        assert by_path["/devenv/website-2"]["subPath"] == "website-2"
+        assert by_path["/devenv/sampleweb"]["subPath"] == "sampleweb"
+        assert by_path["/devenv/sampleweb-2"]["subPath"] == "sampleweb-2"
         assert len({m["subPath"] for m in mounts}) == len(mounts), (
             "two mounts share a subPath; one symphony is inside another's cache"
         )
@@ -1160,19 +1160,19 @@ class TestTheCacheMountCannotBeTalkedIntoTheWrongPlace:
     def test_the_subpath_matches_the_directory_the_mount_path_names(self) -> None:
         """Derived from one source, so the two cannot disagree."""
         mounts = self._built(
-            [self._vol("/anywhere/at/all", "/devenv/website")],
+            [self._vol("/anywhere/at/all", "/devenv/sampleweb")],
         )["spec"]["containers"][0]["volumeMounts"]
 
-        assert mounts[0]["subPath"] == "website"
-        assert mounts[0]["mountPath"] == "/devenv/website"
+        assert mounts[0]["subPath"] == "sampleweb"
+        assert mounts[0]["mountPath"] == "/devenv/sampleweb"
 
     def test_a_path_that_merely_starts_with_the_root_is_not_under_it(self) -> None:
         """`/devenvil/x`.startswith(`/devenv`) is True and means nothing."""
         mounts = self._built(
-            [self._vol("/x/y", "/devenvil/x"), self._vol("/a/b", "/devenv/website")],
+            [self._vol("/x/y", "/devenvil/x"), self._vol("/a/b", "/devenv/sampleweb")],
         )["spec"]["containers"][0]["volumeMounts"]
 
-        assert [m["mountPath"] for m in mounts] == ["/devenv/website"]
+        assert [m["mountPath"] for m in mounts] == ["/devenv/sampleweb"]
 
     def test_a_nested_path_under_the_root_is_refused(self) -> None:
         """The claim is laid out one directory per symphony. A deeper path has
@@ -1180,7 +1180,7 @@ class TestTheCacheMountCannotBeTalkedIntoTheWrongPlace:
         import pytest
 
         with pytest.raises(ValueError, match="subpath"):
-            self._built([self._vol("/a/b", "/devenv/website/inner")])
+            self._built([self._vol("/a/b", "/devenv/sampleweb/inner")])
 
     def test_the_root_itself_is_not_a_symphony(self) -> None:
         import pytest

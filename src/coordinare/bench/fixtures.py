@@ -7,8 +7,8 @@ applies to make CI pass (deterministic integration test), and a planted
 ``ground_truth`` marker consumed later by spec 135 (unused in Phase 1).
 
 The manifest is a YAML file with inline file contents so a single-file fixture set
-needs no external repo. Whole-lifecycle fixtures for real runs live in the sibling
-``ViviDynamics/conductor-bench`` repo and are referenced by a manifest path.
+needs no external repo. Whole-lifecycle fixtures for isolated runs live in an operator-selected synthetic
+repository and are referenced by a manifest path.
 """
 
 from __future__ import annotations

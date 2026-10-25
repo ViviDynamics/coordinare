@@ -1,6 +1,6 @@
 """Integration test for spec-092 US1: configured test-env unblocks the dry-run.
 
-The headline repro is the ``website`` symphony's postgres "Connection refused": the
+The headline repro is the ``sampleweb`` symphony's postgres "Connection refused": the
 service-inference start-phase dry-run rejected the manifest because ``POSTGRESQL_PASSWORD``
 was unset, so the postgres gate tripped ``exit 75`` (EX_TEMPFAIL) and the manifest was
 never accepted — leaving a stale ``services-start.sh`` that never booted postgres.
@@ -38,7 +38,7 @@ from coordinare_service_inference.validator import validate
 from coordinare.config import TestEnvConfig
 from coordinare.services.test_env_loader import load_test_env
 
-# The website symphony's postgres admin-secret env var name (a NAME, never a value).
+# The sampleweb symphony's postgres admin-secret env var name (a NAME, never a value).
 PW_VAR = "POSTGRESQL_PASSWORD"
 GATE_EXIT = 75  # EX_TEMPFAIL — the unset-secret gate in services-start.sh.
 

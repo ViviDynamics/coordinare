@@ -312,11 +312,11 @@ class TestPushBranch:
         stand = Stand(path=tmp_path, branch="feat/x")
         verbose = (
             "17:26:10.642523 http.c:889 == Info: Request completely sent off\n"
-            "To https://github.com/ViviDynamics/website.git\n"
+            "To https://github.com/ExampleOrg/sampleweb.git\n"
             "! [remote rejected] HEAD -> feat/x "
             "(refusing to allow a GitHub App to create or update workflow "
             "`.github/workflows/main-branch-build.yml` without `workflows` permission)\n"
-            "error: failed to push some refs to 'https://github.com/ViviDynamics/website.git'\n"
+            "error: failed to push some refs to 'https://github.com/ExampleOrg/sampleweb.git'\n"
         )
         proc_fail = MagicMock()
         proc_fail.returncode = 1
@@ -790,7 +790,7 @@ class TestActivateEnvCache:
         BASH_ENV, profile-set vars cancelled out of the delta — so cache_env
         lacked LD_LIBRARY_PATH and snapshot-style agents (claude_code) couldn't
         load native extensions (psych/libyaml: Rails wouldn't boot, QA couldn't
-        screenshot — observed live on website PR #173). The reference run must
+        screenshot - observed live on sampleweb PR #173). The reference run must
         NOT source the profile, and the profile's re-entry guard
         (_DEVENV_SOURCED) plus BASH_ENV/ENV themselves must be filtered: leaking
         _DEVENV_SOURCED=1 into agent shells would suppress profile sourcing for

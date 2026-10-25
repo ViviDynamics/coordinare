@@ -16,7 +16,7 @@ SERVICE = {'id': 'postgres', 'required': True,
            **{stage: {'id': f'postgres-{stage}', 'argv': ['true'], 'scope': ['database']}
               for stage in ('start', 'health', 'stop')}}
 ECHO = {'id': 'echo', 'argv': [sys.executable, '-c', 'import os; print(os.environ["PGPASSWORD"], os.environ["DSN"]); raise SystemExit(1)'],
-        'env': {'PGPASSWORD': '${PGPASSWORD}', 'DSN': 'postgres://postgres:${PGPASSWORD}@localhost/elm'}, 'required': True}
+        'env': {'PGPASSWORD': '${PGPASSWORD}', 'DSN': 'postgres://postgres:${PGPASSWORD}@localhost/sampledb'}, 'required': True}
 
 
 def manifest(checks=(ECHO,)):

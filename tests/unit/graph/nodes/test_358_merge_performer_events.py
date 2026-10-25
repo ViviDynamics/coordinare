@@ -2,7 +2,7 @@
 
 Backends re-report their entire accumulated event list on every poll. The old
 code appended that whole list to what was already stored, so the 100-entry
-buffer filled with copies. Measured live on website card #106 mid-turn:
+buffer filled with copies. Measured live on sampleweb card #106 mid-turn:
 
     total events: 40
       01:16:39 progress | implementer.baseline

@@ -111,7 +111,7 @@ def test_non_ci_files_count_even_when_they_publish(path):
     assert selection.required == (X86,) and selection.excluded == ()
 
 
-def test_elm_style_compose_and_guest_image_dockerfile_still_select_x86():
+def test_sampledb_style_compose_and_guest_image_dockerfile_still_select_x86():
     selection = select([
         ('compose.full.yaml', 'services:\n  api:\n    platform: linux/amd64\n'),
         ('guest-image/Dockerfile', 'FROM --platform=linux/amd64 ${GOLANG_IMAGE} AS agent-modules\n'),

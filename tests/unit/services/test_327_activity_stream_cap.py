@@ -1,6 +1,6 @@
 """327: one runaway delta stream must not evict the rest of the feed.
 
-Live incident (website #160): a degenerate model loop emitted ~10 delta events
+Live incident (sampleweb #160): a degenerate model loop emitted ~10 delta events
 per second. Each became its own entry in the process-wide 2000-entry activity
 log, so within minutes the log held nothing but that one stream and every other
 card's activity had been evicted -- which is precisely what made the loop hard

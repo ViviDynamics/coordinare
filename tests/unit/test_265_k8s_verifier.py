@@ -40,7 +40,7 @@ from tests.unit.env_manifest_fixture import reviewed_metadata, verification_outp
 
 CLAIM = "coordinare-devenv-cache"
 NAMESPACE = "coordinare-performers"
-MOUNT = "/devenv/dettmore-platform-615891"
+MOUNT = "/devenv/sampleapp-platform-615891"
 PROJECT = {"Gemfile": "source 'https://rubygems.org'\n", ".ruby-version": "3.4.2\n"}
 
 
@@ -48,7 +48,7 @@ def _manifest(**overrides: Any) -> dict[str, Any]:
     fields: dict[str, Any] = {
         "image": "coordinare-performer:full",
         "cache_claim": CLAIM,
-        "cache_subpath": "dettmore-platform-615891",
+        "cache_subpath": "sampleapp-platform-615891",
         "mount_path": MOUNT,
         "verify_text": "exit 0\n",
         "project_files": PROJECT,
@@ -69,7 +69,7 @@ def test_the_claim_is_mounted_read_only_at_the_consumer_path_from_the_symphony_s
     manifest = _manifest()
     mount = _container(manifest)["volumeMounts"][0]
     assert mount == {
-        "name": "devenv-cache", "mountPath": MOUNT, "subPath": "dettmore-platform-615891", "readOnly": True,
+        "name": "devenv-cache", "mountPath": MOUNT, "subPath": "sampleapp-platform-615891", "readOnly": True,
     }
     claim = manifest["spec"]["volumes"][0]["persistentVolumeClaim"]
     assert claim == {"claimName": CLAIM, "readOnly": True}
@@ -103,7 +103,7 @@ def test_the_verify_runs_with_stdin_closed_from_a_file() -> None:
 
 
 def test_the_pod_name_is_a_bounded_dns_label() -> None:
-    name = verifier_pod_name("Dettmore_Platform " * 20)
+    name = verifier_pod_name("SampleApp_Platform " * 20)
     assert len(name) <= 63
     assert name == name.lower()
     assert name.startswith("coordinare-verify-")
@@ -124,8 +124,8 @@ def test_project_files_are_bounded_in_bytes() -> None:
 
 # --- the in-pod setup, run for real ----------------------------------------------------------------------------------
 def _layout(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """Garden's layout: a vendored Gemfile at the cache root, a relative BUNDLE_PATH, and a checkout elsewhere."""
-    cache = tmp_path / "devenv" / "dettmore-platform-615891"
+    """SampleHost's layout: a vendored Gemfile at the cache root, a relative BUNDLE_PATH, and a checkout elsewhere."""
+    cache = tmp_path / "devenv" / "sampleapp-platform-615891"
     (cache / "project" / "bundle").mkdir(parents=True)
     (cache / ".bundle").mkdir(parents=True)
     (cache / ".bundle" / "config").write_text('BUNDLE_PATH: "project/bundle"\n')
@@ -264,11 +264,11 @@ def _runtime(core: _FakeCoreV1, *, claim: str | None = CLAIM) -> KubernetesRunti
 
 async def _run(runtime: KubernetesRuntime) -> tuple[bool | None, str]:
     spec = VerifierSpec(
-        image="coordinare-performer:full", cache_claim="", cache_subpath="dettmore-platform-615891",
+        image="coordinare-performer:full", cache_claim="", cache_subpath="sampleapp-platform-615891",
         mount_path=MOUNT, verify_text="exit 0\n", project_files=PROJECT,
         source_inputs={path: hashlib.sha256(text.encode()).hexdigest() for path, text in PROJECT.items()},
     )
-    return await runtime.run_verifier(slug="dettmore-platform-615891", spec=spec, poll_interval_s=0)
+    return await runtime.run_verifier(slug="sampleapp-platform-615891", spec=spec, poll_interval_s=0)
 
 
 @pytest.mark.asyncio
@@ -347,9 +347,9 @@ def _persona(runtime: object, *, verify_provided: bool = True) -> str:
     svc = HTTPPerformerService(config, runtime=runtime)
     ctx: dict[str, Any] = {
         "job_type": "env_bootstrap",
-        "symphony_name": "dettmore",
-        "symphony_org": "ViviDynamics",
-        "symphony_repo": "dettmore-platform",
+        "symphony_name": "sampleapp",
+        "symphony_org": "ExampleOrg",
+        "symphony_repo": "sampleapp-platform",
         "env_spec_files": ["README.md"],
         "env_spec_contents": {"README.md": "## Environment\n\nVerification runs in CLEANROOM_MARKER.\n"},
         "cache_mount_path": MOUNT,
@@ -382,13 +382,13 @@ def test_on_docker_the_persona_requires_the_same_reviewed_contract() -> None:
 
 
 
-# --- garden's layout: the rendered verify passes in the pod against the existing cache, without reinstalling -----------
+# --- samplehost's layout: the rendered verify passes in the pod against the existing cache, without reinstalling -----------
 def _fake(path: Path, body: str) -> None:
     path.write_text("#!/bin/sh\n" + body)
     path.chmod(0o755)
 
 
-def test_the_rendered_verify_passes_on_garden_s_cache_in_the_pod(tmp_path: Path) -> None:
+def test_the_rendered_verify_passes_on_samplehost_s_cache_in_the_pod(tmp_path: Path) -> None:
     cache, _checkout, other = _layout(tmp_path)
     ruby_bin = cache / ".rbenv" / "versions" / "3.4.2" / "bin"
     ruby_bin.mkdir(parents=True)

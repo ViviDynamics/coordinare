@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# 077: push the conductor-bench fixture branches and open the review-target PRs,
+# 077: push the sample-bench fixture branches and open the review-target PRs,
 # then write the {role: pr_url} map persona_bench.py consumes. Idempotent-ish:
 # re-running reuses existing PRs (gh pr create fails loudly if one exists; we
 # fall back to `gh pr view`).
 #
-# Prereq: the bench repo must already exist remotely (the fine-grained PAT can't
-# create repos — have an admin create an empty private ViviDynamics/conductor-bench
-# first). Pass its clone URL as $1.
+# Prereq: create an isolated synthetic benchmark repository before running this
+# script. Pass its clone URL as $1.
 #
 # Usage: scripts/bench_setup.sh <repo_git_url> [bench_local_dir]
 set -euo pipefail
 REPO_URL="${1:?usage: bench_setup.sh <repo_git_url> [bench_local_dir]}"
-BENCH_DIR="${2:-$(cd "$(dirname "$0")/../.." && pwd)/conductor-bench}"
+BENCH_DIR="${2:-$(cd "$(dirname "$0")/../.." && pwd)/sample-bench}"
 COORDINARE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PRS_OUT="$COORDINARE_DIR/tmp/bench_prs.json"
 export GH_TOKEN="$(cat "$COORDINARE_DIR/../.gh_token" 2>/dev/null || grep '^GH_TOKEN=' "$COORDINARE_DIR/.env" | cut -d= -f2)"
@@ -35,7 +34,7 @@ for pair in $PR_PAIRS; do
   if [ -z "$url" ]; then
     url="$(gh pr create --base main --head "$br" \
         --title "bench($role): $br" \
-        --body "conductor-bench fixture PR for the $role persona benchmark. Do not merge." \
+        --body "sample-bench fixture PR for the $role persona benchmark. Do not merge." \
         2>/dev/null | tail -1)"
   fi
   echo "  $role -> $url"

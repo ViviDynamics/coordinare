@@ -78,12 +78,12 @@ def _daemon(state: dict[str, Any]) -> CoordinareDaemon:
 def _bootstrap_context(**extra: Any) -> dict[str, Any]:
     ctx: dict[str, Any] = {
         "job_type": "env_bootstrap",
-        "symphony_name": "dettmore",
-        "symphony_org": "ViviDynamics",
-        "symphony_repo": "dettmore-platform",
+        "symphony_name": "sampleapp",
+        "symphony_org": "ExampleOrg",
+        "symphony_repo": "sampleapp-platform",
         "env_spec_files": ["README.md"],
         "env_spec_contents": {"README.md": "## Setup"},
-        "cache_mount_path": "/devenv/dettmore-platform-615891",
+        "cache_mount_path": "/devenv/sampleapp-platform-615891",
     }
     ctx.update(extra)
     return ctx
@@ -101,10 +101,10 @@ def _svc() -> HTTPPerformerService:
 # ---------------------------------------------------------------------------
 def test_dispatch_model_carries_the_rendered_scripts() -> None:
     payload = BootstrapJobPayload(
-        symphony_name="dettmore",
-        symphony_org="ViviDynamics",
-        symphony_repo="dettmore-platform",
-        cache_mount_path="/devenv/dettmore-platform-615891",
+        symphony_name="sampleapp",
+        symphony_org="ExampleOrg",
+        symphony_repo="sampleapp-platform",
+        cache_mount_path="/devenv/sampleapp-platform-615891",
         rendered_verify_sh=RENDERED_VERIFY,
         rendered_activate_sh=RENDERED_ACTIVATE,
     )
@@ -137,7 +137,7 @@ def test_payload_builder_with_no_rendered_scripts_is_unchanged() -> None:
     payload = _svc()._build_env_bootstrap_payload(_bootstrap_context())
 
     assert payload.bootstrap_scripts is None
-    assert payload.env_cache_path == "/devenv/dettmore-platform-615891"
+    assert payload.env_cache_path == "/devenv/sampleapp-platform-615891"
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ def _k8s_daemon(
     daemon = _daemon(_state(state_dir, transport=transport, verify=verify))
     daemon._state["symphony_configs"] = {
         "sym": SimpleNamespace(
-            effective_config=lambda _g: SimpleNamespace(github_org="ViviDynamics", project_name=None),
+            effective_config=lambda _g: SimpleNamespace(github_org="ExampleOrg", project_name=None),
         ),
     }
     daemon._state["coordinare_config"] = SimpleNamespace(

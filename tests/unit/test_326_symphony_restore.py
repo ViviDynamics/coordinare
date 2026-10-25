@@ -30,8 +30,8 @@ def snapshot():
 @pytest.mark.asyncio
 async def test_unfocused_sessions_survive_first_symphony_cycle(monkeypatch):
     daemon = CoordinareDaemon(AsyncMock())
-    runtime = SymphonyRuntimeState(name='website')
-    daemon._state['symphony_states'] = {'website': runtime}
+    runtime = SymphonyRuntimeState(name='sampleweb')
+    daemon._state['symphony_states'] = {'sampleweb': runtime}
     daemon._restore_from_snapshot(snapshot())
     observed = []
 
@@ -54,7 +54,7 @@ async def test_unfocused_sessions_survive_first_symphony_cycle(monkeypatch):
         observed.append(select_pipelines(sessions, 1, {'0', '1'}))
 
     monkeypatch.setattr(daemon, '_invoke_multi_session', first_tick)
-    await daemon._conduct_single_symphony('website', SimpleNamespace())
+    await daemon._conduct_single_symphony('sampleweb', SimpleNamespace())
     assert observed == [{'0'}]
     assert len(runtime.active_sessions) == 6
 
@@ -103,14 +103,14 @@ async def test_daemon_start_runs_real_board_graph_with_unfocused_history(monkeyp
     store = SimpleNamespace(load=AsyncMock(return_value=snapshot()), save=AsyncMock())
     daemon = CoordinareDaemon(builder.compile(), state_store=store, max_cycles=1,
                              sleep_func=AsyncMock())
-    runtime = SymphonyRuntimeState(name='website')
+    runtime = SymphonyRuntimeState(name='sampleweb')
     board = {'snapshot': {'TODO': list(saved_sessions())},
              'titles': dict.fromkeys(saved_sessions(), 'Implement feature'),
              'descriptions': dict.fromkeys(saved_sessions(), 'Deliver feature')}
     github = SimpleNamespace(project_id='project', poll_board=AsyncMock(return_value=board))
-    daemon._state.update(symphony_states={'website': runtime},
-                         symphony_configs={'website': SimpleNamespace(enabled=True)},
-                         symphony_github_services={'website': github})
+    daemon._state.update(symphony_states={'sampleweb': runtime},
+                         symphony_configs={'sampleweb': SimpleNamespace(enabled=True)},
+                         symphony_github_services={'sampleweb': github})
     monkeypatch.setattr('coordinare.services.reconciliation.run_startup_reconciliation',
                         AsyncMock(return_value=SimpleNamespace(docker_unreachable=False)))
     monkeypatch.setattr(daemon, '_install_signal_handlers', lambda: None)

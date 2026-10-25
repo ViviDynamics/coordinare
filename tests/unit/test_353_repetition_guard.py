@@ -1,6 +1,6 @@
 """A reply that degenerates into exact repetition is stopped while it streams, not at the output cap.
 
-On Dettmore the GLM route looped on four replies in v21 alone ("flux? no — just finish:" and "1 | 1 | 1"),
+On SampleApp the GLM route looped on four replies in v21 alone ("flux? no - just finish:" and "1 | 1 | 1"),
 each running to the 32 K cap at about 11 tokens a second. Discovery calls now stream, and the transport
 stops reading once a tail repeats exactly; the author gets the cut-off reply back with guidance.
 """

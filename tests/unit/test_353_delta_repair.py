@@ -36,12 +36,12 @@ from coordinare.services.environment_shard_construction import (
 from coordinare.services.environment_shard_scope import AgentContext
 from tests.unit.test_351_environment_discovery import CAPABILITIES
 
-FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "353_v40_gen0_failure.json"
-COMMIT = "bf498e843ba58362dc6abe122b91129f7c66351f"
+FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "353_sample_install_failure.json"
+COMMIT = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 
 def load_gen0() -> tuple[env.EnvironmentManifest, env.VerificationReport]:
-    """The v40 gen0 failure. Its scope contract is not stored in the fixture, so records are typed and the manifest is
+    """The sample installation failure. Its scope contract is not stored in the fixture, so records are typed and the manifest is
     built without the schema-3 scope validator; triage and admission read only the records."""
     data = json.loads(FIXTURE.read_text())
     raw = data["manifest"]
@@ -154,7 +154,7 @@ def test_changed_ids_names_changed_added_and_removed_records():
 
 # --- triage ---------------------------------------------------------------------------------------------------------
 
-def test_the_v40_gen0_failure_triages_to_its_install_and_prerequisite_only():
+def test_the_sample_install_failure_triages_to_its_install_and_prerequisite_only():
     manifest, report = load_gen0()
     triage = triage_failure(manifest, report)
 
@@ -236,7 +236,7 @@ def test_the_delta_switch_turns_delta_repair_off_and_defaults_to_on():
     assert _delta_repair(options, DiscoveryLimits(), budget) is False
 
 
-# --- replay of the v40 gen0 failure ---------------------------------------------------------------------------------
+# --- replay of the sample installation failure ---------------------------------------------------------------------------------
 
 class Counter:
     def __init__(self) -> None:
@@ -293,13 +293,13 @@ def gen0_budget(triage) -> AttemptBudget:
 
 @pytest.fixture
 def replay():
-    """The v40 gen0 failure: its manifest, triage and a call counter shared by the stubs of one test."""
+    """The sample installation failure: its manifest, triage and a call counter shared by the stubs of one test."""
     manifest, report = load_gen0()
     return SimpleNamespace(manifest=manifest, triage=triage_failure(manifest, report), counter=Counter())
 
 
 @pytest.mark.asyncio
-async def test_replay_v40_delta_authors_only_the_closure_and_adds_no_duplicate_check(replay, monkeypatch):
+async def test_replay_sample_delta_authors_only_the_closure_and_adds_no_duplicate_check(replay, monkeypatch):
     manifest, triage, counter = replay.manifest, replay.triage, replay.counter
     plan = DeltaPlan(manifest, triage)
     changed = delta_for(manifest, "install-helm-gh", argv=["bash", "-c", "set -e; ver=3.17.0; curl -fsSL https://get.helm.sh/helm-$ver.tgz -o /tmp/h.tgz"])
@@ -334,7 +334,7 @@ async def test_replay_v40_delta_authors_only_the_closure_and_adds_no_duplicate_c
 
 
 @pytest.mark.asyncio
-async def test_replay_v40_full_path_authors_every_part_for_comparison(replay, monkeypatch):
+async def test_replay_sample_full_path_authors_every_part_for_comparison(replay, monkeypatch):
     manifest, triage, counter = replay.manifest, replay.triage, replay.counter
     groups, _criteria = fixture_groups(manifest)
     build = FakeBuild(groups, manifest, counter)
@@ -373,7 +373,7 @@ class FreshInspection:
 
 
 @pytest.mark.asyncio
-async def test_replay_v40_review_judges_only_the_changed_part_and_carries_the_rest(replay, monkeypatch):
+async def test_replay_sample_review_judges_only_the_changed_part_and_carries_the_rest(replay, monkeypatch):
     manifest, triage, counter = replay.manifest, replay.triage, replay.counter
     plan = DeltaPlan(manifest, triage)
     groups, _criteria = fixture_groups(manifest)

@@ -179,7 +179,7 @@ async def invoke_recorded(budget: AttemptBudget, chat: Callable[..., Awaitable[s
 
 
 # Output caps (including hidden reasoning) where valid replies are far below the global maximum: a backstop for
-# repetition the stream guard cannot see. Largest valid replies on Dettmore at low effort (v5 to v21): triage
+# repetition the stream guard cannot see. Largest valid replies in the low-effort regression captures: triage
 # 4,875; scope authoring, review and revision 4,147; executable review 11,494; check authors 14,969. The
 # executable author ('discovery') writes whole manifests of about 17 K and keeps the configured maximum.
 OUTPUT_CAPS = {'scope_triage': 16384, 'scope_shard_author': 12288, 'scope_shard_review': 12288,

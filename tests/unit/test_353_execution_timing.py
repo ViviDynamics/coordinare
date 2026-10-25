@@ -17,7 +17,7 @@ def _report(**results):
 
 
 def test_phase_total_sums_only_commands_that_ran_and_emits_one_event_each(capsys):
-    total = command_timing('installer', 'dettmore', _report())
+    total = command_timing('installer', 'sampleapp', _report())
     assert total == 12.75
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [event['command'] for event in events] == ['install-gh', 'install-helm']
@@ -27,8 +27,8 @@ def test_phase_total_sums_only_commands_that_ran_and_emits_one_event_each(capsys
 
 
 def test_missing_or_unparsed_evidence_contributes_no_time(capsys):
-    assert command_timing('clean_consumer', 'dettmore', None) == 0
-    assert command_timing('clean_consumer', 'dettmore', {'results': []}) == 0
+    assert command_timing('clean_consumer', 'sampleapp', None) == 0
+    assert command_timing('clean_consumer', 'sampleapp', {'results': []}) == 0
     assert capsys.readouterr().out == ''
 
 

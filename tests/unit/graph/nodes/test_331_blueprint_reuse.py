@@ -1,6 +1,6 @@
 """331: a still-valid blueprint must survive a restart instead of being replanned.
 
-Website #160 committed "chore: add architecture plan for #160" three separate
+SampleWeb #160 committed "chore: add architecture plan for #160" three separate
 times across restarts. The spec-125 verdict cache could never help: it keys on
 the live PR head, and at planning time there is no PR. So planning reuse is
 keyed on the REQUIREMENTS instead.

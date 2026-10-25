@@ -30,12 +30,12 @@ var document;
 
 eval(src);
 
-// A two-symphony snapshot. P-cards belong to placeholder, C-cards to conductor-e2e.
+// A two-symphony snapshot. P-cards belong to placeholder, C-cards to sample-integration.
 function snapshot() {
   return {
     symphonies: [
       {
-        name: "placeholder", github_project_number: 16, github_org: "ViviDynamics", repo: "placeholder-sample", cycle_count: 4,
+        name: "placeholder", github_project_number: 16, github_org: "ExampleOrg", repo: "demo-sample", cycle_count: 4,
         state: {
           board_snapshot: { TODO: ["P1"], BLOCKED: [], IN_PROGRESS: ["P2"], IN_REVIEW: [], DONE: ["P9"], BACKLOG: ["P8"] },
           board_titles: { P1: "Placeholder card" },
@@ -43,7 +43,7 @@ function snapshot() {
         },
       },
       {
-        name: "conductor-e2e", github_project_number: 3, github_org: "ViviDynamics", repo: "conductor-e2e-sample",
+        name: "sample-integration", github_project_number: 3, github_org: "ExampleOrg", repo: "integration-sample",
         state: {
           board_snapshot: { TODO: [], BLOCKED: ["C1"], IN_PROGRESS: [], IN_REVIEW: [], DONE: [], BACKLOG: [] },
           board_titles: {}, active_sessions: {},
@@ -67,7 +67,7 @@ function snapshot() {
       today: { tokens: { total: 99 } }, week: { tokens: { total: 199 } },
       by_symphony: {
         placeholder: { today: { tokens: { total: 4 } }, week: { tokens: { total: 14 } } },
-        "conductor-e2e": { today: { tokens: { total: 5 } }, week: { tokens: { total: 15 } } },
+        "sample-integration": { today: { tokens: { total: 5 } }, week: { tokens: { total: 15 } } },
       },
     },
   };
@@ -85,7 +85,7 @@ check("an unknown stored choice falls back to All", resolveSymphonyChoice("", "g
 check("nothing chosen is All", resolveSymphonyChoice("", "", ["a", "b"]), "");
 check("a removed symphony never hides everything", resolveSymphonyChoice("gone", "gone", ["a"]), "");
 
-check("deep link read from a query", symphonyParamFromSearch("?symphony=conductor-e2e"), "conductor-e2e");
+check("deep link read from a query", symphonyParamFromSearch("?symphony=sample-integration"), "sample-integration");
 check("deep link among other parameters", symphonyParamFromSearch("?x=1&symphony=placeholder"), "placeholder");
 check("no deep link", symphonyParamFromSearch("?x=1"), "");
 check("empty query", symphonyParamFromSearch(""), "");
@@ -96,7 +96,7 @@ check("a bare parameter is ignored", symphonyParamFromSearch("?symphony"), "");
 const s = snapshot();
 check("a card in a board belongs to that symphony", symphonyOfCard(s, "P1"), "placeholder");
 check("a card only in the live sessions belongs to its symphony", symphonyOfCard(s, "P3"), "placeholder");
-check("a card in the other board belongs to the other symphony", symphonyOfCard(s, "C1"), "conductor-e2e");
+check("a card in the other board belongs to the other symphony", symphonyOfCard(s, "C1"), "sample-integration");
 check("an unknown card belongs to none", symphonyOfCard(s, "NOPE"), "");
 check("an empty card id belongs to none", symphonyOfCard(s, ""), "");
 
@@ -131,9 +131,9 @@ check("a missing block passes through", symphonySpend(undefined, "placeholder"),
 // --- identity line ------------------------------------------------------------
 const full = symphonyIdentity(s.symphonies[0]);
 check("the identity line reads name, project and repository", full.text,
-  "placeholder · GitHub Project #16 · ViviDynamics/placeholder-sample");
-check("the project links to the org's project", full.projectUrl, "https://github.com/orgs/ViviDynamics/projects/16");
-check("the repository links to GitHub", full.repoUrl, "https://github.com/ViviDynamics/placeholder-sample");
+  "placeholder · GitHub Project #16 · ExampleOrg/demo-sample");
+check("the project links to the org's project", full.projectUrl, "https://github.com/orgs/ExampleOrg/projects/16");
+check("the repository links to GitHub", full.repoUrl, "https://github.com/ExampleOrg/demo-sample");
 check("a name alone", symphonyIdentity({ name: "x" }).text, "x");
 check("an unknown project number is left out, not printed",
   symphonyIdentity({ name: "x", github_project_number: null, github_org: "o", repo: "r" }).text, "x · o/r");
@@ -167,9 +167,9 @@ const many = symphonySwitcherHtml(s, "");
 check("several symphonies get a select", many.includes('<select id="symphony-select"'), true);
 check("All symphonies is first and selected", many.includes('<option value="" selected>All symphonies</option>'), true);
 check("no identity line while All is chosen", many.includes('<span id="symphony-identity" class="muted"></span>'), true);
-const chosen = symphonySwitcherHtml(s, "conductor-e2e");
-check("the chosen symphony is selected", chosen.includes('<option value="conductor-e2e" selected>'), true);
-check("the header names the chosen symphony's identity", chosen.replace(/<[^>]+>/g, "").includes("conductor-e2e · GitHub Project #3 · ViviDynamics/conductor-e2e-sample"), true);
+const chosen = symphonySwitcherHtml(s, "sample-integration");
+check("the chosen symphony is selected", chosen.includes('<option value="sample-integration" selected>'), true);
+check("the header names the chosen symphony's identity", chosen.replace(/<[^>]+>/g, "").includes("sample-integration · GitHub Project #3 · ExampleOrg/integration-sample"), true);
 check("the header does not say Board", /board/i.test(many + chosen + one), false);
 const quoted = symphonySwitcherHtml({ symphonies: [{ name: "a\"b" }, { name: "c" }] }, "");
 check("an option value is escaped", quoted.includes('<option value="a&quot;b">a&quot;b</option>'), true);

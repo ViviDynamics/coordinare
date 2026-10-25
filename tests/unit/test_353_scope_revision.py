@@ -228,7 +228,7 @@ def test_only_a_required_criterion_released_as_remote_state_can_leave_the_requir
 
 
 def test_a_criterion_needing_the_network_on_every_run_is_released_like_remote_state():
-    """Maintainer decision 2026-10-24: Dettmore's dev compose stack runs apt-get on every start; v38's reviewers kept
+    """Maintainer decision 2026-10-24: SampleApp's dev compose stack runs apt-get on every start; v38's reviewers kept
     finding residual network fetches in offline workarounds for it."""
     from types import SimpleNamespace
 

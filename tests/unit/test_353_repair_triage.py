@@ -22,7 +22,7 @@ from coordinare.services.environment_repair_triage import (
 )
 from tests.unit.env_manifest_fixture import reviewed_metadata
 
-FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "353_v40_gen0_failure.json"
+FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "353_sample_install_failure.json"
 
 
 def build(*, install=(), checks=(), services=(), activation=None, requirements=(), criterion_checks=None):
@@ -186,8 +186,8 @@ def test_no_failure_is_not_a_triage():
         raise AssertionError("a triage needs a failed result")
 
 
-def test_v40_gen0_replay_closes_over_the_failing_helm_install_only():
-    """The real first generation: one failing command (install-helm-gh), everything else preflight-stopped."""
+def test_sample_install_replay_closes_over_the_failing_helm_install_only():
+    """The sample first generation: one failing command (install-helm-gh), everything else preflight-stopped."""
     data = json.loads(FIXTURE.read_text())
     records = data["manifest"]
     # Only the records are validated one by one; the whole reviewed contract (a 134 KB scope) is not needed to triage.

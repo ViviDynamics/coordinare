@@ -29,7 +29,7 @@ def test_a_variable_the_command_assigns_is_named_when_written_as_a_template(scri
 
 @pytest.mark.parametrize('script', [
     'curl -H "Authorization: Bearer ${API_TOKEN}" https://example',  # a runtime credential the command never assigns
-    'MAXIO_API_KEY=${MAXIO_API_KEY} bin/rails runner "exit 0"',  # passes a runtime value through to a child
+    'BILLINGVENDOR_API_KEY=${BILLINGVENDOR_API_KEY} bin/rails runner "exit 0"',  # passes a runtime value through to a child
     'HA=arm64; curl https://example/gh_$HA.tgz',  # a shell variable written without braces
     'export RBENV_ROOT=/x; echo ${RBENV_ROOT}',  # declared by activation
     'curl https://example/?token=${TOKEN}',  # a query parameter is not an assignment of TOKEN

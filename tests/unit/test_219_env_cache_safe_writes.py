@@ -91,7 +91,7 @@ def _service_models() -> list[ServiceEntry]:
         kind="postgres",
         init=ServiceInit(
             superuser="systemuser",
-            databases=["website_test"],
+            databases=["sampleweb_test"],
             password_env_var="POSTGRESQL_PASSWORD",
         ),
     )

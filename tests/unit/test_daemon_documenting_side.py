@@ -11,8 +11,8 @@ from coordinare.daemon import CoordinareDaemon
 
 
 class _GitHub:
-    org = "ViviDynamics"
-    _project_name = "website"
+    org = "ExampleOrg"
+    _project_name = "sampleweb"
 
 
 class _WM:
@@ -52,7 +52,7 @@ def _session():
     return {
         "card_id": "c1",
         "performer_stage": "implementing",
-        "current_symphony": "website",
+        "current_symphony": "sampleweb",
         "workspace_branch": "coordinare/c1/feature",
         "current_card": {"id": "c1", "title": "T", "body": "B", "issue_number": 5, "base_branch": "main"},
         "blueprint": {
@@ -70,13 +70,13 @@ def _session():
 async def test_resolve_builds_the_documenter_dispatch(monkeypatch):
     monkeypatch.setattr("coordinare.services.persona_service.get_effective_instructions", lambda role, personas: "TECH WRITER PERSONA")
     d = _daemon({
-        "symphony_workspace_managers": {"website": _WM()},
+        "symphony_workspace_managers": {"sampleweb": _WM()},
         "config": _Cfg(),
     })
-    resolved = await d._resolve_documenting_side("c1", _session(), {"website": _GitHub()})
+    resolved = await d._resolve_documenting_side("c1", _session(), {"sampleweb": _GitHub()})
     assert resolved is not None
     ctx, ws = resolved
-    assert ctx["role"] == "documenting" and ctx["repo_url"] == "https://github.com/ViviDynamics/website.git"
+    assert ctx["role"] == "documenting" and ctx["repo_url"] == "https://github.com/ExampleOrg/sampleweb.git"
     assert ctx["branch"] == "coordinare/c1/feature" and ctx["backend"] == "codex" and ctx["model"] == "example/model"
     assert ctx["persona_instructions"].startswith("TECH WRITER PERSONA")
     assert "write only inside the repository's documentation tree" in ctx["persona_instructions"]
@@ -91,7 +91,7 @@ async def test_resolve_returns_none_without_a_repo_or_token(monkeypatch):
     d = _daemon({"symphony_workspace_managers": {}, "config": _Cfg()})
     assert await d._resolve_documenting_side("c1", _session(), {}) is None  # no github service at all
     sess = _session()
-    assert await d._resolve_documenting_side("c1", sess, {"website": _GitHub()}) is None  # no token
+    assert await d._resolve_documenting_side("c1", sess, {"sampleweb": _GitHub()}) is None  # no token
 
 
 @pytest.mark.asyncio
@@ -114,14 +114,14 @@ async def test_cycle_dispatches_and_tracks_the_poll(monkeypatch):
     d = _daemon({
         "performer_services": {"documenting": svc},
         "active_sessions": sessions,
-        "symphony_workspace_managers": {"website": _WM()},
+        "symphony_workspace_managers": {"sampleweb": _WM()},
         "config": _Cfg(),
     })
-    await d._dispatch_documenting_side_runs({"website": _GitHub()}, dispatchable_card_ids={"c1"})
+    await d._dispatch_documenting_side_runs({"sampleweb": _GitHub()}, dispatchable_card_ids={"c1"})
     assert len(svc.dispatched) == 1 and sessions["c1"]["documenting_side"]["status"] == "running"
     await asyncio.gather(*d._documenting_side_tasks)
     assert sessions["c1"]["documenting_side"]["status"] == "done"
-    await d._dispatch_documenting_side_runs({"website": _GitHub()}, dispatchable_card_ids={"c1"})
+    await d._dispatch_documenting_side_runs({"sampleweb": _GitHub()}, dispatchable_card_ids={"c1"})
     assert len(svc.dispatched) == 1, "once per blueprint hash"
 
 
