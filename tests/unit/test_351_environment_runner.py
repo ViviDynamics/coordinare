@@ -518,6 +518,41 @@ async def test_linux_service_start_records_supervised_completion(tmp_path, exit_
 
 @pytest.mark.skipif(sys.platform != 'linux', reason='Linux command-local subreaper adapter')
 @pytest.mark.asyncio
+@pytest.mark.parametrize('exit_code', [0, 7, 143])
+@pytest.mark.timeout(10)
+async def test_linux_teardown_preserves_exit_before_child_watcher_runs(exit_code):
+    import asyncio
+    import contextlib
+    import signal
+
+    from coordinare_service_inference.environment.runner import _terminate
+
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, '-c',
+        'import sys;sys.stdin.buffer.read(1);raise SystemExit(int(sys.argv[1]))',
+        str(exit_code), stdin=asyncio.subprocess.PIPE, start_new_session=True,
+    )
+    try:
+        assert process.stdin is not None
+        process.stdin.write(b'1')
+        # Observe exit without reaping or yielding to the pidfd watcher. Teardown
+        # now runs in the exact window that Popen.send_signal().poll() can steal.
+        exited = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+        assert exited.si_status == exit_code
+        assert process.returncode is None
+        await _terminate(process)
+        assert process.returncode == exit_code
+    finally:
+        if process.stdin is not None:
+            process.stdin.close()
+        if process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(process.pid, signal.SIGKILL)
+            await process.wait()
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux command-local subreaper adapter')
+@pytest.mark.asyncio
 async def test_optional_command_cannot_hide_unconfirmed_supervisor_cleanup(tmp_path):
     manifest = contract([
         {'id': 'baseline', 'argv': ['true']},
