@@ -388,7 +388,8 @@ async def test_replay_v40_review_judges_only_the_changed_part_and_carries_the_re
 
     async def agent(_context, inspection, messages, task):
         counter.calls["review"] += 1
-        shared, own = (json.loads(line) for line in messages[1]["content"].split("\n"))
+        document = json.loads(messages[1]["content"])
+        shared, own = document["shared"], document["own"]
         seen.append({"own": own, "shared": shared})
         # As the real runner does: the reply goes through the task's validation, rulings included when a scope is present.
         rulings = [{"criterion_id": item, "verdict": "accept", "rationale": "covered"}

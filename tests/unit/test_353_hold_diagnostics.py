@@ -30,3 +30,14 @@ async def test_an_invalid_contract_hold_names_the_exception_and_frame_but_not_it
     assert '_raise_inside_discovery' in budget.error_detail
     assert 'secret' not in budget.error_detail and 'rm -rf' not in str(held.value)
     assert budget.summary()['error_detail'] == budget.error_detail
+
+
+def test_a_failure_names_the_innermost_frame_and_the_coordinare_frame_that_called_it():
+    from coordinare.services.environment_attempt import failure_detail
+    from coordinare.services.environment_structured_wire import decode_wire
+
+    with pytest.raises(ValueError) as failed:
+        decode_wire('{"a":1}\n{"b":2}', {'type': 'object'})
+    detail = failure_detail(failed.value)
+    assert detail.startswith('JSONDecodeError at decoder.py:decode:')
+    assert 'environment_structured_wire.py:decode_wire:' in detail

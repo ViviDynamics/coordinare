@@ -1387,9 +1387,9 @@ MERGE_CORRECTABLE = frozenset({'executable_merge_collision', 'obligation_removed
 
 
 def review_part_messages(system: str, shared: Mapping[str, Any], own: Mapping[str, Any]) -> list[dict[str, str]]:
-    """Each review part's conversation: the system prompt, then one user message of the material every part shares
-    followed by the part's own. Serialized JSON never holds a raw newline, so the two objects are one line each."""
-    return [{'role': 'system', 'content': system}, {'role': 'user', 'content': _json(shared) + '\n' + _json(own)}]
+    """Each review part's conversation: the system prompt, then one user message holding one JSON object. The shared
+    material is serialized first, so every part's message begins with the same bytes."""
+    return [{'role': 'system', 'content': system}, {'role': 'user', 'content': '{"shared":' + _json(shared) + ',"own":' + _json(own) + '}'}]
 
 
 async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifest: EnvironmentManifest,

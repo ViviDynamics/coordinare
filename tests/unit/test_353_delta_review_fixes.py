@@ -314,7 +314,7 @@ async def test_a_part_is_judged_again_when_a_prerequisite_it_reads_changes(monke
 
     async def agent(_context, inspection, messages, task):
         # A group part is named by its criterion; the global part has no criterion mapping in its view.
-        own = json.loads(messages[1]["content"].split("\n")[1])
+        own = json.loads(messages[1]["content"])["own"]
         calls.append(",".join(sorted(own["part"].get("criterion_checks", {}))) or "global")
         from tests.unit.test_353_delta_repair import assessment
         reply = {"assessment": {**assessment("accept", sorted(inspection.inputs)).model_dump(mode="json"), "criterion_rulings": []}}

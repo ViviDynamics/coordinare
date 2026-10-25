@@ -61,10 +61,14 @@ class DiscoveryChatReply:
 
 
 def failure_detail(exc: BaseException) -> str:
-    """Exception class and innermost frame (file and function): names the producer without echoing its message."""
-    frame = traceback.extract_tb(exc.__traceback__)[-1:]
-    where = f"{frame[0].filename.rsplit('/', 1)[-1]}:{frame[0].name}:{frame[0].lineno}" if frame else "none"
-    return f"{type(exc).__name__} at {where}"
+    """Exception class, the innermost frame, and the innermost coordinare frame that called into it (file, function,
+    line). Names the producer without echoing its message."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    def where(frame: traceback.FrameSummary) -> str:
+        return f"{frame.filename.rsplit('/', 1)[-1]}:{frame.name}:{frame.lineno}"
+    owned = [frame for frame in frames if "/src/coordinare/" in frame.filename]
+    return (f"{type(exc).__name__} at {where(frames[-1]) if frames else 'none'}"
+            f"; in {where(owned[-1]) if owned else 'none'}")
 
 
 @dataclass

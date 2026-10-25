@@ -282,7 +282,8 @@ async def test_a_divided_review_gives_each_part_a_fresh_reviewer_and_only_its_ow
             return [{'path': path} for path in expected]
 
     async def agent(_context, inspection, messages, task):
-        shared, own = (json.loads(line) for line in messages[1]['content'].split('\n'))
+        document = json.loads(messages[1]['content'])
+        shared, own = document['shared'], document['own']
         seen.append({'owned': list(task.decision_ids), 'part': own['part'], 'evidence': own['mandatory_evidence'],
                      'history': 'untrusted_execution_history' in shared})
         verdict = 'revise' if task.decision_ids == ['F001'] else 'accept'

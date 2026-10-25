@@ -94,19 +94,19 @@ def test_manifest_round_prefix_is_identical_and_the_finding_list_comes_last():
     assert 'coverage-finding-beta' in after[stable:]
 
 
-def test_review_parts_share_a_byte_identical_prefix_in_one_user_message():
+def test_review_parts_share_a_byte_identical_prefix_in_one_json_user_message():
     shared = {'base': {'requested_scope': 'x'}, 'manifest_digest': 'd', 'global_part': {'checks': 3},
               'probe_evidence': [], 'untrusted_execution_history': []}
     one = review_part_messages('SYSTEM', shared, {'part': {'prefix': 'a'}, 'assigned_findings': [{'id': 'f1'}]})
     two = review_part_messages('SYSTEM', shared, {'part': {'prefix': 'b'}, 'assigned_findings': [{'id': 'f2'}]})
     assert [message['role'] for message in one] == ['system', 'user']
     assert one[0] == {'role': 'system', 'content': 'SYSTEM'}
-    shared_text = _json_text(shared)
-    assert one[1]['content'].startswith(shared_text) and two[1]['content'].startswith(shared_text)
-    assert one[1]['content'][:len(shared_text)] == two[1]['content'][:len(shared_text)]
-    assert '"part"' not in shared_text and '"assigned_findings"' not in shared_text
+    # One JSON document per user message, with the shared material first and byte-identical across parts.
+    assert json.loads(one[1]['content'])['own'] == {'part': {'prefix': 'a'}, 'assigned_findings': [{'id': 'f1'}]}
+    prefix = '{"shared":' + _json_text(shared) + ',"own":'
+    assert one[1]['content'].startswith(prefix) and two[1]['content'].startswith(prefix)
+    assert '"part"' not in _json_text(shared) and '"assigned_findings"' not in _json_text(shared)
     assert one[1]['content'] != two[1]['content']
-    assert '"assigned_findings":[{"id":"f1"}]' in one[1]['content']
 
 
 def _json_text(value):
