@@ -881,7 +881,7 @@ conducting:
 #   manifest_max_total_reads: 512
 #   manifest_max_schema_repairs: 2
 #   manifest_max_coverage_revisions: 2   # executable review revisions
-#   manifest_max_scope_revisions: 2      # scope review revisions, counted separately (sharded default 8)
+#   manifest_max_scope_revisions: 8      # scope review revisions, counted separately
 #   manifest_max_execution_repairs: 2
 #   manifest_delta_repair: true  # false restores the full repair after an execution failure
 #   manifest_max_review_context_bytes: 1048576

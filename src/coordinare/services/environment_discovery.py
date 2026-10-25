@@ -159,7 +159,7 @@ class DiscoveryLimits:
     max_total_reads: int = 512
     max_schema_repairs: int = 2
     max_coverage_revisions: int = 2
-    max_scope_revisions: int = 2
+    max_scope_revisions: int = 8
     max_execution_repairs: int = 2
     attempt_timeout_seconds: float = 600
     max_review_context_bytes: int = 1024 * 1024

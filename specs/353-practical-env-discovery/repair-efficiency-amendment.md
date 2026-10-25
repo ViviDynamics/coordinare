@@ -129,3 +129,7 @@ content. Merge-time checks are unchanged. The concurrency cap stays as configure
 - Replay the v40 failure fixture (first-generation manifest and rejected report): the delta repair touches only the
   closure, adds no duplicate checks and reuses the probes.
 - The next Dettmore run's repairs, if any, are measured against v40's 95 minutes and 51 calls.
+
+## Independent revision budgets
+
+Maintainer decision, 2026-10-25: allow eight scope revisions and eight executable revisions independently in sharded discovery. Scope reviews that request revision, including sharded reviews, and runtime release reopenings consume `max_scope_revisions` (default eight); executable review revisions and `observe_sources` reopenings consume the existing `max_coverage_revisions` budget. Exhaustion holds with `attempt_scope_revision_limit` or `attempt_coverage_limit` respectively. Diagnostics persist both counters and maxima. Older journals charge their shared count to both budgets and preserve their maximum. Deadlines, calls, reads, execution repair limits and cleanup requirements remain unchanged.

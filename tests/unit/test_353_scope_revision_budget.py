@@ -31,7 +31,7 @@ async def test_revision_has_own_phase_reads_but_shared_attempt_limit(total_reads
                           'rationale': 'Nested obligation retained', 'sources': ['odd/nest'],
                           'duplicate_of': None}], sources=list(SOURCES)),
     ])
-    budget = AttemptBudget(max_reads=total_reads)
+    budget = AttemptBudget(max_reads=total_reads, max_coverage_revisions=0)
 
     async def fetch(path):
         return SOURCES.get(path)
@@ -53,4 +53,5 @@ async def test_revision_has_own_phase_reads_but_shared_attempt_limit(total_reads
     assert set(scope.all_inputs) == set(SOURCES)
     assert budget.reads == 6
     assert budget.scope_revisions == 1
+    assert budget.coverage_revisions == 0
     assert len(scope.finding_ledger.reviews) == 2

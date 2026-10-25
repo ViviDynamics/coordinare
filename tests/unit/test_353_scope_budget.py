@@ -35,9 +35,11 @@ def test_summary_reports_both_revision_counters_and_maxima():
     assert summary['repairs'] == 0
 
 
-def test_defaults_are_unchanged_unsharded_and_the_ruled_eight_when_sharded():
-    assert AttemptBudget().max_scope_revisions == 2
-    assert EnvCacheConfig().manifest_max_scope_revisions == EnvCacheConfig().manifest_max_coverage_revisions == 2
+def test_scope_defaults_to_eight_and_executable_sharded_defaults_to_eight():
+    assert AttemptBudget().max_scope_revisions == 8
+    assert DiscoveryLimits().max_scope_revisions == 8
+    assert EnvCacheConfig().manifest_max_scope_revisions == 8
+    assert EnvCacheConfig().manifest_max_coverage_revisions == 2
     sharded = EnvCacheConfig(manifest_shard_context_tokens=262144)
     assert (sharded.manifest_max_scope_revisions, sharded.manifest_max_coverage_revisions) == (8, 8)
     explicit = EnvCacheConfig(manifest_shard_context_tokens=262144, manifest_max_scope_revisions=3)

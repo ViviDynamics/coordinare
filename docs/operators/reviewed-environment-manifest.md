@@ -42,7 +42,7 @@ env_cache:
   manifest_max_total_reads: 512
   manifest_max_schema_repairs: 2
   manifest_max_coverage_revisions: 2
-  manifest_max_scope_revisions: 2
+  manifest_max_scope_revisions: 8
   manifest_max_execution_repairs: 2
   manifest_max_review_context_bytes: 1048576
 ```
@@ -335,8 +335,8 @@ token capacity; the byte cap does not guarantee provider context capacity. Provi
 request failures hold and do not consume schema corrections. Output limits remain set
 on the model backend.
 
-Schema corrections, scope revisions, executable revisions and executable repairs default to two each
-(sharded discovery defaults to eight each for scope and executable revisions). Their independent configurable ranges
+Scope revisions default to eight. Schema corrections, executable revisions and executable repairs default to two each
+(sharded discovery defaults to eight executable revisions). Their independent configurable ranges
 are zero to eight, zero to eight, zero to eight and zero to two respectively (`manifest_max_schema_repairs`,
 `manifest_max_scope_revisions`, `manifest_max_coverage_revisions`, `manifest_max_execution_repairs`).
 `manifest_max_coverage_revisions` counts executable review revisions. A scope revision that is refused holds with
