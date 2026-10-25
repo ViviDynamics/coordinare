@@ -42,6 +42,7 @@ env_cache:
   manifest_max_total_reads: 512
   manifest_max_schema_repairs: 2
   manifest_max_coverage_revisions: 2
+  manifest_max_scope_revisions: 2
   manifest_max_execution_repairs: 2
   manifest_max_review_context_bytes: 1048576
 ```
@@ -334,10 +335,12 @@ token capacity; the byte cap does not guarantee provider context capacity. Provi
 request failures hold and do not consume schema corrections. Output limits remain set
 on the model backend.
 
-Schema corrections, coverage revisions and executable repairs default to two each.
-Their independent configurable ranges are zero to eight, zero to eight and zero to
-two respectively (`manifest_max_schema_repairs`, `manifest_max_coverage_revisions`,
-`manifest_max_execution_repairs`). An execution repair defaults to a delta: only the records the failed
+Schema corrections, scope revisions, executable revisions and executable repairs default to two each
+(sharded discovery defaults to eight each for scope and executable revisions). Their independent configurable ranges
+are zero to eight, zero to eight, zero to eight and zero to two respectively (`manifest_max_schema_repairs`,
+`manifest_max_scope_revisions`, `manifest_max_coverage_revisions`, `manifest_max_execution_repairs`).
+`manifest_max_coverage_revisions` counts executable review revisions. A scope revision that is refused holds with
+`attempt_scope_revision_limit`; an executable revision that is refused holds with `attempt_coverage_limit`. An execution repair defaults to a delta: only the records the failed
 execution implicates are re-authored, as changed and added records, and an unchanged record keeps its standing. If the
 delta cannot be admitted or is not accepted by review, the full repair runs while budget remains. Set
 `manifest_delta_repair: false` to use the full repair for every execution repair. All categories share the original

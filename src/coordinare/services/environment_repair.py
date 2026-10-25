@@ -31,7 +31,7 @@ from coordinare_service_inference.environment.scope_investigation import (
     ScopeInspectionBinding,  # noqa: TC002 - pydantic resolves journal field types at runtime
     ScopeInspectionResult,  # noqa: TC002 - pydantic resolves journal field types at runtime
 )
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from coordinare.lib.redaction import redact_command_text, redact_state_value
 from coordinare.services.environment_acceptance import (
@@ -41,8 +41,10 @@ from coordinare.services.environment_acceptance import (
     saved_execution_accepted,
 )
 from coordinare.services.environment_attempt import (
+    HOLD_CODES,
     MAX_ATTEMPT_SECONDS,
     MAX_SHARDED_ATTEMPT_SECONDS,
+    REPAIR_COUNTERS,
     REPAIR_LIMITS,
     AttemptBudget,
     EnvironmentDiscoveryError,
@@ -81,6 +83,17 @@ class RepairJournal(BaseModel):
 
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     version: Literal[9] = 9
+
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_legacy_revisions(cls, data: Any) -> Any:
+        """A journal from before the scope budget has one shared revision count and maximum. Both budgets start from that
+        count, so no spent revision is forgotten. Both keep the legacy maximum, so a resumed legacy attempt can spend
+        the old headroom under each budget; charging the count to one budget instead would forget the other's spend."""
+        if isinstance(data, dict) and 'scope_revisions' not in data and 'coverage_revisions' in data:
+            data = {**data, 'scope_revisions': data['coverage_revisions'],
+                    'max_scope_revisions': data.get('max_coverage_revisions', 0)}
+        return data
     scope_author_protocol: Literal[4]
     scope_phase: Literal["initial", "investigation", "revision", "review", "accepted"] = "initial"
     scope_revision_base_digest: Digest | None = None
@@ -120,11 +133,14 @@ class RepairJournal(BaseModel):
     max_reads: int = Field(ge=1)
     max_schema_repairs: int = Field(ge=0, le=REPAIR_LIMITS["schema"])
     max_coverage_revisions: int = Field(ge=0, le=REPAIR_LIMITS["coverage"])
+    # Journals written before the scope budget existed carry one shared count; see migrate_legacy_revisions.
+    max_scope_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["scope"])
     max_execution_repairs: int = Field(ge=0, le=REPAIR_LIMITS["execution"])
     calls: int = Field(default=0, ge=0)
     reads: int = Field(default=0, ge=0)
     schema_repairs: int = Field(default=0, ge=0, le=REPAIR_LIMITS["schema"])
     coverage_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["coverage"])
+    scope_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["scope"])
     execution_repairs: int = Field(default=0, ge=0, le=2)
     generation: int = Field(default=0, ge=0, le=2)
     status: Literal['discovering', 'executing', 'repair_pending', 'held', 'ready'] = 'discovering'
@@ -350,6 +366,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
         normalized["version"] = 2
         for counter in ("schema_repairs", "coverage_revisions", "execution_repairs"):
             normalized[counter], normalized["max_" + counter] = used, maximum
+        normalized["scope_revisions"], normalized["max_scope_revisions"] = used, maximum
     if data['version'] < CURRENT_JOURNAL_VERSION:
         if normalized.get('scope_author_protocol') not in (None, 2, 3, 4):
             _refuse('unknown legacy scope protocol requires reconciliation')
@@ -411,7 +428,8 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget = AttemptBudget(timeout_seconds=journal.expires_at-journal.started_at,
         started=time.monotonic()-(now-journal.started_at), max_calls=journal.max_calls,
         max_reads=journal.max_reads, max_schema_repairs=journal.max_schema_repairs,
-        max_coverage_revisions=journal.max_coverage_revisions, max_execution_repairs=journal.max_execution_repairs)
+        max_coverage_revisions=journal.max_coverage_revisions, max_scope_revisions=journal.max_scope_revisions,
+        max_execution_repairs=journal.max_execution_repairs)
     budget.scope_investigations = [item.model_copy(deep=True) for item in journal.scope_investigations]
     budget.scope_investigation_results = [item.model_copy(deep=True) for item in journal.scope_investigation_results]
     budget.scope_author_protocol = journal.scope_author_protocol
@@ -441,12 +459,11 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.calls, budget.reads = journal.calls, journal.reads
     budget.probe_batches = journal.probe_batches
     budget.probe_reports = list(journal.probe_reports)
-    for name in ("schema_repairs", "coverage_revisions", "execution_repairs"):
+    for kind, name in REPAIR_COUNTERS.items():
         if getattr(journal, name) > getattr(journal, "max_" + name):
-            _refuse(f"environment {name} limit exceeded after configuration change", code="attempt_" + name.split("_")[0] + "_limit")
-    budget.schema_repairs = journal.schema_repairs
-    budget.coverage_revisions = journal.coverage_revisions
-    budget.execution_repairs = journal.execution_repairs
+            _refuse(f"environment {name} limit exceeded after configuration change", code=HOLD_CODES[kind])
+    for name in REPAIR_COUNTERS.values():
+        setattr(budget, name, getattr(journal, name))
     return budget
 
 
@@ -469,7 +486,8 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
             origin_slug=previous.origin_slug if previous else cache.sanitised_name,
             started_at=now, expires_at=now+seconds, max_calls=limits.max_model_calls,
             max_reads=limits.max_total_reads, max_schema_repairs=limits.max_schema_repairs,
-            max_coverage_revisions=limits.max_coverage_revisions, max_execution_repairs=limits.max_execution_repairs)
+            max_coverage_revisions=limits.max_coverage_revisions, max_scope_revisions=limits.max_scope_revisions,
+            max_execution_repairs=limits.max_execution_repairs)
         if previous is None:
             # After an operator restart, an archived attempt's accepted scope is offered for a fresh review.
             journal.scope_reuse = reusable_scope(cache.environment_attempt_archive, cache.bootstrap_commit_sha)
@@ -480,6 +498,7 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
         journal.max_reads = min(journal.max_reads, limits.max_total_reads)
         journal.max_schema_repairs = min(journal.max_schema_repairs, limits.max_schema_repairs)
         journal.max_coverage_revisions = min(journal.max_coverage_revisions, limits.max_coverage_revisions)
+        journal.max_scope_revisions = min(journal.max_scope_revisions, limits.max_scope_revisions)
         journal.max_execution_repairs = min(journal.max_execution_repairs, limits.max_execution_repairs)
     budget = _budget(journal, now)
     _publish(cache, journal)
@@ -529,6 +548,7 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
     journal.reads = max(journal.reads, budget.reads)
     journal.schema_repairs = max(journal.schema_repairs, budget.schema_repairs)
     journal.coverage_revisions = max(journal.coverage_revisions, budget.coverage_revisions)
+    journal.scope_revisions = max(journal.scope_revisions, budget.scope_revisions)
     journal.execution_repairs = max(journal.execution_repairs, budget.execution_repairs)
     journal.delta_fallback = journal.delta_fallback or budget.delta_fallback
     if executing:

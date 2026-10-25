@@ -52,5 +52,5 @@ async def test_revision_has_own_phase_reads_but_shared_attempt_limit(total_reads
     assert scope.definition.inputs == scope.all_inputs
     assert set(scope.all_inputs) == set(SOURCES)
     assert budget.reads == 6
-    assert budget.coverage_revisions == 1
+    assert budget.scope_revisions == 1
     assert len(scope.finding_ledger.reviews) == 2

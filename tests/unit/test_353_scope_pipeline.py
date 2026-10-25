@@ -175,7 +175,7 @@ async def test_scope_revision_crash_resumes_exact_phase_without_renewing_budget(
     scope = await run(replies, budget=resumed)
     assert len(scope.definition.criteria) == 2 and len(scope.finding_ledger.reviews) == 2
     assert resumed.calls == calls + (2 if phase == 'revision' else 1)
-    assert resumed.reads >= saved['reads'] and resumed.coverage_revisions == saved['coverage_revisions'] == 1
+    assert resumed.reads >= saved['reads'] and resumed.scope_revisions == saved['scope_revisions'] == 1
     assert resumed.schema_repairs == saved['schema_repairs'] == 0
     assert cache.environment_attempt['scope_phase'] == 'accepted'
     assert cache.environment_attempt['expires_at'] == expiry
@@ -273,7 +273,7 @@ async def test_held_source_findings_are_visible_without_exposing_private_evidenc
     from tests.unit.test_353_scope_contract import objection
     cache = cache_fixture(tmp_path)
     cache.bootstrap_commit_sha = COMMIT
-    budget = begin_attempt(cache, DiscoveryLimits(max_coverage_revisions=0), outer_seconds=600)
+    budget = begin_attempt(cache, DiscoveryLimits(max_scope_revisions=0), outer_seconds=600)
     budget.checkpoint = lambda: checkpoint(cache, budget)
     with pytest.raises(EnvironmentDiscoveryError):
         await run(Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion()), objection()]), budget=budget)

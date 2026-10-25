@@ -170,9 +170,9 @@ async def test_reviewers_never_receive_author_material():
 @pytest.mark.asyncio
 async def test_revise_round_reruns_only_open_shards_and_shares_coverage_revisions():
     router = Router(revise_shard='svc1')
-    budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
+    budget = AttemptBudget(max_calls=1024, max_reads=8192, max_scope_revisions=8)
     contract = await run(router, budget=budget)
-    assert len(contract.finding_ledger.reviews) == 2 and budget.coverage_revisions == 1
+    assert len(contract.finding_ledger.reviews) == 2 and budget.scope_revisions == 1
     assert any(c.description == 'Obligation added service obligation' for c in contract.definition.criteria)
     roles = [role for role, _messages in router.conversations]
     first_review = roles.index('review')

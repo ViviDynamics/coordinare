@@ -159,6 +159,7 @@ class DiscoveryLimits:
     max_total_reads: int = 512
     max_schema_repairs: int = 2
     max_coverage_revisions: int = 2
+    max_scope_revisions: int = 2
     max_execution_repairs: int = 2
     attempt_timeout_seconds: float = 600
     max_review_context_bytes: int = 1024 * 1024
@@ -172,9 +173,10 @@ class DiscoveryLimits:
 
     def __post_init__(self) -> None:
         repair_limits = {"schema": self.max_schema_repairs, "coverage": self.max_coverage_revisions,
-                         "execution": self.max_execution_repairs}
+                         "scope": self.max_scope_revisions, "execution": self.max_execution_repairs}
         if (any(value <= 0 for name, value in self.__dict__.items()
-                if name not in {"max_schema_repairs", "max_coverage_revisions", "max_execution_repairs", "delta_repair"}
+                if name not in {"max_schema_repairs", "max_coverage_revisions", "max_scope_revisions",
+                                "max_execution_repairs", "delta_repair"}
                 and value is not None)
                 or any(not 0 <= value <= REPAIR_LIMITS[kind] for kind, value in repair_limits.items())
                 or self.attempt_timeout_seconds > (MAX_SHARDED_ATTEMPT_SECONDS if self.shard_context_tokens else MAX_ATTEMPT_SECONDS)
@@ -806,7 +808,8 @@ async def discover_and_review(
     bounds = configured.limits or DiscoveryLimits()
     budget = configured.budget or AttemptBudget(timeout_seconds=bounds.attempt_timeout_seconds,
         max_calls=bounds.max_model_calls, max_reads=bounds.max_total_reads, max_schema_repairs=bounds.max_schema_repairs,
-        max_coverage_revisions=bounds.max_coverage_revisions, max_execution_repairs=bounds.max_execution_repairs)
+        max_coverage_revisions=bounds.max_coverage_revisions, max_scope_revisions=bounds.max_scope_revisions,
+        max_execution_repairs=bounds.max_execution_repairs)
     try:
         async with asyncio.timeout_at(budget.deadline):
             history = list(budget.probe_reports)
@@ -954,6 +957,12 @@ def release_requests(ledger: FindingLedger, manifest: EnvironmentManifest, scope
 async def _reopen_for_release(attempt: _Attempt, criteria: list[str]) -> None:
     """The reviewed scope is reopened so its independent reviewer rules on the release; the reviewer alone can grant it."""
     budget = attempt.budget
+    try:
+        budget.reserve_repair("scope")
+    except EnvironmentDiscoveryError as exc:
+        budget.error_code = exc.code
+        await budget.flush()
+        raise
     budget.release_requests = sorted(set(budget.release_requests) | set(criteria))
     budget.scope_contract = None
     budget.scope_phase = "review"

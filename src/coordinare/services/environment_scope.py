@@ -701,7 +701,7 @@ async def conclude_review(budget: AttemptBudget, review: tuple[ScopeAssessmentPr
         budget.scope_phase = 'investigation' if _current_investigations(budget) else 'revision'
         budget.scope_revision_base_digest = definition.digest()
         try:
-            budget.reserve_repair('coverage')
+            budget.reserve_repair('scope')
         except EnvironmentDiscoveryError as exc:
             budget.error_code = exc.code
             await budget.flush()

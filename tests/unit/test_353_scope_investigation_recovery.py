@@ -68,7 +68,7 @@ async def test_recovery_preserves_queue_findings_and_spent_budget(tmp_path, boun
     assert len(saved['scope_investigation_results']) == int(boundary in {'result', 'revision'})
     resumed = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600)
     assert resumed.reads == saved['reads'] and resumed.calls == saved['calls']
-    assert resumed.coverage_revisions == saved['coverage_revisions'] == 1
+    assert resumed.scope_revisions == saved['scope_revisions'] == 1
     async def checkpoint():
         save_attempt(cache, resumed)
     resumed.checkpoint = checkpoint
@@ -82,7 +82,7 @@ async def test_recovery_preserves_queue_findings_and_spent_budget(tmp_path, boun
     assert scope.finding_ledger.open_ids() == []
     assert cache.environment_attempt['started_at'] == saved['started_at']
     assert cache.environment_attempt['expires_at'] == saved['expires_at']
-    assert resumed.reads > saved['reads'] and resumed.coverage_revisions == 1
+    assert resumed.reads > saved['reads'] and resumed.scope_revisions == 1
     assert cache.environment_attempt['scope_investigations'] == saved['scope_investigations']
     assert len(cache.environment_attempt['scope_investigation_results']) == 1
 
@@ -136,7 +136,7 @@ async def test_completed_binding_survives_later_scope_revision(tmp_path):
     assert binding.review_sequence == 1
     assert binding.scope_digest == scope.finding_ledger.reviews[0].manifest_digest
     assert binding.scope_digest != scope.definition.digest()
-    assert len(resumed.scope_investigation_results) == 1 and resumed.coverage_revisions == 2
+    assert len(resumed.scope_investigation_results) == 1 and resumed.scope_revisions == 2
 
 
 @pytest.mark.asyncio
@@ -169,13 +169,13 @@ async def test_legacy_held_attempt_stays_terminal(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(('verdict', 'maximum', 'code'), [
-    ('revise', 0, 'attempt_coverage_limit'), ('indeterminate', 2, 'scope_review_indeterminate')])
+    ('revise', 0, 'attempt_scope_revision_limit'), ('indeterminate', 2, 'scope_review_indeterminate')])
 async def test_terminal_review_persists_new_findings_and_pending_queue_as_held(tmp_path, verdict, maximum, code):
     from coordinare.services.environment_scope import discover_scope
 
     cache = cache_fixture(tmp_path)
     cache.bootstrap_commit_sha = COMMIT
-    limits = DiscoveryLimits(max_coverage_revisions=maximum)
+    limits = DiscoveryLimits(max_scope_revisions=maximum)
     budget = begin_attempt(cache, limits, outer_seconds=600)
     async def checkpoint():
         save_attempt(cache, budget)

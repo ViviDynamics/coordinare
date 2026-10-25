@@ -1089,7 +1089,8 @@ class ServiceInferenceConfig(BaseModel):
 ONE_HOUR_SECONDS = 3600
 # Maintainer ruling for sharded source discovery (issue 353): calls, reads and the attempt deadline.
 SHARDED_BUDGET_DEFAULTS = {"manifest_max_model_calls": 1024, "manifest_max_total_reads": 8192,
-                           "manifest_attempt_timeout_seconds": 4 * 3600.0}
+                           "manifest_attempt_timeout_seconds": 4 * 3600.0,
+                           "manifest_max_coverage_revisions": 8, "manifest_max_scope_revisions": 8}
 
 
 class EnvCacheConfig(BaseModel):
@@ -1131,7 +1132,9 @@ class EnvCacheConfig(BaseModel):
     manifest_agent_concurrency: int = Field(default=12, ge=1, le=16)
     manifest_max_repairs: int | None = Field(default=None, ge=0, le=2, exclude=True)
     manifest_max_schema_repairs: int = Field(default=2, ge=0, le=REPAIR_LIMITS["schema"])
+    # Executable review revisions (the name predates the scope budget) and scope review revisions, counted separately.
     manifest_max_coverage_revisions: int = Field(default=2, ge=0, le=REPAIR_LIMITS["coverage"])
+    manifest_max_scope_revisions: int = Field(default=2, ge=0, le=REPAIR_LIMITS["scope"])
     manifest_max_execution_repairs: int = Field(default=2, ge=0, le=REPAIR_LIMITS["execution"])
     # An execution repair re-authors only its failure closure (changed and added records). False restores the full repair.
     manifest_delta_repair: bool = True
@@ -1159,7 +1162,8 @@ class EnvCacheConfig(BaseModel):
     def _legacy_repair_limit(cls, data: Any) -> Any:
         if not isinstance(data, dict) or data.get("manifest_max_repairs") is None:
             return data
-        fields = ("manifest_max_schema_repairs", "manifest_max_coverage_revisions", "manifest_max_execution_repairs")
+        fields = ("manifest_max_schema_repairs", "manifest_max_coverage_revisions", "manifest_max_scope_revisions",
+                  "manifest_max_execution_repairs")
         if any(name in data for name in fields):
             message = "cannot combine legacy and category manifest repair limits"
             raise ValueError(message)

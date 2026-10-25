@@ -2511,6 +2511,7 @@ class EnvCacheService:
             max_review_context_bytes=getattr(cfg, "manifest_max_review_context_bytes", 1024 * 1024),
             max_schema_repairs=getattr(cfg, "manifest_max_schema_repairs", 2),
             max_coverage_revisions=getattr(cfg, "manifest_max_coverage_revisions", 2),
+            max_scope_revisions=getattr(cfg, "manifest_max_scope_revisions", 2),
             max_execution_repairs=getattr(cfg, "manifest_max_execution_repairs", 2),
             delta_repair=getattr(cfg, "manifest_delta_repair", True),
             shard_context_tokens=getattr(cfg, "manifest_shard_context_tokens", None),

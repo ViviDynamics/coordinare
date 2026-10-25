@@ -89,7 +89,7 @@ def replay(transcripts: Path) -> dict[str, Any]:
         'recorded_source_reviews': len((journal.get('scope_findings') or {}).get('reviews', [])),
         'recorded_executable_reviews': len((journal.get('finding_ledger') or {}).get('reviews', [])),
         'recorded_fetch_count': reads if type(reads) is int and 0 <= reads <= 100000 else None,
-        'recorded_hold': held if held in {'attempt_read_limit', 'attempt_deadline', 'attempt_coverage_limit'} else None,
+        'recorded_hold': held if held in {'attempt_read_limit', 'attempt_deadline', 'attempt_coverage_limit', 'attempt_scope_revision_limit'} else None,
         'executed_project_commands': False, 'readiness_proven': False}
     if len(json.dumps(report).encode()) > 256*1024:
         raise ValueError('replay report exceeds metadata bound')

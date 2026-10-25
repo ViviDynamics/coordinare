@@ -31,10 +31,14 @@ if TYPE_CHECKING:
 MAX_ATTEMPT_SECONDS = 3600
 # Maintainer ruling (issue 353): sharded discovery on a self-hosted model may run up to four hours.
 MAX_SHARDED_ATTEMPT_SECONDS = 4 * 3600
-REPAIR_LIMITS = {"schema": 8, "coverage": 8, "execution": 2}
+REPAIR_LIMITS = {"schema": 8, "coverage": 8, "scope": 8, "execution": 2}
 MAX_PROBE_BATCHES = 2
-RepairKind = Literal["schema", "coverage", "execution"]
-REPAIR_COUNTERS = {"schema": "schema_repairs", "coverage": "coverage_revisions", "execution": "execution_repairs"}
+RepairKind = Literal["schema", "coverage", "scope", "execution"]
+# "coverage" is the executable review's revision budget (its name predates the split); "scope" is the source scope's.
+REPAIR_COUNTERS = {"schema": "schema_repairs", "coverage": "coverage_revisions", "scope": "scope_revisions",
+                   "execution": "execution_repairs"}
+HOLD_CODES = {"schema": "attempt_schema_limit", "coverage": "attempt_coverage_limit",
+              "scope": "attempt_scope_revision_limit", "execution": "attempt_execution_limit"}
 
 
 class EnvironmentDiscoveryError(RuntimeError):
@@ -80,6 +84,7 @@ class AttemptBudget:
     max_reads: int = 512
     max_schema_repairs: int = 2
     max_coverage_revisions: int = 2
+    max_scope_revisions: int = 2
     max_execution_repairs: int = 2
     started: float = field(default_factory=time.monotonic)
     calls: int = 0
@@ -89,6 +94,7 @@ class AttemptBudget:
     probe_reports: list[dict[str, Any]] = field(default_factory=list, repr=False)
     schema_repairs: int = 0
     coverage_revisions: int = 0
+    scope_revisions: int = 0
     execution_repairs: int = 0
     review_context_bytes: int = 0
     mandatory_inputs_required: int = 0
@@ -187,20 +193,15 @@ class AttemptBudget:
     @property
     def repairs(self) -> int:
         """Aggregate diagnostics only; authorization uses category-specific counters."""
-        return self.schema_repairs + self.coverage_revisions + self.execution_repairs
+        return self.schema_repairs + self.coverage_revisions + self.scope_revisions + self.execution_repairs
 
     def reserve_repair(self, kind: RepairKind) -> None:
         self.check()
         counter = REPAIR_COUNTERS[kind]
         if getattr(self, counter) >= getattr(self, "max_" + counter):
             message = f"environment discovery {kind} repair limit exceeded"
-            raise EnvironmentDiscoveryError(message, code=f"attempt_{kind}_limit")
-        if kind == "schema":
-            self.schema_repairs += 1
-        elif kind == "coverage":
-            self.coverage_revisions += 1
-        else:
-            self.execution_repairs += 1
+            raise EnvironmentDiscoveryError(message, code=HOLD_CODES[kind])
+        setattr(self, counter, getattr(self, counter) + 1)
 
     async def flush(self) -> None:
         """Persist reservations before calling a model, source reader or executor."""

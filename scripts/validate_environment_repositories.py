@@ -79,6 +79,7 @@ class Profile:
     keep_caches: bool = False
     max_schema_repairs: int = 2
     max_coverage_revisions: int = 2
+    max_scope_revisions: int = 2
     max_execution_repairs: int = 2
     max_review_context_bytes: int = 1024 * 1024
     max_total_reads: int | None = None
@@ -630,6 +631,7 @@ async def validate_repository(
         manifest_phase_timeout_seconds=profile.phase_timeout,
         manifest_max_schema_repairs=profile.max_schema_repairs,
         manifest_max_coverage_revisions=profile.max_coverage_revisions,
+        manifest_max_scope_revisions=profile.max_scope_revisions,
         manifest_max_execution_repairs=profile.max_execution_repairs,
         manifest_max_review_context_bytes=profile.max_review_context_bytes,
         manifest_shard_context_tokens=profile.context_tokens,
@@ -910,7 +912,10 @@ def main() -> int:
     parser.add_argument("--phase-timeout", type=float, default=120)
     parser.add_argument("--attempt-timeout", type=float, default=None)
     parser.add_argument("--max-schema-repairs", type=int, choices=range(REPAIR_LIMITS["schema"] + 1), default=2)
-    parser.add_argument("--max-coverage-revisions", type=int, choices=range(REPAIR_LIMITS["coverage"] + 1), default=2)
+    parser.add_argument("--max-coverage-revisions", type=int, choices=range(REPAIR_LIMITS["coverage"] + 1), default=2,
+                        help="executable review revisions")
+    parser.add_argument("--max-scope-revisions", type=int, choices=range(REPAIR_LIMITS["scope"] + 1), default=2,
+                        help="source scope review revisions, counted separately from executable revisions")
     parser.add_argument("--max-execution-repairs", type=int, choices=range(REPAIR_LIMITS["execution"] + 1), default=2)
     parser.add_argument("--max-review-context-bytes", type=int, default=1024 * 1024)
     parser.add_argument("--max-total-reads", type=_aggregate_read_allowance, default=None)
@@ -942,6 +947,7 @@ def main() -> int:
         keep_caches=args.keep_caches,
         max_schema_repairs=args.max_schema_repairs,
         max_coverage_revisions=args.max_coverage_revisions,
+        max_scope_revisions=args.max_scope_revisions,
         max_execution_repairs=args.max_execution_repairs,
         max_review_context_bytes=args.max_review_context_bytes,
         max_total_reads=args.max_total_reads,

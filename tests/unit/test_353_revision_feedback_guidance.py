@@ -37,7 +37,7 @@ async def test_oversized_revision_feedback_states_limit_count_and_retention():
     error = next(item for item in errors(replies, -2) if item['code'] == 'too_long')
     assert error['limit'] == 16 and error['submitted'] == 38
     assert error['guidance'] == REVISION_LIMIT_GUIDANCE and 'retained' in REVISION_LIMIT_GUIDANCE
-    assert budget.schema_repairs == 1 and budget.coverage_revisions == 1
+    assert budget.schema_repairs == 1 and budget.scope_revisions == 1
     assert len(scope.definition.criteria) == 2
 
 
