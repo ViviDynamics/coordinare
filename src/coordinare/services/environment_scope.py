@@ -102,6 +102,22 @@ def uninspected_sources_errors(sources: Sequence[str], inputs: Mapping[str, str]
                          'or read it first. Keep the rest of your reply unchanged.'}]
 
 
+def unknown_applicability_errors(assessment: ScopeAssessmentProposal,
+                                 criteria: Sequence[ScopeCriterion]) -> list[dict[str, Any]]:
+    """Return actionable feedback before an accepting review can publish unresolved scope."""
+    unknown = sorted(criterion.id for criterion in criteria if criterion.applicability == 'unknown')
+    if assessment.verdict != 'accept' or not unknown:
+        return []
+    return [{'code': 'scope_applicability_unknown', 'location': ['scope_assessment', 'verdict'],
+        'unknown_criterion_ids': unknown,
+        'guidance': 'An accept verdict cannot leave these assigned criteria with unknown applicability. '
+                    'Inspect available source, then return revise with gap_kind unknown_applicability and '
+                    'affected_ids naming the unresolved criteria, in a coverage finding or a source_gap decision '
+                    'on the matching retained finding. Do not duplicate an existing objection. The author must '
+                    'reassess them from inspected source before a fresh review can accept. If an actionable '
+                    'assessment cannot be established, return indeterminate. Preserve existing required criteria.'}]
+
+
 class _ResponseReferenceError(FindingValidationError):
     """Complete bounded citation/reference diagnostics for one rejected proposal."""
 
@@ -269,7 +285,8 @@ def _validate_review(data: dict[str, Any], *, reviewer: SourceInspection, defini
         message = 'every retained finding requires an explicit decision'
         raise FindingValidationError(message,
             code='review_findings_invalid', location=('scope_assessment', 'decisions'))
-    errors = [*uninspected_sources_errors(assessment.sources, reviewer.inputs),
+    errors = [*unknown_applicability_errors(assessment, definition.criteria),
+              *uninspected_sources_errors(assessment.sources, reviewer.inputs),
               *_decision_reference_errors(assessment, definition=definition),
               *_request_rule_errors(assessment, reviewer=reviewer)]
     if errors:

@@ -83,6 +83,7 @@ from coordinare.services.environment_scope import (
     released_criteria,
     run_scope,
     uninspected_sources_errors,
+    unknown_applicability_errors,
 )
 from coordinare.services.environment_scope_investigation import (
     ScopeInvestigationResponseError,
@@ -774,7 +775,8 @@ class ShardedScope:
             raise _ResponseReferenceError([{'code': 'review_findings_invalid', 'location': ['scope_assessment', 'decisions'],
                 'required_decision_ids': list(owned),
                 'guidance': 'Supply exactly one decision for every required_decision_ids entry and no others.'}])
-        errors = uninspected_sources_errors(assessment.sources, inspection.inputs)
+        errors = [*unknown_applicability_errors(assessment, material.criteria),
+                  *uninspected_sources_errors(assessment.sources, inspection.inputs)]
         errors.extend(_decision_reference_errors(assessment, definition=definition))
         errors.extend(_request_rule_errors(assessment, reviewer=self.view(name='scope_review')))
         gaps = any(decision.disposition == 'source_gap' for decision in assessment.decisions)

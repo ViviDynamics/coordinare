@@ -150,3 +150,7 @@ Each validation call reserves its transcript and event ID before awaiting a repl
 ### Retained source evidence reaches review
 
 Source review plans include every retained input, including evidence discovered during construction or repair after the scope definition was authored. Unread inputs schedule their owning reviewers or bounded reference reviewers, and those reviewers receive the verified contents as mandatory evidence. A completed review therefore covers the newly retained files and does not reopen for the same unreviewed input. Required criteria, finding decisions, source identities and revision budgets remain unchanged.
+
+### Unknown applicability returns review feedback
+
+An accepting source review cannot retain unknown applicability. The responsible reviewer receives the unresolved criterion IDs as bounded validation feedback before any accepting assessment or ledger transition is published. Sharded reviewers judge their assigned criteria, and the complete review validates the whole definition. The reviewer can request source-backed reassessment through an existing finding or a new coverage finding, or return indeterminate. This uses the existing correction and scope revision budgets, preserves required criteria and historical reviews, and keeps the final contract refusal as a second guard.
