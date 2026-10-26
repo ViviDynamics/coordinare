@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from coordinare.lib.redaction import redact_command_text
-from coordinare.services.environment_evidence import prepare_mandatory_evidence
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_probe_executor import execute_environment_probe
 from coordinare.services.environment_probes import (
@@ -61,7 +60,9 @@ async def run_owned_probe(plan: ProbePlan, *, context: ProbeServiceContext) -> P
     deadline = min(budget.deadline, time.monotonic() + probe_batch_timeout(plan))
     async with asyncio.timeout_at(deadline):
         inspection = SourceInspection(sorted(plan.inputs), fetch, limits, budget)
-        await prepare_mandatory_evidence(inspection, plan.inputs, phase="probe")
+        # Probe verification has no model conversation. Bind the complete input set
+        # under the existing verifier bounds and charge every read to the attempt.
+        await inspection.bind_verified(plan.inputs, phase="probe")
         budget.stage = "probe_execution"
         with tempfile.TemporaryDirectory(prefix="coordinare-probe-source-") as temporary:
             bundle = context.source_bundle
