@@ -781,6 +781,10 @@ class ShardedScope:
                 'guidance': 'Supply exactly one decision for every required_decision_ids entry and no others.'}])
         errors = [*unknown_applicability_errors(assessment, material.criteria),
                   *uninspected_sources_errors(assessment.sources, inspection.inputs)]
+        for field_name in ('findings', 'decisions'):
+            for index, item in enumerate(getattr(assessment, field_name)):
+                errors.extend(uninspected_sources_errors(item.sources, inspection.inputs,
+                    location=('scope_assessment', field_name, str(index), 'sources')))
         errors.extend(_decision_reference_errors(assessment, definition=definition))
         errors.extend(_request_rule_errors(assessment, reviewer=self.view(name='scope_review')))
         gaps = any(decision.disposition == 'source_gap' for decision in assessment.decisions)
