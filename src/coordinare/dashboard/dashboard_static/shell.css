@@ -270,10 +270,8 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 
 /* 154 review: the fold holds for long titles, four or more runs and the banner.
    The Conductor description is visible text in the strip, cut with an ellipsis. */
-/* The strip is one row: its parts are cut, not wrapped, so the page height does not change with the words. */
-.status-strip { flex-wrap: nowrap; font-size: 11px; gap: var(--space-2) 12px; }
-/* 358: below 1200px the strip's fixed parts alone are wider than the column, so it wraps there. */
-@media (max-width: 1199px) { .status-strip { flex-wrap: wrap; } }
+/* Wrap status facts when their content no longer fits the page column. */
+.status-strip { flex-wrap: wrap; font-size: 11px; gap: var(--space-2) 12px; }
 .status-strip .phase { font-size: 14px; max-width: 180px; }
 .status-desc { max-width: 160px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .status-counts, .status-muted, .status-freshness, .status-actions { white-space: nowrap; }
@@ -314,11 +312,10 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .status-headline { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; max-width: 360px; flex-shrink: 0; }
 .status-strip .phase { max-width: 100%; font-size: 14px; }
 .status-desc { display: block; max-width: 100%; flex: none; font-size: 11px; line-height: 16px; }
-/* 358: the strip never grows past the page column. The headline and the env bootstrap item
-   are the parts that give way: each is cut with an ellipsis down to a floor width, and the
-   bootstrap item keeps its full text in its title. At 1280px the fixed parts leave room for both floors. */
+/* Keep room for the Conductor description as freshness text changes width. The strip wraps
+   facts onto another row when necessary; the bootstrap item keeps its full text in its title. */
 .status-strip { max-width: 100%; min-width: 0; box-sizing: border-box; }
-.status-strip .status-headline { flex: 0 1 auto; min-width: 120px; }
+.status-strip .status-headline { flex: 0 0 360px; min-width: 0; max-width: 100%; }
 .status-strip .status-bootstrap { flex: 0 1 auto; min-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 154 review 2: a board column that overflows fades at its foot and says how many cards are below. */
