@@ -491,10 +491,13 @@ def test_the_tab_title_uses_a_bar_not_a_dash(page: Page, live_server_url: str, s
 # --- Review 2: the description has its own readable line; tall board columns say they scroll ---
 
 @pytest.mark.e2e
+@pytest.mark.parametrize("age_seconds", [0, 9, 60, 3600])
 def test_the_conductor_description_sits_on_its_own_line_and_shows_about_sixty_characters(
-    page: Page, live_server_url: str, store: DashboardStore,
+    page: Page, live_server_url: str, store: DashboardStore, age_seconds: int,
 ) -> None:
     _show_the_layout(page, live_server_url, store)
+    # Exercise each freshness width directly instead of racing the once-per-second timer.
+    page.evaluate("age => { _lastStateAt = Date.now() - age * 1000; refreshFreshness(); }", age_seconds)
     phase = page.locator("#phase").bounding_box()
     desc = page.locator("#phase-desc")
     expect(desc).to_have_text("Performer agent is actively working on the card.", timeout=_WAIT_LIVE)
