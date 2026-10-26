@@ -124,10 +124,18 @@ async def test_nested_operational_obligation_survives_candidate_convenience():
 
 @pytest.mark.asyncio
 async def test_unknown_applicability_cannot_be_accepted():
-    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion(applicability='unknown')), review()])
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion(applicability='unknown')),
+        review(), review('indeterminate')])
+    budget = AttemptBudget()
     with pytest.raises(EnvironmentDiscoveryError) as failure:
-        await run(replies)
-    assert failure.value.code == 'scope_applicability_unknown'
+        await run(replies, budget=budget)
+    errors = json.loads(replies.messages[-1][-1]['content'])['validation_errors']
+    assert errors[0]['code'] == 'scope_applicability_unknown'
+    assert failure.value.code == 'scope_review_indeterminate'
+    assert budget.scope_contract is None
+    assert budget.scope_definition.criteria[0].applicability == 'unknown'
+    assert len(budget.scope_findings.reviews) == 1
+    assert budget.scope_assessment.assessment.verdict == 'indeterminate'
 
 
 @pytest.mark.asyncio

@@ -15,12 +15,22 @@ from coordinare_service_inference.environment.scope import (
     criterion_id,
 )
 
-from coordinare.services.environment_attempt import AttemptBudget
-from coordinare.services.environment_scope import _Request, _ResponseReferenceError
+from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
+from coordinare.services.environment_scope import _accept_scope, _Request, _ResponseReferenceError
 from coordinare.services.environment_shard_scope import ReviewMaterial, ShardedScope
 from tests.unit.test_353_scope_contract import Replies, criterion, proposal, review, revision, run
 from tests.unit.test_353_shard_review_fixes import definition, full
 from tests.unit.test_353_shard_scope import COMMIT, ENTRIES, LIMITS, PLAN, SOURCES
+
+
+@pytest.mark.asyncio
+async def test_final_contract_guard_still_refuses_unknown_even_without_review_feedback():
+    base = definition(full('README.md', 'unresolved', applicability='unknown'))
+    budget = AttemptBudget()
+    with pytest.raises(EnvironmentDiscoveryError) as failure:
+        await _accept_scope(budget, definition=base, reviewer=None, record=None)
+    assert failure.value.code == 'scope_applicability_unknown'
+    assert budget.scope_contract is None
 
 
 @pytest.mark.asyncio
