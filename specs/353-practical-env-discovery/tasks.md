@@ -1,3 +1,5 @@
+> Maintainer-approved source conflict correction: [source-conflict-amendment.md](source-conflict-amendment.md). Inline TDD plan: [source-conflict-plan.md](source-conflict-plan.md).
+
 # Tasks: Practical reviewed environment discovery
 
 Source: approved [plan.md](plan.md); all tasks run sequentially in the current isolated worktree.

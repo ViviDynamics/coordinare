@@ -1,3 +1,5 @@
+> Maintainer-approved source conflict correction: [source-conflict-amendment.md](source-conflict-amendment.md). Inline TDD plan: [source-conflict-plan.md](source-conflict-plan.md).
+
 > Amendment: [repair-amendment.md](repair-amendment.md) supersedes proposal provenance ownership and extends the shared repair budget through executable failures. Implementation: [repair-plan.md](repair-plan.md). User explicitly authorized implementation and retesting.
 
 # Practical Reviewed Environment Discovery Implementation Plan

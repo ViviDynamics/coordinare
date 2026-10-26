@@ -64,6 +64,10 @@ from coordinare.services.environment_scope_investigation import (
     investigation_evidence,
     validate_investigation_responses,
 )
+from coordinare.services.environment_scope_reopening import (
+    current_source_conflicts,
+    source_conflict_reopenings,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
@@ -402,6 +406,11 @@ REVISION_INSTRUCTIONS = (
     'add contains complete criterion proposals without IDs; reassess targets only retained unknown/not_applicable '
     'criterion_id values and supplies a complete criterion proposal. No deletion or required criterion edits, except '
     'that a required criterion named by a remote_state or runtime_network finding may be reassessed as not_applicable. '
+    'reopened_criterion_ids lists required criteria the current independent source reviewer explicitly authorized '
+    'for source-conflict correction; only those IDs may also be reassessed as corrected required or not_applicable '
+    'criteria. Their findings remain open until fresh independent review; all other required criteria stay frozen. '
+    'current_source_conflicts contains the current typed conflict evidence and targets; use it rather than '
+    'superseded finding proposals when preparing corrections. '
     'Empty arrays may defend an existing definition; respond to every open daemon finding ID. '
     'affected_ids may reference retained current criterion IDs or be empty for new/reassessed criteria; '
     'never invent IDs or cite replaced IDs. Inspect source evidence, not runtime/image convenience. '
@@ -448,6 +457,11 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
                 'root_directory': inspection.list_directory(), 'inventory_digest': inspection.inventory_digest,
                 'scope_base_digest': definition.digest() if definition else None,
                 'scope_definition': definition.model_dump(mode='json') if definition else None,
+                **({'reopened_criterion_ids': sorted(source_conflict_reopenings(inspection.budget, definition)),
+                    'current_source_conflicts': {identifier: conflict.model_dump(mode='json') for identifier, conflict
+                        in current_source_conflicts(inspection.budget, definition).items()}}
+                   if not review and definition is not None and inspection.budget is not None
+                   and inspection.budget.scope_phase in {'investigation', 'revision'} else {}),
                 'mandatory_evidence': evidence, 'finding_ledger': ledger.model_dump(mode='json'),
                 **({'required_decision_ids': [record.id for record in ledger.records],
                     'review_resolution': {'unread_available_source': 'inspect',
@@ -594,7 +608,8 @@ def _validate_responses(responses: list[FindingResponse], *, ledger: FindingLedg
     return [r.model_dump(mode='json') for r in responses]
 
 
-def _reassessment_target_errors(base: ScopeDefinition, revision: ScopeRevision) -> list[dict[str, Any]]:
+def _reassessment_target_errors(base: ScopeDefinition, revision: ScopeRevision, *,
+                                reassessable: Collection[str] = ()) -> list[dict[str, Any]]:
     """Explain the authoritative merge rejection using only retained IDs and indices."""
     retained = {criterion.id: criterion for criterion in base.criteria}
     seen: set[str] = set()
@@ -607,6 +622,7 @@ def _reassessment_target_errors(base: ScopeDefinition, revision: ScopeRevision) 
     for index, change in enumerate(revision.reassess):
         target = retained.get(change.criterion_id)
         reason = ('unknown' if target is None else 'required' if target.applicability == 'required'
+                  and target.id not in reassessable
                   else 'duplicate' if change.criterion_id in seen else None)
         seen.add(change.criterion_id)
         if reason is not None:
@@ -614,7 +630,8 @@ def _reassessment_target_errors(base: ScopeDefinition, revision: ScopeRevision) 
                 'location': ['scope_revision', 'reassess', str(index), 'criterion_id'], 'reason': reason,
                 'guidance': guidance[reason]+' Preserve valid add/reassess operations while correcting every invalid target.'})
     if errors:
-        errors[0]['allowed_reassessment_ids'] = sorted(c.id for c in base.criteria if c.applicability != 'required')
+        errors[0]['allowed_reassessment_ids'] = sorted(c.id for c in base.criteria
+                                                     if c.applicability != 'required' or c.id in reassessable)
     return errors
 
 
@@ -636,16 +653,17 @@ def _validate_revision(data: dict[str, Any], *, author: SourceInspection, commit
             errors.extend(_criterion_citation_errors(criterion.sources, author.inputs, (*location, 'sources')))
     if errors:
         raise _ResponseReferenceError(errors)
+    reopenings = source_conflict_reopenings(budget, base)
     try:
         definition = apply_scope_revision(base, envelope.scope_revision, inspected_inputs=dict(author.inputs),
-                                          releasable=released_criteria(ledger))
+                                          releasable=released_criteria(ledger), reassessable=reopenings)
     except PydanticCustomError as exc:
         if exc.type == 'scope_revision_target':
-            errors = _reassessment_target_errors(base, envelope.scope_revision)
+            errors = _reassessment_target_errors(base, envelope.scope_revision, reassessable=reopenings)
             if errors:
                 raise _ResponseReferenceError(errors) from None
         raise
-    preserve_scope(base, definition, released=released_criteria(ledger))
+    preserve_scope(base, definition, released=released_criteria(ledger) | reopenings)
     try:
         responses = _validate_responses(envelope.finding_responses, ledger=ledger,
             inputs=author.inputs, definition=definition)

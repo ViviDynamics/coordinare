@@ -29,12 +29,10 @@ from coordinare_service_inference.environment.scope import (
     ScopeExclusion,
     ShardSummary,
     ShardSummaryEnvelope,
-    SourceGapDecision,
     TriageVerdict,
     canonical,
     criterion_id,
     normalize_source_assessment,
-    validate_source_assessment,
 )
 from coordinare_service_inference.environment.scope_revision import (
     ScopeRevisionEnvelope,
@@ -92,6 +90,10 @@ from coordinare.services.environment_scope_investigation import (
     investigate_scope_requests,
     investigation_evidence,
     validate_investigation_responses,
+)
+from coordinare.services.environment_scope_reopening import (
+    current_source_conflicts,
+    source_conflict_reopenings,
 )
 from coordinare.services.environment_scope_reuse import adopt_reused_scope
 from coordinare.services.environment_shard_triage import (
@@ -906,17 +908,9 @@ class ShardedScope:
     def revision_criteria(self, records: Sequence[FindingRecord], base: ScopeDefinition) -> list[ScopeCriterion]:
         """Include the editable side of typed conflicts, even when only the frozen side was named."""
         named = {identifier for record in records for identifier in record.proposal.affected_ids}
-        conflicts: dict[str, Collection[str]] = {}
-        saved, ledger = self.budget.scope_assessment, self.budget.scope_findings
-        if saved is not None and ledger is not None:
-            validate_source_assessment(saved, ledger=ledger, definition=base)
-            review = ledger.reviews[saved.review_sequence - 1]
-            conflicts.update({identifier: finding.sources
-                for identifier, finding in zip(review.added_ids, saved.assessment.findings, strict=True)
-                if finding.gap_kind == 'source_conflict'})
-            conflicts.update({decision.finding_id: decision.sources for decision in saved.assessment.decisions
-                if isinstance(decision, SourceGapDecision) and decision.gap_kind == 'source_conflict'})
-        paths = {path for record in records for path in conflicts.get(record.id, ())}
+        named.update(source_conflict_reopenings(self.budget, base, finding_ids=[record.id for record in records]))
+        conflicts = current_source_conflicts(self.budget, base, finding_ids=[record.id for record in records])
+        paths = {path for conflict in conflicts.values() for path in conflict.sources}
         return [criterion for criterion in base.criteria if criterion.id in named
                 or (criterion.applicability != 'required' and paths.intersection(criterion.sources))]
 
@@ -935,8 +929,10 @@ class ShardedScope:
             if binding.request.operation == 'read_file' and path in investigator.source_files:
                 inspection.admit_content(path, investigator.source_files[path], fetched=False)
         records = [record for record in ledger.records if record.id in ids]
+        conflicts = current_source_conflicts(budget, base, finding_ids=ids)
         concerned = self.revision_criteria(records, base)
         needed = {path for record in records for path in record.proposal.sources}
+        needed.update(path for conflict in conflicts.values() for path in conflict.sources)
         needed.update(path for criterion in concerned for path in criterion.sources)
         expected = {path: budget.scope_inputs[path] for path in sorted(needed)
                     if path in budget.scope_inputs and path not in inspection.inputs}
@@ -949,6 +945,9 @@ class ShardedScope:
                          'scope_base_digest': base.digest(), 'criterion_index': [_compact(c) for c in base.criteria],
                          'spine_evidence': spine}, {'root_directory': inspection.list_directory(),
                         'scope_criteria': [c.model_dump(mode='json') for c in concerned],
+                        'reopened_criterion_ids': sorted(source_conflict_reopenings(budget, base, finding_ids=ids)),
+                        'current_source_conflicts': {identifier: conflict.model_dump(mode='json')
+                                                     for identifier, conflict in conflicts.items()},
                         'mandatory_evidence': evidence, 'assigned_findings': [r.model_dump(mode='json') for r in records],
                         'required_response_ids': list(ids),
                         'investigation_evidence': investigation_evidence(inspection=inspection, bindings=bindings,
@@ -968,11 +967,14 @@ class ShardedScope:
         errors = self._operation_errors(revision, inspection=inspection, base=base, owner=owner)
         if errors:
             raise _ResponseReferenceError(errors)
+        reopenings = source_conflict_reopenings(self.budget, base, finding_ids=ids)
         try:
             definition = apply_scope_revision(base, revision, inspected_inputs=dict(self.budget.scope_inputs),
-                                              releasable=released_criteria(self.budget.scope_findings))
+                                              releasable=released_criteria(self.budget.scope_findings),
+                                              reassessable=reopenings)
         except PydanticCustomError as exc:
-            if exc.type == 'scope_revision_target' and (target_errors := _reassessment_target_errors(base, revision)):
+            if exc.type == 'scope_revision_target' and (target_errors := _reassessment_target_errors(
+                    base, revision, reassessable=reopenings)):
                 raise _ResponseReferenceError(target_errors) from None
             raise
         responses = envelope.finding_responses
@@ -1037,11 +1039,13 @@ class ShardedScope:
             budget.scope_phase = 'revision'
             await budget.flush()
         groups: dict[str, list[str]] = {}
+        reopenings = source_conflict_reopenings(budget, base)
         for record in ledger.records:
             if record.id in ledger.open_ids():
                 owner = finding_owner(record, base, self.work)
                 # A conflict spanning owners needs the existing global reassessment authority.
-                if any(criterion.id not in record.proposal.affected_ids and criterion_owner(criterion, self.work) != owner
+                if any((criterion.id not in record.proposal.affected_ids or criterion.id in reopenings)
+                       and criterion_owner(criterion, self.work) != owner
                        for criterion in self.revision_criteria([record], base)):
                     owner = MERGE_OWNER
                 groups.setdefault(owner, []).append(record.id)
@@ -1057,7 +1061,8 @@ class ShardedScope:
         results = await run_pool(work, partial(self.revise_group, base=base, investigator=investigator),
                                  budget=budget, split=halves, concurrency=self.concurrency)
         definition, responses = combine_revisions(base, results, inputs=budget.scope_inputs,
-                                                  releasable=released_criteria(budget.scope_findings))
+                                                  releasable=released_criteria(budget.scope_findings),
+                                                  reassessable=reopenings)
         if definition.consolidated:
             # A folded criterion replaced by a revision no longer has a consolidation record.
             live = {criterion.id for criterion in definition.criteria}
@@ -1068,7 +1073,7 @@ class ShardedScope:
             definition = ScopeDefinition.model_validate({**definition.model_dump(mode='json'),
                 'exclusions': [item.model_dump(mode='json') for item in excluded_areas],
                 'unread_unsure': [item.model_dump(mode='json') for item in unsure_areas]})
-        preserve_scope(base, definition, released=released_criteria(budget.scope_findings))
+        preserve_scope(base, definition, released=released_criteria(budget.scope_findings) | reopenings)
         try:
             budget.scope_responses = _validate_responses(responses, ledger=ledger, inputs=dict(budget.scope_inputs),
                                                          definition=definition)
@@ -1163,7 +1168,8 @@ def apply_consolidation(criteria: Sequence[ScopeCriterionProposal], groups: Sequ
 
 
 def combine_revisions(base: ScopeDefinition, results: Sequence[tuple[ScopeRevision, list[FindingResponse]]], *,
-                      inputs: Mapping[str, str], releasable: Collection[str] = ()) -> tuple[ScopeDefinition, list[FindingResponse]]:
+                      inputs: Mapping[str, str], releasable: Collection[str] = (),
+                      reassessable: Collection[str] = ()) -> tuple[ScopeDefinition, list[FindingResponse]]:
     """Apply every group's revision in order. Identical additions collapse; a response naming a criterion another
     group reassessed follows it to its replacement. Genuinely conflicting reassessments hold."""
     definition, responses, replaced = base, [], {}
@@ -1178,7 +1184,7 @@ def combine_revisions(base: ScopeDefinition, results: Sequence[tuple[ScopeRevisi
         change = revision.model_copy(update={'base_digest': definition.digest(), 'add': additions, 'reassess': reassess})
         try:
             definition = apply_scope_revision(definition, change, inspected_inputs=dict(inputs),
-                                              releasable=releasable)
+                                              releasable=releasable, reassessable=reassessable)
         except (PydanticCustomError, ValidationError):
             _fail('scope_revision_conflict')
         replaced.update({item.criterion_id: criterion_id(item.criterion) for item in revision.reassess})

@@ -33,6 +33,7 @@ async def test_conflict_repair_exposes_editable_counterpart_and_preserves_requir
                     sources=['svc0/file0.txt', path] if cross_owner else [path],
                     rationale='The exclusion must distinguish an optional remote refresh from a local scan')
     unrelated = full('svc2/file0.txt', 'Unrelated optional deployment', applicability='not_applicable')
+    protected = full('svc2/file1.txt', 'Unrelated required operation')
     replacement = editable.model_dump(exclude={'id'}) | {
         'description': 'Only the optional remote refresh is excluded',
         'rationale': 'A local scan remains required; installation can supply its input',
@@ -62,10 +63,10 @@ async def test_conflict_repair_exposes_editable_counterpart_and_preserves_requir
     scope = ShardedScope(_Request(list(SOURCES), fetch, chat, COMMIT, limits, budget, entries=ENTRIES),
                          ENTRIES, PLAN, 4)
     reviewer = scope.view(name='scope_review')
-    for name in {p for c in [required, editable, unrelated] for p in c.sources}:
+    for name in {p for c in [required, editable, unrelated, protected] for p in c.sources}:
         reviewer.admit_content(name, SOURCES[name], fetched=False)
     base = ScopeDefinition(source_commit=COMMIT, inventory_digest=reviewer.inventory_digest,
-                           inputs=dict(reviewer.inputs), criteria=[required, editable, unrelated])
+                           inputs=dict(reviewer.inputs), criteria=[required, editable, unrelated, protected])
     assessment = {'scope_assessment': {'verdict': 'revise', 'rationale': 'Resolve conflicting local audit scope',
         'sources': [path], 'findings': [{'category': 'coverage', 'issue': 'Conflicting local audit scope',
         'sources': [path], 'affected_ids': [required.id], 'gap_kind': gap_kind, 'inspection_requests': []}],
@@ -100,10 +101,10 @@ async def test_conflict_repair_exposes_editable_counterpart_and_preserves_requir
         assert editable.id not in {c.id for c in revised.criteria}
         assert any(c.description == replacement['description'] for c in revised.criteria)
     inspection = scope.view(name='scope_revision')
-    inspection.admit_content(path, SOURCES[path], fetched=False)
+    inspection.admit_content(protected.sources[0], SOURCES[protected.sources[0]], fetched=False)
     with pytest.raises(_ResponseReferenceError) as failure:
         scope._validate_group({'scope_revision': {'base_digest': base.digest(), 'add': [], 'reassess': [
-            {'criterion_id': required.id, 'criterion': required.model_dump(exclude={'id'})}]},
+            {'criterion_id': protected.id, 'criterion': protected.model_dump(exclude={'id'})}]},
             'finding_responses': []}, inspection=inspection, base=base,
-            assignment=Assignment(criterion_owner(required, scope.work), ('F0001',), []))
+            assignment=Assignment(criterion_owner(protected, scope.work), ('F0001',), []))
     assert failure.value.errors[0]['reason'] == 'required'

@@ -1,15 +1,16 @@
 """Strict bounded source-scope revisions; canonical contracts remain complete."""
 from __future__ import annotations
 
-from collections.abc import Collection
-
-from typing import NoReturn, Self
+from typing import TYPE_CHECKING, NoReturn, Self
 
 from pydantic import Field, model_validator
 from pydantic_core import PydanticCustomError
 
 from .findings import MAX_LEDGER_FINDINGS, Digest, FindingEvidence, FindingResponse
 from .scope import ScopeCriterion, ScopeCriterionProposal, ScopeDefinition, criterion_id
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
 
 MAX_SCOPE_REVISION_CHANGES = 16
 
@@ -42,7 +43,8 @@ def _invalid(code: str) -> NoReturn:
 
 
 def apply_scope_revision(base: ScopeDefinition, revision: ScopeRevision, *,
-                         inspected_inputs: dict[str, str], releasable: Collection[str] = ()) -> ScopeDefinition:
+                         inspected_inputs: dict[str, str], releasable: Collection[str] = (),
+                         reassessable: Collection[str] = ()) -> ScopeDefinition:
     """Build an independent complete definition, publishing nothing on failure."""
     if revision.base_digest != base.digest():
         _invalid('scope_revision_base')
@@ -52,11 +54,12 @@ def apply_scope_revision(base: ScopeDefinition, revision: ScopeRevision, *,
     replacements: dict[str, ScopeCriterion] = {}
     for change in revision.reassess:
         retained = previous.get(change.criterion_id)
-        # A required criterion is reassessed only when an independent review released it (remote state or a
-        # procedure that needs the network every time it runs), and only
-        # out of the required set; every other required criterion stays fixed.
+        # Source conflicts can correct the named requirement. Existing network/state releases
+        # still permit only leaving the required set. Every other requirement stays frozen.
         released = change.criterion_id in releasable and change.criterion.applicability != 'required'
-        if (retained is None or (retained.applicability == 'required' and not released)
+        correction = change.criterion_id in reassessable and change.criterion.applicability in {'required', 'not_applicable'}
+        if (retained is None or (retained.applicability == 'required' and not released
+                                and not correction)
                 or change.criterion_id in replacements):
             _invalid('scope_revision_target')
         replacements[change.criterion_id] = ScopeCriterion(**change.criterion.model_dump(), id=criterion_id(change.criterion))
