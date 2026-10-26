@@ -29,10 +29,12 @@ from coordinare_service_inference.environment.scope import (
     ScopeExclusion,
     ShardSummary,
     ShardSummaryEnvelope,
+    SourceGapDecision,
     TriageVerdict,
     canonical,
     criterion_id,
     normalize_source_assessment,
+    validate_source_assessment,
 )
 from coordinare_service_inference.environment.scope_revision import (
     ScopeRevisionEnvelope,
@@ -901,6 +903,23 @@ class ShardedScope:
 
     # ----- revision -----
 
+    def revision_criteria(self, records: Sequence[FindingRecord], base: ScopeDefinition) -> list[ScopeCriterion]:
+        """Include the editable side of typed conflicts, even when only the frozen side was named."""
+        named = {identifier for record in records for identifier in record.proposal.affected_ids}
+        conflicts: dict[str, Collection[str]] = {}
+        saved, ledger = self.budget.scope_assessment, self.budget.scope_findings
+        if saved is not None and ledger is not None:
+            validate_source_assessment(saved, ledger=ledger, definition=base)
+            review = ledger.reviews[saved.review_sequence - 1]
+            conflicts.update({identifier: finding.sources
+                for identifier, finding in zip(review.added_ids, saved.assessment.findings, strict=True)
+                if finding.gap_kind == 'source_conflict'})
+            conflicts.update({decision.finding_id: decision.sources for decision in saved.assessment.decisions
+                if isinstance(decision, SourceGapDecision) and decision.gap_kind == 'source_conflict'})
+        paths = {path for record in records for path in conflicts.get(record.id, ())}
+        return [criterion for criterion in base.criteria if criterion.id in named
+                or (criterion.applicability != 'required' and paths.intersection(criterion.sources))]
+
     async def revise_group(self, item: tuple[str, tuple[str, ...]], *, base: ScopeDefinition,
                            investigator: SourceInspection) -> tuple[ScopeRevision, list[FindingResponse]]:
         owner, ids = item
@@ -916,10 +935,7 @@ class ShardedScope:
             if binding.request.operation == 'read_file' and path in investigator.source_files:
                 inspection.admit_content(path, investigator.source_files[path], fetched=False)
         records = [record for record in ledger.records if record.id in ids]
-        by_id = {criterion.id: criterion for criterion in base.criteria}
-        # Only the criteria these findings name, so splitting the findings also shrinks the evidence.
-        concerned = list({identifier: by_id[identifier] for record in records
-                          for identifier in record.proposal.affected_ids if identifier in by_id}.values())
+        concerned = self.revision_criteria(records, base)
         needed = {path for record in records for path in record.proposal.sources}
         needed.update(path for criterion in concerned for path in criterion.sources)
         expected = {path: budget.scope_inputs[path] for path in sorted(needed)
@@ -1023,7 +1039,12 @@ class ShardedScope:
         groups: dict[str, list[str]] = {}
         for record in ledger.records:
             if record.id in ledger.open_ids():
-                groups.setdefault(finding_owner(record, base, self.work), []).append(record.id)
+                owner = finding_owner(record, base, self.work)
+                # A conflict spanning owners needs the existing global reassessment authority.
+                if any(criterion.id not in record.proposal.affected_ids and criterion_owner(criterion, self.work) != owner
+                       for criterion in self.revision_criteria([record], base)):
+                    owner = MERGE_OWNER
+                groups.setdefault(owner, []).append(record.id)
         order = {shard.id: index for index, shard in enumerate(self.work.shards)} | {MERGE_OWNER: len(self.work.shards)}
         work = [(owner, tuple(ids)) for owner, ids in sorted(groups.items(), key=lambda item: order[item[0]])]
 
