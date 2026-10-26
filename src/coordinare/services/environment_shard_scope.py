@@ -908,8 +908,8 @@ class ShardedScope:
     def revision_criteria(self, records: Sequence[FindingRecord], base: ScopeDefinition) -> list[ScopeCriterion]:
         """Include the editable side of typed conflicts, even when only the frozen side was named."""
         named = {identifier for record in records for identifier in record.proposal.affected_ids}
-        named.update(source_conflict_reopenings(self.budget, base, finding_ids=[record.id for record in records]))
         conflicts = current_source_conflicts(self.budget, base, finding_ids=[record.id for record in records])
+        named.update(identifier for conflict in conflicts.values() for identifier in conflict.affected_ids)
         paths = {path for conflict in conflicts.values() for path in conflict.sources}
         return [criterion for criterion in base.criteria if criterion.id in named
                 or (criterion.applicability != 'required' and paths.intersection(criterion.sources))]
@@ -1040,11 +1040,13 @@ class ShardedScope:
             await budget.flush()
         groups: dict[str, list[str]] = {}
         reopenings = source_conflict_reopenings(budget, base)
+        conflicts = current_source_conflicts(budget, base)
         for record in ledger.records:
             if record.id in ledger.open_ids():
                 owner = finding_owner(record, base, self.work)
+                current_targets = set(conflicts[record.id].affected_ids) if record.id in conflicts else set()
                 # A conflict spanning owners needs the existing global reassessment authority.
-                if any((criterion.id not in record.proposal.affected_ids or criterion.id in reopenings)
+                if any((criterion.id not in record.proposal.affected_ids or criterion.id in current_targets)
                        and criterion_owner(criterion, self.work) != owner
                        for criterion in self.revision_criteria([record], base)):
                     owner = MERGE_OWNER

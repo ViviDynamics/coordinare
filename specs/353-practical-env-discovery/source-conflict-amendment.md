@@ -19,6 +19,11 @@ previous definition and findings stay in immutable review history. Sharded autho
 their authorized IDs and complete target criteria; cross-owner revisions use the existing
 global revision authority. An author cannot change another group's required criteria.
 
+Persistence permits the correction only from the saved assessed revision into pending
+fresh review, with the same typed assessment and ledger and no reduction in criterion
+count. Saving an unchanged corrected definition does not reuse the old authority. Current
+nonrequired targets also travel in full and use the same cross-owner routing.
+
 ## Independent acceptance
 
 A reassessment does not close its finding or accept the scope. Changed criteria and newly

@@ -85,11 +85,21 @@ def test_current_independent_conflict_allows_only_its_named_required_reassessmen
 @pytest.mark.asyncio
 @pytest.mark.parametrize('retained', [False, True])
 @pytest.mark.parametrize('applicability', ['required', 'not_applicable'])
-async def test_sharded_cross_owner_conflict_is_corrected_then_independently_reviewed(retained, applicability):
+async def test_sharded_cross_owner_conflict_is_corrected_then_independently_reviewed(tmp_path, retained, applicability):
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.environment_repair import begin_attempt, save_attempt
     from coordinare.services.environment_shard_scope import ShardedScope, ShardPlan, build_plan
     from coordinare.services.environment_shards import Shard
 
-    budget, base, target, protected, _ = fixture(retained=retained)
+    cache = EnvCacheState(symphony_name='fixture', sanitised_name='fixture', cache_dir=tmp_path/'cache',
+                          bootstrap_commit_sha=COMMIT)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    budget, base, target, protected, _ = fixture(retained=retained, budget=budget)
+    save_attempt(cache, budget)
+
+    async def checkpoint():
+        save_attempt(cache, budget)
+    budget.checkpoint = checkpoint
 
     async def chat(messages, *, response_schema):
         data = json.loads(messages[1]['content'])
@@ -233,9 +243,11 @@ def test_full_scope_author_cannot_delete_a_reopened_required_criterion():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('applicability', ['required', 'not_applicable'])
-async def test_single_discovery_accepts_correction_only_after_a_fresh_independent_review(applicability):
+async def test_single_discovery_accepts_correction_only_after_a_fresh_independent_review(tmp_path, applicability):
     from coordinare_service_inference.environment.scope import ScopeCriterionProposal, criterion_id
 
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.environment_repair import begin_attempt, save_attempt
     from tests.unit.test_353_scope_contract import Replies, criterion, proposal, review, run
 
     target = criterion(usability='The retired local procedure succeeds')
@@ -244,7 +256,13 @@ async def test_single_discovery_accepts_correction_only_after_a_fresh_independen
     protected_id = criterion_id(ScopeCriterionProposal.model_validate(protected))
     corrected = target | {'description': 'Current pinned procedure', 'applicability': applicability,
                           'rationale': 'Pinned source retirement corrects the earlier draft'}
-    budget = AttemptBudget()
+    cache = EnvCacheState(symphony_name='fixture', sanitised_name='fixture', cache_dir=tmp_path/'cache',
+                          bootstrap_commit_sha=COMMIT)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+
+    async def checkpoint():
+        save_attempt(cache, budget)
+    budget.checkpoint = checkpoint
 
     def correction(messages):
         context = json.loads(messages[1]['content'])
@@ -329,3 +347,88 @@ async def test_retained_conflict_author_receives_current_target_and_new_evidence
     corrected = await scope.revision_round(base)
     assert corrected.criteria[0] == target and corrected.criteria[1].id != protected.id
     assert budget.scope_findings.open_ids() == ['F0001'] and budget.scope_phase == 'review'
+
+
+@pytest.mark.parametrize('applicability', ['required', 'not_applicable'])
+def test_allowed_correction_survives_the_previously_saved_production_checkpoint(tmp_path, applicability):
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.environment_repair import begin_attempt, save_attempt
+
+    cache = EnvCacheState(symphony_name='fixture', sanitised_name='fixture', cache_dir=tmp_path/'cache',
+                          bootstrap_commit_sha=COMMIT)
+    limits = DiscoveryLimits()
+    budget = begin_attempt(cache, limits, outer_seconds=600)
+    budget, base, target, _, author = fixture(budget=budget)
+    save_attempt(cache, budget)
+    deadline = cache.environment_attempt['expires_at']
+    budget.scope_definition = _validate_revision(revision(base, target, applicability),
+                                                author=author, commit=COMMIT, budget=budget)
+    budget.scope_phase, budget.scope_revision_base_digest = 'review', None
+    save_attempt(cache, budget)
+    save_attempt(cache, budget)  # No old authority is needed merely to save the unchanged new definition.
+    resumed = begin_attempt(cache, limits, outer_seconds=3600)
+    assert resumed.scope_definition == budget.scope_definition and resumed.scope_contract is None
+    assert resumed.scope_findings.open_ids() == ['F0001']
+    assert cache.environment_attempt['expires_at'] == deadline
+
+
+@pytest.mark.parametrize('mutation', ['delete', 'unrelated', 'no_current_review'])
+def test_checkpoint_correction_cannot_bypass_the_scoped_revision_guard(tmp_path, mutation):
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.environment_repair import begin_attempt, save_attempt
+
+    cache = EnvCacheState(symphony_name='fixture', sanitised_name='fixture', cache_dir=tmp_path/'cache',
+                          bootstrap_commit_sha=COMMIT)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600)
+    budget, base, target, _, author = fixture(budget=budget)
+    save_attempt(cache, budget)
+    before = json.dumps(cache.environment_attempt, sort_keys=True)
+    corrected = _validate_revision(revision(base, target), author=author, commit=COMMIT, budget=budget)
+    if mutation == 'delete':
+        corrected = ScopeDefinition.model_validate(corrected.model_dump() | {'criteria': corrected.criteria[1:]})
+    elif mutation == 'unrelated':
+        corrected = ScopeDefinition.model_validate(corrected.model_dump() | {'criteria': corrected.criteria[:1]})
+    else:
+        budget.scope_assessment = None
+    budget.scope_definition = corrected
+    budget.scope_phase, budget.scope_revision_base_digest = 'review', None
+    with pytest.raises(EnvironmentDiscoveryError):
+        save_attempt(cache, budget)
+    assert json.dumps(cache.environment_attempt, sort_keys=True) == before
+
+
+@pytest.mark.asyncio
+async def test_current_nonrequired_conflict_target_is_delivered_across_owners():
+    from coordinare.services.environment_shard_scope import ShardedScope, ShardPlan, build_plan
+    from coordinare.services.environment_shards import Shard
+
+    budget, original, target, _, reviewer = fixture()
+    base = _validate_revision(revision(original, target), author=reviewer, commit=COMMIT, budget=budget)
+    current = base.criteria[0]
+    _, ledger, record = _validate_review({'scope_assessment': {'verdict': 'revise', 'rationale': 'Correct current exclusion',
+        'sources': ['new/retirement'], 'findings': [], 'decisions': [{'finding_id': 'F0001',
+        'disposition': 'source_gap', 'gap_kind': 'source_conflict', 'affected_ids': [current.id],
+        'sources': ['new/retirement'], 'rationale': 'New evidence concerns the current nonrequired criterion',
+        'inspection_requests': []}]}}, reviewer=reviewer, definition=base,
+        ledger=budget.scope_findings, commit=COMMIT)
+    budget.scope_definition, budget.scope_findings, budget.scope_assessment = base, ledger, record
+    budget.scope_revision_base_digest = base.digest()
+
+    async def chat(messages, *, response_schema):
+        context = json.loads(messages[1]['content'])
+        assert next(c for c in context['scope_criteria'] if c['id'] == current.id) == current.model_dump(mode='json')
+        assert context['reopened_criterion_ids'] == []  # No required permission is borrowed.
+        response = revision(base, current)
+        response['scope_revision']['reassess'][0]['criterion']['description'] = 'Corrected current exclusion'
+        return json.dumps(response)
+
+    plan = build_plan(ENTRIES, context_tokens=4096, max_file_bytes=4096)
+    scope = ShardedScope(_Request(list(FILES), fetch, chat, COMMIT, DiscoveryLimits(), budget, entries=ENTRIES),
+                         ENTRIES, plan, 2)
+    scope._work = ShardPlan((Shard('first', ('nested/operations',), 64, 0),
+        Shard('second', ('nested/retirement', 'new/retirement', 'other/operations'), 128, 0)), (), 8192,
+        {'nested/operations': 'first', 'nested/retirement': 'second', 'new/retirement': 'second',
+         'other/operations': 'second'})
+    corrected = await scope.revision_round(base)
+    assert corrected.criteria[0].id != current.id and corrected.criteria[1] == base.criteria[1]
+    assert budget.scope_findings.open_ids() == ['F0001'] and budget.scope_contract is None

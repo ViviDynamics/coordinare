@@ -58,6 +58,7 @@ from coordinare.services.environment_probes import ProbePlan, ProbeReport, bind_
 from coordinare.services.environment_repair_triage import RepairTriage, triage_failure
 from coordinare.services.environment_scope import preserve_scope, released_criteria
 from coordinare.services.environment_scope_investigation import validate_investigation_history
+from coordinare.services.environment_scope_reopening import source_conflict_reopenings
 from coordinare.services.environment_scope_reuse import SCOPE_POLICY_VERSION, reusable_scope
 
 if TYPE_CHECKING:
@@ -281,7 +282,19 @@ def _save_scope_checkpoint(journal: RepairJournal, budget: AttemptBudget) -> Non
     if journal.scope_definition is not None:
         if budget.scope_definition is None:
             _refuse('established scope cannot be removed', code='scope_obligation_removed')
-        preserve_scope(journal.scope_definition, budget.scope_definition, released=released_criteria(budget.scope_findings))
+        old_required = {c.id for c in journal.scope_definition.criteria if c.applicability == 'required'}
+        new_required = {c.id for c in budget.scope_definition.criteria if c.applicability == 'required'}
+        reopenings = (source_conflict_reopenings(budget, journal.scope_definition)
+                      if old_required - new_required else set())
+        if (reopenings & (old_required - new_required) and (
+                journal.scope_phase not in {'investigation', 'revision'} or budget.scope_phase != 'review'
+                or budget.scope_revision_base_digest is not None
+                or journal.scope_assessment != budget.scope_assessment
+                or journal.scope_findings != budget.scope_findings
+                or len(budget.scope_definition.criteria) < len(journal.scope_definition.criteria))):
+            _refuse('source correction must retain its reviewed revision transition', code='scope_obligation_removed')
+        preserve_scope(journal.scope_definition, budget.scope_definition,
+                       released=released_criteria(budget.scope_findings) | reopenings)
     if any(budget.scope_inputs.get(path) != digest for path, digest in journal.scope_inputs.items()):
         _refuse('scope read history cannot be replaced', code='scope_source_identity')
     if (budget.scope_investigations[:len(journal.scope_investigations)] != journal.scope_investigations

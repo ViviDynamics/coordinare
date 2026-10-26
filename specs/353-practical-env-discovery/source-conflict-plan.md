@@ -29,7 +29,8 @@ all review history, independent acceptance, budgets, execution gates, and cleanu
 
 Files: create `src/coordinare/services/environment_scope_reopening.py` and
 `tests/unit/test_353_scope_conflict_reopening.py`; modify `environment_scope.py`,
-`environment_shard_scope.py`, and the inference package's `environment/scope_revision.py`.
+`environment_shard_scope.py`, `environment_repair.py`, and the inference package's
+`environment/scope_revision.py`.
 
 - [x] Write synthetic regression tests for new/retained typed conflicts, corrected required
   and not-applicable outcomes, unrelated freezes, supersession, identity failure, and restart.
@@ -42,7 +43,7 @@ Files: create `src/coordinare/services/environment_scope_reopening.py` and
 
 ## Task 2: Review and delivery
 
-- [ ] Request independent adversarial review; address actionable findings with regression tests.
+- [x] Request independent adversarial review; address actionable findings with regression tests.
 - [ ] Run lint, Ruff baseline, mypy, full `make test-all`, preflight 353, and fresh --check.
 - [ ] Commit and push only with passing evidence. Keep PR354/355 open and unmerged.
 - [ ] Wait for current-head green CI before preparing a separately reviewed validation run.
