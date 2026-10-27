@@ -2194,10 +2194,12 @@ def _fail_result(
 
 
 async def _kill_proc(proc: asyncio.subprocess.Process | None) -> None:
-    """Kill a subprocess and wait for it to exit (if it's still running)."""
-    if proc is not None and proc.returncode is None:
+    """Kill a subprocess (if it's still running) and reap it without waiting on pipes a descendant kept open."""
+    if proc is None:
+        return
+    if proc.returncode is None:
         proc.kill()
-        await proc.wait()
+    await _reap_cache_process(proc)
 
 
 def _truncate(

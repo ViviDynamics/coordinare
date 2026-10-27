@@ -186,3 +186,24 @@ async def test_reaping_closes_pipes_an_escaped_descendant_holds_after_the_child_
     finally:
         with suppress(ProcessLookupError, FileNotFoundError, ValueError):
             os.kill(int(escaped.read_text()), signal.SIGKILL)
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_ci_command_returns_although_an_escaped_descendant_holds_its_pipes(tmp_path):
+    import sys
+    import time
+
+    escaped = tmp_path / 'escaped.pid'
+    child = ('import subprocess,sys,time;'
+             "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],start_new_session=True);"
+             f'open({str(escaped)!r},"w").write(str(p.pid));time.sleep(60)')
+    started = time.monotonic()
+    try:
+        script = tmp_path / 'child.py'
+        script.write_text(child)
+        result = await asyncio.wait_for(workspace.run_command(f'{sys.executable} {script}', tmp_path, timeout=2), 20)
+        assert result.timed_out is True
+        assert time.monotonic() - started < 15
+    finally:
+        with suppress(ProcessLookupError, FileNotFoundError, ValueError):
+            os.kill(int(escaped.read_text()), signal.SIGKILL)
