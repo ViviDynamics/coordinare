@@ -882,6 +882,21 @@ def _record_env_cache_activation_failure(reason: str) -> None:
         )
 
 
+async def _discard_cache_output(reader: asyncio.StreamReader | None) -> None:
+    if reader is not None:
+        while await reader.read(64 * 1024):
+            pass
+
+
+async def _reap_cache_process(proc: asyncio.subprocess.Process) -> None:
+    # Paused stdout/stderr can keep the Python 3.12 process transport alive after SIGKILL.
+    # Discard in bounded chunks, concurrently, rather than retaining cancelled output.
+    async with asyncio.TaskGroup() as output:
+        output.create_task(_discard_cache_output(proc.stdout))
+        output.create_task(_discard_cache_output(proc.stderr))
+        await proc.wait()
+
+
 async def _kill_cache_process_group(proc: asyncio.subprocess.Process) -> None:
     """Stop a cancelled cache script and its children, then reap the script."""
     import signal
@@ -890,7 +905,7 @@ async def _kill_cache_process_group(proc: asyncio.subprocess.Process) -> None:
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    reaped = asyncio.create_task(proc.wait())
+    reaped = asyncio.create_task(_reap_cache_process(proc))
     cancelled = False
     while not reaped.done():
         try:
