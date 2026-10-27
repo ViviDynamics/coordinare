@@ -136,3 +136,26 @@ async def test_cancelled_health_spawn_drains_paused_pipes_before_return(tmp_path
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_reaping_does_not_wait_for_a_descendant_that_escaped_the_group(tmp_path):
+    """An escaped descendant inherits the output pipes and keeps them open long after the killed child exits."""
+    import sys
+
+    escaped = tmp_path / 'escaped.pid'
+    program = ('import subprocess,sys,time;'
+               "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],start_new_session=True);"
+               f'open({str(escaped)!r},"w").write(str(p.pid));print("ready",flush=True);time.sleep(60)')
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, '-c', program, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        assert proc.stdout is not None
+        assert await asyncio.wait_for(proc.stdout.readline(), 10) == b'ready\n'
+        await asyncio.wait_for(workspace._kill_cache_process_group(proc), 15)
+        assert proc.returncode is not None
+    finally:
+        with suppress(ProcessLookupError, FileNotFoundError, ValueError):
+            os.kill(int(escaped.read_text()), signal.SIGKILL)

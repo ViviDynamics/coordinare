@@ -34,7 +34,7 @@ def test_a_repair_probe_batch_survives_the_journal(tmp_path, repairs):
 
 
 def test_the_batch_after_a_repairs_allowance_is_still_refused(tmp_path):
-    cache, budget = _attempt(tmp_path)
+    _, budget = _attempt(tmp_path)
     budget.execution_repairs = 1
     budget.probe_batches = MAX_PROBE_BATCHES + 1
     with pytest.raises(EnvironmentDiscoveryError) as refused:

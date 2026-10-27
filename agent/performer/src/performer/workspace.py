@@ -888,13 +888,28 @@ async def _discard_cache_output(reader: asyncio.StreamReader | None) -> None:
             pass
 
 
+_REAP_PIPE_GRACE_SECONDS = 5.0
+
+
 async def _reap_cache_process(proc: asyncio.subprocess.Process) -> None:
     # Paused stdout/stderr can keep the Python 3.12 process transport alive after SIGKILL.
     # Discard in bounded chunks, concurrently, rather than retaining cancelled output.
-    async with asyncio.TaskGroup() as output:
-        output.create_task(_discard_cache_output(proc.stdout))
-        output.create_task(_discard_cache_output(proc.stderr))
-        await proc.wait()
+    drains = [asyncio.create_task(_discard_cache_output(proc.stdout)),
+              asyncio.create_task(_discard_cache_output(proc.stderr))]
+    waited = asyncio.ensure_future(proc.wait())
+    try:
+        done, _ = await asyncio.wait({waited}, timeout=_REAP_PIPE_GRACE_SECONDS)
+        if not done:
+            # Process.wait() also waits for pipe EOF, and a descendant that escaped the killed group
+            # can hold an inherited pipe open indefinitely. Close our ends so the exited child is reaped.
+            transport = getattr(proc, '_transport', None)
+            if transport is not None:
+                transport.close()
+        await waited
+    finally:
+        for drain in drains:
+            drain.cancel()
+        await asyncio.gather(*drains, return_exceptions=True)
 
 
 async def _kill_cache_process_group(proc: asyncio.subprocess.Process) -> None:
