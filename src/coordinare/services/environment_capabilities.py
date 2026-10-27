@@ -74,6 +74,14 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
         return None
     return {"applies_to": "installer_and_check_carrier_processes", "linux_capabilities": [],
             "no_new_privileges": True, "uid_zero_restores_capabilities": False,
+            "guest_docker_ready_before_manifest_commands": True,
+            "manifest_execution_order": ["guest_readiness", "activation_environment", "install_if_requested",
+                "activation_path_validation", "service_init_start_health", "checks", "service_stop",
+                "seal_if_install_passed", "runtime_teardown"],
+            "runtime_ordering_guidance": "The coordinator opens the private guest and waits for its ready marker and "
+                "successful Docker health before manifest commands. It supplies guest Docker activation to carrier "
+                "commands. Manifest services run after the installer command phase. Startup readiness does not guarantee "
+                "continued daemon health; required checks and cleanup remain mandatory.",
             "installation_guidance": "Even UID 0 cannot assume permission for user, group or ownership changes. "
                 "Use inspected tools and cache-local dependency artifacts under {cache}; system package installation "
                 "may require capabilities this carrier does not have. Guest service privileges are daemon-owned."}

@@ -33,6 +33,10 @@ def test_private_runtime_policy_does_not_equate_uid_zero_with_capabilities():
     assert result['no_new_privileges'] is True
     assert result['uid_zero_restores_capabilities'] is False
     assert 'group' in result['installation_guidance'] and '{cache}' in result['installation_guidance']
+    assert result['guest_docker_ready_before_manifest_commands'] is True
+    assert result['manifest_execution_order']==['guest_readiness','activation_environment','install_if_requested',
+        'activation_path_validation','service_init_start_health','checks','service_stop','seal_if_install_passed','runtime_teardown']
+    assert 'continued daemon health' in result['runtime_ordering_guidance']
 
 
 @pytest.mark.asyncio
@@ -181,7 +185,8 @@ async def get_attempt(monkeypatch, private):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('private', [False, True], ids=['native', 'private'])
 @pytest.mark.parametrize('path', ['initial_global', 'delta_global', 'delta_manifest'])
-async def test_legacy_delta_author_cache_replays_only_if_policy_context_unchanged(monkeypatch, private, path):
+@pytest.mark.parametrize('legacy_context',['without_policy','without_ordering'])
+async def test_legacy_delta_author_cache_replays_only_if_policy_context_unchanged(monkeypatch, private, path, legacy_context):
     import copy
 
     from coordinare.services import environment_discovery as discovery
@@ -192,7 +197,11 @@ async def test_legacy_delta_author_cache_replays_only_if_policy_context_unchange
     attempt.delta = SimpleNamespace(digest='d' * 64, base_proposal=base_proposal)
     current = copy.deepcopy(attempt.messages)
     legacy = json.loads(attempt.messages[1]['content'])
-    legacy.pop('carrier_process_policy', None)
+    if legacy_context=='without_policy':
+        legacy.pop('carrier_process_policy',None)
+    else:
+        for key in ('guest_docker_ready_before_manifest_commands','manifest_execution_order','runtime_ordering_guidance'):
+            legacy.get('carrier_process_policy',{}).pop(key,None)
     attempt.messages[1]['content'] = discovery._json(legacy)
     called = []
 
