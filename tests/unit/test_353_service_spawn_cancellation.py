@@ -207,3 +207,65 @@ async def test_a_timed_out_ci_command_returns_although_an_escaped_descendant_hol
     finally:
         with suppress(ProcessLookupError, FileNotFoundError, ValueError):
             os.kill(int(escaped.read_text()), signal.SIGKILL)
+
+
+def _escaping_child(tmp_path) -> tuple[list[str], Path]:
+    import sys
+
+    escaped = tmp_path / 'escaped.pid'
+    script = tmp_path / 'child.py'
+    script.write_text('import subprocess,sys,time;'
+                      "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],start_new_session=True);"
+                      f'open({str(escaped)!r},"w").write(str(p.pid));time.sleep(60)')
+    return [sys.executable, str(script)], escaped
+
+
+def _kill_escaped(escaped) -> None:
+    with suppress(ProcessLookupError, FileNotFoundError, ValueError):
+        os.kill(int(escaped.read_text()), signal.SIGKILL)
+
+
+@pytest.mark.asyncio
+async def test_a_command_cancelled_again_during_reaping_still_closes_its_pipes(tmp_path, monkeypatch):
+    argv, escaped = _escaping_child(tmp_path)
+    spawned = []
+    actual = asyncio.create_subprocess_exec
+
+    async def recording(*args, **kwargs):
+        proc = await actual(*args, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(workspace.asyncio, 'create_subprocess_exec', recording)
+    task = asyncio.create_task(workspace.run_command(' '.join(argv), tmp_path, timeout=60))
+    try:
+        for _ in range(200):
+            if escaped.exists() and escaped.read_text():
+                break
+            await asyncio.sleep(0.05)
+        task.cancel()
+        await asyncio.sleep(1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 15)
+        transport = spawned[0]._transport
+        assert transport.get_pipe_transport(1) is None or transport.get_pipe_transport(1).is_closing()
+        assert transport.get_pipe_transport(2) is None or transport.get_pipe_transport(2).is_closing()
+    finally:
+        _kill_escaped(escaped)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('module', ['workspace', 'commits'])
+@pytest.mark.parametrize('helper', ['_run_git', '_run_git_stdout'])
+async def test_git_timeouts_return_although_an_escaped_descendant_holds_the_pipes(tmp_path, module, helper):
+    from performer.workflows.implementer import commits
+
+    argv, escaped = _escaping_child(tmp_path)
+    run = getattr(workspace if module == 'workspace' else commits, helper)
+    try:
+        with pytest.raises(Exception, match='timed out'):
+            call = run(argv, tmp_path, dict(os.environ), timeout=1) if module == 'workspace' else run(argv, tmp_path, timeout=1)
+            await asyncio.wait_for(call, 15)
+    finally:
+        _kill_escaped(escaped)

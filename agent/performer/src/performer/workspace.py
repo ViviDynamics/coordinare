@@ -24,6 +24,7 @@ from performer.degeneracy import (
 from performer.env_provenance import ProvenanceMaterialiseError, frozen_scripts_dir, write_replacing
 from performer.models import Score, Stand
 from performer.noise_paths import exclude_globs, path_has_agent_config
+from performer.process_reaping import kill_and_reap, reap_owned
 from performer.workflows.implementer.commits import (
     classify_staged_blob as _classify_staged_blob,
 )
@@ -219,8 +220,7 @@ async def _run_git(
     try:
         _stdout, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await kill_and_reap(proc)
         # Credentials are in env vars, not args, so joining is safe
         cmd_str = " ".join(args)
         raise WorkspaceSetupError(
@@ -251,8 +251,7 @@ async def _run_git_stdout(
     try:
         stdout_bytes, _stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await kill_and_reap(proc)
         raise WorkspaceSetupError(
             f"git command timed out after {timeout}s: {' '.join(args)}",
         ) from None
@@ -882,37 +881,6 @@ def _record_env_cache_activation_failure(reason: str) -> None:
         )
 
 
-async def _discard_cache_output(reader: asyncio.StreamReader | None) -> None:
-    if reader is not None:
-        while await reader.read(64 * 1024):
-            pass
-
-
-_REAP_PIPE_GRACE_SECONDS = 5.0
-
-
-async def _reap_cache_process(proc: asyncio.subprocess.Process) -> None:
-    # Paused stdout/stderr can keep the Python 3.12 process transport alive after SIGKILL.
-    # Discard in bounded chunks, concurrently, rather than retaining cancelled output.
-    drains = [asyncio.create_task(_discard_cache_output(proc.stdout)),
-              asyncio.create_task(_discard_cache_output(proc.stderr))]
-    waited = asyncio.ensure_future(proc.wait())
-    try:
-        _, pending = await asyncio.wait({waited, *drains}, timeout=_REAP_PIPE_GRACE_SECONDS)
-        if pending:
-            # A descendant that escaped the killed group can hold an inherited pipe open indefinitely,
-            # which also blocks Process.wait() on Python 3.12. Close our ends, even when the child itself
-            # has already exited, so neither the reap nor the pipe transports outlive this cleanup.
-            transport = getattr(proc, '_transport', None)
-            if transport is not None:
-                transport.close()
-        await waited
-    finally:
-        for drain in drains:
-            drain.cancel()
-        await asyncio.gather(*drains, return_exceptions=True)
-
-
 async def _kill_cache_process_group(proc: asyncio.subprocess.Process) -> None:
     """Stop a cancelled cache script and its children, then reap the script."""
     import signal
@@ -921,16 +889,7 @@ async def _kill_cache_process_group(proc: asyncio.subprocess.Process) -> None:
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    reaped = asyncio.create_task(_reap_cache_process(proc))
-    cancelled = False
-    while not reaped.done():
-        try:
-            await asyncio.shield(reaped)
-        except asyncio.CancelledError:
-            cancelled = True
-    reaped.result()
-    if cancelled:
-        raise asyncio.CancelledError
+    await reap_owned(proc)
 
 
 async def _drain_cancelled_cache_spawn(spawn: asyncio.Task[asyncio.subprocess.Process]) -> None:
@@ -1780,8 +1739,7 @@ async def get_head_sha(stand: Stand) -> str:
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await kill_and_reap(proc)
         raise WorkspaceSetupError("git rev-parse HEAD timed out") from None
     if proc.returncode != 0:
         raise WorkspaceSetupError(
@@ -2195,11 +2153,8 @@ def _fail_result(
 
 async def _kill_proc(proc: asyncio.subprocess.Process | None) -> None:
     """Kill a subprocess (if it's still running) and reap it without waiting on pipes a descendant kept open."""
-    if proc is None:
-        return
-    if proc.returncode is None:
-        proc.kill()
-    await _reap_cache_process(proc)
+    if proc is not None:
+        await kill_and_reap(proc)
 
 
 def _truncate(
