@@ -157,5 +157,3 @@ def test_real_guest_boot_config_starts_daemon_and_waits_before_ready_marker(tmp_
     boot = config['runcmd'][0]
     assert boot.index('rc-service docker start') < boot.index('docker info >/dev/null') < boot.index('touch /run/coordinare-runtime-ready')
     assert boot.startswith('#!/bin/sh\nset -eu\n')
-
-
