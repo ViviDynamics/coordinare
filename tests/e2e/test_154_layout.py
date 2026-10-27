@@ -330,6 +330,8 @@ def test_the_fold_holds_for_any_title_length_run_count_and_banner(
     expect(page.locator("#activity-feed .af-row")).to_have_count(ACTIVITY_ROWS, timeout=_WAIT_LIVE)
     if banner:
         expect(page.locator("#attention-panel")).to_be_visible(timeout=_WAIT_LIVE)
+    # Measure the live countdown, which otherwise appears on the next timer tick.
+    page.evaluate("refreshFreshness()")
     for selector in _FOLD_SELECTORS:
         box = page.locator(selector).bounding_box()
         assert box is not None, selector
@@ -529,6 +531,7 @@ def test_the_fold_still_holds_with_the_description_on_its_own_line(
     expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
     store.broadcaster.broadcast(_scenario_snapshot(runs, long_title, banner))
     expect(page.locator("#active-performer-tiles .ap-tile")).to_have_count(runs, timeout=_WAIT_LIVE)
+    page.evaluate("refreshFreshness()")
     for selector in _FOLD_SELECTORS:
         box = page.locator(selector).bounding_box()
         assert box is not None, selector
