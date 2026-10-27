@@ -279,6 +279,7 @@ def replay_attempt(budget: AttemptBudget, plan: DeltaPlan | None, messages: list
     async def observe(_inputs):
         return None
 
+    messages = messages or [{'role': 'system', 'content': 'Synthetic author'}, {'role': 'user', 'content': '{}'}]
     return SimpleNamespace(budget=budget, delta=plan, discovery=discovery_stub(), messages=messages, chat=None,
                            construction=SimpleNamespace(observe_sources=observe), prior_manifests=[plan.base] if plan else [])
 

@@ -389,8 +389,7 @@ class DividedConstruction:
             applied = {'shard_checks': apply_group_delta(plan.base_group(group), patch)}
             return validate_group(applied, group=group, summary=summary, inherited=inherited)
 
-        key = (plan.digest if self.carrier_process_policy is None else hashlib.sha256(canonical({
-            'triage_digest': plan.digest, 'carrier_process_policy': self.carrier_process_policy})).hexdigest())
+        key = delta_part_key(plan.digest, self.carrier_process_policy)
         saved = saved_part(self.context.budget, 'delta', group.prefix, key)
         if saved is not None:
             await inspection.bind_verified(saved['inputs'], phase='construction')
@@ -488,6 +487,13 @@ class DividedConstruction:
             if prefix != GLOBAL_OWNER:
                 kept[prefix] = {**kept.get(prefix, {}), 'open_findings': records}
         self.feedback = {prefix: entry for prefix, entry in kept.items() if entry}
+
+
+def delta_part_key(triage_digest: str, process_policy: Mapping[str, Any] | None) -> str:
+    """Keep native delta keys stable; private parts also depend on the delivered carrier policy."""
+    if process_policy is None:
+        return triage_digest
+    return hashlib.sha256(canonical({'triage_digest': triage_digest, 'carrier_process_policy': process_policy})).hexdigest()
 
 
 def saved_part(budget: AttemptBudget, kind: str, name: str, key: str) -> dict[str, Any] | None:

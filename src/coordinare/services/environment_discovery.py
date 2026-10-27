@@ -122,6 +122,7 @@ from coordinare.services.environment_shard_construction import (
     ReviewIds,
     check_groups,
     combine_review,
+    delta_part_key,
     divided,
     execution_feedback_by_group,
     global_summary,
@@ -1574,13 +1575,14 @@ async def _delta_global_part(attempt: _Attempt, validate: Callable[[dict[str, An
     def check(delta: dict[str, Any]) -> Any:
         return validate(apply_delta(base, _delta_record(delta)))
 
-    saved = saved_part(budget, 'delta', 'global', plan.digest)
+    key = delta_part_key(plan.digest, json.loads(attempt.messages[1]['content']).get('carrier_process_policy'))
+    saved = saved_part(budget, 'delta', 'global', key)
     if saved is not None:
         await discovery.bind_verified(saved['inputs'], phase='construction')
         discovery.finding_responses = TypeAdapter(list[FindingResponse]).validate_python(saved['finding_responses'])
         return dict(check(saved['data']))
     data, _ = await _phase(inspection=discovery, chat=attempt.chat, budget=budget, messages=attempt.messages, validate=check)
-    save_part(budget, 'delta', 'global', plan.digest, data=data, inputs=dict(discovery.inputs),
+    save_part(budget, 'delta', 'global', key, data=data, inputs=dict(discovery.inputs),
               finding_responses=[response.model_dump(mode='json') for response in discovery.finding_responses])
     await budget.flush()
     return apply_delta(base, _delta_record(data))
@@ -1594,13 +1596,14 @@ async def _delta_candidate(attempt: _Attempt, validate: Callable[[dict[str, Any]
     def check(delta: dict[str, Any]) -> Any:
         return validate(apply_delta(base, _delta_record(delta)))
 
-    saved = saved_part(budget, 'delta', 'manifest', plan.digest)
+    key = delta_part_key(plan.digest, json.loads(attempt.messages[1]['content']).get('carrier_process_policy'))
+    saved = saved_part(budget, 'delta', 'manifest', key)
     if saved is not None:
         await discovery.bind_verified(saved['inputs'], phase='construction')
         data = saved['data']
     else:
         data, _ = await _phase(inspection=discovery, chat=attempt.chat, budget=budget, messages=attempt.messages, validate=check)
-        save_part(budget, 'delta', 'manifest', plan.digest, data=data, inputs=dict(discovery.inputs))
+        save_part(budget, 'delta', 'manifest', key, data=data, inputs=dict(discovery.inputs))
         await budget.flush()
     return apply_delta(base, _delta_record(data))
 

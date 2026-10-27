@@ -146,3 +146,93 @@ async def test_actual_divided_check_authors_receive_the_daemon_process_policy(mo
         assert 'carrier_process_policy' not in captured
     if repair:
         assert (saved_keys[-1] != 'd' * 64) is private
+
+
+class Captured(BaseException):
+    pass
+
+
+async def get_attempt(monkeypatch, private):
+    from coordinare.services import environment_discovery as discovery
+    from tests.unit.scope_chat_fixture import discover_with_fixture_scope
+
+    selected = CAPABILITIES
+    if private:
+        policy = policy_data()
+        policy['identity'].update(carrier_image=CAPABILITIES.image_ref, carrier_platform=CAPABILITIES.platform)
+        selected = ExecutionCapabilities.model_validate({**CAPABILITIES.model_dump(mode='json'),
+            'schema_version': 2, 'runtime': policy})
+    seen = {}
+
+    async def stop(attempt, _build, _validate):
+        seen['attempt'] = attempt
+        raise Captured
+
+    async def fetch(path):
+        return SOURCE if path == PATH else 'Synthetic additional evidence'
+
+    monkeypatch.setattr(discovery, '_author_candidate', stop)
+    with pytest.raises(Captured):
+        await discover_with_fixture_scope(symphony_name='suite', commit=COMMIT,
+            paths=[PATH, 'other/evidence'], fetch=fetch, chat=ScriptedChat(), capabilities=selected)
+    return seen['attempt'], selected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('private', [False, True], ids=['native', 'private'])
+@pytest.mark.parametrize('path', ['initial_global', 'delta_global', 'delta_manifest'])
+async def test_legacy_delta_author_cache_replays_only_if_policy_context_unchanged(monkeypatch, private, path):
+    import copy
+
+    from coordinare.services import environment_discovery as discovery
+    from tests.unit.test_353_delta_repair import base_proposal
+    from tests.unit.test_353_sharded_executable import global_part
+
+    attempt, _selected = await get_attempt(monkeypatch, private)
+    attempt.delta = SimpleNamespace(digest='d' * 64, base_proposal=base_proposal)
+    current = copy.deepcopy(attempt.messages)
+    legacy = json.loads(attempt.messages[1]['content'])
+    legacy.pop('carrier_process_policy', None)
+    attempt.messages[1]['content'] = discovery._json(legacy)
+    called = []
+
+    async def synthetic_author(**kwargs):
+        called.append(copy.deepcopy(kwargs['messages']))
+        data = global_part() if path == 'initial_global' else {
+            'install': [{'id': 'install-a', 'argv': ['make', 'a', 'PREFIX={cache}']}]}
+        return data, dict(attempt.discovery.inputs)
+
+    monkeypatch.setattr(discovery, '_phase', synthetic_author)
+
+    async def invoke():
+        if path == 'initial_global':
+            return await discovery._global_part(attempt)
+        if path == 'delta_global':
+            return await discovery._delta_global_part(attempt, lambda data: data, base_proposal())
+        return await discovery._delta_candidate(attempt, lambda data: data)
+
+    original_budget = attempt.budget
+    original_started = original_budget.started
+    await invoke()
+    assert len(called) == 1
+    attempt.messages[:] = current
+    await invoke()
+    assert attempt.budget is original_budget and original_budget.started == original_started
+    assert len(called) == (2 if private else 1), (
+        'legacy private delta author result reused without delivering the newly enforced policy context')
+
+    await invoke()
+    assert len(called) == (2 if private else 1)
+
+
+def test_delta_policy_key_binds_policy_content_and_preserves_native_keys():
+    from coordinare.services.environment_shard_construction import delta_part_key
+
+    digest = 'd' * 64
+    assert delta_part_key(digest, None) == digest
+    policy = {'linux_capabilities': [], 'no_new_privileges': True}
+    key = delta_part_key(digest, policy)
+    assert key != digest
+    assert delta_part_key(digest, dict(reversed(list(policy.items())))) == key
+    assert delta_part_key(digest, {**policy, 'no_new_privileges': False}) != key
+    assert delta_part_key('e' * 64, policy) != key
