@@ -159,3 +159,30 @@ async def test_reaping_does_not_wait_for_a_descendant_that_escaped_the_group(tmp
     finally:
         with suppress(ProcessLookupError, FileNotFoundError, ValueError):
             os.kill(int(escaped.read_text()), signal.SIGKILL)
+
+
+@pytest.mark.asyncio
+async def test_reaping_closes_pipes_an_escaped_descendant_holds_after_the_child_exited(tmp_path):
+    """The child exits first; its escaped descendant still holds the pipes, which must not stay open."""
+    import sys
+
+    escaped = tmp_path / 'escaped.pid'
+    program = ('import subprocess,sys;'
+               "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],start_new_session=True);"
+               f'open({str(escaped)!r},"w").write(str(p.pid))')
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, '-c', program, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        for _ in range(200):
+            if escaped.exists() and escaped.read_text():
+                break
+            await asyncio.sleep(0.05)
+        await asyncio.wait_for(workspace._kill_cache_process_group(proc), 15)
+        transport = proc._transport
+        assert transport.get_pipe_transport(1) is None or transport.get_pipe_transport(1).is_closing()
+        assert transport.get_pipe_transport(2) is None or transport.get_pipe_transport(2).is_closing()
+    finally:
+        with suppress(ProcessLookupError, FileNotFoundError, ValueError):
+            os.kill(int(escaped.read_text()), signal.SIGKILL)

@@ -898,10 +898,11 @@ async def _reap_cache_process(proc: asyncio.subprocess.Process) -> None:
               asyncio.create_task(_discard_cache_output(proc.stderr))]
     waited = asyncio.ensure_future(proc.wait())
     try:
-        done, _ = await asyncio.wait({waited}, timeout=_REAP_PIPE_GRACE_SECONDS)
-        if not done:
-            # Process.wait() also waits for pipe EOF, and a descendant that escaped the killed group
-            # can hold an inherited pipe open indefinitely. Close our ends so the exited child is reaped.
+        _, pending = await asyncio.wait({waited, *drains}, timeout=_REAP_PIPE_GRACE_SECONDS)
+        if pending:
+            # A descendant that escaped the killed group can hold an inherited pipe open indefinitely,
+            # which also blocks Process.wait() on Python 3.12. Close our ends, even when the child itself
+            # has already exited, so neither the reap nor the pipe transports outlive this cleanup.
             transport = getattr(proc, '_transport', None)
             if transport is not None:
                 transport.close()
