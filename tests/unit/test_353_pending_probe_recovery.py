@@ -544,3 +544,77 @@ async def test_invalid_abandonment_history_fails_closed(tmp_path, change):
         saved["probe_plan"] = selected.model_dump(mode="json")
     with pytest.raises(EnvironmentDiscoveryError):
         repair.journal_for(cache)
+
+
+async def production_authorization_hold(tmp_path, monkeypatch):
+    from coordinare.services.env_cache import EnvCacheService
+    from tests.unit.scope_chat_fixture import ScopeChatFixture
+    from tests.unit.test_353_bootstrap_pipeline import Proposal, Repository, setup
+
+    manager, cache, state, capabilities = setup(tmp_path)
+    assert isinstance(manager, EnvCacheService)
+    authorized = []
+
+    async def denied(plan):
+        authorized.append(plan)
+        raise TimeoutError
+
+    async def forbidden(*_args, **_kwargs):
+        pytest.fail("Runtime cannot start without authorization")
+
+    manager._kubernetes_state = {**state, "environment_probe_authorize": denied}
+    monkeypatch.setattr(service, "execute_environment_probe", forbidden)
+    with pytest.raises(EnvironmentDiscoveryError):
+        await manager._build_manifest_artifacts(
+            performer_mounts=(cache.cache_dir.parent,), symphony_name="suite", repo="suite",
+            github_org="fictional-org", github_service=Repository(), readme_contents={},
+            current_sha="fictional-fingerprint", cache_dir=cache.cache_dir,
+            cache_mount_path=capabilities.cache_mount_path,
+            llm_chat=ScopeChatFixture(Proposal(), "guide"), cache_state=cache, capabilities=capabilities,
+        )
+    assert cache.environment_attempt["status"] == "held"
+    assert cache.environment_attempt["execution_source"] == cache.environment_execution_source
+    assert cache.environment_attempt["probe_batches"] == 1
+    return cache, authorized[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending", [True, False], ids=["legacy-pending", "already-abandoned"])
+@pytest.mark.parametrize("drift", ["journal", "cache", "both", "malformed", "commit"])
+async def test_complete_source_drift_refuses_before_spending_last_probe_slot(tmp_path, monkeypatch, pending, drift):
+    cache, plan = await production_authorization_hold(tmp_path, monkeypatch)
+    if pending:
+        cache.environment_attempt.pop("probe_abandonments")
+        cache.environment_attempt["probe_owner"] = plan.digest()
+        cache.environment_attempt["probe_plan"] = plan.model_dump(mode="json")
+    if drift in {"journal", "both"}:
+        cache.environment_attempt["execution_source"]["tree_digest"] = "b" * 64
+    if drift in {"cache", "both"}:
+        cache.environment_execution_source["tree_digest"] = "b" * 64
+    if drift == "malformed":
+        cache.environment_attempt["execution_source"]["file_count"] = "1"
+    if drift == "commit":
+        cache.environment_execution_source["source_commit"] = "c" * 40
+    before = copy.deepcopy(cache.model_dump(mode="json"))
+    with pytest.raises(EnvironmentDiscoveryError) as failure:
+        repair.recover_pending_probe(cache, expected_plan_digest=plan.digest(), cleanup_confirmed=True)
+    assert failure.value.code == "probe_recovery_invalid"
+    assert cache.model_dump(mode="json") == before
+    assert cache.environment_attempt["probe_batches"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", ["neither", "journal", "cache"])
+async def test_matching_retained_complete_source_identity_allows_recovery(tmp_path, monkeypatch, missing):
+    cache, plan = await production_authorization_hold(tmp_path, monkeypatch)
+    if missing == "journal":
+        cache.environment_attempt["execution_source"] = None
+    if missing == "cache":
+        cache.environment_execution_source = None
+    original = copy.deepcopy(cache.environment_attempt)
+    repair.recover_pending_probe(cache, expected_plan_digest=plan.digest(), cleanup_confirmed=True)
+    assert cache.environment_attempt["status"] == "discovering"
+    assert cache.environment_attempt["probe_abandonments"] == original["probe_abandonments"]
+    assert cache.environment_attempt["execution_source"] == original["execution_source"]
+    assert cache.environment_attempt["probe_batches"] == original["probe_batches"]
+    assert cache.environment_attempt["expires_at"] == original["expires_at"]

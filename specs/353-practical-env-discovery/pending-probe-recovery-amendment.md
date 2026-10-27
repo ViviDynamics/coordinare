@@ -12,7 +12,7 @@ When authorization raises or is cancelled before the executor is called, the ser
 
 ## Explicit recovery
 
-`recover_pending_probe` requires the exact expected plan digest and confirmed executor cleanup. It only reopens a held, unexpired attempt with accepted source coverage, unchanged source and physical cache identity, no active source owner, no completed probes, no established executable candidate or target, and no execution generations. All source contracts, findings, journals, counters and the original expiry are preserved. The old plan is retained as abandoned without asserting that an ambiguous legacy execution never started.
+`recover_pending_probe` requires the exact expected plan digest and confirmed executor cleanup. It only reopens a held, unexpired attempt with accepted source coverage, unchanged source and physical cache identity, no active source owner, no completed probes, no established executable candidate or target, and no execution generations. Every retained complete-source identity must parse strictly and match the original plan's source commit and complete-source digest before recovery publishes any change. Missing additive identities in legacy checkpoints remain supported. All source contracts, findings, journals, counters and the original expiry are preserved. The old plan is retained as abandoned without asserting that an ambiguous legacy execution never started.
 
 The next probe consumes the next existing slot and receives a new source/runtime binding and fresh authorization. Abandoned plans are never selected as current probe evidence. Completed observations and executable manifests remain protected by their existing image binding; general migration of those objects is outside this amendment.
 

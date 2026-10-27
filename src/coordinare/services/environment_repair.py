@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 from coordinare_service_inference.environment.evidence_safety import source_path
+from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
 from coordinare_service_inference.environment.findings import (
     MAX_LEDGER_FINDINGS,
     Digest,
@@ -700,6 +701,19 @@ def recover_pending_probe(cache: EnvCacheState, *, expected_plan_digest: str,
           or journal.probe_abandonments[-1].plan_digest != expected_plan_digest
           or journal.probe_batches != len(journal.probe_abandonments)):
         _refuse('pending probe recovery has no matching abandoned reservation', code='probe_recovery_invalid')
+    else:
+        plan = journal.probe_abandonments[-1].plan
+    # These additive identities may be absent in older checkpoints. Every retained
+    # identity must still match the reserved complete source before any publication.
+    for retained in (journal.execution_source, cache.environment_execution_source):
+        if retained is None:
+            continue
+        try:
+            identity = ExecutionSourceIdentity.model_validate(retained)
+        except ValidationError:
+            _refuse('pending probe complete source is invalid', code='probe_recovery_invalid')
+        if identity.source_commit != journal.source_commit or identity.digest() != plan.execution_source_digest:
+            _refuse('pending probe complete source differs', code='probe_recovery_invalid')
     journal.status = 'discovering'
     journal.last_error = None
     _publish(cache, journal)
