@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 import uuid
@@ -43,6 +44,7 @@ from coordinare.services.environment_acceptance import (
 from coordinare.services.environment_attempt import (
     HOLD_CODES,
     MAX_ATTEMPT_SECONDS,
+    MAX_PROBE_BATCHES,
     MAX_SHARDED_ATTEMPT_SECONDS,
     REPAIR_COUNTERS,
     REPAIR_LIMITS,
@@ -54,7 +56,12 @@ from coordinare.services.environment_obligations import (
     preserve_execution_obligations,
     preserve_obligations,
 )
-from coordinare.services.environment_probes import ProbePlan, ProbeReport, bind_probe_report
+from coordinare.services.environment_probes import (
+    ProbeAbandonment,
+    ProbePlan,
+    ProbeReport,
+    bind_probe_report,
+)
 from coordinare.services.environment_repair_triage import RepairTriage, triage_failure
 from coordinare.services.environment_scope import preserve_scope, released_criteria
 from coordinare.services.environment_scope_investigation import validate_investigation_history
@@ -121,6 +128,7 @@ class RepairJournal(BaseModel):
     execution_source: dict[str, Any] | None = None
     probe_batches: int = Field(default=0, ge=0, le=2)
     probe_reports: list[dict[str, Any]] = Field(default_factory=list, max_length=2)
+    probe_abandonments: list[ProbeAbandonment] = Field(default_factory=list, max_length=2)
     probe_owner: str | None = None
     probe_plan: dict[str, Any] | None = None
     source_commit: str = Field(pattern=r'^[0-9a-f]{40,64}$')
@@ -214,7 +222,39 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
     if journal.coverage_manifest is not None:
         preserve_execution_obligations(journal.coverage_manifest, journal.rejected)
     _validate_scope_checkpoint(journal)
+    _validate_probe_checkpoint(journal)
     return journal
+
+
+def _validate_probe_checkpoint(journal: RepairJournal) -> None:
+    """Abandoned plans remain distinct from usable observations and live ownership."""
+    if not journal.probe_abandonments:
+        return
+    digests: set[str] = set()
+    executions: set[str] = set()
+    completed = {item.get('plan_digest') for item in journal.probe_reports}
+    for item in journal.probe_abandonments:
+        if (item.plan.source_commit != journal.source_commit or item.recorded_at < journal.started_at
+                or item.plan_digest in digests or item.plan.execution_id in executions
+                or item.plan_digest in completed or item.plan_digest == journal.probe_owner
+                or (journal.scope_definition is not None
+                    and item.plan.inventory_digest != journal.scope_definition.inventory_digest)):
+            _refuse('abandoned probe history is invalid', code='probe_reservation_invalid')
+        digests.add(item.plan_digest)
+        executions.add(item.plan.execution_id)
+    settled = len(journal.probe_reports) + len(journal.probe_abandonments)
+    if (len(journal.probe_abandonments) > MAX_PROBE_BATCHES or journal.probe_batches > MAX_PROBE_BATCHES
+            or journal.probe_batches not in {settled, settled + 1}
+            or (journal.probe_owner is None) != (journal.probe_plan is None)):
+        _refuse('abandoned probe accounting is invalid', code='probe_reservation_invalid')
+    if journal.probe_plan is not None:
+        try:
+            pending = ProbePlan.model_validate(journal.probe_plan)
+        except ValidationError:
+            _refuse('pending probe identity is invalid', code='probe_reservation_invalid')
+        if (journal.probe_batches != settled + 1 or pending.digest() != journal.probe_owner
+                or pending.execution_id in executions):
+            _refuse('pending probe overlaps abandoned history', code='probe_reservation_invalid')
 
 
 def _validate_scope_checkpoint(journal: RepairJournal) -> None:
@@ -425,6 +465,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
 
 
 def _publish(cache: EnvCacheState, journal: RepairJournal) -> None:
+    _validate_probe_checkpoint(journal)
     data = journal.model_dump(mode='json')
     if len(json.dumps(data).encode()) > JOURNAL_MAX_BYTES:
         _refuse('environment repair journal exceeds its bound')
@@ -472,6 +513,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.calls, budget.reads = journal.calls, journal.reads
     budget.probe_batches = journal.probe_batches
     budget.probe_reports = list(journal.probe_reports)
+    budget.probe_abandonments = [item.model_dump(mode='json') for item in journal.probe_abandonments]
     for kind, name in REPAIR_COUNTERS.items():
         if getattr(journal, name) > getattr(journal, "max_" + name):
             _refuse(f"environment {name} limit exceeded after configuration change", code=HOLD_CODES[kind])
@@ -536,6 +578,8 @@ def _validate_established_candidate(journal: RepairJournal, candidate: Environme
 def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool = False) -> None:
     """Save consumed reservations before external work; never move the original expiry."""
     journal = journal_for(cache)
+    if budget.probe_abandonments != [item.model_dump(mode='json') for item in journal.probe_abandonments]:
+        _refuse('abandoned probe history cannot be replaced', code='probe_reservation_invalid')
     _save_scope_checkpoint(journal, budget)
     previous, current = journal.finding_ledger, budget.finding_ledger
     if previous is not None and (current is None
@@ -581,10 +625,83 @@ def reserve_probe(cache: EnvCacheState, plan: ProbePlan) -> None:
     """Claim an already-reserved batch before any external executor work."""
     journal = journal_for(cache)
     if (journal.probe_owner is not None or journal.status != "discovering"
-            or journal.probe_batches != len(journal.probe_reports) + 1 or journal.source_commit != plan.source_commit):
+            or journal.probe_batches != len(journal.probe_reports) + len(journal.probe_abandonments) + 1
+            or journal.source_commit != plan.source_commit
+            or any(item.plan.execution_id == plan.execution_id for item in journal.probe_abandonments)):
         _refuse("environment probe overlaps or lacks a durable reservation", code="probe_reservation_invalid")
     journal.probe_owner = plan.digest()
     journal.probe_plan = plan.model_dump(mode="json")
+    _publish(cache, journal)
+
+
+def abandon_probe(cache: EnvCacheState, budget: AttemptBudget, plan: ProbePlan, *,
+                  reason: Literal['authorization_interrupted', 'cleanup_reconciled'],
+                  cleanup_confirmed: bool) -> None:
+    """Retain a cleaned reservation without refunding it or inventing a report."""
+    journal = journal_for(cache)
+    history = [item.model_dump(mode='json') for item in journal.probe_abandonments]
+    if (cleanup_confirmed is not True or journal.probe_owner != plan.digest()
+            or journal.probe_plan != plan.model_dump(mode='json')
+            or journal.probe_batches != len(journal.probe_reports) + len(history) + 1
+            or budget.probe_batches != journal.probe_batches or budget.probe_abandonments != history):
+        _refuse('pending probe ownership differs', code='probe_reservation_invalid')
+    record = ProbeAbandonment(plan=plan, plan_digest=plan.digest(), reason=reason,
+                             error_code=budget.error_code or 'probe_authorization_interrupted',
+                             recorded_at=time.time(), cleanup_confirmed=True)
+    journal.probe_abandonments.append(record)
+    journal.probe_owner = None
+    journal.probe_plan = None
+    _publish(cache, journal)
+    budget.probe_abandonments = [*history, record.model_dump(mode='json')]
+
+
+def recover_pending_probe(cache: EnvCacheState, *, expected_plan_digest: str,
+                          cleanup_confirmed: bool, now: float | None = None) -> None:
+    """Reopen only a cleaned pre-candidate attempt, keeping every consumed reservation."""
+    journal = journal_for(cache)
+    moment = time.time() if now is None else now
+    if (cleanup_confirmed is not True or not math.isfinite(moment)
+            or not journal.started_at <= moment < journal.expires_at
+            or cache.bootstrap_in_flight or cache.cache_dir_ready
+            or cache.environment_source_owner is not None or journal.source_owner is not None
+            or cache.bootstrap_commit_sha != journal.source_commit
+            or str(cache.cache_dir) != journal.base_cache_dir or cache.sanitised_name != journal.base_slug
+            or cache.cache_dir.is_symlink() or journal.status != 'held'
+            or journal.diagnostics.get('stage') not in {'probe_authorization', 'probe_execution', 'probe_preparation'}
+            or journal.scope_phase != 'accepted' or journal.scope_contract is None
+            or not journal.scope_contract.current or journal.scope_contract.finding_ledger.open_ids()
+            or journal.probe_reports or journal.coverage_manifest is not None or journal.target is not None
+            or journal.rejected or journal.generation or journal.execution_repairs or journal.executable_parts
+            or (journal.finding_ledger is not None and (journal.finding_ledger.records or journal.finding_ledger.reviews))
+            or journal.probe_batches >= MAX_PROBE_BATCHES
+            or journal.calls >= journal.max_calls or journal.reads >= journal.max_reads
+            or any(getattr(cache, key) is not None for key in
+                   ('environment_manifest', 'environment_assessment', 'environment_verification',
+                    'environment_capabilities', 'environment_runtime_artifacts'))):
+        _refuse('pending probe recovery requires an unexpired cleaned pre-candidate attempt',
+                code='probe_recovery_invalid')
+    if journal.probe_owner is not None:
+        try:
+            plan = ProbePlan.model_validate(journal.probe_plan)
+        except ValidationError:
+            _refuse('pending probe plan is invalid', code='probe_recovery_invalid')
+        if (plan.digest() != expected_plan_digest or journal.probe_owner != expected_plan_digest
+                or plan.source_commit != journal.source_commit
+                or plan.inventory_digest != journal.scope_contract.definition.inventory_digest
+                or journal.probe_batches != len(journal.probe_abandonments) + 1):
+            _refuse('pending probe identity differs', code='probe_recovery_invalid')
+        journal.probe_abandonments.append(ProbeAbandonment(
+            plan=plan, plan_digest=expected_plan_digest, reason='cleanup_reconciled',
+            error_code=journal.last_error,
+            recorded_at=moment, cleanup_confirmed=True))
+        journal.probe_owner = None
+        journal.probe_plan = None
+    elif (journal.probe_plan is not None or not journal.probe_abandonments
+          or journal.probe_abandonments[-1].plan_digest != expected_plan_digest
+          or journal.probe_batches != len(journal.probe_abandonments)):
+        _refuse('pending probe recovery has no matching abandoned reservation', code='probe_recovery_invalid')
+    journal.status = 'discovering'
+    journal.last_error = None
     _publish(cache, journal)
 
 

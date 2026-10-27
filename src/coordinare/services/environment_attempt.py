@@ -92,6 +92,7 @@ class AttemptBudget:
     reads: int = 0
     probe_batches: int = 0
     probe_reports: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    probe_abandonments: list[dict[str, Any]] = field(default_factory=list, repr=False)
     schema_repairs: int = 0
     coverage_revisions: int = 0
     scope_revisions: int = 0
@@ -262,7 +263,8 @@ class AttemptBudget:
                 "scope_review_count": len(self.scope_findings.reviews) if self.scope_findings is not None else 0,
                 "scope_contract_digest": self.scope_contract.digest() if self.scope_contract is not None else None, "stage": self.stage, "outcome": self.outcome, "error_code": self.error_code, "error_detail": self.error_detail, "guest": self.guest,
                 "elapsed_seconds": round(time.monotonic() - self.started, 3),
-                "probe_batches": self.probe_batches, "max_probe_batches": MAX_PROBE_BATCHES, "calls": self.calls, "calls_completed": self.calls_completed, "reads": self.reads,
+                "probe_batches": self.probe_batches, "abandoned_probe_batches": len(self.probe_abandonments),
+                "max_probe_batches": MAX_PROBE_BATCHES, "calls": self.calls, "calls_completed": self.calls_completed, "reads": self.reads,
                 "repairs": self.repairs, **{name: getattr(self, name) for counter in REPAIR_COUNTERS.values()
                     for name in (counter, "max_" + counter)}, "inspected_bytes": self.inspected_bytes,
                 "context_bytes": self.context_bytes, "review_context_bytes": self.review_context_bytes,

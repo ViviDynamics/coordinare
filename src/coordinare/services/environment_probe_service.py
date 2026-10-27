@@ -18,7 +18,7 @@ from coordinare.services.environment_probes import (
     probe_batch_timeout,
     validate_probe_report,
 )
-from coordinare.services.environment_repair import finish_probe, reserve_probe
+from coordinare.services.environment_repair import abandon_probe, finish_probe, reserve_probe
 from coordinare.services.environment_source_provider import (
     RepositorySourceRequest,
     prepare_repository_source,
@@ -53,10 +53,19 @@ async def run_owned_probe(plan: ProbePlan, *, context: ProbeServiceContext) -> P
         context.limits,
     )
     reserve_probe(cache, plan)
-    await budget.flush()
     authorize = state.get("environment_probe_authorize")
     if authorize is not None:
-        await authorize(plan)
+        budget.stage = "probe_authorization"
+    await budget.flush()
+    if authorize is not None:
+        try:
+            await authorize(plan)
+        except BaseException:
+            # No source preparation or executor call has occurred at this boundary.
+            abandon_probe(cache, budget, plan, reason="authorization_interrupted", cleanup_confirmed=True)
+            await budget.flush()
+            raise
+    budget.stage = "probe_preparation"
     deadline = min(budget.deadline, time.monotonic() + probe_batch_timeout(plan))
     async with asyncio.timeout_at(deadline):
         inspection = SourceInspection(sorted(plan.inputs), fetch, limits, budget)

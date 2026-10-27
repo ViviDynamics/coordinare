@@ -91,6 +91,24 @@ class ProbePlan(ProbeBase):
         return hashlib.sha256(json.dumps(self.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+class ProbeAbandonment(ProbeBase):
+    """A consumed reservation with no reusable observation, retained for audit."""
+
+    plan: ProbePlan
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason: Literal["authorization_interrupted", "cleanup_reconciled"]
+    error_code: str | None = Field(default=None, max_length=128)
+    recorded_at: float = Field(ge=0)
+    cleanup_confirmed: bool
+
+    @model_validator(mode="after")
+    def exact_plan(self) -> Self:
+        if self.cleanup_confirmed is not True or self.plan_digest != self.plan.digest():
+            message = "abandoned probe requires exact identity and confirmed cleanup"
+            raise ValueError(message)
+        return self
+
+
 def probe_batch_timeout(plan: ProbePlan) -> int:
     """Fresh private guests share one batch allowance, bounded by the caller's attempt."""
     return 30 * 60 if plan.request.execution_context == 'private_service' else 120
