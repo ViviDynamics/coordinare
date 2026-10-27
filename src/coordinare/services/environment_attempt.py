@@ -33,6 +33,8 @@ MAX_ATTEMPT_SECONDS = 3600
 MAX_SHARDED_ATTEMPT_SECONDS = 4 * 3600
 REPAIR_LIMITS = {"schema": 8, "coverage": 8, "scope": 8, "execution": 2}
 MAX_PROBE_BATCHES = 2
+# Each execution repair relocates its cache and brings one more probe batch (see reserve_probe_batch).
+PROBE_BATCH_CEILING = MAX_PROBE_BATCHES + REPAIR_LIMITS["execution"]
 RepairKind = Literal["schema", "coverage", "scope", "execution"]
 # "coverage" is the executable review's revision budget (its name predates the split); "scope" is the source scope's.
 REPAIR_COUNTERS = {"schema": "schema_repairs", "coverage": "coverage_revisions", "scope": "scope_revisions",

@@ -46,6 +46,7 @@ from coordinare.services.environment_attempt import (
     HOLD_CODES,
     MAX_ATTEMPT_SECONDS,
     MAX_PROBE_BATCHES,
+    PROBE_BATCH_CEILING,
     MAX_SHARDED_ATTEMPT_SECONDS,
     REPAIR_COUNTERS,
     REPAIR_LIMITS,
@@ -127,9 +128,9 @@ class RepairJournal(BaseModel):
     coverage_manifest: EnvironmentManifest | None = None
     source_owner: str | None = None
     execution_source: dict[str, Any] | None = None
-    probe_batches: int = Field(default=0, ge=0, le=2)
-    probe_reports: list[dict[str, Any]] = Field(default_factory=list, max_length=2)
-    probe_abandonments: list[ProbeAbandonment] = Field(default_factory=list, max_length=2)
+    probe_batches: int = Field(default=0, ge=0, le=PROBE_BATCH_CEILING)
+    probe_reports: list[dict[str, Any]] = Field(default_factory=list, max_length=PROBE_BATCH_CEILING)
+    probe_abandonments: list[ProbeAbandonment] = Field(default_factory=list, max_length=PROBE_BATCH_CEILING)
     probe_owner: str | None = None
     probe_plan: dict[str, Any] | None = None
     source_commit: str = Field(pattern=r'^[0-9a-f]{40,64}$')
@@ -229,6 +230,8 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
 
 def _validate_probe_checkpoint(journal: RepairJournal) -> None:
     """Abandoned plans remain distinct from usable observations and live ownership."""
+    if journal.probe_batches > MAX_PROBE_BATCHES + journal.execution_repairs:
+        _refuse('probe batches exceed the execution repairs allowance', code='probe_reservation_invalid')
     if not journal.probe_abandonments:
         return
     digests: set[str] = set()
@@ -244,7 +247,7 @@ def _validate_probe_checkpoint(journal: RepairJournal) -> None:
         digests.add(item.plan_digest)
         executions.add(item.plan.execution_id)
     settled = len(journal.probe_reports) + len(journal.probe_abandonments)
-    if (len(journal.probe_abandonments) > MAX_PROBE_BATCHES or journal.probe_batches > MAX_PROBE_BATCHES
+    if (len(journal.probe_abandonments) > MAX_PROBE_BATCHES + journal.execution_repairs
             or journal.probe_batches not in {settled, settled + 1}
             or (journal.probe_owner is None) != (journal.probe_plan is None)):
         _refuse('abandoned probe accounting is invalid', code='probe_reservation_invalid')
