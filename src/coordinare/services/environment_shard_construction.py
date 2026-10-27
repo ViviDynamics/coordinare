@@ -341,6 +341,7 @@ class DividedConstruction:
     global_part: dict[str, Any] | None = None
     # Delta repair: the failed accepted manifest's closure. A touched group is authored as changed and added checks.
     delta: DeltaPlan | None = None
+    carrier_process_policy: dict[str, Any] | None = None
 
     @property
     def groups(self) -> list[CheckGroup]:
@@ -375,6 +376,7 @@ class DividedConstruction:
         inherited = replace(inherit(self.previous, group, parent), mapped=self._kept_mappings(group))
         brief = canonical({
             'check_id_prefix': group.prefix, 'delta_instruction': DELTA_CHECK_INSTRUCTION,
+            **({'carrier_process_policy': self.carrier_process_policy} if self.carrier_process_policy is not None else {}),
             'closure_checks': plan.closure_checks(group), 'closure_criteria': plan.closure_criteria(frozenset(group.ids)),
             'assigned_criteria': [criterion.model_dump(mode='json') for criterion in assigned],
             'global_part': dict(summary), 'probe_evidence': list(probes), 'bound_inputs': index,
@@ -387,7 +389,8 @@ class DividedConstruction:
             applied = {'shard_checks': apply_group_delta(plan.base_group(group), patch)}
             return validate_group(applied, group=group, summary=summary, inherited=inherited)
 
-        key = plan.digest
+        key = (plan.digest if self.carrier_process_policy is None else hashlib.sha256(canonical({
+            'triage_digest': plan.digest, 'carrier_process_policy': self.carrier_process_policy})).hexdigest())
         saved = saved_part(self.context.budget, 'delta', group.prefix, key)
         if saved is not None:
             await inspection.bind_verified(saved['inputs'], phase='construction')
@@ -417,6 +420,7 @@ class DividedConstruction:
         inherited = replace(inherit(self.previous, group, parent), mapped=self._kept_mappings(group))
         brief = canonical({
             'check_id_prefix': group.prefix,
+            **({'carrier_process_policy': self.carrier_process_policy} if self.carrier_process_policy is not None else {}),
             'assigned_criteria': [criterion.model_dump(mode='json') for criterion in group.criteria],
             'global_part': dict(summary), 'probe_evidence': list(probes), 'bound_inputs': index,
             'previous_part': inherited.part, 'keep_check_ids': sorted(inherited.own),

@@ -1214,7 +1214,8 @@ def _divided_construction(scope: ScopeContract, attempt: _Attempt) -> DividedCon
     options, prior = attempt.options, attempt.prior_manifests
     build = DividedConstruction(AgentContext(attempt.budget, attempt.bounds, attempt.chat), options.entries or attempt.inventory,
                                 attempt.fetch, scope, attempt.bounds.agent_concurrency,
-                                previous=parts_from_manifest(prior[-1] if prior else None, groups))
+                                previous=parts_from_manifest(prior[-1] if prior else None, groups),
+                                carrier_process_policy=carrier_process_policy(attempt.construction.capabilities))
     build.obligations = dict(build.previous)
     build.delta = attempt.delta
     if options.execution_feedback is not None:

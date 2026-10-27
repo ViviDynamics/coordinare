@@ -83,3 +83,66 @@ def test_private_policy_matches_actual_docker_carrier_options(tmp_path):
     assert policy['linux_capabilities'] == []
     assert options[options.index('--security-opt') + 1] == 'no-new-privileges'
     assert policy['no_new_privileges'] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('private', [False, True], ids=['native', 'private'])
+@pytest.mark.parametrize('repair', [False, True], ids=['initial', 'delta'])
+async def test_actual_divided_check_authors_receive_the_daemon_process_policy(monkeypatch, private, repair):
+    from coordinare.services import environment_discovery as discovery
+    from coordinare.services import environment_shard_construction as shards
+    from coordinare.services.environment_capabilities import carrier_process_policy
+    from tests.unit.scope_chat_fixture import discover_with_fixture_scope
+    from tests.unit.test_353_sharded_executable import SUMMARY
+
+    selected = CAPABILITIES
+    if private:
+        policy = policy_data()
+        policy['identity'].update(carrier_image=CAPABILITIES.image_ref, carrier_platform=CAPABILITIES.platform)
+        selected = ExecutionCapabilities.model_validate({**CAPABILITIES.model_dump(mode='json'),
+            'schema_version': 2, 'runtime': policy})
+    captured = {}
+    saved_keys = []
+    original_saved = shards.saved_part
+    original = discovery._divided_construction
+
+    class BoundaryReached(BaseException):
+        pass
+
+    def build(scope, attempt):
+        attempt.budget.scope_shards = {'synthetic_division': True}
+        return original(scope, attempt)
+
+    async def author(_attempt, divided, _validate):
+        group = divided.groups[0]
+        if repair:
+            divided.delta = SimpleNamespace(group_touched=lambda _group: True,
+                triage=SimpleNamespace(criterion_ids=list(group.ids)), digest='d' * 64,
+                closure_checks=lambda _group: [], closure_criteria=lambda _ids: [])
+        await divided.author(group, summary=SUMMARY, probes=[])
+
+    def saved_part(budget, stage, prefix, key):
+        saved_keys.append(key)
+        return original_saved(budget, stage, prefix, key)
+
+    async def capture(_context, _inspection, messages, _task):
+        captured.update(json.loads(messages[1]['content']))
+        raise BoundaryReached
+
+    async def fetch(path):
+        return SOURCE if path == PATH else 'Additional fixture evidence'
+
+    monkeypatch.setattr(discovery, 'divided', lambda _scope: True)
+    monkeypatch.setattr(discovery, '_divided_construction', build)
+    monkeypatch.setattr(discovery, '_author_candidate', author)
+    monkeypatch.setattr(shards, 'run_agent', capture)
+    monkeypatch.setattr(shards, 'saved_part', saved_part)
+    with pytest.raises(BoundaryReached):
+        await discover_with_fixture_scope(symphony_name='suite', commit=COMMIT,
+            paths=[PATH, 'other/evidence'], fetch=fetch, chat=ScriptedChat(), capabilities=selected)
+    if private:
+        assert captured['carrier_process_policy'] == carrier_process_policy(selected)
+    else:
+        assert 'carrier_process_policy' not in captured
+    if repair:
+        assert (saved_keys[-1] != 'd' * 64) is private
