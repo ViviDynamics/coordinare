@@ -13,7 +13,7 @@ import threading
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import structlog
 
@@ -890,7 +890,41 @@ async def _kill_cache_process_group(proc: asyncio.subprocess.Process) -> None:
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    await proc.wait()
+    reaped = asyncio.create_task(proc.wait())
+    cancelled = False
+    while not reaped.done():
+        try:
+            await asyncio.shield(reaped)
+        except asyncio.CancelledError:
+            cancelled = True
+    reaped.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def _drain_cancelled_cache_spawn(spawn: asyncio.Task[asyncio.subprocess.Process]) -> None:
+    try:
+        proc = await spawn
+    except Exception:
+        # A failed creation supplies no process handle; the caller is already cancelled.
+        return
+    await _kill_cache_process_group(proc)
+
+
+async def _spawn_cache_process(script: Path, **kwargs: Any) -> asyncio.subprocess.Process:
+    """Keep ownership across the gap between OS creation and handle publication."""
+    spawn = asyncio.create_task(asyncio.create_subprocess_exec("bash", str(script), **kwargs))
+    try:
+        return await asyncio.shield(spawn)
+    except asyncio.CancelledError:
+        cleanup = asyncio.create_task(_drain_cancelled_cache_spawn(spawn))
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                pass
+        cleanup.result()
+        raise
 
 
 def _stringify_env(env: dict[str, str]) -> dict[str, str]:
@@ -975,8 +1009,8 @@ async def _start_env_cache_services(
     try:
         try:
             with os.fdopen(out_fd, "wb") as out_fh:
-                proc = await asyncio.create_subprocess_exec(
-                    "bash", str(start),
+                proc = await _spawn_cache_process(
+                    start,
                     stdout=out_fh,
                     stderr=asyncio.subprocess.STDOUT,
                     env=env,
@@ -1041,8 +1075,8 @@ async def _run_env_cache_health_check(
         return
     proc = None
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "bash", str(health),
+        proc = await _spawn_cache_process(
+            health,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
