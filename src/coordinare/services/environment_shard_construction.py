@@ -661,13 +661,17 @@ def review_capacities(ledger: FindingLedger, owners: Sequence[str]) -> dict[str,
     return dict(zip(owners, finding_capacities(MAX_FINDINGS - len(ledger.records), len(owners)), strict=True))
 
 
-def part_manifest_view(manifest: EnvironmentManifest, group: CheckGroup | None) -> dict[str, Any]:
-    """The part under review: a group's criteria and mapped checks, or the global declaration."""
+def part_manifest_view(manifest: EnvironmentManifest, group: CheckGroup | None,
+                       *, groups: Sequence[CheckGroup] = ()) -> dict[str, Any]:
+    """A group's checks, or the global declaration and checks no group covers in full."""
     data = manifest.model_dump(mode='json')
     if group is None:
+        covered = {identifier for owner in groups for criterion in owner.ids
+                   for identifier in manifest.criterion_checks.get(criterion, [])}
+        covered.update(check['id'] for check in data['checks'] if any(owns(owner.prefix, check['id']) for owner in groups))
         return {key: data.get(key) for key in ('requirements', 'install', 'activation', 'services', 'runtime',
                                                  'local_credentials', 'empty_reason')} | {
-            'checks': [check for check in data['checks'] if not PREFIX.match(check['id'])]}
+            'checks': [check for check in data['checks'] if not PREFIX.match(check['id']) or check['id'] not in covered]}
     mapped = {identifier for criterion in group.ids for identifier in manifest.criterion_checks.get(criterion, [])}
     return {'criterion_checks': {criterion: manifest.criterion_checks.get(criterion, []) for criterion in sorted(group.ids)},
             'checks': [check for check in data['checks'] if check['id'] in mapped or owns(group.prefix, check['id'])],

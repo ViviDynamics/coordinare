@@ -1485,7 +1485,7 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
         system = SOURCE_TOOLS + REVIEW_PART_PREAMBLE + EXECUTABLE_REVIEW_INSTRUCTIONS
         shared = {**base, 'manifest_digest': manifest.digest(), 'global_part': summary, 'probe_evidence': budget.probe_reports,
                   'untrusted_execution_history': budget.execution_review_evidence}
-        own: dict[str, Any] = {'part': part_manifest_view(manifest, group), 'mandatory_evidence': index, 'assigned_findings': mine,
+        own: dict[str, Any] = {'part': part_manifest_view(manifest, group, groups=groups), 'mandatory_evidence': index, 'assigned_findings': mine,
              'required_decision_ids': owned.get(owner, []), 'findings_capacity': capacities[owner],
              'finding_responses': [r for r in responses if r.get('finding_id') in owned.get(owner, [])]}
         # A part's standing also depends on every record its checks depend on, not only on its own records.
