@@ -48,7 +48,7 @@ class RuntimeResources(RuntimeContract):
     cache_bytes: int = Field(gt=0)
     scratch_bytes: int = Field(gt=0)
     reserve_bytes: int = Field(gt=0)
-    max_seconds: int = Field(gt=0, le=3600)
+    max_seconds: int = Field(gt=0, le=7200)
 
 
 class RuntimeEndpoint(RuntimeContract):

@@ -81,6 +81,12 @@ def guest_memory_mib(resources: RuntimeResources) -> int:
     return max(256, resources.memory_mib // 2)
 
 
+def guest_cpus(resources: RuntimeResources) -> int:
+    """Half the CPU quota: native install commands share the container with the emulated guest, which would
+    otherwise take every CPU while it emulates image builds and starve them."""
+    return max(1, resources.cpus // 2)
+
+
 def host_kvm_usable(device: str = '/dev/kvm') -> bool:
     return os.access(device, os.R_OK | os.W_OK)
 
@@ -99,7 +105,7 @@ def qemu_arguments(spec: RuntimeSpec, bundle: RuntimeBundleInputs, *, disk: Path
     # KVM only helps a guest of the carrier's own architecture; a cross-architecture guest stays on TCG.
     kvm = kvm_usable and carrier_platform == bundle.guest_platform
     arguments = [bundle.emulator, *accelerator_arguments(kvm=kvm), '-m', str(guest_memory_mib(spec.policy.resources)),
-                 '-smp', str(spec.policy.resources.cpus), '-bios', bundle.firmware,
+                 '-smp', str(guest_cpus(spec.policy.resources)), '-bios', bundle.firmware,
                  '-drive', f'file={disk},format=qcow2,if=virtio,discard=unmap',
                  '-drive', f'file={seed},format=raw,media=cdrom,if=virtio,readonly=on',
                  '-netdev', 'user,id=net0,restrict=' + ('off' if install else 'on') + ',' + ','.join(forwarding),

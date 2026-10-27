@@ -58,7 +58,7 @@ def test_legacy_native_capability_digest_remains_identical():
     ('resources', 'cache_bytes', 0),
     ('resources', 'scratch_bytes', 0),
     ('resources', 'reserve_bytes', 0),
-    ('resources', 'max_seconds', 3601),
+    ('resources', 'max_seconds', 7201),
 ])
 def test_runtime_policy_rejects_mutable_or_unbounded_inputs(section, field, value):
     raw = policy_data()

@@ -27,7 +27,8 @@ def test_native_execution_does_not_invent_a_capability_policy():
 def test_private_runtime_policy_does_not_equate_uid_zero_with_capabilities():
     from coordinare.services.environment_capabilities import carrier_process_policy
 
-    result = carrier_process_policy(SimpleNamespace(runtime=object()))
+    runtime = SimpleNamespace(resources=SimpleNamespace(cpus=8, memory_mib=4096, max_seconds=3600))
+    result = carrier_process_policy(SimpleNamespace(runtime=runtime))
     assert result['applies_to'] == 'installer_and_check_carrier_processes'
     assert result['linux_capabilities'] == []
     assert result['no_new_privileges'] is True

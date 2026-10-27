@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 from coordinare_service_inference.environment.guest_selection import guest_for
 from coordinare_service_inference.environment.models import ExecutionCapabilities
 from coordinare_service_inference.environment.runtime import RuntimeIdentity, RuntimePolicy
-from coordinare_service_inference.environment.runtime_guest import foreign_platforms
+from coordinare_service_inference.environment.runtime_guest import foreign_platforms, guest_cpus
 
 from coordinare.services.environment_acceptance import (
     accepted_environment,
@@ -72,7 +72,10 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
     """Describe the enforced private-runtime carrier boundary without inferring native transport policy."""
     if capabilities.runtime is None:
         return None
+    resources = capabilities.runtime.resources
     return {"applies_to": "installer_and_check_carrier_processes", "linux_capabilities": [],
+            "session_budget": {"seconds": resources.max_seconds, "container_cpus": resources.cpus,
+                               "guest_cpus": guest_cpus(resources)},
             "no_new_privileges": True, "uid_zero_restores_capabilities": False,
             "guest_docker_ready_before_manifest_commands": True,
             "manifest_execution_order": ["guest_readiness", "activation_environment", "install_if_requested",
@@ -84,7 +87,11 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
                 "continued daemon health; required checks and cleanup remain mandatory.",
             "installation_guidance": "Even UID 0 cannot assume permission for user, group or ownership changes. "
                 "Use inspected tools and cache-local dependency artifacts under {cache}; system package installation "
-                "may require capabilities this carrier does not have. Guest service privileges are daemon-owned."}
+                "may require capabilities this carrier does not have. Guest service privileges are daemon-owned. "
+                "Installation, every check and the service lifecycle share one session_budget; the guest emulates its "
+                "CPU, so container image builds are slow. Prefer an official prebuilt release archive or an extracted "
+                "distribution package over compiling a language runtime, database or other large tool from source; "
+                "compile only what has no pinned prebuilt."}
 
 
 def _refuse_runtime(message: str) -> NoReturn:
