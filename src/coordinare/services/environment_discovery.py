@@ -54,7 +54,7 @@ from coordinare.services.environment_attempt import (
     EnvironmentDiscoveryError,
     failure_detail,
 )
-from coordinare.services.environment_capabilities import platform_roles
+from coordinare.services.environment_capabilities import carrier_process_policy, platform_roles
 from coordinare.services.environment_construction import ReviewedConstruction, ScopeReopenedError
 from coordinare.services.environment_delta import (
     DELTA_FALLBACK,
@@ -1042,6 +1042,8 @@ async def _discover_attempt(
                 "Return declarations only; the daemon owns all provenance fields. "
                 "Never rename or remove existing required requirement/check/service IDs during repairs; "
                 "revise their definitions in place and add new IDs for additional obligations."}
+    if (process_policy := carrier_process_policy(capabilities)) is not None:
+        identity["carrier_process_policy"] = process_policy
     messages = [
                 {"role": "system", "content": legacy_discovery_system()},
                 {"role": "user", "content": _json({**identity, "declared_services": options.declared_services,

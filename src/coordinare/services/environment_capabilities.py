@@ -68,6 +68,17 @@ def platform_roles(capabilities: ExecutionCapabilities) -> dict[str, Any]:
             "emulated_platforms": list(foreign_platforms(daemon)) if runtime is not None else []}
 
 
+def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any] | None:
+    """Describe the enforced private-runtime carrier boundary without inferring native transport policy."""
+    if capabilities.runtime is None:
+        return None
+    return {"applies_to": "installer_and_check_carrier_processes", "linux_capabilities": [],
+            "no_new_privileges": True, "uid_zero_restores_capabilities": False,
+            "installation_guidance": "Even UID 0 cannot assume permission for user, group or ownership changes. "
+                "Use inspected tools and cache-local dependency artifacts under {cache}; system package installation "
+                "may require capabilities this carrier does not have. Guest service privileges are daemon-owned."}
+
+
 def _refuse_runtime(message: str) -> NoReturn:
     raise EnvironmentCapabilityError(message) from None
 
