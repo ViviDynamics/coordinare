@@ -367,8 +367,18 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
         return
 
     def remap(identifiers: list[str], *, exclude: str | None = None) -> list[str]:
-        return [*dict.fromkeys(item for item in (alias.get(identifier, identifier) for identifier in identifiers)
-                               if item != exclude)]
+        """A dropped copy's id becomes the kept one. Only the duplicate or self-reference that this creates is
+        removed: an unrelated list stays byte for byte (an executed check may not change), and an existing
+        self-reference stays for validation to reject."""
+        if not alias.keys() & set(identifiers):
+            return identifiers
+        result: list[str] = []
+        for identifier in identifiers:
+            kept = alias.get(identifier, identifier)
+            if identifier in alias and (kept in result or kept in identifiers or kept == exclude):
+                continue
+            result.append(kept)
+        return result
 
     merged['checks'] = [check for check in checks if check['id'] not in alias]
     for check in merged['checks']:

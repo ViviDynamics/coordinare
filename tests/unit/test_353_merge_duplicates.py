@@ -107,3 +107,19 @@ def test_a_copy_an_executed_check_depends_on_is_not_folded():
     merged = merge_parts(global_data, [c00], executed={'c00-ready', 'c00-test'})
     assert [check['id'] for check in merged['checks']] == ['check-ready', 'c00-ready', 'c00-test']
     assert merge_parts(global_data, [c00])['checks'][1]['depends_on'] == ['check-ready']
+
+
+def test_a_fold_leaves_every_list_not_naming_the_copy_untouched():
+    """An unrelated list may be an executed check's, which may not change; a self-reference is validation's to reject."""
+    global_data = {'checks': [_cmd('check-ready', 'ready'), _cmd('check-health', 'health')]}
+    c00 = _part([_cmd('c00-test', 'test', depends_on=['check-ready', 'check-ready']),
+                 _cmd('c00-loop', 'loop', depends_on=['c00-loop'])], {'S1': ['c00-test', 'c00-test']})
+    c01 = _part([_cmd('c01-health', 'health', required=False),
+                 _cmd('c01-after', 'after', depends_on=['c01-after', 'c01-health', 'check-health'])], {'S2': ['c01-health']})
+    merged = merge_parts(global_data, [c00, c01])
+    by_id = {check['id']: check for check in merged['checks']}
+    assert 'c01-health' not in by_id
+    assert by_id['c00-test']['depends_on'] == ['check-ready', 'check-ready']
+    assert by_id['c00-loop']['depends_on'] == ['c00-loop']
+    assert merged['criterion_checks']['S1'] == ['c00-test', 'c00-test']
+    assert by_id['c01-after']['depends_on'] == ['c01-after', 'check-health']
