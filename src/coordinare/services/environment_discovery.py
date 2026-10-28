@@ -738,6 +738,15 @@ def _record_ids(data: Mapping[str, Any]) -> list[str]:
     return [identifier for identifier in ids if isinstance(identifier, str)]
 
 
+def _carrier_rules(manifest: EnvironmentManifest | EnvironmentManifestProposal,
+                   capabilities: ExecutionCapabilities) -> dict[str, Any]:
+    """The static rules' view of the carrier: every check and service lifecycle command, and whether it can install
+    system packages (the private-runtime carrier has no Linux capabilities, so it cannot)."""
+    lifecycle = [command for service in manifest.services
+                 for command in (service.init, service.start, service.health, service.stop) if command]
+    return {'others': [*manifest.checks, *lifecycle], 'system_packages': capabilities.runtime is None}
+
+
 @dataclass
 class _CandidateValidator:
     discovery: _Inspection
@@ -766,7 +775,8 @@ class _CandidateValidator:
             previous.update(current)
         manifest = self.construction.admit(data, self.discovery.inputs)
         try:
-            validate_static_rules(manifest.install, manifest.activation, self.construction.capabilities.platform)
+            validate_static_rules(manifest.install, manifest.activation, self.construction.capabilities.platform,
+                                  **_carrier_rules(manifest, self.construction.capabilities))
         except PydanticCustomError as exc:
             raise ValidationError.from_exception_data('EnvironmentManifestProposal',
                                                       [{'type': exc, 'loc': (), 'input': None}]) from exc
@@ -1424,7 +1434,8 @@ def _global_rules(merge: Callable[[dict[str, Any]], Any] | None) -> Callable[[di
             # v28 set DOCKER_CONFIG in activation, which the private runtime owns; the merge reported it unlocated.
             validate_records(proposal.install, proposal.checks, proposal.services, proposal.requirements,
                              proposal.activation.env, runtime=merge.construction.capabilities.runtime is not None)
-            validate_static_rules(proposal.install, proposal.activation, merge.construction.capabilities.platform)
+            validate_static_rules(proposal.install, proposal.activation, merge.construction.capabilities.platform,
+                                  **_carrier_rules(proposal, merge.construction.capabilities))
             validate_shell_locals([*proposal.install, *proposal.checks, *(command for service in proposal.services
                                    for command in (service.init, service.start, service.health, service.stop) if command)],
                                   [*proposal.activation.env, *(c.name for c in proposal.local_credentials)])

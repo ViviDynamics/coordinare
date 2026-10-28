@@ -16,6 +16,11 @@ from coordinare_service_inference.environment.runtime_execution import (
 )
 
 
+async def _quiet_ssh(script, **_kwargs):
+    """A guest whose Docker holds nothing once the commands have run."""
+    return 0, b'containers=\nvolumes=\nnetworks=\n' if script == runtime_execution.RESIDUAL_LIST else b''
+
+
 def _command(identifier):
     return SimpleNamespace(id=identifier, required=True)
 
@@ -28,7 +33,7 @@ def _report() -> VerificationReport:
 
 
 async def _run(tmp_path, monkeypatch, cleanup, *, commands=None, seal=None):
-    lease = SimpleNamespace(activation_env={}, installation_passed=False)
+    lease = SimpleNamespace(activation_env={}, installation_passed=False, ssh=_quiet_ssh)
 
     async def close(**_kwargs):
         return cleanup
@@ -149,7 +154,7 @@ def _opened(cleanup):
         return cleanup
 
     async def opened(*_args, **_kwargs):
-        return SimpleNamespace(activation_env={}, installation_passed=False, close=close)
+        return SimpleNamespace(activation_env={}, installation_passed=False, ssh=_quiet_ssh, close=close)
 
     return opened
 
@@ -276,7 +281,7 @@ async def test_a_failed_close_is_an_unconfirmed_teardown_that_keeps_the_evidence
         raise TimeoutError('qemu did not exit after kill')
 
     async def opened(*_args, **_kwargs):
-        return SimpleNamespace(activation_env={}, installation_passed=False, close=close)
+        return SimpleNamespace(activation_env={}, installation_passed=False, ssh=_quiet_ssh, close=close)
 
     async def passthrough(_lease, operation):
         return await operation
@@ -327,7 +332,7 @@ async def test_a_close_failure_during_cancellation_still_cancels(tmp_path, monke
         raise TimeoutError('qemu did not exit after kill')
 
     async def opened(*_args, **_kwargs):
-        return SimpleNamespace(activation_env={}, installation_passed=False, close=close)
+        return SimpleNamespace(activation_env={}, installation_passed=False, ssh=_quiet_ssh, close=close)
 
     async def passthrough(_lease, operation):
         return await operation

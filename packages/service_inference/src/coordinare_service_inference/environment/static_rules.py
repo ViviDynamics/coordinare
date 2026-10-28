@@ -113,8 +113,75 @@ def foreign_artifact(command: Command, platform: str) -> bool:
                and (names := _names(words)) and native not in names for words in segments)
 
 
-def validate_static_rules(install: Sequence[Command], activation: Activation, platform: str | None = None) -> None:
-    """Raises the first correctable static error; each names its record ids (activation entries by position)."""
+# A package manager installing into the system: refused by a carrier without Linux capabilities (apt cannot drop
+# privileges or write its system directories). Downloading or extracting a package into {cache} is not judged.
+_PACKAGE_INSTALL = {"apt-get": {"install"}, "apt": {"install"}, "aptitude": {"install"}, "dpkg": {"-i", "--install"},
+                    "apk": {"add"}, "yum": {"install"}, "dnf": {"install"}, "microdnf": {"install"},
+                    "zypper": {"install", "in"}}
+_PREFIXES = frozenset({"sudo", "env", "command", "exec", "nice", "nohup"})
+_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _segments(command: Command) -> list[list[str]]:
+    try:
+        return [words for words in (_strip(shlex.split(part)) for part in _SEPARATOR.split(_script(command.argv))) if words]
+    except ValueError:
+        return []
+
+
+def _program(words: list[str]) -> list[str]:
+    """The words from the program on: leading variable assignments and wrappers such as sudo are dropped."""
+    while words and (words[0] in _PREFIXES or _ASSIGNMENT.match(words[0])):
+        words = words[1:]
+    return words
+
+
+def system_package_install(command: Command) -> bool:
+    for words in _segments(command):
+        words = _program(words)
+        if words and (verbs := _PACKAGE_INSTALL.get(words[0].rsplit("/", 1)[-1])) and verbs & set(words[1:]):
+            return True
+    return False
+
+
+def _full_match(words: list[str]) -> bool:
+    """pkill or pgrep matching the whole command line (-f, --full, or -f combined with other short flags), on a
+    pattern without a bracket expression; a bracket such as [b]in/tool cannot match its own literal text."""
+    if words[0].rsplit("/", 1)[-1] not in {"pkill", "pgrep"}:
+        return False
+    full = any(word == "--full" or (word.startswith("-") and not word.startswith("--") and "f" in word[1:]) for word in words[1:])
+    patterns = [word for word in words[1:] if not word.startswith("-")]
+    return full and not any("[" in pattern for pattern in patterns)
+
+
+def self_matching_process_pattern(command: Command) -> bool:
+    """A full-command-line pkill or pgrep inside a shell script that does more than that one command: the shell stays
+    alive with the pattern in its own command line, so it matches (and pkill kills) itself. A shell running only the
+    match replaces itself with it, and pkill and pgrep never match themselves."""
+    if not (len(command.argv) == 3 and command.argv[0].rsplit("/", 1)[-1] in _SHELLS and command.argv[1] == "-c"):
+        return False
+    segments = _segments(command)
+    return len(segments) > 1 and any(_full_match(_program(words)) for words in segments if _program(words))
+
+
+def validate_static_rules(install: Sequence[Command], activation: Activation, platform: str | None = None, *,
+                          others: Sequence[Command] = (), system_packages: bool = True) -> None:
+    """Raises the first correctable static error; each names its record ids (activation entries by position).
+
+    ``others`` are the check and service lifecycle commands; ``system_packages`` is False for a carrier that cannot
+    install system packages.
+    """
+    if not system_packages:
+        for command in install:
+            if system_package_install(command):
+                raise _graph_error("system_package_install", "this carrier cannot install system packages: it has no "
+                                   "Linux capabilities, so apt, dpkg, apk and dnf installs are refused; use a prebuilt "
+                                   "release archive or extract packages under {cache}", command.id, set())
+    for command in [*install, *others]:
+        if self_matching_process_pattern(command):
+            raise _graph_error("self_matching_process_pattern", "a full-command-line pkill or pgrep inside a longer shell "
+                               "script matches the script's own shell; use a pid file, or a bracketed pattern such as "
+                               "[b]in/tool", command.id, set())
     gates = {command.id for command in install if connectivity_probe(command)}
     for command in install:
         if hit := gates & set(command.depends_on):

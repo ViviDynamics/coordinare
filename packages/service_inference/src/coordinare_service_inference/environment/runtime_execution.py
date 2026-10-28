@@ -50,6 +50,50 @@ def _cause_detail(cause: BaseException, secret_names: Sequence[str]) -> str:
     return text if len(text) <= DETAIL_MAX_CHARS else type(cause).__name__
 
 
+# What the guest's Docker still holds once every command and service stop has run, by name so an author can tell
+# which record left it. The seal check refuses to shut down while any of it remains.
+RESIDUAL_LIST = ("printf 'containers=%s\\n' \"$(docker ps -a --format '{{.Names}}' | tr '\\n' ' ')\"; "
+                 "printf 'volumes=%s\\n' \"$(docker volume ls -q | tr '\\n' ' ')\"; "
+                 "printf 'networks=%s\\n' \"$(docker network ls --filter type=custom --format '{{.Name}}' | tr '\\n' ' ')\"")
+RESIDUAL_REMOVE = ("docker ps -aq | xargs -r docker rm -f -v >/dev/null; docker volume ls -q | xargs -r docker volume rm -f "
+                   ">/dev/null; docker network ls --filter type=custom -q | xargs -r docker network rm >/dev/null")
+RESIDUAL_GUIDANCE = ('Every service stop must remove the Docker state its service created, including anonymous volumes '
+                     '(docker rm -f -v) and custom networks: the guest cannot shut down cleanly while any remain.')
+MAX_RESIDUAL_NAMES = 16
+
+
+async def _reclaim_residual_state(lease: RuntimeLease, manifest: EnvironmentManifest, report: VerificationReport, *,
+                                  deadline: float) -> None:
+    """Docker state left after the last command fails the records that should have removed it, then is removed, so the
+    guest still shuts down cleanly and the run stays repairable.
+
+    The seal check would otherwise refuse the shutdown and hold the run as incomplete, with no cause and no repair
+    (Dettmore e2e-04: a postgres container's anonymous volume). Blamed are the service stops that ran, or failing
+    those the commands that ran Docker. State no record could have left is not removed: the seal check still refuses it.
+    """
+    try:
+        _code, output = await lease.ssh(RESIDUAL_LIST, deadline=deadline)
+    except (RuntimeError, OSError, TimeoutError):
+        return
+    left = {kind: names.split() for kind, _, names in
+            (line.partition('=') for line in output.decode(errors='replace').splitlines()) if names.split()}
+    if not left:
+        return
+    ran = {result.id: result for result in report.results if result.status != 'not_run'}
+    blamed = [ran[service.stop.id] for service in manifest.services if service.stop.id in ran] or [
+        ran[command.id] for command in [*manifest.install, *manifest.checks]
+        if command.id in ran and any('docker' in word for word in command.argv)]
+    if not blamed:
+        return
+    found = '; '.join(f'{kind} {" ".join(names[:MAX_RESIDUAL_NAMES])}' for kind, names in left.items())
+    detail = f'teardown found Docker state left behind: {found}. {RESIDUAL_GUIDANCE}'
+    for result in blamed:
+        result.status = 'fail'
+        result.output = f'{result.output}\n{detail}' if result.output else detail
+    with contextlib.suppress(RuntimeError, OSError, TimeoutError):
+        await lease.ssh(RESIDUAL_REMOVE, deadline=deadline, check=False)
+
+
 def _cancelling() -> bool:
     task = asyncio.current_task()
     return task is not None and task.cancelling() > 0
@@ -173,6 +217,7 @@ async def execute_with_runtime(
                     report = _partial_report(manifest, progress, install=install, scope=scope,
                                              execution_source_digest=execution_source_digest)
             else:
+                await _reclaim_residual_state(lease, manifest, report, deadline=deadline)
                 if install and report.passed:
                     lease.installation_passed = True
                     try:
@@ -194,6 +239,9 @@ async def execute_with_runtime(
                     raise asyncio.CancelledError from exc
                 cleanup = None
                 cause = cause or exc
+            if cleanup is not None and not cleanup.clean_shutdown and cause is None and getattr(lease, 'shutdown_error', None):
+                # The guest refused or failed its shutdown; close() suppresses that, so without this the hold has no cause.
+                cause = RuntimeError(f'private runtime guest did not shut down cleanly: {lease.shutdown_error}')
         teardown = [] if cleanup is not None and cleanup.confirmed and cleanup.clean_shutdown and \
             cleanup.bounds_respected else ([name for name in TEARDOWN_CONDITIONS
                                             if getattr(cleanup, name, True) is False] or ['unconfirmed'])

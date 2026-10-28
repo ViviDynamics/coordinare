@@ -104,6 +104,8 @@ async def exercise(tmp_path, monkeypatch, *, install, health_fails, never_ready=
     if never_ready:
         monkeypatch.setattr(runtime_supervisor,'time',SimpleNamespace(monotonic=lambda:readiness_clock[0]))
     async def ssh(lease, text, **kwargs):
+        if text == runtime_execution.RESIDUAL_LIST:
+            return 0, b'containers=\nvolumes=\nnetworks=\n'
         assert text == 'test -f /run/coordinare-runtime-ready && docker info >/dev/null'
         polls.append(text)
         if never_ready or len(polls) < 2:

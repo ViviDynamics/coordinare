@@ -158,6 +158,7 @@ class RuntimeLease:
     clean_shutdown: bool = False
     cleanup: RuntimeCleanupReport | None = None
     close_task: asyncio.Task[RuntimeCleanupReport] | None = None
+    shutdown_error: str | None = None
     purpose: RuntimePurpose = 'consumer'
 
     @property
@@ -226,8 +227,11 @@ class RuntimeLease:
                 await run_io(self.check_bounds, deadline=cleanup_deadline)
                 respected = True
             if self.process is not None and self.process.returncode is None:
-                with contextlib.suppress(OSError, RuntimeError, TimeoutError):
+                try:
                     await asyncio.wait_for(self.stop_guest(deadline=cleanup_deadline), timeout=_remaining(cleanup_deadline))
+                except (OSError, RuntimeError, TimeoutError) as exc:
+                    # Kept so the incomplete report says why; the caller redacts before keeping it.
+                    self.shutdown_error = f'{type(exc).__name__}: {exc}'
         finally:
             try:
                 if self.process is not None and self.process.returncode is None:
