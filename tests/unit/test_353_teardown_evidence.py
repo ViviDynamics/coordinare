@@ -373,3 +373,19 @@ def test_repair_refuses_incomplete_evidence_before_filtering_it(tmp_path):
     with pytest.raises(environment_repair.EnvironmentDiscoveryError, match='incomplete'):
         environment_repair._rejected_evidence(SimpleNamespace(), {'runtime_incomplete': ['runtime_failed'],
                                                                    'runtime_cleanup': True, 'results': []})
+
+
+@pytest.mark.asyncio
+async def test_a_crashed_consumer_detail_is_redacted():
+    from coordinare.services import env_cache
+
+    token = 'ghp_' + 'c' * 36
+
+    class Crashed:
+        returncode = 1
+
+        async def communicate(self, input):
+            return f'Traceback ...\nRuntimeError: guest exited; console: token={token}\n'.encode(), b''
+
+    passed, detail = await env_cache._verify_outcome(Crashed(), 'verify-x', 'sym', 'script')
+    assert passed is False and token not in detail

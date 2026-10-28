@@ -29,7 +29,7 @@ from coordinare_service_inference.environment.execution_source import (
 from coordinare_service_inference.environment.guest_selection import pinned_requirements
 from coordinare_service_inference.manual_override import SERVICES_SUBDIR
 
-from coordinare.lib.redaction import redact_state_value
+from coordinare.lib.redaction import redact_command_text, redact_state_value
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 from coordinare.models.performer_endpoint import VolumeMount
@@ -1008,12 +1008,13 @@ async def _verify_outcome(
         symphony=symphony_name,
         passed=passed,
         returncode=proc.returncode,
-        output_tail=out[-500:],
+        output_tail=redact_command_text(out[-500:]),
     )
-    # Concise reason for the dashboard: the FAIL lines verify.sh emitted.
+    # Concise reason for the dashboard: the FAIL lines verify.sh emitted. A crash traceback can carry guest console
+    # text, so the detail is redacted before it reaches any state or file.
     fails = [ln.strip() for ln in out.splitlines() if "FAIL" in ln.upper()][:5]
     detail = "; ".join(fails) if fails else (out[-300:].strip() or "verify.sh non-zero")
-    return passed, detail
+    return passed, redact_command_text(detail)
 
 
 def write_service_scripts(

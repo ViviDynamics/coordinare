@@ -454,17 +454,22 @@ async def _install(
 
 
 def _redact_report_detail(output: bytes) -> bytes:
-    """Redact runtime text before installer output reaches disk: a report's failure detail, or all of a crash
-    traceback (it can carry guest console text); report bytes are otherwise written unchanged."""
+    """Redact runtime text before installer output reaches disk: a report's failure detail and command outputs,
+    or all of a crash traceback (it can carry guest console text)."""
+    from coordinare.lib.redaction import redact_command_text
+
     try:
         raw = json.loads(output)
     except ValueError:
-        from coordinare.lib.redaction import redact_command_text
-
         return redact_command_text(output.decode(errors='replace')).encode()
-    if not isinstance(raw, dict) or not isinstance(raw.get('runtime_incomplete_detail'), str):
-        return output
-    raw['runtime_incomplete_detail'] = _redacted_detail(raw['runtime_incomplete_detail'])
+    if not isinstance(raw, dict):
+        return redact_command_text(output.decode(errors='replace')).encode()
+    if isinstance(raw.get('runtime_incomplete_detail'), str):
+        raw['runtime_incomplete_detail'] = _redacted_detail(raw['runtime_incomplete_detail'])
+    for item in raw.get('results', []) if isinstance(raw.get('results'), list) else []:
+        if isinstance(item, dict) and isinstance(item.get('output'), str):
+            # The runner removes known secret values; a value generated during the run needs pattern redaction.
+            item['output'] = redact_command_text(item['output'])
     return json.dumps(raw).encode()
 
 

@@ -267,7 +267,8 @@ async def test_an_unconfirmed_teardown_holds_and_keeps_its_command_evidence(tmp_
               'runtime_digest': manifest.runtime.digest(), 'runtime_phase': 'installer', 'runtime_cleanup': False,
               'runtime_incomplete': ['clean_shutdown'],
               'runtime_incomplete_detail': 'RuntimeError: guest console token=ghp_' + 'a' * 36 + '',
-              'results': [{'id': 'install-one', 'status': 'pass', 'required': True, 'duration_seconds': 12.5},
+              'results': [{'id': 'install-one', 'status': 'pass', 'required': True, 'duration_seconds': 12.5,
+                           'output': 'generated token=ghp_' + 'b' * 36},
                           {'id': 'check-one', 'status': 'fail', 'required': True, 'duration_seconds': 3.0}]}
     monkeypatch.setattr(harness, '_install', AsyncMock(return_value=(1, json.dumps(report).encode())))
     verifier = AsyncMock()
@@ -281,6 +282,7 @@ async def test_an_unconfirmed_teardown_holds_and_keeps_its_command_evidence(tmp_
     assert result['runtime_incomplete_detail'].startswith('RuntimeError: guest console')
     assert 'ghp_' + 'a' * 36 not in result['runtime_incomplete_detail']
     assert 'ghp_' + 'a' * 36 not in (tmp_path/'installer-output.json').read_text()
+    assert 'ghp_' + 'b' * 36 not in (tmp_path/'installer-output.json').read_text()
     assert result['installer_result_counts'] == {'pass': 1, 'fail': 1}
     assert result['installer_failed_ids'] == ['check-one']
     assert json.loads((tmp_path/'installer-output.json').read_text())['runtime_cleanup'] is False
