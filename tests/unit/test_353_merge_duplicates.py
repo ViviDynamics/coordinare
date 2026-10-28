@@ -130,3 +130,15 @@ def test_a_fold_leaves_every_list_not_naming_the_copy_untouched():
     assert by_id['c00-loop']['depends_on'] == ['c00-loop']
     assert merged['criterion_checks']['S1'] == ['c00-test', 'c00-test']
     assert by_id['c01-after']['depends_on'] == ['c01-after', 'check-health']
+
+
+def test_a_copy_that_changes_its_retained_obligation_is_not_folded():
+    """Folding it would lose the retained scope; the obligation rule must correct its author instead."""
+    from coordinare_service_inference.environment.models import Command
+
+    retained = {'c00-jq': Command.model_validate(_cmd('c00-jq', 'jq'))}
+    c00 = _part([_cmd('c00-jq', 'jq', scope=['ci'])], {'S1': ['c00-jq']})
+    merged = merge_parts({'checks': [_cmd('env-jq', 'jq', scope=['ci'])]}, [c00], retained=retained)
+    assert [check['id'] for check in merged['checks']] == ['env-jq', 'c00-jq']
+    unchanged = _part([_cmd('c00-jq', 'jq')], {'S1': ['c00-jq']})
+    assert [check['id'] for check in merge_parts({'checks': [_cmd('env-jq', 'jq')]}, [unchanged], retained=retained)['checks']] == ['env-jq']

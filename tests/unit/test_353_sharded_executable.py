@@ -505,7 +505,7 @@ async def test_a_redone_group_that_splits_replaces_its_earlier_part(monkeypatch)
 
     monkeypatch.setattr(discovery_module, '_phase', phase)
     budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
-    attempt = SimpleNamespace(budget=budget, required_ids={}, obligation_ledger=SimpleNamespace(coverage={}), delta=None, messages=[{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}],
+    attempt = SimpleNamespace(budget=budget, required_ids={}, obligation_ledger=SimpleNamespace(coverage={}, checks={}), delta=None, messages=[{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}],
                               chat=None, prior_manifests=[], discovery=SimpleNamespace(budget=budget, inputs={}, finding_responses=[]),
                               construction=SimpleNamespace(observe_sources=lambda _inputs: asyncio.sleep(0)))
     merged = await discovery_module._divided_candidate(build, attempt, validate)
@@ -931,3 +931,29 @@ async def test_a_pinned_copy_folds_and_its_obligation_moves_to_the_kept_id(monke
     assert 'c00-toolchain' not in {check['id'] for check in merged['checks']}
     assert required_ids['checks'] == {'toolchain'}
     assert ledger.coverage['req-tool'] == {'toolchain'}
+
+
+@pytest.mark.asyncio
+async def test_a_finding_response_naming_a_folded_copy_now_names_the_kept_check(monkeypatch):
+    from coordinare_service_inference.environment.findings import FindingResponse
+
+    _with_toolchain_copy(monkeypatch)
+    seen: list[list[str]] = []
+    response = FindingResponse.model_validate({'finding_id': 'F0001', 'rationale': 'r', 'sources': ['README.md'],
+                                               'affected_ids': ['c00-toolchain', 'toolchain']})
+
+    def validate(data):
+        seen.append(list(attempt_ref[0].discovery.finding_responses[0].affected_ids))
+        return data
+
+    attempt_ref: list = []
+    real_divided = discovery_module._divided_candidate
+
+    async def capture(build, attempt, validate_fn):
+        attempt.discovery.finding_responses = [response]
+        attempt_ref.append(attempt)
+        return await real_divided(build, attempt, validate_fn)
+
+    monkeypatch.setattr(discovery_module, '_divided_candidate', capture)
+    await merge_with(monkeypatch, validate)
+    assert seen == [['toolchain']]

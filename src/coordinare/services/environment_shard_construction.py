@@ -297,12 +297,14 @@ def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[
 
 
 def merge_parts(global_data: Mapping[str, Any], parts: Sequence[ShardChecks], *,
-                executed: Collection[str] = frozenset(), folded: dict[str, str] | None = None) -> dict[str, Any]:
+                executed: Collection[str] = frozenset(), folded: dict[str, str] | None = None,
+                retained: Mapping[str, Command] | None = None) -> dict[str, Any]:
     """Global declaration plus every part's checks and mappings; a collision is an error, never a choice.
 
     A merge never removes nor rewrites (beyond a longer timeout) an ``executed`` check. Each group copy it folds into
     an identical global check is reported in ``folded`` (dropped id to kept id), so the caller can carry a required
-    id's obligation over to the kept command.
+    id's obligation over to the kept command. A copy whose ``retained`` obligation record it changes in scope or
+    required status is not folded, so the obligation rule still corrects its own author.
     """
     merged = copy.deepcopy(dict(global_data))
     checks = list(merged.get('checks', []) or [])
@@ -324,14 +326,14 @@ def merge_parts(global_data: Mapping[str, Any], parts: Sequence[ShardChecks], *,
     merged['checks'] = checks
     merged['criterion_checks'] = mapping
     aliases = _merge_group_copies_of_global_checks(merged, global_ids, {str(identifier) for identifier in seen} - global_ids,
-                                                   frozenset(executed))
+                                                   frozenset(executed), retained or {})
     if folded is not None:
         folded.update(aliases)
     return merged
 
 
 def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set[str], group_ids: set[str],
-                                         executed: frozenset[str]) -> dict[str, str]:
+                                         executed: frozenset[str], retained: Mapping[str, Command]) -> dict[str, str]:
     """A check group's identical copy of a global check becomes the global one, keeping every obligation of both.
 
     No check author sees another part's checks, so it cannot correct a copy (e2e-03 spent every merge round on
@@ -358,6 +360,9 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
             globals_by_key.setdefault(key, (check, command))
             continue
         if key not in globals_by_key or command.id not in group_ids or command.id in executed:
+            continue
+        if (kept_before := retained.get(command.id)) is not None and (
+                kept_before.scope != command.scope or (kept_before.required and not command.required)):
             continue
         kept, model = globals_by_key[key]
         added = [dependency for dependency in command.depends_on if dependency not in model.depends_on]

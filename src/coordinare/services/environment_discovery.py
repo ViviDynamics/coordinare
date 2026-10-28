@@ -1329,7 +1329,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
         try:
             folded: dict[str, str] = {}
             merged = merge_parts(global_data, [part for _group, part in parts.values()], executed=executed,
-                                 folded=folded)
+                                 folded=folded, retained=attempt.obligation_ledger.checks)
             # A required copy folded into an identical global check keeps its obligation under the kept id; the
             # validator pins ids as candidates arrive, so two copies once distinct can both be required (e2e-07).
             # The same holds for a requirement's locked check list in the obligation ledger.
@@ -1338,6 +1338,11 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
                     if dropped in required:
                         required.discard(dropped)
                         required.add(kept)
+            if folded:
+                # A finding response may name the copy; it now refers to the command kept under the global id.
+                attempt.discovery.finding_responses = [response.model_copy(update={'affected_ids': [
+                    *dict.fromkeys(folded.get(identifier, identifier) for identifier in response.affected_ids)]})
+                    for response in attempt.discovery.finding_responses]
             validate(merged)
         except (EnvironmentDiscoveryError, ValidationError) as exc:
             if plan is not None:
