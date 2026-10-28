@@ -316,3 +316,60 @@ async def test_the_cause_of_a_runtime_failure_is_kept_bounded(tmp_path, monkeypa
             runtime_deadline=None, runtime_lease=None, commands=unused)
     detail = held.value.report.runtime_incomplete_detail
     assert detail.startswith('ValueError: ') and len(detail) == 600
+
+
+@pytest.mark.asyncio
+async def test_a_close_failure_during_cancellation_still_cancels(tmp_path, monkeypatch):
+    import asyncio
+
+    async def close(**_kwargs):
+        asyncio.current_task().cancel()
+        raise TimeoutError('qemu did not exit after kill')
+
+    async def opened(*_args, **_kwargs):
+        return SimpleNamespace(activation_env={}, installation_passed=False, close=close)
+
+    async def passthrough(_lease, operation):
+        return await operation
+
+    async def finished(*_args, **_kwargs):
+        return _report()
+
+    monkeypatch.setattr(runtime_execution, 'run_guarded', passthrough)
+    monkeypatch.setattr(runtime_execution, 'open_runtime', opened)
+    monkeypatch.setattr(runtime_execution, '_scan_bounds', _no_scan)
+    run = asyncio.create_task(execute_with_runtime(_manifest(), cache=tmp_path, repo=tmp_path, scratch=tmp_path,
+        install=True, scope='', secret_names=(), execution_source_digest='c' * 64, runtime_artifacts=None,
+        runtime_deadline=None, runtime_lease=None, commands=finished))
+    with pytest.raises(asyncio.CancelledError):
+        await run
+
+
+@pytest.mark.asyncio
+async def test_a_known_secret_value_in_the_cause_is_redacted_at_the_source(tmp_path, monkeypatch):
+    monkeypatch.setenv('SAMPLE_API_TOKEN', 'sample-secret-value-123456')
+
+    async def failing(_lease, operation):
+        operation.close()
+        raise RuntimeError('guest console: token=sample-secret-value-123456')
+
+    monkeypatch.setattr(runtime_execution, 'run_guarded', failing)
+    monkeypatch.setattr(runtime_execution, 'open_runtime', _opened(CLEAN))
+    monkeypatch.setattr(runtime_execution, '_scan_bounds', _no_scan)
+
+    async def unused(*_args, **_kwargs):
+        return _report()
+
+    with pytest.raises(PrivateRuntimeIncompleteError) as held:
+        await execute_with_runtime(_manifest(), cache=tmp_path, repo=tmp_path, scratch=tmp_path, install=True,
+            scope='', secret_names=('SAMPLE_API_TOKEN',), execution_source_digest='c' * 64, runtime_artifacts=None,
+            runtime_deadline=None, runtime_lease=None, commands=unused)
+    assert 'sample-secret-value-123456' not in held.value.report.runtime_incomplete_detail
+
+
+def test_repair_refuses_incomplete_evidence_before_filtering_it(tmp_path):
+    from coordinare.services import environment_repair
+
+    with pytest.raises(environment_repair.EnvironmentDiscoveryError, match='incomplete'):
+        environment_repair._rejected_evidence(SimpleNamespace(), {'runtime_incomplete': ['runtime_failed'],
+                                                                   'runtime_cleanup': True, 'results': []})

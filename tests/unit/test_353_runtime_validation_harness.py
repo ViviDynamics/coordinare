@@ -279,6 +279,7 @@ async def test_an_unconfirmed_teardown_holds_and_keeps_its_command_evidence(tmp_
     assert result['runtime_incomplete'] == ['clean_shutdown']
     assert result['runtime_incomplete_detail'].startswith('RuntimeError: guest console')
     assert 'ghp_' + 'a' * 36 not in result['runtime_incomplete_detail']
+    assert 'ghp_' + 'a' * 36 not in (tmp_path/'installer-output.json').read_text()
     assert result['installer_result_counts'] == {'pass': 1, 'fail': 1}
     assert result['installer_failed_ids'] == ['check-one']
     assert json.loads((tmp_path/'installer-output.json').read_text())['runtime_cleanup'] is False

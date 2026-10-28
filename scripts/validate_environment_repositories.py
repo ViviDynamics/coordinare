@@ -453,6 +453,18 @@ async def _install(
             raise RuntimeError("installer cleanup could not be confirmed")
 
 
+def _redact_report_detail(output: bytes) -> bytes:
+    """Redact a runtime failure detail before the report reaches disk; other bytes are written unchanged."""
+    try:
+        raw = json.loads(output)
+    except ValueError:
+        return output
+    if not isinstance(raw, dict) or not isinstance(raw.get('runtime_incomplete_detail'), str):
+        return output
+    raw['runtime_incomplete_detail'] = _redacted_detail(raw['runtime_incomplete_detail'])
+    return json.dumps(raw).encode()
+
+
 def _redacted_detail(value: object) -> str | None:
     """A runtime failure message can carry guest console text; keep it bounded and redacted."""
     if not isinstance(value, str):
@@ -509,7 +521,7 @@ async def execute_accepted(
         return
     result["installer_seconds"] = round(time.monotonic() - started, 1)
     _event(repository=snapshot.name, stage="installer", seconds=result["installer_seconds"])
-    (target / "installer-output.json").write_bytes(output)
+    (target / "installer-output.json").write_bytes(_redact_report_detail(output))
     try:
         raw = json.loads(output)
     except ValueError:

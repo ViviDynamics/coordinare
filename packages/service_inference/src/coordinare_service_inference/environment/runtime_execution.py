@@ -34,6 +34,16 @@ class PrivateRuntimeIncompleteError(RuntimeError):
         self.report = report
 
 
+def _cause_detail(cause: BaseException, secret_names: Sequence[str]) -> str:
+    """Exception class and message, with known secret values removed; the owner applies full pattern redaction."""
+    import os
+
+    from .runner import _redact
+
+    secrets = frozenset(os.environ[name] for name in secret_names if os.environ.get(name))
+    return _redact(f'{type(cause).__name__}: {cause}', {}, extra_values=secrets)[:600]
+
+
 def _cancelling() -> bool:
     task = asyncio.current_task()
     return task is not None and task.cancelling() > 0
@@ -172,7 +182,10 @@ async def execute_with_runtime(
             try:
                 cleanup = await lease.close(deadline=deadline)
             except (TimeoutError, RuntimeError, OSError) as exc:
-                # A failed close is an unconfirmed teardown; it never discards the command evidence.
+                # A failed close is an unconfirmed teardown; it never discards the command evidence, and a pending
+                # cancellation still wins.
+                if _cancelling():
+                    raise asyncio.CancelledError from exc
                 cleanup = None
                 cause = cause or exc
         teardown = [] if cleanup is not None and cleanup.confirmed and cleanup.clean_shutdown and \
@@ -185,7 +198,7 @@ async def execute_with_runtime(
             report.runtime_artifacts = None
             report.runtime_incomplete = [*incomplete, *teardown]
             if cause is not None:
-                report.runtime_incomplete_detail = f'{type(cause).__name__}: {cause}'[:600]
+                report.runtime_incomplete_detail = _cause_detail(cause, secret_names)
             raise PrivateRuntimeIncompleteError(report.runtime_incomplete, report)
         report.runtime_digest = spec.digest()
         report.runtime_phase = 'installer' if install else 'consumer'

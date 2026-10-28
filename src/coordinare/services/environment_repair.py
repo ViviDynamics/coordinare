@@ -743,6 +743,9 @@ def _activation_failure(result: CheckResult, manifest: EnvironmentManifest) -> b
 
 
 def _rejected_evidence(cache: EnvCacheState, data: dict[str, Any]) -> dict[str, Any]:
+    # Checked before the allowlist below drops the marker: an incomplete run holds and is never repaired.
+    if data.get('runtime_incomplete') or data.get('runtime_cleanup') is False:
+        _refuse('execution repair evidence is incomplete')
     manifest = accepted_environment(cache)
     if manifest is None:
         _refuse('execution repair requires independent acceptance')
