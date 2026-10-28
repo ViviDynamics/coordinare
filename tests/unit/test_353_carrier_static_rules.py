@@ -237,3 +237,18 @@ def test_review_r6_quoted_operands_downloads_and_valued_options_are_admitted(ins
 ])
 def test_self_contained_options_before_the_subcommand_still_count(script):
     assert _rejected([_cmd('install-deps', 'bash', '-c', script)]).type == 'system_package_install'
+
+
+@pytest.mark.parametrize(('install', 'other'), [
+    ('apt-get install -dy libpq5', 'true'),
+    ('apt-get install --download-only=true libpq5', 'true'),
+    ('true', 'pgrep -f bin/mock | grep -vx "$$" >/dev/null'),
+])
+def test_review_r7_download_variants_and_filtered_pgrep_are_admitted(install, other):
+    validate_static_rules([_cmd('install-x', 'bash', '-c', install)], NO_ACTIVATION, 'linux/aarch64',
+                          others=[_cmd('probe-x', 'bash', '-c', other)], system_packages=False)
+
+
+def test_a_piped_pkill_is_still_corrected():
+    script = 'pkill -f bin/mock | cat; exit 0'
+    assert _rejected(others=[_cmd('mock-stop', 'bash', '-c', script)]).type == 'self_matching_process_pattern'

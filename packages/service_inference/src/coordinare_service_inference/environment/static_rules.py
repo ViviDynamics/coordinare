@@ -206,6 +206,12 @@ _SELF_CONTAINED = re.compile(r"-[yq]+|--[a-z][a-z-]*=.*|--(yes|assume-yes|quiet|
                              r"no-install-suggests|no-progress|force-yes|allow-unauthenticated)")
 
 
+def _no_install(word: str) -> bool:
+    """A simulate, download-only or help request, also as --name=value or inside a short cluster such as -dy."""
+    return (word.split("=", 1)[0] in _NO_INSTALL
+            or (re.fullmatch(r"-[A-Za-z]{2,}", word) is not None and bool(set(word[1:]) & {"d", "s", "h"})))
+
+
 def system_package_install(command: Command) -> bool:
     """A package manager whose subcommand (its first non-option word) installs, or dpkg -i: an option before the
     subcommand that takes a separate value hides it, which is an accepted miss."""
@@ -214,7 +220,7 @@ def system_package_install(command: Command) -> bool:
         if not words or (verbs := _PACKAGE_INSTALL.get(words[0].rsplit("/", 1)[-1])) is None:
             continue
         arguments = words[1:]
-        if _NO_INSTALL & set(arguments):
+        if any(_no_install(word) for word in arguments):
             continue
         if words[0].rsplit("/", 1)[-1] == "dpkg":
             if verbs & set(arguments):
@@ -265,9 +271,13 @@ def self_matching_process_pattern(command: Command) -> bool:
     # Only the script's own top-level commands: a nested shell has its own command line.
     script = command.argv[2]
     segments = _simple_commands(script, nested=False)
+    # A pipeline can filter the shell's own pid out of pgrep's output (pgrep -f x | grep -vx "$$"); pkill has
+    # already killed by then, so only pgrep is left unjudged.
+    piped = re.search(r"(?<!\|)\|(?!\|)", script) is not None
     return len(segments) > 1 and any(
         _certain_self_match(program, script) for words in segments
-        if (program := _program(words)) and "exec" not in words[:len(words) - len(program)])
+        if (program := _program(words)) and "exec" not in words[:len(words) - len(program)]
+        and not (piped and program[0].rsplit("/", 1)[-1] == "pgrep"))
 
 
 def validate_static_rules(install: Sequence[Command], activation: Activation, platform: str | None = None, *,
