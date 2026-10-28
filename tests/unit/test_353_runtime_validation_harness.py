@@ -249,3 +249,34 @@ async def test_an_installer_that_outlives_its_deadline_is_held_as_a_timeout(tmp_
     assert (result['status'], result['reason_code']) == ('held', 'installer_timeout')
     assert result['installer_seconds'] >= 0
     service.on_bootstrap_complete.assert_called_once_with('sym', False, {'env_cache': {'sym': cache}})
+
+
+@pytest.mark.asyncio
+async def test_an_unconfirmed_teardown_holds_and_keeps_its_command_evidence(tmp_path, monkeypatch):
+    """d2: every command ran, then teardown was not clean; the run must hold, never repair, and keep the evidence."""
+    cache = runtime_cache(tmp_path)
+    manifest = accepted_environment(cache)
+    snapshot = SimpleNamespace(name='sym', commit=manifest.source_commit, verify=AsyncMock())
+    image = cache.environment_capabilities['image_ref']
+    (tmp_path/'execution-approved.json').write_text(json.dumps({'scope': 'environment_validation',
+        'approved': True, 'manifest_digest': manifest.digest(), 'source_commit': snapshot.commit, 'image_ref': image}))
+    report = {'manifest_digest': manifest.digest(), 'platform': 'linux/aarch64', 'scope': '',
+              'runtime_digest': manifest.runtime.digest(), 'runtime_phase': 'installer', 'runtime_cleanup': False,
+              'runtime_teardown_failures': ['clean_shutdown'],
+              'results': [{'id': 'install-one', 'status': 'pass', 'required': True, 'duration_seconds': 12.5},
+                          {'id': 'check-one', 'status': 'fail', 'required': True, 'duration_seconds': 3.0}]}
+    monkeypatch.setattr(harness, '_install', AsyncMock(return_value=(1, json.dumps(report).encode())))
+    verifier = AsyncMock()
+    monkeypatch.setattr(harness, 'verify_env_cache_clean', verifier)
+    service = Mock()
+    result = {}
+    await harness.execute_accepted(snapshot, service, {'env_cache': {'sym': cache}}, image=image,
+        target=tmp_path, profile=harness.Profile(model='fixture', base_url='http://localhost:1'), result=result)
+    assert (result['status'], result['reason_code']) == ('held', 'runtime_teardown_unconfirmed')
+    assert result['runtime_teardown_failures'] == ['clean_shutdown']
+    assert result['installer_result_counts'] == {'pass': 1, 'fail': 1}
+    assert result['installer_failed_ids'] == ['check-one']
+    assert json.loads((tmp_path/'installer-output.json').read_text())['runtime_cleanup'] is False
+    verifier.assert_not_awaited()
+    service.record_bootstrap_execution.assert_not_called()
+    service.on_bootstrap_complete.assert_called_once_with('sym', False, {'env_cache': {'sym': cache}})

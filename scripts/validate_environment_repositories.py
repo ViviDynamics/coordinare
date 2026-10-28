@@ -511,6 +511,18 @@ async def execute_accepted(
         result.update(status="held", reason_code="installer_crashed", installer_output_tail=tail)
         service.on_bootstrap_complete(snapshot.name, False, state)
         return
+    if isinstance(raw, dict) and raw.get('runtime_cleanup') is False:
+        # Unconfirmed teardown holds without repair; the report keeps what each command did and why teardown failed.
+        results = [item for item in raw.get('results', []) if isinstance(item, dict)]
+        statuses = [str(item.get('status')) for item in results]
+        result.update(status="held", reason_code="runtime_teardown_unconfirmed",
+                      runtime_teardown_failures=raw.get('runtime_teardown_failures'),
+                      installer_result_counts={status: statuses.count(status) for status in dict.fromkeys(statuses)},
+                      installer_failed_ids=[str(item.get('id')) for item in results
+                                            if item.get('status') in ('fail', 'indeterminate')],
+                      installer_command_seconds=command_timing("installer", snapshot.name, raw))
+        service.on_bootstrap_complete(snapshot.name, False, state)
+        return
     # Failed installer evidence cannot carry a sealed success receipt. Validate it
     # for bounded repair before applying the successful installer admission gate.
     if code != 0 or any(item.get('required') and item.get('status') == 'fail' for item in raw.get('results', [])):

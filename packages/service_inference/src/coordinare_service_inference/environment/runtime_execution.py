@@ -21,6 +21,19 @@ if TYPE_CHECKING:
     from .runtime_supervisor import RuntimeLease
 
 
+TEARDOWN_CONDITIONS = ('qemu_reaped', 'keys_absent', 'listeners_absent', 'artifacts_unchanged', 'clean_shutdown',
+                       'bounds_respected')
+
+
+class PrivateRuntimeTeardownError(RuntimeError):
+    """Teardown was not confirmed: the run holds, but keeps its command evidence and the failed conditions."""
+
+    def __init__(self, failed: list[str], report: VerificationReport | None) -> None:
+        super().__init__('private runtime teardown or immutable artifact verification failed: ' + ', '.join(failed))
+        self.failed = failed
+        self.report = report
+
+
 async def _scan_bounds(lease: RuntimeLease) -> None:
     stop = threading.Event()
     kwargs = {"stop": stop} if "stop" in inspect.signature(lease.check_bounds).parameters else {}
@@ -104,7 +117,13 @@ async def execute_with_runtime(
         finally:
             cleanup = await lease.close(deadline=deadline)
         if not cleanup.confirmed or not cleanup.clean_shutdown or not cleanup.bounds_respected:
-            raise RuntimeError('private runtime teardown or immutable artifact verification failed')
+            failed = [name for name in TEARDOWN_CONDITIONS if getattr(cleanup, name, True) is False] or ['unconfirmed']
+            if report is not None:
+                report.runtime_digest = spec.digest()
+                report.runtime_phase = 'installer' if install else 'consumer'
+                report.runtime_cleanup = False
+                report.runtime_teardown_failures = failed
+            raise PrivateRuntimeTeardownError(failed, report)
         report.runtime_digest = spec.digest()
         report.runtime_phase = 'installer' if install else 'consumer'
         report.runtime_artifacts = receipt

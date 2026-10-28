@@ -12,6 +12,7 @@ from coordinare_service_inference.environment.execution_source import ExecutionS
 from coordinare_service_inference.environment.execution_source_checkout import checkout_identity
 from coordinare_service_inference.environment.models import EnvironmentManifest
 from coordinare_service_inference.environment.runner import run_manifest
+from coordinare_service_inference.environment.runtime_execution import PrivateRuntimeTeardownError
 from coordinare_service_inference.environment.runtime_cli import run_cli
 from coordinare_service_inference.environment.runtime_transport import consume_runtime_controls
 
@@ -42,19 +43,25 @@ def main() -> None:
         )
         if actual != expected:
             raise ValueError("installer source differs from accepted pinned tree")
-        return await run_manifest(
-            manifest,
-            repo=args.repo,
-            cache=args.cache,
-            scratch=args.scratch,
-            install=True,
-            execution_source_digest=actual.digest(),
-            runtime_deadline=runtime_deadline, runtime_artifacts=runtime_artifacts,
-        )
+        try:
+            return await run_manifest(
+                manifest,
+                repo=args.repo,
+                cache=args.cache,
+                scratch=args.scratch,
+                install=True,
+                execution_source_digest=actual.digest(),
+                runtime_deadline=runtime_deadline, runtime_artifacts=runtime_artifacts,
+            )
+        except PrivateRuntimeTeardownError as exc:
+            # The run holds either way; emit the evidence instead of only a traceback.
+            if exc.report is None:
+                raise
+            return exc.report
 
     report = run_cli(install())
     sys.stdout.write(report.model_dump_json() + "\n")
-    raise SystemExit(0 if report.passed else 1)
+    raise SystemExit(0 if report.passed and report.runtime_cleanup is not False else 1)
 
 
 if __name__ == "__main__":
