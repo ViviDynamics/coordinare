@@ -88,7 +88,11 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
                 "Docker container, volume (including an image's anonymous volume: docker rm -f -v) and custom network "
                 "its service created; any left behind fails that stop. To stop a process, write its pid to a file under "
                 "{scratch} when it starts and kill that pid: pkill -f or pgrep -f inside a longer shell script "
-                "matches the script's own shell, whose command line contains the pattern.",
+                "matches the script's own shell, whose command line contains the pattern. A ${NAME} reference "
+                "resolves only from activation variables, operator-supplied runtime variables, and local credentials "
+                "(each owned by a service this manifest starts, usable only by service and check commands, never install "
+                "or activation). Generate any other secret a check needs inside its command, for example "
+                "NAME=$(openssl rand -hex 64) before the test command.",
             "installation_guidance": "Even UID 0 cannot assume permission for user, group or ownership changes. "
                 "Use inspected tools and cache-local dependency artifacts under {cache}. System package managers cannot "
                 "install here: the carrier has no Linux capabilities, so apt-get or apt install, dpkg -i, apk add and "

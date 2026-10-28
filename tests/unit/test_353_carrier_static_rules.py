@@ -252,3 +252,23 @@ def test_review_r7_download_variants_and_filtered_pgrep_are_admitted(install, ot
 def test_a_piped_pkill_is_still_corrected():
     script = 'pkill -f bin/mock | cat; exit 0'
     assert _rejected(others=[_cmd('mock-stop', 'bash', '-c', script)]).type == 'self_matching_process_pattern'
+
+
+def test_the_guidance_says_where_a_test_secret_comes_from():
+    from types import SimpleNamespace
+
+    from coordinare.services.environment_admission import LOCAL_CREDENTIAL_GUIDANCE
+    from coordinare.services.environment_capabilities import carrier_process_policy
+
+    resources = SimpleNamespace(max_seconds=7200, cpus=8)
+    policy = carrier_process_policy(SimpleNamespace(runtime=SimpleNamespace(resources=resources)))
+    assert 'openssl rand' in policy['runtime_ordering_guidance']
+    assert 'openssl rand' in LOCAL_CREDENTIAL_GUIDANCE['local_credential_invalid']
+    assert 'openssl rand' in LOCAL_CREDENTIAL_GUIDANCE['local_credential_in_install']
+
+
+def test_the_runner_names_the_unresolved_variable_and_never_a_value():
+    from coordinare_service_inference.environment.runner import _unresolved_name
+
+    assert _unresolved_name(ValueError('unresolved environment reference: SECRET_KEY_BASE')) == ' ${SECRET_KEY_BASE}'
+    assert _unresolved_name(ValueError('some other failure with value s3cr3t')) == ''

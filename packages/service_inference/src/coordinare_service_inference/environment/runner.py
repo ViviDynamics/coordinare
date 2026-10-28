@@ -156,6 +156,20 @@ os._exit(exit_code)
 """
 
 
+# Where a secret a test needs comes from when no operator supplies it (Dettmore e2e-05 to e2e-09 referenced an
+# undeclared ${SECRET_KEY_BASE} and lost an install, then a repair, each time).
+SECRET_GUIDANCE = ("A secret that no started service owns (for example a framework secret key) is generated inside the "
+                   "command that needs it, for example NAME=$(openssl rand -hex 64) before the test command; declare "
+                   "local_credentials only for services this manifest starts.")
+_UNRESOLVED = re.compile(r"unresolved environment reference: ([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _unresolved_name(exc: ValueError) -> str:
+    """The unresolved variable's name, never a value: only _expand's own message is read."""
+    match = _UNRESOLVED.fullmatch(str(exc))
+    return f" ${{{match[1]}}}" if match else ""
+
+
 def _expand(value: str, roots: dict[str, str], env: dict[str, str]) -> str:
     def reference(match: re.Match[str]) -> str:
         name = match.group("environment")
@@ -203,24 +217,26 @@ def _template_preflight(manifest: EnvironmentManifest, roots: dict[str, str], *,
         for command in commands if not scope or not command.scope or scope in command.scope}
     try:
         env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env, credentials=credentials)
-    except ValueError:
-        # Avoid including environment values in diagnostics from failed activation.
+    except ValueError as exc:
+        # Avoid including environment values in diagnostics from failed activation; only a variable name is named.
         results["activation"] = CheckResult(id="activation", required=True, status="fail",
-            output="activation template expansion failed; use {cache}, {repo}, {scratch} for roots and provide every ${NAME} runtime environment reference",
-            manifest_digest=digest, context=scope)
+            output="activation template expansion failed" + _unresolved_name(exc) + "; use {cache}, {repo}, {scratch} for "
+                   "roots. Activation may reference only operator-supplied runtime variables, never a generated "
+                   "credential. " + SECRET_GUIDANCE, manifest_digest=digest, context=scope)
     else:
         for command in commands:
             if command.id not in results:
                 continue
             try:
                 _command_values(command, roots, env)
-            except ValueError:
+            except ValueError as exc:
                 if not results[command.id].required:
                     continue
                 results[command.id].status = "fail"
                 results[command.id].output = (
-                    "unresolved environment reference in command template; use {cache}, {repo}, {scratch} for execution roots. "
-                    "${NAME} requires a runtime environment variable; use $name for shell-local variables assigned inside the command."
+                    "unresolved environment reference" + _unresolved_name(exc) + " in command template; use {cache}, "
+                    "{repo}, {scratch} for execution roots. ${NAME} requires a runtime environment variable; use $name for "
+                    "shell-local variables assigned inside the command. " + SECRET_GUIDANCE
                 )
     if any(result.required and result.status == "fail" for result in results.values()):
         _bound_outputs(results)

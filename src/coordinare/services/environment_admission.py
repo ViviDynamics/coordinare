@@ -105,13 +105,18 @@ CREDENTIAL_GUIDANCE = (
     'Never move a literal credential into argv, activation, scope text or another field; describe a credential-bearing '
     'URL from source without its password.')
 LOCAL_CREDENTIAL_GUIDANCE = {
-    'local_credential_invalid': 'Each local credential needs a unique name and the id of a service declared in this manifest.',
+    'local_credential_invalid': ('Each local credential needs a unique name and the id of a service declared in this manifest. '
+                                 'A secret no started service owns (for example a framework secret key) is not a local '
+                                 'credential: generate it inside the command that needs it, for example '
+                                 'NAME=$(openssl rand -hex 64) before the test command.'),
     'local_credential_unused': 'Reference every declared local credential as ${NAME}, or remove the declaration.',
     'local_credential_cache_data': ('A command that uses a generated credential must keep its data under {scratch} '
                                     'and must not reference {cache} in argv, cwd or env other than PATH; reach cached '
                                     'tools through activation path entries.'),
     'local_credential_in_install': ('Install commands and activation cannot use generated credentials; reference the '
-                                    'credential only in the service and check commands that need it.'),
+                                    'credential only in the service and check commands that need it, or generate a '
+                                    'secret no started service owns inside the command, for example '
+                                    'NAME=$(openssl rand -hex 64).'),
 }
 # Phase rules a dependency edge broke; each names the command and the ids it may not depend on.
 GRAPH_GUIDANCE = {
