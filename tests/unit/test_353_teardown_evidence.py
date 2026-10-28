@@ -315,8 +315,7 @@ async def test_the_cause_of_a_runtime_failure_is_kept_bounded(tmp_path, monkeypa
             scope='', secret_names=(), execution_source_digest='c' * 64, runtime_artifacts=None,
             runtime_deadline=None, runtime_lease=None, commands=unused)
     detail = held.value.report.runtime_incomplete_detail
-    # A single 2000-character word could be a credential, so it is dropped rather than cut.
-    assert detail.startswith('ValueError') and len(detail) <= 600 and 'x' * 10 not in detail
+    assert detail == 'ValueError: ' + 'x' * 2000  # whole, bounded far above; the owner redacts and clips
 
 
 @pytest.mark.asyncio
@@ -419,12 +418,16 @@ def test_result_json_evidence_has_redacted_outputs_and_the_original_is_untouched
     assert evidence['results'][0]['output'] == 'token=' + token
 
 
-def test_the_cause_is_clipped_only_at_whitespace_so_no_token_fragment_survives():
-    from coordinare_service_inference.environment.runtime_execution import _cause_detail
+def test_the_cause_is_never_clipped_before_pattern_redaction():
+    from coordinare_service_inference.environment.runtime_execution import DETAIL_MAX_CHARS, _cause_detail
+
+    from scripts import validate_environment_repositories as harness
 
     token = 'ghp_' + 'f' * 36
-    prefix = 'RuntimeError: '
-    message = 'a ' * ((585 - len(prefix)) // 2) + token + ' tail'
+    quoted = 'password="alpha123 beta456 ' + 'z' * 40 + '"'
+    message = 'a ' * 270 + token + ' ' + quoted
     detail = _cause_detail(RuntimeError(message), ())
-    assert len(detail) <= 600
-    assert 'f' * 5 not in detail and not detail.endswith('ghp_')
+    assert detail == 'RuntimeError: ' + message  # sent whole; only the owner can pattern-redact
+    shown = harness._redacted_detail(detail)
+    assert len(shown) <= 600 and 'f' * 5 not in shown and 'beta456' not in shown
+    assert _cause_detail(RuntimeError('x' * (DETAIL_MAX_CHARS + 1)), ()) == 'RuntimeError'

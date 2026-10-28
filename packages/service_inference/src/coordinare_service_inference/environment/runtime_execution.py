@@ -34,22 +34,20 @@ class PrivateRuntimeIncompleteError(RuntimeError):
         self.report = report
 
 
-DETAIL_MAX_CHARS = 600
+DETAIL_MAX_CHARS = 16000
 
 
 def _cause_detail(cause: BaseException, secret_names: Sequence[str]) -> str:
-    """Exception class and message, with known secret values removed; the owner applies full pattern redaction."""
+    """Exception class and message with known secret values removed, never clipped: only the owner can
+    pattern-redact, and any cut made before that could split a credential into an unrecognisable fragment. A
+    message beyond the bound is replaced by the exception class alone."""
     import os
 
     from .runner import _redact
 
     secrets = frozenset(os.environ[name] for name in secret_names if os.environ.get(name))
     text = _redact(f'{type(cause).__name__}: {cause}', {}, extra_values=secrets)
-    if len(text) <= DETAIL_MAX_CHARS:
-        return text
-    # Only the owner can pattern-redact, so never cut through a word: a credential is kept whole or dropped.
-    head = text[:DETAIL_MAX_CHARS]
-    return head.rsplit(None, 1)[0] if any(character.isspace() for character in head) else type(cause).__name__
+    return text if len(text) <= DETAIL_MAX_CHARS else type(cause).__name__
 
 
 def _cancelling() -> bool:
