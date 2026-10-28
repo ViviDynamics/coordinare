@@ -57,6 +57,7 @@ from coordinare.services.environment_evidence import (
 )
 from coordinare.services.environment_findings import MAX_FINDINGS, FindingValidationError
 from coordinare.services.environment_inspection import SourceInspection
+from coordinare.services.environment_obligations import REPAIR_CORRECTABLE
 from coordinare.services.environment_response_schema import (
     constrain_source_criteria,
     invoke_recorded,
@@ -349,6 +350,9 @@ def _rejection_errors(exc: Exception, envelope: str) -> list[dict[str, Any]]:
         return [{'location': list(exc.location), 'code': exc.code, 'guidance': str(exc)}]
     if isinstance(exc, EnvironmentDiscoveryError) and exc.code in _CORRECTABLE:
         return [{'location': [], 'code': exc.code}]
+    if isinstance(exc, EnvironmentDiscoveryError) and exc.code in REPAIR_CORRECTABLE:
+        # A delta group author's out-of-closure edit; the guard's message names only safe ids.
+        return [{'location': [], 'code': exc.code, 'guidance': str(exc)}]
     raise exc
 
 

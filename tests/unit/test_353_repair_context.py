@@ -131,3 +131,12 @@ def test_a_group_author_is_guarded_on_its_own_checks_and_mappings():
     with pytest.raises(EnvironmentDiscoveryError, match='c01-other'):
         plan.guard_part(base, {'checks': [_cmd('c01-failed', 'x'), _cmd('c01-other', 'y2')],
                                'criterion_checks': {'S1': ['c01-failed']}})
+
+
+def test_a_group_conversation_turns_an_out_of_closure_edit_into_a_named_correction():
+    from coordinare.services.environment_shard_scope import _rejection_errors
+
+    exc = EnvironmentDiscoveryError('repair may change only its failure closure; frozen records were changed or '
+                                    'removed: c01-other.', code='repair_outside_closure')
+    errors = _rejection_errors(exc, 'shard_checks')
+    assert errors == [{'location': [], 'code': 'repair_outside_closure', 'guidance': str(exc)}]
