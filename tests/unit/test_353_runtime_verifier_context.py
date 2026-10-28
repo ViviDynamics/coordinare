@@ -27,7 +27,8 @@ def test_clean_runtime_context_preserves_original_expiry_and_receipt(tmp_path):
     before = copy.deepcopy(cache.environment_attempt)
     context = runtime_verifier_context(cache, now=1001)
     assert context.expires_at == 1120
-    assert float(context.environment['COORDINARE_ENV_RUNTIME_EXPIRES_AT']) == 1120
+    # The consumer's guest stops a grace before the owner's deadline, so its partial report can still arrive.
+    assert float(context.environment['COORDINARE_ENV_RUNTIME_EXPIRES_AT']) == 1060.5
     assert json.loads(context.environment['COORDINARE_ENV_RUNTIME_ARTIFACTS']) == report['runtime_artifacts']
     assert cache.environment_attempt == before
 
@@ -76,7 +77,7 @@ async def test_runtime_exports_are_present_even_without_credentials(tmp_path, mo
     cache, report = started_cache(tmp_path)
     context = environment_runtime.runtime_verifier_context(cache, now=1001)
     script = await environment_verification.verification_environment({}, 'sym', cache, (), runtime_context=context)
-    assert 'COORDINARE_ENV_RUNTIME_EXPIRES_AT=1120' in script
+    assert 'COORDINARE_ENV_RUNTIME_EXPIRES_AT=1060.5' in script
     assert 'COORDINARE_ENV_RUNTIME_ARTIFACTS=' in script
     assert report['runtime_artifacts']['runtime_digest'] in script
 

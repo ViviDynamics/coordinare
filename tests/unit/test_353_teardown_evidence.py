@@ -245,3 +245,74 @@ def test_an_incomplete_consumer_report_is_summarised_by_ids_and_codes_only():
     assert 'text' not in summary
     assert _incomplete_summary('{"results": []}') is None
     assert _incomplete_summary('not json') is None
+
+
+@pytest.mark.asyncio
+async def test_a_pending_cancellation_is_never_turned_into_a_hold(tmp_path, monkeypatch):
+    import asyncio
+
+    async def cancelled_then_scan_fails(_lease, operation):
+        operation.close()
+        asyncio.current_task().cancel()
+        raise RuntimeError('bounds scan failed while cancelling')
+
+    monkeypatch.setattr(runtime_execution, 'run_guarded', cancelled_then_scan_fails)
+    monkeypatch.setattr(runtime_execution, 'open_runtime', _opened(CLEAN))
+    monkeypatch.setattr(runtime_execution, '_scan_bounds', _no_scan)
+
+    async def unused(*_args, **_kwargs):
+        return _report()
+
+    run = asyncio.create_task(execute_with_runtime(_manifest(), cache=tmp_path, repo=tmp_path, scratch=tmp_path,
+        install=True, scope='', secret_names=(), execution_source_digest='c' * 64, runtime_artifacts=None,
+        runtime_deadline=None, runtime_lease=None, commands=unused))
+    with pytest.raises(asyncio.CancelledError):
+        await run
+
+
+@pytest.mark.asyncio
+async def test_a_failed_close_is_an_unconfirmed_teardown_that_keeps_the_evidence(tmp_path, monkeypatch):
+    async def close(**_kwargs):
+        raise TimeoutError('qemu did not exit after kill')
+
+    async def opened(*_args, **_kwargs):
+        return SimpleNamespace(activation_env={}, installation_passed=False, close=close)
+
+    async def passthrough(_lease, operation):
+        return await operation
+
+    async def finished(*_args, **_kwargs):
+        return _report()
+
+    monkeypatch.setattr(runtime_execution, 'run_guarded', passthrough)
+    monkeypatch.setattr(runtime_execution, 'open_runtime', opened)
+    monkeypatch.setattr(runtime_execution, '_scan_bounds', _no_scan)
+    with pytest.raises(PrivateRuntimeIncompleteError) as held:
+        await execute_with_runtime(_manifest(), cache=tmp_path, repo=tmp_path, scratch=tmp_path, install=True,
+            scope='', secret_names=(), execution_source_digest='c' * 64, runtime_artifacts=None,
+            runtime_deadline=None, runtime_lease=None, commands=finished)
+    report = held.value.report
+    assert report.runtime_incomplete == ['unconfirmed'] and report.runtime_cleanup is False
+    assert report.runtime_incomplete_detail == 'TimeoutError: qemu did not exit after kill'
+    assert [result.id for result in report.results] == ['install-tool', 'check-tool']
+
+
+@pytest.mark.asyncio
+async def test_the_cause_of_a_runtime_failure_is_kept_bounded(tmp_path, monkeypatch):
+    async def failing(_lease, operation):
+        operation.close()
+        raise ValueError('x' * 2000)
+
+    monkeypatch.setattr(runtime_execution, 'run_guarded', failing)
+    monkeypatch.setattr(runtime_execution, 'open_runtime', _opened(CLEAN))
+    monkeypatch.setattr(runtime_execution, '_scan_bounds', _no_scan)
+
+    async def unused(*_args, **_kwargs):
+        return _report()
+
+    with pytest.raises(PrivateRuntimeIncompleteError) as held:
+        await execute_with_runtime(_manifest(), cache=tmp_path, repo=tmp_path, scratch=tmp_path, install=True,
+            scope='', secret_names=(), execution_source_digest='c' * 64, runtime_artifacts=None,
+            runtime_deadline=None, runtime_lease=None, commands=unused)
+    detail = held.value.report.runtime_incomplete_detail
+    assert detail.startswith('ValueError: ') and len(detail) == 600

@@ -434,6 +434,7 @@ class VerificationReport(StrictModel):
     runtime_cleanup: bool | None = None
     # Only on a run that cannot be accepted (deadline, seal or teardown), so it still says why while it holds.
     runtime_incomplete: list[IncompleteCondition] | None = None
+    runtime_incomplete_detail: str | None = Field(default=None, max_length=600)
 
     @model_serializer(mode="wrap")
     def serialize_native_compatibly(self, handler: Any) -> dict[str, Any]:
@@ -441,8 +442,9 @@ class VerificationReport(StrictModel):
         if self.runtime_digest is None:
             for key in ("runtime_digest", "runtime_phase", "runtime_artifacts", "runtime_cleanup"):
                 data.pop(key, None)
-        if self.runtime_incomplete is None:
-            data.pop("runtime_incomplete", None)
+        for key in ("runtime_incomplete", "runtime_incomplete_detail"):
+            if getattr(self, key) is None:
+                data.pop(key, None)
         return data
 
     execution_source_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")

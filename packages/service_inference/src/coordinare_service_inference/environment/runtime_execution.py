@@ -34,6 +34,11 @@ class PrivateRuntimeIncompleteError(RuntimeError):
         self.report = report
 
 
+def _cancelling() -> bool:
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
+
 def _partial_report(manifest: EnvironmentManifest, progress: dict[str, CheckResult], *, install: bool, scope: str,
                     execution_source_digest: str) -> VerificationReport:
     """Finished results as recorded; every declared command, service step included, without one is not_run."""
@@ -128,17 +133,25 @@ async def execute_with_runtime(
         report = None
         receipt = runtime_artifacts
         incomplete: list[str] = []
+        cause: BaseException | None = None
         progress: dict[str, CheckResult] = {}
         try:
             try:
                 report = await run_guarded(lease, commands(manifest, **kwargs, progress=progress,
                                                             runtime_env=lease.activation_env))
                 await _scan_bounds(lease)
-            except TimeoutError:
+            except TimeoutError as exc:
+                if _cancelling():
+                    raise asyncio.CancelledError from exc
                 incomplete.append('deadline_exhausted')
-            except (RuntimeError, OSError, ValueError, RuntimeScanStoppedError):
-                # A guest exit, bounds violation or failed scan still holds; keep what the commands did.
+                cause = exc
+            except (RuntimeError, OSError, ValueError, RuntimeScanStoppedError) as exc:
+                # A guest exit, bounds violation or failed scan still holds; keep what the commands did. A pending
+                # cancellation always wins: it never becomes a hold.
+                if _cancelling():
+                    raise asyncio.CancelledError from exc
                 incomplete.append('runtime_failed')
+                cause = exc
             if incomplete:
                 if report is None:
                     report = _partial_report(manifest, progress, install=install, scope=scope,
@@ -149,19 +162,30 @@ async def execute_with_runtime(
                     try:
                         receipt = await seal_runtime(lease, manifest_digest=manifest.digest(),
                                                      source_digest=execution_source_digest, deadline=deadline)
-                    except (RuntimeError, ValueError, OSError, TimeoutError):
+                    except (RuntimeError, ValueError, OSError, TimeoutError) as exc:
+                        if _cancelling():
+                            raise asyncio.CancelledError from exc
                         lease.installation_passed = False
                         incomplete.append('seal_failed')
+                        cause = exc
         finally:
-            cleanup = await lease.close(deadline=deadline)
-        teardown = [] if cleanup.confirmed and cleanup.clean_shutdown and cleanup.bounds_respected else (
-            [name for name in TEARDOWN_CONDITIONS if getattr(cleanup, name, True) is False] or ['unconfirmed'])
+            try:
+                cleanup = await lease.close(deadline=deadline)
+            except (TimeoutError, RuntimeError, OSError) as exc:
+                # A failed close is an unconfirmed teardown; it never discards the command evidence.
+                cleanup = None
+                cause = cause or exc
+        teardown = [] if cleanup is not None and cleanup.confirmed and cleanup.clean_shutdown and \
+            cleanup.bounds_respected else ([name for name in TEARDOWN_CONDITIONS
+                                            if getattr(cleanup, name, True) is False] or ['unconfirmed'])
         if incomplete or teardown:
             report.runtime_digest = spec.digest()
             report.runtime_phase = 'installer' if install else 'consumer'
             report.runtime_cleanup = not teardown
             report.runtime_artifacts = None
             report.runtime_incomplete = [*incomplete, *teardown]
+            if cause is not None:
+                report.runtime_incomplete_detail = f'{type(cause).__name__}: {cause}'[:600]
             raise PrivateRuntimeIncompleteError(report.runtime_incomplete, report)
         report.runtime_digest = spec.digest()
         report.runtime_phase = 'installer' if install else 'consumer'

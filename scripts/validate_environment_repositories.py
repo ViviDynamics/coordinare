@@ -51,6 +51,7 @@ from coordinare.services.environment_attempt import (
 from coordinare.services.environment_repair import journal_for, remaining_seconds
 from coordinare.services.environment_runtime import (
     admit_installer_runtime,
+    guest_expiry,
     runtime_verifier_options,
 )
 from coordinare.services.environment_runtime_evidence import require_runtime_target
@@ -328,7 +329,6 @@ async def _remove_container(name: str) -> bool:
 
 
 INSTALLER_TAIL_BYTES = 2000
-RUNTIME_REPORT_GRACE_SECONDS = 180.0
 
 
 async def _install(
@@ -350,10 +350,7 @@ async def _install(
             raise ValueError('private runtime installer requires an executing original attempt')
         expires_at = min(expires_at, time.time()+manifest.runtime.policy.resources.max_seconds)
         options = runtime_verifier_options(manifest, target)
-        # The guest stops a grace earlier than this wait, so an exhausted run can still unwind, tear down and print
-        # its partial report before the container is removed; both stay inside the original deadline.
-        guest_expires_at = expires_at - min(RUNTIME_REPORT_GRACE_SECONDS, max(0.0, expires_at-time.time())/2)
-        options.extend(['-e', 'COORDINARE_ENV_RUNTIME_EXPIRES_AT='+str(guest_expires_at)])
+        options.extend(['-e', 'COORDINARE_ENV_RUNTIME_EXPIRES_AT='+str(guest_expiry(expires_at, time.time()))])
     phase_deadline = time.monotonic()+timeout
 
     def time_left() -> float:
@@ -456,6 +453,15 @@ async def _install(
             raise RuntimeError("installer cleanup could not be confirmed")
 
 
+def _redacted_detail(value: object) -> str | None:
+    """A runtime failure message can carry guest console text; keep it bounded and redacted."""
+    if not isinstance(value, str):
+        return None
+    from coordinare.lib.redaction import redact_command_text
+
+    return redact_command_text(value)[:600]
+
+
 async def execute_accepted(
     snapshot: Snapshot,
     service: EnvCacheService,
@@ -522,6 +528,7 @@ async def execute_accepted(
         statuses = [str(item.get('status')) for item in results]
         result.update(status="held", reason_code="runtime_incomplete",
                       runtime_incomplete=raw.get('runtime_incomplete'),
+                      runtime_incomplete_detail=_redacted_detail(raw.get('runtime_incomplete_detail')),
                       installer_result_counts={status: statuses.count(status) for status in dict.fromkeys(statuses)},
                       installer_failed_ids=[str(item.get('id')) for item in results
                                             if item.get('status') in ('fail', 'indeterminate')],
