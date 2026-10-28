@@ -127,10 +127,39 @@ _OPERATORS = ";&|()\n"
 _FD_REDIRECT = re.compile(r"(\d*[<>])&(\d+|-)|&>")
 
 
+# Constructs this lexer cannot follow without misreading text as commands: a heredoc body, or a quoted argument made
+# only of operator characters. A script containing either is not judged.
+_UNJUDGED = re.compile(r"<<|(['\"])[;&|()\s]+\1")
+
+
+def _without_redirections(words: list[str]) -> list[str]:
+    """Drops each redirection operator (the lexer splits > and < from their descriptor), its descriptor number and
+    its target, so neither a file name nor a descriptor is ever read as an argument."""
+    kept: list[str] = []
+    skip = False
+    for word in words:
+        if skip:
+            skip = False
+        elif word and set(word) <= set("<>"):
+            if kept and kept[-1].isdigit():
+                kept.pop()
+            skip = True
+        else:
+            kept.append(word)
+    return kept
+
+
 def _simple_commands(script: str, depth: int = 0) -> list[list[str]]:
     """A script's simple commands as words, split only at unquoted shell operators: a quoted script handed to another
     program (docker run image sh -c '...') stays one word of that program's command. A nested sh -c script runs in
-    the same process context, so its commands are judged too. An unparseable script yields nothing."""
+    the same process context, so its commands are judged too.
+
+    The carrier rules built on this are deliberately conservative: they may miss a case (a command substitution, a
+    comment, a selector such as -P "$PPID"), which execution then reports, but must never reject a valid command,
+    since that would spend an author's corrections on nothing. A script the lexer cannot follow yields nothing.
+    """
+    if _UNJUDGED.search(script):
+        return []
     script = _FD_REDIRECT.sub(lambda match: f"{match[1]}fd{match[2]}" if match[1] else ">both", script)
     lexer = shlex.shlex(script, posix=True, punctuation_chars=_OPERATORS)
     lexer.whitespace = " \t\r"
@@ -144,7 +173,7 @@ def _simple_commands(script: str, depth: int = 0) -> list[list[str]]:
     except ValueError:
         return []
     found: list[list[str]] = []
-    for words in (_strip(words) for words in commands):
+    for words in (_strip(_without_redirections(words)) for words in commands):
         if not words:
             continue
         found.append(words)
@@ -194,7 +223,7 @@ def _full_match(words: list[str], shell_line: str) -> bool:
     for word in rest:
         if word in _VALUED:
             next(rest, None)
-        elif not word.startswith("-") and not any(character in word for character in "<>"):
+        elif not word.startswith("-"):
             operands.append(word)
     if not operands or "[" in (pattern := operands[-1]):
         return False
@@ -231,8 +260,8 @@ def validate_static_rules(install: Sequence[Command], activation: Activation, pl
     for command in [*install, *others]:
         if self_matching_process_pattern(command):
             raise _graph_error("self_matching_process_pattern", "a full-command-line pkill or pgrep inside a longer shell "
-                               "script matches the script's own shell; use a pid file, or a bracketed pattern such as "
-                               "[b]in/tool", command.id, set())
+                               "script matches the script's own shell; stop the process through a pid file written when "
+                               "it starts", command.id, set())
     gates = {command.id for command in install if connectivity_probe(command)}
     for command in install:
         if hit := gates & set(command.depends_on):

@@ -82,7 +82,8 @@ def test_the_carrier_guidance_states_both_rules_and_the_teardown_duty():
     assert 'apt-get or apt install' in policy['installation_guidance']
     assert 'may require' not in policy['installation_guidance']
     assert 'docker rm -f -v' in policy['runtime_ordering_guidance']
-    assert "pkill -f '[b]in/tool'" in policy['runtime_ordering_guidance']
+    assert 'pid to a file' in policy['runtime_ordering_guidance']
+    assert '[b]in' not in policy['runtime_ordering_guidance']
 
 
 def test_discovery_judges_every_lifecycle_and_check_command_and_the_private_carrier_cannot_install_packages():
@@ -103,7 +104,7 @@ def test_both_rules_carry_correction_guidance():
     from coordinare.services.environment_admission import GRAPH_GUIDANCE
 
     assert 'prebuilt' in GRAPH_GUIDANCE['system_package_install']
-    assert 'pid file' in GRAPH_GUIDANCE['self_matching_process_pattern']
+    assert 'process id' in GRAPH_GUIDANCE['self_matching_process_pattern']
 
 
 @pytest.mark.parametrize('script', [
@@ -166,3 +167,26 @@ def test_a_package_install_inside_a_guest_container_is_not_the_carriers(script):
 def test_a_nested_carrier_shell_is_still_judged():
     script = 'set -eu; bash -c "apt-get update; apt-get install -y gcc"'
     assert _rejected([_cmd('install-deps', 'bash', '-c', script)]).type == 'system_package_install'
+
+
+@pytest.mark.parametrize('script', [
+    "pkill -f '[b]in/mock' >/dev/null 2>&1 || true; exit 0",
+    "cat <<'EOF' > {scratch}/notes.txt\napt-get install -y gcc\nEOF\necho written",
+    "echo '|' apt-get install -y gcc",
+])
+def test_the_rules_never_reject_a_command_they_misread(script):
+    """Conservative by design: a redirection target, a heredoc body or a quoted operator is never read as a command."""
+    validate_static_rules([_cmd('install-notes', 'bash', '-c', script)], NO_ACTIVATION, 'linux/aarch64',
+                          others=[_cmd('mock-stop', 'bash', '-c', script)], system_packages=False)
+
+
+def test_a_redirection_target_is_never_taken_as_the_pattern():
+    script = 'pkill -f bin/mock > "[x]" || true; exit 0'
+    assert _rejected(others=[_cmd('mock-stop', 'bash', '-c', script)]).type == 'self_matching_process_pattern'
+
+
+def test_the_correction_recommends_a_pid_file_only():
+    from coordinare.services.environment_admission import GRAPH_GUIDANCE
+
+    assert 'pid' in GRAPH_GUIDANCE['self_matching_process_pattern']
+    assert '[b]in' not in GRAPH_GUIDANCE['self_matching_process_pattern']

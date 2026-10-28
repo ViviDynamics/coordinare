@@ -163,9 +163,9 @@ GRAPH_GUIDANCE = {
                                'Download a prebuilt release archive for execution_capabilities.platform, or extract the '
                                'packages you need under {cache}, and point activation at them.'),
     'self_matching_process_pattern': ('The named command runs pkill -f or pgrep -f inside a shell script that does more than '
-                                      'that, so the pattern matches the script\'s own shell and kills or finds it. Stop the '
-                                      'process through a pid file written when it started, or use a bracketed pattern such '
-                                      "as '[b]in/tool' that cannot match its own literal text."),
+                                      'that, so the pattern matches the script\'s own shell and kills or finds it. Write the '
+                                      'process id to a file under {scratch} when it starts, and stop it by killing that '
+                                      'pid.'),
     'activation_path_uncreated': ('Each listed activation path entry (its 0-based position in activation.path) is not '
                                   'created or populated by any install command. Have an install command create that '
                                   'path or a directory it lives in, or remove the entry.'),
