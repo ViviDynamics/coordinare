@@ -805,6 +805,21 @@ def record_execution_failure(cache: EnvCacheState, report: dict[str, Any], *, cl
         return True
 
 
+MAX_FEEDBACK_RESULTS = 16
+# Commands that ran and failed carry the reason; not_run results only say a prerequisite did not pass.
+_FEEDBACK_ORDER = {'fail': 0, 'indeterminate': 1}
+
+
+def repair_feedback_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The bounded failures a repair's authors see, those that ran and failed first, then report order.
+
+    Dettmore e2e-06: a template refusal left 44 commands not_run and 9 failed; the first 16 in report order were all
+    consequences, so no author saw the nine failures or their reason, and the repair changed nothing that mattered.
+    """
+    failed = [result for result in results if result['status'] != 'pass']
+    return sorted(failed, key=lambda result: _FEEDBACK_ORDER.get(result['status'], 2))[:MAX_FEEDBACK_RESULTS]
+
+
 def _generation(journal: RepairJournal) -> str:
     if not journal.generation:
         return journal.base_slug
@@ -868,8 +883,7 @@ def prepare_repair(cache: EnvCacheState) -> tuple[EnvironmentManifest, dict[str,
     cache.rendered_activate_sh = cache.rendered_verify_sh = None
     cache.provenance_digest = None
     cache.cache_dir_ready = False
-    failed = [result for result in entry['report']['results'] if result['status'] != 'pass']
-    feedback = {'rejected_manifest_digest': previous.digest(), 'results': failed[:16]}
+    feedback = {'rejected_manifest_digest': previous.digest(), 'results': repair_feedback_results(entry['report']['results'])}
     if len(json.dumps(feedback).encode()) > FEEDBACK_MAX_BYTES:
         _refuse('environment repair feedback exceeds its bound')
     return previous, feedback
@@ -903,8 +917,7 @@ def repair_context(cache: EnvCacheState) -> tuple[EnvironmentManifest | None, di
         _refuse('environment repair requires a prepared fresh cache generation')
     entry = journal.rejected[-1]
     previous = EnvironmentManifest.model_validate(entry['manifest'])
-    failed = [item for item in entry['report']['results'] if item['status'] != 'pass']
-    return previous, {'rejected_manifest_digest': previous.digest(), 'results': failed[:16]}
+    return previous, {'rejected_manifest_digest': previous.digest(), 'results': repair_feedback_results(entry['report']['results'])}
 
 
 def finish_attempt(cache: EnvCacheState, success: bool, evidence: dict[str, Any] | None,
