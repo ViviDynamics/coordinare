@@ -127,9 +127,9 @@ _OPERATORS = ";&|()\n"
 _FD_REDIRECT = re.compile(r"(\d*[<>])&(\d+|-)|&>")
 
 
-# Constructs this lexer cannot follow without misreading text as commands: a heredoc body, or a quoted argument made
-# only of operator characters. A script containing either is not judged.
-_UNJUDGED = re.compile(r"<<|(['\"])[;&|()\s]+\1")
+# Constructs this lexer cannot follow without misreading text as commands: a heredoc body, a quoted argument made
+# only of operator characters, or an escaped operator. A script containing any of them is not judged.
+_UNJUDGED = re.compile(r"<<|(['\"])[;&|()\s]+\1|\\[;&|()]")
 
 
 def _without_redirections(words: list[str]) -> list[str]:
@@ -194,10 +194,16 @@ def _program(words: list[str]) -> list[str]:
     return words
 
 
+# Requests that only simulate, download or describe an install, and need no installation capability.
+_NO_INSTALL = frozenset({"-s", "--simulate", "--just-print", "--dry-run", "--recon", "--no-act", "--help", "-h",
+                         "--download-only", "--print-uris", "--downloadonly"})
+
+
 def system_package_install(command: Command) -> bool:
     for words in _segments(command):
         words = _program(words)
-        if words and (verbs := _PACKAGE_INSTALL.get(words[0].rsplit("/", 1)[-1])) and verbs & set(words[1:]):
+        if (words and (verbs := _PACKAGE_INSTALL.get(words[0].rsplit("/", 1)[-1])) and verbs & set(words[1:])
+                and not _NO_INSTALL & set(words[1:])):
             return True
     return False
 
@@ -217,7 +223,8 @@ def _full_match(words: list[str], shell_line: str) -> bool:
         return False
     flags = [word for word in words[1:] if word.startswith("-")]
     full = any(flag == "--full" or (not flag.startswith("--") and "f" in flag[1:]) for flag in flags)
-    if not full or any(flag == "-P" or flag.split("=", 1)[0] == "--parent" for flag in flags):
+    exact = any(flag == "--exact" or (not flag.startswith("--") and "x" in flag[1:]) for flag in flags)
+    if not full or exact or any(flag == "-P" or flag.split("=", 1)[0] == "--parent" for flag in flags):
         return False
     operands, rest = [], iter(words[1:])
     for word in rest:
@@ -241,7 +248,9 @@ def self_matching_process_pattern(command: Command) -> bool:
         return False
     segments = _segments(command)
     shell_line = " ".join(command.argv)
-    return len(segments) > 1 and any(_full_match(program, shell_line) for program in map(_program, segments) if program)
+    # A match run through exec has already replaced the shell, so it cannot find it.
+    return len(segments) > 1 and any(_full_match(program, shell_line) for words in segments
+                                     if words[0] != "exec" and (program := _program(words)))
 
 
 def validate_static_rules(install: Sequence[Command], activation: Activation, platform: str | None = None, *,

@@ -190,3 +190,16 @@ def test_the_correction_recommends_a_pid_file_only():
 
     assert 'pid' in GRAPH_GUIDANCE['self_matching_process_pattern']
     assert '[b]in' not in GRAPH_GUIDANCE['self_matching_process_pattern']
+
+
+@pytest.mark.parametrize(('install', 'other'), [
+    ("printf '%s\\n' \\; apt-get install gcc", 'true'),
+    ('apt-get -s install gcc', 'true'),
+    ('apk add --help', 'true'),
+    ('apt-get install --download-only -y gcc', 'true'),
+    ('true', "set -eu; exec pgrep -f bin/mock"),
+    ('true', "pgrep -fx '/opt/app/server --port 8080' && echo ready"),
+])
+def test_review_r4_valid_commands_are_admitted(install, other):
+    validate_static_rules([_cmd('install-x', 'bash', '-c', install)], NO_ACTIVATION, 'linux/aarch64',
+                          others=[_cmd('probe-x', 'bash', '-c', other)], system_packages=False)
