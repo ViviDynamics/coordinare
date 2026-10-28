@@ -9,6 +9,7 @@ from coordinare_service_inference.environment.findings import FindingResponse
 from coordinare_service_inference.environment.models import (  # noqa: TC002 - pydantic resolves field types at runtime
     Activation,
     Command,
+    LocalCredential,
     Requirement,
     Service,
 )
@@ -31,6 +32,8 @@ class ManifestDelta(BaseModel):
     services: list[Service] = Field(default_factory=list, max_length=64)
     activation: Activation | None = None
     criterion_checks: dict[str, list[str]] = Field(default_factory=dict)
+    # A failure such as an undeclared ${NAME} is repaired by declaring a generated credential (Dettmore e2e-05).
+    local_credentials: list[LocalCredential] = Field(default_factory=list, max_length=64)
 
 
 MANIFEST_DELTA_ENVELOPE = create_model(
@@ -65,6 +68,11 @@ def apply_delta(base: Mapping[str, Any], delta: Mapping[str, Any]) -> dict[str, 
         result["activation"] = delta["activation"]
     if delta.get("criterion_checks"):
         result["criterion_checks"] = {**(result.get("criterion_checks") or {}), **delta["criterion_checks"]}
+    if delta.get("local_credentials"):
+        # Keyed by name: a delta credential replaces the base one of that name, or is added.
+        changed = {item["name"]: item for item in delta["local_credentials"]}
+        kept = [changed.pop(item["name"], item) for item in result.get("local_credentials") or []]
+        result["local_credentials"] = [*kept, *changed.values()]
     return result
 
 

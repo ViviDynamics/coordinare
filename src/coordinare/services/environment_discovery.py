@@ -353,8 +353,8 @@ def _admit_phase_context(inspection: _Inspection, budget: AttemptBudget, message
     budget.expected_envelope = "assessment" if inspection.name == "review" else ("manifest_delta" if inspection.delta else "manifest")
     if inspection.require_preflight:
         inspection.stage_prompts = inspection.stage_prompts or DiscoveryPrompts()
-        inspection.stage_prompts.update(messages, budget, inspection.inputs, repairing=can_patch)
-    if can_patch and PATCH_INSTRUCTION not in messages[0]["content"]:
+        inspection.stage_prompts.update(messages, budget, inspection.inputs, repairing=can_patch, delta=inspection.delta)
+    if can_patch and not inspection.delta and PATCH_INSTRUCTION not in messages[0]["content"]:
         messages[0] = {**messages[0], "content": messages[0]["content"] + "\n\n" + PATCH_INSTRUCTION}
     if inspection.name == "review":
         budget.review_context_bytes = _check_review_context(messages, inspection.limits)
@@ -404,7 +404,7 @@ def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
             "guidance": (f"Return one JSON object with unique keys at every level and nothing after it; "
                          f"{envelope} must occur exactly once and contain an object, "
                          "never a boolean.")}
-        can_patch = base is not None
+        can_patch = base is not None and not inspection.delta
         if can_patch and exc.code == 'invalid_json_envelope' and '"repair_proposal"' in raw[:256]:
             # A correction that could not even be parsed is not retried as another patch: v26's author failed the
             # same nested patch until its repairs ran out. The complete envelope has no value_json layer.
@@ -463,7 +463,7 @@ def _admit_declaration(inspection: _Inspection, reply: dict[str, Any], validate:
     else:
         return True
     _repair(messages, raw, errors, budget,
-            context=CorrectionContext(_declared_key(inspection), True, budget.last_finish_reason))
+            context=CorrectionContext(_declared_key(inspection), not inspection.delta, budget.last_finish_reason))
     return False
 
 
@@ -474,7 +474,8 @@ def _phase_schema(inspection: _Inspection, repair_base: dict[str, Any] | None) -
         budget.expected_envelope = 'probe'
         repair = ProbeRepairSchema([command.id for command in ProbeRequest.model_validate(repair_base['probe']).commands],
             sorted(inspection.inputs))
-    return response_schema(budget.expected_envelope, allow_patch=repair_base is not None,
+    # A delta has no complete declaration to patch, so it is never offered correction records.
+    return response_schema(budget.expected_envelope, allow_patch=repair_base is not None and not getattr(inspection, 'delta', False),
         scope_contract=budget.scope_contract, probe_repair=repair,
         review_decision_ids=[record.id for record in budget.finding_ledger.records] if budget.finding_ledger is not None else [])
 
