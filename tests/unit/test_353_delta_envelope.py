@@ -59,3 +59,21 @@ def test_a_delta_phase_offers_the_delta_schema_and_no_patches():
     schema = discovery_module._phase_schema(inspection, {'manifest_delta': {}, 'finding_responses': []})
     assert 'repair_proposal' not in json.dumps(schema)
     assert 'manifest_delta' in json.dumps(schema)
+
+
+def test_a_duplicate_credential_name_in_a_delta_stays_visible_to_admission():
+    base = {'local_credentials': [_credential('PGPASSWORD')]}
+    delta = {'local_credentials': [_credential('PGPASSWORD', 'a'), _credential('PGPASSWORD', 'b')]}
+    applied = apply_delta(base, delta)
+    assert [(item['name'], item['service']) for item in applied['local_credentials']] == [
+        ('PGPASSWORD', 'a'), ('PGPASSWORD', 'b')]
+
+
+def test_a_probe_correction_within_a_delta_repair_may_still_be_patched():
+    from coordinare.services import environment_discovery as discovery_module
+
+    budget = SimpleNamespace(expected_envelope='probe', scope_contract=None, finding_ledger=None)
+    inspection = SimpleNamespace(budget=budget, delta=True, inputs={'Gemfile': 'a' * 64})
+    base = {'probe': {'execution_context': 'outer', 'commands': [{'id': 'p', 'argv': ['true']}],
+                      'citations': {'p': ['Gemfile']}, 'questions': {'p': 'q'}}}
+    assert 'repair_proposal' in json.dumps(discovery_module._phase_schema(inspection, base))

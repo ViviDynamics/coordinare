@@ -354,7 +354,7 @@ def _admit_phase_context(inspection: _Inspection, budget: AttemptBudget, message
     if inspection.require_preflight:
         inspection.stage_prompts = inspection.stage_prompts or DiscoveryPrompts()
         inspection.stage_prompts.update(messages, budget, inspection.inputs, repairing=can_patch, delta=inspection.delta)
-    if can_patch and not inspection.delta and PATCH_INSTRUCTION not in messages[0]["content"]:
+    if can_patch and not _delta_declaration(inspection, budget) and PATCH_INSTRUCTION not in messages[0]["content"]:
         messages[0] = {**messages[0], "content": messages[0]["content"] + "\n\n" + PATCH_INSTRUCTION}
     if inspection.name == "review":
         budget.review_context_bytes = _check_review_context(messages, inspection.limits)
@@ -362,6 +362,11 @@ def _admit_phase_context(inspection: _Inspection, budget: AttemptBudget, message
         check_evidence_context(messages, max_bytes=inspection.limits.max_review_context_bytes, phase="repair")
     elif budget.probe_reports:
         check_evidence_context(messages, max_bytes=inspection.limits.max_review_context_bytes, phase="discovery")
+
+
+def _delta_declaration(inspection: _Inspection, budget: AttemptBudget) -> bool:
+    """The conversation is declaring a manifest delta, which has no complete base for correction patches."""
+    return bool(inspection.delta) and budget.expected_envelope == "manifest_delta"
 
 
 def _declared_key(inspection: _Inspection) -> str:
@@ -404,7 +409,7 @@ def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
             "guidance": (f"Return one JSON object with unique keys at every level and nothing after it; "
                          f"{envelope} must occur exactly once and contain an object, "
                          "never a boolean.")}
-        can_patch = base is not None and not inspection.delta
+        can_patch = base is not None and not (inspection.delta and 'probe' not in base)
         if can_patch and exc.code == 'invalid_json_envelope' and '"repair_proposal"' in raw[:256]:
             # A correction that could not even be parsed is not retried as another patch: v26's author failed the
             # same nested patch until its repairs ran out. The complete envelope has no value_json layer.
@@ -474,8 +479,9 @@ def _phase_schema(inspection: _Inspection, repair_base: dict[str, Any] | None) -
         budget.expected_envelope = 'probe'
         repair = ProbeRepairSchema([command.id for command in ProbeRequest.model_validate(repair_base['probe']).commands],
             sorted(inspection.inputs))
-    # A delta has no complete declaration to patch, so it is never offered correction records.
-    return response_schema(budget.expected_envelope, allow_patch=repair_base is not None and not getattr(inspection, 'delta', False),
+    # A delta declaration has no complete base to patch; a probe correction within a delta repair does.
+    return response_schema(budget.expected_envelope, allow_patch=repair_base is not None and not (
+        getattr(inspection, 'delta', False) and 'probe' not in repair_base),
         scope_contract=budget.scope_contract, probe_repair=repair,
         review_decision_ids=[record.id for record in budget.finding_ledger.records] if budget.finding_ledger is not None else [])
 

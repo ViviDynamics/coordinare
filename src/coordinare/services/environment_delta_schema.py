@@ -69,10 +69,18 @@ def apply_delta(base: Mapping[str, Any], delta: Mapping[str, Any]) -> dict[str, 
     if delta.get("criterion_checks"):
         result["criterion_checks"] = {**(result.get("criterion_checks") or {}), **delta["criterion_checks"]}
     if delta.get("local_credentials"):
-        # Keyed by name: a delta credential replaces the base one of that name, or is added.
-        changed = {item["name"]: item for item in delta["local_credentials"]}
-        kept = [changed.pop(item["name"], item) for item in result.get("local_credentials") or []]
-        result["local_credentials"] = [*kept, *changed.values()]
+        # Keyed by name, as records are by id: the first delta credential of a name replaces the base one, and every
+        # other is added, so a duplicate name stays visible to admission rather than being silently chosen.
+        base_credentials = list(result.get("local_credentials") or [])
+        known = {item["name"] for item in base_credentials}
+        replacing: dict[str, Any] = {}
+        added: list[Any] = []
+        for item in delta["local_credentials"]:
+            if item["name"] in known and item["name"] not in replacing:
+                replacing[item["name"]] = item
+            else:
+                added.append(item)
+        result["local_credentials"] = [replacing.get(item["name"], item) for item in base_credentials] + added
     return result
 
 
