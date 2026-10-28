@@ -1613,8 +1613,9 @@ async def _delta_global_part(attempt: _Attempt, validate: Callable[[dict[str, An
 
     def check(delta: dict[str, Any]) -> Any:
         applied = apply_delta(base, _delta_record(delta))
+        admitted = validate(applied)
         plan.guard_part(base, applied)
-        return validate(applied)
+        return admitted
 
     key = delta_part_key(plan.digest, json.loads(attempt.messages[1]['content']).get('carrier_process_policy'))
     saved = saved_part(budget, 'delta', 'global', key)
@@ -1636,8 +1637,9 @@ async def _delta_candidate(attempt: _Attempt, validate: Callable[[dict[str, Any]
 
     def check(delta: dict[str, Any]) -> Any:
         applied = apply_delta(base, _delta_record(delta))
+        admitted = validate(applied)
         plan.guard_part(base, applied)
-        return validate(applied)
+        return admitted
 
     key = delta_part_key(plan.digest, json.loads(attempt.messages[1]['content']).get('carrier_process_policy'))
     saved = saved_part(budget, 'delta', 'manifest', key)

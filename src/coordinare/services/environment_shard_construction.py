@@ -387,7 +387,9 @@ class DividedConstruction:
             patch = ShardChecksEnvelope.model_validate(reply).shard_checks.model_dump(mode='json')
             captured['patch'] = patch
             applied = {'shard_checks': apply_group_delta(plan.base_group(group), patch)}
-            return validate_group(applied, group=group, summary=summary, inherited=inherited)
+            admitted = validate_group(applied, group=group, summary=summary, inherited=inherited)
+            plan.guard_part(plan.base_group(group) or {}, applied['shard_checks'])
+            return admitted
 
         key = delta_part_key(plan.digest, self.carrier_process_policy)
         saved = saved_part(self.context.budget, 'delta', group.prefix, key)

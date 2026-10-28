@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from coordinare_service_inference.environment.models import (
+    Activation,
+    Command,
     EnvironmentManifest,
+    Requirement,
+    Service,
     VerificationReport,
     content_key,
 )
@@ -18,8 +23,6 @@ from coordinare.services.environment_scope import preserve_scope, released_crite
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
-
-    from coordinare_service_inference.environment.models import Command
 
     from coordinare.services.environment_repair_triage import RepairTriage
 
@@ -247,6 +250,88 @@ def _grown(old: Sequence[str], new: Sequence[str], added: set[str]) -> bool:
     return set(old) <= set(new) and set(new) - set(old) <= added
 
 
+@dataclass(frozen=True)
+class RecordSet:
+    """The records a repair guard compares: a whole manifest, or the part one delta author owns."""
+
+    commands: dict[str, Command] = field(default_factory=dict)
+    services: list[Service] = field(default_factory=list)
+    requirements: list[Requirement] = field(default_factory=list)
+    criterion_checks: dict[str, list[str]] = field(default_factory=dict)
+    activation: Activation | None = None
+
+
+def manifest_records(manifest: EnvironmentManifest) -> RecordSet:
+    return RecordSet(_commands(manifest), list(manifest.services), list(manifest.requirements),
+                     {key: list(value) for key, value in manifest.criterion_checks.items()}, manifest.activation)
+
+
+def part_records(part: Mapping[str, Any]) -> RecordSet:
+    """A delta part's records, parsed into the models the merge guard compares."""
+    services = [Service.model_validate(item) for item in part.get('services') or []]
+    commands = {command.id: command for command in (Command.model_validate(item) for item in
+                                                     [*(part.get('install') or []), *(part.get('checks') or [])])}
+    for service in services:
+        commands.update({command.id: command for command in (getattr(service, phase) for phase in _PHASES)
+                         if command is not None})
+    activation = part.get('activation')
+    return RecordSet(commands, services, [Requirement.model_validate(item) for item in part.get('requirements') or []],
+                     {key: list(value) for key, value in (part.get('criterion_checks') or {}).items()},
+                     Activation.model_validate(activation) if activation is not None else None)
+
+
+def frozen_records(before: RecordSet, after: RecordSet, triage: RepairTriage,
+                   aliases: Mapping[str, str] | None = None) -> set[str]:
+    """Records of ``before`` outside the triage closure whose established content changed or vanished in ``after``.
+
+    Growth stays allowed: a requirement's or criterion's check list may gain added checks, and activation may gain
+    PATH entries and environment keys while keeping its existing ones. Only records ``before`` holds are judged.
+    """
+    aliases = aliases or {}
+    closure = set(triage.closure_ids)
+    added = set(after.commands) - set(before.commands)
+    # A dropped command that an identical kept one replaces is not a frozen record that changed or vanished.
+    frozen = {identifier for identifier, command in before.commands.items() if identifier not in closure and (
+        (identifier not in after.commands and aliases.get(identifier) not in after.commands)
+        or (identifier in after.commands
+            and after.commands[identifier].model_dump(mode="json") != command.model_dump(mode="json")))}
+    current_services = {service.id: service for service in after.services}
+    for service in before.services:
+        members = {c.id for c in (getattr(service, phase) for phase in _PHASES) if c is not None}
+        if members & closure:
+            continue
+        if service.id not in current_services or _service_shape(current_services[service.id]) != _service_shape(service):
+            frozen.add(service.id)
+    current_requirements = {requirement.id: requirement for requirement in after.requirements}
+    for requirement in before.requirements:
+        if requirement.id in triage.requirement_ids:
+            continue
+        new = current_requirements.get(requirement.id)
+        if (new is None or new.model_dump(mode="json", exclude={"checks"}) != requirement.model_dump(mode="json", exclude={"checks"})
+                or not _grown([aliases.get(item, item) for item in requirement.checks], new.checks, added)):
+            frozen.add(requirement.id)
+    for criterion, identifiers in before.criterion_checks.items():
+        if criterion in triage.criterion_ids:
+            continue
+        if criterion not in after.criterion_checks or not _grown([aliases.get(item, item) for item in identifiers],
+                                                                 after.criterion_checks[criterion], added):
+            frozen.add(criterion)
+    if ACTIVATION not in closure and before.activation is not None:
+        old, new_activation = before.activation, after.activation
+        if (new_activation is None or new_activation.path[:len(old.path)] != old.path
+                or any(new_activation.env.get(key) != value for key, value in old.env.items())):
+            frozen.add(ACTIVATION)
+    return frozen
+
+
+def refuse_frozen(frozen: set[str]) -> None:
+    if frozen:
+        message = (f"repair may change only its failure closure; frozen records were changed or removed: "
+                   f"{_ids(set(sorted(frozen)[:16]))}. Restore each listed record exactly as it was; a consequence "
+                   "re-runs unchanged once its prerequisites pass. Add new records for any new obligation.")
+        raise EnvironmentDiscoveryError(message, code=REPAIR_OUTSIDE_CLOSURE)
+
+
 def guard_repair_diff(candidate: EnvironmentManifest, previous: EnvironmentManifest, triage: RepairTriage) -> None:
     """Every record outside the triage closure keeps its established content; added records are judged by review.
 
@@ -256,42 +341,5 @@ def guard_repair_diff(candidate: EnvironmentManifest, previous: EnvironmentManif
     if previous.digest() != triage.manifest_digest:
         message = "repair triage was computed for another manifest"
         raise EnvironmentDiscoveryError(message, code=REPAIR_TRIAGE_STALE)
-    closure = set(triage.closure_ids)
-    before, after = _commands(previous), _commands(candidate)
-    added = set(after) - set(before)
-    aliases = duplicate_aliases(previous, candidate)
-    # A dropped command that an identical kept one replaces is not a frozen record that changed or vanished.
-    frozen = {identifier for identifier, command in before.items() if identifier not in closure and (
-        (identifier not in after and aliases.get(identifier) not in after)
-        or (identifier in after and after[identifier].model_dump(mode="json") != command.model_dump(mode="json")))}
-    members = {service.id: {c.id for c in (getattr(service, phase) for phase in _PHASES) if c is not None}
-               for service in previous.services}
-    current_services = {service.id: service for service in candidate.services}
-    for service in previous.services:
-        if members[service.id] & closure:
-            continue
-        if service.id not in current_services or _service_shape(current_services[service.id]) != _service_shape(service):
-            frozen.add(service.id)
-    current_requirements = {requirement.id: requirement for requirement in candidate.requirements}
-    for requirement in previous.requirements:
-        if requirement.id in triage.requirement_ids:
-            continue
-        new = current_requirements.get(requirement.id)
-        if (new is None or new.model_dump(mode="json", exclude={"checks"}) != requirement.model_dump(mode="json", exclude={"checks"})
-                or not _grown([aliases.get(item, item) for item in requirement.checks], new.checks, added)):
-            frozen.add(requirement.id)
-    for criterion, identifiers in previous.criterion_checks.items():
-        if criterion in triage.criterion_ids:
-            continue
-        if criterion not in candidate.criterion_checks or not _grown([aliases.get(item, item) for item in identifiers],
-                                                                     candidate.criterion_checks[criterion], added):
-            frozen.add(criterion)
-    if ACTIVATION not in closure:
-        old, new = previous.activation, candidate.activation
-        if new.path[:len(old.path)] != old.path or any(new.env.get(key) != value for key, value in old.env.items()):
-            frozen.add(ACTIVATION)
-    if frozen:
-        message = (f"repair may change only its failure closure; frozen records were changed or removed: "
-                   f"{_ids(set(sorted(frozen)[:16]))}. "
-                   "Restore each listed record exactly as it was, and add new records for any new obligation.")
-        raise EnvironmentDiscoveryError(message, code=REPAIR_OUTSIDE_CLOSURE)
+    refuse_frozen(frozen_records(manifest_records(previous), manifest_records(candidate), triage,
+                                 duplicate_aliases(previous, candidate)))

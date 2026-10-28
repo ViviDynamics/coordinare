@@ -12,9 +12,8 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_delta_schema import RECORD_GROUPS
-from coordinare.services.environment_obligations import REPAIR_OUTSIDE_CLOSURE, _ids
+from coordinare.services.environment_obligations import frozen_records, part_records, refuse_frozen
 from coordinare.services.environment_repair_triage import (
     ACTIVATION,
     GLOBAL,
@@ -82,22 +81,10 @@ class DeltaPlan:
                 'closure_records': self.closure_global() if divided else self.closure_records(),
                 'closure_criteria': self.closure_criteria()}
 
-    def guard_part(self, base: dict[str, Any], candidate: dict[str, Any]) -> None:
-        """Inside an author's own phase: records outside the closure keep their content, so the author can correct an
-        out-of-closure edit before any merge. Added records are allowed; review judges them. Ids only in the message."""
-        frozen: set[str] = set()
-        for group in RECORD_GROUPS:
-            before = {item['id']: item for item in base.get(group) or [] if isinstance(item, dict) and 'id' in item}
-            after = {item['id']: item for item in candidate.get(group) or [] if isinstance(item, dict) and 'id' in item}
-            frozen.update(identifier for identifier, item in before.items()
-                          if identifier not in self.closure and after.get(identifier) != item)
-        if ACTIVATION not in self.closure and base.get('activation') != candidate.get('activation'):
-            frozen.add(ACTIVATION)
-        if frozen:
-            message = (f"repair may change only its failure closure; frozen records were changed or removed: "
-                       f"{_ids(set(sorted(frozen)[:16]))}. Restore each listed record exactly as it was; a consequence "
-                       "re-runs unchanged once its prerequisites pass. Add new records for any new obligation.")
-            raise EnvironmentDiscoveryError(message, code=REPAIR_OUTSIDE_CLOSURE)
+    def guard_part(self, base: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:
+        """Inside an author's own phase, the merge guard's rules over the records this part owns, so the author can
+        correct an out-of-closure edit before any merge. Ids only in the correction."""
+        refuse_frozen(frozen_records(part_records(base), part_records(candidate), self.triage))
 
     def base_proposal(self) -> dict[str, Any]:
         return proposal_of(self.base)
