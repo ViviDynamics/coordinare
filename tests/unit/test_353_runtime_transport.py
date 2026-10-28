@@ -84,7 +84,7 @@ def test_verifier_cli_passes_trusted_deadline_to_runtime(monkeypatch, capsys):
     async def execute(manifest, **kwargs):
         observed.update(kwargs)
         assert 'COORDINARE_ENV_RUNTIME_EXPIRES_AT' not in os.environ
-        return SimpleNamespace(passed=True, model_dump_json=lambda: '{}')
+        return SimpleNamespace(passed=True, runtime_incomplete=None, model_dump_json=lambda: '{}')
     monkeypatch.setattr(runner, 'run_manifest', execute)
     with pytest.raises(SystemExit) as exit_info:
         runner.main()
@@ -117,7 +117,7 @@ def test_source_installer_preserves_the_same_original_deadline(monkeypatch):
     observed = {}
     async def execute(manifest, **kwargs):
         observed.update(kwargs)
-        return SimpleNamespace(passed=True, model_dump_json=lambda: '{}')
+        return SimpleNamespace(passed=True, runtime_incomplete=None, model_dump_json=lambda: '{}')
     monkeypatch.setattr(entry, 'run_manifest', execute)
     with pytest.raises(SystemExit) as exit_info:
         entry.main()

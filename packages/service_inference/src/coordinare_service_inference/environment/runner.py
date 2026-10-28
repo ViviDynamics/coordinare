@@ -702,7 +702,9 @@ async def _run_manifest_commands(
     execution_source_digest: str | None = None,
     runtime_env: Mapping[str, str] | None = None,
     credentials: Mapping[str, str] | None = None,
+    progress: dict[str, CheckResult] | None = None,
 ) -> VerificationReport:
+    """``progress``, when given, receives each result as it lands, so an owner keeps finished results if cancelled."""
     roots = {"cache": str(cache), "repo": str(repo), "scratch": str(scratch)}
     redactions = _runtime_secret_values(secret_names) | frozenset((credentials or {}).values())
     preflight = _template_preflight(manifest, roots, install=install, scope=scope, secret_names=secret_names,
@@ -711,7 +713,7 @@ async def _run_manifest_commands(
         preflight.execution_source_digest = execution_source_digest
         return preflight
     env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env, credentials=credentials)
-    results: dict[str, CheckResult] = {}
+    results: dict[str, CheckResult] = progress if progress is not None else {}
     digest = manifest.digest()
     if install:
         await _commands(
@@ -875,20 +877,28 @@ def main() -> None:
     from .runtime_transport import consume_runtime_controls
 
     runtime_deadline, runtime_artifacts = consume_runtime_controls(required=manifest.runtime is not None, install=args.install)
-    report = run_cli(
-        run_manifest(
-            manifest,
-            cache=args.cache,
-            repo=args.repo,
-            scratch=args.scratch,
-            scope=args.scope, execution_source_digest=execution_source_digest,
-            install=args.install,
-            secret_names=secret_names,
-            runtime_deadline=runtime_deadline, runtime_artifacts=runtime_artifacts,
-        ),
-    )
+    from .runtime_execution import PrivateRuntimeIncompleteError
+
+    try:
+        report = run_cli(
+            run_manifest(
+                manifest,
+                cache=args.cache,
+                repo=args.repo,
+                scratch=args.scratch,
+                scope=args.scope, execution_source_digest=execution_source_digest,
+                install=args.install,
+                secret_names=secret_names,
+                runtime_deadline=runtime_deadline, runtime_artifacts=runtime_artifacts,
+            ),
+        )
+    except PrivateRuntimeIncompleteError as exc:
+        # The run holds either way; emit the evidence instead of only a traceback.
+        if exc.report is None:
+            raise
+        report = exc.report
     sys.stdout.write(report.model_dump_json() + "\n")
-    raise SystemExit(0 if report.passed else 1)
+    raise SystemExit(0 if report.passed and not report.runtime_incomplete else 1)
 
 
 if __name__ == "__main__":

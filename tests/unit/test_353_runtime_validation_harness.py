@@ -262,7 +262,7 @@ async def test_an_unconfirmed_teardown_holds_and_keeps_its_command_evidence(tmp_
         'approved': True, 'manifest_digest': manifest.digest(), 'source_commit': snapshot.commit, 'image_ref': image}))
     report = {'manifest_digest': manifest.digest(), 'platform': 'linux/aarch64', 'scope': '',
               'runtime_digest': manifest.runtime.digest(), 'runtime_phase': 'installer', 'runtime_cleanup': False,
-              'runtime_teardown_failures': ['clean_shutdown'],
+              'runtime_incomplete': ['clean_shutdown'],
               'results': [{'id': 'install-one', 'status': 'pass', 'required': True, 'duration_seconds': 12.5},
                           {'id': 'check-one', 'status': 'fail', 'required': True, 'duration_seconds': 3.0}]}
     monkeypatch.setattr(harness, '_install', AsyncMock(return_value=(1, json.dumps(report).encode())))
@@ -272,8 +272,8 @@ async def test_an_unconfirmed_teardown_holds_and_keeps_its_command_evidence(tmp_
     result = {}
     await harness.execute_accepted(snapshot, service, {'env_cache': {'sym': cache}}, image=image,
         target=tmp_path, profile=harness.Profile(model='fixture', base_url='http://localhost:1'), result=result)
-    assert (result['status'], result['reason_code']) == ('held', 'runtime_teardown_unconfirmed')
-    assert result['runtime_teardown_failures'] == ['clean_shutdown']
+    assert (result['status'], result['reason_code']) == ('held', 'runtime_incomplete')
+    assert result['runtime_incomplete'] == ['clean_shutdown']
     assert result['installer_result_counts'] == {'pass': 1, 'fail': 1}
     assert result['installer_failed_ids'] == ['check-one']
     assert json.loads((tmp_path/'installer-output.json').read_text())['runtime_cleanup'] is False

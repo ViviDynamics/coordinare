@@ -12,7 +12,7 @@ from coordinare_service_inference.environment.execution_source import ExecutionS
 from coordinare_service_inference.environment.execution_source_checkout import checkout_identity
 from coordinare_service_inference.environment.models import EnvironmentManifest
 from coordinare_service_inference.environment.runner import run_manifest
-from coordinare_service_inference.environment.runtime_execution import PrivateRuntimeTeardownError
+from coordinare_service_inference.environment.runtime_execution import PrivateRuntimeIncompleteError
 from coordinare_service_inference.environment.runtime_cli import run_cli
 from coordinare_service_inference.environment.runtime_transport import consume_runtime_controls
 
@@ -53,7 +53,7 @@ def main() -> None:
                 execution_source_digest=actual.digest(),
                 runtime_deadline=runtime_deadline, runtime_artifacts=runtime_artifacts,
             )
-        except PrivateRuntimeTeardownError as exc:
+        except PrivateRuntimeIncompleteError as exc:
             # The run holds either way; emit the evidence instead of only a traceback.
             if exc.report is None:
                 raise
@@ -61,7 +61,7 @@ def main() -> None:
 
     report = run_cli(install())
     sys.stdout.write(report.model_dump_json() + "\n")
-    raise SystemExit(0 if report.passed and report.runtime_cleanup is not False else 1)
+    raise SystemExit(0 if report.passed and not report.runtime_incomplete else 1)
 
 
 if __name__ == "__main__":

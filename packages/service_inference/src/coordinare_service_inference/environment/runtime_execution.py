@@ -16,7 +16,7 @@ from .runtime_supervisor import RuntimeScanStoppedError, open_runtime, seal_runt
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
-    from .models import EnvironmentManifest, VerificationReport
+    from .models import CheckResult, EnvironmentManifest, VerificationReport
     from .runtime import RuntimeArtifactReceipt
     from .runtime_supervisor import RuntimeLease
 
@@ -25,13 +25,31 @@ TEARDOWN_CONDITIONS = ('qemu_reaped', 'keys_absent', 'listeners_absent', 'artifa
                        'bounds_respected')
 
 
-class PrivateRuntimeTeardownError(RuntimeError):
-    """Teardown was not confirmed: the run holds, but keeps its command evidence and the failed conditions."""
+class PrivateRuntimeIncompleteError(RuntimeError):
+    """The run cannot be accepted (deadline, seal or teardown): it holds, but keeps its evidence and the reasons."""
 
     def __init__(self, failed: list[str], report: VerificationReport | None) -> None:
-        super().__init__('private runtime teardown or immutable artifact verification failed: ' + ', '.join(failed))
+        super().__init__('private runtime run incomplete: ' + ', '.join(failed))
         self.failed = failed
         self.report = report
+
+
+def _partial_report(manifest: EnvironmentManifest, progress: dict[str, CheckResult], *, install: bool, scope: str,
+                    execution_source_digest: str) -> VerificationReport:
+    """Finished results as recorded; every declared command without one is reported not_run."""
+    from .models import CheckResult, VerificationReport
+    from .runner import _bound_outputs
+
+    digest = manifest.digest()
+    declared = [*(manifest.install if install else []), *manifest.checks]
+    results = dict(progress)
+    for command in declared:
+        results.setdefault(command.id, CheckResult(id=command.id, required=command.required, status='not_run',
+            output='private runtime deadline exhausted before this result', manifest_digest=digest, context=scope))
+    _bound_outputs(results)
+    order = {command.id: index for index, command in enumerate(declared)}
+    return VerificationReport(execution_source_digest=execution_source_digest, manifest_digest=digest, scope=scope,
+                              results=sorted(results.values(), key=lambda result: order.get(result.id, -1)))
 
 
 async def _scan_bounds(lease: RuntimeLease) -> None:
@@ -107,23 +125,37 @@ async def execute_with_runtime(
             manifest_digest=manifest.digest(), source_digest=execution_source_digest)
         report = None
         receipt = runtime_artifacts
+        incomplete: list[str] = []
+        progress: dict[str, CheckResult] = {}
         try:
-            report = await run_guarded(lease, commands(manifest, **kwargs, runtime_env=lease.activation_env))
-            await _scan_bounds(lease)
-            if install and report.passed:
-                lease.installation_passed = True
-                receipt = await seal_runtime(lease, manifest_digest=manifest.digest(),
-                                             source_digest=execution_source_digest, deadline=deadline)
+            try:
+                report = await run_guarded(lease, commands(manifest, **kwargs, progress=progress,
+                                                            runtime_env=lease.activation_env))
+            except TimeoutError:
+                incomplete.append('deadline_exhausted')
+                report = _partial_report(manifest, progress, install=install, scope=scope,
+                                         execution_source_digest=execution_source_digest)
+            else:
+                await _scan_bounds(lease)
+                if install and report.passed:
+                    lease.installation_passed = True
+                    try:
+                        receipt = await seal_runtime(lease, manifest_digest=manifest.digest(),
+                                                     source_digest=execution_source_digest, deadline=deadline)
+                    except (RuntimeError, ValueError, OSError):
+                        lease.installation_passed = False
+                        incomplete.append('seal_failed')
         finally:
             cleanup = await lease.close(deadline=deadline)
-        if not cleanup.confirmed or not cleanup.clean_shutdown or not cleanup.bounds_respected:
-            failed = [name for name in TEARDOWN_CONDITIONS if getattr(cleanup, name, True) is False] or ['unconfirmed']
-            if report is not None:
-                report.runtime_digest = spec.digest()
-                report.runtime_phase = 'installer' if install else 'consumer'
-                report.runtime_cleanup = False
-                report.runtime_teardown_failures = failed
-            raise PrivateRuntimeTeardownError(failed, report)
+        teardown = [] if cleanup.confirmed and cleanup.clean_shutdown and cleanup.bounds_respected else (
+            [name for name in TEARDOWN_CONDITIONS if getattr(cleanup, name, True) is False] or ['unconfirmed'])
+        if incomplete or teardown:
+            report.runtime_digest = spec.digest()
+            report.runtime_phase = 'installer' if install else 'consumer'
+            report.runtime_cleanup = not teardown
+            report.runtime_artifacts = None
+            report.runtime_incomplete = [*incomplete, *teardown]
+            raise PrivateRuntimeIncompleteError(report.runtime_incomplete, report)
         report.runtime_digest = spec.digest()
         report.runtime_phase = 'installer' if install else 'consumer'
         report.runtime_artifacts = receipt

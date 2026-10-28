@@ -423,8 +423,8 @@ class CheckResult(StrictModel):
     context: str = ""
 
 
-TeardownCondition = Literal["qemu_reaped", "keys_absent", "listeners_absent", "artifacts_unchanged",
-                            "clean_shutdown", "bounds_respected", "unconfirmed"]
+IncompleteCondition = Literal["deadline_exhausted", "seal_failed", "qemu_reaped", "keys_absent", "listeners_absent",
+                              "artifacts_unchanged", "clean_shutdown", "bounds_respected", "unconfirmed"]
 
 
 class VerificationReport(StrictModel):
@@ -432,8 +432,8 @@ class VerificationReport(StrictModel):
     runtime_phase: Literal["installer", "consumer", "live_consumer"] | None = None
     runtime_artifacts: RuntimeArtifactReceipt | None = None
     runtime_cleanup: bool | None = None
-    # Only on an unconfirmed teardown, so the held run still says which conditions failed.
-    runtime_teardown_failures: list[TeardownCondition] | None = None
+    # Only on a run that cannot be accepted (deadline, seal or teardown), so it still says why while it holds.
+    runtime_incomplete: list[IncompleteCondition] | None = None
 
     @model_serializer(mode="wrap")
     def serialize_native_compatibly(self, handler: Any) -> dict[str, Any]:
@@ -441,8 +441,8 @@ class VerificationReport(StrictModel):
         if self.runtime_digest is None:
             for key in ("runtime_digest", "runtime_phase", "runtime_artifacts", "runtime_cleanup"):
                 data.pop(key, None)
-        if self.runtime_teardown_failures is None:
-            data.pop("runtime_teardown_failures", None)
+        if self.runtime_incomplete is None:
+            data.pop("runtime_incomplete", None)
         return data
 
     execution_source_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
