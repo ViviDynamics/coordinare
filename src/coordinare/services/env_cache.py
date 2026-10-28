@@ -1003,18 +1003,19 @@ async def _verify_outcome(
                 # An incomplete consumer run is never published; keep its typed outcome in the hold detail.
                 logger.info("env_cache.clean_verify_incomplete", symphony=symphony_name, detail=incomplete)
                 return False, incomplete
+    redacted = redact_command_text(out)
     logger.info(
         "env_cache.clean_verify_result",
         symphony=symphony_name,
         passed=passed,
         returncode=proc.returncode,
-        output_tail=redact_command_text(out[-500:]),
+        output_tail=redacted[-500:],
     )
     # Concise reason for the dashboard: the FAIL lines verify.sh emitted. A crash traceback can carry guest console
-    # text, so the detail is redacted before it reaches any state or file.
-    fails = [ln.strip() for ln in out.splitlines() if "FAIL" in ln.upper()][:5]
-    detail = "; ".join(fails) if fails else (out[-300:].strip() or "verify.sh non-zero")
-    return passed, redact_command_text(detail)
+    # text, so the whole output is redacted before any clipping, and only then reaches state or files.
+    fails = [ln.strip() for ln in redacted.splitlines() if "FAIL" in ln.upper()][:5]
+    detail = "; ".join(fails) if fails else (redacted[-300:].strip() or "verify.sh non-zero")
+    return passed, detail
 
 
 def write_service_scripts(

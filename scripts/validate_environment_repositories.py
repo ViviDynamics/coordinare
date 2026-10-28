@@ -473,6 +473,17 @@ def _redact_report_detail(output: bytes) -> bytes:
     return json.dumps(raw).encode()
 
 
+def _redacted_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    """A copy for result.json whose command outputs are pattern-redacted; the original is left untouched."""
+    from coordinare.lib.redaction import redact_command_text
+
+    copy = json.loads(json.dumps(evidence))
+    for item in copy.get('results', []) if isinstance(copy.get('results'), list) else []:
+        if isinstance(item, dict) and isinstance(item.get('output'), str):
+            item['output'] = redact_command_text(item['output'])
+    return copy
+
+
 def _redacted_detail(value: object) -> str | None:
     """A runtime failure message can carry guest console text; keep it bounded and redacted."""
     if not isinstance(value, str):
@@ -569,12 +580,12 @@ async def execute_accepted(
         and report.platform == cache.environment_capabilities["platform"]
     )
     evidence = {**report.model_dump(mode='json'), 'image_ref':image}
-    result['installer_evidence'] = evidence
+    result['installer_evidence'] = _redacted_evidence(evidence)
     result['installer_command_seconds'] = command_timing("installer", snapshot.name, evidence)
     result['execution_source'] = cache.environment_execution_source
     if not result["installer_passed"]:
         evidence = {**report.model_dump(mode="json"), "image_ref": image}
-        result.update(status="held", reason_code="installer_failed", installer_evidence=evidence)
+        result.update(status="held", reason_code="installer_failed", installer_evidence=_redacted_evidence(evidence))
         service.record_bootstrap_execution(snapshot.name, state, evidence, cleanup_confirmed=True)
         service.on_bootstrap_complete(snapshot.name, False, state)
         return

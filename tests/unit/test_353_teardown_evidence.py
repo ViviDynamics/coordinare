@@ -389,3 +389,30 @@ async def test_a_crashed_consumer_detail_is_redacted():
 
     passed, detail = await env_cache._verify_outcome(Crashed(), 'verify-x', 'sym', 'script')
     assert passed is False and token not in detail
+
+
+@pytest.mark.asyncio
+async def test_a_token_split_by_the_clip_boundary_is_still_redacted():
+    from coordinare.services import env_cache
+
+    token = 'ghp_' + 'd' * 36
+
+    class Crashed:
+        returncode = 1
+
+        async def communicate(self, input):
+            # Place the token so a 300-character tail would cut through its prefix.
+            return ('x' * 400 + 'token=' + token + ' ' + 'y' * 280).encode(), b''
+
+    _, detail = await env_cache._verify_outcome(Crashed(), 'verify-x', 'sym', 'script')
+    assert 'd' * 30 not in detail
+
+
+def test_result_json_evidence_has_redacted_outputs_and_the_original_is_untouched():
+    from scripts import validate_environment_repositories as harness
+
+    token = 'ghp_' + 'e' * 36
+    evidence = {'results': [{'id': 'check-a', 'status': 'pass', 'output': 'token=' + token}]}
+    copy = harness._redacted_evidence(evidence)
+    assert token not in copy['results'][0]['output']
+    assert evidence['results'][0]['output'] == 'token=' + token
