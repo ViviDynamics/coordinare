@@ -72,6 +72,8 @@ from coordinare.services.environment_scope_reopening import source_conflict_reop
 from coordinare.services.environment_scope_reuse import SCOPE_POLICY_VERSION, reusable_scope
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from coordinare_service_inference.environment.models import CheckResult
 
     from coordinare.models.env_cache import EnvCacheState
@@ -808,6 +810,7 @@ def record_execution_failure(cache: EnvCacheState, report: dict[str, Any], *, cl
 
 MAX_FEEDBACK_RESULTS = 16
 FEEDBACK_FIELD_CHARS = 256
+FEEDBACK_ID_CHARS = 128
 # Commands that ran and failed carry the reason; not_run results only say a prerequisite did not pass.
 _FEEDBACK_ORDER = {'fail': 0, 'indeterminate': 1}
 
@@ -832,8 +835,9 @@ def repair_feedback(rejected_digest: str, results: list[dict[str, Any]]) -> dict
         for depth in range(max(map(len, queues.values()), default=0)):
             chosen.extend(queues[owner][depth] for owner in owners if depth < len(queues[owner]))
     chosen = sorted(chosen[:MAX_FEEDBACK_RESULTS], key=lambda entry: entry[:2])
-    # Copies, so the rejected report kept in the journal is never altered. A context is a short label; bound it.
-    selected = [{**entry[2], 'context': str(entry[2].get('context') or '')[:FEEDBACK_FIELD_CHARS]} for entry in chosen]
+    # Copies of a fixed projection, so the journal's rejected report is never altered and every field but the output
+    # is bounded: the feedback already names the rejected manifest, so each result's digest is left out.
+    selected = [_feedback_projection(entry[2]) for entry in chosen]
     feedback = {'rejected_manifest_digest': rejected_digest, 'results': selected}
 
     def size() -> int:
@@ -857,9 +861,24 @@ def repair_feedback(rejected_digest: str, results: list[dict[str, Any]]) -> dict
             # The least informative result of the owner holding the most; never an owner's last one.
             selected.pop(max(position for position, item in enumerate(selected) if part_of(item['id']) == owner))
             continue
-        if not halve_longest(0):
-            break
+        if halve_longest(0):
+            continue
+        if (at := max(range(len(selected)), key=lambda position: len(selected[position]['context']), default=None)) is not None \
+                and selected[at]['context']:
+            selected[at] = {**selected[at], 'context': selected[at]['context'][:len(selected[at]['context']) // 2]}
+            continue
+        # Still over with every output and context empty: the least informative result goes, even an owner's last.
+        selected.pop()
     return feedback
+
+
+def _feedback_projection(result: Mapping[str, Any]) -> dict[str, Any]:
+    exit_code = result.get('exit_code')
+    return {'id': str(result['id'])[:FEEDBACK_ID_CHARS], 'status': result['status'], 'required': bool(result.get('required', True)),
+            'exit_code': exit_code if isinstance(exit_code, int) and -2**31 <= exit_code < 2**31 else None,
+            'duration_seconds': result.get('duration_seconds', 0), 'output': str(result.get('output') or ''),
+            'output_truncated': bool(result.get('output_truncated', False)),
+            'context': str(result.get('context') or '')[:FEEDBACK_FIELD_CHARS]}
 
 
 def _generation(journal: RepairJournal) -> str:

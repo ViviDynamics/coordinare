@@ -93,3 +93,16 @@ def test_a_long_context_is_bounded_and_the_feedback_fits():
     feedback = repair_feedback('d' * 64, [long_context])
     assert len(json.dumps(feedback).encode()) <= FEEDBACK_MAX_BYTES
     assert long_context['context'] == 'k' * 17000
+
+
+def test_the_byte_bound_always_holds_and_the_report_is_never_altered():
+    import copy
+
+    results = [{**_result(f'c{index:02d}-check', 'fail', '\U0001F600' * 4000), 'context': '\U0001F600' * 256,
+                'manifest_digest': 'f' * 64, 'exit_code': 2**40} for index in range(16)]
+    original = copy.deepcopy(results)
+    feedback = repair_feedback('d' * 64, results)
+    assert len(json.dumps(feedback).encode()) <= FEEDBACK_MAX_BYTES
+    assert results == original
+    assert feedback['results'] and all('manifest_digest' not in item for item in feedback['results'])
+    assert all(item['exit_code'] is None for item in feedback['results'])
