@@ -140,3 +140,29 @@ def test_a_check_author_is_corrected_on_a_self_matching_pattern_while_authoring(
         validate_group(data, group=group, summary={'checks': [], 'readiness_ids': []})
     codes = {error['code'] for error in caught.value.errors}
     assert 'self_matching_process_pattern' in codes
+
+
+@pytest.mark.parametrize('script', [
+    'pkill -u root -f bin/mock || true; exit 0',
+    'pkill -G root -f bin/mock || true; exit 0',
+    "pkill -f '^.*bin/mock' || true; exit 0",
+    "pkill -f '^bash -c pkill' || true; exit 0",
+    'pkill -f bin/mock >/dev/null 2>&1 || true; exit 0',
+    'pkill --signal TERM -f bin/mock 2>&1; echo stopped',
+])
+def test_selectors_and_anchors_that_still_reach_the_shell_are_corrected(script):
+    assert _rejected(others=[_cmd('mock-stop', 'bash', '-c', script)]).type == 'self_matching_process_pattern'
+
+
+@pytest.mark.parametrize('script', [
+    "docker run --rm debian sh -c 'set -e; apt-get install -y gcc; gcc --version'",
+    'docker exec dettmore-pg bash -c "apt-get update; apt-get install -y vim"',
+])
+def test_a_package_install_inside_a_guest_container_is_not_the_carriers(script):
+    validate_static_rules([_cmd('install-in-container', 'bash', '-c', script)], NO_ACTIVATION, 'linux/aarch64',
+                          system_packages=False)
+
+
+def test_a_nested_carrier_shell_is_still_judged():
+    script = 'set -eu; bash -c "apt-get update; apt-get install -y gcc"'
+    assert _rejected([_cmd('install-deps', 'bash', '-c', script)]).type == 'system_package_install'

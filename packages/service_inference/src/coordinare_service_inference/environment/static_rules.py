@@ -122,21 +122,40 @@ _PREFIXES = frozenset({"sudo", "env", "command", "exec", "nice", "nohup"})
 _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
 
-_TEMPLATE = re.compile(r"\{([a-z_]+)\}")
+_OPERATORS = ";&|()\n"
+# A descriptor redirection (2>&1, >&2, &>file) is not a command separator; folded into one word before lexing.
+_FD_REDIRECT = re.compile(r"(\d*[<>])&(\d+|-)|&>")
+
+
+def _simple_commands(script: str, depth: int = 0) -> list[list[str]]:
+    """A script's simple commands as words, split only at unquoted shell operators: a quoted script handed to another
+    program (docker run image sh -c '...') stays one word of that program's command. A nested sh -c script runs in
+    the same process context, so its commands are judged too. An unparseable script yields nothing."""
+    script = _FD_REDIRECT.sub(lambda match: f"{match[1]}fd{match[2]}" if match[1] else ">both", script)
+    lexer = shlex.shlex(script, posix=True, punctuation_chars=_OPERATORS)
+    lexer.whitespace = " \t\r"
+    commands: list[list[str]] = [[]]
+    try:
+        for token in lexer:
+            if token and all(character in _OPERATORS for character in token):
+                commands.append([])
+            elif token not in {"{", "}"}:
+                commands[-1].append(token)
+    except ValueError:
+        return []
+    found: list[list[str]] = []
+    for words in (_strip(words) for words in commands):
+        if not words:
+            continue
+        found.append(words)
+        program = _program(words)
+        if depth < 2 and len(program) >= 3 and program[0].rsplit("/", 1)[-1] in _SHELLS and program[1] == "-c":
+            found.extend(_simple_commands(program[2], depth + 1))
+    return found
 
 
 def _segments(command: Command) -> list[list[str]]:
-    """The script's simple commands as words. Templates such as {cache} are not shell braces, so they are neutralised
-    before splitting on separators; a segment that still cannot be parsed is skipped, never the whole script."""
-    segments: list[list[str]] = []
-    for part in _SEPARATOR.split(_TEMPLATE.sub(r"__\1__", _script(command.argv))):
-        try:
-            words = _strip(shlex.split(part))
-        except ValueError:
-            continue
-        if words:
-            segments.append(words)
-    return segments
+    return _simple_commands(_script(command.argv))
 
 
 def _program(words: list[str]) -> list[str]:
@@ -154,24 +173,35 @@ def system_package_install(command: Command) -> bool:
     return False
 
 
-# Selectors that restrict the match to processes the script's own shell cannot be among.
-_EXCLUDING = frozenset({"-P", "--parent", "-s", "--session", "-g", "--pgroup", "-t", "--terminal", "-u", "--euid",
-                        "-U", "--uid", "-G", "--group"})
+# pkill and pgrep options that take a separate value, which is never the pattern.
+_VALUED = frozenset({"-u", "-U", "-G", "-g", "-s", "-t", "-P", "--signal", "--euid", "--uid", "--group", "--pgroup",
+                     "--session", "--terminal", "--parent", "--ns", "--nslist", "--pidfile", "-F"})
+_REGEX_META = re.compile(r"[.*+?\[\](){}|\\$^]")
 
 
-def _full_match(words: list[str]) -> bool:
+def _full_match(words: list[str], shell_line: str) -> bool:
     """pkill or pgrep matching the whole command line (-f, --full, or -f combined with other short flags) on a pattern
-    the script's own shell could contain: one that is not anchored with ^ (the shell's command line starts with the
-    shell) and has no bracket expression such as [b]in/tool (which cannot match its own literal text), with no selector
-    such as a parent pid that leaves the shell out."""
+    that the script's own shell command line could match. Not judged: a parent-pid selector (-P), which the shell is
+    not a child of; a bracket expression such as [b]in/tool, which cannot match its own literal text; and a ^-anchored
+    pattern whose literal start differs from the start of the shell's command line."""
     if words[0].rsplit("/", 1)[-1] not in {"pkill", "pgrep"}:
         return False
     flags = [word for word in words[1:] if word.startswith("-")]
     full = any(flag == "--full" or (not flag.startswith("--") and "f" in flag[1:]) for flag in flags)
-    patterns = [word for word in words[1:] if not word.startswith("-")]
-    excluded = any(flag.split("=", 1)[0] in _EXCLUDING for flag in flags)
-    return full and not excluded and bool(patterns) and not any("[" in pattern or pattern.startswith("^")
-                                                                 for pattern in patterns)
+    if not full or any(flag == "-P" or flag.split("=", 1)[0] == "--parent" for flag in flags):
+        return False
+    operands, rest = [], iter(words[1:])
+    for word in rest:
+        if word in _VALUED:
+            next(rest, None)
+        elif not word.startswith("-") and not any(character in word for character in "<>"):
+            operands.append(word)
+    if not operands or "[" in (pattern := operands[-1]):
+        return False
+    if pattern.startswith("^"):
+        literal = _REGEX_META.split(pattern[1:], maxsplit=1)[0]
+        return not literal or shell_line.startswith(literal)
+    return True
 
 
 def self_matching_process_pattern(command: Command) -> bool:
@@ -181,7 +211,8 @@ def self_matching_process_pattern(command: Command) -> bool:
     if not (len(command.argv) == 3 and command.argv[0].rsplit("/", 1)[-1] in _SHELLS and command.argv[1] == "-c"):
         return False
     segments = _segments(command)
-    return len(segments) > 1 and any(_full_match(_program(words)) for words in segments if _program(words))
+    shell_line = " ".join(command.argv)
+    return len(segments) > 1 and any(_full_match(program, shell_line) for program in map(_program, segments) if program)
 
 
 def validate_static_rules(install: Sequence[Command], activation: Activation, platform: str | None = None, *,

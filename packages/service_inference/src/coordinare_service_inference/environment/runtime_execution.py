@@ -41,20 +41,19 @@ def _cause_detail(cause: BaseException, secret_names: Sequence[str], extra: froz
     """Exception class and message with known secret values removed, never clipped: only the owner can
     pattern-redact, and any cut made before that could split a credential into an unrecognisable fragment. A
     message beyond the bound is replaced by the exception class alone."""
-    import os
+    from .runner import _redact, _runtime_secret_values
 
-    from .runner import _redact
-
-    secrets = frozenset(os.environ[name] for name in secret_names if os.environ.get(name))
-    text = _redact(f'{type(cause).__name__}: {cause}', {}, extra_values=secrets | extra)
+    text = _redact(f'{type(cause).__name__}: {cause}', {}, extra_values=_runtime_secret_values(secret_names) | extra)
     return text if len(text) <= DETAIL_MAX_CHARS else type(cause).__name__
 
 
 # What the guest's Docker still holds once every command and service stop has run, by name so an author can tell
 # which record left it. The seal check refuses to shut down while any of it remains.
-RESIDUAL_LIST = ("printf 'containers=%s\\n' \"$(docker ps -a --format '{{.Names}}' | tr '\\n' ' ')\"; "
-                 "printf 'volumes=%s\\n' \"$(docker volume ls -q | tr '\\n' ' ')\"; "
-                 "printf 'networks=%s\\n' \"$(docker network ls --filter type=custom --format '{{.Name}}' | tr '\\n' ' ')\"")
+# Each listing is assigned under set -e, so any failed listing fails the whole script rather than reading as empty.
+RESIDUAL_LIST = ("set -eu; c=$(docker ps -a --format '{{.Names}}'); v=$(docker volume ls -q); "
+                 "n=$(docker network ls --filter type=custom --format '{{.Name}}'); "
+                 "for kind in containers volumes networks; do case $kind in containers) x=$c;; volumes) x=$v;; "
+                 "networks) x=$n;; esac; printf '%s=%s\\n' \"$kind\" \"$(printf '%s' \"$x\" | tr '\\n' ' ')\"; done")
 RESIDUAL_REMOVE = ("docker ps -aq | xargs -r docker rm -f -v >/dev/null; docker volume ls -q | xargs -r docker volume rm -f "
                    ">/dev/null; docker network ls --filter type=custom -q | xargs -r docker network rm >/dev/null")
 RESIDUAL_GUIDANCE = ('Every service stop must remove the Docker state its service created, including anonymous volumes '
@@ -72,9 +71,7 @@ async def _reclaim_residual_state(lease: RuntimeLease, manifest: EnvironmentMani
     those the commands that ran Docker. State no record could have left is not removed: the seal check still refuses it.
     Resource names are guest output, so they are redacted like command output before they reach a result.
     """
-    import os
-
-    from .runner import _redact, _secret_values
+    from .runner import _redact, _runtime_secret_values, _secret_values
 
     try:
         _code, output = await lease.ssh(RESIDUAL_LIST, deadline=deadline)
@@ -91,8 +88,8 @@ async def _reclaim_residual_state(lease: RuntimeLease, manifest: EnvironmentMani
     if not blamed:
         return
     found = '; '.join(f'{kind} {" ".join(names[:MAX_RESIDUAL_NAMES])}' for kind, names in left.items())
-    known = frozenset(os.environ[name] for name in secret_names if os.environ.get(name)) | redact_values | frozenset(
-        _secret_values(dict(lease.activation_env)))
+    # The same secret set command output is redacted with, plus the run's generated credentials and activation.
+    known = _runtime_secret_values(secret_names) | redact_values | frozenset(_secret_values(dict(lease.activation_env)))
     detail = _redact(f'teardown found Docker state left behind: {found}. {RESIDUAL_GUIDANCE}', {}, extra_values=known)
     for result in blamed:
         result.status = 'fail'

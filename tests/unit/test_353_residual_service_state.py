@@ -183,3 +183,36 @@ async def test_the_live_lease_path_also_fails_the_stop_that_left_state(monkeypat
         runtime_lease=lease, commands=finished)
     assert not report.passed and lease.installation_passed is False
     assert any('docker volume rm' in script for script in removed)
+
+
+@pytest.mark.asyncio
+async def test_an_inherited_secret_in_a_leftover_name_is_redacted_like_command_output(tmp_path, monkeypatch):
+    monkeypatch.setenv('TEST_SECRET', 'inherited-value-789')
+    listing = b'containers=\nvolumes=db-inherited-value-789\nnetworks=\n'
+    report, _scripts, _sealed = await _run(tmp_path, monkeypatch, report=_report(), manifest=_manifest(), listing=listing)
+    stop = next(result for result in report.results if result.id == 'db-stop')
+    assert stop.status == 'fail' and 'inherited-value-789' not in stop.output
+
+
+def _listing(tmp_path, *, failing):
+    """Runs the real listing script against a stub docker whose volume listing can fail."""
+    import os
+    import subprocess
+
+    stub = tmp_path / 'docker'
+    stub.write_text('#!/bin/sh\ncase "$1 $2" in\n  "ps -a") printf "db\\nweb\\n";;\n'
+                    '  "volume ls") [ -n "$FAILVOL" ] && exit 1; printf "0f3c\\n";;\nesac\n')
+    stub.chmod(0o755)
+    env = {**os.environ, 'PATH': f'{tmp_path}:{os.environ["PATH"]}', **({'FAILVOL': '1'} if failing else {})}
+    return subprocess.run(['sh', '-c', runtime_execution.RESIDUAL_LIST], capture_output=True, env=env, check=False)
+
+
+def test_the_listing_names_everything_left(tmp_path):
+    done = _listing(tmp_path, failing=False)
+    assert done.returncode == 0
+    assert done.stdout.decode().splitlines() == ['containers=db web', 'volumes=0f3c', 'networks=']
+
+
+def test_a_failed_docker_listing_fails_the_whole_listing(tmp_path):
+    """A partial listing must never read as empty: the reclaim would then blame and remove on half the facts."""
+    assert _listing(tmp_path, failing=True).returncode != 0
