@@ -41,10 +41,13 @@ async def repair_case(*, failure=None, budget=None, limits=None):
     async def chat(messages):
         calls.append(messages)
         context = json.loads(messages[1]['content'])
+        evidence = context['mandatory_evidence']
+        if isinstance(evidence, dict):  # an identical index is sent once and referenced
+            evidence = context[evidence['same_as']]
         # Every previous input is verified and indexed; contents are read on demand, never preloaded.
-        assert {item['path']: item['sha256'] for item in context['mandatory_evidence']} == {
+        assert {item['path']: item['sha256'] for item in evidence} == {
             path: hashlib.sha256(text.encode()).hexdigest() for path, text in files.items()}
-        assert all('content' not in item for item in context['mandatory_evidence'])
+        assert all('content' not in item for item in evidence)
         if 'manifest' in context:
             return json.dumps(assessment(candidate()))
         return json.dumps({'manifest': candidate()})
