@@ -106,7 +106,9 @@ async def test_installer_uses_original_deadline_policy_limits_and_private_host_s
         return
     await harness._install(snapshot, cache, cache.environment_capabilities['image_ref'], target, 900)
     command = seen['command']
-    assert 'COORDINARE_ENV_RUNTIME_EXPIRES_AT=1120.0' in command
+    # The guest stops a grace before the parent's own deadline (1120.0), so its partial report can still arrive.
+    assert 'COORDINARE_ENV_RUNTIME_EXPIRES_AT=1060.5' in command
+    assert max(waits) <= 1120.0 - 1001.0
     assert command[command.index('--cap-drop')+1] == 'ALL'
     assert command[command.index('--security-opt')+1] == 'no-new-privileges'
     assert command[command.index('--memory')+1] == '4096m'

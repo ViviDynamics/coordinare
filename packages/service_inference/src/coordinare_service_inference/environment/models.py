@@ -423,7 +423,7 @@ class CheckResult(StrictModel):
     context: str = ""
 
 
-IncompleteCondition = Literal["deadline_exhausted", "seal_failed", "qemu_reaped", "keys_absent", "listeners_absent",
+IncompleteCondition = Literal["deadline_exhausted", "runtime_failed", "seal_failed", "qemu_reaped", "keys_absent", "listeners_absent",
                               "artifacts_unchanged", "clean_shutdown", "bounds_respected", "unconfirmed"]
 
 

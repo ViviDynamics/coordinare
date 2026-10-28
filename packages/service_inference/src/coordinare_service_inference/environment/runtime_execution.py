@@ -36,16 +36,18 @@ class PrivateRuntimeIncompleteError(RuntimeError):
 
 def _partial_report(manifest: EnvironmentManifest, progress: dict[str, CheckResult], *, install: bool, scope: str,
                     execution_source_digest: str) -> VerificationReport:
-    """Finished results as recorded; every declared command without one is reported not_run."""
+    """Finished results as recorded; every declared command, service step included, without one is not_run."""
     from .models import CheckResult, VerificationReport
     from .runner import _bound_outputs
 
     digest = manifest.digest()
-    declared = [*(manifest.install if install else []), *manifest.checks]
+    declared = [*(manifest.install if install else []), *manifest.checks,
+                *(command for service in manifest.services
+                  for command in (service.init, service.start, service.health, service.stop) if command is not None)]
     results = dict(progress)
     for command in declared:
         results.setdefault(command.id, CheckResult(id=command.id, required=command.required, status='not_run',
-            output='private runtime deadline exhausted before this result', manifest_digest=digest, context=scope))
+            output='private runtime run ended before this result', manifest_digest=digest, context=scope))
     _bound_outputs(results)
     order = {command.id: index for index, command in enumerate(declared)}
     return VerificationReport(execution_source_digest=execution_source_digest, manifest_digest=digest, scope=scope,
@@ -131,18 +133,23 @@ async def execute_with_runtime(
             try:
                 report = await run_guarded(lease, commands(manifest, **kwargs, progress=progress,
                                                             runtime_env=lease.activation_env))
+                await _scan_bounds(lease)
             except TimeoutError:
                 incomplete.append('deadline_exhausted')
-                report = _partial_report(manifest, progress, install=install, scope=scope,
-                                         execution_source_digest=execution_source_digest)
+            except (RuntimeError, OSError, ValueError, RuntimeScanStoppedError):
+                # A guest exit, bounds violation or failed scan still holds; keep what the commands did.
+                incomplete.append('runtime_failed')
+            if incomplete:
+                if report is None:
+                    report = _partial_report(manifest, progress, install=install, scope=scope,
+                                             execution_source_digest=execution_source_digest)
             else:
-                await _scan_bounds(lease)
                 if install and report.passed:
                     lease.installation_passed = True
                     try:
                         receipt = await seal_runtime(lease, manifest_digest=manifest.digest(),
                                                      source_digest=execution_source_digest, deadline=deadline)
-                    except (RuntimeError, ValueError, OSError):
+                    except (RuntimeError, ValueError, OSError, TimeoutError):
                         lease.installation_passed = False
                         incomplete.append('seal_failed')
         finally:

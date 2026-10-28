@@ -935,6 +935,23 @@ async def _finish_clean_verification(cache: EnvCacheState, capabilities: Executi
     return outcome
 
 
+def _incomplete_summary(out: str) -> str | None:
+    """Conditions, failed ids and status counts of an incomplete runtime report: ids and codes only, no output."""
+    try:
+        raw = json.loads(out)
+    except ValueError:
+        return None
+    conditions = raw.get('runtime_incomplete') if isinstance(raw, dict) else None
+    if not isinstance(conditions, list) or not conditions:
+        return None
+    results = [item for item in raw.get('results', []) if isinstance(item, dict)]
+    statuses = [str(item.get('status')) for item in results]
+    counts = ', '.join(f'{status}={statuses.count(status)}' for status in dict.fromkeys(statuses))
+    failed = [str(item.get('id'))[:128] for item in results if item.get('status') in ('fail', 'indeterminate')][:20]
+    return (f"runtime incomplete: {', '.join(str(item)[:32] for item in conditions[:10])}; results {counts}; "
+            f"failed: {', '.join(failed) or 'none'}")
+
+
 async def _verify_outcome(
     proc: asyncio.subprocess.Process, name: str, symphony_name: str, script: str | bytes | RuntimeVerifierInput,
     *, cache: EnvCacheState | None = None,
@@ -981,6 +998,11 @@ async def _verify_outcome(
         except ValueError as exc:
             if passed:
                 return False, str(exc)
+            incomplete = _incomplete_summary(out)
+            if incomplete is not None:
+                # An incomplete consumer run is never published; keep its typed outcome in the hold detail.
+                logger.info("env_cache.clean_verify_incomplete", symphony=symphony_name, detail=incomplete)
+                return False, incomplete
     logger.info(
         "env_cache.clean_verify_result",
         symphony=symphony_name,

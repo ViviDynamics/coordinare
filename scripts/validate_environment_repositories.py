@@ -328,6 +328,7 @@ async def _remove_container(name: str) -> bool:
 
 
 INSTALLER_TAIL_BYTES = 2000
+RUNTIME_REPORT_GRACE_SECONDS = 180.0
 
 
 async def _install(
@@ -349,7 +350,10 @@ async def _install(
             raise ValueError('private runtime installer requires an executing original attempt')
         expires_at = min(expires_at, time.time()+manifest.runtime.policy.resources.max_seconds)
         options = runtime_verifier_options(manifest, target)
-        options.extend(['-e', 'COORDINARE_ENV_RUNTIME_EXPIRES_AT='+str(expires_at)])
+        # The guest stops a grace earlier than this wait, so an exhausted run can still unwind, tear down and print
+        # its partial report before the container is removed; both stay inside the original deadline.
+        guest_expires_at = expires_at - min(RUNTIME_REPORT_GRACE_SECONDS, max(0.0, expires_at-time.time())/2)
+        options.extend(['-e', 'COORDINARE_ENV_RUNTIME_EXPIRES_AT='+str(guest_expires_at)])
     phase_deadline = time.monotonic()+timeout
 
     def time_left() -> float:

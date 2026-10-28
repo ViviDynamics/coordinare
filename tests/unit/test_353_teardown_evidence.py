@@ -172,3 +172,76 @@ def test_acceptance_refuses_any_incomplete_report_even_with_cleanup_confirmed(ph
         validate_runtime_evidence(report, SimpleNamespace(runtime=None), SimpleNamespace(), phase=phase)
     with pytest.raises(ValueError, match='incomplete'):
         validate_failed_installer_runtime(report, SimpleNamespace(runtime=None), SimpleNamespace())
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_failure_keeps_finished_results_and_service_steps_are_not_run(tmp_path, monkeypatch):
+    import asyncio
+
+    async def failing(*_args, progress, **_kwargs):
+        progress['install-tool'] = CheckResult(id='install-tool', required=True, status='pass')
+        await asyncio.sleep(60)
+
+    async def guest_exit(_lease, operation):
+        task = asyncio.ensure_future(operation)
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        raise RuntimeError('private runtime guest exited unexpectedly')
+
+    manifest = _manifest()
+    manifest.services = [SimpleNamespace(init=None, start=_command('db-start'), health=_command('db-health'),
+                                         stop=_command('db-stop'))]
+    monkeypatch.setattr(runtime_execution, 'run_guarded', guest_exit)
+    monkeypatch.setattr(runtime_execution, 'open_runtime', _opened(CLEAN))
+    monkeypatch.setattr(runtime_execution, '_scan_bounds', _no_scan)
+    with pytest.raises(PrivateRuntimeIncompleteError) as held:
+        await execute_with_runtime(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path, install=True, scope='',
+            secret_names=(), execution_source_digest='c' * 64, runtime_artifacts=None, runtime_deadline=None,
+            runtime_lease=None, commands=failing)
+    report = held.value.report
+    assert report.runtime_incomplete == ['runtime_failed']
+    statuses = {result.id: result.status for result in report.results}
+    assert statuses['install-tool'] == 'pass'
+    assert {statuses[name] for name in ('db-start', 'db-health', 'db-stop', 'check-tool', 'install-late')} == {'not_run'}
+
+
+@pytest.mark.asyncio
+async def test_a_bounds_scan_failure_after_the_commands_keeps_the_complete_report(tmp_path, monkeypatch):
+    from coordinare_service_inference.environment.runtime_supervisor import RuntimeScanStoppedError
+
+    async def stopped(_lease):
+        raise RuntimeScanStoppedError
+
+    async def passthrough(_lease, operation):
+        return await operation
+
+    async def finished(*_args, **_kwargs):
+        return _report()
+
+    monkeypatch.setattr(runtime_execution, 'run_guarded', passthrough)
+    monkeypatch.setattr(runtime_execution, 'open_runtime', _opened(CLEAN))
+    monkeypatch.setattr(runtime_execution, '_scan_bounds', stopped)
+    with pytest.raises(PrivateRuntimeIncompleteError) as held:
+        await execute_with_runtime(_manifest(), cache=tmp_path, repo=tmp_path, scratch=tmp_path, install=True,
+            scope='', secret_names=(), execution_source_digest='c' * 64, runtime_artifacts=None,
+            runtime_deadline=None, runtime_lease=None, commands=finished)
+    assert held.value.report.runtime_incomplete == ['runtime_failed']
+    assert [result.id for result in held.value.report.results] == ['install-tool', 'check-tool']
+
+
+def test_an_incomplete_consumer_report_is_summarised_by_ids_and_codes_only():
+    import json
+
+    from coordinare.services.env_cache import _incomplete_summary
+
+    out = json.dumps({'runtime_incomplete': ['deadline_exhausted'], 'results': [
+        {'id': 'check-a', 'status': 'pass', 'output': 'secret-looking text'},
+        {'id': 'check-b', 'status': 'fail', 'output': 'more text'},
+        {'id': 'check-c', 'status': 'not_run'}]})
+    summary = _incomplete_summary(out)
+    assert summary == 'runtime incomplete: deadline_exhausted; results pass=1, fail=1, not_run=1; failed: check-b'
+    assert 'text' not in summary
+    assert _incomplete_summary('{"results": []}') is None
+    assert _incomplete_summary('not json') is None
