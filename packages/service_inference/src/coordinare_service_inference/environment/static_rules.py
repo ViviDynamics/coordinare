@@ -132,24 +132,25 @@ _FD_REDIRECT = re.compile(r"(\d*[<>])&(\d+|-)|&>")
 _UNJUDGED = re.compile(r"<<|(['\"])[;&|()\s]+\1|\\[;&|()]")
 
 
+_REDIRECTION = re.compile(r"\d*[<>]+")
+
+
 def _without_redirections(words: list[str]) -> list[str]:
-    """Drops each redirection operator (the lexer splits > and < from their descriptor), its descriptor number and
-    its target, so neither a file name nor a descriptor is ever read as an argument."""
+    """Drops each redirection, whether its target is attached (>/dev/null, 2>fd1) or the next word (> log), so neither
+    a file name nor a descriptor is ever read as an argument."""
     kept: list[str] = []
     skip = False
     for word in words:
         if skip:
             skip = False
-        elif word and set(word) <= set("<>"):
-            if kept and kept[-1].isdigit():
-                kept.pop()
+        elif _REDIRECTION.fullmatch(word):
             skip = True
-        else:
+        elif not _REDIRECTION.match(word):
             kept.append(word)
     return kept
 
 
-def _simple_commands(script: str, depth: int = 0) -> list[list[str]]:
+def _simple_commands(script: str, depth: int = 0, *, nested: bool = True) -> list[list[str]]:
     """A script's simple commands as words, split only at unquoted shell operators: a quoted script handed to another
     program (docker run image sh -c '...') stays one word of that program's command. A nested sh -c script runs in
     the same process context, so its commands are judged too.
@@ -163,6 +164,8 @@ def _simple_commands(script: str, depth: int = 0) -> list[list[str]]:
     script = _FD_REDIRECT.sub(lambda match: f"{match[1]}fd{match[2]}" if match[1] else ">both", script)
     lexer = shlex.shlex(script, posix=True, punctuation_chars=_OPERATORS)
     lexer.whitespace = " \t\r"
+    # Words break only at whitespace and unquoted operators, as in the shell: never at ':', '{' or '='.
+    lexer.whitespace_split = True
     commands: list[list[str]] = [[]]
     try:
         for token in lexer:
@@ -178,7 +181,7 @@ def _simple_commands(script: str, depth: int = 0) -> list[list[str]]:
             continue
         found.append(words)
         program = _program(words)
-        if depth < 2 and len(program) >= 3 and program[0].rsplit("/", 1)[-1] in _SHELLS and program[1] == "-c":
+        if nested and depth < 2 and len(program) >= 3 and program[0].rsplit("/", 1)[-1] in _SHELLS and program[1] == "-c":
             found.extend(_simple_commands(program[2], depth + 1))
     return found
 
@@ -196,7 +199,11 @@ def _program(words: list[str]) -> list[str]:
 
 # Requests that only simulate, download or describe an install, and need no installation capability.
 _NO_INSTALL = frozenset({"-s", "--simulate", "--just-print", "--dry-run", "--recon", "--no-act", "--help", "-h",
-                         "--download-only", "--print-uris", "--downloadonly"})
+                         "-d", "--download-only", "--print-uris", "--downloadonly"})
+# Options that may precede the subcommand without taking a separate value; any other leaves the command unjudged,
+# since its value could be mistaken for the subcommand.
+_SELF_CONTAINED = re.compile(r"-[yq]+|--[a-z][a-z-]*=.*|--(yes|assume-yes|quiet|no-cache|no-install-recommends|"
+                             r"no-install-suggests|no-progress|force-yes|allow-unauthenticated)")
 
 
 def system_package_install(command: Command) -> bool:
@@ -212,8 +219,11 @@ def system_package_install(command: Command) -> bool:
         if words[0].rsplit("/", 1)[-1] == "dpkg":
             if verbs & set(arguments):
                 return True
-        elif (subcommand := next((word for word in arguments if not word.startswith("-")), None)) in verbs:
-            return True
+        else:
+            index = next((position for position, word in enumerate(arguments) if not word.startswith("-")), None)
+            if (index is not None and arguments[index] in verbs
+                    and all(_SELF_CONTAINED.fullmatch(word) for word in arguments[:index])):
+                return True
     return False
 
 
@@ -224,7 +234,7 @@ _SIGNAL = re.compile(r"-(\d+|[A-Z][A-Z0-9+-]*)")
 _LITERAL = re.compile(r"[A-Za-z0-9_./:@%=,~ -]+")
 
 
-def _certain_self_match(words: list[str]) -> bool:
+def _certain_self_match(words: list[str], script: str) -> bool:
     if words[0].rsplit("/", 1)[-1] not in {"pkill", "pgrep"}:
         return False
     operands: list[str] = []
@@ -241,7 +251,9 @@ def _certain_self_match(words: list[str]) -> bool:
             return False
         else:
             operands.append(word)
-    return full and len(operands) == 1 and bool(_LITERAL.fullmatch(operands[0]))
+    # The operand must also appear verbatim in the script text: quoting or escaping ('w''x', foo\\ bar) changes what
+    # is searched for without changing the shell's own command line.
+    return full and len(operands) == 1 and bool(_LITERAL.fullmatch(operands[0])) and operands[0] in script
 
 
 def self_matching_process_pattern(command: Command) -> bool:
@@ -250,9 +262,11 @@ def self_matching_process_pattern(command: Command) -> bool:
     match replaces itself with it, as exec does, and pkill and pgrep never match themselves."""
     if not (len(command.argv) == 3 and command.argv[0].rsplit("/", 1)[-1] in _SHELLS and command.argv[1] == "-c"):
         return False
-    segments = _segments(command)
+    # Only the script's own top-level commands: a nested shell has its own command line.
+    script = command.argv[2]
+    segments = _simple_commands(script, nested=False)
     return len(segments) > 1 and any(
-        _certain_self_match(program) for words in segments
+        _certain_self_match(program, script) for words in segments
         if (program := _program(words)) and "exec" not in words[:len(words) - len(program)])
 
 

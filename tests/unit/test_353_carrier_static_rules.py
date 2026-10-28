@@ -215,3 +215,25 @@ def test_review_r5_valid_or_unjudged_commands_are_admitted(install, other):
     """Only the certain forms are judged: an install subcommand, and a plain -f literal with at most a signal."""
     validate_static_rules([_cmd('install-x', 'bash', '-c', install)], NO_ACTIVATION, 'linux/aarch64',
                           others=[_cmd('probe-x', 'bash', '-c', other)], system_packages=False)
+
+
+@pytest.mark.parametrize(('install', 'other'), [
+    ('true', "pgrep -f 'w''orker' && echo ready"),
+    ('true', 'pgrep -f foo\\ bar && echo ready'),
+    ('apt-get install -d libpq5', 'true'),
+    ('apt-get -c install download libpq5', 'true'),
+    ('apt-get -o Debug::NoLocking=1 install gcc', 'true'),
+])
+def test_review_r6_quoted_operands_downloads_and_valued_options_are_admitted(install, other):
+    validate_static_rules([_cmd('install-x', 'bash', '-c', install)], NO_ACTIVATION, 'linux/aarch64',
+                          others=[_cmd('probe-x', 'bash', '-c', other)], system_packages=False)
+
+
+@pytest.mark.parametrize('script', [
+    'apt-get -y install gcc',
+    'apt-get -qq --no-install-recommends install gcc',
+    'apk --no-cache add postgresql-client',
+    'apt-get --option=Debug::NoLocking=1 install gcc',
+])
+def test_self_contained_options_before_the_subcommand_still_count(script):
+    assert _rejected([_cmd('install-deps', 'bash', '-c', script)]).type == 'system_package_install'
