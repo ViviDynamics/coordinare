@@ -946,7 +946,7 @@ async def _prepare_finding_context(discovery: _Inspection, budget: AttemptBudget
 
 
 def release_requests(ledger: FindingLedger, manifest: EnvironmentManifest, scope: ScopeContract) -> list[str]:
-    """Required criteria an open runtime_network or remote_state executable finding asks to release: those it names, and
+    """Required criteria an open release-category executable finding asks to release: those it names, and
     those mapped to a check it names. Only identifiers the scope already holds, so model text is never echoed."""
     required = {criterion.id for criterion in scope.definition.criteria if criterion.applicability == 'required'}
     mapped: dict[str, set[str]] = {}

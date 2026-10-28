@@ -251,3 +251,35 @@ def test_a_criterion_needing_the_network_on_every_run_is_released_like_remote_st
     assert RUNTIME_NETWORK_RULE in REVIEW_INSTRUCTIONS and RUNTIME_NETWORK_RULE in GRANULARITY_GUIDANCE
     assert "installing the tools it uses" in RUNTIME_NETWORK_RULE
     assert "runtime_network" in FindingProposal.model_json_schema()["properties"]["category"]["enum"]
+
+
+def test_building_or_running_the_apps_own_deployment_images_is_released_like_remote_state():
+    """Maintainer decision 2026-10-27: building SampleApp's own production and QA images under the validation runtime's
+    emulation exceeded an hour on every diagnostic; agents need the development and test environment, not deployment
+    images or stacks."""
+    from types import SimpleNamespace
+
+    from coordinare_service_inference.environment.findings import FindingProposal
+    from coordinare_service_inference.environment.scope import SourceGapKind
+
+    from coordinare.services.environment_scope import (
+        DEPLOYMENT_IMAGE_RULE,
+        GRANULARITY_GUIDANCE,
+        RELEASE_CATEGORIES,
+        REVIEW_INSTRUCTIONS,
+        REVISION_INSTRUCTIONS,
+        released_criteria,
+    )
+
+    def record(category, affected):
+        return SimpleNamespace(proposal=SimpleNamespace(category=category, affected_ids=affected))
+
+    ledger = SimpleNamespace(records=[record("deployment_image", ["S0000000000000004"]),
+                                      record("execution_definition", ["S0000000000000005"])])
+    assert released_criteria(ledger) == {"S0000000000000004"}
+    assert "deployment_image" in RELEASE_CATEGORIES
+    assert DEPLOYMENT_IMAGE_RULE in REVIEW_INSTRUCTIONS and DEPLOYMENT_IMAGE_RULE in GRANULARITY_GUIDANCE
+    assert "deployment_image" in REVISION_INSTRUCTIONS
+    assert "third-party service images" in DEPLOYMENT_IMAGE_RULE and "stay required" in DEPLOYMENT_IMAGE_RULE
+    assert "deployment_image" in FindingProposal.model_json_schema()["properties"]["category"]["enum"]
+    assert "deployment_image" in SourceGapKind.__args__

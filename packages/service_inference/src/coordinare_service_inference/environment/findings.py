@@ -21,8 +21,10 @@ LEDGER_MAX_BYTES = 512*1024
 # remote_state: an obligation only an external service's state can satisfy, outside the environment's scope.
 # runtime_network: an obligation whose own documented procedure fetches from the network every time it runs,
 # which an offline clean verification cannot exercise.
+# deployment_image: an obligation to build or run the repository's own application images or deployment stacks,
+# a deployment concern outside the development and test environment an agent needs.
 Category = Literal['coverage', 'capability', 'activation', 'service_lifecycle', 'execution_definition', 'remote_state',
-                   'runtime_network']
+                   'runtime_network', 'deployment_image']
 
 
 class FindingEvidence(BaseModel):

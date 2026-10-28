@@ -145,7 +145,7 @@ def _criterion_citation_errors(sources: Sequence[str], inputs: dict[str, str],
                     'while inspecting the files or correcting unsupported citations.'}]
 
 
-RELEASE_CATEGORIES = frozenset({'remote_state', 'runtime_network'})
+RELEASE_CATEGORIES = frozenset({'remote_state', 'runtime_network', 'deployment_image'})
 
 
 def released_criteria(ledger: FindingLedger | None) -> set[str]:
@@ -332,6 +332,16 @@ RUNTIME_NETWORK_RULE = (
     'rationale naming the network step in the cited source; installing the tools it uses (Docker, Compose) and '
     'everything installation can build, fetch or cache in advance stays required. '
 )
+# Maintainer decision 2026-10-27: building an application's own deployment images under the validation runtime's
+# emulation exceeded an hour on every diagnostic; agents need the development and test environment.
+DEPLOYMENT_IMAGE_RULE = (
+    "Building or running the repository's own application container images or deployment stacks (production or QA "
+    "images built from its Dockerfiles, or compose stacks that run the application itself) is a deployment concern "
+    "outside the development and test environment an agent needs. Mark such an obligation not_applicable with a "
+    "rationale naming the image or stack in the cited source. Installing the container tools, pulling or starting "
+    "third-party service images that development and tests use (a database, a mail catcher), and everything the "
+    "application needs to run its own tests outside a container stay required. "
+)
 REVIEW_INSTRUCTIONS = (
     'Independently review source-defined scope, not an executable candidate. You have no author conversation. '
     'Follow development/test entry points and nested references; independently check omissions and conflicts. '
@@ -373,10 +383,13 @@ REVIEW_INSTRUCTIONS = (
     'may then reassess them as not_applicable. Accept only when no required criterion fails this check. '
     'Likewise, a required criterion whose documented procedure needs the network every time it runs is a finding '
     'with category runtime_network and gap_kind runtime_network naming those criteria. '
-    + REMOTE_STATE_RULE + RUNTIME_NETWORK_RULE +
+    'Likewise, a required criterion to build or run the repository\'s own deployment images or stacks is a finding '
+    'with category deployment_image and gap_kind deployment_image naming those criteria. '
+    + REMOTE_STATE_RULE + RUNTIME_NETWORK_RULE + DEPLOYMENT_IMAGE_RULE +
     'release_requests lists required criteria that an executable review could not verify offline. Judge each one by the '
-    'two rules above: raise a runtime_network or remote_state finding naming it only when its own documented procedure '
-    'genuinely fetches from the network or needs external state every time it runs. Otherwise raise nothing for it, and it '
+    'rules above: raise a runtime_network, remote_state or deployment_image finding naming it only when its own '
+    'documented procedure genuinely fetches from the network or needs external state every time it runs, or builds or '
+    'runs the repository\'s own deployment images or stacks. Otherwise raise nothing for it, and it '
     'stays required. A criterion already reassessed as not_applicable needs no finding. '
     'Return scope_assessment with verdict, rationale, sources, findings, decisions. '
 )
@@ -385,7 +398,7 @@ GRANULARITY_GUIDANCE = (
     'must install, or a documented development or test operation that must succeed, with its observable result. '
     'The internal behaviour of a script is evidence for an obligation, not an obligation itself; related steps of one '
     'documented operation form one criterion, at the level a person bootstrapping the repository would check. '
-    + REMOTE_STATE_RULE + RUNTIME_NETWORK_RULE
+    + REMOTE_STATE_RULE + RUNTIME_NETWORK_RULE + DEPLOYMENT_IMAGE_RULE
 )
 AUTHOR_INSTRUCTIONS = (
     'Author source-defined obligations for the whole documented development/test environment. '
@@ -405,7 +418,8 @@ REVISION_INSTRUCTIONS = (
     'Use the exact retained scope_base_digest as base_digest. Submit at most 16 combined add/reassess operations. '
     'add contains complete criterion proposals without IDs; reassess targets only retained unknown/not_applicable '
     'criterion_id values and supplies a complete criterion proposal. No deletion or required criterion edits, except '
-    'that a required criterion named by a remote_state or runtime_network finding may be reassessed as not_applicable. '
+    'that a required criterion named by a remote_state, runtime_network or deployment_image finding may be reassessed '
+    'as not_applicable. '
     'reopened_criterion_ids lists required criteria the current independent source reviewer explicitly authorized '
     'for source-conflict correction; only those IDs may also be reassessed as corrected required or not_applicable '
     'criteria. Their findings remain open until fresh independent review; all other required criteria stay frozen. '

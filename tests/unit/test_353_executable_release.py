@@ -144,3 +144,18 @@ async def test_each_rejected_executable_round_costs_one_coverage_revision():
     accept = SimpleNamespace(verdict='accept', finding_ledger=ledger)
     await discovery._checkpoint_finding_review(budget, accept, {'capability_unavailable': False})
     assert budget.coverage_revisions == 1
+
+
+def test_a_deployment_image_finding_requests_release_like_a_network_finding():
+    from types import SimpleNamespace
+
+    from coordinare.services.environment_discovery import release_requests
+
+    scope = SimpleNamespace(definition=SimpleNamespace(criteria=[
+        SimpleNamespace(id='S0000000000000001', applicability='required'),
+        SimpleNamespace(id='S0000000000000002', applicability='required')]))
+    manifest = SimpleNamespace(criterion_checks={'S0000000000000002': ['c01-prod-stack']})
+    finding = SimpleNamespace(id='F0001', proposal=SimpleNamespace(category='deployment_image',
+                                                                   affected_ids=['c01-prod-stack']))
+    ledger = SimpleNamespace(records=[finding], open_ids=lambda: ['F0001'])
+    assert release_requests(ledger, manifest, scope) == ['S0000000000000002']
