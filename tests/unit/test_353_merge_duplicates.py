@@ -142,3 +142,17 @@ def test_a_copy_that_changes_its_retained_obligation_is_not_folded():
     assert [check['id'] for check in merged['checks']] == ['env-jq', 'c00-jq']
     unchanged = _part([_cmd('c00-jq', 'jq')], {'S1': ['c00-jq']})
     assert [check['id'] for check in merge_parts({'checks': [_cmd('env-jq', 'jq')]}, [unchanged], retained=retained)['checks']] == ['env-jq']
+
+
+def test_in_a_repair_a_copy_folds_only_when_the_kept_check_still_replaces_the_prior_one():
+    """Repair preservation accepts a dropped prior check only as an alias of an identical kept command."""
+    from coordinare_service_inference.environment.models import Command
+
+    prior = {'c00-tool': Command.model_validate(_cmd('c00-tool', 'tool', '--old'))}
+    corrected = _part([_cmd('c00-tool', 'tool', '--new')], {'S1': ['c00-tool']})
+    merged = merge_parts({'checks': [_cmd('tool', 'tool', '--new')]}, [corrected], prior=prior)
+    assert [check['id'] for check in merged['checks']] == ['tool', 'c00-tool']
+    unchanged = _part([_cmd('c00-tool', 'tool', '--old')], {'S1': ['c00-tool']})
+    folded: dict[str, str] = {}
+    merge_parts({'checks': [_cmd('tool', 'tool', '--old')]}, [unchanged], prior=prior, folded=folded)
+    assert folded == {'c00-tool': 'tool'}

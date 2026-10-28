@@ -1313,11 +1313,14 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
     # A merge may fold a group's copy into a global check, but never rewrites an executed check.
     executed = {check.id for manifest in budget.executed_manifests for check in manifest.checks}
     redo: list[CheckGroup] = []
+    prior_checks = {check.id: check for manifest in attempt.prior_manifests for check in manifest.checks}
+    authored_responses = list(attempt.discovery.finding_responses)
     for _ in range(MERGE_ROUNDS):
         if global_data is None:
             # A delta repair authors only the touched groups; every other group carries its failed part.
             groups = build.groups if plan is None else [group for group in build.groups if plan.group_touched(group)]
             global_data, authored = await _global_and_groups(build, attempt, validate, _speculative_base(build, attempt), groups)
+            authored_responses = list(attempt.discovery.finding_responses)
             parts = authored if plan is None else {**_carried_parts(plan, build.groups), **authored}
         else:
             # A redone group replaces every part authored under it, including earlier split remainders.
@@ -1329,7 +1332,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
         try:
             folded: dict[str, str] = {}
             merged = merge_parts(global_data, [part for _group, part in parts.values()], executed=executed,
-                                 folded=folded, retained=attempt.obligation_ledger.checks)
+                                 folded=folded, retained=attempt.obligation_ledger.checks, prior=prior_checks)
             # A required copy folded into an identical global check keeps its obligation under the kept id; the
             # validator pins ids as candidates arrive, so two copies once distinct can both be required (e2e-07).
             # The same holds for a requirement's locked check list in the obligation ledger.
@@ -1338,11 +1341,11 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
                     if dropped in required:
                         required.discard(dropped)
                         required.add(kept)
-            if folded:
-                # A finding response may name the copy; it now refers to the command kept under the global id.
-                attempt.discovery.finding_responses = [response.model_copy(update={'affected_ids': [
-                    *dict.fromkeys(folded.get(identifier, identifier) for identifier in response.affected_ids)]})
-                    for response in attempt.discovery.finding_responses]
+            # A finding response may name a folded copy; it now refers to the command kept under the global id. Each
+            # round starts from the global author's own responses, so a rejected round's fold never lingers.
+            attempt.discovery.finding_responses = [response.model_copy(update={'affected_ids': [
+                *dict.fromkeys(folded.get(identifier, identifier) for identifier in response.affected_ids)]})
+                for response in authored_responses]
             validate(merged)
         except (EnvironmentDiscoveryError, ValidationError) as exc:
             if plan is not None:

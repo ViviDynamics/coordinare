@@ -957,3 +957,49 @@ async def test_a_finding_response_naming_a_folded_copy_now_names_the_kept_check(
     monkeypatch.setattr(discovery_module, '_divided_candidate', capture)
     await merge_with(monkeypatch, validate)
     assert seen == [['toolchain']]
+
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_rounds_fold_never_lingers_in_the_next_rounds_responses(monkeypatch):
+    from coordinare_service_inference.environment.findings import FindingResponse
+
+    original = FakeBuild.author_all
+    rounds: list[int] = []
+
+    async def author_all(self, *, summary, probes, groups=None, concurrency=None):
+        parts = await original(self, summary=summary, probes=probes, groups=groups, concurrency=concurrency)
+        rounds.append(1)
+        if 'c00-' in parts:
+            group, part = parts['c00-']
+            data = part.model_dump(mode='json')
+            # Round one copies the global toolchain check; the redo makes it a distinct check.
+            argv = ['true'] if len(rounds) == 1 else ['true', 'distinct']
+            data['checks'].append({'id': 'c00-toolchain', 'argv': argv})
+            parts['c00-'] = (group, ShardChecks.model_validate(data))
+        return parts
+
+    monkeypatch.setattr(FakeBuild, 'author_all', author_all)
+    response = FindingResponse.model_validate({'finding_id': 'F0001', 'rationale': 'r', 'sources': ['README.md'],
+                                               'affected_ids': ['c00-toolchain']})
+    seen: list[list[str]] = []
+    calls: list[int] = []
+    criterion = make_criterion(1).id
+    real_divided = discovery_module._divided_candidate
+    holder: list = []
+
+    async def capture(build, attempt, validate_fn):
+        attempt.discovery.finding_responses = [response]
+        holder.append(attempt)
+        return await real_divided(build, attempt, validate_fn)
+
+    def validate(data):
+        calls.append(1)
+        seen.append(list(holder[0].discovery.finding_responses[0].affected_ids))
+        if len(calls) == 1:
+            raise EnvironmentDiscoveryError(f'criterion "{criterion}" needs a working check', code='obligation_removed')
+        return data
+
+    monkeypatch.setattr(discovery_module, '_divided_candidate', capture)
+    await merge_with(monkeypatch, validate)
+    assert seen == [['toolchain'], ['c00-toolchain']]
