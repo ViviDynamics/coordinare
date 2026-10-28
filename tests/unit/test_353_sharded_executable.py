@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from types import SimpleNamespace
 from typing import Any, cast
@@ -164,14 +165,14 @@ class FakeBuild:
         return {group.prefix: (group, validate_group(group_reply(group), group=group, summary=summary)) for group in asked}
 
 
-async def merge_with(monkeypatch, validate):
+async def merge_with(monkeypatch, validate, *, global_data=None, required_ids=None):
     groups = [CheckGroup('c00-', (make_criterion(1),)), CheckGroup('c01-', (make_criterion(2),))]
     build = FakeBuild(groups)
     phases: list[int] = []
 
     async def phase(**_kwargs):
         phases.append(1)
-        return global_part(), {}
+        return copy.deepcopy(global_data) if global_data is not None else global_part(), {}
 
     monkeypatch.setattr(discovery_module, '_phase', phase)
     budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8, max_schema_repairs=8)
@@ -181,7 +182,8 @@ async def merge_with(monkeypatch, validate):
         return None
 
     messages = [{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}]
-    attempt = SimpleNamespace(budget=budget, required_ids={}, discovery=inspection, messages=messages, chat=None, delta=None,
+    attempt = SimpleNamespace(budget=budget, required_ids={} if required_ids is None else required_ids, discovery=inspection,
+                              messages=messages, chat=None, delta=None,
                               prior_manifests=[], construction=SimpleNamespace(observe_sources=observe))
     merged = await discovery_module._divided_candidate(build, attempt, validate)
     return merged, build, phases, messages
@@ -876,24 +878,53 @@ def test_the_global_parts_criterion_mappings_are_set_aside_not_corrected(mapping
     assert validate_global(data)['criterion_checks'] == {}
 
 
-@pytest.mark.asyncio
-async def test_a_folded_group_copy_survives_into_the_global_part_a_revision_restarts_from(monkeypatch):
-    """A revision rebuilds the global author's conversation from build.global_part; it must carry the folded copy's
-    longer timeout, or the revision would silently restore the shorter one."""
-    copy_of_toolchain = {'id': 'c00-toolchain', 'argv': ['true'], 'timeout_seconds': 600}
+def _with_toolchain_copy(monkeypatch):
+    """c00 also writes an identical copy of the global toolchain check, with a longer timeout."""
     original = FakeBuild.author_all
 
     async def author_all(self, *, summary, probes, groups=None, concurrency=None):
         parts = await original(self, summary=summary, probes=probes, groups=groups, concurrency=concurrency)
-        group, part = parts['c00-']
-        data = part.model_dump(mode='json')
-        data['checks'].append(copy_of_toolchain)
-        data['criterion_checks'] = {criterion: [*ids, 'c00-toolchain'] for criterion, ids in data['criterion_checks'].items()}
-        parts['c00-'] = (group, ShardChecks.model_validate(data))
+        if 'c00-' in parts:
+            group, part = parts['c00-']
+            data = part.model_dump(mode='json')
+            data['checks'].append({'id': 'c00-toolchain', 'argv': ['true'], 'timeout_seconds': 600})
+            data['criterion_checks'] = {criterion: [*ids, 'c00-toolchain'] for criterion, ids in data['criterion_checks'].items()}
+            parts['c00-'] = (group, ShardChecks.model_validate(data))
         return parts
 
     monkeypatch.setattr(FakeBuild, 'author_all', author_all)
-    merged, build, _phases, _messages = await merge_with(monkeypatch, lambda data: data)
+
+
+@pytest.mark.asyncio
+async def test_a_folded_group_copy_survives_into_the_global_part_a_revision_restarts_from(monkeypatch):
+    """A revision rebuilds the global author's conversation from build.global_part; it must carry the folded copy's
+    longer timeout and remapped requirement references, or the revision would restore the stale declaration."""
+    _with_toolchain_copy(monkeypatch)
+    requirement = {'id': 'req-tool', 'description': 'tool', 'source': 'README.md', 'checks': ['c00-toolchain']}
+    merged, build, _phases, _messages = await merge_with(monkeypatch, lambda data: data,
+                                                         global_data=global_part(requirements=[requirement]))
     assert 'c00-toolchain' not in {check['id'] for check in merged['checks']}
     assert build.global_part['checks'] == [{'id': 'toolchain', 'argv': ['true'], 'depends_on': [], 'timeout_seconds': 600,
                                             'required': True}]
+    assert build.global_part['requirements'][0]['checks'] == ['toolchain']
+    assert build.global_part['criterion_checks'] == {}
+
+
+@pytest.mark.asyncio
+async def test_an_id_the_validator_pins_during_the_merge_rounds_is_not_folded_away_later(monkeypatch):
+    """The validator pins ids as candidates arrive; a fold must read the pins every round, not once at entry."""
+    _with_toolchain_copy(monkeypatch)
+    required_ids: dict[str, set[str]] = {'checks': set()}
+    calls: list[int] = []
+    criterion = make_criterion(1).id
+
+    def validate(data):
+        calls.append(1)
+        if len(calls) == 1:
+            required_ids['checks'].add('c00-toolchain')
+            raise EnvironmentDiscoveryError(f'criterion "{criterion}" needs a working check', code='obligation_removed')
+        return data
+
+    merged, _build, _phases, _messages = await merge_with(monkeypatch, validate, required_ids=required_ids)
+    assert len(calls) == 2
+    assert 'c00-toolchain' in {check['id'] for check in merged['checks']}

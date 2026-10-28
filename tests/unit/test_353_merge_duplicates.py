@@ -97,3 +97,13 @@ def test_an_executed_global_check_absorbs_a_copy_only_when_nothing_but_its_timeo
     rewired = _part([_cmd('c00-health', 'health', depends_on=['check-ready'])], {'S1': ['c00-health']})
     merged = merge_parts(global_data, [rewired], executed={'check-health'})
     assert [check['id'] for check in merged['checks']] == ['check-ready', 'check-health', 'c00-health']
+
+
+def test_a_copy_an_executed_check_depends_on_is_not_folded():
+    """Folding would rewrite the executed dependent's depends_on, which execution preservation refuses."""
+    global_data = {'checks': [_cmd('check-ready', 'ready')]}
+    c00 = _part([_cmd('c00-ready', 'ready', required=False), _cmd('c00-test', 'test', depends_on=['c00-ready'])],
+                {'S1': ['c00-test']})
+    merged = merge_parts(global_data, [c00], executed={'c00-ready', 'c00-test'})
+    assert [check['id'] for check in merged['checks']] == ['check-ready', 'c00-ready', 'c00-test']
+    assert merge_parts(global_data, [c00])['checks'][1]['depends_on'] == ['check-ready']

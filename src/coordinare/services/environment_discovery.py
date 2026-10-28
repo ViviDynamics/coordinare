@@ -1293,9 +1293,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
     plan = attempt.delta
     global_data: dict[str, Any] | None = None
     parts: dict[str, tuple[CheckGroup, ShardChecks]] = {}
-    # A merge may fold a group's copy into a global check, but never drops a required id a repair must keep, nor
-    # rewrites an executed check. Taken once: the validator grows required_ids as candidates arrive.
-    pinned = {identifier for ids in attempt.required_ids.values() for identifier in ids}
+    # A merge may fold a group's copy into a global check, but never rewrites an executed check.
     executed = {check.id for manifest in budget.executed_manifests for check in manifest.checks}
     redo: list[CheckGroup] = []
     for _ in range(MERGE_ROUNDS):
@@ -1312,6 +1310,8 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
         discovery.inputs.update(build.group_inputs)
         await attempt.construction.observe_sources(discovery.inputs)
         try:
+            # Nor drops a required id a repair must keep, read every round: the validator pins ids as candidates arrive.
+            pinned = {identifier for ids in attempt.required_ids.values() for identifier in ids}
             merged = merge_parts(global_data, [part for _group, part in parts.values()], pinned=pinned,
                                  executed=executed)
             validate(merged)
@@ -1342,9 +1342,11 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
             continue
         for entry in build.feedback.values():
             entry.pop('merge_errors', None)
-        # A revision restarts the global author from its own part: it must carry what the merge folded into it.
-        build.global_part = {**global_data, 'checks': [check for check in merged['checks']
-                                                       if not any(owns(group.prefix, check['id']) for group in build.groups)]}
+        # A revision restarts the global author from its own part: it must carry what the merge folded into it,
+        # checks and remapped requirement references alike.
+        build.global_part = {**copy.deepcopy(merged), 'criterion_checks': {},
+                             'checks': [copy.deepcopy(check) for check in merged['checks']
+                                        if not any(owns(group.prefix, check['id']) for group in build.groups)]}
         return merged
     message = 'divided executable proposal could not be merged'
     raise EnvironmentDiscoveryError(message, code='executable_merge_invalid')

@@ -330,7 +330,8 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
     manifest still splits into valid parts for a later repair. Left to the authors: a copy depending on a group's
     check, which the global part could not declare, or one whose dependencies would reach the global check (a cycle);
     copies between two groups, which neither group could reference; duplicates inside one part; a pinned copy, which
-    a repair must keep; and a copy that would change an executed global check beyond a longer timeout.
+    a repair must keep; and a fold that would change an executed check beyond a longer timeout, whether the global
+    check it lands in or a check depending on the copy.
     """
     checks = [check for check in merged['checks'] if isinstance(check, dict)]
     graph = {str(record['id']): list(record.get('depends_on') or []) for record in _commands(merged)}
@@ -352,6 +353,8 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
         if any(dependency in group_ids or _reaches(graph, dependency, model.id) for dependency in added):
             continue
         if model.id in executed and (added or (command.required and not model.required)):
+            continue
+        if any(command.id in graph.get(identifier, []) for identifier in executed):
             continue
         alias[command.id] = model.id
         model = model.model_copy(update={'depends_on': [*model.depends_on, *added],
