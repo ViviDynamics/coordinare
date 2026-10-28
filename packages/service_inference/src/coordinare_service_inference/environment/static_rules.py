@@ -122,11 +122,21 @@ _PREFIXES = frozenset({"sudo", "env", "command", "exec", "nice", "nohup"})
 _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
 
+_TEMPLATE = re.compile(r"\{([a-z_]+)\}")
+
+
 def _segments(command: Command) -> list[list[str]]:
-    try:
-        return [words for words in (_strip(shlex.split(part)) for part in _SEPARATOR.split(_script(command.argv))) if words]
-    except ValueError:
-        return []
+    """The script's simple commands as words. Templates such as {cache} are not shell braces, so they are neutralised
+    before splitting on separators; a segment that still cannot be parsed is skipped, never the whole script."""
+    segments: list[list[str]] = []
+    for part in _SEPARATOR.split(_TEMPLATE.sub(r"__\1__", _script(command.argv))):
+        try:
+            words = _strip(shlex.split(part))
+        except ValueError:
+            continue
+        if words:
+            segments.append(words)
+    return segments
 
 
 def _program(words: list[str]) -> list[str]:
@@ -144,14 +154,24 @@ def system_package_install(command: Command) -> bool:
     return False
 
 
+# Selectors that restrict the match to processes the script's own shell cannot be among.
+_EXCLUDING = frozenset({"-P", "--parent", "-s", "--session", "-g", "--pgroup", "-t", "--terminal", "-u", "--euid",
+                        "-U", "--uid", "-G", "--group"})
+
+
 def _full_match(words: list[str]) -> bool:
-    """pkill or pgrep matching the whole command line (-f, --full, or -f combined with other short flags), on a
-    pattern without a bracket expression; a bracket such as [b]in/tool cannot match its own literal text."""
+    """pkill or pgrep matching the whole command line (-f, --full, or -f combined with other short flags) on a pattern
+    the script's own shell could contain: one that is not anchored with ^ (the shell's command line starts with the
+    shell) and has no bracket expression such as [b]in/tool (which cannot match its own literal text), with no selector
+    such as a parent pid that leaves the shell out."""
     if words[0].rsplit("/", 1)[-1] not in {"pkill", "pgrep"}:
         return False
-    full = any(word == "--full" or (word.startswith("-") and not word.startswith("--") and "f" in word[1:]) for word in words[1:])
+    flags = [word for word in words[1:] if word.startswith("-")]
+    full = any(flag == "--full" or (not flag.startswith("--") and "f" in flag[1:]) for flag in flags)
     patterns = [word for word in words[1:] if not word.startswith("-")]
-    return full and not any("[" in pattern for pattern in patterns)
+    excluded = any(flag.split("=", 1)[0] in _EXCLUDING for flag in flags)
+    return full and not excluded and bool(patterns) and not any("[" in pattern or pattern.startswith("^")
+                                                                 for pattern in patterns)
 
 
 def self_matching_process_pattern(command: Command) -> bool:

@@ -24,10 +24,14 @@ from coordinare_service_inference.environment.models import (
     validate_execution_graph,
 )
 from coordinare_service_inference.environment.scope import canonical
-from coordinare_service_inference.environment.static_rules import validate_static_rules
+from coordinare_service_inference.environment.static_rules import (
+    self_matching_process_pattern,
+    validate_static_rules,
+)
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 from pydantic_core import PydanticCustomError
 
+from coordinare.services.environment_admission import GRAPH_GUIDANCE
 from coordinare.services.environment_agent_pool import ShardOverflowError, run_pool
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_delta_schema import apply_group_delta
@@ -249,6 +253,9 @@ def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[
         if not check.id.startswith(group.prefix) and check.id not in inherited.own:
             errors.append({'code': 'check_prefix_invalid', 'location': ['shard_checks', 'checks', str(index), 'id'],
                            'guidance': f'Every check id must start with {group.prefix}.'})
+        if self_matching_process_pattern(check):
+            errors.append({'code': 'self_matching_process_pattern', 'location': ['shard_checks', 'checks', str(index), 'argv'],
+                           'command_id': check.id, 'guidance': GRAPH_GUIDANCE['self_matching_process_pattern']})
         unknown = [dependency for dependency in check.depends_on if dependency not in known]
         if unknown:
             errors.append({'code': 'check_dependency_unknown', 'location': ['shard_checks', 'checks', str(index), 'depends_on'],

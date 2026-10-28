@@ -37,7 +37,7 @@ class PrivateRuntimeIncompleteError(RuntimeError):
 DETAIL_MAX_CHARS = 16000
 
 
-def _cause_detail(cause: BaseException, secret_names: Sequence[str]) -> str:
+def _cause_detail(cause: BaseException, secret_names: Sequence[str], extra: frozenset[str] = frozenset()) -> str:
     """Exception class and message with known secret values removed, never clipped: only the owner can
     pattern-redact, and any cut made before that could split a credential into an unrecognisable fragment. A
     message beyond the bound is replaced by the exception class alone."""
@@ -46,7 +46,7 @@ def _cause_detail(cause: BaseException, secret_names: Sequence[str]) -> str:
     from .runner import _redact
 
     secrets = frozenset(os.environ[name] for name in secret_names if os.environ.get(name))
-    text = _redact(f'{type(cause).__name__}: {cause}', {}, extra_values=secrets)
+    text = _redact(f'{type(cause).__name__}: {cause}', {}, extra_values=secrets | extra)
     return text if len(text) <= DETAIL_MAX_CHARS else type(cause).__name__
 
 
@@ -63,14 +63,19 @@ MAX_RESIDUAL_NAMES = 16
 
 
 async def _reclaim_residual_state(lease: RuntimeLease, manifest: EnvironmentManifest, report: VerificationReport, *,
-                                  deadline: float) -> None:
+                                  deadline: float, secret_names: Sequence[str], redact_values: frozenset[str]) -> None:
     """Docker state left after the last command fails the records that should have removed it, then is removed, so the
     guest still shuts down cleanly and the run stays repairable.
 
     The seal check would otherwise refuse the shutdown and hold the run as incomplete, with no cause and no repair
     (Dettmore e2e-04: a postgres container's anonymous volume). Blamed are the service stops that ran, or failing
     those the commands that ran Docker. State no record could have left is not removed: the seal check still refuses it.
+    Resource names are guest output, so they are redacted like command output before they reach a result.
     """
+    import os
+
+    from .runner import _redact, _secret_values
+
     try:
         _code, output = await lease.ssh(RESIDUAL_LIST, deadline=deadline)
     except (RuntimeError, OSError, TimeoutError):
@@ -86,7 +91,9 @@ async def _reclaim_residual_state(lease: RuntimeLease, manifest: EnvironmentMani
     if not blamed:
         return
     found = '; '.join(f'{kind} {" ".join(names[:MAX_RESIDUAL_NAMES])}' for kind, names in left.items())
-    detail = f'teardown found Docker state left behind: {found}. {RESIDUAL_GUIDANCE}'
+    known = frozenset(os.environ[name] for name in secret_names if os.environ.get(name)) | redact_values | frozenset(
+        _secret_values(dict(lease.activation_env)))
+    detail = _redact(f'teardown found Docker state left behind: {found}. {RESIDUAL_GUIDANCE}', {}, extra_values=known)
     for result in blamed:
         result.status = 'fail'
         result.output = f'{result.output}\n{detail}' if result.output else detail
@@ -162,6 +169,7 @@ async def execute_with_runtime(
     install: bool, scope: str, secret_names: Sequence[str], execution_source_digest: str | None,
     runtime_artifacts: RuntimeArtifactReceipt | None, runtime_deadline: float | None,
     runtime_lease: RuntimeLease | None, commands: Callable[..., Awaitable[VerificationReport]],
+    redact_values: frozenset[str] = frozenset(),
 ) -> VerificationReport:
     spec = manifest.runtime
     if spec is None or execution_source_digest is None:
@@ -176,6 +184,9 @@ async def execute_with_runtime(
         kwargs["scratch"] = str(runtime_lease.scratch)
         report = await run_guarded(runtime_lease, commands(manifest, **kwargs, runtime_env=runtime_lease.activation_env))
         await _scan_bounds(runtime_lease)
+        # The live lease is sealed and stopped by its owner; leftover state must fail here, not at that seal.
+        await _reclaim_residual_state(runtime_lease, manifest, report, deadline=runtime_lease.deadline,
+                                      secret_names=secret_names, redact_values=redact_values)
         if install:
             runtime_lease.installation_passed = report.passed
         report.runtime_digest = spec.digest()
@@ -217,7 +228,8 @@ async def execute_with_runtime(
                     report = _partial_report(manifest, progress, install=install, scope=scope,
                                              execution_source_digest=execution_source_digest)
             else:
-                await _reclaim_residual_state(lease, manifest, report, deadline=deadline)
+                await _reclaim_residual_state(lease, manifest, report, deadline=deadline, secret_names=secret_names,
+                                              redact_values=redact_values)
                 if install and report.passed:
                     lease.installation_passed = True
                     try:
@@ -252,7 +264,7 @@ async def execute_with_runtime(
             report.runtime_artifacts = None
             report.runtime_incomplete = [*incomplete, *teardown]
             if cause is not None:
-                report.runtime_incomplete_detail = _cause_detail(cause, secret_names)
+                report.runtime_incomplete_detail = _cause_detail(cause, secret_names, redact_values)
             raise PrivateRuntimeIncompleteError(report.runtime_incomplete, report)
         report.runtime_digest = spec.digest()
         report.runtime_phase = 'installer' if install else 'consumer'

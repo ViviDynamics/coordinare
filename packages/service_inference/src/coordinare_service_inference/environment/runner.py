@@ -798,7 +798,7 @@ async def run_manifest(
         return await execute_with_runtime(manifest, cache=cache, repo=repo, scratch=scratch,
             install=install, scope=scope, secret_names=secret_names, execution_source_digest=execution_source_digest,
             runtime_artifacts=runtime_artifacts, runtime_deadline=runtime_deadline, runtime_lease=runtime_lease,
-            commands=commands)
+            commands=commands, redact_values=frozenset(credentials.values()))
     if runtime_lease is not None or runtime_artifacts is not None:
         raise ValueError("native manifest cannot use private runtime evidence")
     return await commands(manifest, cache=cache, repo=repo, scratch=scratch,

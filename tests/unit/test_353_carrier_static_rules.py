@@ -104,3 +104,39 @@ def test_both_rules_carry_correction_guidance():
 
     assert 'prebuilt' in GRAPH_GUIDANCE['system_package_install']
     assert 'pid file' in GRAPH_GUIDANCE['self_matching_process_pattern']
+
+
+@pytest.mark.parametrize('script', [
+    'apt-get install -y libpq-dev; mkdir -p "{cache}/bin"',
+    'mkdir -p "{cache}/opt"; DEBIAN_FRONTEND=noninteractive apt-get install -y gcc',
+])
+def test_a_quoted_template_does_not_hide_a_package_install(script):
+    assert _rejected([_cmd('install-deps', 'bash', '-c', script)]).type == 'system_package_install'
+
+
+def test_a_quoted_template_does_not_hide_a_self_matching_pattern():
+    script = 'pkill -f bin/mock || true; rm -f "{scratch}/mock.pid"'
+    assert _rejected(others=[_cmd('mock-stop', 'bash', '-c', script)]).type == 'self_matching_process_pattern'
+
+
+@pytest.mark.parametrize('script', [
+    "pgrep -f '^/opt/app/server'; echo ready",
+    'pkill -P "$(cat {scratch}/mock.pid)" -f mock || true; exit 0',
+    'pgrep --parent 1 -f worker && echo up',
+])
+def test_anchored_or_parent_restricted_patterns_cannot_meet_their_own_shell(script):
+    validate_static_rules([], NO_ACTIVATION, 'linux/aarch64', others=[_cmd('probe', 'bash', '-c', script)],
+                          system_packages=False)
+
+
+def test_a_check_author_is_corrected_on_a_self_matching_pattern_while_authoring():
+    from coordinare.services.environment_scope import _ResponseReferenceError
+    from coordinare.services.environment_shard_construction import CheckGroup, validate_group
+
+    group = CheckGroup('c00-', ())
+    data = {'shard_checks': {'checks': [{'id': 'c00-stop', 'argv': ['bash', '-c', 'pkill -f bin/mock || true; exit 0']}],
+                             'criterion_checks': {}}}
+    with pytest.raises(_ResponseReferenceError) as caught:
+        validate_group(data, group=group, summary={'checks': [], 'readiness_ids': []})
+    codes = {error['code'] for error in caught.value.errors}
+    assert 'self_matching_process_pattern' in codes

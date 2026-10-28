@@ -42,7 +42,7 @@ def _report(*, stop='pass'):
 
 
 async def _run(tmp_path, monkeypatch, *, report, manifest, listing=LISTING, cleanup=CLEAN, failing_list=False,
-               shutdown_error=None):
+               shutdown_error=None, secret_names=(), redact_values=frozenset()):
     scripts: list[str] = []
     sealed: list[bool] = []
     lease = SimpleNamespace(activation_env={}, installation_passed=False, shutdown_error=None)
@@ -80,8 +80,8 @@ async def _run(tmp_path, monkeypatch, *, report, manifest, listing=LISTING, clea
     monkeypatch.setattr(runtime_execution, '_scan_bounds', no_scan)
     monkeypatch.setattr(runtime_execution, 'seal_runtime', seal)
     result = await execute_with_runtime(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path, install=True,
-        scope='', secret_names=(), execution_source_digest='c' * 64, runtime_artifacts=None,
-        runtime_deadline=None, runtime_lease=None, commands=finished)
+        scope='', secret_names=secret_names, execution_source_digest='c' * 64, runtime_artifacts=None,
+        runtime_deadline=None, runtime_lease=None, commands=finished, redact_values=redact_values)
     return result, scripts, sealed
 
 
@@ -137,3 +137,49 @@ async def test_a_refused_shutdown_records_its_cause(tmp_path, monkeypatch):
                    listing=b'containers=\nvolumes=\nnetworks=\n', shutdown_error='RuntimeError: guest command failed')
     assert held.value.report.runtime_incomplete == ['clean_shutdown']
     assert 'guest command failed' in held.value.report.runtime_incomplete_detail
+
+
+@pytest.mark.asyncio
+async def test_secret_values_in_leftover_names_are_redacted(tmp_path, monkeypatch):
+    monkeypatch.setenv('OPERATOR_TOKEN', 'operator-value-123')
+    listing = b'containers=db-operator-value-123\nvolumes=gen-secret-456\nnetworks=\n'
+    report, _scripts, _sealed = await _run(tmp_path, monkeypatch, report=_report(), manifest=_manifest(), listing=listing,
+                                           secret_names=('OPERATOR_TOKEN',), redact_values=frozenset({'gen-secret-456'}))
+    stop = next(result for result in report.results if result.id == 'db-stop')
+    assert stop.status == 'fail'
+    assert 'operator-value-123' not in stop.output and 'gen-secret-456' not in stop.output
+    assert '[REDACTED]' in stop.output
+
+
+@pytest.mark.asyncio
+async def test_the_live_lease_path_also_fails_the_stop_that_left_state(monkeypatch):
+    lease = SimpleNamespace(spec=None, manifest_digest='a' * 64, source_digest='c' * 64, scratch='/tmp', deadline=1e12,
+                            activation_env={}, install=True, installation_passed=False)
+    removed: list[str] = []
+
+    async def ssh(script, *, deadline, check=True):
+        if 'docker ps -a --format' in script:
+            return 0, LISTING
+        removed.append(script)
+        return 0, b''
+
+    lease.ssh = ssh
+    manifest = _manifest()
+    lease.spec = manifest.runtime
+
+    async def passthrough(_lease, operation):
+        return await operation
+
+    async def no_scan(_lease):
+        return None
+
+    async def finished(*_args, **_kwargs):
+        return _report()
+
+    monkeypatch.setattr(runtime_execution, 'run_guarded', passthrough)
+    monkeypatch.setattr(runtime_execution, '_scan_bounds', no_scan)
+    report = await execute_with_runtime(manifest, cache='/tmp', repo='/tmp', scratch='/tmp', install=True, scope='',
+        secret_names=(), execution_source_digest='c' * 64, runtime_artifacts=None, runtime_deadline=None,
+        runtime_lease=lease, commands=finished)
+    assert not report.passed and lease.installation_passed is False
+    assert any('docker volume rm' in script for script in removed)
