@@ -79,3 +79,21 @@ def test_a_global_check_relying_on_defaults_keeps_them_when_a_shorter_optional_c
     c00 = _part([_cmd('c00-health', 'health', timeout_seconds=30, required=False)], {'S1': ['c00-health']})
     kept, = merge_parts(global_data, [c00])['checks']
     assert kept['id'] == 'check-health' and kept['timeout_seconds'] == 180 and kept['required'] is True
+
+
+def test_a_pinned_group_copy_is_never_dropped():
+    """A repair's validator refuses removal of any earlier required id, so dropping one would fail every round."""
+    c00 = _part([_cmd('c00-health', 'health')], {'S1': ['c00-health']})
+    merged = merge_parts({'checks': [_cmd('check-health', 'health')]}, [c00], pinned={'c00-health'})
+    assert [check['id'] for check in merged['checks']] == ['check-health', 'c00-health']
+
+
+def test_an_executed_global_check_absorbs_a_copy_only_when_nothing_but_its_timeout_grows():
+    global_data = {'checks': [_cmd('check-ready', 'ready'), _cmd('check-health', 'health', timeout_seconds=60)]}
+    longer = _part([_cmd('c00-health', 'health', timeout_seconds=600)], {'S1': ['c00-health']})
+    merged = merge_parts(global_data, [longer], executed={'check-health'})
+    assert [check['id'] for check in merged['checks']] == ['check-ready', 'check-health']
+    assert merged['checks'][1]['timeout_seconds'] == 600
+    rewired = _part([_cmd('c00-health', 'health', depends_on=['check-ready'])], {'S1': ['c00-health']})
+    merged = merge_parts(global_data, [rewired], executed={'check-health'})
+    assert [check['id'] for check in merged['checks']] == ['check-ready', 'check-health', 'c00-health']

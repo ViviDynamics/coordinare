@@ -181,7 +181,7 @@ async def merge_with(monkeypatch, validate):
         return None
 
     messages = [{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}]
-    attempt = SimpleNamespace(budget=budget, discovery=inspection, messages=messages, chat=None, delta=None,
+    attempt = SimpleNamespace(budget=budget, required_ids={}, discovery=inspection, messages=messages, chat=None, delta=None,
                               prior_manifests=[], construction=SimpleNamespace(observe_sources=observe))
     merged = await discovery_module._divided_candidate(build, attempt, validate)
     return merged, build, phases, messages
@@ -502,7 +502,7 @@ async def test_a_redone_group_that_splits_replaces_its_earlier_part(monkeypatch)
 
     monkeypatch.setattr(discovery_module, '_phase', phase)
     budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
-    attempt = SimpleNamespace(budget=budget, delta=None, messages=[{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}],
+    attempt = SimpleNamespace(budget=budget, required_ids={}, delta=None, messages=[{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}],
                               chat=None, prior_manifests=[], discovery=SimpleNamespace(budget=budget, inputs={}, finding_responses=[]),
                               construction=SimpleNamespace(observe_sources=lambda _inputs: asyncio.sleep(0)))
     merged = await discovery_module._divided_candidate(build, attempt, validate)
@@ -874,3 +874,26 @@ def test_the_global_parts_criterion_mappings_are_set_aside_not_corrected(mapping
     """v37: the repair's global author spent its last schema repairs on criterion_checks alone."""
     data = global_part(criterion_checks=mapping)
     assert validate_global(data)['criterion_checks'] == {}
+
+
+@pytest.mark.asyncio
+async def test_a_folded_group_copy_survives_into_the_global_part_a_revision_restarts_from(monkeypatch):
+    """A revision rebuilds the global author's conversation from build.global_part; it must carry the folded copy's
+    longer timeout, or the revision would silently restore the shorter one."""
+    copy_of_toolchain = {'id': 'c00-toolchain', 'argv': ['true'], 'timeout_seconds': 600}
+    original = FakeBuild.author_all
+
+    async def author_all(self, *, summary, probes, groups=None, concurrency=None):
+        parts = await original(self, summary=summary, probes=probes, groups=groups, concurrency=concurrency)
+        group, part = parts['c00-']
+        data = part.model_dump(mode='json')
+        data['checks'].append(copy_of_toolchain)
+        data['criterion_checks'] = {criterion: [*ids, 'c00-toolchain'] for criterion, ids in data['criterion_checks'].items()}
+        parts['c00-'] = (group, ShardChecks.model_validate(data))
+        return parts
+
+    monkeypatch.setattr(FakeBuild, 'author_all', author_all)
+    merged, build, _phases, _messages = await merge_with(monkeypatch, lambda data: data)
+    assert 'c00-toolchain' not in {check['id'] for check in merged['checks']}
+    assert build.global_part['checks'] == [{'id': 'toolchain', 'argv': ['true'], 'depends_on': [], 'timeout_seconds': 600,
+                                            'required': True}]

@@ -98,7 +98,7 @@ def attempt_for(build: TimedBuild, budget: AttemptBudget) -> SimpleNamespace:
         return None
 
     inspection = SimpleNamespace(budget=budget, inputs={}, finding_responses=[])
-    return SimpleNamespace(budget=budget, discovery=inspection, messages=[{'role': 'system', 'content': ''},
+    return SimpleNamespace(budget=budget, required_ids={}, discovery=inspection, messages=[{'role': 'system', 'content': ''},
                            {'role': 'user', 'content': '{}'}], chat=None, delta=None, prior_manifests=[],
                            construction=SimpleNamespace(observe_sources=observe))
 
