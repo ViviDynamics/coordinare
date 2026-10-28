@@ -298,16 +298,16 @@ def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[
 
 def merge_parts(global_data: Mapping[str, Any], parts: Sequence[ShardChecks], *,
                 executed: Collection[str] = frozenset(), folded: dict[str, str] | None = None,
-                retained: Mapping[str, Command] | None = None, prior: Mapping[str, Command] | None = None,
+                retained: Mapping[str, Command] | None = None, prior: Mapping[str, Sequence[Command]] | None = None,
                 ) -> dict[str, Any]:
     """Global declaration plus every part's checks and mappings; a collision is an error, never a choice.
 
     A merge never removes nor rewrites (beyond a longer timeout) an ``executed`` check. Each group copy it folds into
     an identical global check is reported in ``folded`` (dropped id to kept id), so the caller can carry a required
     id's obligation over to the kept command. A copy whose ``retained`` obligation record it changes in scope or
-    required status is not folded, so the obligation rule still corrects its own author. In a repair, a copy a
-    ``prior`` manifest declared folds only when the kept command still replaces that prior one (the alias repair
-    preservation accepts); otherwise every round would fold it and fail preservation again.
+    required status is not folded, so the obligation rule still corrects its own author. In a repair, a copy that
+    ``prior`` manifests declared folds only when the kept command still replaces every prior version of it (the alias
+    repair preservation accepts against each prior manifest); otherwise every round would fold it and fail again.
     """
     merged = copy.deepcopy(dict(global_data))
     checks = list(merged.get('checks', []) or [])
@@ -337,7 +337,7 @@ def merge_parts(global_data: Mapping[str, Any], parts: Sequence[ShardChecks], *,
 
 def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set[str], group_ids: set[str],
                                          executed: frozenset[str], retained: Mapping[str, Command],
-                                         prior: Mapping[str, Command]) -> dict[str, str]:
+                                         prior: Mapping[str, Sequence[Command]]) -> dict[str, str]:
     """A check group's identical copy of a global check becomes the global one, keeping every obligation of both.
 
     No check author sees another part's checks, so it cannot correct a copy (e2e-03 spent every merge round on
@@ -379,10 +379,10 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
         merged_model = model.model_copy(update={'depends_on': [*model.depends_on, *added],
                                                 'timeout_seconds': max(model.timeout_seconds, command.timeout_seconds),
                                                 'required': model.required or command.required})
-        if (before := prior.get(command.id)) is not None and not (
-                content_key(before) == key and (merged_model.required or not before.required)
-                and set(before.depends_on) <= set(merged_model.depends_on)
-                and merged_model.timeout_seconds >= before.timeout_seconds):
+        if any(not (content_key(before) == key and (merged_model.required or not before.required)
+                    and set(before.depends_on) <= set(merged_model.depends_on)
+                    and merged_model.timeout_seconds >= before.timeout_seconds)
+               for before in prior.get(command.id, ())):
             continue
         alias[command.id] = model.id
         model = merged_model

@@ -1313,7 +1313,11 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
     # A merge may fold a group's copy into a global check, but never rewrites an executed check.
     executed = {check.id for manifest in budget.executed_manifests for check in manifest.checks}
     redo: list[CheckGroup] = []
-    prior_checks = {check.id: check for manifest in attempt.prior_manifests for check in manifest.checks}
+    # Every version of each check id across the prior manifests: preservation judges the candidate against each.
+    prior_checks: dict[str, list[Command]] = {}
+    for manifest in attempt.prior_manifests:
+        for check in manifest.checks:
+            prior_checks.setdefault(check.id, []).append(check)
     authored_responses = list(attempt.discovery.finding_responses)
     for _ in range(MERGE_ROUNDS):
         if global_data is None:
