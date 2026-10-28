@@ -315,7 +315,8 @@ async def test_the_cause_of_a_runtime_failure_is_kept_bounded(tmp_path, monkeypa
             scope='', secret_names=(), execution_source_digest='c' * 64, runtime_artifacts=None,
             runtime_deadline=None, runtime_lease=None, commands=unused)
     detail = held.value.report.runtime_incomplete_detail
-    assert detail.startswith('ValueError: ') and len(detail) == 600
+    # A single 2000-character word could be a credential, so it is dropped rather than cut.
+    assert detail.startswith('ValueError') and len(detail) <= 600 and 'x' * 10 not in detail
 
 
 @pytest.mark.asyncio
@@ -416,3 +417,14 @@ def test_result_json_evidence_has_redacted_outputs_and_the_original_is_untouched
     copy = harness._redacted_evidence(evidence)
     assert token not in copy['results'][0]['output']
     assert evidence['results'][0]['output'] == 'token=' + token
+
+
+def test_the_cause_is_clipped_only_at_whitespace_so_no_token_fragment_survives():
+    from coordinare_service_inference.environment.runtime_execution import _cause_detail
+
+    token = 'ghp_' + 'f' * 36
+    prefix = 'RuntimeError: '
+    message = 'a ' * ((585 - len(prefix)) // 2) + token + ' tail'
+    detail = _cause_detail(RuntimeError(message), ())
+    assert len(detail) <= 600
+    assert 'f' * 5 not in detail and not detail.endswith('ghp_')
