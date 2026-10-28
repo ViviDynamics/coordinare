@@ -15,10 +15,12 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Self, cast
 
 from coordinare_service_inference.environment.models import (
+    Command,
     CoverageAssessmentProposal,
     EnvironmentManifestProposal,
     ShardChecks,
     ShardChecksEnvelope,
+    content_key,
     validate_execution_graph,
 )
 from coordinare_service_inference.environment.scope import canonical
@@ -293,6 +295,7 @@ def merge_parts(global_data: Mapping[str, Any], parts: Sequence[ShardChecks]) ->
     checks = list(merged.get('checks', []) or [])
     mapping: dict[str, list[str]] = {}
     seen = {check.get('id') for check in checks if isinstance(check, dict)}
+    global_ids = {str(identifier) for identifier in seen}
     for part in parts:
         for check in part.checks:
             if check.id in seen:
@@ -307,7 +310,82 @@ def merge_parts(global_data: Mapping[str, Any], parts: Sequence[ShardChecks]) ->
             mapping[criterion] = list(identifiers)
     merged['checks'] = checks
     merged['criterion_checks'] = mapping
+    _merge_group_copies_of_global_checks(merged, global_ids, {str(identifier) for identifier in seen} - global_ids)
     return merged
+
+
+def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set[str], group_ids: set[str]) -> None:
+    """A check group's identical copy of a global check becomes the global one, keeping every obligation of both.
+
+    No check author sees another part's checks, so it cannot correct a copy (e2e-03 spent every merge round on
+    check-maxio-health and c00-maxio-health). The global check takes the copy's dependencies, the larger timeout and
+    required if either was, and the copy's references move to it. Every part may name a global check, so the merged
+    manifest still splits into valid parts for a later repair. Left to the authors: a copy depending on a group's
+    check, which the global part could not declare, or one whose dependencies would reach the global check (a cycle);
+    copies between two groups, which neither group could reference; and duplicates inside one part.
+    """
+    checks = [check for check in merged['checks'] if isinstance(check, dict)]
+    graph = {str(record['id']): list(record.get('depends_on') or []) for record in _commands(merged)}
+    globals_by_key: dict[str, tuple[dict[str, Any], Command]] = {}
+    alias: dict[str, str] = {}
+    for check in checks:
+        try:
+            command = Command.model_validate(check)
+        except ValidationError:
+            continue
+        key = content_key(command)
+        if command.id in global_ids:
+            globals_by_key.setdefault(key, (check, command))
+            continue
+        if key not in globals_by_key or command.id not in group_ids:
+            continue
+        kept, model = globals_by_key[key]
+        added = [dependency for dependency in command.depends_on if dependency not in model.depends_on]
+        if any(dependency in group_ids or _reaches(graph, dependency, model.id) for dependency in added):
+            continue
+        alias[command.id] = model.id
+        model = model.model_copy(update={'depends_on': [*model.depends_on, *added],
+                                         'timeout_seconds': max(model.timeout_seconds, command.timeout_seconds),
+                                         'required': model.required or command.required})
+        kept.update(depends_on=model.depends_on, timeout_seconds=model.timeout_seconds, required=model.required)
+        graph[model.id] = list(model.depends_on)
+        globals_by_key[key] = (kept, model)
+    if not alias:
+        return
+
+    def remap(identifiers: list[str], *, exclude: str | None = None) -> list[str]:
+        return [*dict.fromkeys(item for item in (alias.get(identifier, identifier) for identifier in identifiers)
+                               if item != exclude)]
+
+    merged['checks'] = [check for check in checks if check['id'] not in alias]
+    for check in merged['checks']:
+        if check.get('depends_on'):
+            check['depends_on'] = remap(check['depends_on'], exclude=check['id'])
+    merged['criterion_checks'] = {criterion: remap(ids) for criterion, ids in merged['criterion_checks'].items()}
+    for requirement in merged.get('requirements') or []:
+        if isinstance(requirement, dict) and requirement.get('checks'):
+            requirement['checks'] = remap(requirement['checks'])
+
+
+def _commands(data: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every install, check and service lifecycle command record with an id, as raw data."""
+    services = [service.get(phase) for service in data.get('services') or [] if isinstance(service, dict)
+                for phase in ('init', 'start', 'health', 'stop')]
+    return [record for record in [*(data.get('install') or []), *(data.get('checks') or []), *services]
+            if isinstance(record, dict) and record.get('id')]
+
+
+def _reaches(graph: Mapping[str, list[str]], start: str, target: str) -> bool:
+    """Whether ``target`` is ``start`` or one of its transitive dependencies."""
+    pending, visited = [start], set()
+    while pending:
+        node = pending.pop()
+        if node == target:
+            return True
+        if node not in visited:
+            visited.add(node)
+            pending.extend(graph.get(node, []))
+    return False
 
 
 def parts_from_manifest(manifest: EnvironmentManifest | None, groups: Sequence[CheckGroup]) -> dict[str, dict[str, Any]]:
