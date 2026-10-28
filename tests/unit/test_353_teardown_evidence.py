@@ -419,8 +419,10 @@ def test_result_json_evidence_has_redacted_outputs_and_the_original_is_untouched
 
 
 def test_the_cause_is_never_clipped_before_pattern_redaction():
-    from coordinare_service_inference.environment.runtime_execution import DETAIL_MAX_CHARS, _cause_detail
-
+    from coordinare_service_inference.environment.runtime_execution import (
+        DETAIL_MAX_CHARS,
+        _cause_detail,
+    )
     from scripts import validate_environment_repositories as harness
 
     token = 'ghp_' + 'f' * 36
