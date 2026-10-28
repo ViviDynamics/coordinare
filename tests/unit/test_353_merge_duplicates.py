@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
-from coordinare.services.environment_shard_construction import ShardChecks, merge_parts
+from coordinare.services.environment_shard_construction import FoldPolicy, ShardChecks, merge_parts
 
 
 def _cmd(identifier, *argv, **fields):
@@ -84,7 +84,7 @@ def test_a_global_check_relying_on_defaults_keeps_them_when_a_shorter_optional_c
 def test_an_executed_group_copy_is_never_dropped():
     """Execution preservation requires every executed required check to survive under its own id."""
     c00 = _part([_cmd('c00-health', 'health')], {'S1': ['c00-health']})
-    merged = merge_parts({'checks': [_cmd('check-health', 'health')]}, [c00], executed={'c00-health'})
+    merged = merge_parts({'checks': [_cmd('check-health', 'health')]}, [c00], policy=FoldPolicy(executed={'c00-health'}))
     assert [check['id'] for check in merged['checks']] == ['check-health', 'c00-health']
 
 
@@ -98,11 +98,11 @@ def test_every_fold_is_reported_so_a_required_id_can_follow_it():
 def test_an_executed_global_check_absorbs_a_copy_only_when_nothing_but_its_timeout_grows():
     global_data = {'checks': [_cmd('check-ready', 'ready'), _cmd('check-health', 'health', timeout_seconds=60)]}
     longer = _part([_cmd('c00-health', 'health', timeout_seconds=600)], {'S1': ['c00-health']})
-    merged = merge_parts(global_data, [longer], executed={'check-health'})
+    merged = merge_parts(global_data, [longer], policy=FoldPolicy(executed={'check-health'}))
     assert [check['id'] for check in merged['checks']] == ['check-ready', 'check-health']
     assert merged['checks'][1]['timeout_seconds'] == 600
     rewired = _part([_cmd('c00-health', 'health', depends_on=['check-ready'])], {'S1': ['c00-health']})
-    merged = merge_parts(global_data, [rewired], executed={'check-health'})
+    merged = merge_parts(global_data, [rewired], policy=FoldPolicy(executed={'check-health'}))
     assert [check['id'] for check in merged['checks']] == ['check-ready', 'check-health', 'c00-health']
 
 
@@ -111,7 +111,7 @@ def test_a_copy_an_executed_check_depends_on_is_not_folded():
     global_data = {'checks': [_cmd('check-ready', 'ready')]}
     c00 = _part([_cmd('c00-ready', 'ready', required=False), _cmd('c00-test', 'test', depends_on=['c00-ready'])],
                 {'S1': ['c00-test']})
-    merged = merge_parts(global_data, [c00], executed={'c00-ready', 'c00-test'})
+    merged = merge_parts(global_data, [c00], policy=FoldPolicy(executed={'c00-ready', 'c00-test'}))
     assert [check['id'] for check in merged['checks']] == ['check-ready', 'c00-ready', 'c00-test']
     assert merge_parts(global_data, [c00])['checks'][1]['depends_on'] == ['check-ready']
 
@@ -138,10 +138,10 @@ def test_a_copy_that_changes_its_retained_obligation_is_not_folded():
 
     retained = {'c00-jq': Command.model_validate(_cmd('c00-jq', 'jq'))}
     c00 = _part([_cmd('c00-jq', 'jq', scope=['ci'])], {'S1': ['c00-jq']})
-    merged = merge_parts({'checks': [_cmd('env-jq', 'jq', scope=['ci'])]}, [c00], retained=retained)
+    merged = merge_parts({'checks': [_cmd('env-jq', 'jq', scope=['ci'])]}, [c00], policy=FoldPolicy(retained=retained))
     assert [check['id'] for check in merged['checks']] == ['env-jq', 'c00-jq']
     unchanged = _part([_cmd('c00-jq', 'jq')], {'S1': ['c00-jq']})
-    assert [check['id'] for check in merge_parts({'checks': [_cmd('env-jq', 'jq')]}, [unchanged], retained=retained)['checks']] == ['env-jq']
+    assert [check['id'] for check in merge_parts({'checks': [_cmd('env-jq', 'jq')]}, [unchanged], policy=FoldPolicy(retained=retained))['checks']] == ['env-jq']
 
 
 def test_in_a_repair_a_copy_folds_only_when_the_kept_check_still_replaces_the_prior_one():
@@ -150,11 +150,11 @@ def test_in_a_repair_a_copy_folds_only_when_the_kept_check_still_replaces_the_pr
 
     prior = {'c00-tool': [Command.model_validate(_cmd('c00-tool', 'tool', '--old'))]}
     corrected = _part([_cmd('c00-tool', 'tool', '--new')], {'S1': ['c00-tool']})
-    merged = merge_parts({'checks': [_cmd('tool', 'tool', '--new')]}, [corrected], prior=prior)
+    merged = merge_parts({'checks': [_cmd('tool', 'tool', '--new')]}, [corrected], policy=FoldPolicy(prior=prior))
     assert [check['id'] for check in merged['checks']] == ['tool', 'c00-tool']
     unchanged = _part([_cmd('c00-tool', 'tool', '--old')], {'S1': ['c00-tool']})
     folded: dict[str, str] = {}
-    merge_parts({'checks': [_cmd('tool', 'tool', '--old')]}, [unchanged], prior=prior, folded=folded)
+    merge_parts({'checks': [_cmd('tool', 'tool', '--old')]}, [unchanged], policy=FoldPolicy(prior=prior), folded=folded)
     assert folded == {'c00-tool': 'tool'}
 
 
@@ -166,5 +166,5 @@ def test_a_copy_folds_only_when_it_replaces_every_prior_version():
                           Command.model_validate(_cmd('c00-tool', 'tool', '--new'))]}
     corrected = _part([_cmd('c00-tool', 'tool', '--new')], {'S1': ['c00-tool']})
     folded: dict[str, str] = {}
-    merged = merge_parts({'checks': [_cmd('tool', 'tool', '--new')]}, [corrected], prior=prior, folded=folded)
+    merged = merge_parts({'checks': [_cmd('tool', 'tool', '--new')]}, [corrected], policy=FoldPolicy(prior=prior), folded=folded)
     assert folded == {} and [check['id'] for check in merged['checks']] == ['tool', 'c00-tool']

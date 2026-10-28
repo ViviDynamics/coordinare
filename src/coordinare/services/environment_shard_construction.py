@@ -296,17 +296,25 @@ def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[
     return part
 
 
+@dataclass(frozen=True)
+class FoldPolicy:
+    """What a fold must respect: executed checks, the obligation ledger's retained records, and every prior version
+    of each check a repair's preservation judges the candidate against."""
+
+    executed: Collection[str] = frozenset()
+    retained: Mapping[str, Command] = field(default_factory=dict)
+    prior: Mapping[str, Sequence[Command]] = field(default_factory=dict)
+
+
 def merge_parts(global_data: Mapping[str, Any], parts: Sequence[ShardChecks], *,
-                executed: Collection[str] = frozenset(), folded: dict[str, str] | None = None,
-                retained: Mapping[str, Command] | None = None, prior: Mapping[str, Sequence[Command]] | None = None,
-                ) -> dict[str, Any]:
+                policy: FoldPolicy | None = None, folded: dict[str, str] | None = None) -> dict[str, Any]:
     """Global declaration plus every part's checks and mappings; a collision is an error, never a choice.
 
-    A merge never removes nor rewrites (beyond a longer timeout) an ``executed`` check. Each group copy it folds into
-    an identical global check is reported in ``folded`` (dropped id to kept id), so the caller can carry a required
-    id's obligation over to the kept command. A copy whose ``retained`` obligation record it changes in scope or
+    A merge never removes nor rewrites (beyond a longer timeout) a ``policy.executed`` check. Each group copy it folds
+    into an identical global check is reported in ``folded`` (dropped id to kept id), so the caller can carry a
+    required id's obligation over to the kept command. A copy that changes its ``policy.retained`` record in scope or
     required status is not folded, so the obligation rule still corrects its own author. In a repair, a copy that
-    ``prior`` manifests declared folds only when the kept command still replaces every prior version of it (the alias
+    ``policy.prior`` versions exist for folds only when the kept command still replaces every one of them (the alias
     repair preservation accepts against each prior manifest); otherwise every round would fold it and fail again.
     """
     merged = copy.deepcopy(dict(global_data))
@@ -329,15 +337,14 @@ def merge_parts(global_data: Mapping[str, Any], parts: Sequence[ShardChecks], *,
     merged['checks'] = checks
     merged['criterion_checks'] = mapping
     aliases = _merge_group_copies_of_global_checks(merged, global_ids, {str(identifier) for identifier in seen} - global_ids,
-                                                   frozenset(executed), retained or {}, prior or {})
+                                                   policy or FoldPolicy())
     if folded is not None:
         folded.update(aliases)
     return merged
 
 
 def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set[str], group_ids: set[str],
-                                         executed: frozenset[str], retained: Mapping[str, Command],
-                                         prior: Mapping[str, Sequence[Command]]) -> dict[str, str]:
+                                         policy: FoldPolicy) -> dict[str, str]:
     """A check group's identical copy of a global check becomes the global one, keeping every obligation of both.
 
     No check author sees another part's checks, so it cannot correct a copy (e2e-03 spent every merge round on
@@ -363,26 +370,11 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
         if command.id in global_ids:
             globals_by_key.setdefault(key, (check, command))
             continue
-        if key not in globals_by_key or command.id not in group_ids or command.id in executed:
-            continue
-        if (kept_before := retained.get(command.id)) is not None and (
-                kept_before.scope != command.scope or (kept_before.required and not command.required)):
+        if key not in globals_by_key or command.id not in group_ids:
             continue
         kept, model = globals_by_key[key]
-        added = [dependency for dependency in command.depends_on if dependency not in model.depends_on]
-        if any(dependency in group_ids or _reaches(graph, dependency, model.id) for dependency in added):
-            continue
-        if model.id in executed and (added or (command.required and not model.required)):
-            continue
-        if any(command.id in graph.get(identifier, []) for identifier in executed):
-            continue
-        merged_model = model.model_copy(update={'depends_on': [*model.depends_on, *added],
-                                                'timeout_seconds': max(model.timeout_seconds, command.timeout_seconds),
-                                                'required': model.required or command.required})
-        if any(not (content_key(before) == key and (merged_model.required or not before.required)
-                    and set(before.depends_on) <= set(merged_model.depends_on)
-                    and merged_model.timeout_seconds >= before.timeout_seconds)
-               for before in prior.get(command.id, ())):
+        merged_model = _fold_result(command, model, group_ids, graph, policy)
+        if merged_model is None:
             continue
         alias[command.id] = model.id
         model = merged_model
@@ -415,6 +407,33 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
         if isinstance(requirement, dict) and requirement.get('checks'):
             requirement['checks'] = remap(requirement['checks'])
     return alias
+
+
+def _fold_result(command: Command, model: Command, group_ids: set[str], graph: Mapping[str, list[str]],
+                 policy: FoldPolicy) -> Command | None:
+    """The global check ``model`` after absorbing the identical group ``command``, or None when the fold is unsafe."""
+    kept_before = policy.retained.get(command.id)
+    added = [dependency for dependency in command.depends_on if dependency not in model.depends_on]
+    unsafe = (command.id in policy.executed
+              # It would change its retained obligation record's scope or required status.
+              or (kept_before is not None
+                  and (kept_before.scope != command.scope or (kept_before.required and not command.required)))
+              # The global part could not declare a group's check, and a cycle would close.
+              or any(dependency in group_ids or _reaches(graph, dependency, model.id) for dependency in added)
+              # An executed check may change beyond a longer timeout neither where it lands nor where it is named.
+              or (model.id in policy.executed and bool(added or (command.required and not model.required)))
+              or any(command.id in graph.get(identifier, []) for identifier in policy.executed))
+    if unsafe:
+        return None
+    merged = model.model_copy(update={'depends_on': [*model.depends_on, *added],
+                                      'timeout_seconds': max(model.timeout_seconds, command.timeout_seconds),
+                                      'required': model.required or command.required})
+    key = content_key(command)
+    if any(not (content_key(before) == key and (merged.required or not before.required)
+                and set(before.depends_on) <= set(merged.depends_on) and merged.timeout_seconds >= before.timeout_seconds)
+           for before in policy.prior.get(command.id, ())):
+        return None
+    return merged
 
 
 def _commands(data: Mapping[str, Any]) -> list[dict[str, Any]]:
