@@ -64,7 +64,7 @@ from coordinare.services.environment_probes import (
     ProbeReport,
     bind_probe_report,
 )
-from coordinare.services.environment_repair_triage import RepairTriage, triage_failure
+from coordinare.services.environment_repair_triage import RepairTriage, part_of, triage_failure
 from coordinare.services.environment_scope import preserve_scope, released_criteria
 from coordinare.services.environment_scope_investigation import validate_investigation_history
 from coordinare.services.environment_scope_reopening import source_conflict_reopenings
@@ -810,14 +810,40 @@ MAX_FEEDBACK_RESULTS = 16
 _FEEDBACK_ORDER = {'fail': 0, 'indeterminate': 1}
 
 
-def repair_feedback_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The bounded failures a repair's authors see, those that ran and failed first, then report order.
+def repair_feedback(rejected_digest: str, results: list[dict[str, Any]]) -> dict[str, Any]:
+    """The bounded failures a repair's authors see: failed first, then indeterminate, then not_run, shared fairly
+    between the parts that own them, and within the serialized byte bound.
 
     Dettmore e2e-06: a template refusal left 44 commands not_run and 9 failed; the first 16 in report order were all
     consequences, so no author saw the nine failures or their reason, and the repair changed nothing that mattered.
+    Each owner (a check group, or the global part) gets one result per round, its most informative first, so one
+    part's many failures never starve another's.
     """
-    failed = [result for result in results if result['status'] != 'pass']
-    return sorted(failed, key=lambda result: _FEEDBACK_ORDER.get(result['status'], 2))[:MAX_FEEDBACK_RESULTS]
+    entries = [(_FEEDBACK_ORDER.get(result['status'], 2), index, result)
+               for index, result in enumerate(item for item in results if item['status'] != 'pass')]
+    owners = list(dict.fromkeys(part_of(entry[2]['id']) for entry in sorted(entries, key=lambda entry: entry[:2])))
+    chosen: list[tuple[int, int, dict[str, Any]]] = []
+    for tier in sorted({entry[0] for entry in entries}):
+        # Within a tier, owners take turns in report order, so every part's failures arrive before any consequence.
+        queues = {owner: [entry for entry in entries if entry[0] == tier and part_of(entry[2]['id']) == owner]
+                  for owner in owners}
+        for depth in range(max(map(len, queues.values()), default=0)):
+            chosen.extend(queues[owner][depth] for owner in owners if depth < len(queues[owner]))
+    chosen = sorted(chosen[:MAX_FEEDBACK_RESULTS], key=lambda entry: entry[:2])
+    selected = [entry[2] for entry in chosen]
+    feedback = {'rejected_manifest_digest': rejected_digest, 'results': selected}
+    while len(json.dumps(feedback).encode()) > FEEDBACK_MAX_BYTES and len(selected) > 1:
+        # Over the byte bound: drop the least informative result of the owner holding the most.
+        counts = {owner: sum(part_of(item['id']) == owner for item in selected) for owner in owners}
+        position = max(range(len(selected)), key=lambda at: (counts[part_of(selected[at]['id'])] > 1, at))
+        selected.pop(position)
+    while len(json.dumps(feedback).encode()) > FEEDBACK_MAX_BYTES and selected and selected[0].get('output'):
+        # A single result over the bound keeps the start of its output.
+        only = dict(selected[0])
+        only['output'] = only['output'][:len(only['output']) // 2]
+        only['output_truncated'] = True
+        selected[0] = only
+    return feedback
 
 
 def _generation(journal: RepairJournal) -> str:
@@ -883,7 +909,7 @@ def prepare_repair(cache: EnvCacheState) -> tuple[EnvironmentManifest, dict[str,
     cache.rendered_activate_sh = cache.rendered_verify_sh = None
     cache.provenance_digest = None
     cache.cache_dir_ready = False
-    feedback = {'rejected_manifest_digest': previous.digest(), 'results': repair_feedback_results(entry['report']['results'])}
+    feedback = repair_feedback(previous.digest(), entry['report']['results'])
     if len(json.dumps(feedback).encode()) > FEEDBACK_MAX_BYTES:
         _refuse('environment repair feedback exceeds its bound')
     return previous, feedback
@@ -917,7 +943,7 @@ def repair_context(cache: EnvCacheState) -> tuple[EnvironmentManifest | None, di
         _refuse('environment repair requires a prepared fresh cache generation')
     entry = journal.rejected[-1]
     previous = EnvironmentManifest.model_validate(entry['manifest'])
-    return previous, {'rejected_manifest_digest': previous.digest(), 'results': repair_feedback_results(entry['report']['results'])}
+    return previous, repair_feedback(previous.digest(), entry['report']['results'])
 
 
 def finish_attempt(cache: EnvCacheState, success: bool, evidence: dict[str, Any] | None,

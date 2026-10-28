@@ -599,11 +599,17 @@ class DividedConstruction:
         self.feedback = {prefix: entry for prefix, entry in kept.items() if entry}
 
 
+# Bumped whenever what a delta author is shown changes, so a part saved under an earlier brief is never replayed:
+# 2 = repair feedback lists failures first and per owner (e2e-06's authors saw only consequences).
+DELTA_BRIEF_VERSION = 2
+
+
 def delta_part_key(triage_digest: str, process_policy: Mapping[str, Any] | None) -> str:
-    """Keep native delta keys stable; private parts also depend on the delivered carrier policy."""
+    """Keep native delta keys stable; private parts also depend on the delivered carrier policy and brief version."""
     if process_policy is None:
         return triage_digest
-    return hashlib.sha256(canonical({'triage_digest': triage_digest, 'carrier_process_policy': process_policy})).hexdigest()
+    return hashlib.sha256(canonical({'triage_digest': triage_digest, 'carrier_process_policy': process_policy,
+                                     'brief_version': DELTA_BRIEF_VERSION})).hexdigest()
 
 
 def saved_part(budget: AttemptBudget, kind: str, name: str, key: str) -> dict[str, Any] | None:
