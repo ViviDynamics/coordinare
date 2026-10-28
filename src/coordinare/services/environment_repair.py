@@ -7,6 +7,7 @@ import math
 import re
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
@@ -806,6 +807,7 @@ def record_execution_failure(cache: EnvCacheState, report: dict[str, Any], *, cl
 
 
 MAX_FEEDBACK_RESULTS = 16
+FEEDBACK_FIELD_CHARS = 256
 # Commands that ran and failed carry the reason; not_run results only say a prerequisite did not pass.
 _FEEDBACK_ORDER = {'fail': 0, 'indeterminate': 1}
 
@@ -830,19 +832,33 @@ def repair_feedback(rejected_digest: str, results: list[dict[str, Any]]) -> dict
         for depth in range(max(map(len, queues.values()), default=0)):
             chosen.extend(queues[owner][depth] for owner in owners if depth < len(queues[owner]))
     chosen = sorted(chosen[:MAX_FEEDBACK_RESULTS], key=lambda entry: entry[:2])
-    selected = [entry[2] for entry in chosen]
+    # Copies, so the rejected report kept in the journal is never altered. A context is a short label; bound it.
+    selected = [{**entry[2], 'context': str(entry[2].get('context') or '')[:FEEDBACK_FIELD_CHARS]} for entry in chosen]
     feedback = {'rejected_manifest_digest': rejected_digest, 'results': selected}
-    while len(json.dumps(feedback).encode()) > FEEDBACK_MAX_BYTES and len(selected) > 1:
-        # Over the byte bound: drop the least informative result of the owner holding the most.
-        counts = {owner: sum(part_of(item['id']) == owner for item in selected) for owner in owners}
-        position = max(range(len(selected)), key=lambda at: (counts[part_of(selected[at]['id'])] > 1, at))
-        selected.pop(position)
-    while len(json.dumps(feedback).encode()) > FEEDBACK_MAX_BYTES and selected and selected[0].get('output'):
-        # A single result over the bound keeps the start of its output.
-        only = dict(selected[0])
-        only['output'] = only['output'][:len(only['output']) // 2]
-        only['output_truncated'] = True
-        selected[0] = only
+
+    def size() -> int:
+        return len(json.dumps(feedback).encode())
+
+    def halve_longest(floor: int) -> bool:
+        at = max(range(len(selected)), key=lambda position: len(selected[position].get('output') or ''), default=None)
+        if at is None or len(selected[at].get('output') or '') <= floor:
+            return False
+        selected[at] = {**selected[at], 'output': selected[at]['output'][:max(floor, len(selected[at]['output']) // 2)],
+                        'output_truncated': True}
+        return True
+
+    while size() > FEEDBACK_MAX_BYTES:
+        # Shorten outputs before dropping anything: every owner keeps its failures and the start of their reasons.
+        if halve_longest(FEEDBACK_FIELD_CHARS):
+            continue
+        counts = Counter(part_of(item['id']) for item in selected)
+        owner, count = max(counts.items(), key=lambda pair: (pair[1], pair[0]))
+        if count > 1:
+            # The least informative result of the owner holding the most; never an owner's last one.
+            selected.pop(max(position for position, item in enumerate(selected) if part_of(item['id']) == owner))
+            continue
+        if not halve_longest(0):
+            break
     return feedback
 
 

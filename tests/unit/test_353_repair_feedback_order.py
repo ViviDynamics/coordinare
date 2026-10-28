@@ -69,3 +69,27 @@ def test_saved_delta_parts_from_an_earlier_brief_are_never_replayed():
         assert construction.delta_part_key('e' * 64, policy) != key
     finally:
         construction.DELTA_BRIEF_VERSION = original
+
+
+def test_byte_trimming_shortens_outputs_before_dropping_any_owner():
+    emoji = '\U0001F600' * 512
+    results = [_result(f'c0{index}-check', 'fail', emoji) for index in range(3)]
+    feedback = repair_feedback('d' * 64, results)
+    assert len(json.dumps(feedback).encode()) <= FEEDBACK_MAX_BYTES
+    assert [item['id'] for item in feedback['results']] == ['c00-check', 'c01-check', 'c02-check']
+    assert all(item['output'] for item in feedback['results'])
+
+
+def test_dropping_takes_from_the_owner_holding_the_most():
+    wide = '\u00e9' * 2000
+    results = [_result(f'c00-{index}', 'fail', wide) for index in range(14)] + [
+        _result('c01-a', 'fail', wide), _result('c01-b', 'fail', wide)]
+    kept = [item['id'] for item in repair_feedback('d' * 64, results)['results']]
+    assert {'c01-a', 'c01-b'} <= set(kept)
+
+
+def test_a_long_context_is_bounded_and_the_feedback_fits():
+    long_context = {**_result('c00-x', 'fail'), 'context': 'k' * 17000}
+    feedback = repair_feedback('d' * 64, [long_context])
+    assert len(json.dumps(feedback).encode()) <= FEEDBACK_MAX_BYTES
+    assert long_context['context'] == 'k' * 17000
