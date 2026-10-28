@@ -72,7 +72,7 @@ from coordinare.services.environment_scope_reopening import source_conflict_reop
 from coordinare.services.environment_scope_reuse import SCOPE_POLICY_VERSION, reusable_scope
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from coordinare_service_inference.environment.models import CheckResult
 
@@ -513,10 +513,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.executed_manifests = executed_manifests(journal.rejected, source_commit=journal.source_commit)
     budget.repair_triage = repair_triage_for(journal)
     budget.delta_fallback = journal.delta_fallback
-    budget.execution_review_evidence = [{"manifest_digest": entry["manifest_digest"],
-        "manifest": entry["manifest"], "results": [{key: result.get(key) for key in
-        ("id", "status", "required", "exit_code", "duration_seconds")} for result in entry["report"]["results"]]}
-        for entry in journal.rejected]
+    budget.execution_review_evidence = execution_review_evidence(journal.rejected)
     budget.calls, budget.reads = journal.calls, journal.reads
     budget.probe_batches = journal.probe_batches
     budget.probe_reports = list(journal.probe_reports)
@@ -806,6 +803,24 @@ def record_execution_failure(cache: EnvCacheState, report: dict[str, Any], *, cl
     else:
         _publish(cache, journal)
         return True
+
+
+# What a reviewer compares in a rejected manifest: its records and results. Its nested scope contract (reviewers get
+# the scope index) and input digests (they get mandatory_evidence) only bloat every review shard's shared prompt.
+REVIEW_HISTORY_EXCLUDED = frozenset({"scope_contract", "inputs"})
+
+
+def execution_review_evidence(rejected: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Each rejected manifest and its results for the review prompt; scope_contract_digest still binds the scope.
+
+    Dettmore e2e-08: the whole rejected manifest (a 387 KB scope contract and 52 KB of input digests) made every
+    review shard's prompt 638 KB, past the model's context, and the repaired candidate's review failed with HTTP 400.
+    """
+    return [{"manifest_digest": entry["manifest_digest"],
+             "manifest": {key: value for key, value in entry["manifest"].items() if key not in REVIEW_HISTORY_EXCLUDED},
+             "results": [{key: result.get(key) for key in ("id", "status", "required", "exit_code", "duration_seconds")}
+                         for result in entry["report"]["results"]]}
+            for entry in rejected]
 
 
 MAX_FEEDBACK_RESULTS = 16
