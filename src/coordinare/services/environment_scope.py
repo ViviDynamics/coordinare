@@ -335,12 +335,13 @@ RUNTIME_NETWORK_RULE = (
 # Maintainer decision 2026-10-27: building an application's own deployment images under the validation runtime's
 # emulation exceeded an hour on every diagnostic; agents need the development and test environment.
 DEPLOYMENT_IMAGE_RULE = (
-    "Building or running the repository's own application container images or deployment stacks (production or QA "
-    "images built from its Dockerfiles, or compose stacks that run the application itself) is a deployment concern "
-    "outside the development and test environment an agent needs. Mark such an obligation not_applicable with a "
-    "rationale naming the image or stack in the cited source. Installing the container tools, pulling or starting "
-    "third-party service images that development and tests use (a database, a mail catcher), and everything the "
-    "application needs to run its own tests outside a container stay required. "
+    "Building or running the repository's own deployment images (production, QA or release container images built "
+    "from its Dockerfiles, or stacks that exist to run those images) is a deployment concern outside the development "
+    "and test environment an agent needs. Mark such an obligation not_applicable with a rationale naming the image or "
+    "stack in the cited source. This never covers a documented development container or compose environment that is "
+    "the way to develop or run the tests, an image build or container run that a test suite itself performs, or "
+    "third-party service images that development and tests use (a database, a mail catcher): those, the container "
+    "tools, and everything the application needs to run its own tests stay required. "
 )
 REVIEW_INSTRUCTIONS = (
     'Independently review source-defined scope, not an executable candidate. You have no author conversation. '

@@ -281,5 +281,7 @@ def test_building_or_running_the_apps_own_deployment_images_is_released_like_rem
     assert DEPLOYMENT_IMAGE_RULE in REVIEW_INSTRUCTIONS and DEPLOYMENT_IMAGE_RULE in GRANULARITY_GUIDANCE
     assert "deployment_image" in REVISION_INSTRUCTIONS
     assert "third-party service images" in DEPLOYMENT_IMAGE_RULE and "stay required" in DEPLOYMENT_IMAGE_RULE
+    assert "documented development container or compose environment" in DEPLOYMENT_IMAGE_RULE
+    assert "a test suite itself performs" in DEPLOYMENT_IMAGE_RULE
     assert "deployment_image" in FindingProposal.model_json_schema()["properties"]["category"]["enum"]
     assert "deployment_image" in SourceGapKind.__args__

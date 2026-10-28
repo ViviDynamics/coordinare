@@ -111,7 +111,12 @@ from coordinare.services.environment_response_schema import (
     invoke_recorded,
     response_schema,
 )
-from coordinare.services.environment_scope import RELEASE_CATEGORIES
+from coordinare.services.environment_scope import (
+    DEPLOYMENT_IMAGE_RULE,
+    RELEASE_CATEGORIES,
+    REMOTE_STATE_RULE,
+    RUNTIME_NETWORK_RULE,
+)
 from coordinare.services.environment_shard_construction import (
     GLOBAL_AUTHOR_INSTRUCTION,
     GLOBAL_OWNER,
@@ -222,6 +227,9 @@ EXECUTABLE_REVIEW_INSTRUCTIONS = (
     'requiring discovery to obtain operational capability evidence; this does not accept coverage. '
     'The requested project environment scope is fixed by pinned development/test evidence, not image convenience. '
     'A false-positive or out-of-scope explanation needs independently cited reasoning and cannot weaken required obligations. '
+    'The one exception: a required obligation that a release rule below covers is not repaired. Raise a finding with '
+    'category remote_state, runtime_network or deployment_image naming its checks; the daemon reopens independent scope '
+    'review to release it. ' + REMOTE_STATE_RULE + RUNTIME_NETWORK_RULE + DEPLOYMENT_IMAGE_RULE +
     'No new privileges, host sockets or verification network are available. A CLI version cannot prove service usability. '
     'The daemon independently fetched and verified every manifest input; mandatory_evidence indexes them '
     '(path, digest, size and the criteria citing each). Read the inputs you need to judge each cited requirement '

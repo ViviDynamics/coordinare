@@ -13,13 +13,18 @@ a database and services, and the ability to run the tests and linters.
 
 ## Decision
 
-Building or running the repository's own application container images or deployment stacks (production or QA images
-built from its Dockerfiles, or compose stacks that run the application itself) is a deployment concern outside the
-development and test environment an agent needs. Such an obligation is classified `not_applicable`, with a rationale
-naming the image or stack in the cited source.
+Building or running the repository's own deployment images (production, QA or release container images built from
+its Dockerfiles, or stacks that exist to run those images) is a deployment concern outside the development and test
+environment an agent needs. Such an obligation is classified `not_applicable`, with a rationale naming the image or
+stack in the cited source.
 
-Installing the container tools, pulling or starting third-party service images that development and tests use, and
-everything the application needs to run its own tests outside a container stay required.
+The release never covers:
+
+- a documented development container or compose environment that is the way to develop or run the tests;
+- an image build or container run that a test suite itself performs;
+- third-party service images that development and tests use.
+
+Those, the container tools, and everything the application needs to run its own tests stay required.
 
 ## Mechanism
 
@@ -30,5 +35,6 @@ It reuses the remote-state and runtime-network mechanism:
   and gap kind `deployment_image`, naming the criteria.
 - `released_criteria` and executable-phase `release_requests` treat `deployment_image` like the other release
   categories, so the author may reassess those criteria as `not_applicable` and obligation preservation honours it.
+- Executable reviewers carry all three release rules and raise the category instead of demanding repairs.
 
 A reused scope always gets one fresh review, so the rule applies from the next run without new scope authoring.

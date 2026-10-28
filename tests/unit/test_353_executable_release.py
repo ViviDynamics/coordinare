@@ -159,3 +159,16 @@ def test_a_deployment_image_finding_requests_release_like_a_network_finding():
                                                                    affected_ids=['c01-prod-stack']))
     ledger = SimpleNamespace(records=[finding], open_ids=lambda: ['F0001'])
     assert release_requests(ledger, manifest, scope) == ['S0000000000000002']
+
+
+def test_executable_reviewers_are_told_how_to_release_rather_than_repair():
+    from coordinare.services.environment_discovery import EXECUTABLE_REVIEW_INSTRUCTIONS
+    from coordinare.services.environment_scope import (
+        DEPLOYMENT_IMAGE_RULE,
+        REMOTE_STATE_RULE,
+        RUNTIME_NETWORK_RULE,
+    )
+
+    for rule in (REMOTE_STATE_RULE, RUNTIME_NETWORK_RULE, DEPLOYMENT_IMAGE_RULE):
+        assert rule in EXECUTABLE_REVIEW_INSTRUCTIONS
+    assert 'deployment_image' in EXECUTABLE_REVIEW_INSTRUCTIONS
