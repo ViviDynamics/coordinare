@@ -144,11 +144,15 @@ def duplicate_aliases(previous: EnvironmentManifest, candidate: EnvironmentManif
     and at least its timeout. A correction that merges duplicates this way keeps every obligation.
     """
     before, after = _commands(previous), _commands(candidate)
+    previous_checks, candidate_checks = {check.id for check in previous.checks}, {check.id for check in candidate.checks}
     aliases: dict[str, str] = {}
     for identifier, old in before.items():
         if identifier in after:
             continue
-        for new in after.values():
+        # A replacement of the same kind first: only a check can keep a dropped check's criterion coverage, so an
+        # identical install command must never be chosen over the kept check (a merge fold keeps the check).
+        same_kind = identifier in previous_checks
+        for new in sorted(after.values(), key=lambda command: (command.id in candidate_checks) != same_kind):
             if (content_key(new) == content_key(old) and (new.required or not old.required)
                     and set(old.depends_on) <= set(new.depends_on) and new.timeout_seconds >= old.timeout_seconds):
                 aliases[identifier] = new.id

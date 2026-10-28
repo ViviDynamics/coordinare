@@ -341,3 +341,15 @@ async def test_a_part_is_judged_again_when_a_prerequisite_it_reads_changes(monke
     await discovery._divided_review(build_stub, attempt, changed, reviewer)
     # c00 changed its own check; c01 is re-judged through its dependency digest although its own check is unchanged.
     assert sorted(calls) == ["S1", "S2"]
+
+
+def test_a_dropped_check_is_aliased_to_the_identical_check_not_to_an_identical_install_command():
+    """Review r4 of the pinned-copy fold: only a check can keep a dropped check's criterion coverage."""
+    previous = build(install=[cmd("install-tool", ["tool", "--version"])],
+                     checks=[cmd("c00-tool", ["tool", "--version"]), cmd("check-other", ["other"])],
+                     criterion_checks={"S1": ["c00-tool"]})
+    candidate = build(install=[cmd("install-tool", ["tool", "--version"])],
+                      checks=[cmd("env-tool", ["tool", "--version"]), cmd("check-other", ["other"])],
+                      criterion_checks={"S1": ["env-tool"]})
+    assert duplicate_aliases(previous, candidate) == {"c00-tool": "env-tool"}
+    preserve_obligations(candidate, previous)
