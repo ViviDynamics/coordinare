@@ -215,6 +215,7 @@ async def test_an_installer_that_crashes_before_reporting_is_held_with_a_redacte
     assert (result['status'], result['reason_code']) == ('held', 'installer_crashed')
     assert 'Out of memory' in result['installer_output_tail']
     assert 'ghp_' + 'a' * 36 not in result['installer_output_tail']
+    assert 'ghp_' + 'a' * 36 not in (tmp_path/'installer-output.json').read_text()
     verifier.assert_not_awaited()
     service.on_bootstrap_complete.assert_called_once_with('sym', False, {'env_cache': {'sym': cache}})
 
