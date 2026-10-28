@@ -1327,10 +1327,17 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
         discovery.inputs.update(build.group_inputs)
         await attempt.construction.observe_sources(discovery.inputs)
         try:
-            # Nor drops a required id a repair must keep, read every round: the validator pins ids as candidates arrive.
-            pinned = {identifier for ids in attempt.required_ids.values() for identifier in ids}
-            merged = merge_parts(global_data, [part for _group, part in parts.values()], pinned=pinned,
-                                 executed=executed)
+            folded: dict[str, str] = {}
+            merged = merge_parts(global_data, [part for _group, part in parts.values()], executed=executed,
+                                 folded=folded)
+            # A required copy folded into an identical global check keeps its obligation under the kept id; the
+            # validator pins ids as candidates arrive, so two copies once distinct can both be required (e2e-07).
+            # The same holds for a requirement's locked check list in the obligation ledger.
+            for required in [*attempt.required_ids.values(), *attempt.obligation_ledger.coverage.values()]:
+                for dropped, kept in folded.items():
+                    if dropped in required:
+                        required.discard(dropped)
+                        required.add(kept)
             validate(merged)
         except (EnvironmentDiscoveryError, ValidationError) as exc:
             if plan is not None:

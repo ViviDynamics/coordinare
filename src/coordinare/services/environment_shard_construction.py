@@ -297,11 +297,12 @@ def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[
 
 
 def merge_parts(global_data: Mapping[str, Any], parts: Sequence[ShardChecks], *,
-                pinned: Collection[str] = frozenset(), executed: Collection[str] = frozenset()) -> dict[str, Any]:
+                executed: Collection[str] = frozenset(), folded: dict[str, str] | None = None) -> dict[str, Any]:
     """Global declaration plus every part's checks and mappings; a collision is an error, never a choice.
 
-    A merge never removes a ``pinned`` check (a repair must keep every earlier required id) and never rewrites an
-    ``executed`` one beyond a longer timeout.
+    A merge never removes nor rewrites (beyond a longer timeout) an ``executed`` check. Each group copy it folds into
+    an identical global check is reported in ``folded`` (dropped id to kept id), so the caller can carry a required
+    id's obligation over to the kept command.
     """
     merged = copy.deepcopy(dict(global_data))
     checks = list(merged.get('checks', []) or [])
@@ -322,13 +323,15 @@ def merge_parts(global_data: Mapping[str, Any], parts: Sequence[ShardChecks], *,
             mapping[criterion] = list(identifiers)
     merged['checks'] = checks
     merged['criterion_checks'] = mapping
-    _merge_group_copies_of_global_checks(merged, global_ids, {str(identifier) for identifier in seen} - global_ids,
-                                         frozenset(pinned), frozenset(executed))
+    aliases = _merge_group_copies_of_global_checks(merged, global_ids, {str(identifier) for identifier in seen} - global_ids,
+                                                   frozenset(executed))
+    if folded is not None:
+        folded.update(aliases)
     return merged
 
 
 def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set[str], group_ids: set[str],
-                                         pinned: frozenset[str], executed: frozenset[str]) -> None:
+                                         executed: frozenset[str]) -> dict[str, str]:
     """A check group's identical copy of a global check becomes the global one, keeping every obligation of both.
 
     No check author sees another part's checks, so it cannot correct a copy (e2e-03 spent every merge round on
@@ -336,9 +339,10 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
     required if either was, and the copy's references move to it. Every part may name a global check, so the merged
     manifest still splits into valid parts for a later repair. Left to the authors: a copy depending on a group's
     check, which the global part could not declare, or one whose dependencies would reach the global check (a cycle);
-    copies between two groups, which neither group could reference; duplicates inside one part; a pinned copy, which
-    a repair must keep; and a fold that would change an executed check beyond a longer timeout, whether the global
-    check it lands in or a check depending on the copy.
+    copies between two groups, which neither group could reference; duplicates inside one part; an executed copy,
+    which must survive execution preservation; and a fold that would change an executed check beyond a longer timeout,
+    whether the global check it lands in or a check depending on the copy. A required (pinned) copy may fold: its
+    obligation is the identical command, kept under the global id (e2e-07 deadlocked on two pinned copies).
     """
     checks = [check for check in merged['checks'] if isinstance(check, dict)]
     graph = {str(record['id']): list(record.get('depends_on') or []) for record in _commands(merged)}
@@ -353,7 +357,7 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
         if command.id in global_ids:
             globals_by_key.setdefault(key, (check, command))
             continue
-        if key not in globals_by_key or command.id not in group_ids or command.id in pinned:
+        if key not in globals_by_key or command.id not in group_ids or command.id in executed:
             continue
         kept, model = globals_by_key[key]
         added = [dependency for dependency in command.depends_on if dependency not in model.depends_on]
@@ -371,7 +375,7 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
         graph[model.id] = list(model.depends_on)
         globals_by_key[key] = (kept, model)
     if not alias:
-        return
+        return alias
 
     def remap(identifiers: list[str], *, exclude: str | None = None) -> list[str]:
         """A dropped copy's id becomes the kept one. Only the duplicate or self-reference that this creates is
@@ -395,6 +399,7 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
     for requirement in merged.get('requirements') or []:
         if isinstance(requirement, dict) and requirement.get('checks'):
             requirement['checks'] = remap(requirement['checks'])
+    return alias
 
 
 def _commands(data: Mapping[str, Any]) -> list[dict[str, Any]]:

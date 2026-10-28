@@ -81,11 +81,18 @@ def test_a_global_check_relying_on_defaults_keeps_them_when_a_shorter_optional_c
     assert kept['id'] == 'check-health' and kept['timeout_seconds'] == 180 and kept['required'] is True
 
 
-def test_a_pinned_group_copy_is_never_dropped():
-    """A repair's validator refuses removal of any earlier required id, so dropping one would fail every round."""
+def test_an_executed_group_copy_is_never_dropped():
+    """Execution preservation requires every executed required check to survive under its own id."""
     c00 = _part([_cmd('c00-health', 'health')], {'S1': ['c00-health']})
-    merged = merge_parts({'checks': [_cmd('check-health', 'health')]}, [c00], pinned={'c00-health'})
+    merged = merge_parts({'checks': [_cmd('check-health', 'health')]}, [c00], executed={'c00-health'})
     assert [check['id'] for check in merged['checks']] == ['check-health', 'c00-health']
+
+
+def test_every_fold_is_reported_so_a_required_id_can_follow_it():
+    folded: dict[str, str] = {}
+    c00 = _part([_cmd('c00-jq', 'jq'), _cmd('c00-own', 'own')], {'S1': ['c00-jq', 'c00-own']})
+    merge_parts({'checks': [_cmd('env-jq', 'jq')]}, [c00], folded=folded)
+    assert folded == {'c00-jq': 'env-jq'}
 
 
 def test_an_executed_global_check_absorbs_a_copy_only_when_nothing_but_its_timeout_grows():

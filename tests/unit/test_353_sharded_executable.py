@@ -165,7 +165,7 @@ class FakeBuild:
         return {group.prefix: (group, validate_group(group_reply(group), group=group, summary=summary)) for group in asked}
 
 
-async def merge_with(monkeypatch, validate, *, global_data=None, required_ids=None):
+async def merge_with(monkeypatch, validate, *, global_data=None, required_ids=None, obligation_ledger=None):
     groups = [CheckGroup('c00-', (make_criterion(1),)), CheckGroup('c01-', (make_criterion(2),))]
     build = FakeBuild(groups)
     phases: list[int] = []
@@ -183,6 +183,7 @@ async def merge_with(monkeypatch, validate, *, global_data=None, required_ids=No
 
     messages = [{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}]
     attempt = SimpleNamespace(budget=budget, required_ids={} if required_ids is None else required_ids, discovery=inspection,
+                              obligation_ledger=obligation_ledger or discovery_module._ObligationLedger(),
                               messages=messages, chat=None, delta=None,
                               prior_manifests=[], construction=SimpleNamespace(observe_sources=observe))
     merged = await discovery_module._divided_candidate(build, attempt, validate)
@@ -504,7 +505,7 @@ async def test_a_redone_group_that_splits_replaces_its_earlier_part(monkeypatch)
 
     monkeypatch.setattr(discovery_module, '_phase', phase)
     budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
-    attempt = SimpleNamespace(budget=budget, required_ids={}, delta=None, messages=[{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}],
+    attempt = SimpleNamespace(budget=budget, required_ids={}, obligation_ledger=SimpleNamespace(coverage={}), delta=None, messages=[{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}],
                               chat=None, prior_manifests=[], discovery=SimpleNamespace(budget=budget, inputs={}, finding_responses=[]),
                               construction=SimpleNamespace(observe_sources=lambda _inputs: asyncio.sleep(0)))
     merged = await discovery_module._divided_candidate(build, attempt, validate)
@@ -911,20 +912,22 @@ async def test_a_folded_group_copy_survives_into_the_global_part_a_revision_rest
 
 
 @pytest.mark.asyncio
-async def test_an_id_the_validator_pins_during_the_merge_rounds_is_not_folded_away_later(monkeypatch):
-    """The validator pins ids as candidates arrive; a fold must read the pins every round, not once at entry."""
+async def test_a_pinned_copy_folds_and_its_obligation_moves_to_the_kept_id(monkeypatch):
+    """e2e-07: two once-distinct copies were both pinned, then made identical; neither could be folded or removed, and
+    every merge round failed. A required copy now folds, and the pin follows it to the identical kept command."""
     _with_toolchain_copy(monkeypatch)
-    required_ids: dict[str, set[str]] = {'checks': set()}
-    calls: list[int] = []
-    criterion = make_criterion(1).id
+    required_ids: dict[str, set[str]] = {'checks': {'c00-toolchain', 'toolchain'}}
 
     def validate(data):
-        calls.append(1)
-        if len(calls) == 1:
-            required_ids['checks'].add('c00-toolchain')
-            raise EnvironmentDiscoveryError(f'criterion "{criterion}" needs a working check', code='obligation_removed')
+        current = {check['id'] for check in data['checks']}
+        if not required_ids['checks'] <= current:
+            raise EnvironmentDiscoveryError('required obligation removed during repair', code='obligation_removed')
         return data
 
-    merged, _build, _phases, _messages = await merge_with(monkeypatch, validate, required_ids=required_ids)
-    assert len(calls) == 2
-    assert 'c00-toolchain' in {check['id'] for check in merged['checks']}
+    ledger = discovery_module._ObligationLedger()
+    ledger.coverage['req-tool'] = {'c00-toolchain'}
+    merged, _build, _phases, _messages = await merge_with(monkeypatch, validate, required_ids=required_ids,
+                                                          obligation_ledger=ledger)
+    assert 'c00-toolchain' not in {check['id'] for check in merged['checks']}
+    assert required_ids['checks'] == {'toolchain'}
+    assert ledger.coverage['req-tool'] == {'toolchain'}

@@ -106,3 +106,12 @@ def test_the_byte_bound_always_holds_and_the_report_is_never_altered():
     assert results == original
     assert feedback['results'] and all('manifest_digest' not in item for item in feedback['results'])
     assert all(item['exit_code'] is None for item in feedback['results'])
+
+
+def test_the_last_fallback_drops_whole_results_when_ids_alone_exceed_the_bound():
+    """Sixteen single-result owners whose ids alone (bounded at 128 characters) overflow, with nothing left to shorten."""
+    results = [_result(f'c{index:02d}-' + '\U0001F600' * 124, 'fail') for index in range(16)]
+    feedback = repair_feedback('d' * 64, results)
+    assert len(json.dumps(feedback).encode()) <= FEEDBACK_MAX_BYTES
+    assert 0 < len(feedback['results']) < 16
+    assert [item['id'][:4] for item in feedback['results']] == [f'c{index:02d}-' for index in range(len(feedback['results']))]

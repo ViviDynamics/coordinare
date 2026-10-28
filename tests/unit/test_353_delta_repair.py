@@ -280,7 +280,7 @@ def replay_attempt(budget: AttemptBudget, plan: DeltaPlan | None, messages: list
         return None
 
     messages = messages or [{'role': 'system', 'content': 'Synthetic author'}, {'role': 'user', 'content': '{}'}]
-    return SimpleNamespace(budget=budget, required_ids={}, delta=plan, discovery=discovery_stub(), messages=messages, chat=None,
+    return SimpleNamespace(budget=budget, required_ids={}, obligation_ledger=SimpleNamespace(coverage={}), delta=plan, discovery=discovery_stub(), messages=messages, chat=None,
                            construction=SimpleNamespace(observe_sources=observe), prior_manifests=[plan.base] if plan else [])
 
 
@@ -380,7 +380,7 @@ async def test_replay_sample_review_judges_only_the_changed_part_and_carries_the
     groups, _criteria = fixture_groups(manifest)
     budget = gen0_budget(triage)
     budget.repair_delta = False
-    base_attempt = SimpleNamespace(budget=budget, required_ids={}, delta=None, identity={"symphony_name": "suite"},
+    base_attempt = SimpleNamespace(budget=budget, required_ids={}, obligation_ledger=SimpleNamespace(coverage={}), delta=None, identity={"symphony_name": "suite"},
                                    discovery=SimpleNamespace(finding_responses=[]))
     build = SimpleNamespace(groups=groups, scope=SimpleNamespace(definition=SimpleNamespace(criteria=[]), finding_ledger=None),
                             context=None, concurrency=4)
@@ -412,7 +412,7 @@ async def test_replay_sample_review_judges_only_the_changed_part_and_carries_the
     candidate = as_manifest(changed, manifest)
     before = counter.calls["review"]
     seen.clear()
-    delta_attempt = SimpleNamespace(budget=budget, required_ids={}, delta=plan, identity={"symphony_name": "suite"},
+    delta_attempt = SimpleNamespace(budget=budget, required_ids={}, obligation_ledger=SimpleNamespace(coverage={}), delta=plan, identity={"symphony_name": "suite"},
                                     discovery=SimpleNamespace(finding_responses=[]))
     budget.repair_delta = True
     await discovery_module._divided_review(build, delta_attempt, candidate, reviewer)
