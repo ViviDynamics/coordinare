@@ -144,14 +144,12 @@ def test_a_check_author_is_corrected_on_a_self_matching_pattern_while_authoring(
 
 
 @pytest.mark.parametrize('script', [
-    'pkill -u root -f bin/mock || true; exit 0',
-    'pkill -G root -f bin/mock || true; exit 0',
-    "pkill -f '^.*bin/mock' || true; exit 0",
-    "pkill -f '^bash -c pkill' || true; exit 0",
     'pkill -f bin/mock >/dev/null 2>&1 || true; exit 0',
     'pkill --signal TERM -f bin/mock 2>&1; echo stopped',
+    'pkill -9 -f bin/maxio-mock; exit 0',
+    'MODE=test pgrep -f bin/mock; echo ready',
 ])
-def test_selectors_and_anchors_that_still_reach_the_shell_are_corrected(script):
+def test_the_plain_literal_form_is_corrected_whatever_surrounds_it(script):
     assert _rejected(others=[_cmd('mock-stop', 'bash', '-c', script)]).type == 'self_matching_process_pattern'
 
 
@@ -201,5 +199,19 @@ def test_the_correction_recommends_a_pid_file_only():
     ('true', "pgrep -fx '/opt/app/server --port 8080' && echo ready"),
 ])
 def test_review_r4_valid_commands_are_admitted(install, other):
+    validate_static_rules([_cmd('install-x', 'bash', '-c', install)], NO_ACTIVATION, 'linux/aarch64',
+                          others=[_cmd('probe-x', 'bash', '-c', other)], system_packages=False)
+
+
+@pytest.mark.parametrize(('install', 'other'), [
+    ('apt search install', 'true'),
+    ('zypper search install', 'true'),
+    ('true', 'pgrep -F/tmp/foo.pid worker && echo ready'),
+    ('true', "pgrep -f 'worker$' && echo ready"),
+    ('true', 'MODE=test exec pgrep -f bin/mock; echo ready'),
+    ('true', 'pkill -u root -f bin/mock || true; exit 0'),
+])
+def test_review_r5_valid_or_unjudged_commands_are_admitted(install, other):
+    """Only the certain forms are judged: an install subcommand, and a plain -f literal with at most a signal."""
     validate_static_rules([_cmd('install-x', 'bash', '-c', install)], NO_ACTIVATION, 'linux/aarch64',
                           others=[_cmd('probe-x', 'bash', '-c', other)], system_packages=False)

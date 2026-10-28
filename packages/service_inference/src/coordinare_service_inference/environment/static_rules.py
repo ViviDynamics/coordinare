@@ -200,57 +200,60 @@ _NO_INSTALL = frozenset({"-s", "--simulate", "--just-print", "--dry-run", "--rec
 
 
 def system_package_install(command: Command) -> bool:
+    """A package manager whose subcommand (its first non-option word) installs, or dpkg -i: an option before the
+    subcommand that takes a separate value hides it, which is an accepted miss."""
     for words in _segments(command):
         words = _program(words)
-        if (words and (verbs := _PACKAGE_INSTALL.get(words[0].rsplit("/", 1)[-1])) and verbs & set(words[1:])
-                and not _NO_INSTALL & set(words[1:])):
+        if not words or (verbs := _PACKAGE_INSTALL.get(words[0].rsplit("/", 1)[-1])) is None:
+            continue
+        arguments = words[1:]
+        if _NO_INSTALL & set(arguments):
+            continue
+        if words[0].rsplit("/", 1)[-1] == "dpkg":
+            if verbs & set(arguments):
+                return True
+        elif (subcommand := next((word for word in arguments if not word.startswith("-")), None)) in verbs:
             return True
     return False
 
 
-# pkill and pgrep options that take a separate value, which is never the pattern.
-_VALUED = frozenset({"-u", "-U", "-G", "-g", "-s", "-t", "-P", "--signal", "--euid", "--uid", "--group", "--pgroup",
-                     "--session", "--terminal", "--parent", "--ns", "--nslist", "--pidfile", "-F"})
-_REGEX_META = re.compile(r"[.*+?\[\](){}|\\$^]")
+# A full-command-line match is judged only in its plainest form: exactly -f or --full, otherwise at most a signal,
+# on a literal pattern. A literal appears verbatim in the script's own command line, so it certainly matches the
+# shell; any other option or any regular-expression syntax is not judged.
+_SIGNAL = re.compile(r"-(\d+|[A-Z][A-Z0-9+-]*)")
+_LITERAL = re.compile(r"[A-Za-z0-9_./:@%=,~ -]+")
 
 
-def _full_match(words: list[str], shell_line: str) -> bool:
-    """pkill or pgrep matching the whole command line (-f, --full, or -f combined with other short flags) on a pattern
-    that the script's own shell command line could match. Not judged: a parent-pid selector (-P), which the shell is
-    not a child of; a bracket expression such as [b]in/tool, which cannot match its own literal text; and a ^-anchored
-    pattern whose literal start differs from the start of the shell's command line."""
+def _certain_self_match(words: list[str]) -> bool:
     if words[0].rsplit("/", 1)[-1] not in {"pkill", "pgrep"}:
         return False
-    flags = [word for word in words[1:] if word.startswith("-")]
-    full = any(flag == "--full" or (not flag.startswith("--") and "f" in flag[1:]) for flag in flags)
-    exact = any(flag == "--exact" or (not flag.startswith("--") and "x" in flag[1:]) for flag in flags)
-    if not full or exact or any(flag == "-P" or flag.split("=", 1)[0] == "--parent" for flag in flags):
-        return False
-    operands, rest = [], iter(words[1:])
+    operands: list[str] = []
+    full = False
+    rest = iter(words[1:])
     for word in rest:
-        if word in _VALUED:
+        if word in {"-f", "--full"}:
+            full = True
+        elif word == "--signal":
             next(rest, None)
-        elif not word.startswith("-"):
+        elif word.startswith("--signal=") or _SIGNAL.fullmatch(word):
+            continue
+        elif word.startswith("-"):
+            return False
+        else:
             operands.append(word)
-    if not operands or "[" in (pattern := operands[-1]):
-        return False
-    if pattern.startswith("^"):
-        literal = _REGEX_META.split(pattern[1:], maxsplit=1)[0]
-        return not literal or shell_line.startswith(literal)
-    return True
+    return full and len(operands) == 1 and bool(_LITERAL.fullmatch(operands[0]))
 
 
 def self_matching_process_pattern(command: Command) -> bool:
     """A full-command-line pkill or pgrep inside a shell script that does more than that one command: the shell stays
     alive with the pattern in its own command line, so it matches (and pkill kills) itself. A shell running only the
-    match replaces itself with it, and pkill and pgrep never match themselves."""
+    match replaces itself with it, as exec does, and pkill and pgrep never match themselves."""
     if not (len(command.argv) == 3 and command.argv[0].rsplit("/", 1)[-1] in _SHELLS and command.argv[1] == "-c"):
         return False
     segments = _segments(command)
-    shell_line = " ".join(command.argv)
-    # A match run through exec has already replaced the shell, so it cannot find it.
-    return len(segments) > 1 and any(_full_match(program, shell_line) for words in segments
-                                     if words[0] != "exec" and (program := _program(words)))
+    return len(segments) > 1 and any(
+        _certain_self_match(program) for words in segments
+        if (program := _program(words)) and "exec" not in words[:len(words) - len(program)])
 
 
 def validate_static_rules(install: Sequence[Command], activation: Activation, platform: str | None = None, *,
