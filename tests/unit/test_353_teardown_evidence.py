@@ -405,7 +405,7 @@ async def test_a_token_split_by_the_clip_boundary_is_still_redacted():
             return ('x' * 400 + 'token=' + token + ' ' + 'y' * 280).encode(), b''
 
     _, detail = await env_cache._verify_outcome(Crashed(), 'verify-x', 'sym', 'script')
-    assert 'd' * 30 not in detail
+    assert 'd' * 10 not in detail  # the clipped tail keeps 19 characters of the token unless redacted first
 
 
 def test_result_json_evidence_has_redacted_outputs_and_the_original_is_untouched():
