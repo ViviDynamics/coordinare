@@ -1089,7 +1089,7 @@ class ServiceInferenceConfig(BaseModel):
 ONE_HOUR_SECONDS = 3600
 # Maintainer ruling for sharded source discovery (issue 353): calls, reads and the attempt deadline.
 SHARDED_BUDGET_DEFAULTS = {"manifest_max_model_calls": 1024, "manifest_max_total_reads": 8192,
-                           "manifest_attempt_timeout_seconds": 4 * 3600.0,
+                           "manifest_attempt_timeout_seconds": 6 * 3600.0,
                            "manifest_max_coverage_revisions": 8, "manifest_max_scope_revisions": 8}
 
 
@@ -1120,10 +1120,10 @@ class EnvCacheConfig(BaseModel):
     manifest_max_file_bytes: int = Field(default=256 * 1024, ge=1, le=4 * 1024 * 1024)
     manifest_max_source_bytes: int = Field(default=4 * 1024 * 1024, ge=1, le=16 * 1024 * 1024)
     manifest_max_inventory_entries: int = Field(default=100_000, ge=1, le=1_000_000)
-    # Over one hour only for sharded discovery, whose attempts may run up to four hours.
+    # Over one hour only for sharded discovery; one phase may take up to four hours of an attempt's six.
     manifest_phase_timeout_seconds: float = Field(default=120.0, gt=0, le=4 * 3600)
-    # Up to one hour; sharded discovery (manifest_shard_context_tokens set) may run up to four.
-    manifest_attempt_timeout_seconds: float = Field(default=600.0, gt=0, le=4 * 3600)
+    # Up to one hour; sharded discovery (manifest_shard_context_tokens set) may run up to six.
+    manifest_attempt_timeout_seconds: float = Field(default=600.0, gt=0, le=6 * 3600)
     manifest_max_model_calls: int = Field(default=128, ge=1, le=4096)
     manifest_max_total_reads: int = Field(default=512, ge=1, le=8192)
     manifest_max_review_context_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)

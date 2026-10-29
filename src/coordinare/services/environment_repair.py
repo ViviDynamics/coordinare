@@ -945,6 +945,9 @@ def prepare_repair(cache: EnvCacheState) -> tuple[EnvironmentManifest, dict[str,
     journal.repair_triage_unavailable = triage is None
     # Each generation starts from delta repair again; a fallback applies to the generation that needed it.
     journal.delta_fallback = False
+    # Maintainer ruling (2026-10-29): each execution repair gets its own schema-correction budget. Construction's review
+    # rounds used six of e2e-11's eight, leaving its repair two.
+    journal.schema_repairs = 0
     journal.status = 'discovering'
     new_path = cache.cache_dir.parent / _generation(journal)
     if new_path.exists() or new_path.is_symlink():

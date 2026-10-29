@@ -29,8 +29,9 @@ if TYPE_CHECKING:
 
 
 MAX_ATTEMPT_SECONDS = 3600
-# Maintainer ruling (issue 353): sharded discovery on a self-hosted model may run up to four hours.
-MAX_SHARDED_ATTEMPT_SECONDS = 4 * 3600
+# Maintainer rulings (issue 353): sharded discovery on a self-hosted model may run up to six hours (raised from four
+# on 2026-10-29: scope re-review, review rounds, install, a repair and the offline consumer did not fit in four).
+MAX_SHARDED_ATTEMPT_SECONDS = 6 * 3600
 REPAIR_LIMITS = {"schema": 8, "coverage": 8, "scope": 8, "execution": 2}
 MAX_PROBE_BATCHES = 2
 # Each execution repair relocates its cache and brings one more probe batch (see reserve_probe_batch).
