@@ -1126,3 +1126,22 @@ def test_a_credential_or_variable_name_never_attributes_a_promoted_check():
         assert discovery_module._attributed(errors, ValueError(), parts, promoted) == []
     reserved = [{'location': [], 'code': 'runtime_env_reserved', 'unavailable': ['DOCKER_HOST'], 'command_id': 'DB_URL'}]
     assert discovery_module._attributed(reserved, ValueError(), parts, promoted) == [group]
+
+
+def test_a_rejected_round_never_retains_a_global_copy_dropped_for_an_executed_check():
+    """Review: rollback locked the unfolded candidate, so the dropped copy became retained and no later round could
+    drop it again; every round then repeated the duplicate until the merge rounds ran out."""
+    from coordinare.services.environment_shard_construction import FoldPolicy, merge_parts
+
+    global_data = {'checks': [_check('env-ruby', 'ruby'), _check('suite-copy', 'suite')]}
+    parts = [ShardChecks.model_validate({'checks': [_check('c00-suite', 'suite')], 'criterion_checks': {'S1': ['c00-suite']}})]
+    folded: dict[str, str] = {}
+    merge_parts(global_data, parts, folded=folded, policy=FoldPolicy(executed={'c00-suite'}))
+    assert folded == {'suite-copy': 'c00-suite'}
+    unfolded = discovery_module._unfolded(global_data, parts, folded)
+    assert [check['id'] for check in unfolded['checks']] == ['env-ruby', 'c00-suite']
+    _required, ledger = _rollback(required=[], coverage={}, after_required=[], after_coverage={}, unfolded=unfolded)
+    assert 'suite-copy' not in ledger.checks
+    again: dict[str, str] = {}
+    merge_parts(global_data, parts, folded=again, policy=FoldPolicy(executed={'c00-suite'}, retained=ledger.checks))
+    assert again == {'suite-copy': 'c00-suite'}

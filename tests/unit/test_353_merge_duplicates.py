@@ -83,8 +83,9 @@ def test_an_executed_group_copy_is_never_dropped():
     """Execution preservation requires every executed required check to survive under its own id; the new global copy
     is the one that goes."""
     c00 = _part([_cmd('c00-health', 'health')], {'S1': ['c00-health']})
-    merged = merge_parts({'checks': [_cmd('check-health', 'health')]}, [c00], policy=FoldPolicy(executed={'c00-health'}))
-    assert [check['id'] for check in merged['checks']] == ['c00-health']
+    merged = merge_parts({'checks': [_cmd('env-x', 'x'), _cmd('check-health', 'health')]}, [c00],
+                         policy=FoldPolicy(executed={'c00-health'}))
+    assert [check['id'] for check in merged['checks']] == ['env-x', 'c00-health']
 
 
 def test_every_fold_is_reported_so_a_required_id_can_follow_it():
@@ -268,3 +269,33 @@ def test_a_kept_group_check_is_never_read_as_a_promotion():
     global_data = {'checks': [_cmd('rspec-run', 'rspec')]}
     assert _promoted_sources({'rspec-run': 'c00-rspec'}, global_data) == {}
     assert _promoted_sources({'c00-x': 'x-shared', 'c01-x': 'x-shared'}, global_data) == {'x-shared': ['c00-x', 'c01-x']}
+
+
+def test_a_global_copy_a_criterion_maps_to_is_kept():
+    """Review: c01 mapping a criterion to the global copy could not name c00's check after a split."""
+    global_data = {'checks': [_cmd('env-ruby', 'ruby'), _cmd('suite-copy', 'suite')]}
+    c00 = _part([_cmd('c00-suite', 'suite')], {'S1': ['c00-suite']})
+    c01 = _part([_cmd('c01-own', 'own')], {'S2': ['suite-copy', 'c01-own']})
+    folded: dict[str, str] = {}
+    merged = merge_parts(global_data, [c00, c01], folded=folded, policy=FoldPolicy(executed={'c00-suite'}))
+    assert 'suite-copy' in [check['id'] for check in merged['checks']] and folded == {}
+
+
+def test_the_last_global_check_is_never_dropped():
+    """A global part needs a check of its own to validate alone after a split."""
+    global_data = {'checks': [_cmd('suite-copy', 'suite'), _cmd('lint-copy', 'lint')]}
+    c00 = _part([_cmd('c00-suite', 'suite'), _cmd('c00-lint', 'lint')], {'S1': ['c00-suite', 'c00-lint']})
+    folded: dict[str, str] = {}
+    merged = merge_parts(global_data, [c00], folded=folded, policy=FoldPolicy(executed={'c00-suite', 'c00-lint'}))
+    assert len(folded) == 1
+    assert sum(1 for check in merged['checks'] if not check['id'].startswith('c00-')) == 1
+
+
+def test_a_global_check_that_kept_another_groups_copy_is_never_dropped():
+    global_data = {'checks': [_cmd('env-ruby', 'ruby'), _cmd('suite-run', 'suite')]}
+    c00 = _part([_cmd('c00-suite', 'suite')], {'S1': ['c00-suite']})
+    c01 = _part([_cmd('c01-suite', 'suite')], {'S2': ['c01-suite']})
+    folded: dict[str, str] = {}
+    merged = merge_parts(global_data, [c00, c01], folded=folded, policy=FoldPolicy(executed={'c00-suite'}))
+    assert folded == {'c01-suite': 'suite-run'}
+    assert {'suite-run', 'c00-suite'} <= {check['id'] for check in merged['checks']}

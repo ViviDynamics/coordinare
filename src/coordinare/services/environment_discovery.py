@@ -132,6 +132,7 @@ from coordinare.services.environment_shard_construction import (
     delta_part_key,
     divided,
     execution_feedback_by_group,
+    global_copies_dropped,
     global_summary,
     merge_parts,
     owns,
@@ -1351,7 +1352,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
             promoted = _promoted_sources(folded, global_data)
             if folded:
                 _undo_folds(attempt, before, validate,
-                            merge_parts(global_data, [part for _group, part in parts.values()], fold=False))
+                            _unfolded(global_data, [part for _group, part in parts.values()], folded))
             if plan is not None:
                 # A delta is not corrected across parts: the full repair re-derives the manifest from its failed base.
                 message = "delta repair could not be merged into a complete manifest"
@@ -1445,6 +1446,16 @@ def _promoted_sources(folded: Mapping[str, str], global_data: Mapping[str, Any])
 def _fold_state(attempt: _Attempt) -> tuple[dict[str, set[str]], _ObligationLedger]:
     """The pins and the obligation ledger before a merge round moves them."""
     return ({group: set(ids) for group, ids in attempt.required_ids.items()}, copy.deepcopy(attempt.obligation_ledger))
+
+
+def _unfolded(global_data: Mapping[str, Any], parts: Sequence[ShardChecks], folded: Mapping[str, str]) -> dict[str, Any]:
+    """The rejected round's candidate as authored, for the validator to retain. A global copy dropped for an executed
+    group check stays dropped: nothing named it, the group check already holds its command, and a retained copy could
+    never be dropped again (every later round would then repeat the duplicate)."""
+    unfolded = merge_parts(global_data, parts, fold=False)
+    dropped = global_copies_dropped(folded)
+    unfolded['checks'] = [check for check in unfolded['checks'] if check.get('id') not in dropped]
+    return unfolded
 
 
 def _undo_folds(attempt: _Attempt, before: tuple[dict[str, set[str]], _ObligationLedger],

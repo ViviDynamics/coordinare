@@ -422,13 +422,18 @@ def _drop_global_copies_of_executed_checks(merged: dict[str, Any], authored: set
     Dettmore e2e-12: in a full repair the global author copied every group check it was shown, and the correction for
     reserved ids led it to rename all 25 copies. The fold into a global check refuses an executed copy, and the groups,
     told to keep their executed ids, wrote them again each round until the merge rounds ran out. The copy goes only
-    when nothing could miss it: no requirement or command names it, it is new (never executed, retained or a prior
-    version), it keeps no group copy, and the executed check takes it whole with at most a longer timeout.
+    when nothing could miss it: no requirement, command or criterion mapping names it (a mapping belongs to a group
+    that may not name another group's check), it is new (never executed, retained or a prior version), it keeps no
+    group copy, and the executed check takes it whole with at most a longer timeout. The last global check always
+    stays: a global part needs one to validate on its own.
     """
-    # A requirement or a dependent that names a global copy keeps it.
+    # A requirement, a dependent or a criterion mapping that names a global copy keeps it.
     named = {str(identifier) for requirement in merged.get('requirements') or [] if isinstance(requirement, dict)
              for identifier in requirement.get('checks') or []}
     named |= {str(dependency) for record in _commands(merged) for dependency in record.get('depends_on') or []}
+    named |= {str(identifier) for identifiers in (merged.get('criterion_checks') or {}).values()
+              for identifier in identifiers}
+    remaining = sum(1 for check in merged['checks'] if isinstance(check, dict) and check.get('id') not in group_ids)
     executed: dict[str, tuple[dict[str, Any], Command]] = {}
     copies: list[Command] = []
     for check in (check for check in merged['checks'] if isinstance(check, dict)):
@@ -447,11 +452,17 @@ def _drop_global_copies_of_executed_checks(merged: dict[str, Any], authored: set
         if found is None:
             continue
         kept, model = found
-        if not set(command.depends_on) <= set(model.depends_on) or (command.required and not model.required):
+        if (not set(command.depends_on) <= set(model.depends_on) or (command.required and not model.required)
+                or remaining - len(dropped) <= 1):
             continue
         kept['timeout_seconds'] = max(model.timeout_seconds, command.timeout_seconds)
         dropped[command.id] = model.id
     return dropped
+
+
+def global_copies_dropped(folded: Mapping[str, str]) -> set[str]:
+    """The global copies a merge dropped for executed group checks, from its reported folds."""
+    return {dropped for dropped, kept in folded.items() if PREFIX.match(kept) and not PREFIX.match(dropped)}
 
 
 _GROUP_BASE = re.compile(r'^(c[0-9]{2,3})[a-z]*-')
