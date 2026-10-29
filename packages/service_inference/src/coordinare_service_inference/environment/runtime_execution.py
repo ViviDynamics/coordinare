@@ -147,13 +147,15 @@ class _Options(NamedTuple):
     bare_long: frozenset[str]
     bare_short: frozenset[str]
     interspersed: bool
+    # Options that only print help; run and create have no -h for help (-h is the hostname there).
+    help: frozenset[str] = frozenset({'--help', '-h'})
 
 
 _RUNS = (['run'], ['create'], ['container', 'run'], ['container', 'create'])
 _RUN_OPTIONS = _Options(frozenset({'--detach', '--rm', '--interactive', '--tty', '--privileged', '--init',
                                    '--publish-all', '--read-only', '--no-healthcheck', '--oom-kill-disable',
                                    '--sig-proxy', '--quiet', '--help', '--disable-content-trust', '--use-api-socket'}),
-                        frozenset('ditPq'), interspersed=False)
+                        frozenset('ditPq'), interspersed=False, help=frozenset({'--help'}))
 # volume create takes a value for every option, -d (driver) included; network create has a few bare long flags.
 _CREATES = {'volume create': ('volumes', _Options(frozenset({'--help'}), frozenset(), interspersed=True)),
             'network create': ('networks', _Options(frozenset({'--help', '--attachable', '--config-only', '--ingress',
@@ -169,7 +171,12 @@ def docker_created(argv: Sequence[str]) -> dict[str, set[str]]:
     or escaped operator) names nothing, nor does one whose commands might not run as written (control flow, a function,
     a subshell or substitution, a comment) or whose quoted words hold redirection characters the lexer would drop. Only
     a docker invocation counts, read as docker reads it: run and create stop at the image and need one, a later --name
-    wins, --help creates nothing, and a create names only its positional word.
+    wins, help and invocations docker refuses (--rm with a restart policy, a second create name, network create
+    --name) create nothing, and a create names only its positional word.
+
+    A command joined by && or || still counts although it may be skipped (docker inspect web || docker run --name web):
+    those are the commonest authored forms, and a skipped one can only be blamed for state of the same name, which
+    another command then created and which is blamed with it.
     """
     from .static_rules import _program, _script, _simple_commands
 
@@ -187,13 +194,14 @@ def docker_created(argv: Sequence[str]) -> dict[str, set[str]]:
         run = next((form for form in _RUNS if args[:len(form)] == form), None)
         if run is not None:
             options, positional = _parse(args[len(run):], _RUN_OPTIONS)
-            if positional and not _helped(options):
+            if positional and _valid(options, _RUN_OPTIONS) and not _conflicting(options):
                 _record_run(options, created)
         elif (create := _CREATES.get(' '.join(args[:2]))) is not None:
             kind, spec = create
             options, positional = _parse(args[2:], spec)
-            # A create with no name asks docker to generate one: nothing is named.
-            if positional and not _helped(options):
+            # A create with no name asks docker to generate one; docker refuses a second name, and network create
+            # has no --name.
+            if len(positional) == 1 and _valid(options, spec) and not (kind == 'networks' and _named(options)):
                 created[kind].add(positional[0])
     return created
 
@@ -201,8 +209,8 @@ def docker_created(argv: Sequence[str]) -> dict[str, set[str]]:
 # Script text after which a command may not run as written, or the lexer would not see it: a subshell, function or
 # substitution, a comment, a backquote.
 _UNREAD = re.compile(r'[()#`]')
-# A quoted word holding < or >: the lexer would read it as a redirection and drop it.
-_QUOTED_REDIRECTION = re.compile('\'[^\']*[<>][^\']*\'|"[^"]*[<>][^"]*"')
+# A quoted or escaped < or > is a literal word the lexer would read as a redirection and drop.
+_QUOTED_REDIRECTION = re.compile('\'[^\']*[<>][^\']*\'|"[^"]*[<>][^"]*"|\\\\[<>]')
 _CONTROL = frozenset({'if', 'then', 'else', 'elif', 'fi', 'case', 'esac', 'for', 'select', 'while', 'until', 'do',
                       'done', 'function', '!', '[[', 'coproc'})
 
@@ -229,8 +237,19 @@ def _joined_continuations(script: str) -> str:
     return ''.join(out)
 
 
-def _helped(options: list[tuple[str, str]]) -> bool:
-    return any(option in {'--help', '-h'} for option, _value in options)
+def _valid(options: list[tuple[str, str]], spec: _Options) -> bool:
+    """Docker would act on the invocation rather than print help."""
+    return not any(option in spec.help for option, _value in options)
+
+
+def _named(options: list[tuple[str, str]]) -> bool:
+    return any(option == '--name' for option, _value in options)
+
+
+def _conflicting(options: list[tuple[str, str]]) -> bool:
+    """Options docker refuses together before it creates anything: --rm with a restart policy."""
+    restart = [value for option, value in options if option == '--restart']
+    return any(option == '--rm' for option, _value in options) and bool(restart) and restart[-1] not in {'', 'no'}
 
 
 def _record_run(options: list[tuple[str, str]], created: dict[str, set[str]]) -> None:

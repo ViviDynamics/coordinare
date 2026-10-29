@@ -335,6 +335,14 @@ async def test_a_creator_that_did_not_run_is_not_blamed(tmp_path, monkeypatch):
     ('docker network create --name fake', {}),
     ('docker create --name first --name second alpine', {'containers': {'second'}}),
     ('docker run --mount type=volume,source=one,src=two,target=/d alpine', {'volumes': {'two'}}),
+    # Round 5: an escaped redirection character, and invocations docker refuses; -h is the hostname for run.
+    ('docker create --name \\>log alpine true', {}),
+    ('docker network create --name fake appnet', {}),
+    ('docker volume create one two', {}),
+    ('docker volume create -h pgdata', {}),
+    ('docker run --name web --rm --restart unless-stopped -v pgdata:/data alpine', {}),
+    ('docker run --name web --rm --restart no alpine', {'containers': {'web'}}),
+    ('docker run -d --name web -h web -v pgdata:/data alpine', {'containers': {'web'}, 'volumes': {'pgdata'}}),
     # Dettmore e2e-12's install-host-ruby, as written.
     ('set -e; rm -rf /c/ruby-root/*; docker create --name ruby-extract ruby:3.4.2-slim true >/dev/null; '
      'docker export ruby-extract | tar -C /c/ruby-root -xf -; docker rm ruby-extract >/dev/null',
