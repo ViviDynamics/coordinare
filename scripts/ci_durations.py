@@ -9,6 +9,10 @@ it from a CI run's ``junit-*`` artifacts:
 
 Browser shards run every file twice (chromium and firefox); their times add up,
 which is the cost a file places on its shard. Stdlib only.
+
+For several independent runs, pass one directory per run with ``--median``.
+Reports within each run still add; repeated observations use their median.
+Do not mix plain-test and coverage reports: instrumentation changes their cost.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import sys
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
+from statistics import median
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -46,9 +51,18 @@ def durations(reports: list[Path]) -> dict[str, float]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("paths", nargs="+", type=Path, help="JUnit XML files or directories holding them")
+    parser.add_argument("--median", action="store_true", help="each path is an independent run; take per-file medians")
     args = parser.parse_args(argv)
-    reports = sorted({x for p in args.paths for x in ([p] if p.is_file() else p.rglob("*.xml"))})
-    json.dump(durations(reports), sys.stdout, indent=1)
+    runs = [sorted([p] if p.is_file() else p.rglob("*.xml")) for p in args.paths]
+    if args.median:
+        samples: dict[str, list[float]] = defaultdict(list)
+        for reports in runs:
+            for path, seconds in durations(reports).items():
+                samples[path].append(seconds)
+        result = {path: round(median(values), 2) for path, values in sorted(samples.items())}
+    else:
+        result = durations(sorted({report for reports in runs for report in reports}))
+    json.dump(result, sys.stdout, indent=1)
     sys.stdout.write("\n")
     return 0
 
