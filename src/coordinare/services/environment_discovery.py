@@ -1459,8 +1459,11 @@ def _undo_folds(attempt: _Attempt, before: tuple[dict[str, set[str]], _Obligatio
         for group, ids in attempt.required_ids.items():
             ids.clear()
             ids.update(required_before.get(group, set()))
-        for name, value in vars(ledger_before).items():
-            setattr(attempt.obligation_ledger, name, copy.deepcopy(value))
+        ledger = attempt.obligation_ledger
+        ledger.checks = copy.deepcopy(ledger_before.checks)
+        ledger.install = copy.deepcopy(ledger_before.install)
+        ledger.lifecycle = copy.deepcopy(ledger_before.lifecycle)
+        ledger.coverage = copy.deepcopy(ledger_before.coverage)
 
     restore()
     if isinstance(validate, _CandidateValidator):
