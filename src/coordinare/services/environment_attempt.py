@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 MAX_ATTEMPT_SECONDS = 3600
 # Maintainer rulings (issue 353): sharded discovery on a self-hosted model may run up to six hours (raised from four
-# on 2026-10-29: scope re-review, review rounds, install, a repair and the offline consumer did not fit in four).
+# on 2026-10-29: scope re-review, review rounds, install, a repair and the offline consumer ran past four).
 MAX_SHARDED_ATTEMPT_SECONDS = 6 * 3600
 # One phase stays within four hours of the six (the config caps manifest_phase_timeout_seconds the same way).
 MAX_PHASE_SECONDS = 4 * 3600
