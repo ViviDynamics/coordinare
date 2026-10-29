@@ -216,3 +216,75 @@ def test_the_listing_names_everything_left(tmp_path):
 def test_a_failed_docker_listing_fails_the_whole_listing(tmp_path):
     """A partial listing must never read as empty: the reclaim would then blame and remove on half the facts."""
     assert _listing(tmp_path, failing=True).returncode != 0
+
+
+def _creating_manifest():
+    """Dettmore e2e-12's shape: an install step that creates a container, and a service that creates its own."""
+    manifest = _manifest()
+    manifest.install = [_command('install-host-ruby', 'bash', '-c',
+                                 'set -e; docker create --name ruby-extract ruby:3 true; docker rm ruby-extract')]
+    manifest.checks = [_command('check-pg', 'bash', '-c', 'docker exec devenv-pg pg_isready')]
+    start = _command('db-start', 'bash', '-c', 'docker run -d --name devenv-pg -v pgdata:/var/lib/postgresql/data pg')
+    manifest.services = [SimpleNamespace(id='db', start=start, health=None, init=None, stop=manifest.services[0].stop)]
+    return manifest
+
+
+def _creating_report():
+    return VerificationReport(manifest_digest='a' * 64, results=[
+        CheckResult(id='install-host-ruby', required=True, status='fail', output='tar: exiting'),
+        CheckResult(id='check-pg', required=True, status='pass'),
+        CheckResult(id='db-start', required=True, status='pass'),
+        CheckResult(id='db-stop', required=True, status='pass', output='removed')])
+
+
+def _by_id(report):
+    return {result.id: result for result in report.results}
+
+
+@pytest.mark.asyncio
+async def test_a_container_an_install_step_created_blames_that_step_not_the_service_stops(tmp_path, monkeypatch):
+    listing = b'containers=ruby-extract\nvolumes=\nnetworks=\n'
+    report, scripts, _sealed = await _run(tmp_path, monkeypatch, report=_creating_report(),
+                                          manifest=_creating_manifest(), listing=listing)
+    results = _by_id(report)
+    assert results['db-stop'].status == 'pass' and results['db-stop'].output == 'removed'
+    install = results['install-host-ruby']
+    assert install.status == 'fail' and install.output.startswith('tar: exiting\n')
+    assert 'ruby-extract' in install.output and runtime_execution.COMMAND_RESIDUAL_GUIDANCE in install.output
+    assert runtime_execution.RESIDUAL_GUIDANCE not in install.output
+    assert any('docker volume rm' in script for script in scripts)
+
+
+@pytest.mark.asyncio
+async def test_state_a_service_created_blames_its_stop_and_never_a_check_that_only_names_it(tmp_path, monkeypatch):
+    listing = b'containers=devenv-pg\nvolumes=pgdata\nnetworks=\n'
+    report, _scripts, _sealed = await _run(tmp_path, monkeypatch, report=_creating_report(),
+                                           manifest=_creating_manifest(), listing=listing)
+    results = _by_id(report)
+    assert results['check-pg'].status == 'pass'
+    stop = results['db-stop']
+    assert stop.status == 'fail' and 'devenv-pg' in stop.output and 'pgdata' in stop.output
+    assert runtime_execution.RESIDUAL_GUIDANCE in stop.output
+    assert results['install-host-ruby'].output == 'tar: exiting'
+
+
+@pytest.mark.asyncio
+async def test_unexplained_state_still_blames_the_stops_and_only_with_the_names_no_command_created(
+        tmp_path, monkeypatch):
+    listing = b'containers=ruby-extract\nvolumes=0f3c9a\nnetworks=\n'
+    report, _scripts, _sealed = await _run(tmp_path, monkeypatch, report=_creating_report(),
+                                           manifest=_creating_manifest(), listing=listing)
+    results = _by_id(report)
+    stop, install = results['db-stop'], results['install-host-ruby']
+    assert stop.status == 'fail' and '0f3c9a' in stop.output and 'ruby-extract' not in stop.output
+    assert 'ruby-extract' in install.output and '0f3c9a' not in install.output
+
+
+@pytest.mark.asyncio
+async def test_a_creator_that_did_not_run_is_not_blamed(tmp_path, monkeypatch):
+    report = _creating_report()
+    report.results = [result for result in report.results if result.id != 'install-host-ruby']
+    listing = b'containers=ruby-extract\nvolumes=\nnetworks=\n'
+    out, _scripts, _sealed = await _run(tmp_path, monkeypatch, report=report, manifest=_creating_manifest(),
+                                        listing=listing)
+    assert _by_id(out)['db-stop'].status == 'fail'

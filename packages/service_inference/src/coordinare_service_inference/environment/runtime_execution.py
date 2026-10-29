@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import re
 import tempfile
 import threading
 import time
@@ -58,7 +59,18 @@ RESIDUAL_REMOVE = ("docker ps -aq | xargs -r docker rm -f -v >/dev/null; docker 
                    ">/dev/null; docker network ls --filter type=custom -q | xargs -r docker network rm >/dev/null")
 RESIDUAL_GUIDANCE = ('Every service stop must remove the Docker state its service created, including anonymous volumes '
                      '(docker rm -f -v) and custom networks: the guest cannot shut down cleanly while any remain.')
+COMMAND_RESIDUAL_GUIDANCE = ('A command that creates Docker state must remove it before it exits, when it fails too '
+                             '(docker run --rm, or remove it in a trap): the guest cannot shut down cleanly while any '
+                             'remains.')
 MAX_RESIDUAL_NAMES = 16
+# How a command names the Docker state it creates, by listing kind; {name} is the escaped leftover name.
+_QUOTE = """['"]?"""
+_CREATOR_PATTERNS = {
+    'containers': (rf'--name[= ]{_QUOTE}{{name}}(?![\w.-])',),
+    'volumes': (rf'volume create {_QUOTE}{{name}}(?![\w.-])', rf'(?:-v|--volume)[= ]{_QUOTE}{{name}}:',
+                r'(?:source|src)={name}(?![\w.-])'),
+    'networks': (rf'network create {_QUOTE}{{name}}(?![\w.-])',),
+}
 
 
 async def _reclaim_residual_state(lease: RuntimeLease, manifest: EnvironmentManifest, report: VerificationReport, *,
@@ -67,8 +79,9 @@ async def _reclaim_residual_state(lease: RuntimeLease, manifest: EnvironmentMani
     guest still shuts down cleanly and the run stays repairable.
 
     The seal check would otherwise refuse the shutdown and hold the run as incomplete, with no cause and no repair
-    (Dettmore e2e-04: a postgres container's anonymous volume). Blamed are the service stops that ran, or failing
-    those the commands that ran Docker. State no record could have left is not removed: the seal check still refuses it.
+    (Dettmore e2e-04: a postgres container's anonymous volume). Each name a command that ran explicitly created blames
+    that command, or its service's stop; the rest blame the service stops that ran, or failing those the commands
+    that ran Docker. State no record could have left is not removed: the seal check still refuses it.
     Resource names are guest output, so they are redacted like command output before they reach a result.
     """
     from .runner import _redact, _runtime_secret_values, _secret_values
@@ -82,20 +95,54 @@ async def _reclaim_residual_state(lease: RuntimeLease, manifest: EnvironmentMani
     if not left:
         return
     ran = {result.id: result for result in report.results if result.status != 'not_run'}
-    blamed = [ran[service.stop.id] for service in manifest.services if service.stop.id in ran] or [
+    created, unexplained = _residual_creators(manifest, ran, left)
+    fallback = [ran[service.stop.id] for service in manifest.services if service.stop.id in ran] or [
         ran[command.id] for command in [*manifest.install, *manifest.checks]
         if command.id in ran and any('docker' in word for word in command.argv)]
+    stops = {service.stop.id for service in manifest.services}
+    blamed = [(ran[identifier], names) for identifier, names in created.items()]
+    if unexplained and fallback:
+        blamed += [(result, unexplained) for result in fallback]
     if not blamed:
         return
-    found = '; '.join(f'{kind} {" ".join(names[:MAX_RESIDUAL_NAMES])}' for kind, names in left.items())
     # The same secret set command output is redacted with, plus the run's generated credentials and activation.
     known = _runtime_secret_values(secret_names) | redact_values | frozenset(_secret_values(dict(lease.activation_env)))
-    detail = _redact(f'teardown found Docker state left behind: {found}. {RESIDUAL_GUIDANCE}', {}, extra_values=known)
-    for result in blamed:
+    for result, names in blamed:
+        found = '; '.join(f'{kind} {" ".join(listed[:MAX_RESIDUAL_NAMES])}' for kind, listed in names.items())
+        guidance = RESIDUAL_GUIDANCE if result.id in stops else COMMAND_RESIDUAL_GUIDANCE
+        detail = _redact(f'teardown found Docker state left behind: {found}. {guidance}', {}, extra_values=known)
         result.status = 'fail'
         result.output = f'{result.output}\n{detail}' if result.output else detail
     with contextlib.suppress(RuntimeError, OSError, TimeoutError):
         await lease.ssh(RESIDUAL_REMOVE, deadline=deadline, check=False)
+
+
+def _residual_creators(manifest: EnvironmentManifest, ran: dict[str, CheckResult], left: dict[str, list[str]],
+                       ) -> tuple[dict[str, dict[str, list[str]]], dict[str, list[str]]]:
+    """Leftover names a command that ran explicitly created, keyed by the record to blame, and the rest.
+
+    Dettmore e2e-12: install-host-ruby failed under set -e between `docker create --name ruby-extract` and its
+    `docker rm`, and every service stop was blamed for the container, sending repair after stops that had worked.
+    Only creating forms count (--name, volume create, -v NAME:, network create), never a mere mention such as
+    `docker exec NAME`. A service's own command blames that service's stop; any other command blames itself.
+    """
+    # (record to blame, the creating command's text), for every command and every service step.
+    owners = [(command.id, ' '.join(command.argv)) for command in [*manifest.install, *manifest.checks]]
+    owners += [(service.stop.id, ' '.join(command.argv)) for service in manifest.services
+               for command in (getattr(service, step, None) for step in ('init', 'start', 'health', 'stop'))
+               if command is not None]
+    created: dict[str, dict[str, list[str]]] = {}
+    unexplained: dict[str, list[str]] = {}
+    for kind, names in left.items():
+        for name in names:
+            patterns = [pattern.format(name=re.escape(name)) for pattern in _CREATOR_PATTERNS.get(kind, ())]
+            blamed = {record for record, text in owners
+                      if record in ran and any(re.search(pattern, text) for pattern in patterns)}
+            for record in sorted(blamed):
+                created.setdefault(record, {}).setdefault(kind, []).append(name)
+            if not blamed:
+                unexplained.setdefault(kind, []).append(name)
+    return created, unexplained
 
 
 def _cancelling() -> bool:
