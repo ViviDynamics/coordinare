@@ -45,13 +45,11 @@ def test_a_group_copy_of_a_global_check_keeps_the_global_one():
     assert merged['criterion_checks'] == {'S1': ['check-ruby']}
 
 
-@pytest.mark.parametrize('case', ['two_groups', 'group_dependency', 'cycle'])
+@pytest.mark.parametrize('case', ['group_dependency', 'cycle'])
 def test_copies_the_parts_could_not_reference_after_a_merge_are_left_to_the_authors(case):
     """Each part must still validate alone after a merge: a later repair splits the merged manifest back into parts."""
     global_data = {'checks': [_cmd('check-db', 'db')]}
-    if case == 'two_groups':
-        parts = [_part([_cmd('c00-x', 'x')], {'S1': ['c00-x']}), _part([_cmd('c01-x', 'x')], {'S2': ['c01-x']})]
-    elif case == 'group_dependency':
+    if case == 'group_dependency':
         global_data['checks'].append(_cmd('check-x', 'x'))
         parts = [_part([_cmd('c00-setup', 's'), _cmd('c00-x', 'x', depends_on=['c00-setup'])], {'S1': ['c00-x']})]
     else:
@@ -168,3 +166,42 @@ def test_a_copy_folds_only_when_it_replaces_every_prior_version():
     folded: dict[str, str] = {}
     merged = merge_parts({'checks': [_cmd('tool', 'tool', '--new')]}, [corrected], policy=FoldPolicy(prior=prior), folded=folded)
     assert folded == {} and [check['id'] for check in merged['checks']] == ['tool', 'c00-tool']
+
+
+def test_identical_checks_from_two_groups_become_one_new_global_check():
+    """e2e-10: c00 and c01 each wrote the full cucumber suite; neither may name the other's check."""
+    c00 = _part([_cmd('c00-cucumber-full', 'bundle', 'exec', 'cucumber', timeout_seconds=1800)], {'S1': ['c00-cucumber-full']})
+    c01 = _part([_cmd('c01-cucumber-full', 'bundle', 'exec', 'cucumber', timeout_seconds=3600, depends_on=['check-db'])],
+                {'S2': ['c01-cucumber-full']})
+    folded: dict[str, str] = {}
+    merged = merge_parts({'checks': [_cmd('check-db', 'db')]}, [c00, c01], folded=folded)
+    ids = [check['id'] for check in merged['checks']]
+    assert ids == ['check-db', 'cucumber-full']
+    kept = merged['checks'][1]
+    assert kept['timeout_seconds'] == 3600 and kept['required'] is True and kept['depends_on'] == ['check-db']
+    assert merged['criterion_checks'] == {'S1': ['cucumber-full'], 'S2': ['cucumber-full']}
+    assert folded == {'c00-cucumber-full': 'cucumber-full', 'c01-cucumber-full': 'cucumber-full'}
+
+
+def test_a_shared_copy_that_cannot_fold_is_not_promoted():
+    """A copy depending on its own group's check could not be declared by the global part."""
+    c00 = _part([_cmd('c00-setup', 'setup'), _cmd('c00-suite', 'suite', depends_on=['c00-setup'])], {'S1': ['c00-suite']})
+    c01 = _part([_cmd('c01-suite', 'suite')], {'S2': ['c01-suite']})
+    merged = merge_parts({'checks': []}, [c00, c01])
+    assert [check['id'] for check in merged['checks']] == ['c00-setup', 'c00-suite', 'c01-suite']
+
+
+def test_a_promoted_name_never_collides_and_split_remainders_are_one_group():
+    taken = _part([_cmd('c00-lint', 'lint')], {'S1': ['c00-lint']})
+    other = _part([_cmd('c01-lint', 'lint')], {'S2': ['c01-lint']})
+    merged = merge_parts({'checks': [_cmd('lint', 'other-lint')]}, [taken, other])
+    assert [check['id'] for check in merged['checks']] == ['lint', 'lint-shared-1']
+    same_group = [_part([_cmd('c00-x', 'x')], {'S1': ['c00-x']}), _part([_cmd('c00a-x', 'x')], {'S2': ['c00a-x']})]
+    assert [check['id'] for check in merge_parts({'checks': []}, same_group)['checks']] == ['c00-x', 'c00a-x']
+
+
+def test_a_promoted_name_never_reuses_a_scope_criterion_id():
+    c00 = _part([_cmd('c00-S9', 'suite')], {'S9': ['c00-S9']})
+    c01 = _part([_cmd('c01-S9', 'suite')], {'S2': ['c01-S9']})
+    ids = [check['id'] for check in merge_parts({'checks': []}, [c00, c01])['checks']]
+    assert ids == ['S9-shared-1']

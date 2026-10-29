@@ -357,8 +357,9 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
     whether the global check it lands in or a check depending on the copy. A required (pinned) copy may fold: its
     obligation is the identical command, kept under the global id (e2e-07 deadlocked on two pinned copies).
     """
-    checks = [check for check in merged['checks'] if isinstance(check, dict)]
     graph = {str(record['id']): list(record.get('depends_on') or []) for record in _commands(merged)}
+    global_ids = global_ids | _promote_shared_group_copies(merged, global_ids, group_ids, graph, policy)
+    checks = [check for check in merged['checks'] if isinstance(check, dict)]
     globals_by_key: dict[str, tuple[dict[str, Any], Command]] = {}
     alias: dict[str, str] = {}
     for check in checks:
@@ -407,6 +408,59 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
         if isinstance(requirement, dict) and requirement.get('checks'):
             requirement['checks'] = remap(requirement['checks'])
     return alias
+
+
+_GROUP_BASE = re.compile(r'^(c[0-9]{2,3})[a-z]*-')
+# A copy is shared, and promoted, only when distinct groups wrote it; one group's copies are its own correction.
+MIN_SHARING_GROUPS = 2
+
+
+def _promote_shared_group_copies(merged: dict[str, Any], global_ids: set[str], group_ids: set[str],
+                                 graph: dict[str, list[str]], policy: FoldPolicy) -> set[str]:
+    """Identical checks written by two or more groups, with no identical global check, become one new global check.
+
+    Dettmore e2e-10: c00 and c01 each wrote the full cucumber suite for their own criteria; neither group may name the
+    other's check, so every merge round rejected the pair. The new check takes the shared name without its group
+    prefix (cucumber-full), placed where the first copy was, and the ordinary fold then merges every copy into it with
+    all its rules. It is made only when every copy can fold; otherwise the authors are corrected as before.
+    """
+    taken = {str(record.get('id')) for key in ('install', 'checks', 'requirements', 'services')
+             for record in merged.get(key) or [] if isinstance(record, dict)} | set(graph) | set(merged.get('criterion_checks') or {})
+    by_key: dict[str, list[Command]] = {}
+    global_keys: set[str] = set()
+    for check in merged['checks']:
+        try:
+            command = Command.model_validate(check)
+        except ValidationError:
+            continue
+        if command.id in global_ids:
+            global_keys.add(content_key(command))
+        elif command.id in group_ids:
+            by_key.setdefault(content_key(command), []).append(command)
+    promoted: set[str] = set()
+    for key, copies in by_key.items():
+        owners = {match[1] for command in copies if (match := _GROUP_BASE.match(command.id))}
+        if key in global_keys or len(owners) < MIN_SHARING_GROUPS:
+            continue
+        name = _GROUP_BASE.sub('', copies[0].id) or 'shared-check'
+        identifier = next(candidate for candidate in (name, *(f'{name}-shared-{index}' for index in range(1, 100)))
+                          if candidate not in taken and not _GROUP_BASE.match(candidate))
+        model: Command | None = copies[0].model_copy(update={'id': identifier, 'depends_on': [], 'timeout_seconds': 1.0,
+                                                              'required': False})
+        graph[identifier] = []
+        for command in copies:
+            model = _fold_result(command, model, group_ids, graph, policy) if model is not None else None
+        if model is None:
+            del graph[identifier]
+            continue
+        # The ordinary fold merges every copy into the new check, so it starts with no obligations of its own.
+        start = copies[0].model_copy(update={'id': identifier, 'depends_on': [], 'timeout_seconds': 1.0, 'required': False})
+        position = next(index for index, check in enumerate(merged['checks'])
+                        if isinstance(check, dict) and check.get('id') == copies[0].id)
+        merged['checks'].insert(position, start.model_dump(mode='json'))
+        taken.add(identifier)
+        promoted.add(identifier)
+    return promoted
 
 
 def _fold_result(command: Command, model: Command, group_ids: set[str], graph: Mapping[str, list[str]],
