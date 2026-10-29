@@ -63,6 +63,8 @@ class DeltaPlan:
 
     base: EnvironmentManifest
     triage: RepairTriage
+    # Commands an earlier execution fixed (fixed_command_ids): a closure record among them keeps all but its timeout.
+    fixed: frozenset[str] = frozenset()
 
     @property
     def closure(self) -> frozenset[str]:
@@ -86,7 +88,8 @@ class DeltaPlan:
                 'consequences': list(self.triage.consequences)[:64], 'touched_parts': list(self.triage.touched_parts),
                 'criterion_ids': list(self.triage.criterion_ids), 'requirement_ids': list(self.triage.requirement_ids),
                 'closure_records': self.closure_global() if divided else self.closure_records(),
-                'closure_criteria': self.closure_criteria()}
+                'closure_criteria': self.closure_criteria(),
+                **({'fixed_ids': fixed} if (fixed := sorted(self.closure & self.fixed)) else {})}
 
     def restore_frozen(self, base: Mapping[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
         """The candidate part with every frozen install or check record it changed or dropped put back as it was.

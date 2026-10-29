@@ -123,7 +123,8 @@ async def test_actual_divided_check_authors_receive_the_daemon_process_policy(mo
         if repair:
             divided.delta = SimpleNamespace(group_touched=lambda _group: True,
                 triage=SimpleNamespace(criterion_ids=list(group.ids)), digest='d' * 64,
-                closure_checks=lambda _group: [], closure_criteria=lambda _ids: [])
+                closure_checks=lambda _group: [], closure_criteria=lambda _ids: [], closure=frozenset(),
+                fixed=frozenset())
         await divided.author(group, summary=SUMMARY, probes=[])
 
     def saved_part(budget, stage, prefix, key):

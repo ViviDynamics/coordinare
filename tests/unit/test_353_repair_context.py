@@ -165,3 +165,15 @@ def test_restoring_never_hides_a_frozen_service_or_requirement_change():
 def test_an_unparsable_part_is_left_for_admission_to_report():
     broken = _part(checks=[{'id': 'check-tool'}])
     assert _plan({'install-tool'}).restore_frozen(_part(), broken) is broken
+
+
+def test_a_delta_brief_names_the_closure_records_a_past_execution_fixed(monkeypatch):
+    """Review: a fixed closure check may change only its timeout, which delta authors were never told."""
+    monkeypatch.setattr(DeltaPlan, 'closure_records', lambda _self, owner=None: {})
+    monkeypatch.setattr(DeltaPlan, 'closure_criteria', lambda _self, criteria=None: {})
+    triage = SimpleNamespace(closure_ids=['check-tool', 'install-tool'], touched_parts=[], requirement_ids=[],
+                             criterion_ids=[], roots=[], consequences=[])
+    base = SimpleNamespace(digest=lambda: 'd' * 64)
+    plan = DeltaPlan(base=base, triage=triage, fixed=frozenset({'check-tool', 'check-other'}))
+    assert plan.brief(divided=False)['fixed_ids'] == ['check-tool']
+    assert 'fixed_ids' not in DeltaPlan(base=base, triage=triage).brief(divided=False)

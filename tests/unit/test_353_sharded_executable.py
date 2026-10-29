@@ -1285,11 +1285,26 @@ async def test_a_check_author_is_told_which_of_its_checks_execution_fixed(monkey
     budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
     scope = SimpleNamespace(all_inputs={'src/001.md': 'b' * 64}, definition=SimpleNamespace(criteria=list(group.criteria)))
     build = DividedConstruction(AgentContext(budget, None, None), [], None, scope, 4)
-    build.previous = {'c00-': group_reply(group)['shard_checks']}
-    build.fixed = frozenset({'c00-0', 'c01-9', 'check-npm'})
+    executed = {'id': 'c00-0', 'argv': ['check', 'c00-0'], 'timeout_seconds': 300.0}
+    build.fixed = {'c00-0': executed, 'c01-9': {'id': 'c01-9'}, 'check-npm': {'id': 'check-npm'}}
+    # Review: after a rejected change, previous_part is the author's own changed check; fixed_checks never is.
+    build.previous = {'c00-': {'checks': [{'id': 'c00-0', 'argv': ['changed']}], 'criterion_checks': {}}}
     await build.author(group, summary=SUMMARY, probes=[])
-    assert briefs[-1]['fixed_check_ids'] == ['c00-0']
-    build.fixed = frozenset()
+    assert briefs[-1]['fixed_checks'] == [executed]
+    assert briefs[-1]['previous_part']['checks'][0]['argv'] == ['changed']
+    build.fixed = {}
     build.feedback = {'c00-': {'merge_errors': [{'code': 'x'}]}}
     await build.author(group, summary=SUMMARY, probes=[])
-    assert 'fixed_check_ids' not in briefs[-1]
+    assert 'fixed_checks' not in briefs[-1]
+
+
+def test_a_fixed_command_carries_the_longest_timeout_any_execution_gave_it():
+    from coordinare_service_inference.environment.models import Command
+
+    from coordinare.services.environment_obligations import fixed_commands
+
+    def manifest(timeout):
+        return SimpleNamespace(checks=[Command.model_validate({'id': 'suite', 'argv': ['rspec'],
+                                                               'timeout_seconds': timeout})], services=[])
+
+    assert fixed_commands([manifest(600), manifest(1800), manifest(900)])['suite']['timeout_seconds'] == 1800

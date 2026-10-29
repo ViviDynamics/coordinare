@@ -108,6 +108,19 @@ def fixed_command_ids(manifests: Sequence[EnvironmentManifest]) -> frozenset[str
     return frozenset(command.id for manifest in manifests for command in _required_execution_commands(manifest))
 
 
+def fixed_commands(manifests: Sequence[EnvironmentManifest]) -> dict[str, dict[str, Any]]:
+    """Each fixed command as preservation accepts it: as executed, with the longest timeout any execution gave it.
+    Authors are given these records, never their own last proposal, which may be the rejected change."""
+    fixed: dict[str, dict[str, Any]] = {}
+    for manifest in manifests:
+        for command in _required_execution_commands(manifest):
+            record = command.model_dump(mode="json")
+            if command.id in fixed:
+                record["timeout_seconds"] = max(record["timeout_seconds"], fixed[command.id]["timeout_seconds"])
+            fixed[command.id] = record
+    return fixed
+
+
 def preserve_execution_commands(
     manifest: EnvironmentManifest,
     previous: EnvironmentManifest,
