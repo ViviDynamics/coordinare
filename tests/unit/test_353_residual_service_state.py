@@ -288,3 +288,83 @@ async def test_a_creator_that_did_not_run_is_not_blamed(tmp_path, monkeypatch):
     out, _scripts, _sealed = await _run(tmp_path, monkeypatch, report=report, manifest=_creating_manifest(),
                                         listing=listing)
     assert _by_id(out)['db-stop'].status == 'fail'
+
+
+@pytest.mark.parametrize(('script', 'expected'), [
+    ('docker create --name  ruby-extract img', {'containers': {'ruby-extract'}}),
+    ('docker run -d \\\n  --name \\\n  web img', {'containers': {'web'}}),
+    ('docker run --name=web img', {'containers': {'web'}}),
+    ("docker create --name 'db'-old img", {'containers': {'db-old'}}),
+    ('FOO=1 docker container run -d --name web img', {'containers': {'web'}}),
+    ('docker volume create --driver local pgdata', {'volumes': {'pgdata'}}),
+    ('docker network create --driver bridge appnet', {'networks': {'appnet'}}),
+    ('docker run -v "pgdata":/data img', {'volumes': {'pgdata'}}),
+    ('docker run --mount type=volume,source="pgdata",target=/d img', {'volumes': {'pgdata'}}),
+    ('docker run --mount type=bind,source=/x,target=/d -v /h:/c -v ./w:/w img', {}),
+    ('echo --name db; printf "docker volume create x"', {}),
+    ('docker exec devenv-pg pg_isready; docker rm -f -v devenv-pg', {}),
+])
+def test_only_a_docker_invocation_that_creates_state_names_it(script, expected):
+    created = runtime_execution.docker_created(['bash', '-c', script])
+    assert {kind: names for kind, names in created.items() if names} == expected
+
+
+def _service_manifest(*, init=None):
+    manifest = _creating_manifest()
+    manifest.install, manifest.checks = [], []
+    manifest.services[0].init = init
+    return manifest
+
+
+@pytest.mark.asyncio
+async def test_a_service_step_that_ran_blames_itself_when_its_stop_never_ran(tmp_path, monkeypatch):
+    report = VerificationReport(manifest_digest='a' * 64, results=[
+        CheckResult(id='db-start', required=True, status='pass')])
+    listing = b'containers=devenv-pg\nvolumes=\nnetworks=\n'
+    out, scripts, _sealed = await _run(tmp_path, monkeypatch, report=report, manifest=_service_manifest(),
+                                       listing=listing)
+    start = _by_id(out)['db-start']
+    assert start.status == 'fail' and 'devenv-pg' in start.output
+    assert any('docker volume rm' in script for script in scripts)
+
+
+@pytest.mark.asyncio
+async def test_a_service_step_that_never_ran_creates_nothing(tmp_path, monkeypatch):
+    """init failed, so start (which names devenv-pg) never ran: the leftover is not start's, and not its stop's."""
+    init = _command('db-init', 'bash', '-c', 'false')
+    report = VerificationReport(manifest_digest='a' * 64, results=[
+        CheckResult(id='db-init', required=True, status='fail', output='init failed'),
+        CheckResult(id='db-stop', required=True, status='pass', output='removed')])
+    listing = b'containers=devenv-pg\nvolumes=\nnetworks=\n'
+    manifest = _service_manifest(init=init)
+    blamed, unexplained = runtime_execution._residual_creators(
+        manifest, {result.id: result for result in report.results}, {'containers': ['devenv-pg']})
+    assert blamed == {} and unexplained == {'containers': ['devenv-pg']}
+    out, _scripts, _sealed = await _run(tmp_path, monkeypatch, report=report, manifest=manifest, listing=listing)
+    assert _by_id(out)['db-init'].output == 'init failed'
+
+
+@pytest.mark.asyncio
+async def test_a_record_is_blamed_once_for_created_and_unexplained_state(tmp_path, monkeypatch):
+    manifest = _manifest(services=False)
+    manifest.install = [_command('install-db', 'docker', 'create', '--name', 'db', 'img')]
+    manifest.checks = []
+    report = VerificationReport(manifest_digest='a' * 64, results=[
+        CheckResult(id='install-db', required=True, status='pass')])
+    listing = b'containers=db\nvolumes=0f3c9a\nnetworks=\n'
+    out, _scripts, _sealed = await _run(tmp_path, monkeypatch, report=report, manifest=manifest, listing=listing)
+    install = _by_id(out)['install-db']
+    assert install.output.count('teardown found Docker state left behind') == 1
+    assert 'containers db' in install.output and 'volumes 0f3c9a' in install.output
+
+
+@pytest.mark.asyncio
+async def test_a_mention_outside_docker_never_explains_state(tmp_path, monkeypatch):
+    """echo --name db is not a creator, so with no other record the state stays unexplained and is not removed."""
+    manifest = _manifest(services=False)
+    manifest.install, manifest.checks = [_command('say', 'bash', '-c', 'echo --name db')], []
+    report = VerificationReport(manifest_digest='a' * 64, results=[CheckResult(id='say', required=True, status='pass')])
+    out, scripts, _sealed = await _run(tmp_path, monkeypatch, report=report, manifest=manifest,
+                                       listing=b'containers=db\nvolumes=\nnetworks=\n')
+    assert _by_id(out)['say'].status == 'pass'
+    assert not any('docker volume rm' in script for script in scripts)

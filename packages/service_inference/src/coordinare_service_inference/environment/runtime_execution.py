@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
-import re
+import itertools
 import tempfile
 import threading
 import time
@@ -63,14 +63,6 @@ COMMAND_RESIDUAL_GUIDANCE = ('A command that creates Docker state must remove it
                              '(docker run --rm, or remove it in a trap): the guest cannot shut down cleanly while any '
                              'remains.')
 MAX_RESIDUAL_NAMES = 16
-# How a command names the Docker state it creates, by listing kind; {name} is the escaped leftover name.
-_QUOTE = """['"]?"""
-_CREATOR_PATTERNS = {
-    'containers': (rf'--name[= ]{_QUOTE}{{name}}(?![\w.-])',),
-    'volumes': (rf'volume create {_QUOTE}{{name}}(?![\w.-])', rf'(?:-v|--volume)[= ]{_QUOTE}{{name}}:',
-                r'(?:source|src)={name}(?![\w.-])'),
-    'networks': (rf'network create {_QUOTE}{{name}}(?![\w.-])',),
-}
 
 
 async def _reclaim_residual_state(lease: RuntimeLease, manifest: EnvironmentManifest, report: VerificationReport, *,
@@ -95,21 +87,22 @@ async def _reclaim_residual_state(lease: RuntimeLease, manifest: EnvironmentMani
     if not left:
         return
     ran = {result.id: result for result in report.results if result.status != 'not_run'}
-    created, unexplained = _residual_creators(manifest, ran, left)
-    fallback = [ran[service.stop.id] for service in manifest.services if service.stop.id in ran] or [
-        ran[command.id] for command in [*manifest.install, *manifest.checks]
+    blamed, unexplained = _residual_creators(manifest, ran, left)
+    fallback = [service.stop.id for service in manifest.services if service.stop.id in ran] or [
+        command.id for command in [*manifest.install, *manifest.checks]
         if command.id in ran and any('docker' in word for word in command.argv)]
-    stops = {service.stop.id for service in manifest.services}
-    blamed = [(ran[identifier], names) for identifier, names in created.items()]
-    if unexplained and fallback:
-        blamed += [(result, unexplained) for result in fallback]
+    for record in fallback if unexplained else []:
+        for kind, unclaimed in unexplained.items():
+            blamed.setdefault(record, {}).setdefault(kind, []).extend(unclaimed)
     if not blamed:
         return
+    stops = {service.stop.id for service in manifest.services}
     # The same secret set command output is redacted with, plus the run's generated credentials and activation.
     known = _runtime_secret_values(secret_names) | redact_values | frozenset(_secret_values(dict(lease.activation_env)))
-    for result, names in blamed:
-        found = '; '.join(f'{kind} {" ".join(listed[:MAX_RESIDUAL_NAMES])}' for kind, listed in names.items())
-        guidance = RESIDUAL_GUIDANCE if result.id in stops else COMMAND_RESIDUAL_GUIDANCE
+    for record, state in blamed.items():
+        result = ran[record]
+        found = '; '.join(f'{kind} {" ".join(listed[:MAX_RESIDUAL_NAMES])}' for kind, listed in state.items())
+        guidance = RESIDUAL_GUIDANCE if record in stops else COMMAND_RESIDUAL_GUIDANCE
         detail = _redact(f'teardown found Docker state left behind: {found}. {guidance}', {}, extra_values=known)
         result.status = 'fail'
         result.output = f'{result.output}\n{detail}' if result.output else detail
@@ -119,30 +112,80 @@ async def _reclaim_residual_state(lease: RuntimeLease, manifest: EnvironmentMani
 
 def _residual_creators(manifest: EnvironmentManifest, ran: dict[str, CheckResult], left: dict[str, list[str]],
                        ) -> tuple[dict[str, dict[str, list[str]]], dict[str, list[str]]]:
-    """Leftover names a command that ran explicitly created, keyed by the record to blame, and the rest.
+    """Leftover names a command that ran created with its own docker invocation, keyed by the record to blame, and
+    the rest.
 
     Dettmore e2e-12: install-host-ruby failed under set -e between `docker create --name ruby-extract` and its
     `docker rm`, and every service stop was blamed for the container, sending repair after stops that had worked.
-    Only creating forms count (--name, volume create, -v NAME:, network create), never a mere mention such as
-    `docker exec NAME`. A service's own command blames that service's stop; any other command blames itself.
+    A service's step blames that service's stop when the stop ran, and otherwise the step itself.
     """
-    # (record to blame, the creating command's text), for every command and every service step.
-    owners = [(command.id, ' '.join(command.argv)) for command in [*manifest.install, *manifest.checks]]
-    owners += [(service.stop.id, ' '.join(command.argv)) for service in manifest.services
-               for command in (getattr(service, step, None) for step in ('init', 'start', 'health', 'stop'))
-               if command is not None]
-    created: dict[str, dict[str, list[str]]] = {}
+    creators = [(command, command.id) for command in [*manifest.install, *manifest.checks]]
+    creators += [(command, service.stop.id if service.stop.id in ran else command.id)
+                 for service in manifest.services
+                 for command in (getattr(service, step, None) for step in ('init', 'start', 'health', 'stop'))
+                 if command is not None]
+    made = [(record, docker_created(command.argv)) for command, record in creators if command.id in ran]
+    blamed: dict[str, dict[str, list[str]]] = {}
     unexplained: dict[str, list[str]] = {}
     for kind, names in left.items():
         for name in names:
-            patterns = [pattern.format(name=re.escape(name)) for pattern in _CREATOR_PATTERNS.get(kind, ())]
-            blamed = {record for record, text in owners
-                      if record in ran and any(re.search(pattern, text) for pattern in patterns)}
-            for record in sorted(blamed):
-                created.setdefault(record, {}).setdefault(kind, []).append(name)
-            if not blamed:
+            records = sorted({record for record, created in made if name in created[kind]})
+            for record in records:
+                blamed.setdefault(record, {}).setdefault(kind, []).append(name)
+            if not records:
                 unexplained.setdefault(kind, []).append(name)
-    return created, unexplained
+    return blamed, unexplained
+
+
+_RUNS = (['run'], ['create'], ['container', 'run'], ['container', 'create'])
+
+
+def docker_created(argv: Sequence[str]) -> dict[str, set[str]]:
+    """The Docker state a command names as it creates it, read from its docker invocations as shell words.
+
+    Conservative like the carrier rules: a form it does not recognise (a docker global option before the
+    subcommand, a name in a variable) creates nothing here, so that state keeps the fallback attribution.
+    Only a docker invocation counts: `echo --name db` creates nothing.
+    """
+    from .static_rules import _program, _script, _simple_commands
+
+    created: dict[str, set[str]] = {'containers': set(), 'volumes': set(), 'networks': set()}
+    # The shell joins a backslash line continuation before it splits words; the lexer would end the command there.
+    for words in _simple_commands(_script(argv).replace('\\\n', ' ')):
+        program = _program(words)
+        if not program or program[0].rsplit('/', 1)[-1] != 'docker':
+            continue
+        args = program[1:]
+        if any(args[:len(form)] == form for form in _RUNS):
+            for option, value in _options(args):
+                if option == '--name':
+                    created['containers'].add(value)
+                elif option in {'-v', '--volume'} and (volume := _named_volume(value.split(':', 1)[0])):
+                    created['volumes'].add(volume)
+                elif option == '--mount':
+                    fields = dict(field.partition('=')[::2] for field in value.split(','))
+                    volume = fields.get('source') or fields.get('src') or ''
+                    if fields.get('type', 'volume') == 'volume' and _named_volume(volume):
+                        created['volumes'].add(volume)
+        elif args[:2] in (['volume', 'create'], ['network', 'create']) and len(args) > 2:
+            kind = 'volumes' if args[0] == 'volume' else 'networks'
+            named = [value for option, value in _options(args) if option == '--name']
+            if not args[-1].startswith('-'):
+                named.append(args[-1])
+            created[kind].update(named)
+    return created
+
+
+def _options(args: list[str]) -> list[tuple[str, str]]:
+    """Each option with its value, written either as two words or as --option=value."""
+    pairs = [(word.partition('=')[0], word.partition('=')[2]) for word in args if word.startswith('--') and '=' in word]
+    pairs += [(word, value) for word, value in itertools.pairwise(args) if word.startswith('-') and '=' not in word]
+    return pairs
+
+
+def _named_volume(source: str) -> str:
+    """A -v or --mount source that names a volume, never a host path."""
+    return source if source and not source.startswith(('/', '.', '~', '$')) and '/' not in source else ''
 
 
 def _cancelling() -> bool:
