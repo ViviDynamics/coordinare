@@ -364,3 +364,34 @@ def test_a_probe_the_machinery_failed_to_run_still_holds():
     with pytest.raises(EnvironmentDiscoveryError) as held:
         validate_probe_report(p, ProbeReport.model_validate(data))
     assert held.value.code == 'probe_observation_incomplete' and str(held.value) == 'probe execution failed: tool'
+
+
+@pytest.mark.parametrize('result', [{'status': 'timed_out', 'exit_code': None, 'output': 'partial', 'truncated': False},
+                                    {'status': 'completed', 'exit_code': 0, 'output': 'x', 'truncated': True}],
+                         ids=['timed_out', 'truncated'])
+def test_a_saved_report_with_a_timed_out_or_truncated_probe_survives_a_restart(result):
+    """Review: a report accepted live was refused after restart or in an execution repair."""
+    from coordinare.services.environment_probes import validate_saved_probe_reports
+    data = report_data()
+    data['results'][0].update(result)
+    validate_saved_probe_reports([data], COMMIT, CAPABILITIES)
+    data['results'][0].update(status='execution_error', exit_code=None, truncated=False)
+    with pytest.raises(EnvironmentDiscoveryError):
+        validate_saved_probe_reports([data], COMMIT, CAPABILITIES)
+
+
+def test_a_probe_the_batch_never_started_is_not_reported_as_timed_out(monkeypatch):
+    """Review: an unstarted probe read as a timeout, an observation it never made."""
+    import io
+    import json as json_module
+    import sys
+
+    from coordinare_service_inference.environment import observation
+
+    command = {'id': 'late', 'argv': ['true'], 'cwd': '/tmp', 'env': {}, 'timeout_seconds': 1}
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json_module.dumps({'commands': [command], 'seconds': 0})))
+    out = io.StringIO()
+    monkeypatch.setattr(sys, 'stdout', out)
+    observation.main()
+    [result] = json_module.loads(out.getvalue())
+    assert result['status'] == 'execution_error' and 'ran out before this probe started' in result['output']

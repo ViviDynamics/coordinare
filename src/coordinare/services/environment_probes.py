@@ -163,7 +163,7 @@ def validate_saved_probe_reports(reports: list[dict[str, Any]], source_commit: s
             raise EnvironmentDiscoveryError(message, code="probe_report_invalid")
     if any(report.source_commit != source_commit or report.image_ref != capabilities.image_ref
            or report.platform != capabilities.platform or not report.cleanup_confirmed
-           or any(item.status != "completed" or item.truncated for item in report.results) for report in parsed):
+           or any(item.status == "execution_error" for item in report.results) for report in parsed):
         message = "saved capability preflight is incomplete or differs from the current target"
         raise EnvironmentDiscoveryError(message, code="probe_report_invalid")
 

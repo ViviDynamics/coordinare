@@ -101,7 +101,10 @@ def _private_results(data: dict[str, Any]) -> list[dict[str, Any]]:
     except PrivateTeardownError:
         raise
     except TimeoutError:
-        return [{"id": command_id, "status": "timed_out", "exit_code": None, "output": "", "truncated": False}]
+        # The guest, not the command, ran out of time: nothing was observed. A command that outlives its own timeout
+        # inside the guest is reported timed_out by execute(); this one must not read as that observation.
+        return [{"id": command_id, "status": "execution_error", "exit_code": None,
+                 "output": "private probe guest unavailable: TimeoutError", "truncated": False}]
     except (OSError, RuntimeError, ValueError) as exc:
         return [{"id": command_id, "status": "execution_error", "exit_code": None,
                  "output": f"private probe guest unavailable: {type(exc).__name__}", "truncated": False}]
@@ -117,7 +120,9 @@ def main() -> None:
     for command in data["commands"]:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            results.append({"id":command["id"], "status":"timed_out", "exit_code":None, "output":"", "truncated":False})
+            # Never started: the batch's time ran out first, so there is no observation of this command.
+            results.append({"id":command["id"], "status":"execution_error", "exit_code":None,
+                            "output":"probe batch time ran out before this probe started", "truncated":False})
         else:
             results.append(execute(command, remaining, runtime_env=data.get("runtime_environment"), roots=data.get('roots')))
     sys.stdout.write(json.dumps(results) + "\n")

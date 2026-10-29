@@ -18,7 +18,7 @@ def failing(exc: BaseException):
 
 @pytest.mark.parametrize(('exc', 'status'), [(RuntimeError('guest boot failed at /private/path'), 'execution_error'),
                                              (OSError('no space'), 'execution_error'),
-                                             (TimeoutError('deadline'), 'timed_out')])
+                                             (TimeoutError('deadline'), 'execution_error')])
 def test_a_guest_failure_is_reported_for_its_command_only(monkeypatch, exc, status):
     monkeypatch.setattr(observation, 'observe_private', lambda data: _coroutine())
     monkeypatch.setattr(observation, 'run_cli', failing(exc))
