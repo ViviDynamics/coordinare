@@ -361,6 +361,7 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
     obligation is the identical command, kept under the global id (e2e-07 deadlocked on two pinned copies).
     """
     graph = {str(record['id']): list(record.get('depends_on') or []) for record in _commands(merged)}
+    authored = set(global_ids)
     global_ids = global_ids | _promote_shared_group_copies(merged, global_ids, group_ids, graph, policy)
     checks = [check for check in merged['checks'] if isinstance(check, dict)]
     globals_by_key: dict[str, tuple[dict[str, Any], Command]] = {}
@@ -385,6 +386,7 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
         kept.update(depends_on=model.depends_on, timeout_seconds=model.timeout_seconds, required=model.required)
         graph[model.id] = list(model.depends_on)
         globals_by_key[key] = (kept, model)
+    alias.update(_drop_global_copies_of_executed_checks(merged, authored, group_ids, policy, alias))
     if not alias:
         return alias
 
@@ -411,6 +413,45 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
         if isinstance(requirement, dict) and requirement.get('checks'):
             requirement['checks'] = remap(requirement['checks'])
     return alias
+
+
+def _drop_global_copies_of_executed_checks(merged: dict[str, Any], authored: set[str], group_ids: set[str],
+                                           policy: FoldPolicy, alias: Mapping[str, str]) -> dict[str, str]:
+    """A new global check identical to an executed group check is dropped for it: the executed id must survive.
+
+    Dettmore e2e-12: in a full repair the global author copied every group check it was shown, and the correction for
+    reserved ids led it to rename all 25 copies. The fold into a global check refuses an executed copy, and the groups,
+    told to keep their executed ids, wrote them again each round until the merge rounds ran out. The copy goes only
+    when nothing could miss it: no requirement or command names it, it is new (never executed, retained or a prior
+    version), it keeps no group copy, and the executed check takes it whole with at most a longer timeout.
+    """
+    # A requirement or a dependent that names a global copy keeps it.
+    named = {str(identifier) for requirement in merged.get('requirements') or [] if isinstance(requirement, dict)
+             for identifier in requirement.get('checks') or []}
+    named |= {str(dependency) for record in _commands(merged) for dependency in record.get('depends_on') or []}
+    executed: dict[str, tuple[dict[str, Any], Command]] = {}
+    copies: list[Command] = []
+    for check in (check for check in merged['checks'] if isinstance(check, dict)):
+        try:
+            command = Command.model_validate(check)
+        except ValidationError:
+            continue
+        if command.id in group_ids and command.id in policy.executed and command.id not in alias:
+            executed.setdefault(content_key(command), (check, command))
+        elif (command.id in authored and command.id not in named and command.id not in alias.values()
+              and command.id not in policy.executed and command.id not in policy.retained and command.id not in policy.prior):
+            copies.append(command)
+    dropped: dict[str, str] = {}
+    for command in copies:
+        found = executed.get(content_key(command))
+        if found is None:
+            continue
+        kept, model = found
+        if not set(command.depends_on) <= set(model.depends_on) or (command.required and not model.required):
+            continue
+        kept['timeout_seconds'] = max(model.timeout_seconds, command.timeout_seconds)
+        dropped[command.id] = model.id
+    return dropped
 
 
 _GROUP_BASE = re.compile(r'^(c[0-9]{2,3})[a-z]*-')

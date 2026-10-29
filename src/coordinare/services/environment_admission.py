@@ -94,8 +94,9 @@ SCOPE_ID_COLLISION_GUIDANCE = ("A requirement, install, check or service id reus
     "as criterion_checks keys. When unavailable lists them, rename exactly those records and leave every other record "
     "and id unchanged.")
 GLOBAL_PART_GUIDANCE = ("This is the global part of a divided manifest. Leave criterion_checks empty: check authors map "
-    "criteria. Check ids of c, two or three digits, optional letters and a hyphen (c00-, c00a-) are reserved for check "
-    "authors; rename yours.")
+    "criteria. Checks with ids of c, two or three digits, optional letters and a hyphen (c00-, c00a-) belong to check "
+    "authors, who write them in their own parts: leave every one of them out of the global part, and never keep a copy "
+    "under another id. Rename only a global check of your own whose id happens to take that form.")
 CREDENTIAL_GUIDANCE = (
     'Use ${NAME} for every operator credential and local credential. For a credential environment variable named K, '
     'its value must be exactly ${K}. '

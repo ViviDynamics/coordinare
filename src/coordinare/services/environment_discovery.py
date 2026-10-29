@@ -1436,7 +1436,8 @@ def _promoted_sources(folded: Mapping[str, str], global_data: Mapping[str, Any])
     authored = {check.get('id') for check in global_data.get('checks') or [] if isinstance(check, dict)}
     sources: dict[str, list[str]] = {}
     for dropped, kept in folded.items():
-        if kept not in authored:
+        # A group-shaped kept id is a group's executed check a global copy was dropped for, never a promotion.
+        if kept not in authored and not PREFIX.match(kept):
             sources.setdefault(kept, []).append(dropped)
     return sources
 

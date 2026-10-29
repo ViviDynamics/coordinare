@@ -80,10 +80,11 @@ def test_a_global_check_relying_on_defaults_keeps_them_when_a_shorter_optional_c
 
 
 def test_an_executed_group_copy_is_never_dropped():
-    """Execution preservation requires every executed required check to survive under its own id."""
+    """Execution preservation requires every executed required check to survive under its own id; the new global copy
+    is the one that goes."""
     c00 = _part([_cmd('c00-health', 'health')], {'S1': ['c00-health']})
     merged = merge_parts({'checks': [_cmd('check-health', 'health')]}, [c00], policy=FoldPolicy(executed={'c00-health'}))
-    assert [check['id'] for check in merged['checks']] == ['check-health', 'c00-health']
+    assert [check['id'] for check in merged['checks']] == ['c00-health']
 
 
 def test_every_fold_is_reported_so_a_required_id_can_follow_it():
@@ -218,3 +219,52 @@ def test_a_name_with_nested_group_prefixes_or_at_the_length_limit_stays_valid():
     merged = merge_parts({'checks': [_cmd(long_name, 'other')]}, long_parts)
     promoted = [check['id'] for check in merged['checks'] if check['id'] != long_name]
     assert len(promoted) == 1 and len(promoted[0]) <= 128 and promoted[0].endswith('-shared-1')
+
+
+def test_new_global_copies_of_executed_group_checks_are_dropped_for_them():
+    """Dettmore e2e-12: a full repair's global author renamed its copies of every group check; the groups, told to keep
+    their executed ids, rewrote them each round until the merge rounds ran out."""
+    global_data = {'checks': [_cmd('env-ruby', 'ruby'), _cmd('rspec-full-run', 'rspec', timeout_seconds=3600),
+                              _cmd('repo-env-ready', 'cp', 'env')]}
+    c00 = _part([_cmd('c00-rspec', 'rspec', timeout_seconds=1800, required=True),
+                 _cmd('c00-repo-env', 'cp', 'env')], {'S1': ['c00-rspec', 'c00-repo-env']})
+    folded: dict[str, str] = {}
+    merged = merge_parts(global_data, [c00], folded=folded,
+                         policy=FoldPolicy(executed={'c00-rspec', 'c00-repo-env'}))
+    assert [check['id'] for check in merged['checks']] == ['env-ruby', 'c00-rspec', 'c00-repo-env']
+    assert merged['checks'][1]['timeout_seconds'] == 3600 and merged['checks'][1]['required'] is True
+    assert folded == {'rspec-full-run': 'c00-rspec', 'repo-env-ready': 'c00-repo-env'}
+    assert merged['criterion_checks'] == {'S1': ['c00-rspec', 'c00-repo-env']}
+
+
+@pytest.mark.parametrize('case', ['requirement', 'dependent', 'executed', 'retained', 'prior', 'more_deps',
+                                  'stricter', 'not_executed'])
+def test_a_global_copy_anything_could_miss_is_kept(case):
+    from coordinare_service_inference.environment.models import Command
+    copy = _cmd('rspec-run', 'rspec', **({'depends_on': ['env-ruby']} if case == 'more_deps' else {}))
+    global_data = {'checks': [_cmd('env-ruby', 'ruby'), copy]}
+    if case == 'requirement':
+        global_data['requirements'] = [{'id': 'req', 'description': 'd', 'source': 'README.md', 'checks': ['rspec-run']}]
+    if case == 'dependent':
+        global_data['checks'].append(_cmd('after', 'after', depends_on=['rspec-run']))
+    executed = {'c00-rspec'} if case != 'not_executed' else set()
+    policy = FoldPolicy(executed=executed | ({'rspec-run'} if case == 'executed' else set()),
+                        retained={'rspec-run': Command.model_validate(copy)} if case == 'retained' else {},
+                        prior={'rspec-run': [Command.model_validate(copy)]} if case == 'prior' else {})
+    c00 = _part([_cmd('c00-rspec', 'rspec', **({'required': False} if case == 'stricter' else {}))],
+                {'S1': ['c00-rspec']} if case != 'stricter' else {})
+    folded: dict[str, str] = {}
+    merged = merge_parts(global_data, [c00], folded=folded, policy=policy)
+    ids = [check['id'] for check in merged['checks']]
+    if case == 'not_executed':
+        # The ordinary fold keeps the global check for a copy that never ran.
+        assert folded == {'c00-rspec': 'rspec-run'} and 'c00-rspec' not in ids
+    else:
+        assert 'rspec-run' in ids and 'c00-rspec' in ids and 'rspec-run' not in folded
+
+
+def test_a_kept_group_check_is_never_read_as_a_promotion():
+    from coordinare.services.environment_discovery import _promoted_sources
+    global_data = {'checks': [_cmd('rspec-run', 'rspec')]}
+    assert _promoted_sources({'rspec-run': 'c00-rspec'}, global_data) == {}
+    assert _promoted_sources({'c00-x': 'x-shared', 'c01-x': 'x-shared'}, global_data) == {'x-shared': ['c00-x', 'c01-x']}
