@@ -272,3 +272,12 @@ def test_the_runner_names_the_unresolved_variable_and_never_a_value():
 
     assert _unresolved_name(ValueError('unresolved environment reference: SECRET_KEY_BASE')) == ' ${SECRET_KEY_BASE}'
     assert _unresolved_name(ValueError('some other failure with value s3cr3t')) == ''
+
+
+
+def test_the_runtime_credential_correction_agrees_with_the_carrier_guidance():
+    """A correction must not forbid what the carrier guidance recommends (e2e-11 bounced between the two)."""
+    from coordinare.services.environment_admission import CREDENTIAL_GUIDANCE
+
+    assert 'openssl rand' in CREDENTIAL_GUIDANCE and 'never in a command env field' in CREDENTIAL_GUIDANCE
+    assert 'Any other credential comes from the trusted runtime' not in CREDENTIAL_GUIDANCE
