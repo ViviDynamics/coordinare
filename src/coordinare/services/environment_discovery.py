@@ -1404,10 +1404,20 @@ def _carry_folds(attempt: _Attempt, folded: Mapping[str, str], authored_response
 _ID_FIELDS = frozenset({'command_id', 'unavailable', 'pairs', 'missing', 'id'})
 
 
+# Codes whose ``unavailable`` lists names that are not record ids: credential and environment variable names,
+# activation path positions and source paths. Their command_id is still a record id.
+_UNAVAILABLE_NOT_IDS = frozenset({'runtime_env_reserved', 'shell_local_template_reference', 'activation_path_uncreated',
+                                  'requirement_source_uninspected'})
+
+
 def _named_ids(value: Any, *, field: bool = False) -> set[str]:
-    """Every string under an id-bearing key of structured feedback (command_id, unavailable, pairs, missing, id)."""
+    """Every string under an id-bearing key of structured feedback (command_id, unavailable, pairs, missing, id),
+    except an ``unavailable`` list that a credential or variable code fills with names."""
     if isinstance(value, Mapping):
-        return set().union(*(_named_ids(item, field=key in _ID_FIELDS) for key, item in value.items()))
+        code = str(value.get('code') or '')
+        names_only = code in _UNAVAILABLE_NOT_IDS or code.startswith('local_credential')
+        return set().union(*(_named_ids(item, field=key in _ID_FIELDS and not (key == 'unavailable' and names_only))
+                             for key, item in value.items()))
     if isinstance(value, list):
         return set().union(*(_named_ids(item, field=field) for item in value))
     return {value} if field and isinstance(value, str) else set()

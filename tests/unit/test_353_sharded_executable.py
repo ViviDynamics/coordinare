@@ -1113,3 +1113,16 @@ def test_rollback_keeps_the_earlier_state_when_the_unfolded_candidate_would_be_r
     required, ledger = _rollback(required=['c00-copy'], coverage={'req': {'c00-copy'}}, after_required=['toolchain'],
                                  after_coverage={'req': {'toolchain'}}, unfolded=unfolded)
     assert required['checks'] == {'c00-copy'} and ledger.coverage == {'req': {'c00-copy'}}
+
+
+
+def test_a_credential_or_variable_name_never_attributes_a_promoted_check():
+    """Review r7: identical c00-DB_URL and c01-DB_URL promote to DB_URL; a DB_URL credential error is global."""
+    group = CheckGroup('c00-', ())
+    parts = {'c00-': (group, ShardChecks.model_validate({'checks': [], 'criterion_checks': {}}))}
+    promoted = {'DB_URL': ['c00-DB_URL', 'c01-DB_URL']}
+    for code in ('local_credential_invalid', 'runtime_env_reserved'):
+        errors = [{'location': [], 'code': code, 'unavailable': ['DB_URL'], 'command_id': 'activation'}]
+        assert discovery_module._attributed(errors, ValueError(), parts, promoted) == []
+    reserved = [{'location': [], 'code': 'runtime_env_reserved', 'unavailable': ['DOCKER_HOST'], 'command_id': 'DB_URL'}]
+    assert discovery_module._attributed(reserved, ValueError(), parts, promoted) == [group]
