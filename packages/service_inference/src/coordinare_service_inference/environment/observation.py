@@ -63,6 +63,9 @@ def execute(command: dict[str, Any], seconds: float, *, runtime_env: dict[str, s
     process = None
     try:
         env = command_environment(command, runtime_env=runtime_env, roots=roots)
+        # When the batch's remaining time, not the command's own timeout, is the deadline that expires, the command
+        # was cut short by the batch: that is no observation of its timeout.
+        batch_bound = seconds < command["timeout_seconds"]
         deadline = time.monotonic() + min(seconds, command["timeout_seconds"])
         process = subprocess.Popen(  # noqa: S603, RUF100 - isolated argv; S603 is enforced by the separate ratchet
             [_expand(value, roots, env) for value in command["argv"]],
@@ -75,7 +78,10 @@ def execute(command: dict[str, Any], seconds: float, *, runtime_env: dict[str, s
             result.update(status="completed", exit_code=code)
         except subprocess.TimeoutExpired:
             expired = True
-        if expired:
+        if expired and batch_bound:
+            result.update(status="execution_error", exit_code=None,
+                          output="probe batch time ran out while this probe ran")
+        elif expired:
             result.update(status="timed_out", exit_code=None)
     except FileNotFoundError:
         result.update(status="completed", exit_code=127, output="executable or working directory unavailable")

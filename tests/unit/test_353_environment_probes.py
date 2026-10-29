@@ -395,3 +395,17 @@ def test_a_probe_the_batch_never_started_is_not_reported_as_timed_out(monkeypatc
     observation.main()
     [result] = json_module.loads(out.getvalue())
     assert result['status'] == 'execution_error' and 'ran out before this probe started' in result['output']
+
+
+def test_a_probe_the_batch_cut_short_is_not_reported_as_its_own_timeout():
+    """Review r2: a 30 second command stopped by a 0.03 second batch budget read as timed_out."""
+    import sys
+
+    from coordinare_service_inference.environment import observation
+
+    command = {'id': 'slow', 'argv': [sys.executable, '-c', 'import time; time.sleep(0.5)'], 'cwd': '/tmp', 'env': {},
+               'timeout_seconds': 30}
+    result = observation.execute(command, 0.05)
+    assert result['status'] == 'execution_error' and 'batch time ran out' in result['output']
+    own = observation.execute({**command, 'timeout_seconds': 0.05}, 30)
+    assert own['status'] == 'timed_out'
