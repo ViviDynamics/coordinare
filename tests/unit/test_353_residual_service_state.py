@@ -323,6 +323,18 @@ async def test_a_creator_that_did_not_run_is_not_blamed(tmp_path, monkeypatch):
     ("cat <<'SCRIPT-EOF'\ndocker create --name fake alpine\nSCRIPT-EOF", {}),
     ('cat <<<EOF\ndocker create --name real alpine', {}),
     ('docker create --name ruby-extract alpine; printf "|"', {}),
+    # Round 4: a command that might not run as written, or that docker would not run, names nothing; docker's own
+    # reading decides the rest.
+    ('if false; then docker create --name fake alpine; fi', {}),
+    ('f() { docker create --name fake alpine; }; true', {}),
+    ('docker # comment\ncreate --name fake alpine', {}),
+    ('docker create --name ">log" alpine', {}),
+    ('docker create --name db\\\\\n-old alpine', {}),
+    ('docker create --help --name fake alpine', {}),
+    ('docker create --name fake', {}),
+    ('docker network create --name fake', {}),
+    ('docker create --name first --name second alpine', {'containers': {'second'}}),
+    ('docker run --mount type=volume,source=one,src=two,target=/d alpine', {'volumes': {'two'}}),
     # Dettmore e2e-12's install-host-ruby, as written.
     ('set -e; rm -rf /c/ruby-root/*; docker create --name ruby-extract ruby:3.4.2-slim true >/dev/null; '
      'docker export ruby-extract | tar -C /c/ruby-root -xf -; docker rm ruby-extract >/dev/null',
@@ -412,3 +424,9 @@ async def test_state_only_partly_explained_is_blamed_but_not_removed(tmp_path, m
     assert results['a-start'].status == 'fail' and 'known' in results['a-start'].output
     assert 'random-other' not in results['a-start'].output and results['b-start'].status == 'pass'
     assert not any('docker volume rm' in script for script in scripts)
+
+
+def test_a_continuation_inside_single_quotes_stays_in_the_word():
+    """Bash keeps a backslash-newline inside single quotes, so the name is never joined into db-old."""
+    created = runtime_execution.docker_created(['bash', '-c', "docker create --name 'db\\\n-old' alpine"])
+    assert created['containers'] == {'db\\\n-old'}

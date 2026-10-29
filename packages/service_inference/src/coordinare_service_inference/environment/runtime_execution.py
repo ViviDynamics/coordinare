@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import re
 import tempfile
 import threading
 import time
@@ -163,41 +164,94 @@ _CREATES = {'volume create': ('volumes', _Options(frozenset({'--help'}), frozens
 def docker_created(argv: Sequence[str]) -> dict[str, set[str]]:
     """The Docker state a command names as it creates it, read from its docker invocations as shell words.
 
-    Conservative like the carrier rules: a form it does not recognise (a docker global option before the
-    subcommand, a name in a variable) creates nothing here, so that state keeps the fallback attribution. A script the
-    carrier lexer refuses (a heredoc, a quoted or escaped operator) names no creator at all: a missed creator only
-    falls back, while an invented one would blame an innocent command and remove state nothing answers for.
-    Only a docker invocation counts (`echo --name db` creates nothing), and only its own options: run and create
-    stop reading options at the image, as docker does, so the container command's words are never its options.
+    Never invents: a missed creator only falls back to the earlier attribution, while an invented one would blame an
+    innocent command and remove state nothing answers for. So a script the carrier lexer refuses (a heredoc, a quoted
+    or escaped operator) names nothing, nor does one whose commands might not run as written (control flow, a function,
+    a subshell or substitution, a comment) or whose quoted words hold redirection characters the lexer would drop. Only
+    a docker invocation counts, read as docker reads it: run and create stop at the image and need one, a later --name
+    wins, --help creates nothing, and a create names only its positional word.
     """
     from .static_rules import _program, _script, _simple_commands
 
     created: dict[str, set[str]] = {'containers': set(), 'volumes': set(), 'networks': set()}
-    # The shell removes a backslash-newline before it splits words; the lexer would end the command there.
-    for words in _simple_commands(_script(argv).replace('\\\n', '')):
-        program = _program(words)
+    script = _joined_continuations(_script(argv))
+    if _UNREAD.search(script) or _QUOTED_REDIRECTION.search(script):
+        return created
+    commands = [_program(words) for words in _simple_commands(script)]
+    if any(program and program[0] in _CONTROL for program in commands):
+        return created
+    for program in commands:
         if not program or program[0].rsplit('/', 1)[-1] != 'docker':
             continue
         args = program[1:]
         run = next((form for form in _RUNS if args[:len(form)] == form), None)
         if run is not None:
-            options, _positional = _parse(args[len(run):], _RUN_OPTIONS)
-            for option, value in options:
-                if option == '--name':
-                    created['containers'].add(value)
-                elif option in {'-v', '--volume'} and (volume := _named_volume(value.split(':', 1)[0])):
-                    created['volumes'].add(volume)
-                elif option == '--mount':
-                    fields = dict(field.partition('=')[::2] for field in value.split(','))
-                    volume = fields.get('source') or fields.get('src') or ''
-                    if fields.get('type', 'volume') == 'volume' and _named_volume(volume):
-                        created['volumes'].add(volume)
+            options, positional = _parse(args[len(run):], _RUN_OPTIONS)
+            if positional and not _helped(options):
+                _record_run(options, created)
         elif (create := _CREATES.get(' '.join(args[:2]))) is not None:
             kind, spec = create
             options, positional = _parse(args[2:], spec)
             # A create with no name asks docker to generate one: nothing is named.
-            created[kind].update([value for option, value in options if option == '--name'] + positional[:1])
+            if positional and not _helped(options):
+                created[kind].add(positional[0])
     return created
+
+
+# Script text after which a command may not run as written, or the lexer would not see it: a subshell, function or
+# substitution, a comment, a backquote.
+_UNREAD = re.compile(r'[()#`]')
+# A quoted word holding < or >: the lexer would read it as a redirection and drop it.
+_QUOTED_REDIRECTION = re.compile('\'[^\']*[<>][^\']*\'|"[^"]*[<>][^"]*"')
+_CONTROL = frozenset({'if', 'then', 'else', 'elif', 'fi', 'case', 'esac', 'for', 'select', 'while', 'until', 'do',
+                      'done', 'function', '!', '[[', 'coproc'})
+
+
+def _joined_continuations(script: str) -> str:
+    """The script with each backslash-newline the shell removes removed: outside single quotes, and only where the
+    backslash is not itself escaped."""
+    out: list[str] = []
+    quote = ''
+    index = 0
+    while index < len(script):
+        character = script[index]
+        if quote != "'" and character == '\\':
+            if script[index + 1:index + 2] == '\n':
+                index += 2
+                continue
+            out.append(script[index:index + 2])
+            index += 2
+            continue
+        if character in '\'"' and quote in ('', character):
+            quote = '' if quote else character
+        out.append(character)
+        index += 1
+    return ''.join(out)
+
+
+def _helped(options: list[tuple[str, str]]) -> bool:
+    return any(option in {'--help', '-h'} for option, _value in options)
+
+
+def _record_run(options: list[tuple[str, str]], created: dict[str, set[str]]) -> None:
+    """A run or create's container name (the last --name wins) and the named volumes its mounts create."""
+    names = [value for option, value in options if option == '--name']
+    if names:
+        created['containers'].add(names[-1])
+    for option, value in options:
+        if option in {'-v', '--volume'} and (volume := _named_volume(value.split(':', 1)[0])):
+            created['volumes'].add(volume)
+        elif option == '--mount':
+            kind, source = 'volume', ''
+            for field in value.split(','):
+                key, _, setting = field.partition('=')
+                if key == 'type':
+                    kind = setting
+                elif key in {'source', 'src'}:
+                    # Docker applies the fields in order: the last source wins.
+                    source = setting
+            if kind == 'volume' and _named_volume(source):
+                created['volumes'].add(source)
 
 
 def _parse(args: list[str], spec: _Options) -> tuple[list[tuple[str, str]], list[str]]:
