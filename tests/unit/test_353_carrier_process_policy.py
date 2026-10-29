@@ -151,7 +151,8 @@ async def test_actual_divided_check_authors_receive_the_daemon_process_policy(mo
     else:
         assert 'carrier_process_policy' not in captured
     if repair:
-        assert (saved_keys[-1] != 'd' * 64) is private
+        from coordinare.services.environment_shard_construction import delta_part_key
+        assert (saved_keys[-1] != delta_part_key('d' * 64, None)) is private
 
 
 class Captured(BaseException):
@@ -237,11 +238,15 @@ async def test_legacy_delta_author_cache_replays_only_if_policy_context_unchange
     assert len(called) == (2 if private else 1)
 
 
-def test_delta_policy_key_binds_policy_content_and_preserves_native_keys():
-    from coordinare.services.environment_shard_construction import delta_part_key
+def test_delta_policy_key_binds_policy_content_and_the_brief_version():
+    from coordinare.services.environment_shard_construction import (
+        DELTA_BRIEF_VERSION,
+        delta_part_key,
+    )
 
     digest = 'd' * 64
-    assert delta_part_key(digest, None) == digest
+    # Review: a native part saved under an earlier brief must not replay either.
+    assert delta_part_key(digest, None) == f'{digest}-v{DELTA_BRIEF_VERSION}' != digest
     policy = {'linux_capabilities': [], 'no_new_privileges': True}
     key = delta_part_key(digest, policy)
     assert key != digest

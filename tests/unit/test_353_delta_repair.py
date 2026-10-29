@@ -529,7 +529,7 @@ async def test_a_touched_group_is_authored_as_a_patch_applied_to_its_failed_part
     assert part.checks[1].argv == ["b", "--strict"]
     assert part.criterion_checks == {"S1": ["c00-a"], "S2": ["c00-b"]}
     saved = budget.executable_parts["delta"]["c00-"]
-    assert saved["key"] == "d" * 64
+    assert saved["key"] == construction_module.delta_part_key("d" * 64, None)
     assert [check["id"] for check in saved["data"]["shard_checks"]["checks"]] == ["c00-b"]
 
 

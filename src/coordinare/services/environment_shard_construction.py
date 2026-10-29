@@ -125,13 +125,13 @@ DELTA_CHECK_INSTRUCTION = (
     'they are kept unchanged. Keep every id in keep_check_ids, never rename a check, and add a new id only for a new '
     'obligation. Read the bound_inputs you need with read_files. Never write literal credentials. A check in '
     'fixed_check_ids ran in an earlier execution: keep its argv, cwd, env, dependencies, scope and required status, '
-    'change at most its timeout_seconds, and leave what it needs to the global repair. '
+    'never shorten its timeout_seconds (you may only lengthen it), and leave what it needs to the global repair. '
 )
 # Dettmore e2e-14 review: a closure record a past execution fixed may change only its timeout, which the delta authors
 # were never told; the fix belongs in installation, activation or a service instead.
 FIXED_DELTA = ('A record in repair_delta.fixed_ids ran in an earlier execution: keep its argv, cwd, env, dependencies, '
-               'scope and required status, change at most its timeout, and repair what it needs in installation, '
-               'activation or a service instead.')
+               'scope and required status, never shorten its timeout (you may only lengthen it), and repair what it '
+               'needs in installation, activation or a service instead.')
 REVIEW_PART_PREAMBLE = (
     'You independently review ONE part of a divided executable manifest: for a check group, its assigned criteria and '
     'the checks that map them; for the global part, installation, activation, services, requirements and global checks. '
@@ -815,9 +815,11 @@ DELTA_BRIEF_VERSION = 3
 
 
 def delta_part_key(triage_digest: str, process_policy: Mapping[str, Any] | None) -> str:
-    """Keep native delta keys stable; private parts also depend on the delivered carrier policy and brief version."""
+    """Every key depends on the brief version, so a part saved under an earlier brief is never replayed; private parts
+    also depend on the delivered carrier policy. (Native keys were the bare triage digest until version 3, when a part
+    saved without the fixed-record rule would otherwise replay and fail preservation at merge.)"""
     if process_policy is None:
-        return triage_digest
+        return f'{triage_digest}-v{DELTA_BRIEF_VERSION}'
     return hashlib.sha256(canonical({'triage_digest': triage_digest, 'carrier_process_policy': process_policy,
                                      'brief_version': DELTA_BRIEF_VERSION})).hexdigest()
 

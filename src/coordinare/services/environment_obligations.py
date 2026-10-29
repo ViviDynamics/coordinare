@@ -116,7 +116,12 @@ def fixed_commands(manifests: Sequence[EnvironmentManifest]) -> dict[str, dict[s
         for command in _required_execution_commands(manifest):
             record = command.model_dump(mode="json")
             if command.id in fixed:
-                record["timeout_seconds"] = max(record["timeout_seconds"], fixed[command.id]["timeout_seconds"])
+                earlier = fixed[command.id]
+                if {**record, "timeout_seconds": 0} != {**earlier, "timeout_seconds": 0}:
+                    # No candidate could preserve both; preservation itself would never have let them diverge.
+                    message = f"executions fixed {_id(command.id)} differently; no repair can preserve both"
+                    raise EnvironmentDiscoveryError(message, code="execution_history_invalid")
+                record["timeout_seconds"] = max(record["timeout_seconds"], earlier["timeout_seconds"])
             fixed[command.id] = record
     return fixed
 

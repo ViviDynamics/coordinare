@@ -1308,3 +1308,17 @@ def test_a_fixed_command_carries_the_longest_timeout_any_execution_gave_it():
                                                                'timeout_seconds': timeout})], services=[])
 
     assert fixed_commands([manifest(600), manifest(1800), manifest(900)])['suite']['timeout_seconds'] == 1800
+
+
+def test_executions_that_fixed_a_command_differently_are_refused_before_authoring():
+    """Review: a record that fails preservation against one execution would be handed to an author as fixed."""
+    from coordinare_service_inference.environment.models import Command
+
+    from coordinare.services.environment_obligations import fixed_commands
+
+    def manifest(argv):
+        return SimpleNamespace(checks=[Command.model_validate({'id': 'suite', 'argv': argv})], services=[])
+
+    with pytest.raises(EnvironmentDiscoveryError) as refused:
+        fixed_commands([manifest(['rspec']), manifest(['rspec', '--fail-fast'])])
+    assert refused.value.code == 'execution_history_invalid' and 'suite' in str(refused.value)
