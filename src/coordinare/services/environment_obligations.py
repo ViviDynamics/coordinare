@@ -102,6 +102,12 @@ def executed_manifests(history: object, *, source_commit: str) -> list[Environme
         raise EnvironmentDiscoveryError(message, code="execution_history_invalid") from None
 
 
+def fixed_command_ids(manifests: Sequence[EnvironmentManifest]) -> frozenset[str]:
+    """Every command execution preservation fixes: the required checks and required services' lifecycle commands of
+    each executed manifest. Only their timeouts may grow."""
+    return frozenset(command.id for manifest in manifests for command in _required_execution_commands(manifest))
+
+
 def preserve_execution_commands(
     manifest: EnvironmentManifest,
     previous: EnvironmentManifest,

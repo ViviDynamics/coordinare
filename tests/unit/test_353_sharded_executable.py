@@ -612,7 +612,7 @@ def test_a_divided_revision_restarts_from_the_global_part_alone():
                 *({'role': 'assistant', 'content': 'x' * 1000} for _ in range(10))]
     assessment = SimpleNamespace(rationale='gaps', sources=['a.md'],
                                  finding_ledger=FindingLedger(source_commit='a' * 40))
-    ledger = SimpleNamespace(coverage={})
+    ledger = SimpleNamespace(coverage={}, fixed=frozenset())
     attempt = SimpleNamespace(messages=messages, prior_manifests=[SimpleNamespace(checks=[], criterion_checks={})])
     discovery_module._divided_revision(attempt, build, assessment, {'checks': {'toolchain', 'c00-0', 'c01a-1'}}, ledger)
     assert len(messages) == 4
@@ -633,7 +633,7 @@ def test_an_id_that_reuses_a_criterion_id_is_never_locked_and_can_be_renamed():
         admit=lambda data, inputs: (_ for _ in ()).throw(RejectedError()))
     validator = discovery_module._CandidateValidator(
         discovery=SimpleNamespace(inputs={}), construction=construction, required_ids={'requirements': set()},
-        prior_manifests=[], obligation_ledger=discovery_module._ObligationLedger(), budget=SimpleNamespace())
+        prior_manifests=[], obligation_ledger=discovery_module._ObligationLedger(), budget=SimpleNamespace(executed_manifests=[]))
     with pytest.raises(RejectedError):
         validator({'requirements': [{'id': criterion.id, 'required': True}, {'id': 'req-node', 'required': True}]})
     with pytest.raises(RejectedError):  # renaming the colliding id is not "removing a required obligation"
@@ -1071,7 +1071,7 @@ def _rollback(*, required, coverage, ledger_checks=(), after_required, after_cov
     attempt = SimpleNamespace(required_ids=required_ids, obligation_ledger=ledger)
     validator = discovery_module._CandidateValidator(
         discovery=SimpleNamespace(inputs={}), construction=SimpleNamespace(budget=SimpleNamespace(scope_contract=None)),
-        required_ids=required_ids, prior_manifests=[], obligation_ledger=ledger, budget=SimpleNamespace())
+        required_ids=required_ids, prior_manifests=[], obligation_ledger=ledger, budget=SimpleNamespace(executed_manifests=[]))
     before = discovery_module._fold_state(attempt)
     required_ids['checks'] = set(after_required)
     ledger.coverage = {name: set(ids) for name, ids in after_coverage.items()}
@@ -1232,3 +1232,64 @@ def test_a_coverage_change_naming_a_group_check_still_goes_to_the_global_author(
     assert 'c00-0' in str(refused.value)
     errors = [{'location': [], 'code': refused.value.code, 'guidance': str(refused.value)}]
     assert discovery_module._attributed(errors, refused.value, _groups('c00-', 'c01-')) == []
+
+
+def test_execution_fixes_required_checks_and_required_services_commands_only():
+    from coordinare_service_inference.environment.models import EnvironmentManifest
+
+    from coordinare.services.environment_obligations import fixed_command_ids
+    from tests.unit.test_351_environment_discovery import candidate
+
+    data = candidate()
+    data['checks'].append({'id': 'optional-lint', 'argv': ['lint'], 'required': False})
+    manifest = EnvironmentManifest.model_validate(data)
+    required = {check.id for check in manifest.checks if check.required}
+    assert fixed_command_ids([manifest]) == required and 'optional-lint' not in required
+    assert fixed_command_ids([]) == frozenset()
+
+
+def _revision(fixed):
+    from types import SimpleNamespace
+    messages: list[dict[str, str]] = []
+    ledger = discovery_module._ObligationLedger(fixed=frozenset(fixed))
+    assessment = SimpleNamespace(rationale='r', sources=[], finding_ledger=SimpleNamespace(model_dump=lambda **_: {}))
+    discovery_module._append_coverage_revision(messages, {}, assessment, {'checks': {'check-npm'}}, ledger)
+    return json.loads(messages[-1]['content'])
+
+
+def test_a_revision_after_execution_names_the_fixed_commands_and_how_to_answer_findings_about_them():
+    """Dettmore e2e-14: told to revise linked commands in place, the revision rewrote fixed check-npm and
+    c00-checkpoint-write-read-active, and preservation refused every merge round."""
+    revision = _revision({'check-npm', 'c00-checkpoint-write-read-active'})
+    assert revision['coverage_revision']['fixed_ids'] == ['c00-checkpoint-write-read-active', 'check-npm']
+    assert 'except fixed_ids' in revision['instruction'] and discovery_module.FIXED_REVISION in revision['instruction']
+    before = _revision(())
+    assert 'fixed_ids' not in before['coverage_revision'] and 'fixed_ids' not in before['instruction']
+
+
+@pytest.mark.asyncio
+async def test_a_check_author_is_told_which_of_its_checks_execution_fixed(monkeypatch):
+    from coordinare.services import environment_shard_construction as construction_module
+    from coordinare.services.environment_shard_construction import DividedConstruction
+    from coordinare.services.environment_shard_scope import AgentContext
+
+    briefs: list[dict] = []
+
+    async def agent(_context, _inspection, messages, task):
+        briefs.append(json.loads(messages[1]['content']))
+        return task.validate(group_reply(group))
+
+    monkeypatch.setattr(construction_module, 'SourceInspection', BindingInspection)
+    monkeypatch.setattr(construction_module, 'run_agent', agent)
+    group = CheckGroup('c00-', (make_criterion(1),))
+    budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
+    scope = SimpleNamespace(all_inputs={'src/001.md': 'b' * 64}, definition=SimpleNamespace(criteria=list(group.criteria)))
+    build = DividedConstruction(AgentContext(budget, None, None), [], None, scope, 4)
+    build.previous = {'c00-': group_reply(group)['shard_checks']}
+    build.fixed = frozenset({'c00-0', 'c01-9', 'check-npm'})
+    await build.author(group, summary=SUMMARY, probes=[])
+    assert briefs[-1]['fixed_check_ids'] == ['c00-0']
+    build.fixed = frozenset()
+    build.feedback = {'c00-': {'merge_errors': [{'code': 'x'}]}}
+    await build.author(group, summary=SUMMARY, probes=[])
+    assert 'fixed_check_ids' not in briefs[-1]

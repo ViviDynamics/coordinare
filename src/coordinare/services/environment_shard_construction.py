@@ -109,7 +109,9 @@ CHECK_AUTHOR_INSTRUCTIONS = (
     'assigned_criteria, write required, unscoped checks that prove its obligation and observable result in the clean '
     'consumer, and map it in criterion_checks to those checks or to global checks in global_part. Every new check id you '
     'write must start with check_id_prefix; keep every id in keep_check_ids unchanged, and you may map or depend on '
-    'sibling_check_ids, which another author keeps. depends_on may name your checks, global checks, or service init, start '
+    'sibling_check_ids, which another author keeps. A check in fixed_check_ids ran in an earlier execution and is fixed: '
+    'copy it exactly from previous_part (only timeout_seconds may grow), and answer a finding about it with a new check. '
+    'depends_on may name your checks, global checks, or service init, start '
     'and health ids. You cannot declare installation, services or activation. bound_inputs indexes verified repository '
     'files with the criteria citing each; read the files you need with read_files. Never write literal credentials. '
     + INSTALL_ARTIFACT_RULE +
@@ -286,7 +288,8 @@ def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[
     missing = sorted(inherited.required - set(own))
     if missing:
         errors.append({'code': 'inherited_check_missing', 'location': ['shard_checks', 'checks'], 'missing': missing[:32],
-                       'guidance': 'Keep every keep_check_ids check that was required; revise it in place, never drop it.'})
+                       'guidance': 'Keep every keep_check_ids check that was required; revise it in place (a '
+                                   'fixed_check_ids check exactly as it was), never drop it.'})
     unmapped = {criterion: sorted(ids - set(part.criterion_checks.get(criterion, [])))
                 for criterion, ids in sorted(inherited.mapped.items()) if ids - set(part.criterion_checks.get(criterion, []))}
     if unmapped:
@@ -640,6 +643,8 @@ class DividedConstruction:
     global_part: dict[str, Any] | None = None
     # Delta repair: the failed accepted manifest's closure. A touched group is authored as changed and added checks.
     delta: DeltaPlan | None = None
+    # Commands an earlier execution fixed; check authors are told which of theirs these are.
+    fixed: frozenset[str] = frozenset()
     carrier_process_policy: dict[str, Any] | None = None
 
     @property
@@ -725,6 +730,7 @@ class DividedConstruction:
             'assigned_criteria': [criterion.model_dump(mode='json') for criterion in group.criteria],
             'global_part': dict(summary), 'probe_evidence': list(probes), 'bound_inputs': index,
             'previous_part': inherited.part, 'keep_check_ids': sorted(inherited.own),
+            **({'fixed_check_ids': fixed} if (fixed := sorted(inherited.own & self.fixed)) else {}),
             'sibling_check_ids': sorted(inherited.siblings),
             'untrusted_feedback': self.feedback.get(group.prefix, self.feedback.get(base_prefix(group.prefix)))}).decode()
         validate = partial(validate_group, group=group, summary=summary, inherited=inherited)

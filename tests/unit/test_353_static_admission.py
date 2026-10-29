@@ -129,7 +129,7 @@ def test_the_candidate_validator_admits_a_connectivity_gate_only_as_a_correctabl
         admit=lambda data, inputs: SimpleNamespace(install=[gate, apt], activation=Activation(), checks=[], services=[]))
     validator = discovery_module._CandidateValidator(
         discovery=SimpleNamespace(inputs={}), construction=construction, required_ids={}, prior_manifests=[],
-        obligation_ledger=discovery_module._ObligationLedger(), budget=SimpleNamespace())
+        obligation_ledger=discovery_module._ObligationLedger(), budget=SimpleNamespace(executed_manifests=[]))
     with pytest.raises(ValidationError) as caught:
         validator({'requirements': []})
     [error] = _validation_feedback(caught.value)
