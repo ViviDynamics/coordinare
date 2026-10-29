@@ -201,7 +201,20 @@ def test_a_promoted_name_never_collides_and_split_remainders_are_one_group():
 
 
 def test_a_promoted_name_never_reuses_a_scope_criterion_id():
-    c00 = _part([_cmd('c00-S9', 'suite')], {'S9': ['c00-S9']})
-    c01 = _part([_cmd('c01-S9', 'suite')], {'S2': ['c01-S9']})
+    criterion = 'S' + '0123456789abcdef'
+    c00 = _part([_cmd(f'c00-{criterion}', 'suite')], {'S1': [f'c00-{criterion}']})
+    c01 = _part([_cmd(f'c01-{criterion}', 'suite')], {'S2': [f'c01-{criterion}']})
     ids = [check['id'] for check in merge_parts({'checks': []}, [c00, c01])['checks']]
-    assert ids == ['S9-shared-1']
+    assert ids == [f'{criterion}-shared-1']
+
+
+def test_a_name_with_nested_group_prefixes_or_at_the_length_limit_stays_valid():
+    nested = [_part([_cmd('c00-c01-suite', 'suite')], {'S1': ['c00-c01-suite']}),
+              _part([_cmd('c01-suite', 'suite')], {'S2': ['c01-suite']})]
+    assert [check['id'] for check in merge_parts({'checks': []}, nested)['checks']] == ['suite']
+    long_name = 'x' * 124
+    long_parts = [_part([_cmd(f'c00-{long_name}', 'long')], {'S1': [f'c00-{long_name}']}),
+                  _part([_cmd(f'c01-{long_name}', 'long')], {'S2': [f'c01-{long_name}']})]
+    merged = merge_parts({'checks': [_cmd(long_name, 'other')]}, long_parts)
+    promoted = [check['id'] for check in merged['checks'] if check['id'] != long_name]
+    assert len(promoted) == 1 and len(promoted[0]) <= 128 and promoted[0].endswith('-shared-1')

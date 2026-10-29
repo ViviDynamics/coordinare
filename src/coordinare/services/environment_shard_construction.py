@@ -413,6 +413,7 @@ def _merge_group_copies_of_global_checks(merged: dict[str, Any], global_ids: set
 _GROUP_BASE = re.compile(r'^(c[0-9]{2,3})[a-z]*-')
 # A copy is shared, and promoted, only when distinct groups wrote it; one group's copies are its own correction.
 MIN_SHARING_GROUPS = 2
+MAX_COMMAND_ID_CHARS = 128
 
 
 def _promote_shared_group_copies(merged: dict[str, Any], global_ids: set[str], group_ids: set[str],
@@ -442,9 +443,9 @@ def _promote_shared_group_copies(merged: dict[str, Any], global_ids: set[str], g
         owners = {match[1] for command in copies if (match := _GROUP_BASE.match(command.id))}
         if key in global_keys or len(owners) < MIN_SHARING_GROUPS:
             continue
-        name = _GROUP_BASE.sub('', copies[0].id) or 'shared-check'
-        identifier = next(candidate for candidate in (name, *(f'{name}-shared-{index}' for index in range(1, 100)))
-                          if candidate not in taken and not _GROUP_BASE.match(candidate))
+        identifier = _promoted_id(copies[0].id, taken)
+        if identifier is None:
+            continue
         model: Command | None = copies[0].model_copy(update={'id': identifier, 'depends_on': [], 'timeout_seconds': 1.0,
                                                               'required': False})
         graph[identifier] = []
@@ -454,13 +455,39 @@ def _promote_shared_group_copies(merged: dict[str, Any], global_ids: set[str], g
             del graph[identifier]
             continue
         # The ordinary fold merges every copy into the new check, so it starts with no obligations of its own.
-        start = copies[0].model_copy(update={'id': identifier, 'depends_on': [], 'timeout_seconds': 1.0, 'required': False})
+        start = Command.model_validate({**copies[0].model_dump(mode='json'), 'id': identifier, 'depends_on': [],
+                                        'timeout_seconds': 1.0, 'required': False})
         position = next(index for index, check in enumerate(merged['checks'])
                         if isinstance(check, dict) and check.get('id') == copies[0].id)
         merged['checks'].insert(position, start.model_dump(mode='json'))
         taken.add(identifier)
         promoted.add(identifier)
     return promoted
+
+
+# The daemon's scope criterion id shape; a record may never take one, mapped or not.
+_CRITERION_ID = re.compile(r'S[0-9a-f]{16}')
+MAX_PROMOTED_CANDIDATES = 100
+
+
+def _promoted_id(source: str, taken: set[str]) -> str | None:
+    """A valid command id for a promoted check: the copy's name without any group prefix, made unique, never shaped
+    like a group check or a scope criterion, and within the id length; None when no candidate is valid."""
+    name = source
+    while (match := _GROUP_BASE.match(name)) is not None:
+        name = name[match.end():]
+    name = name or 'shared-check'
+    for index in range(MAX_PROMOTED_CANDIDATES):
+        suffix = f'-shared-{index}' if index else ''
+        candidate = name[:MAX_COMMAND_ID_CHARS - len(suffix)] + suffix
+        if candidate in taken or _GROUP_BASE.match(candidate) or _CRITERION_ID.fullmatch(candidate):
+            continue
+        try:
+            Command.model_validate({'id': candidate, 'argv': ['true']})
+        except ValidationError:
+            continue
+        return candidate
+    return None
 
 
 def _fold_result(command: Command, model: Command, group_ids: set[str], graph: Mapping[str, list[str]],
