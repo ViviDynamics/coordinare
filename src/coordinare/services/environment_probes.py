@@ -212,8 +212,12 @@ def validate_probe_report(plan: ProbePlan, report: ProbeReport) -> None:
             or not report.cleanup_confirmed):
         message = "probe evidence identity, completeness or cleanup is invalid"
         raise EnvironmentDiscoveryError(message, code="probe_report_invalid")
-    if any(result.status != "completed" or result.truncated for result in report.results):
-        message = "probe execution is incomplete or output was truncated"
+    # A probe that timed out or whose output was truncated is still an observation, carried to the author with its
+    # status: Dettmore e2e-15 held a whole attempt, after 58 minutes, on one probe in a batch of seven. Only a failure
+    # of the probe machinery itself leaves the batch unobserved.
+    if failed := [result.id for result in report.results if result.status == "execution_error"]:
+        # Named, since e2e-15's hold recorded nothing that said which probe it was. Probe ids are schema-validated.
+        message = f"probe execution failed: {', '.join(failed[:16])}"
         raise EnvironmentDiscoveryError(message, code="probe_observation_incomplete")
 
 

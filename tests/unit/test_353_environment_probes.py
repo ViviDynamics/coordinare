@@ -341,3 +341,26 @@ def test_an_execution_repair_relocates_the_cache_even_when_nothing_was_executed(
     assert _execution_repair(SimpleNamespace(previous_manifest=object(), execution_feedback={'results': []}))
     assert not _execution_repair(SimpleNamespace(previous_manifest=None, execution_feedback=None))
     assert not _execution_repair(SimpleNamespace(previous_manifest=object(), execution_feedback=None))
+
+
+@pytest.mark.parametrize('result', [{'status': 'timed_out', 'exit_code': None, 'output': 'partial', 'truncated': False},
+                                    {'status': 'completed', 'exit_code': 0, 'output': 'x' * 100, 'truncated': True}],
+                         ids=['timed_out', 'truncated'])
+def test_a_timed_out_or_truncated_probe_is_evidence_with_its_status(result):
+    """Dettmore e2e-15 held a whole attempt, after 58 minutes, on one probe of seven; the timeout is the observation."""
+    from coordinare.services.environment_probes import ProbeReport, bind_probe_report
+    p = plan()
+    data = report_data(p)
+    data['results'][0].update(result)
+    bound = bind_probe_report(p, ProbeReport.model_validate(data))
+    assert bound.results[0].status == result['status'] and bound.results[0].truncated is result['truncated']
+
+
+def test_a_probe_the_machinery_failed_to_run_still_holds():
+    from coordinare.services.environment_probes import ProbeReport, validate_probe_report
+    p = plan()
+    data = report_data(p)
+    data['results'][0].update(status='execution_error', exit_code=None, output='guest boot failed')
+    with pytest.raises(EnvironmentDiscoveryError) as held:
+        validate_probe_report(p, ProbeReport.model_validate(data))
+    assert held.value.code == 'probe_observation_incomplete' and str(held.value) == 'probe execution failed: tool'
