@@ -1058,7 +1058,7 @@ def test_a_promoted_id_is_attributed_only_where_feedback_names_it_as_an_id():
     assert discovery_module._attributed([], listed, parts, promoted) == [group]
 
 
-def _undo_case(coverage, *, requirements, folded, promoted, moved):
+def _undo_case(coverage, *, requirements, folded, promoted, moved, candidate_ids=None):
     from types import SimpleNamespace
 
     ledger = discovery_module._ObligationLedger()
@@ -1066,8 +1066,11 @@ def _undo_case(coverage, *, requirements, folded, promoted, moved):
     attempt = SimpleNamespace(required_ids={'checks': set()}, obligation_ledger=ledger)
     before = discovery_module._fold_state(attempt)
     ledger.coverage.update({name: set(ids) for name, ids in moved.items()})
-    discovery_module._undo_folds(attempt, folded, promoted, before,
-                                 {'requirements': [{'id': name, 'checks': checks} for name, checks in requirements.items()]})
+    ids = candidate_ids if candidate_ids is not None else {i for checks in requirements.values() for i in checks}
+    discovery_module._undo_folds(attempt, folded, before,
+                                 {'requirements': [{'id': name, 'checks': checks} for name, checks in requirements.items()],
+                                  'checks': [{'id': kept} for kept in set(folded.values()) if kept not in promoted]},
+                                 ids)
     return ledger.coverage
 
 
@@ -1083,3 +1086,12 @@ def test_rollback_never_adds_a_link_to_an_authored_global_check_the_requirement_
     coverage = _undo_case({'req': {'c00-copy'}}, requirements={'req': ['c00-copy']},
                           folded={'c00-copy': 'toolchain'}, promoted={}, moved={'req': {'toolchain'}})
     assert coverage == {'req': {'c00-copy'}}
+
+
+
+def test_rollback_never_records_coverage_the_validator_would_have_skipped():
+    """Review r5: a requirement listing a missing check is not recorded, so its entry returns to its earlier value."""
+    coverage = _undo_case({'req': {'c00-suite'}}, requirements={'req': ['c01-suite', 'missing']},
+                          folded={'c00-suite': 'suite', 'c01-suite': 'suite'}, promoted={'suite': ['c00-suite', 'c01-suite']},
+                          moved={'req': {'suite'}}, candidate_ids={'c00-suite', 'c01-suite'})
+    assert coverage == {'req': {'c00-suite'}}

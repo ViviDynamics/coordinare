@@ -1343,7 +1343,9 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
             validate(merged)
         except (EnvironmentDiscoveryError, ValidationError) as exc:
             promoted = _promoted_sources(folded, global_data)
-            _undo_folds(attempt, folded, promoted, before, global_data)
+            _undo_folds(attempt, folded, before, global_data,
+                        {str(check.get('id')) for check in global_data.get('checks') or [] if isinstance(check, dict)}
+                        | {check.id for _group, part in parts.values() for check in part.checks})
             if plan is not None:
                 # A delta is not corrected across parts: the full repair re-derives the manifest from its failed base.
                 message = "delta repair could not be merged into a complete manifest"
@@ -1429,17 +1431,19 @@ def _fold_state(attempt: _Attempt) -> tuple[dict[str, set[str]], dict[str, set[s
             {requirement: set(ids) for requirement, ids in attempt.obligation_ledger.coverage.items()})
 
 
-def _undo_folds(attempt: _Attempt, folded: Mapping[str, str], promoted: Mapping[str, Sequence[str]],
-                before: tuple[dict[str, set[str]], dict[str, set[str]]], global_data: Mapping[str, Any]) -> None:
+def _undo_folds(attempt: _Attempt, folded: Mapping[str, str], before: tuple[dict[str, set[str]], dict[str, set[str]]],
+                global_data: Mapping[str, Any], candidate_ids: set[str]) -> None:
     """A rejected round's fold bookkeeping is reversed, so a later round where the copies no longer fold (or no longer
     exist) is not refused for a link the fold made.
 
     Pins: each pin moved to a kept id returns to its copy, and a promoted check pinned only by this candidate is
     released; every other pin the validator took stays. Requirement coverage: each entry the round changed becomes
-    what the validator records for the unfolded candidate, the requirement's own authored check list with a kept id
-    standing for the copies it listed, never less than before the round.
+    what the validator records for the unfolded candidate (the global part and every group part, ``candidate_ids``):
+    a required requirement's authored check list when every listed check exists and it keeps the earlier entry;
+    otherwise the entry as it was before the round.
     """
     required_before, coverage_before = before
+    promoted = _promoted_sources(folded, global_data)
     for group, previous in required_before.items():
         current = attempt.required_ids.get(group, set())
         for dropped, kept in folded.items():
@@ -1447,26 +1451,21 @@ def _undo_folds(attempt: _Attempt, folded: Mapping[str, str], promoted: Mapping[
                 current.add(dropped)
             if kept in promoted and kept not in previous:
                 current.discard(kept)
-    sources: dict[str, set[str]] = {}
-    for dropped, kept in folded.items():
-        sources.setdefault(kept, set()).add(dropped)
-    authored = {str(item['id']): set(item.get('checks') or []) for item in global_data.get('requirements') or []
+    authored = {str(item['id']): (set(item.get('checks') or []), item.get('required', True) is True)
+                for item in global_data.get('requirements') or []
                 if isinstance(item, dict) and isinstance(item.get('id'), str)}
     coverage = attempt.obligation_ledger.coverage
     for name, ids in list(coverage.items()):
         linked = coverage_before.get(name)
         if ids == linked:
             continue
-        listed = authored.get(name)
-        if listed is None:
-            if linked is None:
-                del coverage[name]
-            else:
-                coverage[name] = set(linked)
-            continue
-        unfolded = {identifier for identifier in ids if identifier not in sources or identifier in listed}
-        unfolded |= {copy for kept in ids & sources.keys() for copy in sources[kept] if copy in listed}
-        coverage[name] = unfolded | (linked or set())
+        listed, required = authored.get(name, (None, False))
+        if listed is not None and required and listed <= candidate_ids and (linked is None or linked <= listed):
+            coverage[name] = set(listed)
+        elif linked is not None:
+            coverage[name] = set(linked)
+        else:
+            del coverage[name]
 
 
 def _speculative_base(build: DividedConstruction, attempt: _Attempt) -> dict[str, Any] | None:
