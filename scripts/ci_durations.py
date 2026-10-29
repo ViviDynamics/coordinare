@@ -55,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     runs = [sorted([p] if p.is_file() else p.rglob("*.xml")) for p in args.paths]
     if args.median:
+        if any(not reports for reports in runs):
+            parser.error("each --median path must contain at least one JUnit XML report")
         samples: dict[str, list[float]] = defaultdict(list)
         for reports in runs:
             for path, seconds in durations(reports).items():

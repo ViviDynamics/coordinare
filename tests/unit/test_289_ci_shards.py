@@ -161,3 +161,25 @@ def test_duration_refresh_does_not_treat_missing_observations_as_zero(tmp_path: 
         "tests/unit/test_289_ci_shards.py": 5.0,
         "tests/unit/test_333_release_pr_ci.py": 3.0,
     }
+
+
+def test_duration_refresh_rejects_a_missing_run(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, str(PROJECT_ROOT / "scripts/ci_durations.py"), "--median", str(tmp_path / "missing")],
+        cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 2
+    assert not result.stdout
+    assert "JUnit" in result.stderr
+
+
+def test_default_duration_refresh_still_sums_and_deduplicates_reports(tmp_path: Path) -> None:
+    first = tmp_path / "first.xml"
+    second = tmp_path / "second.xml"
+    for path, seconds in ((first, 2), (second, 4)):
+        path.write_text(f'<testsuite><testcase classname="tests.unit.test_289_ci_shards" time="{seconds}"/></testsuite>')
+    result = subprocess.run(
+        [sys.executable, str(PROJECT_ROOT / "scripts/ci_durations.py"), str(tmp_path), str(first)],
+        cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+    )
+    assert json.loads(result.stdout) == {"tests/unit/test_289_ci_shards.py": 6.0}
