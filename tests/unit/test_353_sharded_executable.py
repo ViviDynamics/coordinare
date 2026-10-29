@@ -1058,40 +1058,58 @@ def test_a_promoted_id_is_attributed_only_where_feedback_names_it_as_an_id():
     assert discovery_module._attributed([], listed, parts, promoted) == [group]
 
 
-def _undo_case(coverage, *, requirements, folded, promoted, moved, candidate_ids=None):
+def _rollback(*, required, coverage, ledger_checks=(), after_required, after_coverage, after_checks=(), unfolded):
+    """Runs a rejected round's rollback with the real validator's locking step."""
     from types import SimpleNamespace
+
+    from coordinare_service_inference.environment.models import Command
 
     ledger = discovery_module._ObligationLedger()
     ledger.coverage.update({name: set(ids) for name, ids in coverage.items()})
-    attempt = SimpleNamespace(required_ids={'checks': set()}, obligation_ledger=ledger)
+    ledger.checks.update({identifier: Command.model_validate({'id': identifier, 'argv': ['x']}) for identifier in ledger_checks})
+    required_ids = {'requirements': set(), 'install': set(), 'checks': set(required), 'services': set()}
+    attempt = SimpleNamespace(required_ids=required_ids, obligation_ledger=ledger)
+    validator = discovery_module._CandidateValidator(
+        discovery=SimpleNamespace(inputs={}), construction=SimpleNamespace(budget=SimpleNamespace(scope_contract=None)),
+        required_ids=required_ids, prior_manifests=[], obligation_ledger=ledger, budget=SimpleNamespace())
     before = discovery_module._fold_state(attempt)
-    ledger.coverage.update({name: set(ids) for name, ids in moved.items()})
-    ids = candidate_ids if candidate_ids is not None else {i for checks in requirements.values() for i in checks}
-    discovery_module._undo_folds(attempt, folded, before,
-                                 {'requirements': [{'id': name, 'checks': checks} for name, checks in requirements.items()],
-                                  'checks': [{'id': kept} for kept in set(folded.values()) if kept not in promoted]},
-                                 ids)
-    return ledger.coverage
+    required_ids['checks'] = set(after_required)
+    ledger.coverage = {name: set(ids) for name, ids in after_coverage.items()}
+    ledger.checks.update({identifier: Command.model_validate({'id': identifier, 'argv': ['y'], 'scope': ['ci']})
+                          for identifier in after_checks})
+    discovery_module._undo_folds(attempt, before, validator, unfolded)
+    return required_ids, ledger
 
 
-def test_rollback_rebuilds_coverage_from_the_requirements_own_list():
-    """Review r3/r4: a new entry keeps its unrelated links and names the copy again, not the promoted id."""
-    coverage = _undo_case({}, requirements={'req-new': ['c00-suite', 'toolchain']},
-                          folded={'c00-suite': 'suite', 'c01-suite': 'suite'}, promoted={'suite': ['c00-suite', 'c01-suite']},
-                          moved={'req-new': {'suite', 'toolchain'}})
-    assert coverage == {'req-new': {'c00-suite', 'toolchain'}}
+def _check(identifier, *argv):
+    return {'id': identifier, 'argv': list(argv or ['x'])}
 
 
-def test_rollback_never_adds_a_link_to_an_authored_global_check_the_requirement_did_not_list():
-    coverage = _undo_case({'req': {'c00-copy'}}, requirements={'req': ['c00-copy']},
-                          folded={'c00-copy': 'toolchain'}, promoted={}, moved={'req': {'toolchain'}})
-    assert coverage == {'req': {'c00-copy'}}
+def test_rollback_locks_what_the_unfolded_candidate_names():
+    unfolded = {'checks': [_check('c00-suite'), _check('c01-suite'), _check('toolchain')],
+                'requirements': [{'id': 'req-new', 'description': 'd', 'source': 'README.md',
+                                  'checks': ['c00-suite', 'toolchain']}]}
+    required, ledger = _rollback(required=[], coverage={}, after_required=['suite'],
+                                 after_coverage={'req-new': {'suite', 'toolchain'}}, after_checks=['suite'], unfolded=unfolded)
+    assert ledger.coverage == {'req-new': {'c00-suite', 'toolchain'}}
+    assert 'suite' not in required['checks'] and {'c00-suite', 'c01-suite'} <= required['checks']
+    assert 'suite' not in ledger.checks
 
 
+def test_rollback_never_records_coverage_the_validator_would_skip():
+    """Review r5/r6: a requirement listing a missing or colliding check is not recorded; its entry stays as before."""
+    unfolded = {'checks': [_check('c00-copy'), _check('c01-conflict')],
+                'services': [{'id': 'c01-conflict', 'start': _check('s-start'), 'health': _check('s-health'),
+                              'stop': _check('s-stop')}],
+                'requirements': [{'id': 'req', 'description': 'd', 'source': 'README.md',
+                                  'checks': ['c00-copy', 'c01-conflict']}]}
+    _required, ledger = _rollback(required=['c00-copy'], coverage={'req': {'c00-copy'}}, after_required=['toolchain'],
+                                  after_coverage={'req': {'toolchain'}}, unfolded=unfolded)
+    assert ledger.coverage == {'req': {'c00-copy'}}
 
-def test_rollback_never_records_coverage_the_validator_would_have_skipped():
-    """Review r5: a requirement listing a missing check is not recorded, so its entry returns to its earlier value."""
-    coverage = _undo_case({'req': {'c00-suite'}}, requirements={'req': ['c01-suite', 'missing']},
-                          folded={'c00-suite': 'suite', 'c01-suite': 'suite'}, promoted={'suite': ['c00-suite', 'c01-suite']},
-                          moved={'req': {'suite'}}, candidate_ids={'c00-suite', 'c01-suite'})
-    assert coverage == {'req': {'c00-suite'}}
+
+def test_rollback_keeps_the_earlier_state_when_the_unfolded_candidate_would_be_refused():
+    unfolded = {'checks': [_check('other')], 'requirements': []}
+    required, ledger = _rollback(required=['c00-copy'], coverage={'req': {'c00-copy'}}, after_required=['toolchain'],
+                                 after_coverage={'req': {'toolchain'}}, unfolded=unfolded)
+    assert required['checks'] == {'c00-copy'} and ledger.coverage == {'req': {'c00-copy'}}

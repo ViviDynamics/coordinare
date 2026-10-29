@@ -768,7 +768,8 @@ class _CandidateValidator:
         for previous in self.prior_manifests:
             self.obligation_ledger.record(previous.model_dump(mode='json'))
 
-    def __call__(self, data: dict[str, Any]) -> EnvironmentManifest:
+    def lock(self, data: dict[str, Any]) -> None:
+        """Retain the candidate's obligations: ledger records and required ids, refusing any earlier one it drops."""
         # An id that reuses a scope criterion id can never be admitted, so it never becomes a retained obligation:
         # the author must be able to rename it.
         lockable = _without_criterion_ids(data, self.construction)
@@ -781,6 +782,9 @@ class _CandidateValidator:
                 message = f"required obligation removed during repair: {', '.join(sorted(previous - current))}"
                 raise EnvironmentDiscoveryError(message, code="obligation_removed")
             previous.update(current)
+
+    def __call__(self, data: dict[str, Any]) -> EnvironmentManifest:
+        self.lock(data)
         manifest = self.construction.admit(data, self.discovery.inputs)
         try:
             validate_static_rules(manifest.install, manifest.activation, self.construction.capabilities.platform,
@@ -1343,9 +1347,9 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
             validate(merged)
         except (EnvironmentDiscoveryError, ValidationError) as exc:
             promoted = _promoted_sources(folded, global_data)
-            _undo_folds(attempt, folded, before, global_data,
-                        {str(check.get('id')) for check in global_data.get('checks') or [] if isinstance(check, dict)}
-                        | {check.id for _group, part in parts.values() for check in part.checks})
+            if folded:
+                _undo_folds(attempt, before, validate,
+                            merge_parts(global_data, [part for _group, part in parts.values()], fold=False))
             if plan is not None:
                 # A delta is not corrected across parts: the full repair re-derives the manifest from its failed base.
                 message = "delta repair could not be merged into a complete manifest"
@@ -1425,47 +1429,35 @@ def _promoted_sources(folded: Mapping[str, str], global_data: Mapping[str, Any])
     return sources
 
 
-def _fold_state(attempt: _Attempt) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """The pins and the obligation ledger's requirement coverage before a merge round moves them."""
-    return ({group: set(ids) for group, ids in attempt.required_ids.items()},
-            {requirement: set(ids) for requirement, ids in attempt.obligation_ledger.coverage.items()})
+def _fold_state(attempt: _Attempt) -> tuple[dict[str, set[str]], _ObligationLedger]:
+    """The pins and the obligation ledger before a merge round moves them."""
+    return ({group: set(ids) for group, ids in attempt.required_ids.items()}, copy.deepcopy(attempt.obligation_ledger))
 
 
-def _undo_folds(attempt: _Attempt, folded: Mapping[str, str], before: tuple[dict[str, set[str]], dict[str, set[str]]],
-                global_data: Mapping[str, Any], candidate_ids: set[str]) -> None:
-    """A rejected round's fold bookkeeping is reversed, so a later round where the copies no longer fold (or no longer
-    exist) is not refused for a link the fold made.
+def _undo_folds(attempt: _Attempt, before: tuple[dict[str, set[str]], _ObligationLedger],
+                validate: Callable[[dict[str, Any]], Any], unfolded: dict[str, Any]) -> None:
+    """A rejected round with folds is retained as if the validator had seen it unfolded, so a later round where the
+    copies no longer fold (or no longer exist) is not refused for a link or a promoted check the fold made.
 
-    Pins: each pin moved to a kept id returns to its copy, and a promoted check pinned only by this candidate is
-    released; every other pin the validator took stays. Requirement coverage: each entry the round changed becomes
-    what the validator records for the unfolded candidate (the global part and every group part, ``candidate_ids``):
-    a required requirement's authored check list when every listed check exists and it keeps the earlier entry;
-    otherwise the entry as it was before the round.
+    The pins and the ledger return to their state before the round (in place: the validator holds the same objects),
+    and the validator's own locking step then runs on the unfolded candidate, the global part and every group part as
+    authored. If that candidate would itself be refused, nothing from the round is retained.
     """
-    required_before, coverage_before = before
-    promoted = _promoted_sources(folded, global_data)
-    for group, previous in required_before.items():
-        current = attempt.required_ids.get(group, set())
-        for dropped, kept in folded.items():
-            if dropped in previous:
-                current.add(dropped)
-            if kept in promoted and kept not in previous:
-                current.discard(kept)
-    authored = {str(item['id']): (set(item.get('checks') or []), item.get('required', True) is True)
-                for item in global_data.get('requirements') or []
-                if isinstance(item, dict) and isinstance(item.get('id'), str)}
-    coverage = attempt.obligation_ledger.coverage
-    for name, ids in list(coverage.items()):
-        linked = coverage_before.get(name)
-        if ids == linked:
-            continue
-        listed, required = authored.get(name, (None, False))
-        if listed is not None and required and listed <= candidate_ids and (linked is None or linked <= listed):
-            coverage[name] = set(listed)
-        elif linked is not None:
-            coverage[name] = set(linked)
-        else:
-            del coverage[name]
+    required_before, ledger_before = before
+
+    def restore() -> None:
+        for group, ids in attempt.required_ids.items():
+            ids.clear()
+            ids.update(required_before.get(group, set()))
+        for name, value in vars(ledger_before).items():
+            setattr(attempt.obligation_ledger, name, copy.deepcopy(value))
+
+    restore()
+    if isinstance(validate, _CandidateValidator):
+        try:
+            validate.lock(unfolded)
+        except (EnvironmentDiscoveryError, ValidationError):
+            restore()
 
 
 def _speculative_base(build: DividedConstruction, attempt: _Attempt) -> dict[str, Any] | None:

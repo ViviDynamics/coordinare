@@ -307,7 +307,8 @@ class FoldPolicy:
 
 
 def merge_parts(global_data: Mapping[str, Any], parts: Sequence[ShardChecks], *,
-                policy: FoldPolicy | None = None, folded: dict[str, str] | None = None) -> dict[str, Any]:
+                policy: FoldPolicy | None = None, folded: dict[str, str] | None = None, fold: bool = True,
+                ) -> dict[str, Any]:
     """Global declaration plus every part's checks and mappings; a collision is an error, never a choice.
 
     A merge never removes nor rewrites (beyond a longer timeout) a ``policy.executed`` check. Each group copy it folds
@@ -336,6 +337,8 @@ def merge_parts(global_data: Mapping[str, Any], parts: Sequence[ShardChecks], *,
             mapping[criterion] = list(identifiers)
     merged['checks'] = checks
     merged['criterion_checks'] = mapping
+    if not fold:
+        return merged
     aliases = _merge_group_copies_of_global_checks(merged, global_ids, {str(identifier) for identifier in seen} - global_ids,
                                                    policy or FoldPolicy())
     if folded is not None:
