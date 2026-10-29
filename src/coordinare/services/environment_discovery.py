@@ -1336,11 +1336,14 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
         await attempt.construction.observe_sources(discovery.inputs)
         try:
             folded: dict[str, str] = {}
+            before = _fold_state(attempt)
             merged = merge_parts(global_data, [part for _group, part in parts.values()], folded=folded,
                                  policy=FoldPolicy(executed, attempt.obligation_ledger.checks, prior_checks))
             _carry_folds(attempt, folded, authored_responses)
             validate(merged)
         except (EnvironmentDiscoveryError, ValidationError) as exc:
+            promoted = _promoted_sources(folded, global_data)
+            _undo_folds(attempt, folded, promoted, before)
             if plan is not None:
                 # A delta is not corrected across parts: the full repair re-derives the manifest from its failed base.
                 message = "delta repair could not be merged into a complete manifest"
@@ -1352,7 +1355,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
                       else [{'location': [], 'code': exc.code, 'guidance': str(exc)}])
             # Recorded so a held attempt shows what the merge rejected.
             budget.validation_codes.extend(str(error.get('code')) for error in errors)
-            redo = _attributed(errors, exc, parts)
+            redo = _attributed(errors, exc, parts, promoted)
             for group in redo:
                 build.feedback[group.prefix] = {**build.feedback.get(group.prefix, {}), 'merge_errors': errors}
                 build.previous[group.prefix] = parts[group.prefix][1].model_dump(mode='json')
@@ -1390,6 +1393,38 @@ def _carry_folds(attempt: _Attempt, folded: Mapping[str, str], authored_response
     attempt.discovery.finding_responses = [response.model_copy(update={'affected_ids': [
         *dict.fromkeys(folded.get(identifier, identifier) for identifier in response.affected_ids)]})
         for response in authored_responses]
+
+
+def _promoted_sources(folded: Mapping[str, str], global_data: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Each check the merge promoted (kept under an id the global author never declared) and the group copies in it."""
+    authored = {check.get('id') for check in global_data.get('checks') or [] if isinstance(check, dict)}
+    sources: dict[str, list[str]] = {}
+    for dropped, kept in folded.items():
+        if kept not in authored:
+            sources.setdefault(kept, []).append(dropped)
+    return sources
+
+
+def _fold_state(attempt: _Attempt) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """The pins and the obligation ledger's requirement coverage before a merge round moves them."""
+    return ({group: set(ids) for group, ids in attempt.required_ids.items()},
+            {requirement: set(ids) for requirement, ids in attempt.obligation_ledger.coverage.items()})
+
+
+def _undo_folds(attempt: _Attempt, folded: Mapping[str, str], promoted: Mapping[str, Sequence[str]],
+                before: tuple[dict[str, set[str]], dict[str, set[str]]]) -> None:
+    """A rejected round's fold bookkeeping is reversed: each moved pin and coverage entry returns to its copy, and a
+    promoted check pinned only by this candidate is released, so a later round where the copies no longer fold (or no
+    longer exist) is not refused for a check nobody wrote. Every other pin the validator took stays."""
+    required_before, coverage_before = before
+    for current, previous in [*((attempt.required_ids.get(group, set()), ids) for group, ids in required_before.items()),
+                              *((attempt.obligation_ledger.coverage.get(name, set()), ids)
+                                for name, ids in coverage_before.items())]:
+        for dropped, kept in folded.items():
+            if dropped in previous:
+                current.add(dropped)
+            if kept in promoted and kept not in previous:
+                current.discard(kept)
 
 
 def _speculative_base(build: DividedConstruction, attempt: _Attempt) -> dict[str, Any] | None:
@@ -1521,9 +1556,10 @@ async def _global_part(attempt: _Attempt, merge: Callable[[dict[str, Any]], Any]
 GROUP_CHECK_ID = re.compile(r'(?<![A-Za-z0-9_.:-])c[0-9]{2,3}[a-z]*-[A-Za-z0-9_.:-]*')
 
 
-def _attributed(errors: list[dict[str, Any]], exc: Exception,
-                parts: Mapping[str, tuple[CheckGroup, ShardChecks]]) -> list[CheckGroup]:
-    """The groups an error names by a check id they declare or own, or by an assigned criterion id.
+def _attributed(errors: list[dict[str, Any]], exc: Exception, parts: Mapping[str, tuple[CheckGroup, ShardChecks]],
+                promoted: Mapping[str, Sequence[str]] | None = None) -> list[CheckGroup]:
+    """The groups an error names by a check id they declare or own, or by an assigned criterion id. A check the merge
+    promoted from group copies is named by its sources: only those groups wrote it, so only they can correct it.
 
     Only the structured feedback and the daemon's own message are read; a validation error's rendering embeds
     candidate input and would attribute by accident.
@@ -1532,6 +1568,9 @@ def _attributed(errors: list[dict[str, Any]], exc: Exception,
         return []
     text = _json(errors) + (str(exc) if isinstance(exc, EnvironmentDiscoveryError) else '')
     named = set(GROUP_CHECK_ID.findall(text))
+    for identifier, sources in (promoted or {}).items():
+        if re.search(r'(?<![A-Za-z0-9_.:-])' + re.escape(identifier) + r'(?![A-Za-z0-9_.:-])', text):
+            named.update(sources)
     return [group for prefix, (group, part) in parts.items()
             if any(owns(prefix, identifier) for identifier in named)
             or any(check.id in named for check in part.checks)

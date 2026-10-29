@@ -1003,3 +1003,39 @@ async def test_a_rejected_rounds_fold_never_lingers_in_the_next_rounds_responses
     monkeypatch.setattr(discovery_module, '_divided_candidate', capture)
     await merge_with(monkeypatch, validate)
     assert seen == [['toolchain'], ['c00-toolchain']]
+
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_promoted_check_goes_back_to_its_source_groups_and_releases_its_pin(monkeypatch):
+    """Review r2 of promotion: an error naming only the promoted id reached no group, and the global author could not
+    remove a check it never wrote once the validator had pinned it."""
+    original = FakeBuild.author_all
+    rounds: list[int] = []
+
+    async def author_all(self, *, summary, probes, groups=None, concurrency=None):
+        parts = await original(self, summary=summary, probes=probes, groups=groups, concurrency=concurrency)
+        rounds.append(1)
+        for prefix in ('c00-', 'c01-'):
+            if prefix in parts and len(rounds) == 1:
+                group, part = parts[prefix]
+                data = part.model_dump(mode='json')
+                data['checks'].append({'id': f'{prefix}suite', 'argv': ['suite']})
+                parts[prefix] = (group, ShardChecks.model_validate(data))
+        return parts
+
+    monkeypatch.setattr(FakeBuild, 'author_all', author_all)
+    required_ids: dict[str, set[str]] = {'checks': set()}
+    calls: list[int] = []
+
+    def validate(data):
+        calls.append(1)
+        required_ids['checks'].update(check['id'] for check in data['checks'])
+        if len(calls) == 1:
+            raise EnvironmentDiscoveryError('suite uses a reserved runtime variable', code='obligation_removed')
+        return data
+
+    merged, build, _phases, _messages = await merge_with(monkeypatch, validate, required_ids=required_ids)
+    assert build.rounds[1] == ['c00-', 'c01-']
+    assert 'suite' not in required_ids['checks']
+    assert 'suite' not in {check['id'] for check in merged['checks']}
