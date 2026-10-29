@@ -1058,17 +1058,28 @@ def test_a_promoted_id_is_attributed_only_where_feedback_names_it_as_an_id():
     assert discovery_module._attributed([], listed, parts, promoted) == [group]
 
 
-def test_new_requirement_coverage_under_a_rejected_promoted_id_is_dropped():
+def _undo_case(coverage, *, requirements, folded, promoted, moved):
     from types import SimpleNamespace
 
     ledger = discovery_module._ObligationLedger()
-    ledger.coverage['req-old'] = {'c00-suite'}
-    attempt = SimpleNamespace(required_ids={'checks': {'c00-suite'}}, obligation_ledger=ledger)
+    ledger.coverage.update({name: set(ids) for name, ids in coverage.items()})
+    attempt = SimpleNamespace(required_ids={'checks': set()}, obligation_ledger=ledger)
     before = discovery_module._fold_state(attempt)
-    folded = {'c00-suite': 'suite', 'c01-suite': 'suite'}
-    attempt.required_ids['checks'] = {'suite'}
-    ledger.coverage['req-old'] = {'suite'}
-    ledger.coverage['req-new'] = {'suite'}
-    discovery_module._undo_folds(attempt, folded, {'suite': ['c00-suite', 'c01-suite']}, before)
-    assert attempt.required_ids['checks'] == {'c00-suite'}
-    assert ledger.coverage == {'req-old': {'c00-suite'}}
+    ledger.coverage.update({name: set(ids) for name, ids in moved.items()})
+    discovery_module._undo_folds(attempt, folded, promoted, before,
+                                 {'requirements': [{'id': name, 'checks': checks} for name, checks in requirements.items()]})
+    return ledger.coverage
+
+
+def test_rollback_rebuilds_coverage_from_the_requirements_own_list():
+    """Review r3/r4: a new entry keeps its unrelated links and names the copy again, not the promoted id."""
+    coverage = _undo_case({}, requirements={'req-new': ['c00-suite', 'toolchain']},
+                          folded={'c00-suite': 'suite', 'c01-suite': 'suite'}, promoted={'suite': ['c00-suite', 'c01-suite']},
+                          moved={'req-new': {'suite', 'toolchain'}})
+    assert coverage == {'req-new': {'c00-suite', 'toolchain'}}
+
+
+def test_rollback_never_adds_a_link_to_an_authored_global_check_the_requirement_did_not_list():
+    coverage = _undo_case({'req': {'c00-copy'}}, requirements={'req': ['c00-copy']},
+                          folded={'c00-copy': 'toolchain'}, promoted={}, moved={'req': {'toolchain'}})
+    assert coverage == {'req': {'c00-copy'}}

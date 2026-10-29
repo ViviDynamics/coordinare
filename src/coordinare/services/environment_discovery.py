@@ -1343,7 +1343,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
             validate(merged)
         except (EnvironmentDiscoveryError, ValidationError) as exc:
             promoted = _promoted_sources(folded, global_data)
-            _undo_folds(attempt, folded, promoted, before)
+            _undo_folds(attempt, folded, promoted, before, global_data)
             if plan is not None:
                 # A delta is not corrected across parts: the full repair re-derives the manifest from its failed base.
                 message = "delta repair could not be merged into a complete manifest"
@@ -1430,24 +1430,43 @@ def _fold_state(attempt: _Attempt) -> tuple[dict[str, set[str]], dict[str, set[s
 
 
 def _undo_folds(attempt: _Attempt, folded: Mapping[str, str], promoted: Mapping[str, Sequence[str]],
-                before: tuple[dict[str, set[str]], dict[str, set[str]]]) -> None:
-    """A rejected round's fold bookkeeping is reversed: each moved pin and coverage entry returns to its copy, and a
-    promoted check pinned only by this candidate is released, so a later round where the copies no longer fold (or no
-    longer exist) is not refused for a check nobody wrote. Every other pin the validator took stays."""
+                before: tuple[dict[str, set[str]], dict[str, set[str]]], global_data: Mapping[str, Any]) -> None:
+    """A rejected round's fold bookkeeping is reversed, so a later round where the copies no longer fold (or no longer
+    exist) is not refused for a link the fold made.
+
+    Pins: each pin moved to a kept id returns to its copy, and a promoted check pinned only by this candidate is
+    released; every other pin the validator took stays. Requirement coverage: each entry the round changed becomes
+    what the validator records for the unfolded candidate, the requirement's own authored check list with a kept id
+    standing for the copies it listed, never less than before the round.
+    """
     required_before, coverage_before = before
-    for current, previous in [*((attempt.required_ids.get(group, set()), ids) for group, ids in required_before.items()),
-                              *((attempt.obligation_ledger.coverage.get(name, set()), ids)
-                                for name, ids in coverage_before.items())]:
+    for group, previous in required_before.items():
+        current = attempt.required_ids.get(group, set())
         for dropped, kept in folded.items():
             if dropped in previous:
                 current.add(dropped)
             if kept in promoted and kept not in previous:
                 current.discard(kept)
-    # Requirement coverage the rejected candidate recorded for the first time under a promoted id is dropped: rebuilding
-    # it from every source copy would lock more than the requirement named.
-    for name in [name for name, ids in attempt.obligation_ledger.coverage.items()
-                 if name not in coverage_before and ids & set(promoted)]:
-        del attempt.obligation_ledger.coverage[name]
+    sources: dict[str, set[str]] = {}
+    for dropped, kept in folded.items():
+        sources.setdefault(kept, set()).add(dropped)
+    authored = {str(item['id']): set(item.get('checks') or []) for item in global_data.get('requirements') or []
+                if isinstance(item, dict) and isinstance(item.get('id'), str)}
+    coverage = attempt.obligation_ledger.coverage
+    for name, ids in list(coverage.items()):
+        linked = coverage_before.get(name)
+        if ids == linked:
+            continue
+        listed = authored.get(name)
+        if listed is None:
+            if linked is None:
+                del coverage[name]
+            else:
+                coverage[name] = set(linked)
+            continue
+        unfolded = {identifier for identifier in ids if identifier not in sources or identifier in listed}
+        unfolded |= {copy for kept in ids & sources.keys() for copy in sources[kept] if copy in listed}
+        coverage[name] = unfolded | (linked or set())
 
 
 def _speculative_base(build: DividedConstruction, attempt: _Attempt) -> dict[str, Any] | None:
