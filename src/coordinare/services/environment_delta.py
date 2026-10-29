@@ -12,6 +12,8 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from coordinare.services.environment_delta_schema import RECORD_GROUPS
 from coordinare.services.environment_obligations import frozen_records, part_records, refuse_frozen
 from coordinare.services.environment_repair_triage import (
@@ -21,7 +23,12 @@ from coordinare.services.environment_repair_triage import (
     depends_on_closure,
     part_of,
 )
-from coordinare.services.environment_shard_construction import CheckGroup, owns, parts_from_manifest
+from coordinare.services.environment_shard_construction import (
+    CheckGroup,
+    global_view,
+    owns,
+    parts_from_manifest,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -81,6 +88,30 @@ class DeltaPlan:
                 'closure_records': self.closure_global() if divided else self.closure_records(),
                 'closure_criteria': self.closure_criteria()}
 
+    def restore_frozen(self, base: Mapping[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+        """The candidate part with every frozen install or check record it changed or dropped put back as it was.
+
+        Dettmore e2e-13: execution feedback named c00-gh-cli and c00-repo-env, outside the closure; the delta author,
+        never shown their records, rewrote them, and three corrections asking it to restore them exactly as they were
+        went unanswered until the schema budget ran out. A delta may not change a frozen record, so restoring it is
+        exactly the correction; the author's closure changes stand. Service, requirement, mapping and activation
+        changes are still corrected by the guard. An unparsable part is returned unchanged for admission to report.
+        """
+        try:
+            before = part_records(base)
+            frozen = frozen_records(before, part_records(candidate), self.triage) & set(before.commands)
+        except ValidationError:
+            return candidate
+        restored = dict(candidate)
+        for key in ('install', 'checks'):
+            originals = {item['id']: item for item in base.get(key) or [] if isinstance(item, dict) and item.get('id') in frozen}
+            if not originals:
+                continue
+            items = [originals.get(item.get('id'), item) if isinstance(item, dict) else item for item in candidate.get(key) or []]
+            present = {item.get('id') for item in items if isinstance(item, dict)}
+            restored[key] = [*items, *(record for identifier, record in originals.items() if identifier not in present)]
+        return restored
+
     def guard_part(self, base: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:
         """Inside an author's own phase, the merge guard's rules over the records this part owns, so the author can
         correct an out-of-closure edit before any merge. Ids only in the correction."""
@@ -91,10 +122,7 @@ class DeltaPlan:
 
     def base_global(self, groups: list[CheckGroup]) -> dict[str, Any]:
         """The global part's base: checks that no check group owns, and no criterion mappings."""
-        data = self.base_proposal()
-        data["checks"] = [check for check in data["checks"] if not any(owns(group.prefix, check["id"]) for group in groups)]
-        data["criterion_checks"] = {}
-        return data
+        return global_view(self.base_proposal(), groups)
 
     def base_group(self, group: CheckGroup) -> dict[str, Any] | None:
         return parts_from_manifest(self.base, [group]).get(group.prefix)

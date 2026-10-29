@@ -299,3 +299,14 @@ def test_a_global_check_that_kept_another_groups_copy_is_never_dropped():
     merged = merge_parts(global_data, [c00, c01], folded=folded, policy=FoldPolicy(executed={'c00-suite'}))
     assert folded == {'c01-suite': 'suite-run'}
     assert {'suite-run', 'c00-suite'} <= {check['id'] for check in merged['checks']}
+
+
+def test_a_full_repairs_global_author_sees_only_the_global_part():
+    """Dettmore e2e-13: shown the whole failed manifest, the global author copied the 38 group checks into its part."""
+    from coordinare.services.environment_shard_construction import CheckGroup, global_view
+    data = {'checks': [_cmd('env-ruby', 'ruby'), _cmd('c00-suite', 'suite'), _cmd('c01a-lint', 'lint')],
+            'criterion_checks': {'S1': ['c00-suite']}, 'requirements': [{'id': 'req', 'checks': ['env-ruby']}]}
+    view = global_view(data, [CheckGroup('c00-', ()), CheckGroup('c01-', ())])
+    assert [check['id'] for check in view['checks']] == ['env-ruby']
+    assert view['criterion_checks'] == {} and view['requirements'] == data['requirements']
+    assert len(data['checks']) == 3

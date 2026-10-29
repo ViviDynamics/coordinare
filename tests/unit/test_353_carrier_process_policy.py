@@ -195,7 +195,8 @@ async def test_legacy_delta_author_cache_replays_only_if_policy_context_unchange
     from tests.unit.test_353_sharded_executable import global_part
 
     attempt, _selected = await get_attempt(monkeypatch, private)
-    attempt.delta = SimpleNamespace(digest='d' * 64, base_proposal=base_proposal, guard_part=lambda _base, _candidate: None)
+    attempt.delta = SimpleNamespace(digest='d' * 64, base_proposal=base_proposal, guard_part=lambda _base, _candidate: None,
+                                    restore_frozen=lambda _base, candidate: candidate)
     current = copy.deepcopy(attempt.messages)
     legacy = json.loads(attempt.messages[1]['content'])
     if legacy_context=='without_policy':

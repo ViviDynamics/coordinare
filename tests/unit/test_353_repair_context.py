@@ -140,3 +140,28 @@ def test_a_group_conversation_turns_an_out_of_closure_edit_into_a_named_correcti
                                     'removed: c01-other.', code='repair_outside_closure')
     errors = _rejection_errors(exc, 'shard_checks')
     assert errors == [{'location': [], 'code': 'repair_outside_closure', 'guidance': str(exc)}]
+
+
+def test_a_frozen_check_or_install_record_the_author_changed_or_dropped_is_put_back():
+    """Dettmore e2e-13: the delta author rewrote two frozen checks it was never shown, and three corrections asking for
+    the originals went unanswered; restoring them is exactly the correction, so the daemon makes it."""
+    plan = _plan({'install-tool'})
+    authored = _part(install=[_cmd('install-tool', 'a2')], checks=[_cmd('check-tool', 'rewritten'), _cmd('check-new', 'n')])
+    restored = plan.restore_frozen(_part(), authored)
+    assert restored['install'] == [_cmd('install-tool', 'a2')]
+    assert restored['checks'] == [_cmd('check-tool', 'b'), _cmd('check-new', 'n'), _cmd('check-other', 'c')]
+    plan.guard_part(_part(), restored)
+
+
+def test_restoring_never_hides_a_frozen_service_or_requirement_change():
+    plan = _plan({'install-tool'})
+    authored = _part(services=[{'id': 'db', 'start': _cmd('db-start', 'other'), 'health': _cmd('db-health'),
+                                'stop': _cmd('db-stop')}])
+    with pytest.raises(EnvironmentDiscoveryError) as refused:
+        plan.guard_part(_part(), plan.restore_frozen(_part(), authored))
+    assert refused.value.code == 'repair_outside_closure'
+
+
+def test_an_unparsable_part_is_left_for_admission_to_report():
+    broken = _part(checks=[{'id': 'check-tool'}])
+    assert _plan({'install-tool'}).restore_frozen(_part(), broken) is broken

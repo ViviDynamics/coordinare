@@ -82,6 +82,22 @@ GLOBAL_AUTHOR_INSTRUCTION = (
     'followed by digits, optional letters and a hyphen, or a scope criterion id (S followed by 16 hex characters) as '
     'any record id. Requirements may reference only your own checks. '
 )
+# A full repair's global author is shown only the global part of the failed manifest (global_view).
+GLOBAL_REPAIR_NOTE = (
+    'previous_manifest shows only the global part of the failed manifest: the check groups own every c-prefixed check '
+    'and re-author their own. Repair your part; never write or copy a group check, and keep each requirement naming '
+    'only your own checks, as before.')
+
+
+def global_view(data: Mapping[str, Any], groups: Sequence[CheckGroup]) -> dict[str, Any]:
+    """A manifest's global part: every check no check group owns, and no criterion mappings."""
+    view = dict(data)
+    view['checks'] = [check for check in data.get('checks') or []
+                      if not (isinstance(check, dict) and any(owns(group.prefix, str(check.get('id'))) for group in groups))]
+    view['criterion_checks'] = {}
+    return view
+
+
 # A check verifies what installation persisted; it never rebuilds or re-fetches it, since clean verification is offline.
 INSTALL_ARTIFACT_RULE = (
     'A check consumes an artifact that installation persisted (an image, tool, package or cache entry) by inspecting or '
@@ -669,7 +685,8 @@ class DividedConstruction:
         def validate(reply: dict[str, Any]) -> ShardChecks:
             patch = ShardChecksEnvelope.model_validate(reply).shard_checks.model_dump(mode='json')
             captured['patch'] = patch
-            applied = {'shard_checks': apply_group_delta(plan.base_group(group), patch)}
+            applied = {'shard_checks': plan.restore_frozen(plan.base_group(group) or {},
+                                                           apply_group_delta(plan.base_group(group), patch))}
             admitted = validate_group(applied, group=group, summary=summary, inherited=inherited)
             plan.guard_part(plan.base_group(group) or {}, applied['shard_checks'])
             return admitted

@@ -1204,3 +1204,15 @@ def test_a_duplicate_a_group_can_fix_unpins_nothing():
     assert discovery_module._global_copies(_duplicate_error(('c01-lint', 'c00-lint')), {'c00-lint'}) == set()
     assert discovery_module._global_copies(_duplicate_error(('lint-copy', 'c00-lint')), set()) == set()
     assert discovery_module._global_copies(ValueError('x'), {'c00-lint'}) == set()
+
+
+def test_a_coverage_change_names_the_requirement_and_the_checks_it_must_keep():
+    from coordinare_service_inference.environment.models import Command
+    ledger = discovery_module._ObligationLedger()
+    ledger.coverage['req-mock'] = {'check-rails-boot', 'check-mock'}
+    data = {'checks': [Command.model_validate({'id': 'check-rails-boot', 'argv': ['x']}).model_dump(mode='json')],
+            'requirements': [{'id': 'req-mock', 'description': 'd', 'source': 'README.md', 'checks': ['check-rails-boot']}]}
+    with pytest.raises(EnvironmentDiscoveryError) as refused:
+        ledger.record(data)
+    assert refused.value.code == 'obligation_removed'
+    assert 'requirement req-mock must keep checks check-mock' in str(refused.value)

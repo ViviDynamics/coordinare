@@ -86,6 +86,7 @@ from coordinare.services.environment_findings import (
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_obligations import (
     REPAIR_CORRECTABLE,
+    SAFE_ID,
     guard_repair_diff,
     preserve_execution_commands,
 )
@@ -121,6 +122,7 @@ from coordinare.services.environment_scope import (
 from coordinare.services.environment_shard_construction import (
     GLOBAL_AUTHOR_INSTRUCTION,
     GLOBAL_OWNER,
+    GLOBAL_REPAIR_NOTE,
     PREFIX,
     REVIEW_PART_PREAMBLE,
     CheckGroup,
@@ -134,6 +136,7 @@ from coordinare.services.environment_shard_construction import (
     execution_feedback_by_group,
     global_copies_dropped,
     global_summary,
+    global_view,
     merge_parts,
     owns,
     part_manifest_view,
@@ -656,6 +659,10 @@ def _validated_assessment(
         if proposal.verdict == "accept" else proposal.rationale})
 
 
+def _safe_id(identifier: str) -> str:
+    return identifier if SAFE_ID.fullmatch(identifier) else '(unnamed)'
+
+
 @dataclass
 class _ObligationLedger:
     """Retain valid obligations even when an unrelated proposal field is invalid."""
@@ -701,8 +708,10 @@ class _ObligationLedger:
                 continue
             if requirement.required and set(requirement.checks) <= checks.keys():
                 previous = self.coverage.get(requirement.id, set())
-                if not previous <= set(requirement.checks):
-                    message = "required obligation coverage changed during schema correction"
+                if missing := previous - set(requirement.checks):
+                    # Named, so the author can restore exactly these (e2e-13 was told only that coverage changed).
+                    message = (f"required obligation coverage changed during schema correction: requirement "
+                               f"{_safe_id(requirement.id)} must keep checks {', '.join(sorted(map(_safe_id, missing)))}")
                     raise EnvironmentDiscoveryError(message, code="obligation_removed")
                 self.coverage[requirement.id] = set(requirement.checks)
         for service in data.get("services", []) if isinstance(data.get("services"), list) else []:
@@ -1286,7 +1295,13 @@ def _divided_construction(scope: ScopeContract, attempt: _Attempt) -> DividedCon
     if options.execution_feedback is not None:
         build.feedback = execution_feedback_by_group(options.execution_feedback, groups)
     messages = attempt.messages
-    messages[1]['content'] = _json({**compact_scope_identity(json.loads(messages[1]['content']), scope),
+    identity = json.loads(messages[1]['content'])
+    if isinstance(identity.get('previous_manifest'), dict):
+        # Dettmore e2e-13: shown the whole failed manifest, a full repair's global author copied the 38 group checks
+        # into its part, then bounced between global_part_invalid and the obligations its copies had recorded.
+        identity['previous_manifest'] = global_view(identity['previous_manifest'], groups)
+        identity['previous_manifest_note'] = GLOBAL_REPAIR_NOTE
+    messages[1]['content'] = _json({**compact_scope_identity(identity, scope),
         'divided_instruction': DELTA_GLOBAL_INSTRUCTION if attempt.delta is not None else GLOBAL_AUTHOR_INSTRUCTION,
         **({'repair_delta': attempt.delta.brief(divided=True)} if attempt.delta is not None else {}),
         'check_groups': [{'prefix': group.prefix, 'criterion_ids': sorted(group.ids)} for group in groups]})
@@ -1808,7 +1823,7 @@ async def _delta_global_part(attempt: _Attempt, validate: Callable[[dict[str, An
     budget, discovery, plan = attempt.budget, attempt.discovery, cast('DeltaPlan', attempt.delta)
 
     def check(delta: dict[str, Any]) -> Any:
-        applied = apply_delta(base, _delta_record(delta))
+        applied = plan.restore_frozen(base, apply_delta(base, _delta_record(delta)))
         admitted = validate(applied)
         plan.guard_part(base, applied)
         return admitted
@@ -1823,7 +1838,7 @@ async def _delta_global_part(attempt: _Attempt, validate: Callable[[dict[str, An
     save_part(budget, 'delta', 'global', key, data=data, inputs=dict(discovery.inputs),
               finding_responses=[response.model_dump(mode='json') for response in discovery.finding_responses])
     await budget.flush()
-    return apply_delta(base, _delta_record(data))
+    return plan.restore_frozen(base, apply_delta(base, _delta_record(data)))
 
 
 async def _delta_candidate(attempt: _Attempt, validate: Callable[[dict[str, Any]], Any]) -> dict[str, Any]:
@@ -1832,7 +1847,7 @@ async def _delta_candidate(attempt: _Attempt, validate: Callable[[dict[str, Any]
     base = plan.base_proposal()
 
     def check(delta: dict[str, Any]) -> Any:
-        applied = apply_delta(base, _delta_record(delta))
+        applied = plan.restore_frozen(base, apply_delta(base, _delta_record(delta)))
         admitted = validate(applied)
         plan.guard_part(base, applied)
         return admitted
@@ -1846,7 +1861,7 @@ async def _delta_candidate(attempt: _Attempt, validate: Callable[[dict[str, Any]
         data, _ = await _phase(inspection=discovery, chat=attempt.chat, budget=budget, messages=attempt.messages, validate=check)
         save_part(budget, 'delta', 'manifest', key, data=data, inputs=dict(discovery.inputs))
         await budget.flush()
-    return apply_delta(base, _delta_record(data))
+    return plan.restore_frozen(base, apply_delta(base, _delta_record(data)))
 
 
 DELTA_REPAIR_INSTRUCTION = (

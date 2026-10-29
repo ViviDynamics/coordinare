@@ -588,7 +588,10 @@ async def test_an_accepted_delta_repair_reaches_the_author_without_the_previous_
 
 
 @pytest.mark.asyncio
-async def test_a_delta_that_stays_outside_its_closure_falls_back_to_the_full_repair():
+async def test_a_delta_that_rewrites_a_frozen_check_keeps_the_original_and_needs_no_fallback():
+    """Dettmore e2e-13: a delta author rewrote frozen checks it was never shown and could not restore them on request,
+    spending the schema budget before the full repair. The daemon now puts a frozen check back as it was; the delta's
+    closure changes stand, and the frozen check re-runs unchanged."""
     from tests.unit.test_353_discovery_repair import assessment, candidate
 
     kinds: list[str] = []
@@ -599,23 +602,19 @@ async def test_a_delta_that_stays_outside_its_closure_falls_back_to_the_full_rep
             return json.dumps(assessment(candidate()))
         if "repair_delta" in context:
             kinds.append("delta")
-            # 'other' is outside the failure's closure: admission rejects it on every correction.
+            # 'other' is outside the failure's closure.
             mapping = {criterion["id"]: ["version"] for criterion in context["scope_contract"]["definition"]["criteria"]}
             return json.dumps({"manifest_delta": {"criterion_checks": mapping, "checks": [
                 {"id": "other", "argv": ["zog", "--changed"], "required": False}]}, "finding_responses": []})
         kinds.append("full")
-        assert "previous_manifest" in context
-        # The full repair is the backstop: the closure guard does not apply, so 'other' may change here.
-        full = candidate()
-        full["checks"].append({"id": "other", "argv": ["zog", "--changed"], "required": False})
-        return json.dumps({"manifest": full, "finding_responses": []})
+        return json.dumps({"manifest": candidate(), "finding_responses": []})
 
     budget = AttemptBudget()
     manifest, _review = await delta_run(chat, budget=budget)
 
-    assert kinds[-1] == "full" and kinds.count("delta") >= 1
-    assert budget.delta_fallback is True and budget.repair_delta is False
-    assert [check.argv for check in manifest.checks if check.id == "other"] == [["zog", "--changed"]]
+    assert kinds == ["delta"]
+    assert budget.delta_fallback is False and budget.repair_delta is True
+    assert [check.argv for check in manifest.checks if check.id == "other"] == [["zog", "--other"]]
 
 
 def test_a_delta_fallback_is_persisted_on_the_journal_and_a_restart_keeps_the_full_repair(tmp_path):
