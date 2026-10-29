@@ -1395,6 +1395,24 @@ def _carry_folds(attempt: _Attempt, folded: Mapping[str, str], authored_response
         for response in authored_responses]
 
 
+_ID_FIELDS = frozenset({'command_id', 'unavailable', 'pairs', 'missing', 'id'})
+
+
+def _named_ids(value: Any, *, field: bool = False) -> set[str]:
+    """Every string under an id-bearing key of structured feedback (command_id, unavailable, pairs, missing, id)."""
+    if isinstance(value, Mapping):
+        return set().union(*(_named_ids(item, field=key in _ID_FIELDS) for key, item in value.items()))
+    if isinstance(value, list):
+        return set().union(*(_named_ids(item, field=field) for item in value))
+    return {value} if field and isinstance(value, str) else set()
+
+
+def _message_ids(message: str) -> set[str]:
+    """The comma-separated id list a daemon message ends with (e.g. "required obligation removed during repair: a, b")."""
+    _, separator, tail = message.rpartition(': ')
+    return {token.strip() for token in tail.split(',') if token.strip()} if separator else set()
+
+
 def _promoted_sources(folded: Mapping[str, str], global_data: Mapping[str, Any]) -> dict[str, list[str]]:
     """Each check the merge promoted (kept under an id the global author never declared) and the group copies in it."""
     authored = {check.get('id') for check in global_data.get('checks') or [] if isinstance(check, dict)}
@@ -1425,6 +1443,11 @@ def _undo_folds(attempt: _Attempt, folded: Mapping[str, str], promoted: Mapping[
                 current.add(dropped)
             if kept in promoted and kept not in previous:
                 current.discard(kept)
+    # Requirement coverage the rejected candidate recorded for the first time under a promoted id is dropped: rebuilding
+    # it from every source copy would lock more than the requirement named.
+    for name in [name for name, ids in attempt.obligation_ledger.coverage.items()
+                 if name not in coverage_before and ids & set(promoted)]:
+        del attempt.obligation_ledger.coverage[name]
 
 
 def _speculative_base(build: DividedConstruction, attempt: _Attempt) -> dict[str, Any] | None:
@@ -1568,9 +1591,12 @@ def _attributed(errors: list[dict[str, Any]], exc: Exception, parts: Mapping[str
         return []
     text = _json(errors) + (str(exc) if isinstance(exc, EnvironmentDiscoveryError) else '')
     named = set(GROUP_CHECK_ID.findall(text))
-    for identifier, sources in (promoted or {}).items():
-        if re.search(r'(?<![A-Za-z0-9_.:-])' + re.escape(identifier) + r'(?![A-Za-z0-9_.:-])', text):
-            named.update(sources)
+    if promoted:
+        # Only ids the feedback names as ids: a promoted id is often an ordinary word (source, lint, suite).
+        mentioned = _named_ids(errors) | (_message_ids(str(exc)) if isinstance(exc, EnvironmentDiscoveryError) else set())
+        for identifier, sources in promoted.items():
+            if identifier in mentioned:
+                named.update(sources)
     return [group for prefix, (group, part) in parts.items()
             if any(owns(prefix, identifier) for identifier in named)
             or any(check.id in named for check in part.checks)

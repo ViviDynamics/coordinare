@@ -1032,10 +1032,43 @@ async def test_a_rejected_promoted_check_goes_back_to_its_source_groups_and_rele
         calls.append(1)
         required_ids['checks'].update(check['id'] for check in data['checks'])
         if len(calls) == 1:
-            raise EnvironmentDiscoveryError('suite uses a reserved runtime variable', code='obligation_removed')
+            raise EnvironmentDiscoveryError('required obligation removed during repair: suite', code='obligation_removed')
         return data
 
     merged, build, _phases, _messages = await merge_with(monkeypatch, validate, required_ids=required_ids)
     assert build.rounds[1] == ['c00-', 'c01-']
+    assert all('merge_errors' in build.briefs[1][prefix] for prefix in ('c00-', 'c01-'))
+    assert _phases == [1]  # the global author was not asked to correct a check it never wrote
     assert 'suite' not in required_ids['checks']
     assert 'suite' not in {check['id'] for check in merged['checks']}
+
+
+
+def test_a_promoted_id_is_attributed_only_where_feedback_names_it_as_an_id():
+    group = CheckGroup('c00-', ())
+    part = ShardChecks.model_validate({'checks': [], 'criterion_checks': {}})
+    parts = {'c00-': (group, part)}
+    promoted = {'source': ['c00-source', 'c01-source']}
+    prose = EnvironmentDiscoveryError('discovery requirement cites unread source', code='source_identity')
+    assert discovery_module._attributed([{'location': [], 'code': 'source_identity', 'guidance': str(prose)}], prose,
+                                        parts, promoted) == []
+    named = [{'location': [], 'code': 'runtime_env_reserved', 'command_id': 'source'}]
+    assert discovery_module._attributed(named, ValueError(), parts, promoted) == [group]
+    listed = EnvironmentDiscoveryError('required obligation removed during repair: other, source', code='obligation_removed')
+    assert discovery_module._attributed([], listed, parts, promoted) == [group]
+
+
+def test_new_requirement_coverage_under_a_rejected_promoted_id_is_dropped():
+    from types import SimpleNamespace
+
+    ledger = discovery_module._ObligationLedger()
+    ledger.coverage['req-old'] = {'c00-suite'}
+    attempt = SimpleNamespace(required_ids={'checks': {'c00-suite'}}, obligation_ledger=ledger)
+    before = discovery_module._fold_state(attempt)
+    folded = {'c00-suite': 'suite', 'c01-suite': 'suite'}
+    attempt.required_ids['checks'] = {'suite'}
+    ledger.coverage['req-old'] = {'suite'}
+    ledger.coverage['req-new'] = {'suite'}
+    discovery_module._undo_folds(attempt, folded, {'suite': ['c00-suite', 'c01-suite']}, before)
+    assert attempt.required_ids['checks'] == {'c00-suite'}
+    assert ledger.coverage == {'req-old': {'c00-suite'}}
