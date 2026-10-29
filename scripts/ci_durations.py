@@ -1,11 +1,14 @@
 #!/usr/bin/env python
 """Turn the CI shards' JUnit reports into per-file durations (289).
 
-``scripts/ci_shard.py`` balances shards on ``tests/ci-durations.json``. Refresh
-it from a CI run's ``junit-*`` artifacts:
+``scripts/ci_shard.py`` balances shards on ``tests/ci-durations.json``. Collect
+one lane's observations from a CI run's artifacts:
 
-    gh run download <run-id> --pattern 'junit-*' --dir /tmp/junit
-    python scripts/ci_durations.py /tmp/junit > tests/ci-durations.json
+    gh run download <run-id> --pattern 'junit-test-*' --dir /tmp/junit
+    python scripts/ci_durations.py /tmp/junit > /tmp/test-durations.json
+
+Merge those observations into ``tests/ci-durations.json``, keeping the other
+lanes' existing weights. Use ``junit-coverage-*`` or ``junit-e2e-*`` separately.
 
 Browser shards run every file twice (chromium and firefox); their times add up,
 which is the cost a file places on its shard. Stdlib only.
