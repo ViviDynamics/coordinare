@@ -38,7 +38,11 @@ from coordinare.services.environment_admission import (
     _repair,
     _validation_feedback,
 )
-from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
+from coordinare.services.environment_attempt import (
+    MAX_PHASE_SECONDS,
+    AttemptBudget,
+    EnvironmentDiscoveryError,
+)
 from coordinare.services.environment_discovery_prompts import SOURCE_NAVIGATION
 from coordinare.services.environment_evidence import (
     AuthorEvidenceCache,
@@ -779,7 +783,8 @@ async def _discover_scope(request: _Request) -> ScopeContract:
         count = len(saved.all_inputs)
         verify = replace(limits, max_reads=max(limits.max_reads, count),
                          max_source_bytes=max(limits.max_source_bytes, RESUME_SOURCE_BYTES),
-                         phase_timeout_seconds=max(limits.phase_timeout_seconds, count * RESUME_SECONDS_PER_INPUT))
+                         phase_timeout_seconds=min(MAX_PHASE_SECONDS, max(limits.phase_timeout_seconds,
+                                                                       count * RESUME_SECONDS_PER_INPUT)))
         inspection = SourceInspection(request.entries or _checked_inventory(paths, limits), fetch, verify, None,
                                       retained_inputs=budget.scope_inputs)
         if (saved.definition.source_commit, saved.definition.inventory_digest) != (commit, inspection.inventory_digest):

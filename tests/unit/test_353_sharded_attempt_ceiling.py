@@ -1,4 +1,4 @@
-"""Sharded discovery may run up to four hours; every other attempt keeps its one-hour ceiling."""
+"""Sharded discovery may run up to six hours (one phase up to four); every other attempt keeps its one-hour ceiling."""
 from __future__ import annotations
 
 import pytest
@@ -12,7 +12,7 @@ from coordinare.services.environment_attempt import (
 from coordinare.services.environment_discovery import DiscoveryLimits
 
 
-def test_the_sharded_ceiling_is_four_hours_and_the_default_one_hour_stays():
+def test_the_sharded_ceiling_is_six_hours_and_the_default_one_hour_stays():
     assert (MAX_ATTEMPT_SECONDS, MAX_SHARDED_ATTEMPT_SECONDS) == (3600, 21600)
     assert EnvCacheConfig(manifest_shard_context_tokens=262144).manifest_attempt_timeout_seconds == 21600
     with pytest.raises(ValueError, match='one hour'):
@@ -25,6 +25,9 @@ def test_limits_allow_longer_attempts_only_when_sharded():
         DiscoveryLimits(attempt_timeout_seconds=7200)
     with pytest.raises(ValueError):
         DiscoveryLimits(attempt_timeout_seconds=21601, shard_context_tokens=262144)
+    DiscoveryLimits(attempt_timeout_seconds=21600, phase_timeout_seconds=4 * 3600, shard_context_tokens=262144)
+    with pytest.raises(ValueError):
+        DiscoveryLimits(attempt_timeout_seconds=21600, phase_timeout_seconds=5 * 3600, shard_context_tokens=262144)
     AttemptBudget(timeout_seconds=21600)
 
 
