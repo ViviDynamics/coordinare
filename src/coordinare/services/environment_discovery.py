@@ -712,7 +712,8 @@ class _ObligationLedger:
                     # Named, so the author can restore exactly these (e2e-13 was told only that coverage changed).
                     message = (f"required obligation coverage changed during schema correction: requirement "
                                f"{_safe_id(requirement.id)} must keep checks {', '.join(sorted(map(_safe_id, missing)))}")
-                    raise EnvironmentDiscoveryError(message, code="obligation_removed")
+                    # Requirements are the global author's: a named group check must not send it to that group.
+                    raise EnvironmentDiscoveryError(message, code="obligation_removed", global_owned=True)
                 self.coverage[requirement.id] = set(requirement.checks)
         for service in data.get("services", []) if isinstance(data.get("services"), list) else []:
             if not isinstance(service, dict) or not isinstance(service.get("id"), str):

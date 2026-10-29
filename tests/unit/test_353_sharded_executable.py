@@ -1216,3 +1216,19 @@ def test_a_coverage_change_names_the_requirement_and_the_checks_it_must_keep():
         ledger.record(data)
     assert refused.value.code == 'obligation_removed'
     assert 'requirement req-mock must keep checks check-mock' in str(refused.value)
+
+
+def test_a_coverage_change_naming_a_group_check_still_goes_to_the_global_author():
+    """Review: naming c00-0 in the message routed the correction to c00, which cannot change requirements, until the
+    merge rounds ran out."""
+    from coordinare_service_inference.environment.models import Command
+    ledger = discovery_module._ObligationLedger()
+    ledger.coverage['req-tool'] = {'toolchain', 'c00-0'}
+    data = {'checks': [Command.model_validate({'id': identifier, 'argv': ['x']}).model_dump(mode='json')
+                       for identifier in ('toolchain', 'c00-0')],
+            'requirements': [{'id': 'req-tool', 'description': 'd', 'source': 'README.md', 'checks': ['toolchain']}]}
+    with pytest.raises(EnvironmentDiscoveryError) as refused:
+        ledger.record(data)
+    assert 'c00-0' in str(refused.value)
+    errors = [{'location': [], 'code': refused.value.code, 'guidance': str(refused.value)}]
+    assert discovery_module._attributed(errors, refused.value, _groups('c00-', 'c01-')) == []
