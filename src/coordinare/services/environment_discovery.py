@@ -13,7 +13,7 @@ import json
 import re
 import time
 from collections import Counter
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, Unpack, cast
@@ -1364,7 +1364,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
                       else [{'location': [], 'code': exc.code, 'guidance': str(exc)}])
             # Recorded so a held attempt shows what the merge rejected.
             budget.validation_codes.extend(str(error.get('code')) for error in errors)
-            redo = _attributed(errors, exc, parts, promoted)
+            redo = _attributed(_group_errors(errors, executed), exc, parts, promoted)
             for group in redo:
                 build.feedback[group.prefix] = {**build.feedback.get(group.prefix, {}), 'merge_errors': errors}
                 build.previous[group.prefix] = parts[group.prefix][1].model_dump(mode='json')
@@ -1638,6 +1638,38 @@ def _attributed(errors: list[dict[str, Any]], exc: Exception, parts: Mapping[str
             if any(owns(prefix, identifier) for identifier in named)
             or any(check.id in named for check in part.checks)
             or any(criterion in text for criterion in group.ids)]
+
+
+GLOBAL_COPY_GUIDANCE = ("A pair that names a global check of yours and a check group's executed check runs the same "
+    "command twice. The executed check must stay under its own id, so its group cannot change it: remove your copy from "
+    "the global part, and name the group's check wherever you named the copy.")
+
+
+def _group_errors(errors: list[dict[str, Any]], executed: Collection[str]) -> list[dict[str, Any]]:
+    """The merge errors as check groups should be judged by: a duplicate pair of an executed group check and a global
+    check is the global author's alone, so it never sends the group back, and its error gains guidance for the global
+    author (which also corrects whenever no group is named).
+
+    Review of the e2e-12 fix: a global copy that may not be dropped (the last global check, or one a criterion maps to)
+    was attributed only to the group, which must keep its executed check, so every round repeated it.
+    """
+    judged: list[dict[str, Any]] = []
+    for error in errors:
+        pairs = error.get('pairs') if error.get('code') == 'duplicate_command_content' else None
+        if not pairs:
+            judged.append(error)
+            continue
+        own = [pair for pair in pairs if not _global_copy_pair(pair, executed)]
+        if len(own) < len(pairs):
+            error['guidance'] = f"{error.get('guidance') or ''} {GLOBAL_COPY_GUIDANCE}".strip()
+        if own:
+            judged.append({**error, 'pairs': own})
+    return judged
+
+
+def _global_copy_pair(pair: Sequence[str], executed: Collection[str]) -> bool:
+    return any(PREFIX.match(group) is not None and group in executed and PREFIX.match(other) is None
+               for group, other in (tuple(pair), tuple(reversed(pair))))
 
 
 MERGE_CORRECTABLE = frozenset({'executable_merge_collision', 'obligation_removed', 'source_identity', *REPAIR_CORRECTABLE})

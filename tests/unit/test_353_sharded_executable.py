@@ -1145,3 +1145,32 @@ def test_a_rejected_round_never_retains_a_global_copy_dropped_for_an_executed_ch
     again: dict[str, str] = {}
     merge_parts(global_data, parts, folded=again, policy=FoldPolicy(executed={'c00-suite'}, retained=ledger.checks))
     assert again == {'suite-copy': 'c00-suite'}
+
+
+def _groups(*prefixes):
+    return {prefix: (CheckGroup(prefix, ()), ShardChecks.model_validate({'checks': [], 'criterion_checks': {}}))
+            for prefix in prefixes}
+
+
+def test_a_duplicate_of_a_global_copy_and_an_executed_group_check_goes_to_the_global_author():
+    """Review r2 of the e2e-12 fix: a copy that may not be dropped (the last global check, or one a criterion maps to)
+    was sent only to c00, which must keep its executed check; every round repeated it until the merge rounds ran out."""
+    errors = [{'location': [], 'code': 'duplicate_command_content', 'guidance': 'Keep one of the two.',
+               'pairs': [['suite-copy', 'c00-suite']]}]
+    parts = _groups('c00-', 'c01-')
+    judged = discovery_module._group_errors(errors, {'c00-suite'})
+    assert discovery_module._attributed(judged, ValueError(), parts) == []
+    assert discovery_module.GLOBAL_COPY_GUIDANCE in errors[0]['guidance']
+
+
+def test_only_the_pairs_a_group_can_correct_send_it_back():
+    errors = [{'location': [], 'code': 'duplicate_command_content', 'guidance': 'Keep one of the two.',
+               'pairs': [['c01-lint', 'c00-lint'], ['suite-copy', 'c00-suite']]},
+              {'location': [], 'code': 'duplicate_command_content', 'pairs': [['new-copy', 'c01-new']]}]
+    parts = _groups('c00-', 'c01-', 'c02-')
+    judged = discovery_module._group_errors(errors, {'c00-suite', 'c00-lint'})
+    # c01-new never ran, so its group may still drop it; c00-lint is executed, but its pair is between two groups.
+    assert [group.prefix for group in discovery_module._attributed(judged, ValueError(), parts)] == ['c00-', 'c01-']
+    assert judged[0]['pairs'] == [['c01-lint', 'c00-lint']]
+    assert discovery_module.GLOBAL_COPY_GUIDANCE in errors[0]['guidance']
+    assert discovery_module.GLOBAL_COPY_GUIDANCE not in (errors[1].get('guidance') or '')
