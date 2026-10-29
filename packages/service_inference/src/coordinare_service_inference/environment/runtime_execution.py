@@ -249,7 +249,9 @@ def _named(options: list[tuple[str, str]]) -> bool:
 def _conflicting(options: list[tuple[str, str]]) -> bool:
     """Options docker refuses together before it creates anything: --rm with a restart policy."""
     restart = [value for option, value in options if option == '--restart']
-    return any(option == '--rm' for option, _value in options) and bool(restart) and restart[-1] not in {'', 'no'}
+    # A bare --rm is true, and --rm=false turns it off; the last one wins.
+    removed = [value.lower() not in {'false', '0'} for option, value in options if option == '--rm']
+    return bool(removed) and removed[-1] and bool(restart) and restart[-1] not in {'', 'no'}
 
 
 def _record_run(options: list[tuple[str, str]], created: dict[str, set[str]]) -> None:

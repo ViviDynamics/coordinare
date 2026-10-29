@@ -342,6 +342,9 @@ async def test_a_creator_that_did_not_run_is_not_blamed(tmp_path, monkeypatch):
     ('docker volume create -h pgdata', {}),
     ('docker run --name web --rm --restart unless-stopped -v pgdata:/data alpine', {}),
     ('docker run --name web --rm --restart no alpine', {'containers': {'web'}}),
+    ('docker run --name web --rm=false --restart always -v pgdata:/data alpine',
+     {'containers': {'web'}, 'volumes': {'pgdata'}}),
+    ('docker create --name web --rm=true --restart always alpine', {}),
     ('docker run -d --name web -h web -v pgdata:/data alpine', {'containers': {'web'}, 'volumes': {'pgdata'}}),
     # Dettmore e2e-12's install-host-ruby, as written.
     ('set -e; rm -rf /c/ruby-root/*; docker create --name ruby-extract ruby:3.4.2-slim true >/dev/null; '
