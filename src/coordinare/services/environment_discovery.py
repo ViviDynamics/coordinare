@@ -1350,9 +1350,9 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
             validate(merged)
         except (EnvironmentDiscoveryError, ValidationError) as exc:
             promoted = _promoted_sources(folded, global_data)
-            if folded:
+            if (copies := _global_copies(exc, executed)) or folded:
                 _undo_folds(attempt, before, validate,
-                            _unfolded(global_data, [part for _group, part in parts.values()], folded))
+                            _unfolded(global_data, [part for _group, part in parts.values()], folded, copies))
             if plan is not None:
                 # A delta is not corrected across parts: the full repair re-derives the manifest from its failed base.
                 message = "delta repair could not be merged into a complete manifest"
@@ -1448,12 +1448,15 @@ def _fold_state(attempt: _Attempt) -> tuple[dict[str, set[str]], _ObligationLedg
     return ({group: set(ids) for group, ids in attempt.required_ids.items()}, copy.deepcopy(attempt.obligation_ledger))
 
 
-def _unfolded(global_data: Mapping[str, Any], parts: Sequence[ShardChecks], folded: Mapping[str, str]) -> dict[str, Any]:
-    """The rejected round's candidate as authored, for the validator to retain. A global copy dropped for an executed
-    group check stays dropped: nothing named it, the group check already holds its command, and a retained copy could
-    never be dropped again (every later round would then repeat the duplicate)."""
+def _unfolded(global_data: Mapping[str, Any], parts: Sequence[ShardChecks], folded: Mapping[str, str],
+              copies: Collection[str] = frozenset()) -> dict[str, Any]:
+    """The rejected round's candidate as authored, for the validator to retain. A global copy of an executed group
+    check is left out, whether the merge dropped it or a duplicate error named it: the group check already holds its
+    command, and a retained copy could never be removed again, though the global author is told to remove it (review
+    r3 of the e2e-12 fix: the validator pinned a required copy before rejecting the duplicate, so the removal it then
+    asked for was refused as a removed obligation)."""
     unfolded = merge_parts(global_data, parts, fold=False)
-    dropped = global_copies_dropped(folded)
+    dropped = global_copies_dropped(folded) | set(copies)
     unfolded['checks'] = [check for check in unfolded['checks'] if check.get('id') not in dropped]
     return unfolded
 
@@ -1665,6 +1668,14 @@ def _group_errors(errors: list[dict[str, Any]], executed: Collection[str]) -> li
         if own:
             judged.append({**error, 'pairs': own})
     return judged
+
+
+def _global_copies(exc: Exception, executed: Collection[str]) -> set[str]:
+    """The global ids a rejected candidate's duplicate errors pair with an executed group check."""
+    errors = _validation_feedback(exc) if isinstance(exc, ValidationError) else []
+    return {identifier for error in errors if error.get('code') == 'duplicate_command_content'
+            for pair in error.get('pairs') or [] if _global_copy_pair(pair, executed)
+            for identifier in pair if PREFIX.match(identifier) is None}
 
 
 def _global_copy_pair(pair: Sequence[str], executed: Collection[str]) -> bool:

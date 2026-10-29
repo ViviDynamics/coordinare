@@ -1174,3 +1174,33 @@ def test_only_the_pairs_a_group_can_correct_send_it_back():
     assert judged[0]['pairs'] == [['c01-lint', 'c00-lint']]
     assert discovery_module.GLOBAL_COPY_GUIDANCE in errors[0]['guidance']
     assert discovery_module.GLOBAL_COPY_GUIDANCE not in (errors[1].get('guidance') or '')
+
+
+def _duplicate_error(*pairs):
+    from pydantic import ValidationError
+    from pydantic_core import PydanticCustomError
+    return ValidationError.from_exception_data('EnvironmentManifestProposal', [
+        {'type': PydanticCustomError('duplicate_command_content', 'duplicate', {'pairs': [list(pair) for pair in pairs]}),
+         'loc': (), 'input': None}])
+
+
+def test_a_rejected_round_unpins_a_global_copy_its_duplicate_names():
+    """Review r3 of the e2e-12 fix: the validator pinned a required suite-copy before rejecting the duplicate, so the
+    removal the guidance then asked for was refused as global_obligation_removed until the schema budget ran out."""
+    exc = _duplicate_error(('suite-copy', 'c00-suite'), ('c01-lint', 'c00-lint'))
+    copies = discovery_module._global_copies(exc, {'c00-suite', 'c00-lint'})
+    assert copies == {'suite-copy'}
+    global_data = {'checks': [_check('suite-copy', 'suite')]}
+    parts = [ShardChecks.model_validate({'checks': [_check('c00-suite', 'suite')], 'criterion_checks': {'S1': ['c00-suite']}})]
+    unfolded = discovery_module._unfolded(global_data, parts, {}, copies)
+    assert [check['id'] for check in unfolded['checks']] == ['c00-suite']
+    required, ledger = _rollback(required=['c00-suite'], coverage={}, after_required=['c00-suite', 'suite-copy'],
+                                 after_coverage={}, after_checks=['suite-copy'], unfolded=unfolded)
+    assert 'suite-copy' not in required['checks'] and 'c00-suite' in required['checks']
+    assert 'suite-copy' not in ledger.checks
+
+
+def test_a_duplicate_a_group_can_fix_unpins_nothing():
+    assert discovery_module._global_copies(_duplicate_error(('c01-lint', 'c00-lint')), {'c00-lint'}) == set()
+    assert discovery_module._global_copies(_duplicate_error(('lint-copy', 'c00-lint')), set()) == set()
+    assert discovery_module._global_copies(ValueError('x'), {'c00-lint'}) == set()
