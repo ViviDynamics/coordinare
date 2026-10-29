@@ -281,3 +281,16 @@ def test_the_runtime_credential_correction_agrees_with_the_carrier_guidance():
 
     assert 'openssl rand' in CREDENTIAL_GUIDANCE and 'never in a command env field' in CREDENTIAL_GUIDANCE
     assert 'Any other credential comes from the trusted runtime' not in CREDENTIAL_GUIDANCE
+
+
+
+def test_the_credential_correction_never_steers_a_generated_secret_into_a_template_reference():
+    """Review r1: "Use ${NAME} for every credential" plus a shell-generated secret leads to the rejected self-reference."""
+    from coordinare_service_inference.environment.models import Command, validate_shell_locals
+
+    from coordinare.services.environment_admission import CREDENTIAL_GUIDANCE
+
+    assert 'Use ${NAME} for every credential.' not in CREDENTIAL_GUIDANCE
+    assert 'as $NAME, never ${NAME}' in CREDENTIAL_GUIDANCE
+    for script in ('NAME=$(openssl rand -hex 64) bundle exec rspec', 'NAME=$(openssl rand -hex 64); export NAME; bin/test'):
+        validate_shell_locals([Command(id='check-tests', argv=['bash', '-c', script])], [])

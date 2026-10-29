@@ -97,14 +97,16 @@ GLOBAL_PART_GUIDANCE = ("This is the global part of a divided manifest. Leave cr
     "criteria. Check ids of c, two or three digits, optional letters and a hyphen (c00-, c00a-) are reserved for check "
     "authors; rename yours.")
 CREDENTIAL_GUIDANCE = (
-    'Use ${NAME} for every credential. For a credential environment variable named K, its value must be exactly ${K}. '
+    'Use ${NAME} for every operator credential and local credential. For a credential environment variable named K, '
+    'its value must be exactly ${K}. '
     'A credential for a service this manifest starts, such as a local test database password, belongs in '
     'local_credentials as {name, service, purpose} and is referenced as ${NAME}; the trusted runner generates a fresh '
     'value every run, so data that stores it must live under {scratch}, and neither install commands nor activation can use it. '
     'An operator credential (an external service token or key) comes from the trusted runtime; do not invent one, and '
     'unavailable required values hold readiness. A secret no started service owns and no operator supplies, such as a '
-    'framework secret key a test run needs, is generated inside the shell command that needs it, for example '
-    'NAME=$(openssl rand -hex 64) before the test command, never in a command env field. '
+    'framework secret key a test run needs, is generated inside the shell command that needs it and referred to there '
+    'as $NAME, never ${NAME}, for example NAME=$(openssl rand -hex 64) bundle exec rspec or '
+    'NAME=$(openssl rand -hex 64); export NAME; bin/test, never in a command env field. '
     'Never move a literal credential into argv, activation, scope text or another field; describe a credential-bearing '
     'URL from source without its password.')
 LOCAL_CREDENTIAL_GUIDANCE = {
