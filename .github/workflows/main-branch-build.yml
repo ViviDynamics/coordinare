@@ -127,8 +127,7 @@ jobs:
 
       - name: Install coordinare and performer packages
         run: |
-          uv venv
-          uv pip install -e ".[dev]"
+          uv sync --extra dev --frozen
           uv pip install -e "agent/performer[dev]"
 
       - name: Run pytest
@@ -177,8 +176,7 @@ jobs:
 
       - name: Install coordinare and performer packages
         run: |
-          uv venv
-          uv pip install -e ".[dev]"
+          uv sync --extra dev --frozen
           uv pip install -e "agent/performer[dev]"
 
       - name: Run coverage shard
