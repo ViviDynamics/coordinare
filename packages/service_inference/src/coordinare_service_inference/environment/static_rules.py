@@ -150,16 +150,17 @@ def _without_redirections(words: list[str]) -> list[str]:
     return kept
 
 
-def _simple_commands(script: str, depth: int = 0, *, nested: bool = True) -> list[list[str]]:
+def _simple_commands(script: str, depth: int = 0, *, nested: bool = True, guarded: bool = True) -> list[list[str]]:
     """A script's simple commands as words, split only at unquoted shell operators: a quoted script handed to another
     program (docker run image sh -c '...') stays one word of that program's command. A nested sh -c script runs in
     the same process context, so its commands are judged too.
 
     The carrier rules built on this are deliberately conservative: they may miss a case (a command substitution, a
     comment, a selector such as -P "$PPID"), which execution then reports, but must never reject a valid command,
-    since that would spend an author's corrections on nothing. A script the lexer cannot follow yields nothing.
+    since that would spend an author's corrections on nothing. A script the lexer cannot follow yields nothing, unless
+    ``guarded`` is False: a reader that only extracts words may take the extra split a quoted operator causes.
     """
-    if _UNJUDGED.search(script):
+    if guarded and _UNJUDGED.search(script):
         return []
     script = _FD_REDIRECT.sub(lambda match: f"{match[1]}fd{match[2]}" if match[1] else ">both", script)
     lexer = shlex.shlex(script, posix=True, punctuation_chars=_OPERATORS)
@@ -182,7 +183,7 @@ def _simple_commands(script: str, depth: int = 0, *, nested: bool = True) -> lis
         found.append(words)
         program = _program(words)
         if nested and depth < 2 and len(program) >= 3 and program[0].rsplit("/", 1)[-1] in _SHELLS and program[1] == "-c":
-            found.extend(_simple_commands(program[2], depth + 1))
+            found.extend(_simple_commands(program[2], depth + 1, guarded=guarded))
     return found
 
 

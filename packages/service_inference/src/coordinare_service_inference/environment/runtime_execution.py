@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
-import itertools
+import re
 import tempfile
 import threading
 import time
@@ -106,6 +106,9 @@ async def _reclaim_residual_state(lease: RuntimeLease, manifest: EnvironmentMani
         detail = _redact(f'teardown found Docker state left behind: {found}. {guidance}', {}, extra_values=known)
         result.status = 'fail'
         result.output = f'{result.output}\n{detail}' if result.output else detail
+    if unexplained and not fallback:
+        # Some state no record answers for: it stays, and the seal check refuses it.
+        return
     with contextlib.suppress(RuntimeError, OSError, TimeoutError):
         await lease.ssh(RESIDUAL_REMOVE, deadline=deadline, check=False)
 
@@ -138,6 +141,14 @@ def _residual_creators(manifest: EnvironmentManifest, ran: dict[str, CheckResult
 
 
 _RUNS = (['run'], ['create'], ['container', 'run'], ['container', 'create'])
+_CREATES = {'volume create': 'volumes', 'network create': 'networks'}
+# Docker options that take no value; every other option takes the next word unless written --option=value.
+_BARE_LONG = frozenset({'--detach', '--rm', '--interactive', '--tty', '--privileged', '--init', '--publish-all',
+                        '--read-only', '--no-healthcheck', '--oom-kill-disable', '--sig-proxy', '--quiet', '--help',
+                        '--disable-content-trust', '--use-api-socket', '--attachable', '--config-only', '--ingress',
+                        '--internal', '--ipv4', '--ipv6'})
+_BARE_SHORT = frozenset('ditPq')
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 
 def docker_created(argv: Sequence[str]) -> dict[str, set[str]]:
@@ -145,19 +156,21 @@ def docker_created(argv: Sequence[str]) -> dict[str, set[str]]:
 
     Conservative like the carrier rules: a form it does not recognise (a docker global option before the
     subcommand, a name in a variable) creates nothing here, so that state keeps the fallback attribution.
-    Only a docker invocation counts: `echo --name db` creates nothing.
+    Only a docker invocation counts (`echo --name db` creates nothing), and only its own options: run and create
+    stop reading options at the image, as docker does, so the container command's words are never its options.
     """
     from .static_rules import _program, _script, _simple_commands
 
     created: dict[str, set[str]] = {'containers': set(), 'volumes': set(), 'networks': set()}
-    # The shell joins a backslash line continuation before it splits words; the lexer would end the command there.
-    for words in _simple_commands(_script(argv).replace('\\\n', ' ')):
+    for words in _simple_commands(_shell_text(_script(argv)), guarded=False):
         program = _program(words)
         if not program or program[0].rsplit('/', 1)[-1] != 'docker':
             continue
         args = program[1:]
-        if any(args[:len(form)] == form for form in _RUNS):
-            for option, value in _options(args):
+        run = next((form for form in _RUNS if args[:len(form)] == form), None)
+        if run is not None:
+            options, _positional = _parse(args[len(run):], interspersed=False)
+            for option, value in options:
                 if option == '--name':
                     created['containers'].add(value)
                 elif option in {'-v', '--volume'} and (volume := _named_volume(value.split(':', 1)[0])):
@@ -167,20 +180,61 @@ def docker_created(argv: Sequence[str]) -> dict[str, set[str]]:
                     volume = fields.get('source') or fields.get('src') or ''
                     if fields.get('type', 'volume') == 'volume' and _named_volume(volume):
                         created['volumes'].add(volume)
-        elif args[:2] in (['volume', 'create'], ['network', 'create']) and len(args) > 2:
-            kind = 'volumes' if args[0] == 'volume' else 'networks'
-            named = [value for option, value in _options(args) if option == '--name']
-            if not args[-1].startswith('-'):
-                named.append(args[-1])
-            created[kind].update(named)
+        elif (kind := _CREATES.get(' '.join(args[:2]))) is not None:
+            options, positional = _parse(args[2:], interspersed=True)
+            # A volume create with no name asks docker to generate one: nothing is named.
+            created[kind].update([value for option, value in options if option == '--name'] + positional[:1])
     return created
 
 
-def _options(args: list[str]) -> list[tuple[str, str]]:
-    """Each option with its value, written either as two words or as --option=value."""
-    pairs = [(word.partition('=')[0], word.partition('=')[2]) for word in args if word.startswith('--') and '=' in word]
-    pairs += [(word, value) for word, value in itertools.pairwise(args) if word.startswith('-') and '=' not in word]
-    return pairs
+def _shell_text(script: str) -> str:
+    """The script as the shell reads it for words: a backslash-newline is removed outright, and heredoc bodies,
+    which are data, are dropped."""
+    lines = script.replace('\\\n', '').split('\n')
+    kept: list[str] = []
+    ends: list[str] = []
+    for line in lines:
+        if ends:
+            if line.strip() == ends[0]:
+                ends.pop(0)
+            continue
+        kept.append(line)
+        ends.extend(match[2] for match in _HEREDOC.finditer(line))
+    return '\n'.join(kept)
+
+
+def _parse(args: list[str], *, interspersed: bool) -> tuple[list[tuple[str, str]], list[str]]:
+    """Docker's own reading of a subcommand's words: each option with its value, and the positional words. Without
+    ``interspersed`` (run, create) options end at the first positional word, the image."""
+    options: list[tuple[str, str]] = []
+    positional: list[str] = []
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if word == '--':
+            positional.extend(args[index:])
+            break
+        if word.startswith('--'):
+            name, equals, value = word.partition('=')
+            if not equals and name not in _BARE_LONG and index < len(args):
+                value, index = args[index], index + 1
+            options.append((name, value))
+        elif word.startswith('-') and len(word) > 1:
+            letters = word[1:]
+            if set(letters) <= _BARE_SHORT:
+                continue
+            flag = next((position for position, letter in enumerate(letters) if letter not in _BARE_SHORT))
+            name, value = f'-{letters[flag]}', letters[flag + 1:]
+            if not value and index < len(args):
+                value, index = args[index], index + 1
+            options.append((name, value))
+        else:
+            positional.append(word)
+            if not interspersed:
+                positional.extend(args[index:])
+                break
+    return options, positional
 
 
 def _named_volume(source: str) -> str:

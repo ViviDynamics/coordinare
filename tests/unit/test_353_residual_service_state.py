@@ -303,6 +303,19 @@ async def test_a_creator_that_did_not_run_is_not_blamed(tmp_path, monkeypatch):
     ('docker run --mount type=bind,source=/x,target=/d -v /h:/c -v ./w:/w img', {}),
     ('echo --name db; printf "docker volume create x"', {}),
     ('docker exec devenv-pg pg_isready; docker rm -f -v devenv-pg', {}),
+    # Round 2 of review: docker stops reading run options at the image, and an option's value is never an option.
+    ('docker run --rm alpine echo --name db', {}),
+    ('docker run --rm -e --name=db alpine true', {}),
+    ('docker run -it -p 80:80 --name web img', {'containers': {'web'}}),
+    ('docker run -dp 80:80 --name web img', {'containers': {'web'}}),
+    ('docker run -vpgdata:/d img', {'volumes': {'pgdata'}}),
+    ('docker volume create pgdata --driver local', {'volumes': {'pgdata'}}),
+    ('docker volume create --driver local', {}),
+    ('docker network create appnet --driver bridge', {'networks': {'appnet'}}),
+    ('docker create --name ruby-extract alpine; printf "|"', {'containers': {'ruby-extract'}}),
+    ("docker create --name ruby-extract alpine\ncat <<'EOF'\ndocker run --name fake img\nEOF\ndocker rm x",
+     {'containers': {'ruby-extract'}}),
+    ('docker create --name db\\\n-old alpine', {'containers': {'db-old'}}),
 ])
 def test_only_a_docker_invocation_that_creates_state_names_it(script, expected):
     created = runtime_execution.docker_created(['bash', '-c', script])
@@ -367,4 +380,24 @@ async def test_a_mention_outside_docker_never_explains_state(tmp_path, monkeypat
     out, scripts, _sealed = await _run(tmp_path, monkeypatch, report=report, manifest=manifest,
                                        listing=b'containers=db\nvolumes=\nnetworks=\n')
     assert _by_id(out)['say'].status == 'pass'
+    assert not any('docker volume rm' in script for script in scripts)
+
+
+@pytest.mark.asyncio
+async def test_state_only_partly_explained_is_blamed_but_not_removed(tmp_path, monkeypatch):
+    """Two service starts ran and neither stop did: start A named its container, B's name was generated. A is blamed
+    for its own; nothing answers for the other, so nothing is removed and the seal check still refuses it."""
+    manifest = _manifest()
+    start_a = _command('a-start', 'docker', 'run', '-d', '--name', 'known', 'img')
+    start_b = _command('b-start', 'docker', 'run', '-d', 'img')
+    manifest.install, manifest.checks = [], []
+    manifest.services = [SimpleNamespace(id='a', init=None, start=start_a, health=None, stop=_command('a-stop')),
+                         SimpleNamespace(id='b', init=None, start=start_b, health=None, stop=_command('b-stop'))]
+    report = VerificationReport(manifest_digest='a' * 64, results=[
+        CheckResult(id='a-start', required=True, status='pass'), CheckResult(id='b-start', required=True, status='pass')])
+    out, scripts, _sealed = await _run(tmp_path, monkeypatch, report=report, manifest=manifest,
+                                       listing=b'containers=known random-other\nvolumes=\nnetworks=\n')
+    results = _by_id(out)
+    assert results['a-start'].status == 'fail' and 'known' in results['a-start'].output
+    assert 'random-other' not in results['a-start'].output and results['b-start'].status == 'pass'
     assert not any('docker volume rm' in script for script in scripts)
