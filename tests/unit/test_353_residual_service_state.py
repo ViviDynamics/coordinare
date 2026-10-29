@@ -312,10 +312,21 @@ async def test_a_creator_that_did_not_run_is_not_blamed(tmp_path, monkeypatch):
     ('docker volume create pgdata --driver local', {'volumes': {'pgdata'}}),
     ('docker volume create --driver local', {}),
     ('docker network create appnet --driver bridge', {'networks': {'appnet'}}),
-    ('docker create --name ruby-extract alpine; printf "|"', {'containers': {'ruby-extract'}}),
-    ("docker create --name ruby-extract alpine\ncat <<'EOF'\ndocker run --name fake img\nEOF\ndocker rm x",
-     {'containers': {'ruby-extract'}}),
     ('docker create --name db\\\n-old alpine', {'containers': {'db-old'}}),
+    # Round 3: -d is the driver for volume and network create.
+    ('docker volume create -d local pgdata', {'volumes': {'pgdata'}}),
+    ('docker network create -d bridge appnet', {'networks': {'appnet'}}),
+    # A script the carrier lexer refuses names no creator: a miss only falls back, an invented creator would blame an
+    # innocent command (round 3: a quoted or escaped separator, a heredoc body, a here-string).
+    ("printf '%s ' ';' docker create --name fake alpine", {}),
+    ('echo \\; docker create --name fake alpine', {}),
+    ("cat <<'SCRIPT-EOF'\ndocker create --name fake alpine\nSCRIPT-EOF", {}),
+    ('cat <<<EOF\ndocker create --name real alpine', {}),
+    ('docker create --name ruby-extract alpine; printf "|"', {}),
+    # Dettmore e2e-12's install-host-ruby, as written.
+    ('set -e; rm -rf /c/ruby-root/*; docker create --name ruby-extract ruby:3.4.2-slim true >/dev/null; '
+     'docker export ruby-extract | tar -C /c/ruby-root -xf -; docker rm ruby-extract >/dev/null',
+     {'containers': {'ruby-extract'}}),
 ])
 def test_only_a_docker_invocation_that_creates_state_names_it(script, expected):
     created = runtime_execution.docker_created(['bash', '-c', script])

@@ -4,12 +4,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
-import re
 import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from .runtime_io import settle as _settle
 from .runtime_supervisor import RuntimeScanStoppedError, open_runtime, seal_runtime
@@ -140,36 +139,49 @@ def _residual_creators(manifest: EnvironmentManifest, ran: dict[str, CheckResult
     return blamed, unexplained
 
 
+class _Options(NamedTuple):
+    """How one docker subcommand reads its words: the options that take no value, and whether options may follow a
+    positional word (run and create stop at the image, as docker does)."""
+
+    bare_long: frozenset[str]
+    bare_short: frozenset[str]
+    interspersed: bool
+
+
 _RUNS = (['run'], ['create'], ['container', 'run'], ['container', 'create'])
-_CREATES = {'volume create': 'volumes', 'network create': 'networks'}
-# Docker options that take no value; every other option takes the next word unless written --option=value.
-_BARE_LONG = frozenset({'--detach', '--rm', '--interactive', '--tty', '--privileged', '--init', '--publish-all',
-                        '--read-only', '--no-healthcheck', '--oom-kill-disable', '--sig-proxy', '--quiet', '--help',
-                        '--disable-content-trust', '--use-api-socket', '--attachable', '--config-only', '--ingress',
-                        '--internal', '--ipv4', '--ipv6'})
-_BARE_SHORT = frozenset('ditPq')
-_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+_RUN_OPTIONS = _Options(frozenset({'--detach', '--rm', '--interactive', '--tty', '--privileged', '--init',
+                                   '--publish-all', '--read-only', '--no-healthcheck', '--oom-kill-disable',
+                                   '--sig-proxy', '--quiet', '--help', '--disable-content-trust', '--use-api-socket'}),
+                        frozenset('ditPq'), interspersed=False)
+# volume create takes a value for every option, -d (driver) included; network create has a few bare long flags.
+_CREATES = {'volume create': ('volumes', _Options(frozenset({'--help'}), frozenset(), interspersed=True)),
+            'network create': ('networks', _Options(frozenset({'--help', '--attachable', '--config-only', '--ingress',
+                                                               '--internal', '--ipv4', '--ipv6'}),
+                                                    frozenset(), interspersed=True))}
 
 
 def docker_created(argv: Sequence[str]) -> dict[str, set[str]]:
     """The Docker state a command names as it creates it, read from its docker invocations as shell words.
 
     Conservative like the carrier rules: a form it does not recognise (a docker global option before the
-    subcommand, a name in a variable) creates nothing here, so that state keeps the fallback attribution.
+    subcommand, a name in a variable) creates nothing here, so that state keeps the fallback attribution. A script the
+    carrier lexer refuses (a heredoc, a quoted or escaped operator) names no creator at all: a missed creator only
+    falls back, while an invented one would blame an innocent command and remove state nothing answers for.
     Only a docker invocation counts (`echo --name db` creates nothing), and only its own options: run and create
     stop reading options at the image, as docker does, so the container command's words are never its options.
     """
     from .static_rules import _program, _script, _simple_commands
 
     created: dict[str, set[str]] = {'containers': set(), 'volumes': set(), 'networks': set()}
-    for words in _simple_commands(_shell_text(_script(argv)), guarded=False):
+    # The shell removes a backslash-newline before it splits words; the lexer would end the command there.
+    for words in _simple_commands(_script(argv).replace('\\\n', '')):
         program = _program(words)
         if not program or program[0].rsplit('/', 1)[-1] != 'docker':
             continue
         args = program[1:]
         run = next((form for form in _RUNS if args[:len(form)] == form), None)
         if run is not None:
-            options, _positional = _parse(args[len(run):], interspersed=False)
+            options, _positional = _parse(args[len(run):], _RUN_OPTIONS)
             for option, value in options:
                 if option == '--name':
                     created['containers'].add(value)
@@ -180,32 +192,16 @@ def docker_created(argv: Sequence[str]) -> dict[str, set[str]]:
                     volume = fields.get('source') or fields.get('src') or ''
                     if fields.get('type', 'volume') == 'volume' and _named_volume(volume):
                         created['volumes'].add(volume)
-        elif (kind := _CREATES.get(' '.join(args[:2]))) is not None:
-            options, positional = _parse(args[2:], interspersed=True)
-            # A volume create with no name asks docker to generate one: nothing is named.
+        elif (create := _CREATES.get(' '.join(args[:2]))) is not None:
+            kind, spec = create
+            options, positional = _parse(args[2:], spec)
+            # A create with no name asks docker to generate one: nothing is named.
             created[kind].update([value for option, value in options if option == '--name'] + positional[:1])
     return created
 
 
-def _shell_text(script: str) -> str:
-    """The script as the shell reads it for words: a backslash-newline is removed outright, and heredoc bodies,
-    which are data, are dropped."""
-    lines = script.replace('\\\n', '').split('\n')
-    kept: list[str] = []
-    ends: list[str] = []
-    for line in lines:
-        if ends:
-            if line.strip() == ends[0]:
-                ends.pop(0)
-            continue
-        kept.append(line)
-        ends.extend(match[2] for match in _HEREDOC.finditer(line))
-    return '\n'.join(kept)
-
-
-def _parse(args: list[str], *, interspersed: bool) -> tuple[list[tuple[str, str]], list[str]]:
-    """Docker's own reading of a subcommand's words: each option with its value, and the positional words. Without
-    ``interspersed`` (run, create) options end at the first positional word, the image."""
+def _parse(args: list[str], spec: _Options) -> tuple[list[tuple[str, str]], list[str]]:
+    """Docker's own reading of a subcommand's words: each option with its value, and the positional words."""
     options: list[tuple[str, str]] = []
     positional: list[str] = []
     index = 0
@@ -217,21 +213,21 @@ def _parse(args: list[str], *, interspersed: bool) -> tuple[list[tuple[str, str]
             break
         if word.startswith('--'):
             name, equals, value = word.partition('=')
-            if not equals and name not in _BARE_LONG and index < len(args):
+            if not equals and name not in spec.bare_long and index < len(args):
                 value, index = args[index], index + 1
             options.append((name, value))
         elif word.startswith('-') and len(word) > 1:
             letters = word[1:]
-            if set(letters) <= _BARE_SHORT:
+            if set(letters) <= spec.bare_short:
                 continue
-            flag = next((position for position, letter in enumerate(letters) if letter not in _BARE_SHORT))
+            flag = next(position for position, letter in enumerate(letters) if letter not in spec.bare_short)
             name, value = f'-{letters[flag]}', letters[flag + 1:]
             if not value and index < len(args):
                 value, index = args[index], index + 1
             options.append((name, value))
         else:
             positional.append(word)
-            if not interspersed:
+            if not spec.interspersed:
                 positional.extend(args[index:])
                 break
     return options, positional
