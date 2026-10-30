@@ -1,15 +1,30 @@
 ---
 name: copilot-review
-description: Use when a pull request needs a GitHub Copilot code review, or when ship-issue's review gate is set to copilot. Requests the review, waits for it, fixes or answers each comment, and loops until nothing actionable remains.
+description: Use only when the developer explicitly asks for a GitHub Copilot code review, or when ship-issue's review gate is copilot and the local review is clean. Requests one review, waits for it, and fixes or answers each comment. Never the first reviewer, and never re-requested to check its own fixes.
 license: Proprietary
 compatibility: Requires gh, jq, git and a repo.env in the consumer repo. Copilot code review must be enabled for the repository. Scripts are bash 3.2 compatible.
 metadata:
-  version: "1.0.0"
+  version: "2.0.0"
   owner: Vivi Dynamics
   requires: ci-safety
 ---
 
 # Copilot Review
+
+**Every request is billed.** Each Copilot review spends AI credits on the whole pull
+request, not just the latest commit, so a re-request after a fix pays for the entire
+diff again. Copilot is a second opinion, not the reviewer of record:
+
+- **Local review comes first.** Before requesting, run the harness's own reviewer on
+  the PR (Claude Code's `code-review` skill, Codex `/review`, or a self-review against
+  the issue scope and house rules when the harness has none) and apply its Critical and
+  Important findings. Skip this only when the developer explicitly says to.
+- **Only on request.** Run this skill when the developer asks for a Copilot review or
+  ship-issue's `copilot` gate calls it. Never request Copilot on your own initiative,
+  from a loop, or as a substitute for the local review.
+- **One request per PR by default.** Verify fixes to Copilot's comments with the local
+  reviewer, not by asking Copilot again. Request again only when the developer
+  explicitly asks for more rounds.
 
 **A request is not a review.** Copilot can accept a review request and never deliver.
 The outcome passes only when a review object arrives with `submitted_at` after the
@@ -23,8 +38,9 @@ then run every `gh` call as `$S/vgh`. Let `R=$($S/repo-config COORDINARE_REPO)`.
 ## Inputs
 
 - PR number. If not given: `$S/vgh pr view --json number --jq .number`.
+- Rounds: 1 unless the developer explicitly asks for more, and never more than 3.
 
-## Loop (cap: 8 rounds)
+## Round (default: 1)
 
 1. **Request, reliably.** Adding Copilot silently no-ops when it is already requested,
    so clear the slot first, then add, then read back:
@@ -60,8 +76,11 @@ then run every `gh` call as `$S/vgh`. Let `R=$($S/repo-config COORDINARE_REPO)`.
 
 5. **Push fixes.** Stage only the files you changed (never `git add -A`), commit
    "Address Copilot review (round N)", run `$S/preflight <issue>`, and push only when
-   `$S/preflight --check <issue>` passes. Never amend or force-push. Then go back to step 1 for the new head.
-   Only dismissals this round: stop.
+   `$S/preflight --check <issue>` passes. Never amend or force-push.
+
+6. **Verify the fixes locally.** Run the local reviewer on the new head and apply its
+   Critical and Important findings. Go back to step 1 only when the developer asked for
+   more than one round and rounds remain. Only dismissals this round: stop.
 
 ## Report
 
@@ -69,4 +88,4 @@ End with one machine-readable line:
 
     COPILOT_RESULT review_received: <true|false> rounds: <n> fixed: <n> dismissed: <n> unresolved: <n>
 
-Round cap reached: list the unresolved comments with their links.
+Rounds used up with comments still open: list them with their links.

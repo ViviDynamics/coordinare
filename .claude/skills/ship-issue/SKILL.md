@@ -4,7 +4,7 @@ description: Use when a GitHub issue should go all the way to a merged PR withou
 license: Proprietary
 compatibility: Requires gh, jq, git and a repo.env in the consumer repo (see ADOPTING.md). Scripts are bash 3.2 compatible.
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
   owner: Vivi Dynamics
   requires: ci-safety watch-ci merge-pr rebase-main copilot-review
 ---
@@ -41,6 +41,7 @@ script as `$S/<script>` and every one-off `gh` call as `$S/vgh`. Let
 | Verified retries per CI job | 2 | classify and report in SHIP_RESULT |
 | Rebases onto the default branch | 2 | report churn, stop |
 | Review fix rounds | 2 | proceed; unresolved items listed in SHIP_RESULT |
+| Copilot review requests | 1 per PR | never re-request; verify fixes with the local reviewer |
 | Watch wall-clock per CI cycle | 60 min | report timeout state |
 
 ## Preflight before every push
@@ -263,18 +264,24 @@ default branch is not stale; merge-pr merges it.
 
 ## Stage 3: Review gate
 
-Choose a gate from `COORDINARE_REVIEW_TOOL`. Never emit silence.
+Choose a gate from `COORDINARE_REVIEW_TOOL`. Never emit silence. The review always starts
+local, with the developer's own agent. Copilot reviews are billed per request and
+re-review the whole PR each time, so Copilot is at most one final second opinion.
 
 - `harness`: use the harness's own code reviewer against the PR (for example Claude
   Code's `code-review` skill at high effort, or Codex `/review`). If this harness has
   none, fall back to `self` and say so in the gate record.
-- `copilot`: use the copilot-review skill. If Copilot never submits a review, the gate
-  is unsatisfied; fall back to `self` and record both.
+- `copilot`: run the `harness` gate first, until its Critical and Important findings are
+  fixed. Then run the copilot-review skill once, for one round, on that head. Check the
+  fixes to its comments with the local reviewer, never by requesting Copilot again. If
+  Copilot never submits a review, the local review stands; record both.
 - `self`: review the diff against the issue scope and the house rules yourself.
 - Unset or unrecognized: `self`.
 
+Request Copilot only through the `copilot` gate or when the developer explicitly asks.
+
 Apply Critical and Important findings, push, and return to Stage 2 (budget: 2 review
-rounds). Record the outcome in the PR body under `### Code review gate`: the tool used,
+rounds). Record the outcome in the PR body under `### Code review gate`: the tools used,
 findings, and what was fixed, or "no findings".
 
 ## Stage 4: Merge
