@@ -2615,6 +2615,7 @@ class EnvCacheService:
             raise EnvironmentDiscoveryError(message, code=budget.error_code) from None
         except EnvironmentDiscoveryError as exc:
             budget.error_code = exc.code
+            budget.error_detail = exc.detail or budget.error_detail
             raise
         except ExecutionSourceError as exc:
             budget.error_code = exc.code

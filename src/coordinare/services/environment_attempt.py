@@ -49,11 +49,14 @@ HOLD_CODES = {"schema": "attempt_schema_limit", "coverage": "attempt_coverage_li
 class EnvironmentDiscoveryError(RuntimeError):
     """Discovery cannot establish an accepted, evidence-bound environment."""
 
-    def __init__(self, message: str, *, code: str = "environment_discovery_held", global_owned: bool = False) -> None:
+    def __init__(self, message: str, *, code: str = "environment_discovery_held", global_owned: bool = False,
+                 detail: str | None = None) -> None:
         super().__init__(message)
         self.code = code
         # Set when only the global author's records can fix it, even though the message names check ids.
         self.global_owned = global_owned
+        # Daemon-composed text safe to journal as the hold's error_detail (never model or command output).
+        self.detail = detail
 
 
 CALL_STAT_KEYS = ('calls', 'seconds', 'input_tokens', 'output_tokens', 'cached_tokens', 'length_stops', 'repetition_stops')

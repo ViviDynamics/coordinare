@@ -901,6 +901,7 @@ async def discover_and_review(
         raise EnvironmentDiscoveryError(message, code="attempt_deadline") from None
     except EnvironmentDiscoveryError as exc:
         budget.error_code = exc.code
+        budget.error_detail = exc.detail or budget.error_detail
         raise
     except (ValueError, TypeError) as exc:
         budget.error_code, budget.error_detail = "invalid_contract", failure_detail(exc)

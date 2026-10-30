@@ -364,6 +364,21 @@ def test_a_probe_the_machinery_failed_to_run_still_holds():
     with pytest.raises(EnvironmentDiscoveryError) as held:
         validate_probe_report(p, ProbeReport.model_validate(data))
     assert held.value.code == 'probe_observation_incomplete' and str(held.value) == 'probe execution failed: tool'
+    # Text the observer did not compose is withheld from the journaled detail.
+    assert held.value.detail == 'tool: execution_error'
+
+
+@pytest.mark.parametrize('output', ['private probe guest unavailable: TimeoutError',
+                                    'probe batch time ran out while this probe ran'])
+def test_a_machinery_failure_records_its_probe_and_reason(output):
+    """Dettmore e2e-27 held with neither the failed probe nor its cause on record."""
+    from coordinare.services.environment_probes import ProbeReport, validate_probe_report
+    p = plan()
+    data = report_data(p)
+    data['results'][0].update(status='execution_error', exit_code=None, output=output)
+    with pytest.raises(EnvironmentDiscoveryError) as held:
+        validate_probe_report(p, ProbeReport.model_validate(data))
+    assert held.value.detail == f'tool: {output}'
 
 
 @pytest.mark.parametrize('result', [{'status': 'timed_out', 'exit_code': None, 'output': 'partial', 'truncated': False},

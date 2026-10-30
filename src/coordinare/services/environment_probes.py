@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal, Self
@@ -215,10 +216,24 @@ def validate_probe_report(plan: ProbePlan, report: ProbeReport) -> None:
     # A probe that timed out or whose output was truncated is still an observation, carried to the author with its
     # status: Dettmore e2e-15 held a whole attempt, after 58 minutes, on one probe in a batch of seven. Only a failure
     # of the probe machinery itself leaves the batch unobserved.
-    if failed := [result.id for result in report.results if result.status == "execution_error"]:
+    if failed := [result for result in report.results if result.status == "execution_error"]:
         # Named, since e2e-15's hold recorded nothing that said which probe it was. Probe ids are schema-validated.
-        message = f"probe execution failed: {', '.join(failed[:16])}"
-        raise EnvironmentDiscoveryError(message, code="probe_observation_incomplete")
+        message = f"probe execution failed: {', '.join(result.id for result in failed[:16])}"
+        # Dettmore e2e-27 held here with neither the probe nor the cause on record. An execution_error's output is
+        # one of the observer's own fixed reasons (a guest exception class name, or the batch deadline); anything
+        # else is withheld.
+        detail = '; '.join(f"{result.id}: {_machinery_reason(result.output)}" for result in failed[:16])
+        raise EnvironmentDiscoveryError(message, code="probe_observation_incomplete", detail=detail)
+
+
+_MACHINERY_REASON = re.compile(r"(private probe guest unavailable: [A-Za-z]{1,64}"
+                               r"|probe batch time ran out (?:while this probe ran|before this probe started)"
+                               r"|probe process or environment could not be resolved)")
+
+
+def _machinery_reason(output: str) -> str:
+    return output if _MACHINERY_REASON.fullmatch(output) else "execution_error"
+
 
 
 def bind_probe_report(plan: ProbePlan, report: ProbeReport) -> ProbeReport:
