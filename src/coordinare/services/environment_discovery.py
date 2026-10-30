@@ -91,6 +91,7 @@ from coordinare.services.environment_obligations import (
     fixed_commands,
     guard_repair_diff,
     preserve_execution_commands,
+    restore_execution_commands,
 )
 from coordinare.services.environment_obligations import (
     preserve_obligations as _preserve_obligations,
@@ -1378,6 +1379,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
             merged = merge_parts(global_data, [part for _group, part in parts.values()], folded=folded,
                                  policy=FoldPolicy(executed, attempt.obligation_ledger.checks, prior_checks))
             _carry_folds(attempt, folded, authored_responses)
+            restore_execution_commands(merged, budget.executed_manifests)
             validate(merged)
         except (EnvironmentDiscoveryError, ValidationError) as exc:
             promoted = _promoted_sources(folded, global_data)

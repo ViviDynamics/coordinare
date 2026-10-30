@@ -302,3 +302,34 @@ def test_every_changed_fixed_command_is_named_in_one_correction():
     with pytest.raises(EnvironmentDiscoveryError) as single:
         preserve_execution_obligations(one, history(previous))
     assert str(single.value) == "required executable command suite changed after project execution"
+
+
+def test_a_merged_candidate_gets_executed_commands_back():
+    """Dettmore e2e-25: a group added a dependency to an executed check and the global author rewrote the failed mock
+    service's start and health; every merge named them, the authors changed them again, and the rounds ran out."""
+    from coordinare.services.environment_obligations import (
+        preserve_execution_commands,
+        restore_execution_commands,
+    )
+
+    data = contract().model_dump()
+    data["services"] = [{"id": "mock", "required": True,
+                         **{p: {"id": "mock-" + p, "argv": ["mock-tool", p]} for p in ["start", "health", "stop"]}}]
+    previous = EnvironmentManifest.model_validate(data)
+    candidate = previous.model_dump(mode="json")
+    candidate["checks"][0]["depends_on"] = ["assets"]
+    candidate["checks"][1]["timeout_seconds"] = 900
+    candidate["services"][0]["health"]["argv"] = ["bash", "-c", "for i in 1 2 3; do mock-tool health && exit 0; done"]
+    candidate["services"][0]["start"]["timeout_seconds"] = 900
+    candidate["checks"].append({"id": "new-check", "argv": ["extra-check"]})
+    assert restore_execution_commands(candidate, [previous]) == ["mock-health", "suite"]
+    restored = EnvironmentManifest.model_validate(candidate)
+    preserve_execution_commands(restored, previous)
+    assert restored.checks[0].depends_on == [] and restored.checks[1].timeout_seconds == 900
+    assert restored.services[0].health == previous.services[0].health
+    assert restored.services[0].start.timeout_seconds == 900 and restored.checks[2].id == "new-check"
+    # A removed executed command is not put back here; admission and preservation still report it.
+    dropped = previous.model_dump(mode="json")
+    dropped["checks"] = dropped["checks"][1:]
+    assert restore_execution_commands(dropped, [previous]) == []
+    assert [check["id"] for check in dropped["checks"]] == ["assets"]

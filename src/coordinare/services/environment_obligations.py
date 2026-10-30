@@ -16,6 +16,7 @@ from coordinare_service_inference.environment.models import (
     VerificationReport,
     content_key,
 )
+from pydantic import ValidationError
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_repair_triage import ACTIVATION
@@ -124,6 +125,47 @@ def fixed_commands(manifests: Sequence[EnvironmentManifest]) -> dict[str, dict[s
                 record["timeout_seconds"] = max(record["timeout_seconds"], earlier["timeout_seconds"])
             fixed[command.id] = record
     return fixed
+
+
+def _restored(item: dict[str, Any], old: Command, restored: list[str]) -> dict[str, Any]:
+    """The executed record, keeping a longer timeout (the one change preservation allows), or the item if unchanged."""
+    try:
+        current = Command.model_validate(item)
+    except ValidationError:
+        current = None
+    if current is not None and current.model_dump(exclude={"timeout_seconds"}) == old.model_dump(exclude={"timeout_seconds"}):
+        return item
+    record: dict[str, Any] = old.model_dump(mode="json")
+    timeout = item.get("timeout_seconds")
+    if type(timeout) in {int, float} and timeout > old.timeout_seconds:
+        record["timeout_seconds"] = timeout
+    restored.append(old.id)
+    return record
+
+
+def restore_execution_commands(data: dict[str, Any], executed: Sequence[EnvironmentManifest]) -> list[str]:
+    """Put back every executed required check or service command a merged candidate changed; return their ids.
+
+    Dettmore e2e-25: after the first execution, a check group added a dependency to an executed check and the global
+    author rewrote the failed mock service's start and health commands. Each merge named all three and asked for them
+    back, the authors changed them again, and the merge rounds ran out. A changed executed command can only be
+    rejected, so restoring it is exactly the correction; a removed one is still reported by preservation.
+    """
+    restored: list[str] = []
+    for previous in executed:
+        frozen = {check.id: check for check in previous.checks if check.required}
+        if isinstance(checks := data.get("checks"), list):
+            data["checks"] = [_restored(item, frozen[item["id"]], restored)
+                              if isinstance(item, dict) and item.get("id") in frozen else item for item in checks]
+        services = {service.id: service for service in previous.services if service.required}
+        for service in data.get("services") or []:
+            if not isinstance(service, dict) or (old := services.get(service.get("id"))) is None:
+                continue
+            for phase in ("init", "start", "health", "stop"):
+                command = getattr(old, phase)
+                if command is not None and isinstance(service.get(phase), dict) and service[phase].get("id") == command.id:
+                    service[phase] = _restored(service[phase], command, restored)
+    return sorted(set(restored))
 
 
 def preserve_execution_commands(
