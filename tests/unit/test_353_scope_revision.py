@@ -285,3 +285,16 @@ def test_building_or_running_the_apps_own_deployment_images_is_released_like_rem
     assert "a test suite itself performs" in DEPLOYMENT_IMAGE_RULE
     assert "deployment_image" in FindingProposal.model_json_schema()["properties"]["category"]["enum"]
     assert "deployment_image" in SourceGapKind.__args__
+
+
+def test_finding_responses_nested_in_the_revision_are_moved_to_the_envelope():
+    """Dettmore e2e-17: the author kept the responses one level too deep through every correction and both restarts."""
+    from coordinare_service_inference.environment.scope_revision import ScopeRevisionEnvelope
+
+    base = definition()
+    nested = {"scope_revision": {**delta(base), "finding_responses": []}}
+    envelope = ScopeRevisionEnvelope.model_validate(nested)
+    assert envelope.finding_responses == [] and envelope.scope_revision.add == []
+    assert "finding_responses" in nested["scope_revision"]
+    with pytest.raises(ValidationError):
+        ScopeRevisionEnvelope.model_validate({**nested, "finding_responses": []})

@@ -37,6 +37,23 @@ class ScopeRevisionEnvelope(FindingEvidence):
     scope_revision: ScopeRevision
     finding_responses: list[FindingResponse] = Field(max_length=MAX_LEDGER_FINDINGS)
 
+    @model_validator(mode='before')
+    @classmethod
+    def hoist_nested_finding_responses(cls, data: object) -> object:
+        """finding_responses nested inside scope_revision, and absent beside it, is moved to where it belongs.
+
+        Dettmore e2e-17: the scope revision author kept the same responses one level too deep through every
+        correction and both restarts, and the attempt held on the schema limit. The placement is unambiguous; when
+        both levels carry responses nothing moves and validation reports it as before.
+        """
+        if not isinstance(data, dict) or 'finding_responses' in data:
+            return data
+        revision = data.get('scope_revision')
+        if not isinstance(revision, dict) or 'finding_responses' not in revision:
+            return data
+        revision = dict(revision)
+        return {**data, 'finding_responses': revision.pop('finding_responses'), 'scope_revision': revision}
+
 
 def _invalid(code: str) -> NoReturn:
     raise PydanticCustomError(code, 'source scope revision is invalid')
