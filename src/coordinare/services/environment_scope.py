@@ -779,13 +779,14 @@ async def _discover_scope(request: _Request) -> ScopeContract:
     if saved is not None:
         saved = ScopeContract.model_validate(saved.model_dump(mode='json'))
         # Resume verification is daemon integrity work, not model work: it re-reads every accepted input, however many,
-        # without spending the attempt's model read allowance, under a deadline scaled to the input count.
+        # without spending the attempt's model read allowance, under a deadline scaled to the input count. It is
+        # reserved (as verification) and flushed before each fetch and stays within the attempt deadline.
         count = len(saved.all_inputs)
         verify = replace(limits, max_reads=max(limits.max_reads, count),
                          max_source_bytes=max(limits.max_source_bytes, RESUME_SOURCE_BYTES),
                          phase_timeout_seconds=min(MAX_PHASE_SECONDS, max(limits.phase_timeout_seconds,
                                                                        count * RESUME_SECONDS_PER_INPUT)))
-        inspection = SourceInspection(request.entries or _checked_inventory(paths, limits), fetch, verify, None,
+        inspection = SourceInspection(request.entries or _checked_inventory(paths, limits), fetch, verify, budget,
                                       retained_inputs=budget.scope_inputs)
         if (saved.definition.source_commit, saved.definition.inventory_digest) != (commit, inspection.inventory_digest):
             _fail('scope_source_identity')

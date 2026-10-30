@@ -142,6 +142,9 @@ async def test_sharded_scope_accepts_one_definition_and_one_ledger():
     # The root obligation every shard reported merges into one criterion.
     assert sum(c.description == 'Obligation root make test' for c in contract.definition.criteria) == 1
     assert budget.shard_agents >= 2 * len(PLAN.shards) and budget.schema_repairs == 0
+    # Only each author's own read_files request is charged; the daemon's pre-reads and spine count as verification.
+    assert budget.reads == sum(min(8, len(shard.paths)) for shard in PLAN.shards)
+    assert budget.verification_reads >= sum(len(shard.paths) for shard in PLAN.shards) + len(PLAN.spine)
 
 
 @pytest.mark.asyncio

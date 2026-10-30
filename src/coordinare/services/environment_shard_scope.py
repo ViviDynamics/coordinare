@@ -493,7 +493,7 @@ class ShardedScope:
         missing = [path for path in self.plan.spine if path not in self.spine_files]
         reader = self.view(name='scope_spine')
         for offset in range(0, len(missing), 8):
-            for item in (await reader.read_files(missing[offset:offset + 8]))['files']:
+            for item in (await reader.read_files(missing[offset:offset + 8], verification=True))['files']:
                 self.spine_files[item['path']] = item['content']
 
     def file_list(self, paths: Sequence[str]) -> list[dict[str, Any]]:
@@ -642,11 +642,12 @@ class ShardedScope:
         inspection = self.view(shard.paths, name='scope_shard_author')
         spine = self.admit_spine(inspection)
         # Every named file is read by the daemon for the author: none can be skipped, and no call is spent reading it.
+        # Daemon-selected, so counted with verification rather than against the model's read cap or allowance.
         evidence: list[dict[str, str]] = []
         unread = [path for path in shard.paths if path not in inspection.inputs]
         for offset in range(0, len(unread), 8):
-            evidence.extend(item for item in (await inspection.read_files(unread[offset:offset + 8], navigation=True))['files']
-                            if 'error' not in item)
+            batch = await inspection.read_files(unread[offset:offset + 8], navigation=True, verification=True)
+            evidence.extend(item for item in batch['files'] if 'error' not in item)
         messages = [{'role': 'system', 'content': SOURCE_NAVIGATION + SHARD_AUTHOR_INSTRUCTIONS + PHASE_CONTRACT
                      + SHARED_CONTEXT_NOTE},
                     {'role': 'user', 'content': agent_context(

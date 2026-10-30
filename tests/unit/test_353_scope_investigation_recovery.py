@@ -83,7 +83,9 @@ async def test_recovery_preserves_queue_findings_and_spent_budget(tmp_path, boun
     assert scope.finding_ledger.open_ids() == []
     assert cache.environment_attempt['started_at'] == saved['started_at']
     assert cache.environment_attempt['expires_at'] == saved['expires_at']
-    assert resumed.reads >= saved['reads'] and resumed.scope_revisions == 1
+    # The reviewer-requested investigation is the model's read: charged again only if its content was never retained
+    # (queue: not yet read; fetch: reserved but cancelled). Retained content is re-verified, never charged to the model.
+    assert resumed.reads == saved['reads'] + int(boundary in {'queue', 'fetch'}) and resumed.scope_revisions == 1
     assert resumed.verification_reads > saved['verification_reads']
     assert cache.environment_attempt['scope_investigations'] == saved['scope_investigations']
     assert len(cache.environment_attempt['scope_investigation_results']) == 1
