@@ -39,9 +39,37 @@ def test_a_system_package_install_is_corrected_in_a_carrier_without_capabilities
     assert 'install-deps' in str(error.context)
 
 
-def test_extracting_a_package_into_the_cache_is_allowed():
-    validate_static_rules([_cmd('install-lib', 'bash', '-c', 'apt-get download libpq5 && dpkg -x libpq5*.deb {cache}/pq')],
-                          NO_ACTIVATION, 'linux/aarch64', system_packages=False)
+def test_extracting_a_fetched_package_into_the_cache_is_allowed():
+    script = 'curl -fsSLO https://deb.debian.org/debian/pool/main/p/pkg/libpq5.deb && dpkg-deb -x libpq5.deb {cache}/pq'
+    validate_static_rules([_cmd('install-lib', 'bash', '-c', script)], NO_ACTIVATION, 'linux/aarch64',
+                          system_packages=False)
+
+
+@pytest.mark.parametrize('script', [
+    'apt-get update -qq',
+    'cd {cache}/debs && apt-get download libpq5 libyaml-0-2',
+    'apt download zlib1g',
+    'apt-get -y install -d libssl-dev',
+    'apt-get source ruby3.4',
+    # Earlier review rounds admitted download-only installs as needing no installation capability; the fetch itself
+    # needs capabilities this carrier lacks.
+    'apt-get install --download-only -y gcc',
+    'apt-get install -d libpq5',
+    'apt-get install -dy libpq5',
+    'apt-get install --download-only=true libpq5',
+])
+def test_an_apt_fetch_is_corrected_in_a_carrier_without_capabilities(script):
+    """Dettmore e2e-18 and e2e-22: apt-get download and apt-get update failed with "Failed to setgroups", spending the
+    first execution each time; the guidance had suggested extracting packages, which authors read as apt download."""
+    error = _rejected([_cmd('install-sysroot', 'bash', '-c', script)])
+    assert error.type == 'system_package_install'
+
+
+@pytest.mark.parametrize('script', ['apt-cache policy libpq5', 'apt-get --help', 'apt-get -s install gcc',
+                                    'apt-get --print-uris install gcc'])
+def test_apt_requests_that_fetch_nothing_are_allowed(script):
+    validate_static_rules([_cmd('install-plan', 'bash', '-c', script)], NO_ACTIVATION, 'linux/aarch64',
+                          system_packages=False)
 
 
 def test_a_carrier_that_can_install_packages_is_not_judged():
@@ -80,6 +108,7 @@ def test_the_carrier_guidance_states_both_rules_and_the_teardown_duty():
     resources = SimpleNamespace(max_seconds=7200, cpus=8)
     policy = carrier_process_policy(SimpleNamespace(runtime=SimpleNamespace(resources=resources)))
     assert 'apt-get or apt install' in policy['installation_guidance']
+    assert 'dpkg-deb -x' in policy['installation_guidance'] and 'update and download' in policy['installation_guidance']
     assert 'may require' not in policy['installation_guidance']
     assert 'docker rm -f -v' in policy['runtime_ordering_guidance']
     assert 'pid to a file' in policy['runtime_ordering_guidance']
@@ -194,7 +223,6 @@ def test_the_correction_recommends_a_pid_file_only():
     ("printf '%s\\n' \\; apt-get install gcc", 'true'),
     ('apt-get -s install gcc', 'true'),
     ('apk add --help', 'true'),
-    ('apt-get install --download-only -y gcc', 'true'),
     ('true', "set -eu; exec pgrep -f bin/mock"),
     ('true', "pgrep -fx '/opt/app/server --port 8080' && echo ready"),
 ])
@@ -220,7 +248,6 @@ def test_review_r5_valid_or_unjudged_commands_are_admitted(install, other):
 @pytest.mark.parametrize(('install', 'other'), [
     ('true', "pgrep -f 'w''orker' && echo ready"),
     ('true', 'pgrep -f foo\\ bar && echo ready'),
-    ('apt-get install -d libpq5', 'true'),
     ('apt-get -c install download libpq5', 'true'),
     ('apt-get -o Debug::NoLocking=1 install gcc', 'true'),
 ])
@@ -240,8 +267,6 @@ def test_self_contained_options_before_the_subcommand_still_count(script):
 
 
 @pytest.mark.parametrize(('install', 'other'), [
-    ('apt-get install -dy libpq5', 'true'),
-    ('apt-get install --download-only=true libpq5', 'true'),
     ('true', 'pgrep -f bin/mock | grep -vx "$$" >/dev/null'),
 ])
 def test_review_r7_download_variants_and_filtered_pgrep_are_admitted(install, other):

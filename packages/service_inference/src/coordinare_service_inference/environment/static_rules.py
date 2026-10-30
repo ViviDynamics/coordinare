@@ -212,6 +212,39 @@ def _no_install(word: str) -> bool:
             or (re.fullmatch(r"-[A-Za-z]{2,}", word) is not None and bool(set(word[1:]) & {"d", "s", "h"})))
 
 
+# Subcommands that fetch from a package repository. apt's fetch helper drops to the _apt user with setgroups, which a
+# carrier without Linux capabilities refuses (Dettmore e2e-18 and e2e-22: "Failed to setgroups"), so these fail there
+# even though they install nothing.
+_PACKAGE_FETCH = {"apt-get": {"update", "download", "source", "build-dep", "changelog"},
+                  "apt": {"update", "download", "source", "build-dep", "changelog"},
+                  "aptitude": {"update", "download", "changelog"}}
+_DOWNLOAD_ONLY = frozenset({"-d", "--download-only", "--downloadonly"})
+
+
+def package_fetch(command: Command) -> bool:
+    """An apt-family subcommand that fetches from a repository, or an install asking only to download (apt-get
+    install -d): judged like system_package_install, by the first non-option word after self-contained options."""
+    for words in _segments(command):
+        words = _program(words)
+        tool = words[0].rsplit("/", 1)[-1] if words else ""
+        if tool not in _PACKAGE_FETCH:
+            continue
+        arguments = words[1:]
+        index = next((position for position, word in enumerate(arguments) if not word.startswith("-")), None)
+        if index is None or not all(_SELF_CONTAINED.fullmatch(word) for word in arguments[:index]):
+            continue
+        verb = arguments[index]
+        if verb in _PACKAGE_FETCH[tool] or (verb in _PACKAGE_INSTALL[tool] and any(map(_download_only, arguments))):
+            return True
+    return False
+
+
+def _download_only(word: str) -> bool:
+    """A download-only request, also as --name=value or inside a short cluster such as -dy."""
+    return (word.split("=", 1)[0] in _DOWNLOAD_ONLY
+            or (re.fullmatch(r"-[A-Za-z]{2,}", word) is not None and "d" in word[1:]))
+
+
 def system_package_install(command: Command) -> bool:
     """A package manager whose subcommand (its first non-option word) installs, or dpkg -i: an option before the
     subcommand that takes a separate value hides it, which is an accepted miss."""
@@ -289,10 +322,11 @@ def validate_static_rules(install: Sequence[Command], activation: Activation, pl
     """
     if not system_packages:
         for command in install:
-            if system_package_install(command):
-                raise _graph_error("system_package_install", "this carrier cannot install system packages: it has no "
-                                   "Linux capabilities, so apt, dpkg, apk and dnf installs are refused; use a prebuilt "
-                                   "release archive or extract packages under {cache}", command.id, set())
+            if system_package_install(command) or package_fetch(command):
+                raise _graph_error("system_package_install", "this carrier cannot run system package managers: it has "
+                                   "no Linux capabilities, so apt installs, apt update and apt download, dpkg -i, apk "
+                                   "and dnf are refused; fetch a prebuilt release archive or individual .deb files with "
+                                   "curl and unpack them under {cache} with dpkg-deb -x", command.id, set())
     for command in [*install, *others]:
         if self_matching_process_pattern(command):
             raise _graph_error("self_matching_process_pattern", "a full-command-line pkill or pgrep inside a longer shell "

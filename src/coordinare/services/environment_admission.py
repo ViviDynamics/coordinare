@@ -169,10 +169,12 @@ GRAPH_GUIDANCE = {
                                       'than the install platform in execution_capabilities.platform. Download the artifact '
                                       'for that platform instead; request a foreign platform only when the repository '
                                       'explicitly requires one.'),
-    'system_package_install': ('The named install runs a system package manager install (apt-get or apt install, dpkg -i, '
-                               'apk add, dnf or yum install), which this carrier refuses: it has no Linux capabilities. '
-                               'Download a prebuilt release archive for execution_capabilities.platform, or extract the '
-                               'packages you need under {cache}, and point activation at them.'),
+    'system_package_install': ('The named install runs a system package manager (apt-get or apt install, update or '
+                               'download, dpkg -i, apk add, dnf or yum install), which this carrier refuses: it has no '
+                               'Linux capabilities, and even apt update and apt download need them. Download a prebuilt '
+                               'release archive for execution_capabilities.platform, or fetch the .deb files you need '
+                               'from a package mirror with curl and unpack them under {cache} with dpkg-deb -x, and point '
+                               'activation at them.'),
     'self_matching_process_pattern': ('The named command runs pkill -f or pgrep -f inside a shell script that does more than '
                                       'that, so the pattern matches the script\'s own shell and kills or finds it. Write the '
                                       'process id to a file under {scratch} when it starts, and stop it by killing that '

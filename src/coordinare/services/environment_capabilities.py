@@ -95,9 +95,10 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
                 "NAME=$(openssl rand -hex 64) before the test command.",
             "installation_guidance": "Even UID 0 cannot assume permission for user, group or ownership changes. "
                 "Use inspected tools and cache-local dependency artifacts under {cache}. System package managers cannot "
-                "install here: the carrier has no Linux capabilities, so apt-get or apt install, dpkg -i, apk add and "
-                "dnf or yum install are refused; download a prebuilt release archive, or extract packages under "
-                "{cache}. Guest service privileges are daemon-owned. "
+                "run here: the carrier has no Linux capabilities, so apt-get or apt install, update and download (apt's "
+                "fetch helper needs setgroups), dpkg -i, apk add and dnf or yum install all fail; download a prebuilt "
+                "release archive, or fetch individual .deb files from a package mirror with curl and unpack them under "
+                "{cache} with dpkg-deb -x. Guest service privileges are daemon-owned. "
                 "Installation, every check and the service lifecycle share one session_budget; the guest emulates its "
                 "CPU, so container image builds are slow. Prefer an official prebuilt release archive or an extracted "
                 "distribution package over compiling a language runtime, database or other large tool from source; "
