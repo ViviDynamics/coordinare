@@ -1322,3 +1322,14 @@ def test_executions_that_fixed_a_command_differently_are_refused_before_authorin
     with pytest.raises(EnvironmentDiscoveryError) as refused:
         fixed_commands([manifest(['rspec']), manifest(['rspec', '--fail-fast'])])
     assert refused.value.code == 'execution_history_invalid' and 'suite' in str(refused.value)
+
+
+def test_a_coverage_revision_carries_every_record_and_only_the_latest_review():
+    """Dettmore e2e-20: the fourth revision carried a 328 KB review history and the 606 KB request was refused."""
+    ledger = SimpleNamespace(model_dump=lambda **_: {'records': [{'id': 'F0001'}, {'id': 'F0002'}],
+                                                     'reviews': [{'n': 1}, {'n': 2}, {'n': 3}]})
+    messages: list[dict[str, str]] = []
+    assessment = SimpleNamespace(rationale='r', sources=[], finding_ledger=ledger)
+    discovery_module._append_coverage_revision(messages, {}, assessment, {}, discovery_module._ObligationLedger())
+    carried = json.loads(messages[-1]['content'])['coverage_revision']['finding_ledger']
+    assert carried == {'records': [{'id': 'F0001'}, {'id': 'F0002'}], 'reviews': [{'n': 3}]}

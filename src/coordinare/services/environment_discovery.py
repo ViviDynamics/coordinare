@@ -1905,7 +1905,9 @@ def _append_coverage_revision(messages: list[dict[str, str]], candidate: dict[st
     messages.extend([{"role": "assistant", "content": _json({"manifest": candidate})},
         {"role": "user", "content": _json({"coverage_revision": {
             "untrusted_review_feedback": feedback, "sources": assessment.sources,
-            "finding_ledger": cast("FindingLedger", assessment.finding_ledger).model_dump(mode='json'),
+            # Every record and only the latest review, as the opening message carries it: Dettmore e2e-20's fourth
+            # revision carried the whole 328 KB review history and the 606 KB request was refused (HTTP 400).
+            "finding_ledger": _ledger_for_prompt(assessment.finding_ledger),
             "required_ids": {group: sorted(ids) for group, ids in required_ids.items()},
             "required_coverage": {key: sorted(ids) for key, ids in obligation_ledger.coverage.items()},
             **({"fixed_ids": sorted(obligation_ledger.fixed)} if obligation_ledger.fixed else {})},
