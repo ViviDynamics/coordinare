@@ -46,9 +46,14 @@ as `$S/<script>`.
    Read it before deciding, write it after acting. It is gitignored.
 4. Never force-push except inside `rebase-main` on your own unmerged branch, and then
    only with a lease. Never push to the default branch.
-5. Never disable, skip or delete a test to make CI green.
-6. Prose we publish (PR bodies, comments, docs) uses no em dashes.
-7. Claim an issue before working it, and leave it alone when it is someone else's.
+5. Nothing from live infrastructure reaches a public repository: no internal addresses,
+   host, node or hardware names, key aliases, client lists, spend logs, probe output or
+   runbooks, in code, reports, commit messages, PR bodies or comments. `disclosure-guard`
+   enforces it; keep raw evidence in a private repository and publish aggregates. An
+   issue on a public repository never asks to publish such evidence.
+6. Never disable, skip or delete a test to make CI green.
+7. Prose we publish (PR bodies, comments, docs) uses no em dashes.
+8. Claim an issue before working it, and leave it alone when it is someone else's.
    An issue assigned to another person, or with their open PR, is theirs. ship-issue
    claims through `$S/claim`, which assigns `COORDINARE_ASSIGNEE`: set it to your own GitHub
    login in your uncommitted `repo.env`, or, for Claude Code, in

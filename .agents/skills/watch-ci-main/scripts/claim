@@ -6,7 +6,7 @@
 # and the loser unassigns itself.
 # usage: claim <issue>            claim the issue
 #        claim <issue> --pr <pr>  assign the PR to the same login, read back
-# exit: 0 claimed|already-mine|assigned, 1 held|lost-race|closed|not-assigned (stop),
+# exit: 0 claimed|already-mine, 1 held|lost-race|closed|not-assigned (stop),
 #       2 usage or config, 3 transient gh failure
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
@@ -43,10 +43,10 @@ emit() {  # status holders_json evidence_json
 }
 
 if [ -n "$pr" ]; then
-  write pr edit "$pr" --repo "$R" --add-assignee "$login"
+  write api -X POST "repos/$R/issues/$pr/assignees" -f "assignees[]=$login"
   got=$(coordinare_gh pr view "$pr" --repo "$R" --json assignees) || fail $? "pr view $pr failed"
   if printf '%s' "$got" | jq -e --arg l "$login" 'any(.assignees[]; .login == $l)' >/dev/null; then
-    emit assigned '[]' '[]'; exit 0
+    emit claimed '[]' '[]'; exit 0
   fi
   emit not-assigned '[]' "$(jq -nc --arg e "pr #$pr assignees read back without $login" '[$e]')"; exit 1
 fi

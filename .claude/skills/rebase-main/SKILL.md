@@ -13,7 +13,8 @@ metadata:
 
 **Where the scripts are.** `S` is this skill's `scripts/` directory, next to this
 SKILL.md. Set it once per session, for example `S=.agents/skills/rebase-main/scripts`,
-then run every script as `$S/<script>`. Let `B=$($S/repo-config COORDINARE_DEFAULT_BRANCH)`.
+then run every script as `$S/<script>`. Let `B=$($S/repo-config COORDINARE_DEFAULT_BRANCH)`
+and `R=$($S/repo-config COORDINARE_REPO)`.
 
 ## When not to rebase
 
@@ -61,7 +62,8 @@ rebase: merge it (merge-pr). Rebase only for `CONFLICTING`, or when ci-safety §
 
        - Rebased onto <B> at <short sha> (YYYY-MM-DD); conflicts in <files> | no conflicts
 
-   Write it with `$S/vgh pr edit <pr> --body-file <file>`, then read the body back.
+   Write it with `$S/vgh api -X PATCH "repos/$R/pulls/<pr>" -F "body=@<file>"`,
+   then read the body back with `$S/vgh pr view <pr> --repo "$R" --json body --jq .body`.
 
 ## Report
 

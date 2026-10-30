@@ -52,6 +52,30 @@ records the result against `HEAD`. Push only when `$S/preflight --check <issue>`
 exits 0. A failure is fixed locally with TDD and preflighted again; it never goes to CI
 to find out. Count each run in `preflight_runs`.
 
+## Disclosure guard before every push
+
+A public repository publishes everything pushed to it, forever: history rewrites do not
+reach clones, caches or pull request refs. Before every push, run
+`$S/disclosure-guard --body-file <draft PR body>` (or `--pr <pr>` once the PR exists).
+On a public repository it blocks added lines, file paths, commit messages and PR body
+text that carry a private IPv4 address, a literal `*.svc.cluster.local` name, a personal
+home directory, or any term from the maintainers' private list.
+
+- `clean` or `not_public`: push.
+- `private_terms: false` on a public repository: the private list is missing on this
+  machine. Stop with `unresolved: disclosure terms unavailable`; never push unchecked.
+- A `private_term` hit: remove it. It cannot be justified. Raw evidence from live
+  infrastructure (spend logs, provider evidence, inventories, probe output, runbooks,
+  client and key lists) belongs in a private repository; a public report carries only
+  aggregates and placeholders.
+- A generic hit that is genuinely not a real host or person (for example a made-up
+  address in a parser fixture): name the file and why under `### Disclosure review` in
+  the PR body, which makes it `justified`.
+- Anything else: stop with `unresolved: disclosure blocked`.
+
+The output names file, line and kind only, never the matched text, because Actions logs
+on a public repository are public. Do not paste matched text into comments either.
+
 ## Quality guard before every push
 
 The fastest way to turn CI green is to weaken what CI checks, and that is never the
@@ -205,8 +229,9 @@ stage; read them before writing anything.
 6. Push and open the PR:
    - Body: `Closes #<issue>`, plus a description of what shipped and test counts.
    - Assign the PR to the login that claimed the issue: `$S/claim <issue> --pr <pr>`.
-     It reads the assignment back; `not-assigned` goes in `unresolved`. The issue was
-     assigned at the claim; `assigned` in SHIP_RESULT reports both read-backs.
+     It reads the assignment back and reports `claimed`; `not-assigned` goes in
+     `unresolved`. The issue was assigned at the claim; `assigned` in SHIP_RESULT
+     reports both read-backs.
 
 Stop conditions at this stage:
 - The issue is held by someone else (the claim exited 1).

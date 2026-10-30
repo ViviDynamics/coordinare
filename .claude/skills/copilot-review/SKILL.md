@@ -33,9 +33,9 @@ then run every `gh` call as `$S/vgh`. Let `R=$($S/repo-config COORDINARE_REPO)`.
        $S/vgh api -X POST   "repos/$R/pulls/<pr>/requested_reviewers" -f 'reviewers[]=copilot-pull-request-reviewer[bot]'
        $S/vgh api "repos/$R/pulls/<pr>" --jq '[.requested_reviewers[].login]'
 
-   If `Copilot` is absent, try `$S/vgh pr edit <pr> --add-reviewer @copilot` and read
-   back again. Still absent: stop with `review_received: false`, reason "request did
-   not land (is Copilot review enabled?)". Record the UTC request time.
+   If `copilot-pull-request-reviewer[bot]` is absent, stop with
+   `review_received: false`, reason "request did not land (is Copilot review
+   enabled?)". Record the UTC request time.
 
 2. **Wait for the review.** Every 2 minutes, up to 20 minutes, read
    `$S/vgh api "repos/$R/pulls/<pr>/reviews"` for a review whose `user.login` contains

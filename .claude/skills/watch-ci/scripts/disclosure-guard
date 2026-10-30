@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# Block infrastructure detail from reaching a public repository.
+# usage: disclosure-guard [--body-file <file>]   local diff: merge-base(origin/<default>)..HEAD
+#        disclosure-guard --pr <pr>              the PR's diff, body and commits from GitHub
+# exit: 0 clean, justified or not public; 1 blocked
+# Scans added lines, changed file paths, commit messages and the PR body. Generic hits
+# (private IPv4 addresses, literal *.svc.cluster.local names, personal home directories)
+# are justified when the body's "### Disclosure review" section names the file. Private
+# terms are never justifiable: one case-insensitive ERE per line, from COORDINARE_DISCLOSURE_TERMS
+# or the file COORDINARE_DISCLOSURE_TERMS_FILE (default ~/.config/vivi/disclosure-terms). Keep that
+# list out of every public repository. Output names file, line and kind, never the matched
+# text, because Actions logs on a public repository are public.
+# COORDINARE_REPO_VISIBILITY (public|private) skips the GitHub lookup; unknown counts as public.
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+coordinare_load_env; coordinare_require COORDINARE_DEFAULT_BRANCH
+
+PRIVATE_IP='(^|[^0-9.])(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3})([^0-9]|$)'
+CLUSTER_DNS='[A-Za-z0-9-]+\.[A-Za-z0-9-]+\.svc\.cluster\.local'
+HOME_PATH='(/home/|/Users/)[A-Za-z0-9._-]+'
+GENERIC_HOMES='runner|user|username|you|me|example|ubuntu|root|vscode|node|app|shared|Shared'
+
+pr=""; body_file=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --pr) pr=$2; shift 2;;
+    --body-file) body_file=$2; shift 2;;
+    *) coordinare_die 2 "unknown option $1";;
+  esac
+done
+cd "$COORDINARE_ROOT"
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+
+visibility=$(printf '%s' "${COORDINARE_REPO_VISIBILITY:-}" | tr '[:upper:]' '[:lower:]')
+if [ -z "$visibility" ]; then
+  coordinare_require COORDINARE_REPO
+  visibility=$(coordinare_gh repo view "$COORDINARE_REPO" --json visibility --jq .visibility 2>/dev/null | tr '[:upper:]' '[:lower:]') || visibility=""
+fi
+case "$visibility" in public|private|internal) ;; *) visibility=unknown;; esac
+if [ "$visibility" = private ] || [ "$visibility" = internal ]; then
+  jq -nc --arg v "$visibility" '{schema:"DISCLOSURE_GUARD_RESULT", state:"not_public", visibility:$v, private_terms:false, hits:[]}'
+  exit 0
+fi
+
+terms_file=${COORDINARE_DISCLOSURE_TERMS_FILE:-$HOME/.config/vivi/disclosure-terms}
+if [ -n "${COORDINARE_DISCLOSURE_TERMS:-}" ]; then
+  printf '%s\n' "$COORDINARE_DISCLOSURE_TERMS" > "$tmp/terms.raw"
+elif [ -f "$terms_file" ]; then
+  cp "$terms_file" "$tmp/terms.raw"
+else
+  : > "$tmp/terms.raw"
+fi
+grep -vE '^[[:space:]]*(#|$)' "$tmp/terms.raw" > "$tmp/terms" || true
+private_terms=false; [ -s "$tmp/terms" ] && private_terms=true
+
+if [ -n "$pr" ]; then
+  coordinare_require COORDINARE_REPO
+  coordinare_gh pr diff "$pr" --repo "$COORDINARE_REPO" > "$tmp/diff" || exit $?
+  coordinare_gh pr view "$pr" --repo "$COORDINARE_REPO" --json body --jq .body > "$tmp/body" || exit $?
+  coordinare_gh pr view "$pr" --repo "$COORDINARE_REPO" --json commits --jq '.commits[].messageHeadline,.commits[].messageBody' > "$tmp/messages" || exit $?
+else
+  base_ref="origin/$COORDINARE_DEFAULT_BRANCH"
+  git rev-parse -q --verify "$base_ref^{commit}" >/dev/null || coordinare_die 2 "$base_ref not found: git fetch origin $COORDINARE_DEFAULT_BRANCH first"
+  base=$(git merge-base HEAD "$base_ref")
+  git diff "$base" HEAD > "$tmp/diff"
+  git log --format=%B "$base..HEAD" > "$tmp/messages"
+  if [ -n "$body_file" ]; then cp "$body_file" "$tmp/body"; else : > "$tmp/body"; fi
+fi
+
+awk '
+  /^#+[[:space:]]*Disclosure review[[:space:]]*$/ { on=1; next }
+  /^#/ { on=0 }
+  on { print }
+' "$tmp/body" > "$tmp/section"
+
+# Records: "F<TAB>path" per changed file, "A<TAB>path<TAB>line<TAB>text" per added line,
+# then the commit messages and the body as pseudo-files.
+awk '
+  /^diff --git / { file=$NF; sub(/^b\//, "", file); print "F\t" file; next }
+  /^\+\+\+ / { next }
+  /^--- / { next }
+  /^@@ / { split($3, h, ","); line=substr(h[1], 2) + 0; next }
+  /^\+/ { print "A\t" file "\t" line "\t" substr($0, 2); line++; next }
+  /^-/ { next }
+  /^ / { line++; next }
+' "$tmp/diff" > "$tmp/records"
+awk '{ print "A\t(commit message)\t" NR "\t" $0 }' "$tmp/messages" >> "$tmp/records"
+awk '{ print "A\t(pr body)\t" NR "\t" $0 }' "$tmp/body" >> "$tmp/records"
+
+# One pass per pattern over the scanned text (the path for F, the line for A); record
+# numbers join the matches back to file and line, first kind wins.
+awk -F'\t' '{ if ($1 == "F") print $2; else { sub(/^[^\t]*\t[^\t]*\t[^\t]*\t/, ""); print } }' "$tmp/records" > "$tmp/text"
+: > "$tmp/matches"
+if [ "$private_terms" = true ]; then
+  grep -niE -f "$tmp/terms" "$tmp/text" | cut -d: -f1 | sed 's/$/	1private_term/' >> "$tmp/matches" || true
+fi
+grep -nE -- "$PRIVATE_IP" "$tmp/text" | cut -d: -f1 | sed 's/$/	2private_ip/' >> "$tmp/matches" || true
+grep -nE -- "$CLUSTER_DNS" "$tmp/text" | cut -d: -f1 | sed 's/$/	3cluster_dns/' >> "$tmp/matches" || true
+grep -noE -- "$HOME_PATH" "$tmp/text" | sed -E 's#^([0-9]+):/(home|Users)/#\1	#' \
+  | awk -F'\t' -v g="^($GENERIC_HOMES)\$" '$2 !~ g { print $1 "\t4home_path" }' >> "$tmp/matches" || true
+
+sort -t$'\t' -k1,1n -k2,2 "$tmp/matches" | awk -F'\t' '!seen[$1]++ { print $1 "\t" substr($2, 2) }' > "$tmp/first"
+awk -F'\t' 'NR == FNR { kind[$1] = $2; next }
+  (FNR in kind) { print $2 "\t" ($1 == "A" ? $3 : "-") "\t" kind[FNR] }' "$tmp/first" "$tmp/records" > "$tmp/hitrows"
+
+: > "$tmp/hits"
+while IFS=$'\t' read -r file line kind; do
+  j=false
+  if [ "$kind" != private_term ] && [ -s "$tmp/section" ] && grep -qF -- "$file" "$tmp/section"; then j=true; fi
+  jq -nc --arg f "$file" --arg k "$kind" --arg l "$line" --argjson j "$j" \
+    '{file:$f, kind:$k, justified:$j} + (if $l != "-" then {line:($l|tonumber)} else {} end)' >> "$tmp/hits"
+done < "$tmp/hitrows"
+
+hits=$(jq -sc '.' "$tmp/hits")
+state=$(printf '%s' "$hits" | jq -r 'if length == 0 then "clean" elif all(.justified) then "justified" else "blocked" end')
+jq -nc --arg s "$state" --arg v "$visibility" --argjson p "$private_terms" --argjson h "$hits" \
+  '{schema:"DISCLOSURE_GUARD_RESULT", state:$s, visibility:$v, private_terms:$p, hits:$h}'
+[ "$state" = blocked ] && exit 1
+exit 0

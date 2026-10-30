@@ -1046,6 +1046,7 @@ class TestChartCIDoesNotDisturbTheExistingGate:
         "performer",
         "docker",
         "benchmark",
+        "disclosure-guard",
     ]
 
     def test_build_success_gates_on_exactly_these_jobs(self) -> None:
