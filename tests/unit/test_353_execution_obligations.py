@@ -284,3 +284,21 @@ async def test_discovery_rejects_waiver_before_fresh_review(tmp_path):
         )
     assert exc.value.code == "obligation_removed"
     assert len(replies.messages) == 1
+
+
+def test_every_changed_fixed_command_is_named_in_one_correction():
+    """Dettmore e2e-18: told of one changed command at a time, the author restored it and changed the next until the
+    schema corrections ran out."""
+    previous = contract()
+    changed = previous.model_copy(deep=True)
+    changed.checks[0] = changed.checks[0].model_copy(update={"argv": ["true"]})
+    changed.checks[1] = changed.checks[1].model_copy(update={"argv": ["true"]})
+    with pytest.raises(EnvironmentDiscoveryError) as exc:
+        preserve_execution_obligations(changed, history(previous))
+    assert exc.value.code == "obligation_removed"
+    assert str(exc.value).endswith(": suite, assets")
+    one = previous.model_copy(deep=True)
+    one.checks[0] = one.checks[0].model_copy(update={"argv": ["true"]})
+    with pytest.raises(EnvironmentDiscoveryError) as single:
+        preserve_execution_obligations(one, history(previous))
+    assert str(single.value) == "required executable command suite changed after project execution"

@@ -130,18 +130,23 @@ def preserve_execution_commands(
     manifest: EnvironmentManifest,
     previous: EnvironmentManifest,
 ) -> None:
-    """Repair the environment around established checks, never rewrite their result."""
+    """Repair the environment around established checks, never rewrite their result.
+
+    Every changed command is named at once: Dettmore e2e-18's author, told of one at a time, restored it and changed
+    the next, until the schema corrections ran out.
+    """
     current = {command.id: command for command in _required_execution_commands(manifest)}
-    for old in _required_execution_commands(previous):
-        new = current.get(old.id)
-        if (
-            new is None
-            or new.model_dump(exclude={"timeout_seconds"})
-            != old.model_dump(exclude={"timeout_seconds"})
-            or new.timeout_seconds < old.timeout_seconds
-        ):
-            message = f"required executable command {old.id} changed after project execution"
-            raise EnvironmentDiscoveryError(message, code="obligation_removed")
+    changed = [old.id for old in _required_execution_commands(previous)
+               if (new := current.get(old.id)) is None
+               or new.model_dump(exclude={"timeout_seconds"}) != old.model_dump(exclude={"timeout_seconds"})
+               or new.timeout_seconds < old.timeout_seconds]
+    if len(changed) == 1:
+        message = f"required executable command {_id(changed[0])} changed after project execution"
+        raise EnvironmentDiscoveryError(message, code="obligation_removed")
+    if changed:
+        message = (f"required executable commands changed after project execution; keep each as it was: "
+                   f"{', '.join(_id(identifier) for identifier in changed[:16])}")
+        raise EnvironmentDiscoveryError(message, code="obligation_removed")
 
 
 def preserve_execution_obligations(manifest: EnvironmentManifest, history: object) -> None:

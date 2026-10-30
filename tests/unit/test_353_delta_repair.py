@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import json
@@ -535,7 +536,7 @@ async def test_a_touched_group_is_authored_as_a_patch_applied_to_its_failed_part
 
 # --- end to end through the real discovery entry point ---------------------------------------------------------------
 
-async def delta_run(chat, *, budget):
+async def delta_run(chat, *, budget, executed=False):
     """A repair of a validated previous manifest whose check ``version`` failed, through discover_and_review."""
     from coordinare_service_inference.environment.models import CheckResult, VerificationReport
 
@@ -552,6 +553,8 @@ async def delta_run(chat, *, budget):
     failed = VerificationReport(manifest_digest=previous.digest(), results=[
         CheckResult(id="version", status="fail", required=True, exit_code=1, duration_seconds=1, output="zog: failed")])
     budget.repair_triage = triage_failure(previous, failed)
+    if executed:
+        budget.executed_manifests = [previous]
 
     async def fetch(path):
         return files.get(path)
@@ -640,3 +643,28 @@ def test_the_delta_switch_is_a_config_setting_that_defaults_on():
 
     assert EnvCacheConfig().manifest_delta_repair is True
     assert EnvCacheConfig(manifest_delta_repair=False).manifest_delta_repair is False
+
+
+@pytest.mark.asyncio
+async def test_a_full_repair_after_execution_lists_the_fixed_commands_up_front():
+    """Dettmore e2e-18: the full repair's author was given only the general rule and learned of fixed commands one
+    correction at a time."""
+    from tests.unit.test_353_discovery_repair import assessment, candidate
+
+    contexts: list[dict] = []
+
+    async def chat(messages):
+        context = json.loads(messages[1]["content"])
+        if "manifest" in context:
+            return json.dumps(assessment(candidate()))
+        contexts.append(context)
+        return json.dumps({"manifest": candidate(), "finding_responses": []})
+
+    budget = AttemptBudget()
+    budget.repair_delta = False
+    with contextlib.suppress(EnvironmentDiscoveryError):
+        # The fixture candidate itself changes a fixed check, so later rounds are corrections; the prompt is the point.
+        await delta_run(chat, budget=budget, executed=True)
+    author = next(context for context in contexts if "previous_manifest" in context)
+    assert "version" in author["fixed_ids"]
+    assert "fixed_ids lists the commands an earlier execution fixed" in author["repair_instruction"]
