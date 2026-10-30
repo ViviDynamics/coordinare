@@ -1278,9 +1278,14 @@ async def _rescope(attempt: _Attempt, build: DividedConstruction | None) -> Divi
     rescoped = construction.require_scope()
     refreshed = await attempt.discovery.bind_verified(rescoped.all_inputs, phase='construction',
                                                       cited_by=scope_citations(rescoped))
-    attempt.messages.append({'role': 'user', 'content': _json({**construction.context(),
-        'bound_scope_inputs': refreshed, 'instruction': 'Source scope was independently reviewed again. '
-        'Reconstruct the complete manifest against every current criterion; required obligations remain fixed.'})})
+    # The opening message is updated in place with the reviewed scope (compacted for a divided build); this one names
+    # its digest and brings the newly bound evidence. Dettmore e2e-21 appended the whole ~500 KB contract here again and
+    # the discovery conversation passed its context limit.
+    attempt.messages.append({'role': 'user', 'content': _json({
+        **{key: value for key, value in construction.context().items() if key != 'scope_contract'},
+        'bound_scope_inputs': refreshed, 'instruction': 'Source scope was independently reviewed again; the first '
+        'message now holds the reviewed scope. Reconstruct the complete manifest against every current criterion; '
+        'required obligations remain fixed.'})})
     attempt.messages[1]['content'] = _json({**json.loads(attempt.messages[1]['content']), **construction.context()})
     if build is not None:
         build.scope = rescoped

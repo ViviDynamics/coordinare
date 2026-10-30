@@ -1333,3 +1333,28 @@ def test_a_coverage_revision_carries_every_record_and_only_the_latest_review():
     discovery_module._append_coverage_revision(messages, {}, assessment, {}, discovery_module._ObligationLedger())
     carried = json.loads(messages[-1]['content'])['coverage_revision']['finding_ledger']
     assert carried == {'records': [{'id': 'F0001'}, {'id': 'F0002'}], 'reviews': [{'n': 3}]}
+
+
+@pytest.mark.asyncio
+async def test_a_reopened_scope_is_not_sent_again_in_full():
+    """Dettmore e2e-21: the rescope message re-sent the whole ~500 KB contract and discovery passed its context limit."""
+    contract = {'definition': {'criteria': [], 'padding': 'x' * 200_000}}
+    rescoped = SimpleNamespace(all_inputs={}, definition=SimpleNamespace(criteria=[]))
+    construction = SimpleNamespace(
+        context=lambda: {'scope_contract': contract, 'scope_contract_digest': 'd' * 64, 'scope_mapping_instruction': 'm'},
+        require_scope=lambda: rescoped)
+
+    async def bind_verified(*_args, **_kwargs):
+        return [{'path': 'a.md'}]
+
+    attempt = SimpleNamespace(budget=SimpleNamespace(repair_delta=False), construction=construction, identity={},
+                              discovery=SimpleNamespace(bind_verified=bind_verified),
+                              messages=[{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'}])
+    build = SimpleNamespace(scope=None)
+    assert await discovery_module._rescope(attempt, build) is build
+    appended = json.loads(attempt.messages[-1]['content'])
+    assert 'scope_contract' not in appended and appended['scope_contract_digest'] == 'd' * 64
+    assert appended['bound_scope_inputs'] == [{'path': 'a.md'}]
+    opening = json.loads(attempt.messages[1]['content'])
+    assert 'scope_contract' not in opening and 'scope_criteria_index' in opening
+    assert len(attempt.messages[-1]['content']) < 10_000
