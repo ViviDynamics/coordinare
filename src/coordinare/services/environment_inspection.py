@@ -128,16 +128,18 @@ class SourceInspection:
         self.source_files[path] = content
         return {"path": path, "content": content, "sha256": digest}
 
-    async def read_files(self, paths: Sequence[str], *, navigation: bool = False) -> dict[str, list[dict[str, str]]]:
+    async def read_files(self, paths: Sequence[str], *, navigation: bool = False,
+                         verification: bool = False) -> dict[str, list[dict[str, str]]]:
         if (not isinstance(paths, list | tuple) or not 1 <= len(paths) <= MAX_BATCH_FILES
                 or any(not isinstance(path, str) or path not in self.inventory for path in paths)
                 or len(set(paths)) != len(paths)):
             message = f"{self.name} requested invalid source batch or paths"
             raise EnvironmentDiscoveryError(message, code="invalid_tool_arguments")
         if self.budget is not None:
-            self.budget.reserve_reads(len(paths))
+            self.budget.reserve_reads(len(paths), verification=verification)
             await self.budget.flush()
-        self.reads += len(paths)
+        if not verification:
+            self.reads += len(paths)
         if self.reads > self.limits.max_reads:
             message = f"{self.name} file read limit exceeded"
             raise EnvironmentDiscoveryError(message)

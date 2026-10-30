@@ -97,7 +97,7 @@ async def test_scope_is_reviewed_fresh_before_any_executable_candidate():
     content = json.loads(reviewer[1]['content'])
     assert 'manifest' not in content and 'execution_capabilities' not in content
     assert content['scope_definition']['criteria'][0]['id'] == scope.definition.criteria[0].id
-    assert budget.calls == 4 and budget.reads == 3
+    assert budget.calls == 4 and budget.reads == 2 and budget.verification_reads == 1
     assert budget.scope_contract.digest() == scope.digest()
 
 

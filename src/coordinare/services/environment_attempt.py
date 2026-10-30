@@ -95,6 +95,10 @@ class AttemptBudget:
     calls: int = 0
     calls_completed: int = 0
     reads: int = 0
+    # The daemon's own evidence verification (binding and delivering mandatory inputs), counted apart from the model's
+    # capped reads. Maintainer ruling 2026-10-30: max_reads limits what the model asks for; verification stays
+    # independent per role but is not charged to it (Dettmore e2e-22: 8,100 of 8,188 reads were verification).
+    verification_reads: int = 0
     probe_batches: int = 0
     probe_reports: list[dict[str, Any]] = field(default_factory=list, repr=False)
     probe_abandonments: list[dict[str, Any]] = field(default_factory=list, repr=False)
@@ -189,8 +193,14 @@ class AttemptBudget:
             raise EnvironmentDiscoveryError(message, code="attempt_probe_limit")
         self.probe_batches += 1
 
-    def reserve_reads(self, count: int) -> None:
+    def reserve_reads(self, count: int, *, verification: bool = False) -> None:
         self.check()
+        if verification:
+            if type(count) is not int or count < 1:
+                message = "environment discovery verification read count is invalid"
+                raise EnvironmentDiscoveryError(message, code="attempt_read_limit")
+            self.verification_reads += count
+            return
         if type(count) is not int or count < 1 or self.reads + count > self.max_reads:
             message = "environment discovery budget file read limit exceeded"
             raise EnvironmentDiscoveryError(message, code="attempt_read_limit")
@@ -270,6 +280,7 @@ class AttemptBudget:
                 "elapsed_seconds": round(time.monotonic() - self.started, 3),
                 "probe_batches": self.probe_batches, "abandoned_probe_batches": len(self.probe_abandonments),
                 "max_probe_batches": MAX_PROBE_BATCHES, "calls": self.calls, "calls_completed": self.calls_completed, "reads": self.reads,
+                "verification_reads": self.verification_reads,
                 "repairs": self.repairs, **{name: getattr(self, name) for counter in REPAIR_COUNTERS.values()
                     for name in (counter, "max_" + counter)}, "inspected_bytes": self.inspected_bytes,
                 "context_bytes": self.context_bytes, "review_context_bytes": self.review_context_bytes,

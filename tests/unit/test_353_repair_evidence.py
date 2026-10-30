@@ -70,9 +70,9 @@ async def test_repair_receives_all_18_inputs_before_first_call():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('failure,code', [('missing', 'scope_author_evidence_unavailable'), ('drift', 'source_identity'),
-    ('context', 'scope_author_context_limit'), ('reads', 'attempt_read_limit'), ('checkpoint', 'attempt_checkpoint_failed')])
+    ('context', 'scope_author_context_limit'), ('checkpoint', 'attempt_checkpoint_failed')])
 async def test_incomplete_repair_evidence_holds_before_model(failure, code):
-    budget = AttemptBudget(max_reads=1 if failure == 'reads' else 512)
+    budget = AttemptBudget()
     async def checkpoint():
         if failure == 'checkpoint':
             raise EnvironmentDiscoveryError('checkpoint rejected', code='attempt_checkpoint_failed')
@@ -81,6 +81,14 @@ async def test_incomplete_repair_evidence_holds_before_model(failure, code):
         await repair_case(failure=failure, budget=budget,
             limits=DiscoveryLimits(max_review_context_bytes=100 if failure == 'context' else 1024*1024))
     assert exc.value.code == code
+
+
+@pytest.mark.asyncio
+async def test_repair_evidence_is_not_charged_to_model_reads():
+    budget = AttemptBudget(max_reads=1)
+    (manifest, _review), fetched, _calls = await repair_case(budget=budget)
+    assert len(manifest.inputs) == 18
+    assert budget.reads == 0 and budget.verification_reads == len(fetched) == 72
 
 
 @pytest.mark.asyncio

@@ -61,7 +61,8 @@ async def test_configured_allowance_holds_real_attempt_without_skipping_review(t
     assert result['status'] == 'held' and result['reason_code'] == 'attempt_read_limit'
     attempt = json.loads((output/'environment-attempt.json').read_text())
     assert attempt['max_reads'] == 1 and attempt['reads'] == 1
-    assert result['independent_source_review_invocations'] == 0
+    assert attempt['verification_reads'] == 2
+    assert result['independent_source_review_invocations'] == 1
     assert not result['installer_ran'] and not result['clean_consumer_ran'] and not result['ready_at_validation']
 
 

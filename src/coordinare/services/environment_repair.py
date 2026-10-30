@@ -152,6 +152,7 @@ class RepairJournal(BaseModel):
     max_execution_repairs: int = Field(ge=0, le=REPAIR_LIMITS["execution"])
     calls: int = Field(default=0, ge=0)
     reads: int = Field(default=0, ge=0)
+    verification_reads: int = Field(default=0, ge=0)
     schema_repairs: int = Field(default=0, ge=0, le=REPAIR_LIMITS["schema"])
     coverage_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["coverage"])
     scope_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["scope"])
@@ -515,6 +516,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.delta_fallback = journal.delta_fallback
     budget.execution_review_evidence = execution_review_evidence(journal.rejected)
     budget.calls, budget.reads = journal.calls, journal.reads
+    budget.verification_reads = journal.verification_reads
     budget.probe_batches = journal.probe_batches
     budget.probe_reports = list(journal.probe_reports)
     budget.probe_abandonments = [item.model_dump(mode='json') for item in journal.probe_abandonments]
@@ -609,6 +611,7 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
     journal.probe_batches = max(journal.probe_batches, budget.probe_batches)
     journal.calls = max(journal.calls, budget.calls)
     journal.reads = max(journal.reads, budget.reads)
+    journal.verification_reads = max(journal.verification_reads, budget.verification_reads)
     journal.schema_repairs = max(journal.schema_repairs, budget.schema_repairs)
     journal.coverage_revisions = max(journal.coverage_revisions, budget.coverage_revisions)
     journal.scope_revisions = max(journal.scope_revisions, budget.scope_revisions)

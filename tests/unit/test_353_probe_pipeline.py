@@ -118,7 +118,7 @@ async def test_owned_probe_checkpoints_before_executor_and_redacts_evidence(tmp_
         return SOURCE
     async def execute(plan, **kwargs):
         assert cache.environment_attempt['probe_owner'] == plan.digest()
-        assert cache.environment_attempt['reads'] == 1
+        assert cache.environment_attempt['reads'] == 0 and cache.environment_attempt['verification_reads'] == 1
         data = report_data(plan)
         data['results'][0]['output'] = 'API_KEY=private-secret-value'
         return ProbeReport.model_validate(data)
@@ -225,17 +225,19 @@ async def test_probe_binds_complete_inputs_beyond_conversation_read_limit(tmp_pa
         nonlocal executed
         executed = True
         assert fetched == inputs.keys()
-        assert budget.reads == len(inputs) == cache.environment_attempt['reads']
+        # Binding is the daemon's verification: not charged to the model's read cap, even beyond it ('budget').
+        assert budget.reads == 0 == cache.environment_attempt['reads']
+        assert budget.verification_reads == len(inputs) == cache.environment_attempt['verification_reads']
         data = report_data(probe)
         data['execution_source_digest'] = probe.execution_source_digest
         return ProbeReport.model_validate(data)
 
     monkeypatch.setattr(service, 'execute_environment_probe', execute)
     context = service.ProbeServiceContext(cache, {}, fetch, budget, limits, bundle)
-    if failure:
+    if failure == 'drift':
         with pytest.raises(EnvironmentDiscoveryError) as exc:
             await service.run_owned_probe(selected, context=context)
-        assert exc.value.code == ('probe_evidence_drift' if failure == 'drift' else 'attempt_read_limit')
+        assert exc.value.code == 'probe_evidence_drift'
         assert not executed and not cache.environment_attempt['probe_reports']
     else:
         report = await service.run_owned_probe(selected, context=context)

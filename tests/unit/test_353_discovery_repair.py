@@ -296,7 +296,7 @@ async def test_invalid_navigation_does_not_spend_schema_repairs(tool):
     assert manifest.inputs == full_candidate()["inputs"]
     assert review.verdict == "accept"
     assert events[-1]["repairs"] == 0
-    assert events[-1]["reads"] == 6
+    assert events[-1]["reads"] == 3 and events[-1]["verification_reads"] == 3
     feedback = json.loads(replies.messages[1][-1]["content"])
     assert feedback["tool_result"]["errors"]
 

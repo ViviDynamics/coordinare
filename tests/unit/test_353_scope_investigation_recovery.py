@@ -68,6 +68,7 @@ async def test_recovery_preserves_queue_findings_and_spent_budget(tmp_path, boun
     assert len(saved['scope_investigation_results']) == int(boundary in {'result', 'revision'})
     resumed = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600)
     assert resumed.reads == saved['reads'] and resumed.calls == saved['calls']
+    assert resumed.verification_reads == saved['verification_reads']
     assert resumed.scope_revisions == saved['scope_revisions'] == 1
     async def checkpoint():
         save_attempt(cache, resumed)
@@ -82,7 +83,8 @@ async def test_recovery_preserves_queue_findings_and_spent_budget(tmp_path, boun
     assert scope.finding_ledger.open_ids() == []
     assert cache.environment_attempt['started_at'] == saved['started_at']
     assert cache.environment_attempt['expires_at'] == saved['expires_at']
-    assert resumed.reads > saved['reads'] and resumed.scope_revisions == 1
+    assert resumed.reads >= saved['reads'] and resumed.scope_revisions == 1
+    assert resumed.verification_reads > saved['verification_reads']
     assert cache.environment_attempt['scope_investigations'] == saved['scope_investigations']
     assert len(cache.environment_attempt['scope_investigation_results']) == 1
 
@@ -140,19 +142,26 @@ async def test_completed_binding_survives_later_scope_revision(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_missing_memory_cache_requires_charged_reinspection_or_hold(tmp_path):
+async def test_missing_memory_cache_is_reverified_without_model_reads(tmp_path):
     from coordinare.services.environment_scope import discover_scope
 
     cache = await saved_investigation(tmp_path, 'result')
     cache.environment_attempt['max_reads'] = cache.environment_attempt['reads']
     resumed = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600)
+    verified = resumed.verification_reads
+    fetched = []
     async def fetch(path):
-        pytest.fail('exhausted reservation fetched source')
-    with pytest.raises(EnvironmentDiscoveryError) as held:
-        await discover_scope(paths=list(SOURCES), fetch=fetch, chat=Replies([]), commit=COMMIT,
-                             limits=DiscoveryLimits(), budget=resumed)
-    assert held.value.code == 'attempt_read_limit'
-    assert resumed.scope_contract is None
+        fetched.append(path)
+        return SOURCES[path]
+    values = [revision(criterion('nested'), sources=['nested']),
+        review(sources=list(SOURCES), decisions=[{'finding_id': 'F0001', 'status': 'resolved',
+            'rationale': 'Nested source retained', 'sources': ['nested'], 'duplicate_of': None}])]
+    scope = await discover_scope(paths=list(SOURCES), fetch=fetch, chat=Replies(values), commit=COMMIT,
+                                 limits=DiscoveryLimits(), budget=resumed)
+    # The daemon re-verifies the lost content by digest; the model's exhausted read cap is never charged.
+    assert scope.finding_ledger.open_ids() == []
+    assert set(fetched) == set(SOURCES)
+    assert resumed.reads == resumed.max_reads and resumed.verification_reads > verified
 
 
 @pytest.mark.asyncio

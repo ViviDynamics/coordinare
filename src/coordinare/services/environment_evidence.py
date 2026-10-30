@@ -27,7 +27,8 @@ async def _prepare_mandatory_evidence(
     paths = sorted(expected_inputs)
     for offset in range(0, len(paths), 8):
         try:
-            result = await inspection.read_files(paths[offset:offset + 8])
+            # The daemon's verification, not a model request: charged to verification_reads, not the model's cap.
+            result = await inspection.read_files(paths[offset:offset + 8], verification=True)
         except EnvironmentDiscoveryError as exc:
             if exc.code != "environment_discovery_held":
                 raise

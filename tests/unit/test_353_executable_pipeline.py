@@ -135,7 +135,7 @@ async def test_reservations_are_durable_before_model_and_source_requests(tmp_pat
     await publish(service, cache, state, capability, model)
     assert saves[-1]['status'] == 'executing'
     assert saves[-1]['calls'] == 8
-    assert saves[-1]['reads'] == 7
+    assert saves[-1]['reads'] == 3 and saves[-1]['verification_reads'] == 4
     assert len(saves[-1]['probe_reports']) == 1
 
 
