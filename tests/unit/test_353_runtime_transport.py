@@ -124,3 +124,28 @@ def test_source_installer_preserves_the_same_original_deadline(monkeypatch):
     assert exit_info.value.code == 0
     assert observed['runtime_deadline'] == 170
     assert observed['execution_source_digest'] == 'b'*64
+
+
+@pytest.mark.parametrize(('size', 'accepted'), [(608_024, True), (None, False)], ids=['e2e-19-size', 'over-bound'])
+def test_the_installer_accepts_any_manifest_its_scope_bound_allows(monkeypatch, size, accepted):
+    """Dettmore e2e-19: a 608 KB manifest (518 KB scope contract after reviewed reuses) crashed the installer against
+    a fixed 512 KiB bound before any command ran."""
+    import io
+    import sys
+    from types import SimpleNamespace
+
+    from coordinare_service_inference.environment import execution_source_install as entry
+    from coordinare_service_inference.environment.scope import SCOPE_CONTRACT_MAX_BYTES
+
+    assert entry.MAX_CONTRACT_BYTES >= SCOPE_CONTRACT_MAX_BYTES + 1024 * 1024
+    total = size or entry.MAX_CONTRACT_BYTES + 1
+    body = b'{"manifest":{"pad":"' + b'x' * (total - 40) + b'"},"execution_source":{}}'
+    monkeypatch.setattr(sys, 'argv', ['installer', '--cache', '/c', '--repo', '/r', '--scratch', '/s'])
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(body)))
+    sentinel = RuntimeError('reached manifest validation')
+    monkeypatch.setattr(entry.EnvironmentManifest, 'model_validate', lambda data: (_ for _ in ()).throw(sentinel))
+    with pytest.raises((RuntimeError, ValueError)) as raised:
+        entry.main()
+    assert (raised.value is sentinel) is accepted
+    if not accepted:
+        assert 'exceeds byte bound' in str(raised.value)
