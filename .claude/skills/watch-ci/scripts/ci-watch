@@ -73,6 +73,12 @@ if [ "$state" = "failed" ]; then
     rid=${row%%:*}; jid=${row##*:}
     log_error=false
     log=$(coordinare_gh run view --job "$jid" --log-failed --repo "$COORDINARE_REPO" 2>/dev/null) || { log_error=true; log="(log unavailable)"; }
+    if ! $log_error && [ -z "$log" ]; then
+      log=$(coordinare_gh api "repos/$COORDINARE_REPO/actions/jobs/$jid/logs" 2>/dev/null) || log=""
+      last_error=$(printf '%s\n' "$log" | grep -n '##\[error\]' | tail -n 1 | cut -d: -f1 || true)
+      if [ -n "$last_error" ]; then log=$(printf '%s\n' "$log" | head -n "$last_error"); fi
+      if [ -z "$log" ]; then log_error=true; log="(log unavailable)"; fi
+    fi
     tail_=$(printf '%s\n' "$log" | tail -n 60)
     hint=unknown; match=null
     if $log_error; then :

@@ -688,6 +688,25 @@ jobs:
           cp repo.env.example repo.env
           .agents/skills/merge-pr/scripts/quality-guard --pr ${{ github.event.pull_request.number }}
 
+  disclosure-guard:
+    timeout-minutes: 10
+    name: Disclosure guard
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Pull the latest code
+        uses: actions/checkout@v6
+      - name: Block infrastructure detail from reaching this public repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COORDINARE_DISCLOSURE_TERMS: ${{ secrets.VIVI_DISCLOSURE_TERMS }}
+        run: |
+          cp repo.env.example repo.env
+          .agents/skills/merge-pr/scripts/disclosure-guard --pr ${{ github.event.pull_request.number }}
+
   build-success:
     timeout-minutes: 10
     name: Build Success
@@ -708,6 +727,7 @@ jobs:
       - performer
       - docker
       - benchmark
+      - disclosure-guard
     steps:
       - name: Mark build successful
         run: echo "Lint, tests, coverage, performer tests, E2E browser tests, Docker image builds, and benchmarks passed. Build successful."

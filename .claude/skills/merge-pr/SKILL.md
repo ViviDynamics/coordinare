@@ -23,7 +23,7 @@ script as `$S/<script>`.
 
 - PR number. If not given: `$S/vgh pr view --json number --jq .number`.
 
-## Preconditions (check all four, report any that fails)
+## Preconditions (check all five, report any that fails)
 
 1. Open: `$S/vgh pr view <pr> --json state --jq .state` is `OPEN`. If `MERGED`, run
    `$S/merge-verified <pr>` anyway; it is idempotent and prints the result.
@@ -47,6 +47,12 @@ script as `$S/<script>`.
    suppression marker was added, without a justification: stop and report
    `preconditions_failed: quality gate weakened` with the `hits`. Never add the
    justification yourself to get past this; it must come from the issue's scope.
+5. Nothing private disclosed: `$S/disclosure-guard --pr <pr>` exits 0 (`clean`,
+   `not_public`, or `justified` by a `### Disclosure review` section). Exit 1 means the
+   PR would publish a private address, cluster name, home directory or private term:
+   stop and report `preconditions_failed: disclosure blocked` with the `hits` (file,
+   line and kind only). `private_terms: false` on a public repository is also a stop:
+   `preconditions_failed: disclosure terms unavailable`.
 
 ## BLOCKED and BEHIND are not red
 
