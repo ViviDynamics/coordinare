@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import asyncio
-import subprocess
 from unittest.mock import AsyncMock
 
 import pytest
+from agent.performer.tests.source_contract_fixture import bind_checkout_contract
 from performer.backends.base import BackendStatus
 from performer.models import Score, Stand
 from performer.workflows.adapter import build_production_toolkit
@@ -19,9 +19,6 @@ from tests.unit.env_manifest_fixture import reviewed_metadata
 def setup(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=t@example.org",
-                    "commit", "--allow-empty", "-qm", "fixture"], cwd=repo, check=True)
     cache = tmp_path / "cache"
     cache.mkdir()
     (cache / "activate.sh").write_text("true\n")
@@ -31,9 +28,9 @@ def setup(tmp_path, monkeypatch):
                   role="env_bootstrap", workflow="env_bootstrap", backend="codex",
                   env_cache_path=str(cache), verify_provided=True, activate_provided=True,
                   coordinare_manages_services=False, persona_instructions="Install the required tool")
-    metadata = reviewed_metadata(checks=[{"id": "tool", "argv": ["python3", "-c",
+    metadata = bind_checkout_contract(reviewed_metadata(checks=[{"id": "tool", "argv": ["python3", "-c",
         "from pathlib import Path; import os, sys; ready=Path(os.environ[\"DEVENV\"] + \"/installed\").exists(); print(\"PASS tool\" if ready else \"FAIL missing tool\"); sys.exit(0 if ready else 1)"]}],
-        activation={"env": {"DEVENV": "{cache}"}})
+        activation={"env": {"DEVENV": "{cache}"}}), repo)
     for key, value in metadata.items():
         setattr(score, key, value)
     score.workflow_env = {"ENV_BOOTSTRAP_MAX_REPAIRS": "2"}
@@ -73,26 +70,36 @@ def toolkit(stand, score, harness):
                                     backend_factory=lambda name: harness)
 
 
-@pytest.mark.parametrize(("action", "status", "turns"), [
-    ("install", "complete", 1), ("repair", "complete", 2), ("missing", "error", 2),
-    ("overwrite", "error", 1), ("delete", "error", 1),
-])
-async def test_install_repair_and_integrity(setup, action, status, turns):
+def reviewed_install(setup, argv, *, checks=None):
+    stand, score, _, _ = setup
+    metadata = bind_checkout_contract(reviewed_metadata(
+        install=[{"id": "install", "argv": argv}],
+        checks=checks if checks is not None else score.environment_manifest["checks"],
+        activation={"env": {"DEVENV": "{cache}"}}), stand.path)
+    for key, value in metadata.items():
+        setattr(score, key, value)
+
+
+@pytest.mark.parametrize("outcome", ["installed", "check_failure", "overwrite", "delete"])
+async def test_reviewed_install_outcomes_and_artifact_integrity(setup, outcome):
     stand, score, cache, inference = setup
-    harness = Harness(cache, action)
+    script = "from pathlib import Path; import os; p=Path(os.environ['DEVENV']); "
+    script += "pass" if outcome == "check_failure" else "(p/'installed').touch()"
+    if outcome == "overwrite":
+        script += "; (p/'verify.sh').write_text('exit 0')"
+    elif outcome == "delete":
+        script += "; (p/'activate.sh').unlink()"
+    reviewed_install(setup, ["python3", "-c", script])
+    harness = Harness(cache, "install")
     tk = toolkit(stand, score, harness)
-    result = await EnvBootstrapWorkflow().run(stand, score, tk)
-    assert result.report["env_bootstrap_run"]["status"] == status
-    assert tk.metrics.agent_turns == turns
-    assert tk.metrics.model_calls == 0
+    report = (await EnvBootstrapWorkflow().run(stand, score, tk)).report["env_bootstrap_run"]
+    assert report["status"] == ("complete" if outcome == "installed" else "error")
+    assert report["repairs"] == tk.metrics.agent_turns == tk.metrics.model_calls == 0
+    assert harness.personas == []
     assert "install" in tk.metrics.step_durations_ms
-    if action == "repair":
-        assert "tool: fail" in harness.personas[-1]
-        assert result.report["env_bootstrap_run"]["inference"] == {}
-        inference.assert_not_awaited()
-    if action in {"overwrite", "delete"}:
-        inference.assert_not_awaited()
-        assert "artifact" in result.report["env_bootstrap_run"]["reason"]
+    inference.assert_not_awaited()
+    if outcome in {"overwrite", "delete"}:
+        assert "artifact" in report["reason"]
 
 
 async def test_missing_promised_verifier_fails_before_install(setup):
@@ -109,11 +116,11 @@ async def test_readiness_precedes_verification_and_respects_mode(setup, monkeypa
     stand, score, cache, inference = setup
     score.coordinare_manages_services = managed
     order = cache / "order"
-    metadata = reviewed_metadata(
+    metadata = bind_checkout_contract(reviewed_metadata(
         services=[{"id": "custom", "start": {"id": "start", "argv": ["true"]},
                    "health": {"id": "health", "argv": ["bash", "-c", f"echo readiness >> '{order}'"]},
                    "stop": {"id": "stop", "argv": ["true"]}}],
-        checks=[{"id": "verify", "argv": ["bash", "-c", f"echo verify >> '{order}'"]}])
+        checks=[{"id": "verify", "argv": ["bash", "-c", f"echo verify >> '{order}'"]}]), stand.path)
     for key, value in metadata.items():
         setattr(score, key, value)
     harness = Harness(cache, "install")
@@ -132,33 +139,57 @@ async def test_zero_repair_budget(setup):
     assert len(harness.personas) == 0
 
 
-async def test_timeout_stops_harness_without_repair(setup):
+async def test_timeout_stops_reviewed_installation_without_agent_repair(setup):
+    import os
+    from contextlib import suppress
+
     stand, score, cache, _ = setup
+    pid_path = cache / 'installer-pid'
+    reviewed_install(setup, ['bash', '-c', f'echo $$ > "{pid_path}"; exec sleep 60'])
     score.workflow_env = {"ENV_BOOTSTRAP_TIMEOUT_SECONDS": "1"}
     harness = Harness(cache, "hang")
     tk = toolkit(stand, score, harness)
-    result = await EnvBootstrapWorkflow().run(stand, score, tk)
-    assert tk.metrics.agent_turns == 1
-    assert len(tk.metrics.turn_durations_ms) == 1
-    assert result.report["env_bootstrap_run"]["status"] == "error"
-    assert "timeout" in result.report["env_bootstrap_run"]["reason"]
-    assert harness.stopped
-    assert len(harness.personas) == 1
+    try:
+        report = (await EnvBootstrapWorkflow().run(stand, score, tk)).report['env_bootstrap_run']
+        assert report['status'] == 'error' and 'timeout' in report['reason']
+        assert tk.metrics.agent_turns == 0 and harness.personas == []
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(pid_path.read_text()), 0)
+    finally:
+        if pid_path.exists():
+            with suppress(ProcessLookupError):
+                os.kill(int(pid_path.read_text()), 9)
 
 
-async def test_cancellation_stops_harness_and_propagates(setup):
+async def test_cancellation_stops_reviewed_installation_and_propagates(setup):
+    import os
+    from contextlib import suppress
+
     stand, score, cache, _ = setup
+    pid_path = cache / 'installer-pid'
+    reviewed_install(setup, ['bash', '-c', f'echo $$ > "{pid_path}"; exec sleep 60'])
     harness = Harness(cache, "hang")
-    task = asyncio.create_task(EnvBootstrapWorkflow().run(stand, score, toolkit(stand, score, harness)))
-    for _ in range(2000):
-        if harness.personas:
-            break
-        await asyncio.sleep(0.001)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert harness.stopped
-    assert len(harness.personas) == 1
+    tk = toolkit(stand, score, harness)
+    task = asyncio.create_task(EnvBootstrapWorkflow().run(stand, score, tk))
+    try:
+        for _ in range(200):
+            if pid_path.exists():
+                break
+            await asyncio.sleep(0.005)
+        assert pid_path.exists()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert tk.metrics.agent_turns == 0 and harness.personas == []
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(pid_path.read_text()), 0)
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if pid_path.exists():
+            with suppress(ProcessLookupError):
+                os.kill(int(pid_path.read_text()), 9)
 
 
 @pytest.mark.parametrize("env", [
@@ -198,6 +229,7 @@ async def test_symlinked_promised_artifact_fails_before_install(setup):
 
 async def test_accepted_contract_never_invokes_legacy_inference(setup):
     stand, score, cache, inference = setup
+    (cache / "installed").touch()
     inference.side_effect = TimeoutError
     harness = Harness(cache, "install")
     result = await EnvBootstrapWorkflow().run(stand, score, toolkit(stand, score, harness))
@@ -207,23 +239,26 @@ async def test_accepted_contract_never_invokes_legacy_inference(setup):
     inference.assert_not_awaited()
 
 
-async def test_readiness_failure_is_repaired_before_verify(setup, monkeypatch):
+async def test_readiness_failure_returns_evidence_without_agent_repair(setup):
     stand, score, cache, _ = setup
-    metadata = reviewed_metadata(services=[{"id": "database", "start": {"id": "start", "argv": ["true"]},
+    metadata = bind_checkout_contract(reviewed_metadata(services=[{"id": "database", "start": {"id": "start", "argv": ["true"]},
         "health": {"id": "health", "argv": ["bash", "-c", f"test -f '{cache / 'installed'}'"]},
-        "stop": {"id": "stop", "argv": ["true"]}}])
+        "stop": {"id": "stop", "argv": ["true"]}}]), stand.path)
     for key, value in metadata.items():
         setattr(score, key, value)
     harness = Harness(cache, "install")
-    result = await EnvBootstrapWorkflow().run(stand, score, toolkit(stand, score, harness))
-    assert result.report["env_bootstrap_run"]["status"] == "complete"
-    assert len(harness.personas) == 1
-    assert "health: fail" in harness.personas[-1]
+    tk = toolkit(stand, score, harness)
+    report = (await EnvBootstrapWorkflow().run(stand, score, tk)).report['env_bootstrap_run']
+    assert report['status'] == 'error' and report['repairs'] == 0
+    assert tk.metrics.agent_turns == 0 and harness.personas == []
+    assert any(item['id'] == 'health' and item['status'] == 'fail'
+               for item in report['environment_verification']['results'])
 
 
 async def test_adapter_reports_named_steps_and_real_metrics(setup):
     from performer.workflows.adapter import WorkflowAdapter
     stand, score, cache, _ = setup
+    (cache / "installed").touch()
     harness = Harness(cache, "install")
     adapter = WorkflowAdapter("env_bootstrap", toolkit_factory=lambda metrics, sink:
         build_production_toolkit(score, metrics=metrics, event_sink=sink,
@@ -232,9 +267,9 @@ async def test_adapter_reports_named_steps_and_real_metrics(setup):
     await adapter.start(stand, score)
     await adapter._task
     assert adapter.get_status().state == "done"
-    assert adapter.metrics.agent_turns == 1
+    assert adapter.metrics.agent_turns == 0
     assert adapter.metrics.model_calls == 0
-    assert {"snapshot", "integrity", "inference", "readiness", "verify", "install"} <= adapter.metrics.step_durations_ms.keys()
+    assert {"snapshot", "verify", "install"} <= adapter.metrics.step_durations_ms.keys()
     assert any(e.text == "env_bootstrap.verify" for e in adapter.drain_events())
 
 
@@ -264,29 +299,49 @@ async def test_cancelled_verification_reaps_subprocess(setup):
             os.kill(pid, signal.SIGKILL)
 
 
-async def test_cancellation_during_harness_start_stops_it(setup):
+async def test_cancellation_during_reviewed_verification_propagates(setup):
     stand, score, cache, _ = setup
+    reviewed_install(setup, ['true'], checks=[{'id': 'baseline', 'argv': ['true']}])
     harness = Harness(cache, "hang")
-    started = asyncio.Event()
-    async def start(*args, **kwargs):
-        started.set()
-        await asyncio.Event().wait()
-    harness.start = start
-    task = asyncio.create_task(EnvBootstrapWorkflow().run(stand, score, toolkit(stand, score, harness)))
-    await started.wait()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert harness.stopped
+    tk = toolkit(stand, score, harness)
+    run_step = tk.run_bootstrap_step
+    entered, stopped = asyncio.Event(), asyncio.Event()
+
+    async def gate(name):
+        if name != 'verify':
+            return await run_step(name)
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    tk.run_bootstrap_step = gate
+    task = asyncio.create_task(EnvBootstrapWorkflow().run(stand, score, tk))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert stopped.is_set()
+        assert tk.metrics.agent_turns == 0 and harness.personas == []
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
-async def test_harness_error_never_runs_verification_or_repair(setup):
+async def test_failed_install_returns_without_verification_phase_or_agent(setup):
     stand, score, cache, inference = setup
-    harness = Harness(cache, "missing")
-    harness.get_status = lambda: BackendStatus(state="error", error_reason="install failed")
-    result = await EnvBootstrapWorkflow().run(stand, score, toolkit(stand, score, harness))
-    assert result.report["env_bootstrap_run"]["status"] == "error"
-    assert len(harness.personas) == 1
+    reviewed_install(setup, ['false'])
+    harness = Harness(cache, "install")
+    tk = toolkit(stand, score, harness)
+    report = (await EnvBootstrapWorkflow().run(stand, score, tk)).report['env_bootstrap_run']
+    assert report['status'] == 'error'
+    assert tk.metrics.agent_turns == 0 and harness.personas == []
+    assert 'verify' not in tk.metrics.step_durations_ms
+    assert any(item['id'] == 'install' and item['status'] == 'fail'
+               for item in report['environment_verification']['results'])
     inference.assert_not_awaited()
 
 
@@ -311,33 +366,49 @@ async def test_cancelled_service_gate_cannot_write_after_timeout(setup, phase):
     services = cache / "services"
     services.mkdir()
     pid_path = cache / "pid"
+    child_ready = cache / "child-ready"
+    release = cache / "release-child"
     script = services / f"services-{phase}.sh"
     late = cache / "late"
-    script.write_text(f'#!/bin/bash\necho $$ > "{pid_path}"\n(sleep 0.2; touch "{late}") &\nexec sleep 60\n')
+    # The child cannot write until cancellation has drained. A timer here races
+    # the test runner: a loaded event loop may not cancel before it expires.
+    script.write_text(f'#!/bin/bash\necho $$ > "{pid_path}"\n'
+        f'(touch "{child_ready}"; while [ ! -f "{release}" ]; do sleep 0.01; done; touch "{late}") &\n'
+        'exec sleep 60\n')
     script.chmod(0o755)
     run = _start_env_cache_services if phase == "start" else _run_env_cache_health_check
     task = asyncio.create_task(run(str(cache), {}))
-    for _ in range(200):
-        if pid_path.exists():
-            break
-        await asyncio.sleep(0.005)
-    pid = int(pid_path.read_text())
+    pid = None
     try:
+        for _ in range(200):
+            if pid_path.exists() and child_ready.exists():
+                break
+            await asyncio.sleep(0.005)
+        assert child_ready.exists(), "service descendant did not reach its release gate"
+        pid = int(pid_path.read_text())
+        assert not late.exists()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)
+        release.touch()
         await asyncio.sleep(0.3)
         assert not late.exists()
     finally:
-        with suppress(ProcessLookupError):
-            os.kill(pid, signal.SIGKILL)
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if pid is None and pid_path.exists():
+            pid = int(pid_path.read_text())
+        if pid is not None:
+            with suppress(ProcessLookupError):
+                os.killpg(pid, signal.SIGKILL)
 
 
 async def test_verifier_cannot_rewrite_activation_and_report_success(setup):
     stand, score, cache, _ = setup
-    metadata = reviewed_metadata(checks=[{"id": "mutating", "argv": ["bash", "-c", f"echo changed > '{cache / 'activate.sh'}'"]}])
+    metadata = bind_checkout_contract(reviewed_metadata(checks=[{"id": "mutating", "argv": ["bash", "-c", f"echo changed > '{cache / 'activate.sh'}'"]}]), stand.path)
     for key, value in metadata.items():
         setattr(score, key, value)
     harness = Harness(cache, "install")
@@ -345,3 +416,20 @@ async def test_verifier_cannot_rewrite_activation_and_report_success(setup):
     assert result.report["env_bootstrap_run"]["status"] == "error"
     assert "artifact changed" in result.report["env_bootstrap_run"]["reason"]
     assert len(harness.personas) == 0
+
+
+async def test_reviewed_failure_returns_original_evidence_without_agent_repair(setup):
+    stand, score, cache, inference = setup
+    harness = Harness(cache, 'install')
+    tk = toolkit(stand, score, harness)
+    result = await EnvBootstrapWorkflow().run(stand, score, tk)
+    report = result.report['env_bootstrap_run']
+    assert report['status'] == 'error'
+    assert report['repairs'] == 0
+    assert tk.metrics.agent_turns == 0
+    assert harness.personas == []
+    assert not (cache / 'installed').exists()
+    evidence = report['environment_verification']
+    assert evidence['manifest_digest'] == score.environment_manifest_digest
+    assert any(item['id'] == 'tool' and item['status'] == 'fail' for item in evidence['results'])
+    inference.assert_not_awaited()

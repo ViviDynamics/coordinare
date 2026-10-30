@@ -37,6 +37,12 @@ from tests.unit.graph.nodes.test_dispatch_performer import (
 CODE_RUNNING_STAGES = sorted(set(ROLE_TO_STAGE.values()))
 
 
+@pytest.fixture(autouse=True)
+def _inspected_fixture_image(monkeypatch):
+    monkeypatch.setattr("coordinare.services.environment_capabilities._docker_identity",
+        AsyncMock(return_value=("trusted/global@sha256:" + "a" * 64, "linux/x86_64")))
+
+
 def _readiness_state(
     tmp_path: Path,
     *,

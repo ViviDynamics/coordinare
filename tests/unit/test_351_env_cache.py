@@ -11,6 +11,7 @@ from coordinare.daemon import _persist_env_cache
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.services.env_cache import EnvCacheService
 from coordinare.state_store import EnvCacheStateSnapshot
+from tests.unit.test_351_environment_discovery import CAPABILITIES
 
 
 def test_accepted_contract_survives_snapshot(tmp_path: Path) -> None:
@@ -127,12 +128,15 @@ async def test_discovery_inventory_respects_outer_bootstrap_budget(tmp_path: Pat
     service = EnvCacheService(SimpleNamespace(global_config=SimpleNamespace(
         env_cache=SimpleNamespace(bootstrap_max_seconds=0.01))))
     cache = EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=tmp_path, bootstrap_commit_sha="a" * 40)
-    github = SimpleNamespace(get_repository_paths=stalled)
-    with pytest.raises(TimeoutError):
+    github = SimpleNamespace(get_repository_paths=stalled, prepare_execution_source=stalled)
+    from coordinare.services.environment_discovery import EnvironmentDiscoveryError
+
+    with pytest.raises(EnvironmentDiscoveryError, match="deadline"):
         await service._build_manifest_artifacts(
             performer_mounts=(tmp_path,), symphony_name="sym", repo="sym", github_org="org",
             github_service=github, readme_contents={}, current_sha="a" * 40, cache_dir=tmp_path,
-            cache_mount_path="/devenv/sym", llm_chat=None, cache_state=cache)
+            cache_mount_path="/devenv/sym", llm_chat=None, cache_state=cache,
+            capabilities=CAPABILITIES.model_copy(update={"cache_mount_path": "/devenv/sym"}))
 
 
 def test_clean_report_requires_service_lifecycle_evidence(tmp_path: Path) -> None:
@@ -145,7 +149,8 @@ def test_clean_report_requires_service_lifecycle_evidence(tmp_path: Path) -> Non
         "health": {"id": "health", "argv": ["true"]}, "stop": {"id": "stop", "argv": ["true"]}}])
     cache = EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=tmp_path,
         bootstrap_commit_sha="a" * 40, environment_manifest=metadata["environment_manifest"],
-        environment_assessment=metadata["environment_assessment"])
+        environment_assessment=metadata["environment_assessment"],
+        environment_capabilities=metadata["environment_capabilities"])
     digest = metadata["environment_manifest_digest"]
     report = {"manifest_digest": digest, "platform": "linux/arm64", "results": [{"id": "baseline", "status": "pass",
         "required": True, "exit_code": 0, "manifest_digest": digest}]}

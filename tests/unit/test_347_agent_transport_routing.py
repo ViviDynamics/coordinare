@@ -53,7 +53,17 @@ async def test_bootstrap_dispatch_pins_commit_with_wrapper(tmp_path: Path, monke
     github = AsyncMock()
     github.get_branch_head_sha.return_value = COMMIT
     github.get_file_content.return_value = "Environment"
-    monkeypatch.setattr(service, "_build_manifest_artifacts", AsyncMock(return_value=("", False, False)))
+    async def reviewed_artifacts(**kwargs):
+        from coordinare.services.environment_discovery import DiscoveryLimits
+        from coordinare.services.environment_repair import begin_attempt, save_attempt
+        from tests.unit.env_manifest_fixture import reviewed_cache
+
+        reviewed_cache(ec, source_commit=COMMIT)
+        budget = begin_attempt(ec, DiscoveryLimits(), outer_seconds=3600)
+        save_attempt(ec, budget, executing=True)
+        return "", False, False
+
+    monkeypatch.setattr(service, "_build_manifest_artifacts", AsyncMock(side_effect=reviewed_artifacts))
     monkeypatch.setattr(service, "_load_test_env_vars", AsyncMock(return_value={}))
     dispatch = AsyncMock()
     sym = cfg.symphonies[0]

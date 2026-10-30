@@ -17,10 +17,18 @@ from coordinare.services.conductor_calls import (
     ModelRequest,
     split_messages,
 )
+from coordinare.services.environment_evidence import check_evidence_context
+from coordinare.services.environment_function_wire import (
+    INSTRUCTION,
+    decode_function,
+    functions,
+    load_unique,
+)
 
 if TYPE_CHECKING:
     from coordinare.config import ProjectConfiguration
     from coordinare.services.claude import ClaudeService
+    from coordinare.services.environment_attempt import DiscoveryChatReply
 
 log = structlog.get_logger(__name__)
 
@@ -250,6 +258,20 @@ class AnthropicApiBackend:
         return _parse_prompt_response(raw, response_format)
 
 
+SCHEMA_LIMIT_ERROR = "schema_limit"
+# Provider refusals to compile a strict response schema, before any generation.
+SCHEMA_LIMIT_MARKERS = ("grammar is too large", "schema is too complex")
+
+
+_BAD_REQUEST = 400
+
+
+def _schema_limit_rejection(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    return (getattr(response, "status_code", None) == _BAD_REQUEST
+            and any(marker in str(getattr(response, "text", "")).lower() for marker in SCHEMA_LIMIT_MARKERS))
+
+
 class OpenAiApiBackend:
     """Direct OpenAI Chat Completions call via httpx — no SDK dep required.
 
@@ -273,6 +295,7 @@ class OpenAiApiBackend:
         effort: str | None = None,
         calls: ConductorCallLog | None = None,
         endpoint_name: str = "openai_api",
+        structured_transport: str = "json_schema",
     ) -> None:
         self._api_key = api_key or ""
         self._model = model
@@ -283,6 +306,10 @@ class OpenAiApiBackend:
         # 131: every send is recorded on the conductor call that is open, if any.
         self.calls = calls if calls is not None else NULL_CALL_LOG
         self._endpoint_name = endpoint_name
+        if structured_transport not in {"json_schema", "tool_call", "json_object"}:
+            message = "unsupported structured transport"
+            raise ValueError(message)
+        self._structured_transport = structured_transport
 
     # Transient-error retry budget. Three attempts total at 0.5s / 1.5s
     # backoff — enough to ride out a LiteLLM/proxy hiccup or a brief 429
@@ -291,17 +318,27 @@ class OpenAiApiBackend:
     _RETRY_DELAYS_S: tuple[float, ...] = (0.5, 1.5)
 
     async def _chat(self, messages: list[dict[str, str]], json_mode: bool) -> str:
+        return (await self._chat_reply(messages, json_mode)).text
+
+    async def _chat_reply(self, messages: list[dict[str, str]], json_mode: bool, *, response_schema: dict[str, Any] | None = None,
+                          transport: str | None = None) -> ModelReply:
         """The reply text of one chat call ('' on any failure), recorded on the open call (131)."""
         system, user = split_messages(messages)
+        parameters = self._request_parameters(json_mode)
+        if response_schema is not None:
+            parameters["response_schema"] = response_schema
+            parameters["structured_transport"] = transport or self._structured_transport
         request = ModelRequest(
             model=self._model,
             endpoint=self._endpoint_name,
             system=system,
             prompt=user,
-            parameters=self._request_parameters(json_mode),
+            parameters=parameters,
         )
-        reply = await self.calls.invoke(request, lambda: self._post_chat(messages, json_mode))
-        return reply.text
+        if response_schema is not None:
+            return await self.calls.invoke(request, lambda: self._post_chat(messages, json_mode, response_schema=response_schema,
+                                                                            transport=transport))
+        return await self.calls.invoke(request, lambda: self._post_chat(messages, json_mode))
 
     def _request_parameters(self, json_mode: bool) -> dict[str, Any]:
         parameters: dict[str, Any] = {"max_tokens": self._max_tokens, "json_mode": json_mode}
@@ -311,7 +348,19 @@ class OpenAiApiBackend:
             parameters["temperature"] = self._temperature
         return parameters
 
-    async def _post_chat(self, messages: list[dict[str, str]], json_mode: bool) -> ModelReply:
+    def _response_parameters(self, schema: dict[str, Any] | None, json_mode: bool, transport: str | None = None) -> dict[str, Any]:
+        transport = transport or self._structured_transport
+        if schema is not None and transport == "json_object":
+            return {"response_format": {"type": "json_object"}}
+        if schema is not None and transport == "tool_call":
+            return {"tools": functions(schema), "tool_choice": "required", "parallel_tool_calls": False}
+        if schema is not None:
+            return {"response_format": {"type": "json_schema", "json_schema": {
+                "name": "coordinare_environment_response", "strict": True, "schema": schema}}}
+        return {"response_format": {"type": "json_object"}} if json_mode else {}
+
+    async def _post_chat(self, messages: list[dict[str, str]], json_mode: bool, *, response_schema: dict[str, Any] | None = None,
+                         transport: str | None = None) -> ModelReply:
         """The HTTP send with its retries. Failures come back as ``error``, never raised."""
         import httpx
         if not self._api_key:
@@ -331,8 +380,7 @@ class OpenAiApiBackend:
             payload["max_tokens"] = self._max_tokens
             if self._temperature is not None:
                 payload["temperature"] = self._temperature
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
+        payload.update(self._response_parameters(response_schema, json_mode, transport))
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -360,7 +408,10 @@ class OpenAiApiBackend:
                         await asyncio.sleep(self._RETRY_DELAYS_S[attempt])
                         continue
                 resp.raise_for_status()
-                data = resp.json()
+                try:
+                    data = load_unique(resp.text) if response_schema is not None else resp.json()
+                except (ValueError, RecursionError):
+                    last_error = "invalid provider JSON"
                 break
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = type(exc).__name__
@@ -375,13 +426,15 @@ class OpenAiApiBackend:
             except httpx.HTTPError as exc:
                 # Non-retryable (e.g. 4xx after raise_for_status).
                 log.error("openai_api_http_error", error=str(exc))
-                return ModelReply(error=type(exc).__name__)
+                limited = response_schema is not None and _schema_limit_rejection(exc)
+                return ModelReply(error=SCHEMA_LIMIT_ERROR if limited else type(exc).__name__)
 
         if data is None:
             log.error("openai_api_http_error", error=last_error or "retries_exhausted")
             return ModelReply(error=last_error or "retries_exhausted")
         try:
-            text = str(data["choices"][0]["message"]["content"] or "")
+            message = data["choices"][0]["message"]
+            text = json.dumps(message) if response_schema is not None and (transport or self._structured_transport) == "tool_call" else str(message["content"] or "")
         except (KeyError, IndexError, TypeError):
             log.warning("openai_api_unexpected_response", keys=list(data.keys()) if isinstance(data, dict) else None)
             return ModelReply(error="unexpected response")
@@ -390,12 +443,67 @@ class OpenAiApiBackend:
             text=text,
             model=model if isinstance(model, str) else None,
             usage=_openai_usage(data),
+            finish_reason=data["choices"][0].get("finish_reason") if isinstance(data["choices"][0].get("finish_reason"), str) else None,
         )
 
     async def chat_json(self, messages: list[dict[str, str]]) -> str:
         """Public JSON-mode chat for ad-hoc coordinare prompts (e.g. 077 env
         manifest README pass). Returns the assistant text ('' on any failure)."""
         return await self._chat(messages, json_mode=True)
+
+    async def chat_json_with_metadata(self, messages: list[dict[str, str]], *, response_schema: dict[str, Any] | None = None,
+                                      max_context_bytes: int | None = None, context_phase: str = "discovery") -> DiscoveryChatReply:
+        """Keep diagnostics tied to this request without changing string-only callers."""
+        from coordinare.services.environment_attempt import DiscoveryChatReply
+
+        reply, text, error_code = await self._structured_chat(messages, response_schema, self._structured_transport,
+                                                              max_context_bytes, context_phase)
+        fallback = None
+        if (reply.error == SCHEMA_LIMIT_ERROR and response_schema is not None
+                and self._structured_transport != "json_object"):
+            # The provider refused to compile this schema before generating anything; resend the same
+            # request once with the schema in the prompt. Local validation remains authoritative.
+            log.warning("structured_schema_fallback", phase=context_phase, transport="json_object")
+            fallback = "json_object"
+            reply, text, error_code = await self._structured_chat(messages, response_schema, fallback,
+                                                                  max_context_bytes, context_phase)
+        return DiscoveryChatReply(text=text, usage=reply.usage, finish_reason=reply.finish_reason, error_code=error_code,
+            wire_text=reply.text if response_schema is not None else None, transport_fallback=fallback)
+
+    async def _structured_chat(self, messages: list[dict[str, str]], canonical_schema: dict[str, Any] | None, transport: str,
+                               max_context_bytes: int | None, context_phase: str) -> tuple[ModelReply, str, str | None]:
+        from coordinare.services.environment_structured_wire import (
+            WIRE_INSTRUCTION,
+            decode_wire,
+            wire_schema,
+        )
+
+        function_mode = transport == "tool_call"
+        text_mode = transport == "json_object"
+        instruction = ("Transport: return exactly one canonical JSON object in the logical phase envelope described above. "
+            "No native function calls, prose, markdown, or response wrapper. All local validation, source evidence, "
+            "independent review and required execution rules remain mandatory.") if text_mode else (INSTRUCTION if function_mode else WIRE_INSTRUCTION)
+        response_schema = canonical_schema
+        if canonical_schema is not None:
+            if text_mode:
+                instruction += "\n\nAuthoritative logical response schema for this request:\n" + json.dumps(canonical_schema)
+            messages = [dict(message) for message in messages]
+            if messages and messages[0]["role"] == "system":
+                messages[0]["content"] += "\n\n" + instruction
+            else:
+                messages.insert(0, {"role": "system", "content": instruction})
+            response_schema = canonical_schema if function_mode or text_mode else wire_schema(canonical_schema)
+        if max_context_bytes is not None:
+            check_evidence_context(messages, max_bytes=max_context_bytes, phase=context_phase)
+        reply = await self._chat_reply(messages, json_mode=True, response_schema=response_schema, transport=transport)
+        text = reply.text
+        error_code = "provider_request_failed" if reply.error else None
+        if canonical_schema is not None and not error_code and not text_mode:
+            try:
+                text = decode_function(text, canonical_schema) if function_mode else decode_wire(text, canonical_schema)
+            except (ValueError, TypeError, RecursionError, KeyError):
+                text, error_code = "", "provider_response_invalid"
+        return reply, text, error_code
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
         prompt = _build_assess_prompt(card)
@@ -669,6 +777,7 @@ def build_conducting_backend(
                 temperature=a.temperature,
                 base_url=a.base_url,
                 effort=a.effort,
+                structured_transport=a.structured_transport,
                 calls=calls,
             )
         case "claude_cli":

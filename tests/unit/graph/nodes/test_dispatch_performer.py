@@ -118,7 +118,7 @@ class _WorkspaceManager:
 def _base_state(**overrides: Any) -> dict[str, Any]:
     """Return an initial state pre-configured with common test prerequisites."""
     state = initial_state()
-    state["config"] = mount_global()
+    state["config"] = mount_global(performer_image="trusted/global@sha256:" + "a" * 64)
     state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
     state["github_service"] = _GitHub()
     state["workspace_manager"] = _WorkspaceManager()
@@ -1438,6 +1438,8 @@ def _provenance_gate_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
 def _readiness_gate_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
     """Volume-wiring tests use a passing clean-verifier seam with bound fixture evidence.
     Dedicated readiness tests override the seam to exercise each real gate outcome."""
+    monkeypatch.setattr("coordinare.services.environment_capabilities._docker_identity",
+        AsyncMock(return_value=("trusted/global@sha256:" + "a" * 64, "linux/x86_64")))
     monkeypatch.setattr(
         "coordinare.graph.nodes.dispatch_performer.verify_env_cache_clean",
         AsyncMock(return_value=(True, "fixture clean verification passed")),
@@ -1556,6 +1558,7 @@ async def test_env_cache_bootstrap_dispatch_proceeds_without_activate(
         cache_dir=cache_dir,
         cache_dir_ready=False,
     )
+    reviewed_cache(not_ready_state)
     env_cache = {symphony_name: not_ready_state}
 
     svc = _make_http_service(mode="ephemeral")
@@ -2146,6 +2149,7 @@ async def test_dispatch_resolves_test_env_via_effective_config(tmp_path: Path) -
         tmp_path, symphony_name, source=".env.test",
     )
     global_cfg = ProjectConfiguration(
+        performer_image="trusted/global@sha256:" + "a" * 64,
         github_org="acme-org",
         github_project_number=1,
         github_token="token",
@@ -2188,6 +2192,7 @@ async def test_dispatch_test_env_absent_when_no_source_configured(
     github = _GitHubWithFileContent(file_content="SHOULD_NOT_BE_READ=1\n")
     env_cache = _ready_env_cache(tmp_path, symphony_name)  # no test_env_source
     global_cfg = ProjectConfiguration(
+        performer_image="trusted/global@sha256:" + "a" * 64,
         github_org="acme-org",
         github_project_number=1,
         github_token="token",

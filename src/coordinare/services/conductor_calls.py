@@ -111,6 +111,7 @@ class ModelReply:
     error: str | None = None
     timed_out: bool = False
     note: str = ""
+    finish_reason: str | None = None
 
 
 @dataclass
