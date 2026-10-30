@@ -296,5 +296,11 @@ def test_finding_responses_nested_in_the_revision_are_moved_to_the_envelope():
     envelope = ScopeRevisionEnvelope.model_validate(nested)
     assert envelope.finding_responses == [] and envelope.scope_revision.add == []
     assert "finding_responses" in nested["scope_revision"]
+    response = {"finding_id": "F0001", "rationale": "Added the missing obligation", "sources": ["guide"],
+                "affected_ids": []}
+    # Dettmore e2e-24: an empty list beside the nested responses says nothing, so they still move.
+    beside = {"scope_revision": {**delta(base), "finding_responses": [response]}, "finding_responses": []}
+    assert [r.finding_id for r in ScopeRevisionEnvelope.model_validate(beside).finding_responses] == ["F0001"]
+    # Responses at both levels stay ambiguous and are reported, never merged.
     with pytest.raises(ValidationError):
-        ScopeRevisionEnvelope.model_validate({**nested, "finding_responses": []})
+        ScopeRevisionEnvelope.model_validate({**beside, "finding_responses": [response]})

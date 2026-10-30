@@ -44,9 +44,10 @@ class ScopeRevisionEnvelope(FindingEvidence):
 
         Dettmore e2e-17: the scope revision author kept the same responses one level too deep through every
         correction and both restarts, and the attempt held on the schema limit. The placement is unambiguous; when
-        both levels carry responses nothing moves and validation reports it as before.
+        both levels carry responses nothing moves and validation reports it as before. An empty list beside it says
+        nothing (Dettmore e2e-24 sent [] beside the nested responses), so it does not block the move.
         """
-        if not isinstance(data, dict) or 'finding_responses' in data:
+        if not isinstance(data, dict) or data.get('finding_responses', []) != []:
             return data
         revision = data.get('scope_revision')
         if not isinstance(revision, dict) or 'finding_responses' not in revision:

@@ -337,3 +337,20 @@ def test_activation_path_guidance_names_the_alternative():
     from coordinare.services.environment_admission import GRAPH_GUIDANCE
 
     assert 'activation.path' in GRAPH_GUIDANCE['activation_path_replaced']
+
+
+def test_an_unknown_key_gets_removal_guidance_without_being_named():
+    from coordinare_service_inference.environment.scope import ScopeAssessmentEnvelope
+    from pydantic import ValidationError
+
+    from coordinare.services.environment_admission import UNKNOWN_KEY_GUIDANCE, _validation_feedback
+
+    # Dettmore e2e-24: reviewers added decisions_note beside decisions and never learned which key to drop.
+    with pytest.raises(ValidationError) as caught:
+        ScopeAssessmentEnvelope.model_validate({'scope_assessment': {
+            'verdict': 'accept', 'rationale': 'r', 'sources': ['a'], 'findings': [], 'decisions': [],
+            'decisions_review_note': 'private note'}})
+    feedback = [item for item in _validation_feedback(caught.value) if item['code'] == 'extra_forbidden']
+    assert feedback and feedback[0]['location'][-1] == '*'
+    assert feedback[0]['guidance'] == UNKNOWN_KEY_GUIDANCE
+    assert 'decisions_review_note' not in str(feedback) and 'private note' not in str(feedback)

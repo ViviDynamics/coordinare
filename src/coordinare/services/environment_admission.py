@@ -68,6 +68,11 @@ def _decode_reply(raw: str, name: str, limits: DiscoveryLimits) -> dict[str, Any
     return reply
 
 
+# The unknown key itself is never echoed (see _validation_feedback); the guidance says what to do with it.
+UNKNOWN_KEY_GUIDANCE = (
+    'The key shown as * at this location is not defined by the response schema. Remove it rather than renaming it: '
+    'send only the keys the schema defines, with no notes, counts, placeholders or extra copies of a section beside '
+    'them. Put any explanation in the rationale field, and send each section once under its schema key.')
 SOURCE_DISPOSITION_GUIDANCE = (
     'Each source review decision needs exactly one disposition: covered, source_correction, source_gap or duplicate, '
     'with that disposition\'s required fields. Do not supply a status field; the daemon derives it. '
@@ -315,8 +320,9 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
         if code in {"union_tag_not_found", "union_tag_invalid"} or (
                 code == "extra_forbidden" and "scope_assessment" in location and "decisions" in location):
             detail["guidance"] = SOURCE_DISPOSITION_GUIDANCE
-        if code == "global_part_invalid":
-            detail["guidance"] = GLOBAL_PART_GUIDANCE
+        unknown_key = code == "extra_forbidden" and location[-1:] == ["*"] and "guidance" not in detail
+        if code == "global_part_invalid" or unknown_key:
+            detail["guidance"] = GLOBAL_PART_GUIDANCE if code == "global_part_invalid" else UNKNOWN_KEY_GUIDANCE
         if code == "scope_id_collision":
             detail.update(_graph_ids(error), guidance=SCOPE_ID_COLLISION_GUIDANCE)
         detail.update(_schema_bounds(code, error, guided="guidance" in detail))
