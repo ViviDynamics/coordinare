@@ -1441,7 +1441,7 @@ _ID_FIELDS = frozenset({'command_id', 'unavailable', 'pairs', 'missing', 'id'})
 # Codes whose ``unavailable`` lists names that are not record ids: credential and environment variable names,
 # activation path positions and source paths. Their command_id is still a record id.
 _UNAVAILABLE_NOT_IDS = frozenset({'runtime_env_reserved', 'shell_local_template_reference', 'activation_path_uncreated',
-                                  'requirement_source_uninspected'})
+                                  'activation_path_replaced', 'requirement_source_uninspected'})
 
 
 def _named_ids(value: Any, *, field: bool = False) -> set[str]:

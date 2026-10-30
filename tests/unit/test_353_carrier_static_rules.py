@@ -319,3 +319,21 @@ def test_the_credential_correction_never_steers_a_generated_secret_into_a_templa
     assert 'as $NAME, never ${NAME}' in CREDENTIAL_GUIDANCE
     for script in ('NAME=$(openssl rand -hex 64) bundle exec rspec', 'NAME=$(openssl rand -hex 64); export NAME; bin/test'):
         validate_shell_locals([Command(id='check-tests', argv=['bash', '-c', script])], [])
+
+
+@pytest.mark.parametrize('value', ['{cache}/rbenv/shims:{cache}/bin', '${PATH}'])
+def test_activation_cannot_replace_the_guest_path(value):
+    # Dettmore e2e-23: activation PATH of cache directories only; every install exited 127 without a shell.
+    activation = Activation(path=['{cache}/bin'], env={'PATH': value, 'RBENV_ROOT': '{cache}/rbenv'})
+    install = [_cmd('tools', 'bash', '-c', 'mkdir -p {cache}/bin')]
+    with pytest.raises(PydanticCustomError) as caught:
+        validate_static_rules(install, activation, 'linux/aarch64')
+    assert caught.value.type == 'activation_path_replaced'
+    assert caught.value.context['command_id'] == 'activation'
+    validate_static_rules(install, Activation(path=['{cache}/bin'], env={'RBENV_ROOT': '{cache}/rbenv'}), 'linux/aarch64')
+
+
+def test_activation_path_guidance_names_the_alternative():
+    from coordinare.services.environment_admission import GRAPH_GUIDANCE
+
+    assert 'activation.path' in GRAPH_GUIDANCE['activation_path_replaced']

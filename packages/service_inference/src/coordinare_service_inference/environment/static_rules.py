@@ -340,6 +340,12 @@ def validate_static_rules(install: Sequence[Command], activation: Activation, pl
         if foreign_artifact(command, platform):
             raise _graph_error("foreign_architecture_artifact", "a release artifact is built for another CPU architecture",
                                command.id, set())
+    # Activation applies to install, service and check commands alike. PATH set here replaces the guest's own PATH
+    # (an idempotent self reference is a no-op), so every command loses its shell and system tools: Dettmore e2e-23
+    # declared PATH as cache directories only and every install exited 127 before running.
+    if "PATH" in activation.env:
+        raise _graph_error("activation_path_replaced", "activation env cannot set PATH: it replaces the guest PATH; "
+                           "list tool directories in activation.path, which is prepended to it", "activation", {"PATH"})
     mentioned = _mentions(install)
     uncreated = {f"activation-path-{index}" for index, path in enumerate(activation.path)
                  if not _templated(path) and not any(_related(path, mention) for mention in mentioned)}

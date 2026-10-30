@@ -179,6 +179,10 @@ GRAPH_GUIDANCE = {
                                       'that, so the pattern matches the script\'s own shell and kills or finds it. Write the '
                                       'process id to a file under {scratch} when it starts, and stop it by killing that '
                                       'pid.'),
+    'activation_path_replaced': ('activation.env sets PATH, which replaces the guest\'s own PATH for every install, service '
+                                 'and check command, so even the shell and system tools are not found. Remove PATH from '
+                                 'activation.env and list each tool directory in activation.path instead: those entries '
+                                 'are prepended to the guest PATH.'),
     'activation_path_uncreated': ('Each listed activation path entry (its 0-based position in activation.path) is not '
                                   'created or populated by any install command. Have an install command create that '
                                   'path or a directory it lives in, or remove the entry.'),

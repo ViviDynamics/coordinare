@@ -94,6 +94,7 @@ _MANIFEST_INSTRUCTIONS = (
     'For shell-local variables assigned inside bash -c, use $name rather than ${name}. '
     f'{LOCAL_CREDENTIAL_AUTHORING} '
     'Create every declared activation directory during installation; do not hide a missing path by removing useful activation. '
+    'List tool directories in activation.path, which is prepended to the guest PATH; never set PATH in activation.env. '
     'The project environment scope is fixed by pinned development/test evidence, never by image convenience. '
     'Include finding_responses for every open finding ID: rationale, sources and affected_ids. '
     'Resolve missing capabilities or provide source-backed explanations; no new privileges or verification networking. '
