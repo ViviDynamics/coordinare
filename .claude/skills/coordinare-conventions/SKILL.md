@@ -4,7 +4,7 @@ description: Use when starting work in any Vivi Dynamics repository, when unsure
 license: Proprietary
 compatibility: Any agent that can run bash, gh, jq and git.
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
   owner: Vivi Dynamics
 ---
 
@@ -29,7 +29,7 @@ as `$S/<script>`.
 | Watch the default branch's CI and retry flakes | `watch-ci-main` |
 | Merge a PR, or decide whether it can merge | `merge-pr` |
 | Bring a branch up to date with the default branch | `rebase-main` |
-| Run a GitHub Copilot review loop on a PR | `copilot-review` |
+| Get a GitHub Copilot review, only when explicitly asked and after a local review | `copilot-review` |
 | Take an issue to a merged PR unattended | `ship-issue` |
 | Work an issue to an open PR with a plan gate | `work-issue` (future) |
 
