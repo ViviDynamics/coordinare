@@ -1,6 +1,7 @@
 """Daemon-owned transitions for independently adjudicated coverage findings."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NoReturn
 
@@ -54,6 +55,22 @@ def _ids(manifest: EnvironmentManifest) -> set[str]:
     return ids
 
 
+# Model-chosen ids and paths are echoed only when they are plain names.
+_SAFE_NAME = re.compile(r'[A-Za-z0-9_.:/@+-]{1,160}')
+
+
+def _named(values: list[str]) -> str:
+    return ', '.join(value if _SAFE_NAME.fullmatch(value) else '(unnamed)' for value in values[:8])
+
+
+def _response_problem(response: FindingResponse, inspected: Mapping[str, str], known: set[str]) -> str:
+    unread = [path for path in response.sources if path not in inspected]
+    unknown = [identifier for identifier in response.affected_ids if identifier not in known]
+    parts = [*([f'unread sources {_named(unread)}'] if unread else []),
+             *([f'affected_ids that are not manifest record ids {_named(unknown)}'] if unknown else [])]
+    return f'{_named([response.finding_id])} has ' + ' and '.join(parts) if parts else ''
+
+
 def manifest_obligation_ids(manifest: EnvironmentManifest) -> set[str]:
     """The ids an executable finding may name."""
     return _ids(manifest)
@@ -65,9 +82,15 @@ def validate_finding_responses(responses: list[FindingResponse], *, ledger: Find
     if (len(set(ids)) != len(ids) or not set(ledger.open_ids()) <= set(ids)
             or not set(ids) <= {record.id for record in ledger.records}):
         refuse_finding('finding response IDs must match established objections', code='finding_response_ids_invalid')
-    if any(not set(response.sources) <= inspected.keys() or not set(response.affected_ids) <= _ids(manifest)
-           for response in responses):
-        refuse_finding('finding responses must address every open objection with read evidence', code='review_findings_invalid')
+    known = _ids(manifest)
+    problems = [_response_problem(response, inspected, known) for response in responses]
+    if any(problems):
+        # Named, since Dettmore e2e-37's global author was told only that its responses were invalid: one listed
+        # 'activation' in affected_ids, and three merge rounds passed without it learning which value to drop.
+        named = '; '.join(problem for problem in problems if problem)[:1500]
+        refuse_finding('finding responses must address every open objection with read evidence; correct: ' + named
+                       + '. affected_ids name requirement, check, install or service command ids only (activation, '
+                       'env and paths are not ids); sources name only files you read.', code='review_findings_invalid')
 
 
 def apply_finding_review(ledger: FindingLedger, *, manifest: EnvironmentManifest,

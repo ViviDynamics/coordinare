@@ -193,3 +193,29 @@ def test_a_bare_indeterminate_review_is_a_correction_not_a_hold():
     assert review(named).open_ids() == ['F0001']
     # A source review keeps its designed hold on an indeterminate judgment.
     assert apply(empty, bare).open_ids() == []
+
+
+def test_an_invalid_finding_response_is_named_with_what_to_correct():
+    """Dettmore e2e-37: the global author listed 'activation' in affected_ids and was never told which value failed."""
+    from coordinare_service_inference.environment.findings import FindingResponse
+    from coordinare_service_inference.environment.models import EnvironmentManifest
+
+    from coordinare.services.environment_findings import validate_finding_responses
+    from tests.unit.env_manifest_fixture import reviewed_metadata
+
+    manifest = EnvironmentManifest.model_validate(reviewed_metadata(
+        checks=[{"id": "suite", "argv": ["quality-runner", "suite"]}])["environment_manifest"])
+    current = ledger()
+    responses = [FindingResponse.model_validate({'finding_id': 'F0001', 'rationale': 'Covered by the suite check',
+                                                 'sources': ['guide'], 'affected_ids': ['suite']}),
+                 FindingResponse.model_validate({'finding_id': 'F0002', 'rationale': 'Activation now exports PATH',
+                                                 'sources': ['guide', 'unread/file.md'],
+                                                 'affected_ids': ['activation', 'suite']})]
+    with pytest.raises(FindingValidationError) as caught:
+        validate_finding_responses(responses, ledger=current, inspected=INPUTS, manifest=manifest)
+    message = str(caught.value)
+    assert caught.value.code == 'review_findings_invalid'
+    assert 'F0002 has unread sources unread/file.md and affected_ids that are not manifest record ids activation' in message
+    assert 'F0001' not in message
+    corrected = responses[1].model_copy(update={'sources': ['guide'], 'affected_ids': ['suite']})
+    validate_finding_responses([responses[0], corrected], ledger=current, inspected=INPUTS, manifest=manifest)
