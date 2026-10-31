@@ -313,13 +313,99 @@ def self_matching_process_pattern(command: Command) -> bool:
         and not (piped and program[0].rsplit("/", 1)[-1] == "pgrep"))
 
 
+# A fallback that turns a failure into success: true, :, a message, or exit 0.
+_FALLBACKS = frozenset({"true", ":", "echo", "printf"})
+# Shell constructs this reader does not follow: a script using any of them is not judged.
+_CONTROL_WORDS = frozenset({"if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac",
+                            "function", "select"})
+
+
+_OUTPUT = re.compile(r"\d*>>?(.*)")
+
+
+def _writes_file(words: list[str]) -> bool:
+    """A redirection of output into a file (not /dev/null or a descriptor): echo or printf then does work."""
+    for index, word in enumerate(words):
+        if match := _OUTPUT.fullmatch(word):
+            target = match[1] or (words[index + 1] if index + 1 < len(words) else "")
+            if target and target != "/dev/null" and not target.startswith("fd") and target != "both":
+                return True
+    return False
+
+
+def _fallback(words: list[str]) -> bool:
+    """true, :, exit 0, or a message: e2e-20's grep -q line file || printf line >> file appends, so is no fallback."""
+    program = _program(_without_redirections(words))
+    if not program or _writes_file(words):
+        return False
+    return program[0] in _FALLBACKS or program == ["exit", "0"]
+
+
+def masked_check_status(command: Command) -> bool:
+    """Whether a check's script discards the failure of the work it verifies.
+
+    Dettmore e2e-23 reviewed and approved a check whose dependency listing, package test and CSS build ran as one
+    chain ending in || true, followed only by a directory test, so it passed whatever the build did. Judged only at
+    the top level of a plain script: the script ends with a command masked by a fallback (x || true, || :, || echo,
+    || exit 0), or a chain of two or more commands joined by && is masked by one. A single preparatory command
+    masked on its own (cp -n a b || true) is allowed. Control structures, subshells and anything the lexer cannot
+    follow are not judged, so this may miss a case but never refuses a check that reports its own status.
+    """
+    if not (len(command.argv) == 3 and command.argv[0].rsplit("/", 1)[-1] in _SHELLS and command.argv[1] == "-c"):
+        return False
+    script = command.argv[2]
+    if _UNJUDGED.search(script):
+        return False
+    script = _FD_REDIRECT.sub(lambda match: f"{match[1]}fd{match[2]}" if match[1] else ">both", script)
+    lexer = shlex.shlex(script, posix=True, punctuation_chars=_OPERATORS)
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    # Lists separated by ; newline or &, each a sequence of commands joined by && or ||.
+    lists: list[list[tuple[str | None, list[str]]]] = [[(None, [])]]
+    try:
+        for token in lexer:
+            if token and all(character in _OPERATORS for character in token):
+                # Adjacent operator characters arrive as one token (";\n", "&&\n"); newlines only end a list.
+                core = token.replace("\n", "")
+                if core in {"&&", "||"}:
+                    lists[-1].append((core, []))
+                elif core in {"", ";", "&"}:
+                    lists.append([(None, [])])
+                elif core == "|":
+                    lists[-1][-1][1].append(core)
+                else:
+                    return False  # A subshell, group or other operator this reader does not follow.
+            elif token in _CONTROL_WORDS or token in {"{", "}"}:
+                return False
+            else:
+                lists[-1][-1][1].append(token)
+    except ValueError:
+        return False
+    lists = [[(operator, words) for operator, words in items if words] for items in lists]
+    lists = [items for items in lists if items]
+    for position, items in enumerate(lists):
+        operator, words = items[-1]
+        if operator != "||" or not _fallback(words):
+            continue
+        masked = items[:-1]
+        if position == len(lists) - 1 or (len(masked) >= 2 and all(op in {None, "&&"} for op, _ in masked)):
+            return True
+    return False
+
+
 def validate_static_rules(install: Sequence[Command], activation: Activation, platform: str | None = None, *,
-                          others: Sequence[Command] = (), system_packages: bool = True) -> None:
+                          others: Sequence[Command] = (), system_packages: bool = True,
+                          checks: Sequence[Command] = ()) -> None:
     """Raises the first correctable static error; each names its record ids (activation entries by position).
 
     ``others`` are the check and service lifecycle commands; ``system_packages`` is False for a carrier that cannot
-    install system packages.
+    install system packages. ``checks`` are the required checks judged for a masked status (those not yet executed:
+    an executed check is frozen and cannot be corrected).
     """
+    for command in checks:
+        if masked_check_status(command):
+            raise _graph_error("masked_check_status", "a required check discards the failure of the work it verifies",
+                               command.id, set())
     if not system_packages:
         for command in install:
             if system_package_install(command) or package_fetch(command):

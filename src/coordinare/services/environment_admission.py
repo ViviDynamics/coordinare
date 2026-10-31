@@ -184,6 +184,11 @@ GRAPH_GUIDANCE = {
                                       'that, so the pattern matches the script\'s own shell and kills or finds it. Write the '
                                       'process id to a file under {scratch} when it starts, and stop it by killing that '
                                       'pid.'),
+    'masked_check_status': ('The named required check discards the failure of the work it verifies: it ends with a '
+                            'command masked by || true, || :, || echo or || exit 0, or masks a chain of commands '
+                            'joined by && that way, so it passes whatever that work does. Let the verified command\'s '
+                            'own exit status be the check\'s: drop the fallback, or move preparation that may fail '
+                            'harmlessly into its own step and keep the verified commands unmasked.'),
     'activation_path_replaced': ('activation.env sets PATH, which replaces the guest\'s own PATH for every install, service '
                                  'and check command, so even the shell and system tools are not found. Remove PATH from '
                                  'activation.env and list each tool directory in activation.path instead: those entries '

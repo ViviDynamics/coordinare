@@ -123,10 +123,11 @@ def test_discovery_judges_every_lifecycle_and_check_command_and_the_private_carr
     service = SimpleNamespace(init=None, start=_cmd('db-start', 'true'), health=_cmd('db-health', 'true'),
                               stop=_cmd('db-stop', 'true'))
     manifest = SimpleNamespace(checks=[_cmd('check-a', 'true')], services=[service])
-    private = _carrier_rules(manifest, SimpleNamespace(runtime=object()))
+    fresh = SimpleNamespace(executed_manifests=[])
+    private = _carrier_rules(manifest, SimpleNamespace(runtime=object()), fresh)
     assert [command.id for command in private['others']] == ['check-a', 'db-start', 'db-health', 'db-stop']
     assert private['system_packages'] is False
-    assert _carrier_rules(manifest, SimpleNamespace(runtime=None))['system_packages'] is True
+    assert _carrier_rules(manifest, SimpleNamespace(runtime=None), fresh)['system_packages'] is True
 
 
 def test_both_rules_carry_correction_guidance():
@@ -354,3 +355,65 @@ def test_an_unknown_key_gets_removal_guidance_without_being_named():
     assert feedback and feedback[0]['location'][-1] == '*'
     assert feedback[0]['guidance'] == UNKNOWN_KEY_GUIDANCE
     assert 'decisions_review_note' not in str(feedback) and 'private note' not in str(feedback)
+
+
+@pytest.mark.parametrize('script', [
+    # Dettmore e2e-23: the whole verification chain masked, then only a directory test.
+    'cd {cache}/npm-root && npm ls --silent >/dev/null && test -d node_modules/x && npm run build:css >/dev/null 2>&1 '
+    '|| true; test -d node_modules',
+    'bundle exec rspec || true',
+    'set -e\nbin/setup\nbundle exec rspec || echo "rspec failed"',
+    'npm test || :',
+    'make check || exit 0',
+    'bundle exec rails db:prepare;\nbundle exec rspec || true',
+])
+def test_a_check_that_discards_its_verified_failure_is_refused(script):
+    from coordinare_service_inference.environment.static_rules import masked_check_status
+
+    check = _cmd('c00-masked', 'bash', '-c', script)
+    assert masked_check_status(check)
+    with pytest.raises(PydanticCustomError) as caught:
+        validate_static_rules([], NO_ACTIVATION, 'linux/aarch64', checks=[check])
+    assert caught.value.type == 'masked_check_status' and caught.value.context['command_id'] == 'c00-masked'
+
+
+@pytest.mark.parametrize('script', [
+    # Dettmore e2e-25: one preparatory command masked on its own, the verified commands unmasked.
+    'cp -n repo.env.example repo.env || true; gh --version && jq --version',
+    # Dettmore e2e-20: the fallback appends a missing line, so it does work.
+    "grep -qxF 'X=on' repo.env || printf 'X=on\\n' >> repo.env",
+    'test -f repo.env || cp repo.env.example repo.env; bin/repo-config KEY',
+    'pkill -f stale-worker || true\nbundle exec rspec',
+    'bundle exec rspec && echo passed',
+    'curl -fsS http://127.0.0.1:4569/healthz',
+    'if ! bundle exec rspec; then exit 1; fi',
+    '(bundle exec rspec) || true',
+])
+def test_a_check_that_reports_its_own_status_is_admitted(script):
+    from coordinare_service_inference.environment.static_rules import masked_check_status
+
+    check = _cmd('c00-honest', 'bash', '-c', script)
+    assert not masked_check_status(check)
+    validate_static_rules([], NO_ACTIVATION, 'linux/aarch64', checks=[check])
+
+
+def test_masked_check_guidance_says_how_to_correct_it():
+    from coordinare.services.environment_admission import GRAPH_GUIDANCE
+
+    guidance = GRAPH_GUIDANCE['masked_check_status']
+    assert '|| true' in guidance and 'exit status' in guidance
+
+
+def test_an_executed_check_is_never_refused_for_a_masked_status():
+    """An executed check is frozen: refusing it would ask for a correction the author may not make."""
+    from types import SimpleNamespace
+
+    from coordinare.services.environment_discovery import _carrier_rules
+
+    masked = _cmd('c00-masked', 'bash', '-c', 'bundle exec rspec || true')
+    fresh = _cmd('c00-fresh', 'bash', '-c', 'npm test || :')
+    manifest = SimpleNamespace(checks=[masked, fresh], services=[])
+    capabilities = SimpleNamespace(runtime=object())
+    executed = SimpleNamespace(executed_manifests=[SimpleNamespace(checks=[masked])])
+    rules = _carrier_rules(manifest, capabilities, executed)
+    assert [check.id for check in rules['checks']] == ['c00-fresh']

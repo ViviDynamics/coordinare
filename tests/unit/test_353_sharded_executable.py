@@ -790,6 +790,7 @@ def test_the_global_author_hears_of_a_criterion_id_and_a_dropped_obligation_in_i
     """v25: both surfaced only at the merge, one per round, until the rounds ran out."""
     criterion = make_criterion(1)
     merge = discovery_module._CandidateValidator.__new__(discovery_module._CandidateValidator)
+    merge.budget = SimpleNamespace(executed_manifests=[])
     merge.construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=scope_of([criterion])),
                                          capabilities=SimpleNamespace(runtime=None, platform='linux/aarch64'))
     merge.required_ids = {'requirements': set(), 'checks': {'toolchain', 'c00-owned'}, 'install': set(),
@@ -824,6 +825,7 @@ def test_without_the_attempt_validator_the_global_part_keeps_only_its_own_rules(
 def test_record_rules_reach_the_global_author_in_its_own_phase_with_the_ids_they_name(changes, code, command_id, unavailable):
     """v28: DOCKER_CONFIG in activation and an optional stop on a required service reached the merge unlocated."""
     merge = discovery_module._CandidateValidator.__new__(discovery_module._CandidateValidator)
+    merge.budget = SimpleNamespace(executed_manifests=[])
     merge.construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=None),
                                          capabilities=SimpleNamespace(runtime=object(), platform='linux/aarch64'))
     merge.required_ids = {}
@@ -858,6 +860,7 @@ def test_a_part_duplicate_decision_left_open_is_corrected_by_its_reviewer():
 def test_a_requirement_sharing_a_check_id_is_its_own_correction_and_never_locked():
     """v35: a requirement and a check shared ids; called a criterion collision, the author renamed the checks."""
     merge = discovery_module._CandidateValidator.__new__(discovery_module._CandidateValidator)
+    merge.budget = SimpleNamespace(executed_manifests=[])
     merge.construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=None), capabilities=SimpleNamespace(runtime=None, platform='linux/aarch64'))
     merge.required_ids = {}
     requirement = {'id': 'toolchain', 'description': 'zog 7', 'source': 'README.md', 'checks': ['toolchain']}
