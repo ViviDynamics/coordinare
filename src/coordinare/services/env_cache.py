@@ -2536,7 +2536,7 @@ class EnvCacheService:
             max_schema_repairs=getattr(cfg, "manifest_max_schema_repairs", 2),
             max_coverage_revisions=getattr(cfg, "manifest_max_coverage_revisions", 2),
             max_scope_revisions=getattr(cfg, "manifest_max_scope_revisions", 8),
-            max_execution_repairs=getattr(cfg, "manifest_max_execution_repairs", 2),
+            max_execution_repairs=getattr(cfg, "manifest_max_execution_repairs", DiscoveryLimits.max_execution_repairs),
             delta_repair=getattr(cfg, "manifest_delta_repair", True),
             shard_context_tokens=getattr(cfg, "manifest_shard_context_tokens", None),
             agent_concurrency=getattr(cfg, "manifest_agent_concurrency", 12),

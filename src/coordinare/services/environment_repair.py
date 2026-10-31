@@ -156,7 +156,7 @@ class RepairJournal(BaseModel):
     schema_repairs: int = Field(default=0, ge=0, le=REPAIR_LIMITS["schema"])
     coverage_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["coverage"])
     scope_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["scope"])
-    execution_repairs: int = Field(default=0, ge=0, le=2)
+    execution_repairs: int = Field(default=0, ge=0, le=REPAIR_LIMITS["execution"])
     generation: int = Field(default=0, ge=0, le=2)
     status: Literal['discovering', 'executing', 'repair_pending', 'held', 'ready'] = 'discovering'
     target: ExecutionCapabilities | None = None

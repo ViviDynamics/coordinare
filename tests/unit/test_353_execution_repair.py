@@ -70,12 +70,12 @@ def test_failed_execution_uses_same_budget_and_new_empty_cache_generation(tmp_pa
     assert cache.environment_attempt['expires_at'] == 700
 
 
-def test_third_repair_holds_without_renewing_counters(tmp_path):
+def test_a_repair_beyond_the_limit_holds_without_renewing_counters(tmp_path):
     cache = cache_fixture(tmp_path)
-    started(cache, repairs=2)
+    started(cache, repairs=4)
     assert not record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=101)
     assert len(cache.environment_attempt['rejected']) == 1
-    assert cache.environment_attempt['execution_repairs'] == 2
+    assert cache.environment_attempt['execution_repairs'] == 4
     with pytest.raises(EnvironmentDiscoveryError, match=r'held|exhausted'):
         begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=102)
 
@@ -310,7 +310,7 @@ def test_durable_diagnostics_keep_actual_stage_and_category_counts(tmp_path):
     assert summary['stage'] == 'review'
     assert summary['schema_repairs'] == 1
     assert summary['mandatory_inputs_required'] == summary['mandatory_inputs_delivered'] == 8
-    assert summary['max_execution_repairs'] == 2
+    assert summary['max_execution_repairs'] == 4
 
 
 def activation_failure_case(tmp_path):

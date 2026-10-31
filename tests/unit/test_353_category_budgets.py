@@ -8,7 +8,7 @@ from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDi
 
 
 def test_category_reservations_are_independent():
-    budget = AttemptBudget()
+    budget = AttemptBudget(max_execution_repairs=2)
     for kind in ('schema', 'coverage', 'execution'):
         budget.reserve_repair(kind)
         budget.reserve_repair(kind)
@@ -32,14 +32,15 @@ def test_zero_category_limit_refuses_without_changing_counters(kind, maximum):
 def test_category_config_defaults_legacy_alias_and_mixed_setting_rejection():
     defaults = EnvCacheConfig()
     assert defaults.manifest_max_schema_repairs == defaults.manifest_max_coverage_revisions == 2
-    assert defaults.manifest_max_execution_repairs == 2
+    # Maintainer ruling 2026-10-31: four execution repairs.
+    assert defaults.manifest_max_execution_repairs == 4
     legacy = EnvCacheConfig(manifest_max_repairs=0)
     assert legacy.manifest_max_schema_repairs == legacy.manifest_max_coverage_revisions == 0
     assert legacy.manifest_max_execution_repairs == 0
     with pytest.raises(ValueError, match='cannot combine'):
         EnvCacheConfig(manifest_max_repairs=1, manifest_max_schema_repairs=2)
     for name, invalid_upper in [('manifest_max_schema_repairs', 9), ('manifest_max_coverage_revisions', 9),
-                                ('manifest_max_execution_repairs', 3)]:
+                                ('manifest_max_execution_repairs', 5)]:
         for invalid in (-1, invalid_upper):
             with pytest.raises(ValueError):
                 EnvCacheConfig(**{name: invalid})
@@ -53,13 +54,13 @@ def test_larger_category_budgets_remain_finite_and_do_not_expand_execution():
         max_coverage_revisions=config.manifest_max_coverage_revisions)
     budget = AttemptBudget(max_schema_repairs=limits.max_schema_repairs,
         max_coverage_revisions=limits.max_coverage_revisions)
-    for kind, count in [('schema', 8), ('coverage', 8), ('execution', 2)]:
+    for kind, count in [('schema', 8), ('coverage', 8), ('execution', 4)]:
         for _ in range(count):
             budget.reserve_repair(kind)
         with pytest.raises(EnvironmentDiscoveryError) as exc:
             budget.reserve_repair(kind)
         assert exc.value.code == f'attempt_{kind}_limit'
-    assert (budget.schema_repairs, budget.coverage_revisions, budget.execution_repairs) == (8, 8, 2)
+    assert (budget.schema_repairs, budget.coverage_revisions, budget.execution_repairs) == (8, 8, 4)
     assert EnvCacheConfig().manifest_max_coverage_revisions == 2
 
 

@@ -81,7 +81,7 @@ class Profile:
     max_schema_repairs: int = 2
     max_coverage_revisions: int = 2
     max_scope_revisions: int = 8
-    max_execution_repairs: int = 2
+    max_execution_repairs: int = REPAIR_LIMITS["execution"]
     max_review_context_bytes: int = 1024 * 1024
     max_total_reads: int | None = None
     max_model_calls: int | None = None
@@ -971,7 +971,7 @@ def main() -> int:
                         help="executable review revisions")
     parser.add_argument("--max-scope-revisions", type=int, choices=range(REPAIR_LIMITS["scope"] + 1), default=8,
                         help="source scope review revisions, counted separately from executable revisions")
-    parser.add_argument("--max-execution-repairs", type=int, choices=range(REPAIR_LIMITS["execution"] + 1), default=2)
+    parser.add_argument("--max-execution-repairs", type=int, choices=range(REPAIR_LIMITS["execution"] + 1), default=REPAIR_LIMITS["execution"])
     parser.add_argument("--max-review-context-bytes", type=int, default=1024 * 1024)
     parser.add_argument("--max-total-reads", type=_aggregate_read_allowance, default=None)
     parser.add_argument("--max-model-calls", type=_model_call_allowance, default=None)

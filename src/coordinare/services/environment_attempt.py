@@ -34,7 +34,8 @@ MAX_ATTEMPT_SECONDS = 3600
 MAX_SHARDED_ATTEMPT_SECONDS = 6 * 3600
 # One phase stays within four hours of the six (the config caps manifest_phase_timeout_seconds the same way).
 MAX_PHASE_SECONDS = 4 * 3600
-REPAIR_LIMITS = {"schema": 8, "coverage": 8, "scope": 8, "execution": 2}
+# Maintainer ruling 2026-10-31: four execution repairs (Dettmore e2e-33 held with every install but one passing).
+REPAIR_LIMITS = {"schema": 8, "coverage": 8, "scope": 8, "execution": 4}
 MAX_PROBE_BATCHES = 2
 # Each execution repair relocates its cache and brings one more probe batch (see reserve_probe_batch).
 PROBE_BATCH_CEILING = MAX_PROBE_BATCHES + REPAIR_LIMITS["execution"]
@@ -93,7 +94,7 @@ class AttemptBudget:
     max_schema_repairs: int = 2
     max_coverage_revisions: int = 2
     max_scope_revisions: int = 8
-    max_execution_repairs: int = 2
+    max_execution_repairs: int = REPAIR_LIMITS["execution"]
     started: float = field(default_factory=time.monotonic)
     calls: int = 0
     calls_completed: int = 0
