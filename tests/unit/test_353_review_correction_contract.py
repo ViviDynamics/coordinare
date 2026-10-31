@@ -168,3 +168,28 @@ async def test_real_scope_phase_corrects_duplicate_once_and_retains_original_blo
     feedback = json.loads(observed[1][-1]['content'])['validation_errors'][0]
     assert feedback['location'] == ['decisions', '1', 'status']
     assert 'resolved' in feedback['guidance']
+
+
+def test_a_bare_indeterminate_review_is_a_correction_not_a_hold():
+    """Dettmore e2e-36: an indeterminate verdict naming nothing held the attempt with nothing to act on."""
+    from coordinare_service_inference.environment.models import EnvironmentManifest
+
+    from coordinare.services.environment_findings import BARE_INDETERMINATE, apply_finding_review
+    from tests.unit.env_manifest_fixture import reviewed_metadata
+
+    manifest = EnvironmentManifest.model_validate(reviewed_metadata(
+        checks=[{"id": "suite", "argv": ["quality-runner", "suite"]}])["environment_manifest"])
+    empty = FindingLedger.model_validate({'source_commit': manifest.source_commit, 'records': [], 'reviews': []})
+    bare = {'verdict': 'indeterminate', 'rationale': 'Cannot judge', 'sources': ['guide'],
+            'capability_unavailable': False, 'findings': [], 'decisions': []}
+    def review(data):
+        return apply_finding_review(empty, manifest=manifest, proposal=CoverageAssessmentProposal.model_validate(data),
+                                    reviewer_inputs=INPUTS)
+    with pytest.raises(FindingValidationError) as caught:
+        review(bare)
+    assert caught.value.code == 'review_findings_invalid' and str(caught.value) == BARE_INDETERMINATE
+    named = {**bare, 'findings': [{'category': 'coverage', 'issue': 'Required evidence is missing',
+                                   'sources': ['guide'], 'affected_ids': []}]}
+    assert review(named).open_ids() == ['F0001']
+    # A source review keeps its designed hold on an indeterminate judgment.
+    assert apply(empty, bare).open_ids() == []

@@ -138,7 +138,11 @@ def test_a_divided_review_accepts_only_when_every_part_accepts():
     ledger = SimpleNamespace(records=[])
     assert combine_review([('c00-', assessment('accept')), (GLOBAL_OWNER, assessment('accept'))], ledger)['verdict'] == 'accept'
     assert combine_review([('c00-', assessment('accept')), (GLOBAL_OWNER, assessment('revise'))], ledger)['verdict'] == 'revise'
+    # Maintainer ruling 2026-10-31 (e2e-36): a part asking for revision outranks an indeterminate one; every part
+    # reviews the revised candidate, and indeterminate holds only when no part asks for revision.
     assert combine_review([('c00-', assessment('indeterminate')), (GLOBAL_OWNER, assessment('revise'))],
+                          ledger)['verdict'] == 'revise'
+    assert combine_review([('c00-', assessment('indeterminate')), (GLOBAL_OWNER, assessment('accept'))],
                           ledger)['verdict'] == 'indeterminate'
 
 

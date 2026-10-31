@@ -35,6 +35,13 @@ class FindingValidationError(EnvironmentDiscoveryError):
         self.location = location
 
 
+# Maintainer ruling 2026-10-31: an indeterminate judgment must say what blocks it. Dettmore e2e-36's c01 reviewer returned
+# indeterminate with no finding, ruling or capability gap, and the attempt held with nothing an author could act on.
+BARE_INDETERMINATE = ('An indeterminate verdict must name what prevents judgment: report a finding citing the missing or '
+                      'conflicting evidence (or keep an existing finding open), or set capability_unavailable with an '
+                      'open capability finding. Otherwise judge accept or revise.')
+
+
 def refuse_finding(message: str, *, code: str = 'review_findings_invalid',
                    location: tuple[str, ...] = ()) -> NoReturn:
     raise FindingValidationError(message, code=code, location=location) from None
@@ -65,8 +72,12 @@ def validate_finding_responses(responses: list[FindingResponse], *, ledger: Find
 
 def apply_finding_review(ledger: FindingLedger, *, manifest: EnvironmentManifest,
                          proposal: CoverageAssessmentProposal, reviewer_inputs: Mapping[str, str]) -> FindingLedger:
-    return apply_evidence_review(ledger, subject=ReviewSubject(manifest.source_commit, manifest.digest(), _ids(manifest)),
+    result = apply_evidence_review(ledger, subject=ReviewSubject(manifest.source_commit, manifest.digest(), _ids(manifest)),
         proposal=proposal, reviewer_inputs=reviewer_inputs)
+    # Executable review only: a source review's indeterminate on unknown applicability still holds as designed.
+    if proposal.verdict == 'indeterminate' and not result.open_ids():
+        refuse_finding(BARE_INDETERMINATE, location=('verdict',))
+    return result
 
 
 @dataclass(frozen=True)

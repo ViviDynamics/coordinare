@@ -36,7 +36,7 @@ from coordinare.services.environment_agent_pool import ShardOverflowError, run_p
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_delta_schema import apply_group_delta
 from coordinare.services.environment_discovery_prompts import SOURCE_NAVIGATION
-from coordinare.services.environment_findings import MAX_FINDINGS
+from coordinare.services.environment_findings import BARE_INDETERMINATE, MAX_FINDINGS
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_scope import _ResponseReferenceError, released_criteria
 from coordinare.services.environment_shard_scope import (
@@ -951,15 +951,23 @@ def validate_review_part(data: dict[str, Any], *, inspection: SourceInspection, 
             proposal.verdict == 'revise' and not proposal.findings and not opened):
         errors.append({'code': 'review_findings_invalid', 'location': ['assessment', 'verdict'],
                        'guidance': 'accept requires no new or open findings; revise requires at least one.'})
+    elif proposal.verdict == 'indeterminate' and not proposal.findings and not opened:
+        errors.append({'code': 'review_findings_invalid', 'location': ['assessment', 'verdict'],
+                       'guidance': BARE_INDETERMINATE})
     if errors:
         raise _ResponseReferenceError(errors)
     return proposal, dict(inspection.inputs)
 
 
 def combine_review(parts: Sequence[tuple[str, CoverageAssessmentProposal]], ledger: FindingLedger) -> dict[str, Any]:
-    """One assessment: accept only when every part accepts; any capability gap or indeterminate part carries."""
+    """One assessment: accept only when every part accepts; any capability gap carries.
+
+    Maintainer ruling 2026-10-31: a part asking for revision outranks an indeterminate one (Dettmore e2e-36 held on
+    c01's indeterminate while c00 and the global part named fixes). The revised candidate is reviewed by every part
+    again; indeterminate holds only when no part asks for revision.
+    """
     verdicts = [proposal.verdict for _owner, proposal in parts]
-    verdict = 'indeterminate' if 'indeterminate' in verdicts else 'accept' if set(verdicts) == {'accept'} else 'revise'
+    verdict = 'accept' if set(verdicts) == {'accept'} else 'revise' if 'revise' in verdicts else 'indeterminate'
     order = {record.id: index for index, record in enumerate(ledger.records)}
     # A finding several parts decide is open while any of them keeps it open; otherwise its first resolution stands.
     chosen: dict[str, dict[str, Any]] = {}

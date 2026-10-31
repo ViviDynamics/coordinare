@@ -353,3 +353,19 @@ def test_a_dropped_check_is_aliased_to_the_identical_check_not_to_an_identical_i
                       criterion_checks={"S1": ["env-tool"]})
     assert duplicate_aliases(previous, candidate) == {"c00-tool": "env-tool"}
     preserve_obligations(candidate, previous)
+
+
+def test_a_bare_indeterminate_review_part_is_sent_back():
+    """Dettmore e2e-36: c01's reviewer returned indeterminate with no finding, ruling or capability gap."""
+    from coordinare.services.environment_findings import BARE_INDETERMINATE
+
+    data = _review_data([])
+    data["assessment"]["verdict"] = "indeterminate"
+    with pytest.raises(Exception) as caught:
+        validate_review_part(data, inspection=_inspection(), owned=[], capacity=8)
+    assert caught.value.errors[0]["code"] == "review_findings_invalid"
+    assert caught.value.errors[0]["guidance"] == BARE_INDETERMINATE
+    data["assessment"]["findings"] = [{"category": "capability", "issue": "Database engine evidence is missing",
+                                       "sources": ["a.md"], "affected_ids": []}]
+    proposal, _inputs = validate_review_part(data, inspection=_inspection(), owned=[], capacity=8)
+    assert proposal.verdict == "indeterminate"
