@@ -26,7 +26,11 @@ from coordinare.services.environment_evidence import check_evidence_context
 from coordinare.services.environment_findings import MAX_FINDINGS
 from coordinare.services.environment_probes import ProbeEnvelope
 from coordinare.services.environment_proposal_patch import PATCH_SCHEMA
-from coordinare.services.model_output_cap import output_token_cap, repetition_guard
+from coordinare.services.model_output_cap import (
+    output_token_cap,
+    provider_outage_seconds,
+    repetition_guard,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -163,6 +167,11 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
     return {'type': 'object', 'anyOf': [*tools, declaration], '$defs': definitions}
 
 
+# Maintainer ruling 2026-10-31: a discovery call rides out a provider outage for up to ten minutes before the attempt
+# holds. The waits spend the attempt's own clock, never a repair budget.
+PROVIDER_OUTAGE_SECONDS = 600.0
+
+
 async def invoke_recorded(budget: AttemptBudget, chat: Callable[..., Awaitable[str | DiscoveryChatReply]],
                           messages: list[dict[str, str]], **request: Any) -> str:
     """One model call (``invoke_chat``'s keywords), timed, recorded against its phase and bounded by its output cap."""
@@ -170,9 +179,11 @@ async def invoke_recorded(budget: AttemptBudget, chat: Callable[..., Awaitable[s
     started = time.monotonic()
     token = output_token_cap.set(OUTPUT_CAPS.get(phase))
     guard = repetition_guard.set(True)
+    outage = provider_outage_seconds.set(PROVIDER_OUTAGE_SECONDS)
     try:
         reply = await invoke_chat(chat, messages, **request)
     finally:
+        provider_outage_seconds.reset(outage)
         repetition_guard.reset(guard)
         output_token_cap.reset(token)
     return budget.record_reply(reply, phase=phase, seconds=time.monotonic() - started)

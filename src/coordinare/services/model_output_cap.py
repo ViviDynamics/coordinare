@@ -11,6 +11,9 @@ from contextvars import ContextVar
 
 output_token_cap: ContextVar[int | None] = ContextVar('output_token_cap', default=None)
 repetition_guard: ContextVar[bool] = ContextVar('repetition_guard', default=False)
+# How long a call keeps retrying a provider outage (5xx, 429, dropped connection) after its first failure, beyond the
+# transport's own few quick retries; 0 keeps only those.
+provider_outage_seconds: ContextVar[float] = ContextVar('provider_outage_seconds', default=0.0)
 
 # A reply whose last REPEAT_SPAN characters repeat with a period of at most MAX_PERIOD characters is degenerate:
 # at least eight exact copies of the longest period, far beyond anything a JSON envelope repeats verbatim. A loop

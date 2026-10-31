@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -29,6 +30,7 @@ from coordinare.services.model_output_cap import (
     REPETITION_FINISH,
     capped,
     degenerate,
+    provider_outage_seconds,
     repetition_guard,
 )
 
@@ -382,6 +384,30 @@ class OpenAiApiBackend:
     # without compounding latency on a hard outage.
     _MAX_ATTEMPTS: int = 3
     _RETRY_DELAYS_S: tuple[float, ...] = (0.5, 1.5)
+    # A caller that sets provider_outage_seconds keeps retrying past those, with growing waits up to this one.
+    _OUTAGE_DELAYS_S: tuple[float, ...] = (15.0, 30.0, 60.0, 120.0)
+
+    def _retry_delay(self, attempt: int, first_failure: float) -> float | None:
+        """The wait before retrying a transient failure, or None when the call should give up.
+
+        Dettmore e2e-26 and e2e-28 to e2e-31 each held within seconds of a provider outage (dropped connections,
+        then HTTP 500s for over an hour) on the three quick attempts below; a caller's outage window rides it out.
+        """
+        if attempt < len(self._RETRY_DELAYS_S):
+            return self._RETRY_DELAYS_S[attempt]
+        remaining = provider_outage_seconds.get() - (time.monotonic() - first_failure)
+        if remaining <= 0:
+            return None
+        step = min(attempt - len(self._RETRY_DELAYS_S), len(self._OUTAGE_DELAYS_S) - 1)
+        return min(self._OUTAGE_DELAYS_S[step], remaining)
+
+    async def _waited_to_retry(self, attempt: int, first_failure: float, **failure: Any) -> bool:
+        """Logs and waits before another attempt; False when the call should give up instead."""
+        if (delay := self._retry_delay(attempt, first_failure)) is None:
+            return False
+        log.warning("openai_api_retry", attempt=attempt + 1, **failure)
+        await asyncio.sleep(delay)
+        return True
 
     async def _chat(self, messages: list[dict[str, str]], json_mode: bool) -> str:
         return (await self._chat_reply(messages, json_mode)).text
@@ -479,7 +505,10 @@ class OpenAiApiBackend:
         stream = self._streams(payload, response_schema, transport)
         data: Any = None
         last_error: str | None = None
-        for attempt in range(self._MAX_ATTEMPTS):
+        first_failure: float | None = None
+        attempt = -1
+        while True:
+            attempt += 1
             try:
                 async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
                     resp, parsed, parse_error = await self._request_completion(
@@ -490,24 +519,16 @@ class OpenAiApiBackend:
                 # just delays the eventual empty-string return.
                 if resp.status_code >= 500 or resp.status_code == 429:
                     last_error = f"http_{resp.status_code}"
-                    if attempt < len(self._RETRY_DELAYS_S):
-                        log.warning(
-                            "openai_api_retry",
-                            attempt=attempt + 1,
-                            status=resp.status_code,
-                        )
-                        await asyncio.sleep(self._RETRY_DELAYS_S[attempt])
+                    first_failure = time.monotonic() if first_failure is None else first_failure
+                    if await self._waited_to_retry(attempt, first_failure, status=resp.status_code):
                         continue
                 resp.raise_for_status()
                 data, last_error = parsed, parse_error or last_error
                 break
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = type(exc).__name__
-                if attempt < len(self._RETRY_DELAYS_S):
-                    log.warning(
-                        "openai_api_retry", attempt=attempt + 1, error=last_error,
-                    )
-                    await asyncio.sleep(self._RETRY_DELAYS_S[attempt])
+                first_failure = time.monotonic() if first_failure is None else first_failure
+                if await self._waited_to_retry(attempt, first_failure, error=last_error):
                     continue
                 log.error("openai_api_http_error", error=str(exc))
                 return ModelReply(error=last_error, timed_out=isinstance(exc, httpx.TimeoutException))
