@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 from coordinare_service_inference.environment.evidence_safety import source_path
+from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
 from coordinare_service_inference.environment.findings import (
     MAX_LEDGER_FINDINGS,
     Digest,
@@ -19,6 +22,7 @@ from coordinare_service_inference.environment.findings import (
 from coordinare_service_inference.environment.models import (
     EnvironmentManifest,
     ExecutionCapabilities,
+    VerificationReport,
 )
 from coordinare_service_inference.environment.scope import (
     ScopeContract,
@@ -30,7 +34,7 @@ from coordinare_service_inference.environment.scope_investigation import (
     ScopeInspectionBinding,  # noqa: TC002 - pydantic resolves journal field types at runtime
     ScopeInspectionResult,  # noqa: TC002 - pydantic resolves journal field types at runtime
 )
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from coordinare.lib.redaction import redact_command_text, redact_state_value
 from coordinare.services.environment_acceptance import (
@@ -40,7 +44,12 @@ from coordinare.services.environment_acceptance import (
     saved_execution_accepted,
 )
 from coordinare.services.environment_attempt import (
+    HOLD_CODES,
     MAX_ATTEMPT_SECONDS,
+    MAX_PROBE_BATCHES,
+    MAX_SHARDED_ATTEMPT_SECONDS,
+    PROBE_BATCH_CEILING,
+    REPAIR_COUNTERS,
     REPAIR_LIMITS,
     AttemptBudget,
     EnvironmentDiscoveryError,
@@ -50,11 +59,21 @@ from coordinare.services.environment_obligations import (
     preserve_execution_obligations,
     preserve_obligations,
 )
-from coordinare.services.environment_probes import ProbePlan, ProbeReport, bind_probe_report
-from coordinare.services.environment_scope import preserve_scope
+from coordinare.services.environment_probes import (
+    ProbeAbandonment,
+    ProbePlan,
+    ProbeReport,
+    bind_probe_report,
+)
+from coordinare.services.environment_repair_triage import RepairTriage, part_of, triage_failure
+from coordinare.services.environment_scope import preserve_scope, released_criteria
 from coordinare.services.environment_scope_investigation import validate_investigation_history
+from coordinare.services.environment_scope_reopening import source_conflict_reopenings
+from coordinare.services.environment_scope_reuse import SCOPE_POLICY_VERSION, reusable_scope
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from coordinare_service_inference.environment.models import CheckResult
 
     from coordinare.models.env_cache import EnvCacheState
@@ -77,9 +96,21 @@ class RepairJournal(BaseModel):
 
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     version: Literal[9] = 9
+
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_legacy_revisions(cls, data: Any) -> Any:
+        """A journal from before the scope budget has one shared revision count and maximum. Both budgets start from that
+        count, so no spent revision is forgotten. Both keep the legacy maximum, so a resumed legacy attempt can spend
+        the old headroom under each budget; charging the count to one budget instead would forget the other's spend."""
+        if isinstance(data, dict) and 'scope_revisions' not in data and 'coverage_revisions' in data:
+            data = {**data, 'scope_revisions': data['coverage_revisions'],
+                    'max_scope_revisions': data.get('max_coverage_revisions', 0)}
+        return data
     scope_author_protocol: Literal[4]
     scope_phase: Literal["initial", "investigation", "revision", "review", "accepted"] = "initial"
     scope_revision_base_digest: Digest | None = None
+    release_requests: list[str] = Field(default_factory=list, max_length=MAX_LEDGER_FINDINGS)
     scope_investigations: list[ScopeInspectionBinding] = Field(default_factory=list, max_length=256)
     scope_investigation_results: list[ScopeInspectionResult] = Field(default_factory=list, max_length=256)
     scope_inputs: dict[str, Digest] = Field(default_factory=dict)
@@ -88,12 +119,21 @@ class RepairJournal(BaseModel):
     scope_contract: ScopeContract | None = None
     scope_findings: FindingLedger | None = None
     scope_assessment: SourceAssessmentRecord | None = None
+    # Sharded discovery progress; validated against the recomputed shard plan when resumed.
+    scope_shards: dict[str, Any] | None = None
+    # Divided executable progress; a part is reused only when its author's complete input digest matches.
+    executable_parts: dict[str, Any] | None = None
+    # An archived attempt's accepted scope offered for a fresh review, and the record once adopted.
+    scope_reuse: dict[str, Any] | None = None
+    scope_reused_from: dict[str, Any] | None = None
+    scope_policy_version: str = SCOPE_POLICY_VERSION
     finding_ledger: FindingLedger | None = None
     coverage_manifest: EnvironmentManifest | None = None
     source_owner: str | None = None
     execution_source: dict[str, Any] | None = None
-    probe_batches: int = Field(default=0, ge=0, le=2)
-    probe_reports: list[dict[str, Any]] = Field(default_factory=list, max_length=2)
+    probe_batches: int = Field(default=0, ge=0, le=PROBE_BATCH_CEILING)
+    probe_reports: list[dict[str, Any]] = Field(default_factory=list, max_length=PROBE_BATCH_CEILING)
+    probe_abandonments: list[ProbeAbandonment] = Field(default_factory=list, max_length=PROBE_BATCH_CEILING)
     probe_owner: str | None = None
     probe_plan: dict[str, Any] | None = None
     source_commit: str = Field(pattern=r'^[0-9a-f]{40,64}$')
@@ -107,22 +147,57 @@ class RepairJournal(BaseModel):
     max_reads: int = Field(ge=1)
     max_schema_repairs: int = Field(ge=0, le=REPAIR_LIMITS["schema"])
     max_coverage_revisions: int = Field(ge=0, le=REPAIR_LIMITS["coverage"])
+    # Journals written before the scope budget existed carry one shared count; see migrate_legacy_revisions.
+    max_scope_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["scope"])
     max_execution_repairs: int = Field(ge=0, le=REPAIR_LIMITS["execution"])
     calls: int = Field(default=0, ge=0)
     reads: int = Field(default=0, ge=0)
+    verification_reads: int = Field(default=0, ge=0)
     schema_repairs: int = Field(default=0, ge=0, le=REPAIR_LIMITS["schema"])
     coverage_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["coverage"])
-    execution_repairs: int = Field(default=0, ge=0, le=2)
+    scope_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["scope"])
+    execution_repairs: int = Field(default=0, ge=0, le=REPAIR_LIMITS["execution"])
     generation: int = Field(default=0, ge=0, le=2)
     status: Literal['discovering', 'executing', 'repair_pending', 'held', 'ready'] = 'discovering'
     target: ExecutionCapabilities | None = None
     rejected: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
+    # The pending repair's failure triage, stored before any author call; absent in journals written earlier.
+    repair_triage: dict[str, Any] | None = None
+    # A delta repair fell back to the full repair; an old journal has none, so it keeps the delta default.
+    delta_fallback: bool = False
+    # Triage was impossible (no failed result): the full repair runs for this generation.
+    repair_triage_unavailable: bool = False
     last_error: str | None = None
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
 def _refuse(message: str, *, code: str = 'execution_repair_held') -> NoReturn:
     raise EnvironmentDiscoveryError(message, code=code)
+
+
+def _triage_or_none(entry: dict[str, Any]) -> RepairTriage | None:
+    """The daemon's triage of one rejected execution; None when it has no failed result, so the full repair runs instead."""
+    manifest = EnvironmentManifest.model_validate(entry['manifest'])
+    data = dict(entry['report'])
+    data.pop('passed', None)
+    try:
+        return triage_failure(manifest, VerificationReport.model_validate(data))
+    except ValueError:
+        return None
+
+
+def repair_triage_for(journal: RepairJournal) -> RepairTriage | None:
+    """The pending repair's stored triage, derived from the rejected execution when the journal predates storing it."""
+    if journal.repair_triage_unavailable:
+        return None
+    if journal.repair_triage is not None:
+        try:
+            return RepairTriage.model_validate(journal.repair_triage)
+        except ValidationError:
+            _refuse('environment repair triage is invalid')
+    if not journal.generation or not journal.rejected:
+        return None
+    return _triage_or_none(journal.rejected[-1])
 
 
 def journal_for(cache: EnvCacheState) -> RepairJournal:
@@ -142,7 +217,7 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
         journal = RepairJournal.model_validate(data)
     except (TypeError, ValueError, ValidationError):
         _refuse('environment repair journal is invalid')
-    if not 0 < journal.expires_at - journal.started_at <= MAX_ATTEMPT_SECONDS:
+    if not 0 < journal.expires_at - journal.started_at <= MAX_SHARDED_ATTEMPT_SECONDS:
         _refuse('environment repair deadline is invalid')
     if journal.finding_ledger is not None and journal.finding_ledger.source_commit != journal.source_commit:
         _refuse('finding ledger source differs from attempt', code='source_identity')
@@ -153,7 +228,41 @@ def journal_for(cache: EnvCacheState) -> RepairJournal:
     if journal.coverage_manifest is not None:
         preserve_execution_obligations(journal.coverage_manifest, journal.rejected)
     _validate_scope_checkpoint(journal)
+    _validate_probe_checkpoint(journal)
     return journal
+
+
+def _validate_probe_checkpoint(journal: RepairJournal) -> None:
+    """Abandoned plans remain distinct from usable observations and live ownership."""
+    if journal.probe_batches > MAX_PROBE_BATCHES + journal.execution_repairs:
+        _refuse('probe batches exceed the execution repairs allowance', code='probe_reservation_invalid')
+    if not journal.probe_abandonments:
+        return
+    digests: set[str] = set()
+    executions: set[str] = set()
+    completed = {item.get('plan_digest') for item in journal.probe_reports}
+    for item in journal.probe_abandonments:
+        if (item.plan.source_commit != journal.source_commit or item.recorded_at < journal.started_at
+                or item.plan_digest in digests or item.plan.execution_id in executions
+                or item.plan_digest in completed or item.plan_digest == journal.probe_owner
+                or (journal.scope_definition is not None
+                    and item.plan.inventory_digest != journal.scope_definition.inventory_digest)):
+            _refuse('abandoned probe history is invalid', code='probe_reservation_invalid')
+        digests.add(item.plan_digest)
+        executions.add(item.plan.execution_id)
+    settled = len(journal.probe_reports) + len(journal.probe_abandonments)
+    if (len(journal.probe_abandonments) > MAX_PROBE_BATCHES + journal.execution_repairs
+            or journal.probe_batches not in {settled, settled + 1}
+            or (journal.probe_owner is None) != (journal.probe_plan is None)):
+        _refuse('abandoned probe accounting is invalid', code='probe_reservation_invalid')
+    if journal.probe_plan is not None:
+        try:
+            pending = ProbePlan.model_validate(journal.probe_plan)
+        except ValidationError:
+            _refuse('pending probe identity is invalid', code='probe_reservation_invalid')
+        if (journal.probe_batches != settled + 1 or pending.digest() != journal.probe_owner
+                or pending.execution_id in executions):
+            _refuse('pending probe overlaps abandoned history', code='probe_reservation_invalid')
 
 
 def _validate_scope_checkpoint(journal: RepairJournal) -> None:
@@ -221,7 +330,19 @@ def _save_scope_checkpoint(journal: RepairJournal, budget: AttemptBudget) -> Non
     if journal.scope_definition is not None:
         if budget.scope_definition is None:
             _refuse('established scope cannot be removed', code='scope_obligation_removed')
-        preserve_scope(journal.scope_definition, budget.scope_definition)
+        old_required = {c.id for c in journal.scope_definition.criteria if c.applicability == 'required'}
+        new_required = {c.id for c in budget.scope_definition.criteria if c.applicability == 'required'}
+        reopenings = (source_conflict_reopenings(budget, journal.scope_definition)
+                      if old_required - new_required else set())
+        if (reopenings & (old_required - new_required) and (
+                journal.scope_phase not in {'investigation', 'revision'} or budget.scope_phase != 'review'
+                or budget.scope_revision_base_digest is not None
+                or journal.scope_assessment != budget.scope_assessment
+                or journal.scope_findings != budget.scope_findings
+                or len(budget.scope_definition.criteria) < len(journal.scope_definition.criteria))):
+            _refuse('source correction must retain its reviewed revision transition', code='scope_obligation_removed')
+        preserve_scope(journal.scope_definition, budget.scope_definition,
+                       released=released_criteria(budget.scope_findings) | reopenings)
     if any(budget.scope_inputs.get(path) != digest for path, digest in journal.scope_inputs.items()):
         _refuse('scope read history cannot be replaced', code='scope_source_identity')
     if (budget.scope_investigations[:len(journal.scope_investigations)] != journal.scope_investigations
@@ -232,7 +353,13 @@ def _save_scope_checkpoint(journal: RepairJournal, budget: AttemptBudget) -> Non
     journal.scope_author_protocol = budget.scope_author_protocol
     journal.scope_phase = budget.scope_phase
     journal.scope_revision_base_digest = budget.scope_revision_base_digest
+    journal.release_requests = list(budget.release_requests)
     journal.scope_inputs = dict(budget.scope_inputs)
+    journal.scope_shards = json.loads(json.dumps(budget.scope_shards)) if budget.scope_shards is not None else None
+    journal.executable_parts = (json.loads(json.dumps(budget.executable_parts))
+                                if budget.executable_parts is not None else None)
+    journal.scope_reuse = budget.scope_reuse
+    journal.scope_reused_from = budget.scope_reused_from
     try:
         journal.scope_responses = [FindingResponse.model_validate(value) for value in budget.scope_responses]
     except ValidationError:
@@ -300,6 +427,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
         normalized["version"] = 2
         for counter in ("schema_repairs", "coverage_revisions", "execution_repairs"):
             normalized[counter], normalized["max_" + counter] = used, maximum
+        normalized["scope_revisions"], normalized["max_scope_revisions"] = used, maximum
     if data['version'] < CURRENT_JOURNAL_VERSION:
         if normalized.get('scope_author_protocol') not in (None, 2, 3, 4):
             _refuse('unknown legacy scope protocol requires reconciliation')
@@ -315,7 +443,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
         parsed = RepairJournal.model_validate(normalized)
     except ValidationError:
         _refuse("malformed environment journal requires reconciliation before reset")
-    if not 0 < parsed.expires_at - parsed.started_at <= MAX_ATTEMPT_SECONDS:
+    if not 0 < parsed.expires_at - parsed.started_at <= MAX_SHARDED_ATTEMPT_SECONDS:
         _refuse("invalid environment deadline requires reconciliation before reset")
     uncertain = (data.get("source_owner") is not None or data.get("probe_owner") is not None or data.get("probe_plan") is not None
         or data.get("status") == "executing" or data.get("last_error") == "cleanup_unconfirmed"
@@ -345,6 +473,7 @@ def restart_environment_attempt(cache: EnvCacheState, *, cleanup_confirmed: bool
 
 
 def _publish(cache: EnvCacheState, journal: RepairJournal) -> None:
+    _validate_probe_checkpoint(journal)
     data = journal.model_dump(mode='json')
     if len(json.dumps(data).encode()) > JOURNAL_MAX_BYTES:
         _refuse('environment repair journal exceeds its bound')
@@ -361,13 +490,20 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget = AttemptBudget(timeout_seconds=journal.expires_at-journal.started_at,
         started=time.monotonic()-(now-journal.started_at), max_calls=journal.max_calls,
         max_reads=journal.max_reads, max_schema_repairs=journal.max_schema_repairs,
-        max_coverage_revisions=journal.max_coverage_revisions, max_execution_repairs=journal.max_execution_repairs)
+        max_coverage_revisions=journal.max_coverage_revisions, max_scope_revisions=journal.max_scope_revisions,
+        max_execution_repairs=journal.max_execution_repairs)
     budget.scope_investigations = [item.model_copy(deep=True) for item in journal.scope_investigations]
     budget.scope_investigation_results = [item.model_copy(deep=True) for item in journal.scope_investigation_results]
     budget.scope_author_protocol = journal.scope_author_protocol
     budget.scope_phase = journal.scope_phase
     budget.scope_revision_base_digest = journal.scope_revision_base_digest
+    budget.release_requests = list(journal.release_requests)
     budget.scope_inputs = dict(journal.scope_inputs)
+    budget.scope_shards = json.loads(json.dumps(journal.scope_shards)) if journal.scope_shards is not None else None
+    budget.executable_parts = (json.loads(json.dumps(journal.executable_parts))
+                               if journal.executable_parts is not None else None)
+    budget.scope_reuse = json.loads(json.dumps(journal.scope_reuse)) if journal.scope_reuse is not None else None
+    budget.scope_reused_from = journal.scope_reused_from
     budget.scope_responses = [r.model_dump(mode="json") for r in journal.scope_responses]
     budget.scope_definition = journal.scope_definition.model_copy(deep=True) if journal.scope_definition is not None else None
     budget.scope_contract = journal.scope_contract.model_copy(deep=True) if journal.scope_contract is not None else None
@@ -376,18 +512,20 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.finding_ledger = journal.finding_ledger.model_copy(deep=True) if journal.finding_ledger is not None else None
     budget.coverage_manifest = journal.coverage_manifest.model_copy(deep=True) if journal.coverage_manifest is not None else None
     budget.executed_manifests = executed_manifests(journal.rejected, source_commit=journal.source_commit)
-    budget.execution_review_evidence = [{"manifest_digest": entry["manifest_digest"],
-        "manifest": entry["manifest"], "results": [{key: result.get(key) for key in
-        ("id", "status", "required", "exit_code", "duration_seconds")} for result in entry["report"]["results"]]}
-        for entry in journal.rejected]
+    budget.repair_triage = repair_triage_for(journal)
+    budget.delta_fallback = journal.delta_fallback
+    budget.execution_review_evidence = execution_review_evidence(journal.rejected)
     budget.calls, budget.reads = journal.calls, journal.reads
+    budget.verification_reads = journal.verification_reads
     budget.probe_batches = journal.probe_batches
     budget.probe_reports = list(journal.probe_reports)
-    for name in ("schema_repairs", "coverage_revisions", "execution_repairs"):
+    budget.probe_abandonments = [item.model_dump(mode='json') for item in journal.probe_abandonments]
+    for kind, name in REPAIR_COUNTERS.items():
         if getattr(journal, name) > getattr(journal, "max_" + name):
-            _refuse(f"environment {name} limit exceeded after configuration change", code="attempt_" + name.split("_")[0] + "_limit")
+            _refuse(f"environment {name} limit exceeded after configuration change", code=HOLD_CODES[kind])
     budget.schema_repairs = journal.schema_repairs
     budget.coverage_revisions = journal.coverage_revisions
+    budget.scope_revisions = journal.scope_revisions
     budget.execution_repairs = journal.execution_repairs
     return budget
 
@@ -401,8 +539,8 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
     previous = journal_for(cache) if cache.environment_attempt is not None else None
     if previous is not None and (previous.last_error == "cleanup_unconfirmed" or previous.status == "executing" or previous.probe_owner is not None or previous.source_owner is not None):
         _refuse("environment repair requires confirmed cleanup of interrupted execution")
-    seconds = min(limits.attempt_timeout_seconds, outer_seconds if outer_seconds > 0 else MAX_ATTEMPT_SECONDS,
-                  MAX_ATTEMPT_SECONDS)
+    ceiling = MAX_SHARDED_ATTEMPT_SECONDS if limits.shard_context_tokens else MAX_ATTEMPT_SECONDS
+    seconds = min(limits.attempt_timeout_seconds, outer_seconds if outer_seconds > 0 else ceiling, ceiling)
     if not isinstance(cache.bootstrap_commit_sha, str):
         _refuse("environment repair requires an immutable source commit")
     if previous is None or previous.source_commit != cache.bootstrap_commit_sha or previous.status == 'ready':
@@ -411,7 +549,11 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
             origin_slug=previous.origin_slug if previous else cache.sanitised_name,
             started_at=now, expires_at=now+seconds, max_calls=limits.max_model_calls,
             max_reads=limits.max_total_reads, max_schema_repairs=limits.max_schema_repairs,
-            max_coverage_revisions=limits.max_coverage_revisions, max_execution_repairs=limits.max_execution_repairs)
+            max_coverage_revisions=limits.max_coverage_revisions, max_scope_revisions=limits.max_scope_revisions,
+            max_execution_repairs=limits.max_execution_repairs)
+        if previous is None:
+            # After an operator restart, an archived attempt's accepted scope is offered for a fresh review.
+            journal.scope_reuse = reusable_scope(cache.environment_attempt_archive, cache.bootstrap_commit_sha)
     else:
         journal = previous
         journal.expires_at = min(journal.expires_at, journal.started_at+seconds)
@@ -419,6 +561,7 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
         journal.max_reads = min(journal.max_reads, limits.max_total_reads)
         journal.max_schema_repairs = min(journal.max_schema_repairs, limits.max_schema_repairs)
         journal.max_coverage_revisions = min(journal.max_coverage_revisions, limits.max_coverage_revisions)
+        journal.max_scope_revisions = min(journal.max_scope_revisions, limits.max_scope_revisions)
         journal.max_execution_repairs = min(journal.max_execution_repairs, limits.max_execution_repairs)
     budget = _budget(journal, now)
     _publish(cache, journal)
@@ -441,6 +584,8 @@ def _validate_established_candidate(journal: RepairJournal, candidate: Environme
 def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool = False) -> None:
     """Save consumed reservations before external work; never move the original expiry."""
     journal = journal_for(cache)
+    if budget.probe_abandonments != [item.model_dump(mode='json') for item in journal.probe_abandonments]:
+        _refuse('abandoned probe history cannot be replaced', code='probe_reservation_invalid')
     _save_scope_checkpoint(journal, budget)
     previous, current = journal.finding_ledger, budget.finding_ledger
     if previous is not None and (current is None
@@ -466,9 +611,12 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
     journal.probe_batches = max(journal.probe_batches, budget.probe_batches)
     journal.calls = max(journal.calls, budget.calls)
     journal.reads = max(journal.reads, budget.reads)
+    journal.verification_reads = max(journal.verification_reads, budget.verification_reads)
     journal.schema_repairs = max(journal.schema_repairs, budget.schema_repairs)
     journal.coverage_revisions = max(journal.coverage_revisions, budget.coverage_revisions)
+    journal.scope_revisions = max(journal.scope_revisions, budget.scope_revisions)
     journal.execution_repairs = max(journal.execution_repairs, budget.execution_repairs)
+    journal.delta_fallback = journal.delta_fallback or budget.delta_fallback
     if executing:
         capabilities = ExecutionCapabilities.model_validate(cache.environment_capabilities)
         if journal.target is not None and (
@@ -484,10 +632,96 @@ def reserve_probe(cache: EnvCacheState, plan: ProbePlan) -> None:
     """Claim an already-reserved batch before any external executor work."""
     journal = journal_for(cache)
     if (journal.probe_owner is not None or journal.status != "discovering"
-            or journal.probe_batches != len(journal.probe_reports) + 1 or journal.source_commit != plan.source_commit):
+            or journal.probe_batches != len(journal.probe_reports) + len(journal.probe_abandonments) + 1
+            or journal.source_commit != plan.source_commit
+            or any(item.plan.execution_id == plan.execution_id for item in journal.probe_abandonments)):
         _refuse("environment probe overlaps or lacks a durable reservation", code="probe_reservation_invalid")
     journal.probe_owner = plan.digest()
     journal.probe_plan = plan.model_dump(mode="json")
+    _publish(cache, journal)
+
+
+def abandon_probe(cache: EnvCacheState, budget: AttemptBudget, plan: ProbePlan, *,
+                  reason: Literal['authorization_interrupted', 'cleanup_reconciled'],
+                  cleanup_confirmed: bool) -> None:
+    """Retain a cleaned reservation without refunding it or inventing a report."""
+    journal = journal_for(cache)
+    history = [item.model_dump(mode='json') for item in journal.probe_abandonments]
+    if (cleanup_confirmed is not True or journal.probe_owner != plan.digest()
+            or journal.probe_plan != plan.model_dump(mode='json')
+            or journal.probe_batches != len(journal.probe_reports) + len(history) + 1
+            or budget.probe_batches != journal.probe_batches or budget.probe_abandonments != history):
+        _refuse('pending probe ownership differs', code='probe_reservation_invalid')
+    record = ProbeAbandonment(plan=plan, plan_digest=plan.digest(), reason=reason,
+                             error_code=budget.error_code or 'probe_authorization_interrupted',
+                             recorded_at=time.time(), cleanup_confirmed=True)
+    journal.probe_abandonments.append(record)
+    journal.probe_owner = None
+    journal.probe_plan = None
+    _publish(cache, journal)
+    budget.probe_abandonments = [*history, record.model_dump(mode='json')]
+
+
+def recover_pending_probe(cache: EnvCacheState, *, expected_plan_digest: str,
+                          cleanup_confirmed: bool, now: float | None = None) -> None:
+    """Reopen only a cleaned pre-candidate attempt, keeping every consumed reservation."""
+    journal = journal_for(cache)
+    moment = time.time() if now is None else now
+    if (cleanup_confirmed is not True or not math.isfinite(moment)
+            or not journal.started_at <= moment < journal.expires_at
+            or cache.bootstrap_in_flight or cache.cache_dir_ready
+            or cache.environment_source_owner is not None or journal.source_owner is not None
+            or cache.bootstrap_commit_sha != journal.source_commit
+            or str(cache.cache_dir) != journal.base_cache_dir or cache.sanitised_name != journal.base_slug
+            or cache.cache_dir.is_symlink() or journal.status != 'held'
+            or journal.diagnostics.get('stage') not in {'probe_authorization', 'probe_execution', 'probe_preparation'}
+            or journal.scope_phase != 'accepted' or journal.scope_contract is None
+            or not journal.scope_contract.current or journal.scope_contract.finding_ledger.open_ids()
+            or journal.probe_reports or journal.coverage_manifest is not None or journal.target is not None
+            or journal.rejected or journal.generation or journal.execution_repairs or journal.executable_parts
+            or (journal.finding_ledger is not None and (journal.finding_ledger.records or journal.finding_ledger.reviews))
+            or journal.probe_batches >= MAX_PROBE_BATCHES
+            or journal.calls >= journal.max_calls or journal.reads >= journal.max_reads
+            or any(getattr(cache, key) is not None for key in
+                   ('environment_manifest', 'environment_assessment', 'environment_verification',
+                    'environment_capabilities', 'environment_runtime_artifacts'))):
+        _refuse('pending probe recovery requires an unexpired cleaned pre-candidate attempt',
+                code='probe_recovery_invalid')
+    if journal.probe_owner is not None:
+        try:
+            plan = ProbePlan.model_validate(journal.probe_plan)
+        except ValidationError:
+            _refuse('pending probe plan is invalid', code='probe_recovery_invalid')
+        if (plan.digest() != expected_plan_digest or journal.probe_owner != expected_plan_digest
+                or plan.source_commit != journal.source_commit
+                or plan.inventory_digest != journal.scope_contract.definition.inventory_digest
+                or journal.probe_batches != len(journal.probe_abandonments) + 1):
+            _refuse('pending probe identity differs', code='probe_recovery_invalid')
+        journal.probe_abandonments.append(ProbeAbandonment(
+            plan=plan, plan_digest=expected_plan_digest, reason='cleanup_reconciled',
+            error_code=journal.last_error,
+            recorded_at=moment, cleanup_confirmed=True))
+        journal.probe_owner = None
+        journal.probe_plan = None
+    elif (journal.probe_plan is not None or not journal.probe_abandonments
+          or journal.probe_abandonments[-1].plan_digest != expected_plan_digest
+          or journal.probe_batches != len(journal.probe_abandonments)):
+        _refuse('pending probe recovery has no matching abandoned reservation', code='probe_recovery_invalid')
+    else:
+        plan = journal.probe_abandonments[-1].plan
+    # These additive identities may be absent in older checkpoints. Every retained
+    # identity must still match the reserved complete source before any publication.
+    for retained in (journal.execution_source, cache.environment_execution_source):
+        if retained is None:
+            continue
+        try:
+            identity = ExecutionSourceIdentity.model_validate(retained)
+        except ValidationError:
+            _refuse('pending probe complete source is invalid', code='probe_recovery_invalid')
+        if identity.source_commit != journal.source_commit or identity.digest() != plan.execution_source_digest:
+            _refuse('pending probe complete source differs', code='probe_recovery_invalid')
+    journal.status = 'discovering'
+    journal.last_error = None
     _publish(cache, journal)
 
 
@@ -512,6 +746,9 @@ def _activation_failure(result: CheckResult, manifest: EnvironmentManifest) -> b
 
 
 def _rejected_evidence(cache: EnvCacheState, data: dict[str, Any]) -> dict[str, Any]:
+    # Checked before the allowlist below drops the marker: an incomplete run holds and is never repaired.
+    if data.get('runtime_incomplete') or data.get('runtime_cleanup') is False:
+        _refuse('execution repair evidence is incomplete')
     manifest = accepted_environment(cache)
     if manifest is None:
         _refuse('execution repair requires independent acceptance')
@@ -571,6 +808,97 @@ def record_execution_failure(cache: EnvCacheState, report: dict[str, Any], *, cl
         return True
 
 
+# What a reviewer compares in a rejected manifest: its records and results. Its nested scope contract (reviewers get
+# the scope index) and input digests (they get mandatory_evidence) only bloat every review shard's shared prompt.
+REVIEW_HISTORY_EXCLUDED = frozenset({"scope_contract", "inputs"})
+
+
+def execution_review_evidence(rejected: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Each rejected manifest and its results for the review prompt; scope_contract_digest still binds the scope.
+
+    Dettmore e2e-08: the whole rejected manifest (a 387 KB scope contract and 52 KB of input digests) made every
+    review shard's prompt 638 KB, past the model's context, and the repaired candidate's review failed with HTTP 400.
+    """
+    return [{"manifest_digest": entry["manifest_digest"],
+             "manifest": {key: value for key, value in entry["manifest"].items() if key not in REVIEW_HISTORY_EXCLUDED},
+             "results": [{key: result.get(key) for key in ("id", "status", "required", "exit_code", "duration_seconds")}
+                         for result in entry["report"]["results"]]}
+            for entry in rejected]
+
+
+MAX_FEEDBACK_RESULTS = 16
+FEEDBACK_FIELD_CHARS = 256
+FEEDBACK_ID_CHARS = 128
+# Commands that ran and failed carry the reason; not_run results only say a prerequisite did not pass.
+_FEEDBACK_ORDER = {'fail': 0, 'indeterminate': 1}
+
+
+def repair_feedback(rejected_digest: str, results: list[dict[str, Any]]) -> dict[str, Any]:
+    """The bounded failures a repair's authors see: failed first, then indeterminate, then not_run, shared fairly
+    between the parts that own them, and within the serialized byte bound.
+
+    Dettmore e2e-06: a template refusal left 44 commands not_run and 9 failed; the first 16 in report order were all
+    consequences, so no author saw the nine failures or their reason, and the repair changed nothing that mattered.
+    Each owner (a check group, or the global part) gets one result per round, its most informative first, so one
+    part's many failures never starve another's.
+    """
+    entries = [(_FEEDBACK_ORDER.get(result['status'], 2), index, result)
+               for index, result in enumerate(item for item in results if item['status'] != 'pass')]
+    owners = list(dict.fromkeys(part_of(entry[2]['id']) for entry in sorted(entries, key=lambda entry: entry[:2])))
+    chosen: list[tuple[int, int, dict[str, Any]]] = []
+    for tier in sorted({entry[0] for entry in entries}):
+        # Within a tier, owners take turns in report order, so every part's failures arrive before any consequence.
+        queues = {owner: [entry for entry in entries if entry[0] == tier and part_of(entry[2]['id']) == owner]
+                  for owner in owners}
+        for depth in range(max(map(len, queues.values()), default=0)):
+            chosen.extend(queues[owner][depth] for owner in owners if depth < len(queues[owner]))
+    chosen = sorted(chosen[:MAX_FEEDBACK_RESULTS], key=lambda entry: entry[:2])
+    # Copies of a fixed projection, so the journal's rejected report is never altered and every field but the output
+    # is bounded: the feedback already names the rejected manifest, so each result's digest is left out.
+    selected = [_feedback_projection(entry[2]) for entry in chosen]
+    feedback = {'rejected_manifest_digest': rejected_digest, 'results': selected}
+
+    def size() -> int:
+        return len(json.dumps(feedback).encode())
+
+    def halve_longest(floor: int) -> bool:
+        at = max(range(len(selected)), key=lambda position: len(selected[position].get('output') or ''), default=None)
+        if at is None or len(selected[at].get('output') or '') <= floor:
+            return False
+        selected[at] = {**selected[at], 'output': selected[at]['output'][:max(floor, len(selected[at]['output']) // 2)],
+                        'output_truncated': True}
+        return True
+
+    while size() > FEEDBACK_MAX_BYTES:
+        # Shorten outputs before dropping anything: every owner keeps its failures and the start of their reasons.
+        if halve_longest(FEEDBACK_FIELD_CHARS):
+            continue
+        counts = Counter(part_of(item['id']) for item in selected)
+        owner, count = max(counts.items(), key=lambda pair: (pair[1], pair[0]))
+        if count > 1:
+            # The least informative result of the owner holding the most; never an owner's last one.
+            selected.pop(max(position for position, item in enumerate(selected) if part_of(item['id']) == owner))
+            continue
+        if halve_longest(0):
+            continue
+        if (at := max(range(len(selected)), key=lambda position: len(selected[position]['context']), default=None)) is not None \
+                and selected[at]['context']:
+            selected[at] = {**selected[at], 'context': selected[at]['context'][:len(selected[at]['context']) // 2]}
+            continue
+        # Still over with every output and context empty: the least informative result goes, even an owner's last.
+        selected.pop()
+    return feedback
+
+
+def _feedback_projection(result: Mapping[str, Any]) -> dict[str, Any]:
+    exit_code = result.get('exit_code')
+    return {'id': str(result['id'])[:FEEDBACK_ID_CHARS], 'status': result['status'], 'required': bool(result.get('required', True)),
+            'exit_code': exit_code if isinstance(exit_code, int) and -2**31 <= exit_code < 2**31 else None,
+            'duration_seconds': result.get('duration_seconds', 0), 'output': str(result.get('output') or ''),
+            'output_truncated': bool(result.get('output_truncated', False)),
+            'context': str(result.get('context') or '')[:FEEDBACK_FIELD_CHARS]}
+
+
 def _generation(journal: RepairJournal) -> str:
     if not journal.generation:
         return journal.base_slug
@@ -614,6 +942,15 @@ def prepare_repair(cache: EnvCacheState) -> tuple[EnvironmentManifest, dict[str,
     previous = EnvironmentManifest.model_validate(entry['manifest'])
     journal.generation = len(journal.rejected)
     journal.generation_nonce = uuid.uuid4().hex[:12]
+    # Persisted before any author call, so a restart resumes the same closure. Without one the full repair runs.
+    triage = _triage_or_none(entry)
+    journal.repair_triage = triage.model_dump(mode='json') if triage is not None else None
+    journal.repair_triage_unavailable = triage is None
+    # Each generation starts from delta repair again; a fallback applies to the generation that needed it.
+    journal.delta_fallback = False
+    # Maintainer ruling (2026-10-29): each execution repair gets its own schema-correction budget. Construction's review
+    # rounds used six of e2e-11's eight, leaving its repair two.
+    journal.schema_repairs = 0
     journal.status = 'discovering'
     new_path = cache.cache_dir.parent / _generation(journal)
     if new_path.exists() or new_path.is_symlink():
@@ -628,8 +965,7 @@ def prepare_repair(cache: EnvCacheState) -> tuple[EnvironmentManifest, dict[str,
     cache.rendered_activate_sh = cache.rendered_verify_sh = None
     cache.provenance_digest = None
     cache.cache_dir_ready = False
-    failed = [result for result in entry['report']['results'] if result['status'] != 'pass']
-    feedback = {'rejected_manifest_digest': previous.digest(), 'results': failed[:16]}
+    feedback = repair_feedback(previous.digest(), entry['report']['results'])
     if len(json.dumps(feedback).encode()) > FEEDBACK_MAX_BYTES:
         _refuse('environment repair feedback exceeds its bound')
     return previous, feedback
@@ -663,8 +999,7 @@ def repair_context(cache: EnvCacheState) -> tuple[EnvironmentManifest | None, di
         _refuse('environment repair requires a prepared fresh cache generation')
     entry = journal.rejected[-1]
     previous = EnvironmentManifest.model_validate(entry['manifest'])
-    failed = [item for item in entry['report']['results'] if item['status'] != 'pass']
-    return previous, {'rejected_manifest_digest': previous.digest(), 'results': failed[:16]}
+    return previous, repair_feedback(previous.digest(), entry['report']['results'])
 
 
 def finish_attempt(cache: EnvCacheState, success: bool, evidence: dict[str, Any] | None,

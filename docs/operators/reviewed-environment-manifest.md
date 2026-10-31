@@ -42,6 +42,7 @@ env_cache:
   manifest_max_total_reads: 512
   manifest_max_schema_repairs: 2
   manifest_max_coverage_revisions: 2
+  manifest_max_scope_revisions: 8
   manifest_max_execution_repairs: 2
   manifest_max_review_context_bytes: 1048576
 ```
@@ -111,8 +112,11 @@ source text and 120 seconds. One attempt, including runtime identity resolution,
 inventory fetching, installation, clean verification and executable repairs, defaults to 600 seconds, 128 model calls, 512 total reads and at
 most two repair rounds. The configured outer `bootstrap_max_seconds` also applies;
 zero there never removes discovery's own bound. `manifest_attempt_timeout_seconds`
-can be raised to at most 3600 seconds. Phase changes and fresh reviews cannot reset
-the aggregate counters.
+can be raised to at most 3600 seconds, or to at most 14400 seconds (four hours) when
+`manifest_shard_context_tokens` enables sharded discovery. Sharded discovery defaults to
+14400 seconds, 1,024 model calls and 8,192 total reads unless those are set explicitly;
+raise `bootstrap_max_seconds` to match, or it caps the attempt. Phase changes and fresh
+reviews cannot reset the aggregate counters.
 
 The pinned inventory carries each path's size and mode, plus a symbolic link's
 recorded target, from the verified execution-source bundle. Files larger than the
@@ -331,10 +335,15 @@ token capacity; the byte cap does not guarantee provider context capacity. Provi
 request failures hold and do not consume schema corrections. Output limits remain set
 on the model backend.
 
-Schema corrections, coverage revisions and executable repairs default to two each.
-Their independent configurable ranges are zero to eight, zero to eight and zero to
-two respectively (`manifest_max_schema_repairs`, `manifest_max_coverage_revisions`,
-`manifest_max_execution_repairs`). All categories share the original
+Scope revisions default to eight. Schema corrections, executable revisions and executable repairs default to two each
+(sharded discovery defaults to eight executable revisions). Their independent configurable ranges
+are zero to eight, zero to eight, zero to eight and zero to two respectively (`manifest_max_schema_repairs`,
+`manifest_max_scope_revisions`, `manifest_max_coverage_revisions`, `manifest_max_execution_repairs`).
+`manifest_max_coverage_revisions` counts executable review revisions. A scope revision that is refused holds with
+`attempt_scope_revision_limit`; an executable revision that is refused holds with `attempt_coverage_limit`. An execution repair defaults to a delta: only the records the failed
+execution implicates are re-authored, as changed and added records, and an unchanged record keeps its standing. If the
+delta cannot be admitted or is not accepted by review, the full repair runs while budget remains. Set
+`manifest_delta_repair: false` to use the full repair for every execution repair. All categories share the original
 aggregate deadline, model-call and source-read limits. A new candidate, new reviewer,
 cache generation or daemon restart never renews them. The old `manifest_max_repairs`
 configuration is a deprecated alias supplying all three limits; combining it with any

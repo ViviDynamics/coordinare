@@ -43,7 +43,7 @@ async def test_56_author_inputs_are_not_refetched_each_revision():
     scope = await discover_scope(paths=paths, fetch=fetch, chat=Replies(values), commit=COMMIT,
                                  limits=DiscoveryLimits(), budget=budget)
     assert fetched == Counter(dict.fromkeys(paths, 3)), 'one author and two fresh reviewer fetches per file'
-    assert budget.reads == 168 and len(scope.all_inputs) == 56
+    assert budget.reads == 56 and budget.verification_reads == 112 and len(scope.all_inputs) == 56
     assert len(scope.finding_ledger.reviews) == 2
 
 

@@ -20,6 +20,11 @@ from performer.protocol import PerformerResponse
 from .test_353_environment_runtime import private_score
 
 
+async def _clean_guest(_script, **_kwargs):
+    """A guest whose Docker holds nothing once the commands have run."""
+    return 0, b'containers=\nvolumes=\nnetworks=\n'
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('transport', ['http', 'stdio'])
 async def test_late_resource_failure_stops_real_backend_before_success(tmp_path, monkeypatch, transport):
@@ -43,7 +48,7 @@ async def test_late_resource_failure_stops_real_backend_before_success(tmp_path,
     async def open_runtime(*args, **kwargs):
         key.write_text('ephemeral fixture')
         return SimpleNamespace(spec=manifest.runtime, manifest_digest=manifest.digest(), source_digest=source.digest(),
-            install=False, deadline=time.monotonic()+10, scratch=tmp_path, close=close, check_bounds=check_bounds,
+            install=False, deadline=time.monotonic()+10, scratch=tmp_path, close=close, check_bounds=check_bounds, ssh=_clean_guest,
             activation_env={'DOCKER_HOST': 'ssh://private-fixture', 'DOCKER_CONFIG': '/owned/config',
                             'DOCKER_CONTEXT': '', 'PATH': os.environ['PATH']})
 
@@ -124,7 +129,7 @@ async def test_installer_stops_monitor_before_removing_sealed_runtime(tmp_path, 
     async def open_runtime(*args, **kwargs):
         return SimpleNamespace(spec=manifest.runtime, manifest_digest=manifest.digest(), source_digest=source.digest(),
             install=True, installation_passed=True, deadline=time.monotonic()+10, scratch=tmp_path,
-            close=close, check_bounds=check_bounds, activation_env={'DOCKER_HOST': 'ssh://private-fixture',
+            close=close, check_bounds=check_bounds, ssh=_clean_guest, activation_env={'DOCKER_HOST': 'ssh://private-fixture',
             'DOCKER_CONFIG': '/owned/config', 'DOCKER_CONTEXT': '', 'PATH': os.environ['PATH']})
 
     async def seal(*args, **kwargs):

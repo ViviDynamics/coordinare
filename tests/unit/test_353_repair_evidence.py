@@ -41,7 +41,13 @@ async def repair_case(*, failure=None, budget=None, limits=None):
     async def chat(messages):
         calls.append(messages)
         context = json.loads(messages[1]['content'])
-        assert {item['path']: item['content'] for item in context['mandatory_evidence']} == files
+        evidence = context['mandatory_evidence']
+        if isinstance(evidence, dict):  # an identical index is sent once and referenced
+            evidence = context[evidence['same_as']]
+        # Every previous input is verified and indexed; contents are read on demand, never preloaded.
+        assert {item['path']: item['sha256'] for item in evidence} == {
+            path: hashlib.sha256(text.encode()).hexdigest() for path, text in files.items()}
+        assert all('content' not in item for item in evidence)
         if 'manifest' in context:
             return json.dumps(assessment(candidate()))
         return json.dumps({'manifest': candidate()})
@@ -57,15 +63,16 @@ async def test_repair_receives_all_18_inputs_before_first_call():
     (manifest, review), fetched, calls = await repair_case()
     assert len(calls) == 2
     assert len(manifest.inputs) == len(review.inputs) == 18
-    assert len(fetched) == 90
-    assert all(fetched.count(path) == 5 for path in manifest.inputs)
+    # Repair binding reuses inputs the same author inspection already verified for construction.
+    assert len(fetched) == 72
+    assert all(fetched.count(path) == 4 for path in manifest.inputs)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('failure,code', [('missing', 'scope_author_evidence_unavailable'), ('drift', 'source_identity'),
-    ('context', 'scope_author_context_limit'), ('reads', 'attempt_read_limit'), ('checkpoint', 'attempt_checkpoint_failed')])
+    ('context', 'scope_author_context_limit'), ('checkpoint', 'attempt_checkpoint_failed')])
 async def test_incomplete_repair_evidence_holds_before_model(failure, code):
-    budget = AttemptBudget(max_reads=1 if failure == 'reads' else 512)
+    budget = AttemptBudget()
     async def checkpoint():
         if failure == 'checkpoint':
             raise EnvironmentDiscoveryError('checkpoint rejected', code='attempt_checkpoint_failed')
@@ -74,6 +81,14 @@ async def test_incomplete_repair_evidence_holds_before_model(failure, code):
         await repair_case(failure=failure, budget=budget,
             limits=DiscoveryLimits(max_review_context_bytes=100 if failure == 'context' else 1024*1024))
     assert exc.value.code == code
+
+
+@pytest.mark.asyncio
+async def test_repair_evidence_is_not_charged_to_model_reads():
+    budget = AttemptBudget(max_reads=1)
+    (manifest, _review), fetched, _calls = await repair_case(budget=budget)
+    assert len(manifest.inputs) == 18
+    assert budget.reads == 0 and budget.verification_reads == len(fetched) == 72
 
 
 @pytest.mark.asyncio

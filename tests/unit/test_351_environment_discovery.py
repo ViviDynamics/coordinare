@@ -76,8 +76,10 @@ async def test_accepts_unfamiliar_nested_evidence_with_fresh_review():
     reviewer_start = chat.calls[2]
     assert len(reviewer_start) == 2
     assert not any(message["role"] == "assistant" for message in reviewer_start)
-    assert json.loads(reviewer_start[1]["content"])["mandatory_evidence"] == [
-        {"path": PATH, "content": SOURCE, "sha256": hashlib.sha256(SOURCE.encode()).hexdigest()}]
+    # Evidence on demand: the reviewer gets a verified index, never preloaded contents.
+    [indexed] = json.loads(reviewer_start[1]["content"])["mandatory_evidence"]
+    assert (indexed["path"], indexed["sha256"]) == (PATH, hashlib.sha256(SOURCE.encode()).hexdigest())
+    assert "content" not in indexed and SOURCE not in json.dumps(reviewer_start[1])
     assert PATH in json.dumps(reviewer_start)
 
 

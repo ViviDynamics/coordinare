@@ -13,6 +13,7 @@ from pathlib import Path
 import structlog
 
 from performer import degeneracy
+from performer.process_reaping import kill_and_reap
 from performer.degeneracy import format_refusal
 
 log = structlog.get_logger(__name__)
@@ -228,8 +229,7 @@ async def _run_git(
     try:
         _stdout, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await kill_and_reap(proc)
         raise TimeoutError(f"git command timed out after {timeout}s: {' '.join(args)}")
     return proc.returncode, stderr_bytes.decode(errors="replace")
 
@@ -251,8 +251,7 @@ async def _run_git_stdout(
     try:
         stdout_bytes, _stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await kill_and_reap(proc)
         raise TimeoutError(f"git command timed out after {timeout}s: {' '.join(args)}")
     return proc.returncode, stdout_bytes.decode(errors="replace")
 

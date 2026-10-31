@@ -118,7 +118,7 @@ async def test_owned_probe_checkpoints_before_executor_and_redacts_evidence(tmp_
         return SOURCE
     async def execute(plan, **kwargs):
         assert cache.environment_attempt['probe_owner'] == plan.digest()
-        assert cache.environment_attempt['reads'] == 1
+        assert cache.environment_attempt['reads'] == 0 and cache.environment_attempt['verification_reads'] == 1
         data = report_data(plan)
         data['results'][0]['output'] = 'API_KEY=private-secret-value'
         return ProbeReport.model_validate(data)
@@ -183,3 +183,66 @@ async def test_unread_probe_citation_feedback_identifies_rule_without_echoing_un
     assert 'untrusted-secret-source' not in messages[-1]['content']
     assert budget.schema_repairs == 1
     assert not executed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', [None, 'drift', 'budget'])
+async def test_probe_binds_complete_inputs_beyond_conversation_read_limit(tmp_path, monkeypatch, failure):
+    import hashlib
+
+    from coordinare.services import environment_probe_service as service
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_probes import ProbePlan, ProbeReport
+    from coordinare.services.environment_repair import begin_attempt, save_attempt
+    from tests.unit.test_353_environment_probes import plan
+    from tests.unit.test_353_execution_repair import cache_fixture
+    from tests.unit.test_353_execution_source_pipeline import bundle_fixture
+
+    inputs = dict.fromkeys([PATH, *(f'fixtures/input-{index:03}.txt' for index in range(334))],
+                           hashlib.sha256(SOURCE.encode()).hexdigest())
+    bundle = bundle_fixture(tmp_path, {path: (SOURCE.encode(), '100644') for path in inputs})
+    selected = ProbePlan.model_validate({**plan().model_dump(mode='json'), 'inputs': inputs,
+                                        'execution_source_digest': bundle.identity.digest()})
+    limits = DiscoveryLimits(max_reads=256, max_total_reads=334 if failure == 'budget' else 512)
+    cache = cache_fixture(tmp_path)
+    budget = begin_attempt(cache, limits, outer_seconds=600)
+    expiry = cache.environment_attempt['expires_at']
+    budget.reserve_probe_batch()
+
+    async def checkpoint():
+        save_attempt(cache, budget)
+
+    budget.checkpoint = checkpoint
+    await budget.flush()
+    fetched = set()
+    executed = False
+
+    async def fetch(path):
+        fetched.add(path)
+        return SOURCE + 'changed' if failure == 'drift' and path == max(inputs) else SOURCE
+
+    async def execute(probe, **kwargs):
+        nonlocal executed
+        executed = True
+        assert fetched == inputs.keys()
+        # Binding is the daemon's verification: not charged to the model's read cap, even beyond it ('budget').
+        assert budget.reads == 0 == cache.environment_attempt['reads']
+        assert budget.verification_reads == len(inputs) == cache.environment_attempt['verification_reads']
+        data = report_data(probe)
+        data['execution_source_digest'] = probe.execution_source_digest
+        return ProbeReport.model_validate(data)
+
+    monkeypatch.setattr(service, 'execute_environment_probe', execute)
+    context = service.ProbeServiceContext(cache, {}, fetch, budget, limits, bundle)
+    if failure == 'drift':
+        with pytest.raises(EnvironmentDiscoveryError) as exc:
+            await service.run_owned_probe(selected, context=context)
+        assert exc.value.code == 'probe_evidence_drift'
+        assert not executed and not cache.environment_attempt['probe_reports']
+    else:
+        report = await service.run_owned_probe(selected, context=context)
+        assert report.cleanup_confirmed and executed
+        assert cache.environment_attempt['probe_owner'] is None
+        assert len(cache.environment_attempt['probe_reports']) == 1
+    assert limits.max_reads == 256
+    assert cache.environment_attempt['expires_at'] == expiry

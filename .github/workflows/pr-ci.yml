@@ -1,9 +1,8 @@
 name: Pull Request CI
 
 on:
+  # Every pull request, including stacked ones against another PR's branch, gets the full gate.
   pull_request:
-    branches:
-      - main
     types:
       - opened
       - synchronize

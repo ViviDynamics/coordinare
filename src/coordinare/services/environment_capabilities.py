@@ -6,8 +6,10 @@ import json
 import uuid
 from typing import TYPE_CHECKING, Any, NoReturn
 
+from coordinare_service_inference.environment.guest_selection import guest_for
 from coordinare_service_inference.environment.models import ExecutionCapabilities
 from coordinare_service_inference.environment.runtime import RuntimeIdentity, RuntimePolicy
+from coordinare_service_inference.environment.runtime_guest import foreign_platforms, guest_cpus
 
 from coordinare.services.environment_acceptance import (
     accepted_environment,
@@ -58,6 +60,51 @@ async def _docker_identity(image: str) -> tuple[str, str]:
         return pinned, f"{os_name}/{machine}"
 
 
+def platform_roles(capabilities: ExecutionCapabilities) -> dict[str, Any]:
+    """Where each kind of work runs; installs and checks always run on the carrier's own CPU, never through emulation."""
+    runtime = capabilities.runtime
+    daemon = runtime.identity.guest_platform if runtime is not None else capabilities.platform
+    return {"install_and_check_platform": capabilities.platform, "container_daemon_platform": daemon,
+            "emulated_platforms": list(foreign_platforms(daemon)) if runtime is not None else []}
+
+
+def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any] | None:
+    """Describe the enforced private-runtime carrier boundary without inferring native transport policy."""
+    if capabilities.runtime is None:
+        return None
+    resources = capabilities.runtime.resources
+    return {"applies_to": "installer_and_check_carrier_processes", "linux_capabilities": [],
+            "session_budget": {"seconds": resources.max_seconds, "container_cpus": resources.cpus,
+                               "guest_cpus": guest_cpus(resources)},
+            "no_new_privileges": True, "uid_zero_restores_capabilities": False,
+            "guest_docker_ready_before_manifest_commands": True,
+            "manifest_execution_order": ["guest_readiness", "activation_environment", "install_if_requested",
+                "activation_path_validation", "service_init_start_health", "checks", "service_stop",
+                "seal_if_install_passed", "runtime_teardown"],
+            "runtime_ordering_guidance": "The coordinator opens the private guest and waits for its ready marker and "
+                "successful Docker health before manifest commands. It supplies guest Docker activation to carrier "
+                "commands. Manifest services run after the installer command phase. Startup readiness does not guarantee "
+                "continued daemon health; required checks and cleanup remain mandatory. Each service stop must remove every "
+                "Docker container, volume (including an image's anonymous volume: docker rm -f -v) and custom network "
+                "its service created; any left behind fails that stop. To stop a process, write its pid to a file under "
+                "{scratch} when it starts and kill that pid: pkill -f or pgrep -f inside a longer shell script "
+                "matches the script's own shell, whose command line contains the pattern. A ${NAME} reference "
+                "resolves only from activation variables, operator-supplied runtime variables, and local credentials "
+                "(each owned by a service this manifest starts, usable only by service and check commands, never install "
+                "or activation). Generate any other secret a check needs inside its command, for example "
+                "NAME=$(openssl rand -hex 64) before the test command.",
+            "installation_guidance": "Even UID 0 cannot assume permission for user, group or ownership changes. "
+                "Use inspected tools and cache-local dependency artifacts under {cache}. System package managers cannot "
+                "run here: the carrier has no Linux capabilities, so apt-get or apt install, update and download (apt's "
+                "fetch helper needs setgroups), dpkg -i, apk add and dnf or yum install all fail; download a prebuilt "
+                "release archive, or fetch individual .deb files from a package mirror with curl and unpack them under "
+                "{cache} with dpkg-deb -x. Guest service privileges are daemon-owned. "
+                "Installation, every check and the service lifecycle share one session_budget; the guest emulates its "
+                "CPU, so container image builds are slow. Prefer an official prebuilt release archive or an extracted "
+                "distribution package over compiling a language runtime, database or other large tool from source; "
+                "compile only what has no pinned prebuilt."}
+
+
 def _refuse_runtime(message: str) -> NoReturn:
     raise EnvironmentCapabilityError(message) from None
 
@@ -83,8 +130,8 @@ async def _remove_runtime_inspector(name: str) -> None:
         _refuse_runtime("private runtime inspection cleanup is unconfirmed")
 
 
-async def _inspect_runtime_bundle(image: str) -> dict[str, str]:
-    """Hash the immutable carrier's platform bundle with no project or network."""
+async def _inspect_runtime_bundle(image: str, guest_platform: str) -> dict[str, str]:
+    """Hash the immutable carrier's platform bundle for one guest, with no project or network."""
     name = "coordinare-runtime-inspect-" + uuid.uuid4().hex
     proc = None
     try:
@@ -93,7 +140,7 @@ async def _inspect_runtime_bundle(image: str) -> dict[str, str]:
             "--label", "coordinare.runtime.inspection=true",
             "--security-opt", "no-new-privileges", "--memory", "128m", "--memory-swap", "128m",
             "--cpus", "1", "--pids-limit", "32", "--read-only", "--entrypoint", "python",
-            image, "-m", "coordinare_service_inference.environment.runtime_bundle",
+            image, "-m", "coordinare_service_inference.environment.runtime_bundle", guest_platform,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
@@ -113,11 +160,14 @@ async def _inspect_runtime_bundle(image: str) -> dict[str, str]:
         await _remove_runtime_inspector(name)
 
 
-async def _with_private_runtime(target: ExecutionCapabilities, runtime: Any) -> ExecutionCapabilities:
+async def _with_private_runtime(target: ExecutionCapabilities, runtime: Any, guest_platform: str) -> ExecutionCapabilities:
     try:
-        policy = RuntimePolicy.model_validate(runtime)
+        policy = RuntimePolicy.model_validate(runtime).for_guest(guest_platform)
+    except ValueError:
+        _refuse_runtime("private runtime has no configured guest for the repository's platform requirement")
+    try:
         actual = RuntimeIdentity.model_validate({
-            **await _inspect_runtime_bundle(target.image_ref), "schema_version": 1,
+            **await _inspect_runtime_bundle(target.image_ref, guest_platform), "schema_version": 1,
             "carrier_image": target.image_ref, "carrier_platform": target.platform,
         })
     except ValueError:
@@ -173,7 +223,9 @@ async def resolve_execution_capabilities(state: Mapping[str, Any], symphony_name
     target = ExecutionCapabilities(schema_version=1, image_ref=image, platform=platform,
         cache_mount_path=f"{root}/{cache.sanitised_name}", install_network="enabled", verify_network="disabled")
     if runtime is not None:
-        target = await _with_private_runtime(target, runtime)
+        # Derived from the pinned source's recorded requirements, so probes, approvals, execution and clean verification agree.
+        required = (getattr(cache, "environment_guest", None) or {}).get("required") or []
+        target = await _with_private_runtime(target, runtime, guest_for(target.platform, required))
     await _check_bootstrap_target(state, symphony_name, target)
     return target
 

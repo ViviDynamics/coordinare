@@ -260,7 +260,7 @@ async def test_backend_metadata_remains_request_local(monkeypatch):
     assert isinstance(await backend.chat_json([{"role": "user", "content": "first"}]), str)
 
 
-@pytest.mark.parametrize("changes", [{"max_schema_repairs": 9}, {"max_schema_repairs": -1}, {"timeout_seconds": 3601}, {"max_calls": 0}])
+@pytest.mark.parametrize("changes", [{"max_schema_repairs": 9}, {"max_schema_repairs": -1}, {"timeout_seconds": 6 * 3600 + 1}, {"max_calls": 0}])
 def test_invalid_attempt_bounds_cannot_extend_policy(changes):
     with pytest.raises(ValueError):
         AttemptBudget(**changes)
@@ -296,7 +296,7 @@ async def test_invalid_navigation_does_not_spend_schema_repairs(tool):
     assert manifest.inputs == full_candidate()["inputs"]
     assert review.verdict == "accept"
     assert events[-1]["repairs"] == 0
-    assert events[-1]["reads"] == 6
+    assert events[-1]["reads"] == 3 and events[-1]["verification_reads"] == 3
     feedback = json.loads(replies.messages[1][-1]["content"])
     assert feedback["tool_result"]["errors"]
 

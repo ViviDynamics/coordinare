@@ -11,6 +11,7 @@ from coordinare_service_inference.environment.models import (
 )
 from pydantic import ConfigDict, create_model
 
+from coordinare.services.environment_delta_schema import MANIFEST_DELTA_ENVELOPE
 from coordinare.services.environment_probes import ProbeEnvelope, ProbeRequest
 from coordinare.services.environment_proposal_patch import PATCH_INSTRUCTION, PATCH_SCHEMA
 
@@ -65,6 +66,9 @@ _MANIFEST_INSTRUCTIONS = (
     'Use the fixed scope_contract supplied by the daemon: criterion_checks maps every required criterion ID '
     'to required unscoped consumer checks. Never return scope_contract, scope_contract_digest or change source obligations. '
     'runtime_endpoints declares bounded loopback forwards only when an explicit private platform policy is configured. '
+    'Architecture: installs and checks run natively on platform_roles.install_and_check_platform, so download release '
+    'artifacts for that platform. A container image for another platform runs only through emulated_platforms, which is '
+    'slower; request one only when the repository explicitly requires it. '
 
     'Discover the project environment from arbitrary repository evidence, including '
     'documentation, build/test entry points, automation and nested subprojects. '
@@ -90,6 +94,7 @@ _MANIFEST_INSTRUCTIONS = (
     'For shell-local variables assigned inside bash -c, use $name rather than ${name}. '
     f'{LOCAL_CREDENTIAL_AUTHORING} '
     'Create every declared activation directory during installation; do not hide a missing path by removing useful activation. '
+    'List tool directories in activation.path, which is prepended to the guest PATH; never set PATH in activation.env. '
     'The project environment scope is fixed by pinned development/test evidence, never by image convenience. '
     'Include finding_responses for every open finding ID: rationale, sources and affected_ids. '
     'Resolve missing capabilities or provide source-backed explanations; no new privileges or verification networking. '
@@ -116,7 +121,8 @@ def assessment_envelope_schema() -> dict[str, object]:
 class DiscoveryPrompts:
     """Keep source tools available while advertising only the current declaration."""
 
-    def update(self, messages: list[dict[str, str]], budget: AttemptBudget, inputs: Mapping[str, str], *, repairing: bool = False) -> None:
+    def update(self, messages: list[dict[str, str]], budget: AttemptBudget, inputs: Mapping[str, str], *, repairing: bool = False,
+               delta: bool = False) -> None:
         if not inputs:
             budget.expected_envelope = "source_tool"
             guidance = ('Current phase: source_inspection. Inspect repository evidence using the source tools. '
@@ -140,14 +146,23 @@ class DiscoveryPrompts:
                 'Do not submit a manifest before actual probe results. Return exactly the complete envelope '
                 'matching this schema: ' + json.dumps(ProbeEnvelope.model_json_schema()))
         else:
-            budget.expected_envelope = "manifest"
+            # A delta repair keeps its delta envelope; correction patches need a complete declaration it never has.
+            budget.expected_envelope = "manifest_delta" if delta else "manifest"
             ledger = budget.finding_ledger
             known_ids = [record.id for record in ledger.records] if ledger else []
             finding_rule = ('Only respond to these daemon-assigned coverage finding IDs: ' + json.dumps(known_ids) +
                 '. Probe observations are not coverage findings. ' + ('finding_responses MUST be [] because no finding IDs exist. ' if not known_ids else ''))
-            guidance = ('Current phase: manifest_construction. ' + finding_rule + _MANIFEST_INSTRUCTIONS +
-                (PATCH_INSTRUCTION + json.dumps(PATCH_SCHEMA) if repairing else
-                 'Return exactly the complete envelope matching this schema: ' + json.dumps(_MANIFEST_ENVELOPE.model_json_schema())))
+            # The per-round finding list comes last so the instructions before it stay a cacheable prefix across rounds.
+            if delta:
+                guidance = ('Current phase: manifest_delta_construction. ' + _MANIFEST_INSTRUCTIONS +
+                    'This is a repair: return exactly {"manifest_delta":{...},"finding_responses":[...]} with only the '
+                    'records you change or add, matching this schema: ' +
+                    json.dumps(MANIFEST_DELTA_ENVELOPE.model_json_schema()) + ' ' + finding_rule.rstrip())
+            else:
+                guidance = ('Current phase: manifest_construction. ' + _MANIFEST_INSTRUCTIONS +
+                    (PATCH_INSTRUCTION + json.dumps(PATCH_SCHEMA) if repairing else
+                     'Return exactly the complete envelope matching this schema: ' + json.dumps(_MANIFEST_ENVELOPE.model_json_schema())) +
+                    ' ' + finding_rule.rstrip())
         messages[0] = {"role": "system", "content": SOURCE_TOOLS + guidance}
 
 
@@ -160,9 +175,18 @@ def correction_instruction(envelope: str) -> str:
             'Citations and questions must each contain exactly the unique command IDs; citations must be nonempty '
             'and questions nonblank, at most 512 characters. Do not add root schema_version or return a list or manifest. ',
         "manifest": 'Return exactly {"manifest":{...},"finding_responses":[...]} matching the manifest envelope, never a bare proposal. ',
+        "manifest_delta": 'Return exactly {"manifest_delta":{...},"finding_responses":[...]} with only the changed and added records, never the unchanged ones. ',
         "scope": 'Return exactly {"scope":{"criteria":[...]},"finding_responses":[...]} with complete source obligations, never executable commands. ',
         "scope_revision": 'Return exactly {"scope_revision":{"base_digest":"retained definition digest","add":[],"reassess":[]},"finding_responses":[...]} with at most 16 combined additions/reassessments. Never return a complete scope or commands. Preserve the attempted scope_revision operations while correcting finding responses; do not abandon additions/reassessments merely to repair stale affected_ids. Nothing from the rejected proposal has been committed. Use [] for affected_ids of new/reassessed criteria, not their replaced IDs. ' ,
         "scope_assessment": 'Return exactly {"scope_assessment":{...}} with verdict, sources, rationale, findings and decisions. ',
+        "shard_checks": 'Return exactly {"shard_checks":{"checks":[...],"criterion_checks":{...}}} with every check id '
+            'starting with your assigned prefix and every assigned criterion mapped. ',
+        "scope_consolidation": 'Return exactly {"scope_consolidation":{"groups":[{"member_ids":[...],"criterion":{...}}]}} '
+            'with at least two member ids per group; criterion sources are exactly the union of the members\' sources. ',
+        "listing_triage": 'Return exactly {"listing_triage":{"verdicts":[{"path":...,"verdict":...,"rationale":...}]}} '
+            'covering every listed file with a directory or file verdict. ',
+        "shard_summary": 'Return exactly {"shard_summary":{"criteria":[...],"cross_references":[...],"questions":[...]}} '
+            'with source obligations evidenced by your shard, never executable commands. ',
         "assessment": 'Return exactly {"assessment":{...}} matching the review envelope. ',
     }[envelope]
 

@@ -17,7 +17,7 @@ BATCH_SIZE = 128
 BATCHES = 100
 REPEATS = 5
 INSERT = 'INSERT OR IGNORE INTO events (' + ','.join(COLUMNS) + ') VALUES (' + ','.join('?' for _ in COLUMNS) + ')'
-ROWS = [('2026-10-15T12:00:00Z', 'garden', '271', 'run', 'implementing', 'performer', 'progress', 'info', 'message', '{}')] * BATCH_SIZE
+ROWS = [('2026-10-15T12:00:00Z', 'samplehost', '271', 'run', 'implementing', 'performer', 'progress', 'info', 'message', '{}')] * BATCH_SIZE
 
 
 def batch(db: sqlite3.Connection) -> None:

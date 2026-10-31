@@ -15,7 +15,7 @@ from coordinare_service_inference.environment.models import environment_order
 from coordinare_service_inference.environment.runner import _expand
 
 from .runtime_cli import run_cli
-from .runtime_observation import observe_private
+from .runtime_observation import PrivateTeardownError, observe_private
 
 
 def command_environment(command: dict[str, Any], *, runtime_env: dict[str, str] | None = None,
@@ -63,6 +63,9 @@ def execute(command: dict[str, Any], seconds: float, *, runtime_env: dict[str, s
     process = None
     try:
         env = command_environment(command, runtime_env=runtime_env, roots=roots)
+        # When the batch's remaining time, not the command's own timeout, is the deadline that expires, the command
+        # was cut short by the batch: that is no observation of its timeout.
+        batch_bound = seconds < command["timeout_seconds"]
         deadline = time.monotonic() + min(seconds, command["timeout_seconds"])
         process = subprocess.Popen(  # noqa: S603, RUF100 - isolated argv; S603 is enforced by the separate ratchet
             [_expand(value, roots, env) for value in command["argv"]],
@@ -75,7 +78,10 @@ def execute(command: dict[str, Any], seconds: float, *, runtime_env: dict[str, s
             result.update(status="completed", exit_code=code)
         except subprocess.TimeoutExpired:
             expired = True
-        if expired:
+        if expired and batch_bound:
+            result.update(status="execution_error", exit_code=None,
+                          output="probe batch time ran out while this probe ran")
+        elif expired:
             result.update(status="timed_out", exit_code=None)
     except FileNotFoundError:
         result.update(status="completed", exit_code=127, output="executable or working directory unavailable")
@@ -92,18 +98,37 @@ def execute(command: dict[str, Any], seconds: float, *, runtime_env: dict[str, s
     return result
 
 
+def _private_results(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """One command's private observation. A guest that cannot start or runs out of time is that command's result,
+    reported by exception class only; an unconfirmed teardown still fails the whole probe."""
+    command_id = data["commands"][0]["id"] if data.get("commands") else "unknown"
+    try:
+        return run_cli(observe_private(data))
+    except PrivateTeardownError:
+        raise
+    except TimeoutError:
+        # The guest, not the command, ran out of time: nothing was observed. A command that outlives its own timeout
+        # inside the guest is reported timed_out by execute(); this one must not read as that observation.
+        return [{"id": command_id, "status": "execution_error", "exit_code": None,
+                 "output": "private probe guest unavailable: TimeoutError", "truncated": False}]
+    except (OSError, RuntimeError, ValueError) as exc:
+        return [{"id": command_id, "status": "execution_error", "exit_code": None,
+                 "output": f"private probe guest unavailable: {type(exc).__name__}", "truncated": False}]
+
+
 def main() -> None:
     data = json.load(sys.stdin)
     if data.get("runtime") is not None:
-        results = run_cli(observe_private(data))
-        sys.stdout.write(json.dumps(results)+"\n")
+        sys.stdout.write(json.dumps(_private_results(data))+"\n")
         return
     deadline = time.monotonic() + min(120, data["seconds"])
     results = []
     for command in data["commands"]:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            results.append({"id":command["id"], "status":"timed_out", "exit_code":None, "output":"", "truncated":False})
+            # Never started: the batch's time ran out first, so there is no observation of this command.
+            results.append({"id":command["id"], "status":"execution_error", "exit_code":None,
+                            "output":"probe batch time ran out before this probe started", "truncated":False})
         else:
             results.append(execute(command, remaining, runtime_env=data.get("runtime_environment"), roots=data.get('roots')))
     sys.stdout.write(json.dumps(results) + "\n")

@@ -156,6 +156,20 @@ os._exit(exit_code)
 """
 
 
+# Where a secret a test needs comes from when no operator supplies it (Dettmore e2e-05 to e2e-09 referenced an
+# undeclared ${SECRET_KEY_BASE} and lost an install, then a repair, each time).
+SECRET_GUIDANCE = ("A secret that no started service owns (for example a framework secret key) is generated inside the "
+                   "command that needs it, for example NAME=$(openssl rand -hex 64) before the test command; declare "
+                   "local_credentials only for services this manifest starts.")
+_UNRESOLVED = re.compile(r"unresolved environment reference: ([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _unresolved_name(exc: ValueError) -> str:
+    """The unresolved variable's name, never a value: only _expand's own message is read."""
+    match = _UNRESOLVED.fullmatch(str(exc))
+    return f" ${{{match[1]}}}" if match else ""
+
+
 def _expand(value: str, roots: dict[str, str], env: dict[str, str]) -> str:
     def reference(match: re.Match[str]) -> str:
         name = match.group("environment")
@@ -203,24 +217,26 @@ def _template_preflight(manifest: EnvironmentManifest, roots: dict[str, str], *,
         for command in commands if not scope or not command.scope or scope in command.scope}
     try:
         env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env, credentials=credentials)
-    except ValueError:
-        # Avoid including environment values in diagnostics from failed activation.
+    except ValueError as exc:
+        # Avoid including environment values in diagnostics from failed activation; only a variable name is named.
         results["activation"] = CheckResult(id="activation", required=True, status="fail",
-            output="activation template expansion failed; use {cache}, {repo}, {scratch} for roots and provide every ${NAME} runtime environment reference",
-            manifest_digest=digest, context=scope)
+            output="activation template expansion failed" + _unresolved_name(exc) + "; use {cache}, {repo}, {scratch} for "
+                   "roots. Activation may reference only operator-supplied runtime variables, never a generated "
+                   "credential. " + SECRET_GUIDANCE, manifest_digest=digest, context=scope)
     else:
         for command in commands:
             if command.id not in results:
                 continue
             try:
                 _command_values(command, roots, env)
-            except ValueError:
+            except ValueError as exc:
                 if not results[command.id].required:
                     continue
                 results[command.id].status = "fail"
                 results[command.id].output = (
-                    "unresolved environment reference in command template; use {cache}, {repo}, {scratch} for execution roots. "
-                    "${NAME} requires a runtime environment variable; use $name for shell-local variables assigned inside the command."
+                    "unresolved environment reference" + _unresolved_name(exc) + " in command template; use {cache}, "
+                    "{repo}, {scratch} for execution roots. ${NAME} requires a runtime environment variable; use $name for "
+                    "shell-local variables assigned inside the command. " + SECRET_GUIDANCE
                 )
     if any(result.required and result.status == "fail" for result in results.values()):
         _bound_outputs(results)
@@ -702,7 +718,9 @@ async def _run_manifest_commands(
     execution_source_digest: str | None = None,
     runtime_env: Mapping[str, str] | None = None,
     credentials: Mapping[str, str] | None = None,
+    progress: dict[str, CheckResult] | None = None,
 ) -> VerificationReport:
+    """``progress``, when given, receives each result as it lands, so an owner keeps finished results if cancelled."""
     roots = {"cache": str(cache), "repo": str(repo), "scratch": str(scratch)}
     redactions = _runtime_secret_values(secret_names) | frozenset((credentials or {}).values())
     preflight = _template_preflight(manifest, roots, install=install, scope=scope, secret_names=secret_names,
@@ -711,7 +729,7 @@ async def _run_manifest_commands(
         preflight.execution_source_digest = execution_source_digest
         return preflight
     env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env, credentials=credentials)
-    results: dict[str, CheckResult] = {}
+    results: dict[str, CheckResult] = progress if progress is not None else {}
     digest = manifest.digest()
     if install:
         await _commands(
@@ -796,7 +814,7 @@ async def run_manifest(
         return await execute_with_runtime(manifest, cache=cache, repo=repo, scratch=scratch,
             install=install, scope=scope, secret_names=secret_names, execution_source_digest=execution_source_digest,
             runtime_artifacts=runtime_artifacts, runtime_deadline=runtime_deadline, runtime_lease=runtime_lease,
-            commands=commands)
+            commands=commands, redact_values=frozenset(credentials.values()))
     if runtime_lease is not None or runtime_artifacts is not None:
         raise ValueError("native manifest cannot use private runtime evidence")
     return await commands(manifest, cache=cache, repo=repo, scratch=scratch,
@@ -875,20 +893,28 @@ def main() -> None:
     from .runtime_transport import consume_runtime_controls
 
     runtime_deadline, runtime_artifacts = consume_runtime_controls(required=manifest.runtime is not None, install=args.install)
-    report = run_cli(
-        run_manifest(
-            manifest,
-            cache=args.cache,
-            repo=args.repo,
-            scratch=args.scratch,
-            scope=args.scope, execution_source_digest=execution_source_digest,
-            install=args.install,
-            secret_names=secret_names,
-            runtime_deadline=runtime_deadline, runtime_artifacts=runtime_artifacts,
-        ),
-    )
+    from .runtime_execution import PrivateRuntimeIncompleteError
+
+    try:
+        report = run_cli(
+            run_manifest(
+                manifest,
+                cache=args.cache,
+                repo=args.repo,
+                scratch=args.scratch,
+                scope=args.scope, execution_source_digest=execution_source_digest,
+                install=args.install,
+                secret_names=secret_names,
+                runtime_deadline=runtime_deadline, runtime_artifacts=runtime_artifacts,
+            ),
+        )
+    except PrivateRuntimeIncompleteError as exc:
+        # The run holds either way; emit the evidence instead of only a traceback.
+        if exc.report is None:
+            raise
+        report = exc.report
     sys.stdout.write(report.model_dump_json() + "\n")
-    raise SystemExit(0 if report.passed else 1)
+    raise SystemExit(0 if report.passed and not report.runtime_incomplete else 1)
 
 
 if __name__ == "__main__":

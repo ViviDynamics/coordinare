@@ -92,11 +92,21 @@ def test_finding_count_and_serialized_bounds():
     data = {'schema_version': 1, 'source_commit': COMMIT, 'records': [], 'reviews': [
         {'sequence': 1, 'manifest_digest': DIGEST, 'inputs': {'p': 'c'*64}, 'decisions': [], 'added_ids': []}]}
     size = len(json.dumps(data, sort_keys=True, separators=(',', ':')).encode())
-    data['reviews'][0]['inputs'] = {'p' * (512*1024-size+1): 'c'*64}
+    data['reviews'][0]['inputs'] = {'p' * (findings.LEDGER_MAX_BYTES-size+1): 'c'*64}
     findings.FindingLedger.model_validate(data)
-    data['reviews'][0]['inputs'] = {'p' * (512*1024-size+2): 'c'*64}
+    data['reviews'][0]['inputs'] = {'p' * (findings.LEDGER_MAX_BYTES-size+2): 'c'*64}
     with pytest.raises(ValueError):
         findings.FindingLedger.model_validate(data)
+
+
+def test_the_ledger_holds_many_full_reviews_of_a_large_repository():
+    """Dettmore e2e-35: seven reviews of ~570 inputs each filled the former 512 KiB bound mid-repair."""
+    inputs = {f'app/path/{index:04}/file.rb': 'c'*64 for index in range(570)}
+    reviews = [{'sequence': sequence, 'manifest_digest': DIGEST, 'inputs': inputs, 'decisions': [], 'added_ids': []}
+               for sequence in range(1, 31)]
+    ledger = findings.FindingLedger.model_validate({'schema_version': 1, 'source_commit': COMMIT, 'records': [],
+                                                    'reviews': reviews})
+    assert len(ledger.canonical()) > 512*1024 and len(ledger.reviews) == 30
 
 
 def test_duplicate_resolution_cannot_hide_an_open_survivor_or_cycle():

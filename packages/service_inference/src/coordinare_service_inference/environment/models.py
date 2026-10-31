@@ -6,9 +6,10 @@ import hashlib
 import json
 import platform as runtime_platform
 import re
+from collections import Counter
 from graphlib import CycleError, TopologicalSorter
 from itertools import pairwise
-from typing import Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -37,6 +38,9 @@ from .runtime import (
     RuntimeSpec,
 )
 from .scope import ScopeContract, validate_scope_mapping
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
 EXECUTION_PATH_PATTERN = r"^(?:/|\{(?:cache|repo|scratch)\}|\$\{[A-Za-z_][A-Za-z0-9_]*\})(?:[^\x00-\x1f\x7f\\]*)$"
@@ -307,80 +311,47 @@ class EnvironmentManifest(StrictModel):
             commands.extend([service.start, service.health, service.stop])
             if service.init:
                 commands.append(service.init)
-        if self.runtime is not None and any(RUNTIME_OWNED_ENV & variables.keys()
-                for variables in [self.activation.env, *(command.env for command in commands)]):
-            raise ValueError("private runtime control environment cannot be overridden")
-        ids = [command.id for command in commands]
-        if len(ids) != len(set(ids)) or len(commands) > 4096:
-            raise ValueError("duplicate command IDs or excessive commands")
-        if len({r.id for r in self.requirements}) != len(self.requirements):
-            raise ValueError("duplicate requirement IDs")
-        if len({s.id for s in self.services}) != len(self.services):
-            raise ValueError("duplicate service IDs")
-        install_ids = {command.id for command in self.install}
-        for command in commands[len(self.install) :]:
-            if install_ids.intersection(command.depends_on):
-                raise PydanticCustomError("clean_dependency_install_only", "clean execution cannot depend on install-only evidence")
-        graph = {command.id: list(command.depends_on) for command in commands}
-        for service in self.services:
-            stages = [command for command in [service.init, service.start, service.health] if command]
-            for previous, current in pairwise(stages):
-                graph[current.id].append(previous.id)
-        if any(dependency not in graph for deps in graph.values() for dependency in deps):
-            raise ValueError('missing prerequisite')
-        try:
-            tuple(TopologicalSorter(graph).static_order())
-        except CycleError as exc:
-            raise ValueError('cyclic prerequisites') from exc
-        readiness_ids = {command.id for service in self.services
-                         for command in [service.init, service.start, service.health] if command}
-        check_ids = {command.id for command in self.checks}
-        for command in self.install:
-            if set(command.depends_on) - install_ids:
-                raise ValueError('install actions may only depend on install actions')
-        for command in self.checks:
-            if set(command.depends_on) - readiness_ids - check_ids:
-                raise ValueError('checks require consumer-executable prerequisites')
-        for service in self.services:
-            earlier = set(readiness_ids)
-            own = [command for command in [service.init, service.start, service.health] if command]
-            earlier.difference_update(command.id for command in own)
-            for command in own:
-                if set(command.depends_on) - earlier:
-                    raise ValueError('service lifecycle depends on unavailable execution phase')
-                earlier.add(command.id)
-            if any(command.scope != service.start.scope for command in [*own, service.stop]):
-                raise ValueError('service lifecycle commands must share applicability scope')
+        validate_records(self.install, self.checks, self.services, self.requirements, self.activation.env,
+                         runtime=self.runtime is not None, reviewed_scope=self.schema_version == 3)
+        validate_execution_graph(self.install, self.checks, self.services)
+        if self.schema_version == 3:
+            validate_shell_locals(commands, [*self.activation.env, *(c.name for c in self.local_credentials)])
         checks = {check.id: check for check in self.checks}
         if not any(check.required for check in self.checks):
-            raise ValueError("at least one required baseline check is mandatory")
+            raise PydanticCustomError("required_check_missing", "at least one required baseline check is mandatory")
         for requirement in self.requirements:
             if requirement.source not in self.inputs:
-                raise ValueError("requirement source was not inspected")
+                raise _graph_error("requirement_source_uninspected", "requirement source was not inspected",
+                                   requirement.id, set())
             for check_id in requirement.checks:
                 if check_id not in checks or (
                     requirement.required and not checks[check_id].required
                 ):
                     raise PydanticCustomError("requirement_check_reference", "requirement must reference required executable checks")
         if not self.requirements and not (self.empty_reason and self.empty_reason.strip()):
-            raise ValueError("empty environment requires justification")
+            raise PydanticCustomError("empty_reason_missing", "empty environment requires justification")
         self._validate_local_credentials(commands)
         return self
 
     def _validate_local_credentials(self, commands: list[Command]) -> None:
         names = [credential.name for credential in self.local_credentials]
         service_ids = {service.id for service in self.services}
-        if len(names) != len(set(names)) or any(c.service not in service_ids for c in self.local_credentials):
-            raise PydanticCustomError("local_credential_invalid",
-                                      "local credentials need unique names and a service this manifest starts")
+        # Each rule names the credentials and the command it rejects (v34's author, told neither, repeated both).
+        invalid = {name for name, count in Counter(names).items() if count > 1}
+        invalid |= {c.name for c in self.local_credentials if c.service not in service_ids}
+        if invalid:
+            raise _graph_error("local_credential_invalid",
+                               "local credentials need unique names and a service this manifest starts", "", invalid)
         if not names:
             return
         # Activation also applies to install commands, so it cannot carry generated credentials either.
-        installed = {name for command in self.install for name in _references(command)}
-        installed |= {name for text in self.activation.env.values() for name in _CREDENTIAL_REFERENCE.findall(text)}
-        if set(names) & installed:
-            raise PydanticCustomError("local_credential_in_install",
-                                      "install commands and activation cannot use generated credentials")
+        for command in self.install:
+            if leaked := set(names) & _references(command):
+                raise _graph_error("local_credential_in_install",
+                                   "install commands and activation cannot use generated credentials", command.id, leaked)
+        if leaked := set(names) & {name for text in self.activation.env.values() for name in _CREDENTIAL_REFERENCE.findall(text)}:
+            raise _graph_error("local_credential_in_install",
+                               "install commands and activation cannot use generated credentials", "activation", leaked)
         consumers = commands[len(self.install):]
         used = {name for command in consumers for name in _references(command)}
         # Data that stores a per-run value lives in {scratch}; {cache} reaches tools only through activation PATH.
@@ -390,11 +361,11 @@ class EnvironmentManifest(StrictModel):
             texts = [*command.argv, command.cwd, *(value for key, value in command.env.items() if key != "PATH")]
             via_activation = any(re.search(r"\$(?:\{" + re.escape(key) + r"\}|" + re.escape(key) + r"(?![A-Za-z0-9_]))", text)
                                  for key in cached for text in texts)
-            if set(names) & _references(command) and (via_activation or any("{cache}" in text for text in texts)):
-                raise PydanticCustomError("local_credential_cache_data",
-                                          "commands using generated credentials cannot reference {cache}")
-        if set(names) - used:
-            raise PydanticCustomError("local_credential_unused", "every local credential must be referenced as ${NAME}")
+            if (referenced := set(names) & _references(command)) and (via_activation or any("{cache}" in text for text in texts)):
+                raise _graph_error("local_credential_cache_data",
+                                   "commands using generated credentials cannot reference {cache}", command.id, referenced)
+        if unused := set(names) - used:
+            raise _graph_error("local_credential_unused", "every local credential must be referenced as ${NAME}", "", unused)
 
     def digest(self) -> str:
         return hashlib.sha256(self.canonical_json().encode()).hexdigest()
@@ -452,17 +423,27 @@ class CheckResult(StrictModel):
     context: str = ""
 
 
+IncompleteCondition = Literal["deadline_exhausted", "runtime_failed", "seal_failed", "qemu_reaped", "keys_absent", "listeners_absent",
+                              "artifacts_unchanged", "clean_shutdown", "bounds_respected", "unconfirmed"]
+
+
 class VerificationReport(StrictModel):
     runtime_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     runtime_phase: Literal["installer", "consumer", "live_consumer"] | None = None
     runtime_artifacts: RuntimeArtifactReceipt | None = None
     runtime_cleanup: bool | None = None
+    # Only on a run that cannot be accepted (deadline, seal or teardown), so it still says why while it holds.
+    runtime_incomplete: list[IncompleteCondition] | None = None
+    runtime_incomplete_detail: str | None = Field(default=None, max_length=16000)
 
     @model_serializer(mode="wrap")
     def serialize_native_compatibly(self, handler: Any) -> dict[str, Any]:
         data: dict[str, Any] = handler(self)
         if self.runtime_digest is None:
             for key in ("runtime_digest", "runtime_phase", "runtime_artifacts", "runtime_cleanup"):
+                data.pop(key, None)
+        for key in ("runtime_incomplete", "runtime_incomplete_detail"):
+            if getattr(self, key) is None:
                 data.pop(key, None)
         return data
 
@@ -479,6 +460,154 @@ class VerificationReport(StrictModel):
         return bool(required) and all(result.status == "pass" for result in required)
 
 
+GRAPH_IDS = 8
+MAX_COMMANDS = 4096
+
+
+def _graph_error(code: str, message: str, command_id: str, unavailable: set[str]) -> PydanticCustomError:
+    """Names only schema-validated command ids, so a correction can say which edge to remove."""
+    return PydanticCustomError(code, message, {'command_id': command_id, 'unavailable': sorted(unavailable)[:GRAPH_IDS]})
+
+
+def _repeated(identifiers: Iterable[str]) -> set[str]:
+    return {identifier for identifier, count in Counter(identifiers).items() if count > 1}
+
+
+MAX_DUPLICATE_PAIRS = 32
+
+
+def content_key(command: Command) -> str:
+    """What makes two commands one obligation: argv, cwd, env and scope. Timeout, dependencies and required do not."""
+    return json.dumps([command.argv, command.cwd, sorted(command.env.items()), sorted(command.scope)], ensure_ascii=False)
+
+
+def duplicate_content_pairs(commands: Iterable[Command]) -> list[list[str]]:
+    """Each later command repeating an earlier one's argv, cwd, env and scope, paired with that earlier copy."""
+    first: dict[str, str] = {}
+    pairs: list[list[str]] = []
+    for command in commands:
+        key = content_key(command)
+        if key in first:
+            pairs.append([first[key], command.id])
+        else:
+            first[key] = command.id
+    return pairs
+
+
+def validate_unique_content(commands: Iterable[Command]) -> None:
+    """One obligation is one command: an identical copy under another id is rejected, listing every pair."""
+    if pairs := duplicate_content_pairs(commands):
+        raise PydanticCustomError("duplicate_command_content",
+                                  "identical commands repeat an earlier command's argv, cwd, env and scope; "
+                                  "keep one and remove the rest",
+                                  {"pairs": pairs[:MAX_DUPLICATE_PAIRS]})
+
+
+def validate_records(install: list[Command], checks: list[Command], services: list[Service],
+                     requirements: list[Requirement], activation_env: dict[str, str], *, runtime: bool,
+                     reviewed_scope: bool = True) -> None:
+    """Rules on records and their ids that one author can break alone; each names the records it rejects."""
+    commands = [*install, *checks, *(command for service in services
+                                     for command in [service.start, service.health, service.stop, service.init] if command)]
+    if runtime:
+        for command in commands:
+            if reserved := RUNTIME_OWNED_ENV & command.env.keys():
+                raise _graph_error('runtime_env_reserved', 'private runtime control environment cannot be overridden',
+                                   command.id, set(reserved))
+        if reserved := RUNTIME_OWNED_ENV & activation_env.keys():
+            raise _graph_error('runtime_env_reserved', 'private runtime control environment cannot be overridden',
+                               'activation', set(reserved))
+    if (repeated := _repeated(command.id for command in commands)) or len(commands) > MAX_COMMANDS:
+        raise _graph_error('duplicate_command_ids', 'duplicate command IDs or excessive commands', '', repeated)
+    validate_unique_content(install)
+    validate_unique_content(checks)
+    # A lifecycle command repeated under another service repeats its obligation; one service's own phases may share content.
+    owner = {command.id: service.id for service in services
+             for command in [service.init, service.start, service.health, service.stop] if command}
+    lifecycle = [command for service in services for command in [service.init, service.start, service.health, service.stop] if command]
+    if pairs := [pair for pair in duplicate_content_pairs(lifecycle) if owner[pair[0]] != owner[pair[1]]]:
+        raise PydanticCustomError("duplicate_command_content",
+                                  "identical commands repeat an earlier command's argv, cwd, env and scope; "
+                                  "keep one and remove the rest",
+                                  {"pairs": pairs[:MAX_DUPLICATE_PAIRS]})
+    if repeated := _repeated(requirement.id for requirement in requirements):
+        raise _graph_error('duplicate_requirement_ids', 'duplicate requirement IDs', '', repeated)
+    for service in services:
+        lifecycle = [command for command in [service.init, service.start, service.health, service.stop] if command]
+        if differing := {command.id for command in lifecycle if command.scope != service.start.scope}:
+            raise _graph_error('service_scope_mismatch', 'service lifecycle commands must share applicability scope',
+                               service.id, differing)
+        if reviewed_scope and service.required and (optional := {command.id for command in lifecycle if not command.required}):
+            raise _graph_error('scope_required_service', 'required service lifecycle cannot be optional',
+                               service.id, optional)
+
+
+_TEMPLATE_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_SHELL_ASSIGNMENT = re.compile(r"(?:(?<![A-Za-z0-9_$.{/-])([A-Za-z_][A-Za-z0-9_]*)=|\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b"
+                               r"|\bread\s+(?:-[a-z]+\s+)*([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def validate_shell_locals(commands: Iterable[Command], declared: Iterable[str]) -> None:
+    """A ${NAME} for a variable the command itself assigns is a shell variable the runner would refuse as a template.
+
+    The runner expands every ${NAME} from its environment before a command runs, and refuses names it lacks. Three
+    Regression runs lost an execution repair to ${HA} and ${GHV} assigned in the same command. Names a
+    command does not assign (such as runtime credentials) are never flagged here.
+    """
+    known = set(declared)
+    for command in commands:
+        text = "\n".join(command.argv)
+        # NAME=${NAME} passes a runtime value through to a child process; only other assignments make NAME local.
+        assigned = {name for match in _SHELL_ASSIGNMENT.finditer(text) for name in match.groups()
+                    if name and not text.startswith("${" + name + "}", match.end())}
+        if local := ({name for name in _TEMPLATE_REFERENCE.findall(text)} & assigned) - known - set(command.env):
+            raise _graph_error('shell_local_template_reference',
+                               'a variable the command assigns is referenced as a ${NAME} template', command.id, local)
+
+
+def validate_execution_graph(install: list[Command], checks: list[Command], services: list[Service]) -> None:
+    """Prerequisite rules per execution phase; raises a correctable error naming the offending command."""
+    if len({service.id for service in services}) != len(services):
+        raise PydanticCustomError('duplicate_service_ids', 'duplicate service IDs')
+    install_ids = {command.id for command in install}
+    lifecycle = [[command for command in [service.init, service.start, service.health] if command] for service in services]
+    readiness_ids = {command.id for own in lifecycle for command in own}
+    check_ids = {command.id for command in checks}
+    clean = [*checks, *(command for service in services
+                        for command in [service.start, service.health, service.stop, service.init] if command)]
+    for command in clean:
+        if install_ids.intersection(command.depends_on):
+            raise _graph_error('clean_dependency_install_only', 'clean execution cannot depend on install-only evidence',
+                               command.id, install_ids.intersection(command.depends_on))
+    graph = {command.id: list(command.depends_on) for command in [*install, *clean]}
+    for own in lifecycle:
+        for previous, current in pairwise(own):
+            graph[current.id].append(previous.id)
+    for command_id, dependencies in graph.items():
+        if unknown := set(dependencies) - graph.keys():
+            raise _graph_error('missing_prerequisite', 'missing prerequisite', command_id, unknown)
+    try:
+        tuple(TopologicalSorter(graph).static_order())
+    except CycleError as exc:
+        cycle = sorted({str(node) for node in exc.args[1]}) if len(exc.args) > 1 else []
+        raise _graph_error('cyclic_prerequisites', 'cyclic prerequisites', cycle[0] if cycle else '', set(cycle)) from exc
+    for command in install:
+        if outside := set(command.depends_on) - install_ids:
+            raise _graph_error('install_dependency_phase', 'install actions may only depend on install actions',
+                               command.id, outside)
+    for command in checks:
+        if outside := set(command.depends_on) - readiness_ids - check_ids:
+            raise _graph_error('check_dependency_phase', 'checks require consumer-executable prerequisites',
+                               command.id, outside)
+    for own in lifecycle:
+        earlier = readiness_ids - {command.id for command in own}
+        for command in own:
+            if outside := set(command.depends_on) - earlier:
+                raise _graph_error('service_dependency_phase', 'service lifecycle depends on unavailable execution phase',
+                                   command.id, outside)
+            earlier.add(command.id)
+
+
 class EnvironmentManifestProposal(StrictModel):
     """Model-owned behavior only; immutable provenance is assembled by the daemon."""
 
@@ -493,6 +622,30 @@ class EnvironmentManifestProposal(StrictModel):
     local_credentials: list[LocalCredential] = Field(default_factory=list, max_length=32)
 
 
+class ShardChecks(StrictModel):
+    """One check author's required checks and criterion mappings, merged by the daemon into one manifest."""
+
+    checks: list[Command] = Field(max_length=1024)
+    criterion_checks: dict[str, list[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def unique_content(self) -> Self:
+        validate_unique_content(self.checks)
+        return self
+
+
+class ShardChecksEnvelope(StrictModel):
+    shard_checks: ShardChecks
+
+
+class CriterionRulingProposal(StrictModel):
+    """A reviewer's ruling on one criterion a repair touched; the daemon names which criteria need one."""
+
+    criterion_id: str = Field(min_length=1, max_length=128)
+    verdict: Literal["accept", "revise"]
+    rationale: str = Field(min_length=1, max_length=2048)
+
+
 class CoverageAssessmentProposal(StrictModel):
     """A judgment about the exact manifest supplied in this isolated conversation."""
 
@@ -502,6 +655,8 @@ class CoverageAssessmentProposal(StrictModel):
     verdict: Literal["accept", "revise", "indeterminate"]
     rationale: str = Field(min_length=1)
     sources: list[str] = Field(min_length=1)
+    # Required, one per daemon-named criterion, only when a repair scope is present (validated by discovery).
+    criterion_rulings: list[CriterionRulingProposal] = Field(default_factory=list, max_length=MAX_LEDGER_FINDINGS)
 
 
 def validate_current_coverage(manifest: EnvironmentManifest, assessment: CoverageAssessment) -> None:

@@ -176,7 +176,7 @@ def test_kubernetes_restores_same_full_tree_identity_as_docker(tmp_path):
     assert (tmp_path / "restored/src/main").read_bytes() == b"app\n"
 
 
-def test_elm_sized_source_metadata_and_bytes_fit_kubernetes_objects(tmp_path):
+def test_sampledb_sized_source_metadata_and_bytes_fit_kubernetes_objects(tmp_path):
     import base64
 
     from coordinare_service_inference.environment.execution_source_restore import (

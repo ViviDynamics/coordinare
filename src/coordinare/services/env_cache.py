@@ -26,9 +26,10 @@ from coordinare_service_inference.environment.execution_source import (
     ExecutionSourceError,
     bundle_inventory,
 )
+from coordinare_service_inference.environment.guest_selection import pinned_requirements
 from coordinare_service_inference.manual_override import SERVICES_SUBDIR
 
-from coordinare.lib.redaction import redact_state_value
+from coordinare.lib.redaction import redact_command_text, redact_state_value
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 from coordinare.models.performer_endpoint import VolumeMount
@@ -934,6 +935,23 @@ async def _finish_clean_verification(cache: EnvCacheState, capabilities: Executi
     return outcome
 
 
+def _incomplete_summary(out: str) -> str | None:
+    """Conditions, failed ids and status counts of an incomplete runtime report: ids and codes only, no output."""
+    try:
+        raw = json.loads(out)
+    except ValueError:
+        return None
+    conditions = raw.get('runtime_incomplete') if isinstance(raw, dict) else None
+    if not isinstance(conditions, list) or not conditions:
+        return None
+    results = [item for item in raw.get('results', []) if isinstance(item, dict)]
+    statuses = [str(item.get('status')) for item in results]
+    counts = ', '.join(f'{status}={statuses.count(status)}' for status in dict.fromkeys(statuses))
+    failed = [str(item.get('id'))[:128] for item in results if item.get('status') in ('fail', 'indeterminate')][:20]
+    return (f"runtime incomplete: {', '.join(str(item)[:32] for item in conditions[:10])}; results {counts}; "
+            f"failed: {', '.join(failed) or 'none'}")
+
+
 async def _verify_outcome(
     proc: asyncio.subprocess.Process, name: str, symphony_name: str, script: str | bytes | RuntimeVerifierInput,
     *, cache: EnvCacheState | None = None,
@@ -980,16 +998,23 @@ async def _verify_outcome(
         except ValueError as exc:
             if passed:
                 return False, str(exc)
+            incomplete = _incomplete_summary(out)
+            if incomplete is not None:
+                # An incomplete consumer run is never published; keep its typed outcome in the hold detail.
+                logger.info("env_cache.clean_verify_incomplete", symphony=symphony_name, detail=incomplete)
+                return False, incomplete
+    redacted = redact_command_text(out)
     logger.info(
         "env_cache.clean_verify_result",
         symphony=symphony_name,
         passed=passed,
         returncode=proc.returncode,
-        output_tail=out[-500:],
+        output_tail=redacted[-500:],
     )
-    # Concise reason for the dashboard: the FAIL lines verify.sh emitted.
-    fails = [ln.strip() for ln in out.splitlines() if "FAIL" in ln.upper()][:5]
-    detail = "; ".join(fails) if fails else (out[-300:].strip() or "verify.sh non-zero")
+    # Concise reason for the dashboard: the FAIL lines verify.sh emitted. A crash traceback can carry guest console
+    # text, so the whole output is redacted before any clipping, and only then reaches state or files.
+    fails = [ln.strip() for ln in redacted.splitlines() if "FAIL" in ln.upper()][:5]
+    detail = "; ".join(fails) if fails else (redacted[-300:].strip() or "verify.sh non-zero")
     return passed, detail
 
 
@@ -2484,6 +2509,7 @@ class EnvCacheService:
             message = "environment discovery requires an immutable source commit"
             raise EnvironmentDiscoveryError(message)
         cache_state.environment_capabilities = None
+        cache_state.environment_guest = None
         cache_state.environment_runtime_artifacts = None
         cache_state.environment_manifest = None
         cache_state.environment_assessment = None
@@ -2509,7 +2535,11 @@ class EnvCacheService:
             max_review_context_bytes=getattr(cfg, "manifest_max_review_context_bytes", 1024 * 1024),
             max_schema_repairs=getattr(cfg, "manifest_max_schema_repairs", 2),
             max_coverage_revisions=getattr(cfg, "manifest_max_coverage_revisions", 2),
-            max_execution_repairs=getattr(cfg, "manifest_max_execution_repairs", 2),
+            max_scope_revisions=getattr(cfg, "manifest_max_scope_revisions", 8),
+            max_execution_repairs=getattr(cfg, "manifest_max_execution_repairs", DiscoveryLimits.max_execution_repairs),
+            delta_repair=getattr(cfg, "manifest_delta_repair", True),
+            shard_context_tokens=getattr(cfg, "manifest_shard_context_tokens", None),
+            agent_concurrency=getattr(cfg, "manifest_agent_concurrency", 12),
         )
         outer_budget = getattr(cfg, "bootstrap_max_seconds",
             getattr(self._coordinare_config.global_config, "bootstrap_max_seconds", 3600))
@@ -2528,19 +2558,6 @@ class EnvCacheService:
         attempt_timer = asyncio.timeout_at(budget.deadline)
         try:
             async with attempt_timer:
-                budget.stage = "capabilities"
-                if capabilities is None:
-                    from coordinare.services.environment_capabilities import (
-                        resolve_execution_capabilities,
-                    )
-
-                    capability_state = dict(self._kubernetes_state)
-                    capability_state.setdefault("coordinare_config", self._coordinare_config)
-                    capability_state.setdefault("env_cache", {symphony_name: cache_state})
-                    capabilities = await resolve_execution_capabilities(capability_state, symphony_name)
-                from coordinare.services.environment_capabilities import require_cache_mount
-
-                require_cache_mount(capabilities, cache_mount_path)
                 budget.stage = 'execution_source'
                 await budget.flush()
                 prepare_source = getattr(github_service, 'prepare_execution_source', None)
@@ -2554,6 +2571,28 @@ class EnvCacheService:
                 budget.stage = "inventory"
                 paths, entries = await _pinned_inventory(github_service, github_org, repo,
                     limit=limits.max_inventory_entries, bundle=source_bundle)
+                # The guest is decided from the pinned source before any capability, probe or model step.
+                budget.stage = "guest"
+                guest_requirements = await asyncio.to_thread(
+                    pinned_requirements, source_bundle.payload_path, paths, expected=source_bundle.identity)
+                cache_state.environment_guest = guest_requirements
+                budget.guest = dict(guest_requirements)
+                budget.stage = "capabilities"
+                if capabilities is None:
+                    from coordinare.services.environment_capabilities import (
+                        resolve_execution_capabilities,
+                    )
+
+                    capability_state = dict(self._kubernetes_state)
+                    capability_state.setdefault("coordinare_config", self._coordinare_config)
+                    capability_state.setdefault("env_cache", {symphony_name: cache_state})
+                    capabilities = await resolve_execution_capabilities(capability_state, symphony_name)
+                budget.guest = {**budget.guest, "guest_platform": (
+                    capabilities.runtime.identity.guest_platform if capabilities.runtime is not None else capabilities.platform)}
+                logger.info("env_cache.guest_selected", symphony=symphony_name, **budget.guest)
+                from coordinare.services.environment_capabilities import require_cache_mount
+
+                require_cache_mount(capabilities, cache_mount_path)
                 from coordinare.services.environment_probe_service import (
                     ProbeServiceContext,
                     run_owned_probe,
@@ -2576,6 +2615,7 @@ class EnvCacheService:
             raise EnvironmentDiscoveryError(message, code=budget.error_code) from None
         except EnvironmentDiscoveryError as exc:
             budget.error_code = exc.code
+            budget.error_detail = exc.detail or budget.error_detail
             raise
         except ExecutionSourceError as exc:
             budget.error_code = exc.code
@@ -2591,6 +2631,9 @@ class EnvCacheService:
             source_temporary.cleanup()
             release_execution_source(cache_state, identity=cache_state.environment_execution_source)
             save_attempt(cache_state, budget)
+            # The terminal hold (status, last_error) must reach the snapshot, not only memory; the original error still wins.
+            with contextlib.suppress(EnvironmentDiscoveryError):
+                await self._checkpoint_environment_attempt(cache_state, budget)
             logger.info("env_cache.manifest_attempt", symphony=symphony_name, **budget.summary())
         activation = render_activate(manifest, cache_mount_path=cache_mount_path)
         verification = render_verify(manifest, cache_mount_path=cache_mount_path)

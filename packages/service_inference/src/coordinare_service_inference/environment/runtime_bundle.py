@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -14,7 +15,14 @@ from .runtime_io import check_io, digest_file
 if TYPE_CHECKING:
     from threading import Event
 
-BUNDLE_PATH = Path('/opt/coordinare-runtime/bundle.json')
+RUNTIME_ROOT = Path('/opt/coordinare-runtime')
+
+
+def bundle_path(guest_platform: str) -> Path:
+    """Each prepared guest keeps its own bundle beside its image: /opt/coordinare-runtime/<cpu>/bundle.json."""
+    if not re.fullmatch(LINUX_PLATFORM, guest_platform):
+        raise ValueError('runtime guest platform is unsupported')
+    return RUNTIME_ROOT / guest_platform.rsplit('/', 1)[-1] / 'bundle.json'
 
 
 class RuntimeBundleInputs(RuntimeContract):
@@ -43,7 +51,7 @@ def read_bundle(metadata: Path, *, deadline: float | None = None, stop: Event | 
     return RuntimeBundleInputs.model_validate_json(payload)
 
 
-def inspect_bundle(metadata: Path = BUNDLE_PATH, *, deadline: float | None = None, stop: Event | None = None) -> dict[str, str]:
+def inspect_bundle(metadata: Path, *, deadline: float | None = None, stop: Event | None = None) -> dict[str, str]:
     """Hash actual image members, never trust stored digest declarations."""
     bundle = read_bundle(metadata, deadline=deadline, stop=stop)
     result = {'guest_platform': bundle.guest_platform, 'configuration_sha256': bundle.digest()}
@@ -55,9 +63,12 @@ def inspect_bundle(metadata: Path = BUNDLE_PATH, *, deadline: float | None = Non
     return result
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
     try:
-        result = inspect_bundle()
+        if len(args) != 1:
+            raise ValueError('runtime bundle requires one guest platform')
+        result = inspect_bundle(bundle_path(args[0]))
     except (ValueError, OSError):
         sys.stderr.write('runtime bundle unavailable or malformed\n')
         return 1

@@ -79,3 +79,7 @@ Independent prefetch costs reads and context on every review. Separate category 
 ## Self-review
 
 The design preserves independent judgment while making mandatory evidence delivery deterministic. Preparation never counts as model acceptance. All correction paths retain required obligations, durable counters, original expiry and cleanup gates. Legacy state cannot silently gain repair capacity. Acceptance scenarios cover the observed Elm failure, category boundaries, context limits, restarts and false-readiness controls. Written-spec approval and a subsequently reviewed implementation plan remain prerequisites for code changes.
+
+## Separate scope and executable revision budgets
+
+Maintainer decision, 2026-10-25. Scope revisions (a source scope review that returns `revise`, including a release reopening) and executable revisions (an executable review that returns `revise`, and an executable reviewer's read that reopens scope) no longer share one coverage budget. Each is counted independently: `manifest_max_scope_revisions` (new, `scope` counter, hold `attempt_scope_revision_limit`) and `manifest_max_coverage_revisions` (kept as the executable counter for compatibility, hold `attempt_coverage_limit`). The new scope budget defaults to eight; the executable budget keeps its unsharded default of two and sharded default of eight. Journals written before this change carry one shared count, which both counters inherit, so no spent revision is forgotten.

@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from coordinare.lib.redaction import redact_command_text
-from coordinare.services.environment_evidence import prepare_mandatory_evidence
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_probe_executor import execute_environment_probe
 from coordinare.services.environment_probes import (
@@ -19,7 +18,7 @@ from coordinare.services.environment_probes import (
     probe_batch_timeout,
     validate_probe_report,
 )
-from coordinare.services.environment_repair import finish_probe, reserve_probe
+from coordinare.services.environment_repair import abandon_probe, finish_probe, reserve_probe
 from coordinare.services.environment_source_provider import (
     RepositorySourceRequest,
     prepare_repository_source,
@@ -54,14 +53,25 @@ async def run_owned_probe(plan: ProbePlan, *, context: ProbeServiceContext) -> P
         context.limits,
     )
     reserve_probe(cache, plan)
-    await budget.flush()
     authorize = state.get("environment_probe_authorize")
     if authorize is not None:
-        await authorize(plan)
+        budget.stage = "probe_authorization"
+    await budget.flush()
+    if authorize is not None:
+        try:
+            await authorize(plan)
+        except BaseException:
+            # No source preparation or executor call has occurred at this boundary.
+            abandon_probe(cache, budget, plan, reason="authorization_interrupted", cleanup_confirmed=True)
+            await budget.flush()
+            raise
+    budget.stage = "probe_preparation"
     deadline = min(budget.deadline, time.monotonic() + probe_batch_timeout(plan))
     async with asyncio.timeout_at(deadline):
         inspection = SourceInspection(sorted(plan.inputs), fetch, limits, budget)
-        await prepare_mandatory_evidence(inspection, plan.inputs, phase="probe")
+        # Probe verification has no model conversation. Bind the complete input set
+        # under the existing verifier bounds and charge every read to the attempt.
+        await inspection.bind_verified(plan.inputs, phase="probe")
         budget.stage = "probe_execution"
         with tempfile.TemporaryDirectory(prefix="coordinare-probe-source-") as temporary:
             bundle = context.source_bundle

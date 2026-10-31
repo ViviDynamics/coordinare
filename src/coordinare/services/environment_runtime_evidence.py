@@ -28,6 +28,8 @@ def require_runtime_target(manifest: EnvironmentManifest, cache: EnvCacheState) 
 
 def validate_runtime_evidence(report: VerificationReport, manifest: EnvironmentManifest,
                               cache: EnvCacheState, *, phase: Literal['installer', 'consumer']) -> None:
+    if report.runtime_incomplete:
+        _refuse('private runtime run is incomplete and holds')
     runtime = manifest.runtime
     if runtime is None:
         if any(value is not None for value in (report.runtime_digest, report.runtime_phase,
@@ -54,6 +56,8 @@ def validate_runtime_evidence(report: VerificationReport, manifest: EnvironmentM
 def validate_failed_installer_runtime(report: VerificationReport, manifest: EnvironmentManifest,
                                       cache: EnvCacheState) -> None:
     """A failed installer has cleanup evidence, never a sealed successful artifact."""
+    if report.runtime_incomplete:
+        _refuse('private runtime run is incomplete and holds')
     if manifest.runtime is None:
         validate_runtime_evidence(report, manifest, cache, phase='installer')
         return

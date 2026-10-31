@@ -37,7 +37,7 @@ def test_rejects_invalid_configmap_names(name: str) -> None:
         _endpoint(kubernetes_routing_configmap={"name": name})
 
 
-@pytest.mark.parametrize("name", ["routing", "garden-routing-v1", "garden.routing", "9", "a" * 253])
+@pytest.mark.parametrize("name", ["routing", "samplehost-routing-v1", "samplehost.routing", "9", "a" * 253])
 def test_accepts_dns1123_subdomain_names(name: str) -> None:
     config = _endpoint(kubernetes_routing_configmap={"name": name})
     assert config.kubernetes_routing_configmap.name == name
@@ -70,7 +70,7 @@ def test_default_leaves_mounts_and_environment_unchanged(env, overrides) -> None
     assert {e["name"]: e["value"] for e in container.get("env", [])} == env
 
 
-@pytest.mark.parametrize("name, passed", [("garden-routing", True), ("Bad_Name", False)])
+@pytest.mark.parametrize("name, passed", [("samplehost-routing", True), ("Bad_Name", False)])
 def test_config_validator_checks_endpoint_routing_from_yaml(tmp_path, monkeypatch, name, passed) -> None:
     example = Path(__file__).resolve().parents[2] / "config.example.yaml"
     raw = yaml.safe_load(example.read_text())
@@ -90,13 +90,13 @@ def test_config_validator_checks_endpoint_routing_from_yaml(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("key", ["routing.yaml", "custom-routes.yaml"])
 def test_projects_one_key_read_only_and_sets_env_without_mutating_input(key: str) -> None:
-    config = _endpoint(kubernetes_routing_configmap={"name": "garden-routing", "key": key})
+    config = _endpoint(kubernetes_routing_configmap={"name": "samplehost-routing", "key": key})
     env = {"SELFHOSTED_ROUTING_CONFIG": "/wrong/path", "KEEP": "value"}
     spec = _manifest(config, env=env)["spec"]
     container = spec["containers"][0]
     assert spec["volumes"] == [{
         "name": "selfhosted-routing",
-        "configMap": {"name": "garden-routing", "items": [{"key": key, "path": "routing.yaml"}]},
+        "configMap": {"name": "samplehost-routing", "items": [{"key": key, "path": "routing.yaml"}]},
     }]
     assert container["volumeMounts"] == [{
         "name": "selfhosted-routing", "mountPath": "/etc/coordinare/routing", "readOnly": True,
@@ -110,14 +110,14 @@ def test_projects_one_key_read_only_and_sets_env_without_mutating_input(key: str
 
 def test_mount_coexists_with_cache_and_does_not_leak_to_other_endpoint() -> None:
     config = _endpoint(
-        kubernetes_routing_configmap={"name": "garden-routing"},
-        volumes=[{"host_path": "/cache/garden", "container_path": "/devenv/garden", "mode": "ro"}],
+        kubernetes_routing_configmap={"name": "samplehost-routing"},
+        volumes=[{"host_path": "/cache/samplehost", "container_path": "/devenv/samplehost", "mode": "ro"}],
     )
     spec = _manifest(config, cache_claim="cache")["spec"]
     mounts = spec["containers"][0]["volumeMounts"]
     assert {m["name"] for m in mounts} == {"devenv-cache", "selfhosted-routing"}
     assert mounts[0] == {
-        "name": "devenv-cache", "mountPath": "/devenv/garden", "subPath": "garden", "readOnly": True,
+        "name": "devenv-cache", "mountPath": "/devenv/samplehost", "subPath": "samplehost", "readOnly": True,
     }
     assert spec["volumes"][0] == {"name": "devenv-cache", "persistentVolumeClaim": {"claimName": "cache"}}
     assert "volumes" not in _manifest(_endpoint(id="other"))["spec"]
@@ -136,14 +136,14 @@ async def test_dispatch_submits_projection_with_no_configmap_api_calls() -> None
         phase="Running", pod_ip="10.0.0.2", reason="", container_statuses=[],
     ))
     config = _endpoint(
-        kubernetes_routing_configmap={"name": "garden-routing"},
+        kubernetes_routing_configmap={"name": "samplehost-routing"},
         env={"OTHER": "value", "SELFHOSTED_ROUTING_CONFIG": "/old"},
     )
-    await KubernetesRuntime(namespace="garden-performers", core_v1=api).start_ephemeral(
+    await KubernetesRuntime(namespace="samplehost-performers", core_v1=api).start_ephemeral(
         config, backend="claude_code",
     )
     api.create_namespaced_pod.assert_called_once()
-    assert api.create_namespaced_pod.call_args.kwargs["namespace"] == "garden-performers"
+    assert api.create_namespaced_pod.call_args.kwargs["namespace"] == "samplehost-performers"
     container = api.create_namespaced_pod.call_args.kwargs["body"]["spec"]["containers"][0]
     assert {e["name"]: e["value"] for e in container["env"]} == {
         "BACKEND": "claude_code", "OTHER": "value", "SELFHOSTED_ROUTING_CONFIG": ROUTING_PATH,

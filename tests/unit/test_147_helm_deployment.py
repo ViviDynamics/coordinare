@@ -84,7 +84,7 @@ def test_endpoint_routing_configmap_passes_through_without_extra_rbac() -> None:
     endpoint = {
         "id": "claude", "mode": "ephemeral", "roles": ["assessor"],
         "image": "performer:full",
-        "kubernetes_routing_configmap": {"name": "garden-routing", "key": "routing.yaml"},
+        "kubernetes_routing_configmap": {"name": "samplehost-routing", "key": "routing.yaml"},
     }
     objects = _render(**{"config.performer_endpoints": [endpoint]})
     assert _rendered_config(objects)["performer_endpoints"] == [endpoint]
@@ -653,27 +653,27 @@ class TestDevenvCache:
 class TestLegacyCacheClaimMigration:
     """An install that predates devenvCache must keep working with no values change.
 
-    The reference install (garden) sets only performers.cacheClaim, and its claim
+    The reference install (samplehost) sets only performers.cacheClaim, and its claim
     is created outside Helm. A chart bump must not fail that install's Argo sync.
     With create left unset (null), a named claim means "wire it, do not create".
     """
 
-    #: Garden's performers block, verbatim. No devenvCache overrides at all.
-    GARDEN_PERFORMERS: ClassVar[dict[str, str]] = {"performers.cacheClaim": "coordinare-devenv-cache"}
+    #: SampleHost's performers block, verbatim. No devenvCache overrides at all.
+    SAMPLEHOST_PERFORMERS: ClassVar[dict[str, str]] = {"performers.cacheClaim": "coordinare-devenv-cache"}
 
-    def test_garden_performers_block_renders_with_no_pvc(self) -> None:
+    def test_samplehost_performers_block_renders_with_no_pvc(self) -> None:
         """The render succeeds, and no claim is created over the infra-owned one."""
-        objects = _render(**self.GARDEN_PERFORMERS)
+        objects = _render(**self.SAMPLEHOST_PERFORMERS)
         assert not _devenv_claims(objects), (
-            "a chart bump must not render a second claim over garden's existing one"
+            "a chart bump must not render a second claim over samplehost's existing one"
         )
 
-    def test_garden_performers_block_wires_the_existing_claim(self) -> None:
-        config = _rendered_config(_render(**self.GARDEN_PERFORMERS))
+    def test_samplehost_performers_block_wires_the_existing_claim(self) -> None:
+        config = _rendered_config(_render(**self.SAMPLEHOST_PERFORMERS))
         assert config["kubernetes_cache_claim"] == "coordinare-devenv-cache"
 
     def test_the_legacy_key_announces_its_migration_in_notes(self) -> None:
-        notes = TestNotesWarnTheInstaller._notes(**self.GARDEN_PERFORMERS)
+        notes = TestNotesWarnTheInstaller._notes(**self.SAMPLEHOST_PERFORMERS)
         assert "DEPRECATED: performers.cacheClaim" in notes
         assert "existingClaim: coordinare-devenv-cache" in notes
 

@@ -54,6 +54,14 @@ async def _observe_command(data: dict[str, Any], *, environment: dict[str, str],
             await process.wait()
 
 
+COMMAND_SECONDS = 120
+TEARDOWN_SECONDS = 60
+
+
+class PrivateTeardownError(RuntimeError):
+    """A private guest was not confirmed clean; never reported as an ordinary probe result."""
+
+
 async def observe_private(data: dict[str, Any], *, repo: Path = Path('/repo'),
                           cache: Path = Path('/cache'), scratch: Path = Path('/scratch')) -> list[dict[str, Any]]:
     policy = RuntimePolicy.model_validate(data['runtime'])
@@ -65,17 +73,24 @@ async def observe_private(data: dict[str, Any], *, repo: Path = Path('/repo'),
     remaining = data['expires_at']-time.time()
     if not math.isfinite(remaining) or remaining <= 0:
         raise TimeoutError('private preflight original deadline exhausted')
-    deadline = time.monotonic()+min(120, data['seconds'], remaining, policy.resources.max_seconds)
+    # Teardown has its own share of the same original budget: a guest booted under load can otherwise spend the
+    # whole window and leave none for a clean shutdown.
+    now = time.monotonic()
+    budget = min(data['seconds'], remaining, policy.resources.max_seconds, COMMAND_SECONDS + TEARDOWN_SECONDS)
+    lease_deadline = now + budget
+    deadline = now + min(COMMAND_SECONDS, budget - min(TEARDOWN_SECONDS, budget / 2))
     spec = RuntimeSpec(schema_version=1, policy=policy, endpoints=[])
     with tempfile.TemporaryDirectory(prefix='coordinare-project-', dir=scratch) as project:
         lease = await open_runtime(spec, artifacts=None, repo=repo, cache=cache, scratch=Path(project),
-            install=False, deadline=deadline, source_digest=source_digest, purpose='preflight')
+            install=False, deadline=lease_deadline, source_digest=source_digest, purpose='preflight')
         try:
             result = await run_guarded(lease, _observe_command({'commands': data['commands'],
                 'roots': {'repo': str(repo), 'cache': str(cache), 'scratch': project}},
                 environment=lease.activation_env, deadline=deadline))
         finally:
-            cleanup = await lease.close(deadline=deadline)
+            cleanup = await lease.close(deadline=lease_deadline)
         if not cleanup.confirmed or not cleanup.clean_shutdown or not cleanup.bounds_respected:
-            raise RuntimeError('private preflight teardown is incomplete')
+            failed = [name for name in ('qemu_reaped', 'keys_absent', 'listeners_absent', 'artifacts_unchanged',
+                                        'clean_shutdown', 'bounds_respected') if getattr(cleanup, name, True) is False]
+            raise PrivateTeardownError('private preflight teardown is incomplete: ' + (', '.join(failed) or 'unconfirmed'))
         return result

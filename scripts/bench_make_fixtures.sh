@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# 077: (re)generate the conductor-bench fixture repo used by persona_bench.py.
+# 077: (re)generate the sample-bench fixture repo used by persona_bench.py.
 # Creates a tiny self-contained Python project on main plus one branch per
 # persona with a *planted* issue / known-correct answer (see BENCH.md). The repo
 # is built as a sibling dir; push it with scripts/bench_setup.sh once an empty
 # remote exists (the fine-grained PAT can't create repos).
 #
-# Usage: scripts/bench_make_fixtures.sh [target_dir]   (default ../conductor-bench)
+# Usage: scripts/bench_make_fixtures.sh [target_dir]   (default ../sample-bench)
 set -euo pipefail
-DIR="${1:-$(cd "$(dirname "$0")/../.." && pwd)/conductor-bench}"
+DIR="${1:-$(cd "$(dirname "$0")/../.." && pwd)/sample-bench}"
 rm -rf "$DIR"; mkdir -p "$DIR/src/bench" "$DIR/tests"; cd "$DIR"
 
 cat > README.md <<'EOF'
-# conductor-bench
+# sample-bench
 
 Self-contained fixture project for coordinare's persona-capability benchmark
 (`scripts/persona_bench.py`, spec 077). Intentionally tiny so every lifecycle
@@ -42,7 +42,7 @@ EOF
 
 cat > pyproject.toml <<'EOF'
 [project]
-name = "conductor-bench"
+name = "sample-bench"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = []
@@ -58,7 +58,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 EOF
 
-echo '"""conductor-bench: tiny fixture package for persona benchmarking."""' > src/bench/__init__.py
+echo '"""sample-bench: tiny fixture package for persona benchmarking."""' > src/bench/__init__.py
 cat > src/bench/cart.py <<'EOF'
 """A minimal shopping-cart price calculator (benchmark fixture)."""
 from __future__ import annotations
@@ -92,7 +92,7 @@ def test_apply_discount():
 EOF
 
 git init -q && git branch -M main && git add -A
-git commit -q -m "chore: conductor-bench baseline fixture project"
+git commit -q -m "chore: sample-bench baseline fixture project"
 
 # implementer: failing spec for an unimplemented function
 git checkout -q -b feat/impl-failing-test main
