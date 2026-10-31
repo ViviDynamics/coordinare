@@ -25,6 +25,7 @@ from coordinare_service_inference.environment.models import (
 )
 from coordinare_service_inference.environment.scope import canonical
 from coordinare_service_inference.environment.static_rules import (
+    masked_check_status,
     self_matching_process_pattern,
     validate_static_rules,
 )
@@ -267,7 +268,7 @@ def inherit(previous: Mapping[str, dict[str, Any]], group: CheckGroup, parent: C
 
 
 def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[str, Any],
-                   inherited: Inheritance | None = None) -> ShardChecks:
+                   inherited: Inheritance | None = None, frozen: Collection[str] = ()) -> ShardChecks:
     """Own prefix, known dependencies, and exactly the assigned criteria mapped to required unscoped checks."""
     inherited = inherited or Inheritance()
     part = ShardChecksEnvelope.model_validate(data).shard_checks
@@ -279,9 +280,14 @@ def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[
         if not check.id.startswith(group.prefix) and check.id not in inherited.own:
             errors.append({'code': 'check_prefix_invalid', 'location': ['shard_checks', 'checks', str(index), 'id'],
                            'guidance': f'Every check id must start with {group.prefix}.'})
-        if self_matching_process_pattern(check):
-            errors.append({'code': 'self_matching_process_pattern', 'location': ['shard_checks', 'checks', str(index), 'argv'],
-                           'command_id': check.id, 'guidance': GRAPH_GUIDANCE['self_matching_process_pattern']})
+        # Each rule in the author's own phase, so a correction never waits for a merge round: Dettmore e2e-38's
+        # masked check reached the merge twice and its last rounds ran out. An executed check is frozen, so exempt.
+        for code, applies in (('self_matching_process_pattern', self_matching_process_pattern(check)),
+                              ('masked_check_status', check.required and check.id not in frozen
+                               and masked_check_status(check))):
+            if applies:
+                errors.append({'code': code, 'location': ['shard_checks', 'checks', str(index), 'argv'],
+                               'command_id': check.id, 'guidance': GRAPH_GUIDANCE[code]})
         unknown = [dependency for dependency in check.depends_on if dependency not in known]
         if unknown:
             errors.append({'code': 'check_dependency_unknown', 'location': ['shard_checks', 'checks', str(index), 'depends_on'],
@@ -702,7 +708,7 @@ class DividedConstruction:
             captured['patch'] = patch
             applied = {'shard_checks': plan.restore_frozen(plan.base_group(group) or {},
                                                            apply_group_delta(plan.base_group(group), patch))}
-            admitted = validate_group(applied, group=group, summary=summary, inherited=inherited)
+            admitted = validate_group(applied, group=group, summary=summary, inherited=inherited, frozen=self.fixed)
             plan.guard_part(plan.base_group(group) or {}, applied['shard_checks'])
             return admitted
 
@@ -744,7 +750,7 @@ class DividedConstruction:
                                                        if identifier in self.fixed]) else {}),
             'sibling_check_ids': sorted(inherited.siblings),
             'untrusted_feedback': self.feedback.get(group.prefix, self.feedback.get(base_prefix(group.prefix)))}).decode()
-        validate = partial(validate_group, group=group, summary=summary, inherited=inherited)
+        validate = partial(validate_group, group=group, summary=summary, inherited=inherited, frozen=self.fixed)
         key = hashlib.sha256(brief.encode()).hexdigest()
         saved = saved_part(self.context.budget, 'groups', group.prefix, key)
         if saved is not None:
@@ -767,7 +773,8 @@ class DividedConstruction:
         parent = next((candidate for candidate in self.groups if candidate.prefix == base_prefix(group.prefix)), None)
         inherited = replace(inherit(self.previous, group, parent), mapped=self._kept_mappings(group))
         try:
-            validate_group({'shard_checks': part.model_dump(mode='json')}, group=group, summary=summary, inherited=inherited)
+            validate_group({'shard_checks': part.model_dump(mode='json')}, group=group, summary=summary, inherited=inherited,
+                           frozen=self.fixed)
         except _ResponseReferenceError:
             return False
         return True

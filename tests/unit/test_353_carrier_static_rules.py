@@ -417,3 +417,20 @@ def test_an_executed_check_is_never_refused_for_a_masked_status():
     executed = SimpleNamespace(executed_manifests=[SimpleNamespace(checks=[masked])])
     rules = _carrier_rules(manifest, capabilities, executed)
     assert [check.id for check in rules['checks']] == ['c00-fresh']
+
+
+def test_a_check_author_is_corrected_on_a_masked_check_while_authoring():
+    """Dettmore e2e-38: a group's masked check reached the merge twice and its last rounds ran out."""
+    from coordinare.services.environment_scope import _ResponseReferenceError
+    from coordinare.services.environment_shard_construction import CheckGroup, validate_group
+
+    group = CheckGroup('c00-', ())
+    script = "gh --version | grep -q '^gh version' && gh auth status >/dev/null 2>&1 || true; gh --version >/dev/null"
+    data = {'shard_checks': {'checks': [{'id': 'c00-gh', 'argv': ['bash', '-c', script]}], 'criterion_checks': {}}}
+    with pytest.raises(_ResponseReferenceError) as caught:
+        validate_group(data, group=group, summary={'checks': [], 'readiness_ids': []})
+    masked = [error for error in caught.value.errors if error['code'] == 'masked_check_status']
+    assert masked and masked[0]['command_id'] == 'c00-gh'
+    # An executed check is frozen: its author may not change it, so it is never refused for it.
+    part = validate_group(data, group=group, summary={'checks': [], 'readiness_ids': []}, frozen={'c00-gh'})
+    assert [check.id for check in part.checks] == ['c00-gh']
