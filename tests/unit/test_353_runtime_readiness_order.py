@@ -96,7 +96,8 @@ async def exercise(tmp_path, monkeypatch, *, install, health_fails, never_ready=
         if argv[0] == 'TEST_GUEST_PROCESS_BOUNDARY':
             event('guest-created')
             return SimpleNamespace(returncode=None)
-        assert argv[0] == sys.executable, 'Only Python marker subprocesses permitted'
+        # The runner's environment health check after each install step (sh -c true) is the one other process.
+        assert argv[0] == sys.executable or tuple(argv) == ('sh', '-c', 'true'), 'Only Python marker subprocesses permitted'
         return await actual_spawn(*argv, **kwargs)
     monkeypatch.setattr(asyncio, 'create_subprocess_exec', spawn)
     polls = []

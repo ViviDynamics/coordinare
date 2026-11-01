@@ -517,6 +517,27 @@ async def _execute(
     return result
 
 
+# A trivial command run with the activated environment after each install step. Maintainer ruling 2026-10-31: one
+# general health check, not a rule per setting. Dettmore e2e-39: an install step copied an old libc into a directory
+# activation put on LD_LIBRARY_PATH, and every later command, the shell included, failed; nothing named the step.
+# sh, not bash: every image has a POSIX shell, and anything that breaks it (a replaced libc or PATH) breaks bash too.
+ENVIRONMENT_HEALTH = Command(id="environment-health", argv=["sh", "-c", "true"], cwd="{repo}", timeout_seconds=30)
+UNHEALTHY = ("environment health check failed after this step: a trivial command (sh -c true) could not run with "
+             "the activated environment, so later commands will fail too. Keep this step from breaking the shell "
+             "(for example a library or PATH entry that replaces a system one): ")
+
+
+async def _environment_health(*, roots: dict[str, str], env: dict[str, str], digest: str, scope: str,
+                              redactions: frozenset[str]) -> str | None:
+    """None when a trivial command still runs with the activated environment; otherwise its first output line."""
+    probe = await _execute(ENVIRONMENT_HEALTH, roots=roots, env=env, digest=digest, scope=scope, results={},
+                           ignore_dependencies=True, redactions=redactions)
+    if probe.status == "pass":
+        return None
+    first = next((line.strip() for line in probe.output.splitlines() if line.strip()), "")
+    return (first or f"exit {probe.exit_code}")[:400]
+
+
 async def _commands(
     commands: list[Command],
     *,
@@ -526,6 +547,7 @@ async def _commands(
     scope: str,
     results: dict[str, CheckResult],
     redactions: frozenset[str] = frozenset(),
+    health: bool = False,
 ) -> None:
     pending = {command.id: command for command in commands}
     while pending:
@@ -556,6 +578,11 @@ async def _commands(
                     results=results,
                     redactions=redactions,
                 )
+                if health and results[command.id].status in {"pass", "fail"} and (broken := await _environment_health(
+                        roots=roots, env=env, digest=digest, scope=scope, redactions=redactions)) is not None:
+                    result = results[command.id]
+                    result.status = "fail"
+                    result.output = UNHEALTHY + broken + ("\n" + result.output if result.output else "")
             del pending[command.id]
 
 
@@ -734,6 +761,7 @@ async def _run_manifest_commands(
     if install:
         await _commands(
             manifest.install, roots=roots, env=env, digest=digest, scope=scope, results=results, redactions=redactions,
+            health=True,
         )
     # Activation paths are execution prerequisites, even when a command uses absolute argv.
     missing = [

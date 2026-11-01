@@ -624,3 +624,23 @@ async def test_teardown_preserves_exit_before_child_watcher_delivery(exit_code):
     assert process.returncode is None
     await _terminate(process)
     assert process.returncode == exit_code
+
+
+@pytest.mark.asyncio
+async def test_an_install_step_that_breaks_the_environment_is_named(tmp_path):
+    """Dettmore e2e-39: an install step left the activated environment unable to run a shell, and nothing named it."""
+    from coordinare_service_inference.environment.runner import UNHEALTHY
+
+    broken = "mkdir -p {cache}/bin && printf '#!/bin/sh\\necho shell is broken >&2\\nexit 3\\n' > {cache}/bin/sh && chmod +x {cache}/bin/sh"
+    manifest = contract(
+        [{"id": "check", "argv": ["true"]}],
+        install=[{"id": "fine", "argv": ["sh", "-c", "mkdir -p {cache}/tools"]},
+                 {"id": "breaks-shell", "argv": ["sh", "-c", broken], "depends_on": ["fine"]}],
+        activation={"path": ["{cache}/bin"]},
+    )
+    report = await run_manifest(manifest, cache=tmp_path / "cache", repo=tmp_path, scratch=tmp_path, install=True)
+    results = {result.id: result for result in report.results}
+    assert results["fine"].status == "pass"
+    assert results["breaks-shell"].status == "fail"
+    assert results["breaks-shell"].output.startswith(UNHEALTHY + "shell is broken")
+    assert "environment-health" not in results and not report.passed
