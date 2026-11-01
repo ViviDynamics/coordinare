@@ -74,6 +74,8 @@ class Profile:
     phase_timeout: float = 120
     attempt_timeout: float | None = None
     execute: bool = False
+    # Unattended runs take the daemon's path: no operator gate on probes or execution (Jason, 2026-11-01).
+    unattended: bool = False
     approval_timeout: float = 600
     installer_timeout: float = 900
     save_transcripts: bool = False
@@ -514,7 +516,8 @@ async def execute_accepted(
     marker = target / "execution-approved.json"
     remaining = remaining_seconds(cache) if cache.environment_attempt is not None else profile.approval_timeout
     deadline = time.monotonic() + min(profile.approval_timeout, remaining)
-    while not execution_authorized(
+    result["execution_authorization"] = "unattended" if profile.unattended else "operator"
+    while not profile.unattended and not execution_authorized(
         marker, manifest_digest=manifest.digest(), source_commit=snapshot.commit, image=image,
     ):
         if time.monotonic() >= deadline:
@@ -812,7 +815,12 @@ async def validate_repository(
         index = (cache.environment_attempt or {}).get("probe_batches", 1) - 1
         target = output / f"probe-{index:03}"
         new_profile_directory(target)
-        _event(repository=snapshot.name, stage="probe_scope", plan_digest=plan.digest())
+        _event(repository=snapshot.name, stage="probe_scope", plan_digest=plan.digest(),
+               authorization="unattended" if profile.unattended else "operator")
+        if profile.unattended:
+            # The plan is still recorded; independent review and the guest's isolation are the gates, as in the daemon.
+            _write(target / "probe-proposal.json", plan.model_dump(mode="json"))
+            return
         await await_probe_approval(target, plan, seconds=min(profile.approval_timeout, remaining_seconds(cache)))
 
     state["snapshot_save_fn"] = persist_attempt
@@ -980,12 +988,16 @@ def main() -> int:
     parser.add_argument("--agent-concurrency", type=_agent_concurrency, default=12)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--approval-timeout", type=float, default=600)
+    parser.add_argument("--unattended", action="store_true",
+                        help="Run probes and execution without operator approval, as the daemon does; requires --execute")
     parser.add_argument("--save-transcripts", action="store_true")
     parser.add_argument("--keep-caches", action="store_true")
     parser.add_argument("--reuse-scope-from", type=Path, default=None,
                         help="Earlier run output whose accepted scope is reviewed afresh instead of authored again")
     parser.add_argument('--runtime-policy', type=Path, help='Explicit private-service platform policy JSON; image contents are verified')
     args = parser.parse_args()
+    if args.unattended and not args.execute:
+        parser.error("--unattended requires --execute")
     new_profile_directory(args.output)
     profile = Profile(
         model=args.model,
@@ -997,6 +1009,7 @@ def main() -> int:
         phase_timeout=args.phase_timeout,
         attempt_timeout=args.attempt_timeout,
         execute=args.execute,
+        unattended=args.unattended,
         approval_timeout=args.approval_timeout,
         save_transcripts=args.save_transcripts,
         keep_caches=args.keep_caches,
