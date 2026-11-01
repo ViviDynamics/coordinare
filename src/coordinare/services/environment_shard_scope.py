@@ -397,9 +397,15 @@ class _AgentExhaustedError(Exception):
 
 async def _converse(context: AgentContext, inspection: SourceInspection, messages: list[dict[str, str]],
                     task: AgentTask, schema: dict[str, Any]) -> Any:
-    """One conversation: schema corrections and repetition stops are each bounded separately."""
+    """One conversation: schema corrections and repetition stops are each bounded separately.
+
+    A correction that leaves fewer distinct errors than any earlier reply did is progress and is not charged;
+    each uncharged correction needs a new low, so the free ones are bounded by the first reply's error count.
+    """
     budget, limits = context.budget, context.limits
     corrections = repetitions = 0
+    fewest: int | None = None
+    seen: dict[tuple[str, str], dict[str, Any]] = {}
     for _ in range(limits.max_model_calls):
         raw = await _ask(context, inspection, messages, schema)
         # Read before any other await: the shared budget's last finish reason is still this call's.
@@ -419,18 +425,29 @@ async def _converse(context: AgentContext, inspection: SourceInspection, message
                 return task.validate(reply)
         except (ValidationError, PydanticCustomError, FindingValidationError, EnvironmentDiscoveryError) as exc:
             errors = _rejection_errors(exc, task.envelope)
+        current = {_error_key(error): error for error in errors}
+        progress = fewest is not None and len(current) < fewest
+        fewest = len(current) if fewest is None else min(fewest, len(current))
         # A reply the transport stopped for repetition is not a schema mistake: it has its own small allowance.
         if stopped and repetitions < AGENT_REPETITION_STOPS:
             repetitions += 1
+        elif progress:
+            budget.validation_codes.append('correction_progress')
         elif corrections >= SHARD_SCHEMA_REPAIRS:
             budget.validation_codes.extend(error['code'] for error in errors)
             raise _AgentExhaustedError
         else:
             corrections += 1
             budget.shard_schema_repairs += 1
-        explain_rejection(messages, raw, errors, budget,
-                          context=CorrectionContext(task.envelope, finish_reason=finish_reason))
+        earlier = tuple(error for key, error in seen.items() if key not in current)
+        seen.update(current)
+        explain_rejection(messages, raw, errors, budget, context=CorrectionContext(
+            task.envelope, finish_reason=finish_reason, earlier_errors=earlier))
     return _fail('scope_phase_call_limit')
+
+def _error_key(error: dict[str, Any]) -> tuple[str, str]:
+    return str(error.get('code')), canonical(error.get('location', [])).decode()
+
 
 async def _ask(context: AgentContext, inspection: SourceInspection, messages: list[dict[str, str]],
                schema: dict[str, Any]) -> str:

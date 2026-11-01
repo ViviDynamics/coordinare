@@ -69,6 +69,7 @@ def _decode_reply(raw: str, name: str, limits: DiscoveryLimits) -> dict[str, Any
 
 
 # The unknown key itself is never echoed (see _validation_feedback); the guidance says what to do with it.
+EARLIER_CORRECTIONS_LIMIT = 16
 UNKNOWN_KEY_GUIDANCE = (
     'The key shown as * at this location is not defined by the response schema. Remove it rather than renaming it: '
     'send only the keys the schema defines, with no notes, counts, placeholders or extra copies of a section beside '
@@ -353,6 +354,8 @@ class CorrectionContext:
     envelope: str
     can_patch: bool = False
     finish_reason: str | None = None
+    # Errors this conversation was corrected for before and no longer makes, so a fix does not undo an earlier one.
+    earlier_errors: tuple[dict[str, Any], ...] = ()
 
 
 def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *,
@@ -391,8 +394,11 @@ def explain_rejection(messages: list[dict[str, str]], raw: str, errors: list[dic
                 if len(path) <= MAX_PATH_DEPTH:
                     error['correction_path'] = path
     budget.validation_codes.extend(error["code"] for error in errors)
+    earlier = [{"location": error["location"], "code": error["code"]}
+               for error in context.earlier_errors[:EARLIER_CORRECTIONS_LIMIT]]
     messages.extend([{"role": "assistant", "content": raw},
                      {"role": "user", "content": _json({"validation_errors": errors,
+                        **({"earlier_corrections": earlier} if earlier else {}),
                         "expected_envelope": envelope,
                         "instruction": (PATCH_INSTRUCTION if can_patch else correction_instruction(envelope)) +
                         "When supplied, copy correction_path exactly into the patch path; location is a diagnostic field path. "
@@ -404,6 +410,9 @@ def explain_rejection(messages: list[dict[str, str]], raw: str, errors: list[dic
                          "Preserve source-defined scope; do not generate commands during source review. "
                          if envelope in {"scope", "scope_revision", "scope_assessment", "shard_summary",
                                                          "listing_triage", "scope_consolidation"} else "") +
+                        ("Keep every fix listed in earlier_corrections: those errors were corrected before, and a reply "
+                         "that makes one again is rejected again. Change only what validation_errors names. "
+                         if earlier else "") +
                         "Independent review and successful clean execution remain mandatory."})}])
 
 
