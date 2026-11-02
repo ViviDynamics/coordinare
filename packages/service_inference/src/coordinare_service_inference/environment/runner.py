@@ -29,6 +29,13 @@ if TYPE_CHECKING:
     from .runtime_supervisor import RuntimeLease
 
 OUTPUT_LIMIT = 4096
+# Error lines earlier than the kept tail (Dettmore e2e-45: "OpenSSL is not available" scrolled out behind a long
+# rubygems backtrace, so the repair saw only stack frames). A bounded excerpt keeps them in the reported output.
+ERROR_EXCERPT_LINES = 8
+ERROR_EXCERPT_LINE_BYTES = 240
+ERROR_EXCERPT_LIMIT = 1024
+_ERROR_LINE = re.compile(rb"(?i)\b(error|fatal|failed|failure|exception|not available|not found|cannot|could not|denied)\b")
+_STACK_FRAME = re.compile(rb"^\s*(from\s+)?\S+:\d+:in\b|^\s+at\s")
 ATTEMPT_OUTPUT_LIMIT = 256 * 1024
 GENERATED_NAMES_ENV = "COORDINARE_ENV_GENERATED_NAMES"
 _VALUE_REFERENCE = re.compile(r"\$\{(?P<environment>[A-Za-z_][A-Za-z0-9_]*)\}|\{(?P<root>cache|repo|scratch)\}")
@@ -197,6 +204,38 @@ def _bound_outputs(results: dict[str, CheckResult]) -> None:
             result.output = output[:budget].decode(errors="ignore")
             result.output_truncated = True
         budget -= len(result.output.encode())
+
+
+class _ErrorLines:
+    """Streaming record of the latest error lines, each with the line after it (the message often follows)."""
+
+    def __init__(self) -> None:
+        self.lines: list[tuple[int, bytes]] = []
+        self._partial = bytearray()
+        self._offset = 0
+        self._follow = False
+
+    def feed(self, chunk: bytes) -> None:
+        self._partial.extend(chunk)
+        *complete, rest = bytes(self._partial).split(b"\n")
+        kept = rest[-ERROR_EXCERPT_LINE_BYTES * 4:]
+        self._partial = bytearray(kept)
+        for line in complete:
+            end = self._offset + len(line) + 1
+            if self._follow and line.strip() and not _STACK_FRAME.search(line):
+                self.lines.append((end, line[:ERROR_EXCERPT_LINE_BYTES]))
+            self._follow = False
+            if _ERROR_LINE.search(line) and not _STACK_FRAME.search(line):
+                self.lines.append((end, line[:ERROR_EXCERPT_LINE_BYTES]))
+                self._follow = True
+            self._offset = end
+            del self.lines[:-ERROR_EXCERPT_LINES]
+        # A runaway partial line is trimmed; its dropped bytes still count toward later offsets.
+        self._offset += len(rest) - len(kept)
+
+    def before(self, offset: int) -> bytes:
+        """Recorded lines that ended before the kept tail began."""
+        return b"\n".join(line for end, line in self.lines if end <= offset)[-ERROR_EXCERPT_LIMIT:]
 
 
 def _template_preflight(manifest: EnvironmentManifest, roots: dict[str, str], *, install: bool,
@@ -388,6 +427,7 @@ async def _execute(
     drain = None
     tail = bytearray()
     total = 0
+    errors = _ErrorLines()
     child_env = dict(env)
     known_secrets = frozenset(_secret_values(env)) | redactions
     retained_limit = OUTPUT_LIMIT * 2 + max((len(value.encode()) for value in known_secrets), default=0)
@@ -450,6 +490,7 @@ async def _execute(
             while chunk := await process.stdout.read(8192):
                 total += len(chunk)
                 tail.extend(chunk)
+                errors.feed(chunk)
                 if len(tail) > retained_limit:
                     del tail[:-retained_limit]
 
@@ -513,7 +554,13 @@ async def _execute(
         result.duration_seconds = time.monotonic() - started
         cleaned = _redact(tail.decode(errors="replace"), child_env, extra_values=known_secrets).encode()
         result.output_truncated = total > OUTPUT_LIMIT or len(cleaned) > OUTPUT_LIMIT
-        result.output = cleaned[-OUTPUT_LIMIT:].decode(errors="ignore")
+        output = cleaned[-OUTPUT_LIMIT:]
+        earlier = errors.before(total - len(output)) if result.output_truncated else b""
+        if earlier:
+            excerpt = _redact(earlier.decode(errors="replace"), child_env, extra_values=known_secrets).encode()
+            excerpt = b"[error lines from earlier output]\n" + excerpt[-ERROR_EXCERPT_LIMIT:] + b"\n[... output tail]\n"
+            output = excerpt + output[-(OUTPUT_LIMIT - len(excerpt)):]
+        result.output = output.decode(errors="ignore")
     return result
 
 

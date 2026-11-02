@@ -644,3 +644,28 @@ async def test_an_install_step_that_breaks_the_environment_is_named(tmp_path):
     assert results["breaks-shell"].status == "fail"
     assert results["breaks-shell"].output.startswith(UNHEALTHY + "shell is broken")
     assert "environment-health" not in results and not report.passed
+
+
+@pytest.mark.asyncio
+async def test_error_lines_before_the_kept_tail_are_reported(tmp_path, monkeypatch):
+    """Dettmore e2e-45: "OpenSSL is not available" scrolled out behind a rubygems backtrace, hiding the cause."""
+    from coordinare_service_inference.environment.runner import OUTPUT_LIMIT
+
+    monkeypatch.setenv('TEST_SECRET', 'sensitive-value-654')
+    script = ('import sys\n'
+              'print("configure ok\\n" * 50)\n'
+              'print("ERROR:  While executing gem ... (Gem::Exception)")\n'
+              'print("    OpenSSL is not available. Install OpenSSL and rebuild Ruby (sensitive-value-654)")\n'
+              'for i in range(200): print(f"\\t/devenv/ruby/lib/rubygems/request.rb:{i}:in \'Gem::Request#fetch\'")\n'
+              'sys.exit(1)\n')
+    manifest = contract([{'id': 'ruby', 'argv': [sys.executable, '-c', script]},
+                         {'id': 'short', 'argv': [sys.executable, '-c', 'print("error: small")']}])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    ruby, short = report.results[0], report.results[1]
+    assert ruby.output_truncated
+    assert len(ruby.output.encode()) <= OUTPUT_LIMIT
+    assert 'OpenSSL is not available' in ruby.output
+    assert 'ERROR:  While executing gem' in ruby.output
+    assert 'sensitive-value-654' not in ruby.output
+    assert ruby.output.rstrip().endswith("'Gem::Request#fetch'")
+    assert 'error lines from earlier output' not in short.output
