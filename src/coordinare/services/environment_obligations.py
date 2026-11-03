@@ -18,7 +18,7 @@ from coordinare_service_inference.environment.models import (
 )
 from pydantic import ValidationError
 
-from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.environment_attempt import REPAIR_LIMITS, EnvironmentDiscoveryError
 from coordinare.services.environment_repair_triage import ACTIVATION
 from coordinare.services.environment_scope import preserve_scope, released_criteria
 
@@ -89,14 +89,16 @@ def _ran(manifest: EnvironmentManifest, ran: set[str]) -> EnvironmentManifest:
                                        "services": services})
 
 
-_MAX_REJECTED_EXECUTIONS = 3
-_MAX_EXECUTION_HISTORY_BYTES = 4 * 1024 * 1024
+# Every execution of a fully used repair budget: the first and one per execution repair (was 3, below that budget).
+MAX_REJECTED_EXECUTIONS = 1 + REPAIR_LIMITS["execution"]
+# Dettmore e2e-47 journaled 0.8-1.1 MB per rejected execution; 4 MiB held only three.
+_MAX_EXECUTION_HISTORY_BYTES = MAX_REJECTED_EXECUTIONS * 2 * 1024 * 1024
 
 
 def _bounded_history(history: object) -> list[Any]:
     if (
         not isinstance(history, list)
-        or len(history) > _MAX_REJECTED_EXECUTIONS
+        or len(history) > MAX_REJECTED_EXECUTIONS
         or len(json.dumps(history, allow_nan=False).encode()) > _MAX_EXECUTION_HISTORY_BYTES
     ):
         message = "execution history exceeds its bound"

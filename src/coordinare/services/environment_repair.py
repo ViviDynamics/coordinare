@@ -55,6 +55,7 @@ from coordinare.services.environment_attempt import (
     EnvironmentDiscoveryError,
 )
 from coordinare.services.environment_obligations import (
+    MAX_REJECTED_EXECUTIONS,
     executed_manifests,
     preserve_execution_obligations,
     preserve_obligations,
@@ -160,7 +161,7 @@ class RepairJournal(BaseModel):
     generation: int = Field(default=0, ge=0, le=2)
     status: Literal['discovering', 'executing', 'repair_pending', 'held', 'ready'] = 'discovering'
     target: ExecutionCapabilities | None = None
-    rejected: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
+    rejected: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_REJECTED_EXECUTIONS)
     # The pending repair's failure triage, stored before any author call; absent in journals written earlier.
     repair_triage: dict[str, Any] | None = None
     # A delta repair fell back to the full repair; an old journal has none, so it keeps the delta default.
@@ -822,8 +823,21 @@ def execution_review_evidence(rejected: Sequence[Mapping[str, Any]]) -> list[dic
     return [{"manifest_digest": entry["manifest_digest"],
              "manifest": {key: value for key, value in entry["manifest"].items() if key not in REVIEW_HISTORY_EXCLUDED},
              "results": [{key: result.get(key) for key in ("id", "status", "required", "exit_code", "duration_seconds")}
-                         for result in entry["report"]["results"]]}
+                         for result in entry["report"]["results"]],
+             "failure_output": _review_failure_output(entry)}
             for entry in rejected]
+
+
+def _review_failure_output(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The failed commands' output, bounded exactly as the repair's authors receive it (repair_feedback).
+
+    Dettmore e2e-46/47: given only statuses, a reviewer could not tell whether a repair answered the failure; the
+    install-ruby rewrite was judged indeterminate cycle after cycle. The output is the runner's redacted excerpt and
+    stays untrusted data, as the history's name says.
+    """
+    feedback = repair_feedback(entry["manifest_digest"], list(entry["report"]["results"]))
+    return [{"id": item["id"], "output": item["output"], "output_truncated": item["output_truncated"]}
+            for item in feedback["results"] if item["status"] in _FEEDBACK_ORDER and item["output"]]
 
 
 MAX_FEEDBACK_RESULTS = 16

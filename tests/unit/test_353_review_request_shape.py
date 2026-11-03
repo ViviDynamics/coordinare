@@ -73,7 +73,8 @@ async def test_every_divided_review_request_parses_as_one_document_through_run_a
     monkeypatch.setattr(discovery_module, 'manifest_obligation_ids', lambda _manifest: set())
     monkeypatch.setattr(discovery_module, 'dependency_digest', lambda _manifest, _ids: 'x' * 64)
     manifest = FakeManifest(inputs=inputs, checks=[{'id': 'toolchain'}, {'id': 'c00-0'}, {'id': 'c01-0'}],
-                            criterion_checks={first.id: ['c00-0'], second.id: ['c01-0']})
+                            criterion_checks={first.id: ['c00-0'], second.id: ['c01-0']},
+                            install=[SimpleNamespace(id='install-ruby', argv=['build-ruby', '3.4.2'], cwd='{repo}', env={})])
     scope = SimpleNamespace(definition=SimpleNamespace(criteria=[first, second]))
     build = SimpleNamespace(groups=groups, scope=scope, context=AgentContext(budget, DiscoveryLimits(), chat), concurrency=4)
     attempt = SimpleNamespace(budget=budget, delta=None, identity={'symphony_name': 'suite'},
@@ -87,3 +88,6 @@ async def test_every_divided_review_request_parses_as_one_document_through_run_a
     assert len(requests) == 3
     prefixes = {message[1]['content'].split(',"own":', 1)[0] for message in requests}
     assert len(prefixes) == 1
+    # Every part reviewer sees the install commands its checks rely on, not only their ids (Dettmore e2e-46).
+    shared = json.loads(requests[0][1]['content'])['shared']
+    assert shared['global_part']['install'] == [{'id': 'install-ruby', 'argv': ['build-ruby', '3.4.2'], 'cwd': '{repo}', 'env': {}}]

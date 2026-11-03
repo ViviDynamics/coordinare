@@ -341,3 +341,18 @@ def test_a_merged_candidate_gets_executed_commands_back():
     dropped["checks"] = dropped["checks"][1:]
     assert restore_execution_commands(dropped, [previous]) == []
     assert [check["id"] for check in dropped["checks"]] == ["assets"]
+
+
+def test_history_holds_every_execution_of_the_full_repair_budget():
+    """Dettmore e2e-47: the history bound (3) sat below the execution repair budget (4), so a run stopped with a
+    configured repair unused. The first execution and one per repair now fit; one more does not."""
+    from coordinare.services.environment_attempt import REPAIR_LIMITS
+    from coordinare.services.environment_obligations import MAX_REJECTED_EXECUTIONS
+    from coordinare.services.environment_repair import RepairJournal
+
+    assert REPAIR_LIMITS["execution"] + 1 == MAX_REJECTED_EXECUTIONS
+    assert RepairJournal.model_fields["rejected"].metadata[0].max_length == MAX_REJECTED_EXECUTIONS
+    previous = contract()
+    preserve_execution_obligations(previous, history(previous) * MAX_REJECTED_EXECUTIONS)
+    with pytest.raises(EnvironmentDiscoveryError):
+        preserve_execution_obligations(previous, history(previous) * (MAX_REJECTED_EXECUTIONS + 1))

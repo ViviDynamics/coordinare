@@ -190,5 +190,12 @@ def dependency_digest(manifest: EnvironmentManifest, identifiers: Iterable[str])
 
 
 def standing_view(shared: Mapping[str, Any]) -> dict[str, Any]:
-    """The review context a part's standing depends on: no probe history, execution history or cache path."""
-    return {key: value for key, value in shared.items() if key not in STANDING_EXCLUDED}
+    """The review context a part's standing depends on: no probe history, execution history or cache path.
+
+    Install command text is shown to every part reviewer but is the global part's to judge: as before it was shown,
+    only install ids bear on a group part's standing, so an install repair re-reviews the global part alone.
+    """
+    view = {key: value for key, value in shared.items() if key not in STANDING_EXCLUDED}
+    if isinstance(global_part := view.get("global_part"), dict):
+        view["global_part"] = {key: value for key, value in global_part.items() if key != "install"}
+    return view

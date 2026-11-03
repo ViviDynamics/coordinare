@@ -19,5 +19,20 @@ def test_the_history_keeps_records_and_results_but_not_the_scope_or_input_digest
     [entry] = execution_review_evidence([{'manifest_digest': 'm' * 64, 'manifest': manifest, 'report': report}])
     assert set(entry['manifest']) == {'checks', 'install', 'criterion_checks', 'scope_contract_digest'}
     assert entry['results'] == [{'id': 'c00-a', 'status': 'fail', 'required': True, 'exit_code': 1, 'duration_seconds': 2.0}]
+    assert entry['failure_output'] == [{'id': 'c00-a', 'output': 'secret-ish output', 'output_truncated': False}]
     assert len(json.dumps(entry).encode()) < 2000
     assert 'scope_contract' in manifest
+
+
+def test_failed_commands_carry_their_bounded_output_for_the_reviewer():
+    """Dettmore e2e-46/47: shown statuses only, reviewers could not tell whether a repair answered install-ruby's failure."""
+    manifest = {'checks': [], 'install': [{'id': 'install-ruby', 'argv': ['build-ruby']}]}
+    report = {'results': [
+        {'id': 'install-ruby', 'status': 'fail', 'required': True, 'exit_code': 1, 'duration_seconds': 238.0,
+         'output': 'BUILD FAILED ' + 'x' * 100_000},
+        {'id': 'install-npm', 'status': 'pass', 'required': True, 'exit_code': 0, 'duration_seconds': 3.0, 'output': 'ok'},
+        {'id': 'c00-a', 'status': 'not_run', 'required': True, 'exit_code': None, 'duration_seconds': 0.0, 'output': ''}]}
+    [entry] = execution_review_evidence([{'manifest_digest': 'm' * 64, 'manifest': manifest, 'report': report}])
+    [failure] = entry['failure_output']
+    assert failure['id'] == 'install-ruby' and failure['output'].startswith('BUILD FAILED') and failure['output_truncated']
+    assert len(json.dumps(entry).encode()) < 20 * 1024

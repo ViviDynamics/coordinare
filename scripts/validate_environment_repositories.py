@@ -830,7 +830,9 @@ async def validate_repository(
     attempt_target = output
     try:
         await snapshot.verify()
-        for generation in range(3):
+        # One generation per execution repair the daemon's budget allows, plus the first; the journal's status ends it.
+        # Dettmore e2e-47 stopped after a fixed three with one configured repair unused.
+        for generation in range(1 + profile.max_execution_repairs):
             service.prepare_bootstrap_generation(cache)
             attempt_target = output / f"attempt-{generation:03}"
             new_profile_directory(attempt_target)

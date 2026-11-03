@@ -516,3 +516,21 @@ keeps its definition, so exclusions and retry wrappers are still rejected. A
 check that never ran may be corrected but not dropped (the obligation ledger
 and criterion coverage still bind it), and the independent review judges the
 change like any unexecuted check.
+
+## Dettmore e2e-47 and the review's execution evidence, 2026-11-03
+
+e2e-47 (unattended, `51d16270`) was the first run in which every generation's
+repair was accepted and executed. Each repair fixed real failures (an invalid
+downloaded package, then a missing libreadline8). It held as `installer_failed`
+after its third execution, with one configured execution repair unused.
+
+Two corrections follow. The repair reviewer saw only install ids and per-command
+statuses, so neither the daemon nor a Pi review spike (#375) could tell that a
+failed install-ruby step was resubmitted unchanged: part reviewers now see the
+candidate's install commands, and the execution history carries each failed
+command's output, bounded exactly as the repair's authors receive it and still
+marked untrusted. Install text is left out of a part's standing, so an install
+repair still re-reviews only the global part. Second, the execution history held
+three rejected executions while the repair budget allows four repairs: the bound
+is now the first execution plus one per repair (5), the history byte bound scales
+with it, and the validation harness runs as many generations as that budget allows.
