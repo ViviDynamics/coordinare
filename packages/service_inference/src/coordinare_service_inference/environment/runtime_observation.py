@@ -54,7 +54,9 @@ async def _observe_command(data: dict[str, Any], *, environment: dict[str, str],
             await process.wait()
 
 
-COMMAND_SECONDS = 120
+# One window per private probe for guest boot and the command. Dettmore e2e-50: on a loaded host the emulated guest
+# boot alone outran 120 s for three probes and their retries; the batch's 30 minute allowance still bounds the whole.
+COMMAND_SECONDS = 300
 TEARDOWN_SECONDS = 60
 
 

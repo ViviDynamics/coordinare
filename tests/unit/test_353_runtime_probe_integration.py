@@ -224,5 +224,46 @@ async def test_a_full_batch_reserves_teardown_time_and_names_the_failed_cleanup(
     started = time.monotonic()
     with pytest.raises(runner.PrivateTeardownError, match='clean_shutdown'):
         await runner.observe_private(data, repo=tmp_path / 'repo', cache=tmp_path / 'cache', scratch=tmp_path)
-    assert 179 <= observed['deadline'] - started <= 181
+    window = runner.COMMAND_SECONDS + runner.TEARDOWN_SECONDS
+    assert window - 1 <= observed['deadline'] - started <= window + 1
     assert observed['close_deadline'] == observed['deadline']
+
+
+@pytest.mark.asyncio
+async def test_a_private_guest_gets_a_five_minute_window_when_the_batch_allows_it(tmp_path, monkeypatch):
+    """Dettmore e2e-50: emulated guest boots outran a 120 s window on a loaded host, retries included."""
+    import time
+    from types import SimpleNamespace
+
+    from coordinare_service_inference.environment import runtime_observation as runner
+
+    observed = {}
+
+    class Lease:
+        def __init__(self):
+            self.activation_env = {}
+
+        async def close(self, *, deadline):
+            return SimpleNamespace(confirmed=True, clean_shutdown=True, bounds_respected=True)
+
+    async def open_runtime(spec, **kwargs):
+        observed['lease'] = kwargs['deadline'] - time.monotonic()
+        return Lease()
+
+    async def run_guarded(lease, awaitable):
+        awaitable.close()
+        return [{'id': 'probe', 'status': 'completed', 'exit_code': 0, 'output': '', 'truncated': False}]
+
+    def observe(data, *, environment, deadline):
+        observed['command'] = deadline - time.monotonic()
+        async def done():
+            return None
+        return done()
+
+    monkeypatch.setattr(runner, 'open_runtime', open_runtime)
+    monkeypatch.setattr(runner, 'run_guarded', run_guarded)
+    monkeypatch.setattr(runner, '_observe_command', observe)
+    await runner.observe_private({'commands': [{'id': 'probe'}], 'seconds': 1800, 'expires_at': time.time() + 1800,
+                                  'runtime': policy_data(), 'execution_source_digest': 'a' * 64}, scratch=tmp_path)
+    assert 295 < observed['command'] <= 300
+    assert 355 < observed['lease'] <= 360

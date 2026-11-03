@@ -555,3 +555,13 @@ journal is invalid`: the e8043e75 change raised the rejected-history bound to th
 repair budget but left the journal's `generation` field capped at 2. The field is
 now bounded by the execution repair limit, and a regression walks one journal
 through every generation of the full budget, across snapshot roundtrips.
+
+## Dettmore e2e-50: probe guests outran their window, 2026-11-03
+
+e2e-50 (`e15eace0`) executed two generations (remaining failures: no prebuilt
+Ruby 3.4.2 arm64 archive, and a missing activation path), then held in
+generation 2's probe batch: three private guests and their retries each ran out
+of the 120 second boot-and-command window at about 2.7 minutes. No probe guest
+or container from an earlier generation was left running; the host was loaded
+by unrelated work. Ruling (Jason, 2026-11-03): the window is widened to 300
+seconds. The batch's 30 minute allowance still bounds the whole batch.
