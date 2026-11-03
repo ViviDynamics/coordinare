@@ -158,7 +158,7 @@ class RepairJournal(BaseModel):
     coverage_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["coverage"])
     scope_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["scope"])
     execution_repairs: int = Field(default=0, ge=0, le=REPAIR_LIMITS["execution"])
-    generation: int = Field(default=0, ge=0, le=2)
+    generation: int = Field(default=0, ge=0, le=REPAIR_LIMITS["execution"])
     status: Literal['discovering', 'executing', 'repair_pending', 'held', 'ready'] = 'discovering'
     target: ExecutionCapabilities | None = None
     rejected: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_REJECTED_EXECUTIONS)

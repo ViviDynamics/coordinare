@@ -378,3 +378,32 @@ def test_bounded_repair_excerpt_retains_terminal_error_after_verbose_progress(tm
     assert len(result['output'])<=512 and result['output_truncated']
     assert 'private-secret-value' not in result['output']
     assert result['status']=='fail' and not cache.cache_dir_ready
+
+
+def test_every_generation_of_the_full_repair_budget_is_a_valid_journal(tmp_path):
+    """Dettmore e2e-49: the history bound was raised to the repair budget, but generation stayed capped at 2, so
+    preparing the fourth generation made the journal invalid and the run held. Walk the whole budget through
+    snapshot roundtrips: every generation it allows must be preparable, and the one after the last must hold."""
+    from coordinare.services.environment_attempt import REPAIR_LIMITS
+    from coordinare.services.environment_repair import journal_for
+
+    cache = cache_fixture(tmp_path)
+    budget = started(cache)
+    now = 101
+    for generation in range(1, REPAIR_LIMITS['execution'] + 1):
+        report = failed_report(cache)
+        report['results'][0]['duration_seconds'] = generation  # a distinct execution each time
+        assert record_execution_failure(cache, report, cleanup_confirmed=True, now=now)
+        prepare_repair(cache)
+        snapshots = _persist_env_cache({'suite': cache})
+        restored = cache_fixture(tmp_path)
+        _rehydrate_env_cache({'env_cache': {'suite': restored}}, SimpleNamespace(env_cache=snapshots))
+        assert journal_for(restored).generation == generation
+        budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=now + 1)
+        reviewed_cache(cache)
+        save_attempt(cache, budget, executing=True)
+        now += 2
+    report = failed_report(cache)
+    report['results'][0]['duration_seconds'] = 99
+    assert not record_execution_failure(cache, report, cleanup_confirmed=True, now=now)
+    assert len(cache.environment_attempt['rejected']) == REPAIR_LIMITS['execution'] + 1

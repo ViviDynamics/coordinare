@@ -545,3 +545,13 @@ about 2.4 minutes each, and one boot ran out of time before observing anything.
 That machinery failure alone is now retried once in a fresh guest within the
 batch's own 30 minute allowance. A second timeout, or any other failure, still
 holds the attempt, and no observation is ever invented.
+
+## Dettmore e2e-49: the journal's generation bound, 2026-11-03
+
+e2e-49 (`dce0a988`) accepted and executed three generations; the third failed only
+on a gem native extension that could not find the OpenSSL headers (Ruby itself
+installed). Preparing the fourth generation then held with `environment repair
+journal is invalid`: the e8043e75 change raised the rejected-history bound to the
+repair budget but left the journal's `generation` field capped at 2. The field is
+now bounded by the execution repair limit, and a regression walks one journal
+through every generation of the full budget, across snapshot roundtrips.
