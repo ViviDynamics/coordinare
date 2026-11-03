@@ -24,13 +24,15 @@ def contract():
     )
 
 
-def history(manifest, *, preflight=False, install_started=False):
+def history(manifest, *, preflight=False, install_started=False, ran=("suite",)):
+    """suite fails; every other id in ran executes and passes; the rest stay not_run."""
     report = json.loads(verification_output(manifest.model_dump()))
     for result in report["results"]:
+        executed = not preflight and result["id"] in ran
         result.update(
-            status="fail" if result["id"] == "suite" else "not_run",
-            exit_code=None if preflight else (1 if result["id"] == "suite" else None),
-            duration_seconds=0 if preflight else (1 if result["id"] == "suite" else 0),
+            status="fail" if result["id"] == "suite" else ("pass" if executed else "not_run"),
+            exit_code=(1 if result["id"] == "suite" else 0) if executed else None,
+            duration_seconds=1 if executed else 0,
         )
     if install_started:
         report["results"].append(
@@ -78,25 +80,28 @@ def test_executed_required_definition_cannot_be_weakened(field, value):
     assert exc.value.code == "obligation_removed"
 
 
-def test_unrun_required_check_is_pinned_once_another_action_ran():
+def test_a_check_that_never_ran_stays_correctable_after_another_ran():
+    """Dettmore e2e-46: ruby failed to install, so every c01 check stayed not_run, yet each was pinned with the wrong
+    database port it exported; the reviewer named it in all 8 coverage revisions and no repair could change it. A
+    check without a result has nothing to preserve; the ledger keeps it and the independent review judges the change."""
     previous = contract()
     data = previous.model_dump()
-    data["checks"][1]["argv"] = ["true"]
+    data["checks"][1]["argv"] = ["artifact-check", "--port", "5439"]
+    preserve_execution_obligations(EnvironmentManifest.model_validate(data), history(previous))
     with pytest.raises(EnvironmentDiscoveryError):
-        preserve_execution_obligations(EnvironmentManifest.model_validate(data), history(previous))
+        preserve_execution_obligations(EnvironmentManifest.model_validate(data), history(previous, ran=("suite", "assets")))
 
 
-def test_installer_execution_pins_unrun_required_verification():
+def test_installer_execution_leaves_unrun_verification_correctable():
     data = contract().model_dump()
     data["install"] = [{"id": "install", "argv": ["provision-tools"]}]
     previous = EnvironmentManifest.model_validate(data)
     data = previous.model_dump()
-    data["checks"][0]["argv"] = ["true"]
-    with pytest.raises(EnvironmentDiscoveryError):
-        preserve_execution_obligations(
-            EnvironmentManifest.model_validate(data),
-            history(previous, preflight=True, install_started=True),
-        )
+    data["checks"][0]["argv"] = ["corrected-check"]
+    preserve_execution_obligations(
+        EnvironmentManifest.model_validate(data),
+        history(previous, preflight=True, install_started=True),
+    )
 
 
 def test_template_preflight_before_any_command_may_correct_definitions():
@@ -133,8 +138,11 @@ def test_required_service_lifecycle_definitions_are_pinned(phase):
     previous = EnvironmentManifest.model_validate(data)
     data = previous.model_dump()
     data["services"][0][phase]["argv"] = ["true"]
+    changed = EnvironmentManifest.model_validate(data)
+    # Once any of its commands ran, the whole lifecycle is fixed; a service that never started is not.
     with pytest.raises(EnvironmentDiscoveryError):
-        preserve_execution_obligations(EnvironmentManifest.model_validate(data), history(previous))
+        preserve_execution_obligations(changed, history(previous, ran=("suite", "backend-start")))
+    preserve_execution_obligations(changed, history(previous))
 
 
 def test_every_prior_execution_remains_binding():
@@ -294,7 +302,7 @@ def test_every_changed_fixed_command_is_named_in_one_correction():
     changed.checks[0] = changed.checks[0].model_copy(update={"argv": ["true"]})
     changed.checks[1] = changed.checks[1].model_copy(update={"argv": ["true"]})
     with pytest.raises(EnvironmentDiscoveryError) as exc:
-        preserve_execution_obligations(changed, history(previous))
+        preserve_execution_obligations(changed, history(previous, ran=("suite", "assets")))
     assert exc.value.code == "obligation_removed"
     assert str(exc.value).endswith(": suite, assets")
     one = previous.model_copy(deep=True)

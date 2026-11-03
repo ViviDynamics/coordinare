@@ -60,9 +60,8 @@ def _executed_manifest(entry: Any, source_commit: str) -> EnvironmentManifest | 
     ):
         message = "execution history identity or results differ"
         raise ValueError(message)
-    if not any(
-        result.exit_code is not None or result.duration_seconds > 0 for result in report.results
-    ):
+    ran = {result.id for result in report.results if result.exit_code is not None or result.duration_seconds > 0}
+    if not ran:
         return None  # Trusted preflight stopped every project command before execution.
     required = [
         command
@@ -72,7 +71,22 @@ def _executed_manifest(entry: Any, source_commit: str) -> EnvironmentManifest | 
     if any(command.id not in by_id or not by_id[command.id].required for command in required):
         message = "execution history omits required commands"
         raise ValueError(message)
-    return manifest
+    return _ran(manifest, ran)
+
+
+def _ran(manifest: EnvironmentManifest, ran: set[str]) -> EnvironmentManifest:
+    """The executed manifest as far as it ran: only a command that executed (an exit code or a duration) is fixed.
+
+    Dettmore e2e-46: ruby failed to install, so every c01 check stayed not_run, yet each was fixed with the wrong
+    database port it exported. The reviewer named that port in all 8 coverage revisions and no repair could change it.
+    A check that never ran has no result to protect; the obligation ledger still keeps it from being dropped, and the
+    independent review judges its revision like any unexecuted check. A service stays fixed once any of its commands ran.
+    """
+    services = [service if any(command.id in ran for command in (service.init, service.start, service.health, service.stop)
+                               if command is not None) else service.model_copy(update={"required": False})
+                for service in manifest.services]
+    return manifest.model_copy(update={"checks": [check for check in manifest.checks if check.id in ran],
+                                       "services": services})
 
 
 _MAX_REJECTED_EXECUTIONS = 3
@@ -104,8 +118,8 @@ def executed_manifests(history: object, *, source_commit: str) -> list[Environme
 
 
 def fixed_command_ids(manifests: Sequence[EnvironmentManifest]) -> frozenset[str]:
-    """Every command execution preservation fixes: the required checks and required services' lifecycle commands of
-    each executed manifest. Only their timeouts may grow."""
+    """Every command execution preservation fixes: the required checks that ran and the lifecycle commands of each
+    required service that started, in each executed manifest (see _ran). Only their timeouts may grow."""
     return frozenset(command.id for manifest in manifests for command in _required_execution_commands(manifest))
 
 

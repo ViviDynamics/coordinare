@@ -498,3 +498,21 @@ genuinely unread source or missing explicit obligations. This diagnostic does
 not resolve any finding, grant source acceptance or waive runtime proof. The
 citation correction alone does not establish that those semantic problems are
 fixed. Elm acceptance and subsequent Dettmore validation remain pending.
+
+## Only commands that ran are fixed after execution, 2026-11-02
+
+Dettmore e2e-46 (unattended) held at `attempt_coverage_limit` after 8 coverage
+revisions with only 1 of 4 execution repairs used. Every review reply validated;
+the reviewer kept answering revise for a real defect no repair could fix. Ruby
+failed to install, so all 15 required c01 checks stayed `not_run`, yet the
+2026-10-18 rule pinned every required check once any project command executed,
+including unrun ones. Those checks export `DATABASE_PORT=5432`, while the pg17
+service, which did run and is therefore pinned, publishes 5439.
+
+Ruling (Jason, 2026-11-02): a command is fixed only if it executed (an exit code
+or a nonzero duration). A required service's lifecycle stays fixed once any of
+its commands executed. The Nare case is unchanged: a check that ran and failed
+keeps its definition, so exclusions and retry wrappers are still rejected. A
+check that never ran may be corrected but not dropped (the obligation ledger
+and criterion coverage still bind it), and the independent review judges the
+change like any unexecuted check.
