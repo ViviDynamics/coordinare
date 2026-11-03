@@ -105,3 +105,30 @@ async def test_eleven_private_observations_share_one_thirty_minute_deadline(tmp_
     assert len(set(deadlines)) == 1 and deadlines[0] <= budget.deadline
     assert len(set(scratch_paths)) == 11 and all(not path.exists() for path in scratch_paths)
     assert all(c.timeout_seconds == 30 for c in selected.request.commands)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('second', ['completed', 'timeout'])
+async def test_a_guest_that_timed_out_before_observing_is_retried_once(tmp_path, monkeypatch, second):
+    """Dettmore e2e-48: one emulated guest boot ran out of time under load and the 2-hour run held on it. That one
+    machinery failure is retried once in a fresh guest; a second one is still the report's result."""
+    from coordinare.services import environment_probe_executor as executor
+
+    selected, bundle = bound_plan(tmp_path, True)
+    monkeypatch.setattr(executor, '_docker_identity', AsyncMock(return_value=(selected.capabilities.image_ref, selected.capabilities.platform)))
+    calls: list[str] = []
+    timed_out = {'status': 'execution_error', 'exit_code': None, 'output': executor.GUEST_TIMEOUT_OUTPUT, 'truncated': False}
+
+    async def command(p, roots, command, deadline, *, scratch):
+        calls.append(command['id'])
+        if len(calls) == 1 or second == 'timeout':
+            return ProbeCommandResult(id=command['id'], **timed_out)
+        return ProbeCommandResult(id=command['id'], status='completed', exit_code=0, output='available', truncated=False)
+
+    monkeypatch.setattr(executor, '_command_container', command)
+    report = await executor.execute_environment_probe(selected, state={'probe_backend': 'docker'}, source_bundle=bundle,
+                                                      budget=AttemptBudget(timeout_seconds=3600))
+    commands = len(selected.request.commands)
+    assert len(report.results) == commands
+    assert len(calls) == 2 * commands
+    assert all(result.status == ('completed' if second == 'completed' else 'execution_error') for result in report.results)

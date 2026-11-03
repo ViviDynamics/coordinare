@@ -534,3 +534,14 @@ repair still re-reviews only the global part. Second, the execution history held
 three rejected executions while the repair budget allows four repairs: the bound
 is now the first execution plus one per repair (5), the history byte bound scales
 with it, and the validation harness runs as many generations as that budget allows.
+
+## Dettmore e2e-48: a private probe guest timed out, 2026-11-03
+
+e2e-48 (`e8043e75`) executed generation 0, then held at `probe_observation_incomplete`
+in generation 1's probe batch after 2 hours: `probe-node-toolchain: private probe
+guest unavailable: TimeoutError`. Each private probe boots its own emulated guest
+inside one 120 second window for boot and command; the batch's five probes took
+about 2.4 minutes each, and one boot ran out of time before observing anything.
+That machinery failure alone is now retried once in a fresh guest within the
+batch's own 30 minute allowance. A second timeout, or any other failure, still
+holds the attempt, and no observation is ever invented.

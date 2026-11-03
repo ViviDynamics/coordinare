@@ -141,6 +141,17 @@ def _executor_failed(step: str, code: int, command: Mapping[str, Any], *, output
                 runtime_error=redact_command_text(stderr_tail)[-STDERR_TAIL_BYTES:] if stderr_tail else None)
 
 
+# Dettmore e2e-48: each private probe boots its own emulated guest within one short window; under load one boot ran
+# out of time before observing anything, and the 2-hour run held on it. Only that machinery failure (nothing observed)
+# is retried, once, within the batch's own allowance; a second one still holds the attempt.
+PRIVATE_GUEST_ATTEMPTS = 2
+GUEST_TIMEOUT_OUTPUT = 'private probe guest unavailable: TimeoutError'
+
+
+def _guest_timed_out(result: ProbeCommandResult) -> bool:
+    return result.status == 'execution_error' and result.output == GUEST_TIMEOUT_OUTPUT
+
+
 async def _command_container(plan: ProbePlan, roots: tuple[Path, Path], command: dict[str, Any], deadline: float,
                              *, scratch: Path | None = None) -> ProbeCommandResult:
     name = "coordinare-probe-" + plan.digest()[:24]
@@ -228,9 +239,15 @@ async def execute_environment_probe(
                 results = []
                 for command in plan.request.commands:
                     if plan.request.execution_context == 'private_service':
-                        with tempfile.TemporaryDirectory(prefix='runtime-scratch-', dir=root) as scratch:
-                            results.append(await _command_container(plan, (root/'repo', root/'cache'),
-                                command.model_dump(mode='json'), deadline, scratch=Path(scratch)))
+                        for attempt in range(PRIVATE_GUEST_ATTEMPTS):
+                            with tempfile.TemporaryDirectory(prefix='runtime-scratch-', dir=root) as scratch:
+                                result = await _command_container(plan, (root/'repo', root/'cache'),
+                                    command.model_dump(mode='json'), deadline, scratch=Path(scratch))
+                            if not _guest_timed_out(result) or attempt + 1 == PRIVATE_GUEST_ATTEMPTS \
+                                    or deadline - time.monotonic() <= 0:
+                                break
+                            log.info("env_cache.probe_guest_retry", command=command.id)
+                        results.append(result)
                     else:
                         results.append(await _command_container(plan, (root/'repo', root/'cache'),
                             command.model_dump(mode='json'), deadline))
