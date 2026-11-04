@@ -406,6 +406,7 @@ async def _converse(context: AgentContext, inspection: SourceInspection, message
     corrections = repetitions = 0
     fewest: int | None = None
     seen: dict[tuple[str, str], dict[str, Any]] = {}
+    decided: dict[str, dict[str, Any]] = {}
     for _ in range(limits.max_model_calls):
         raw = await _ask(context, inspection, messages, schema)
         # Read before any other await: the shared budget's last finish reason is still this call's.
@@ -421,6 +422,8 @@ async def _converse(context: AgentContext, inspection: SourceInspection, message
             # A listing-only agent judges what it was given; a tool request is corrected, never executed.
             errors = ([dict(LISTING_ONLY_ERROR)] if 'tool' in reply
                       else [dict(EVIDENCE_FIRST_ERROR)] if not task.listing_only and not inspection.inputs else [])
+            if not errors and task.decision_ids is not None and _carry_decisions(reply, task, decided):
+                budget.validation_codes.append('decision_carried')
             if not errors:
                 return task.validate(reply)
         except (ValidationError, PydanticCustomError, FindingValidationError, EnvironmentDiscoveryError) as exc:
@@ -444,6 +447,36 @@ async def _converse(context: AgentContext, inspection: SourceInspection, message
         explain_rejection(messages, raw, errors, budget, context=CorrectionContext(
             task.envelope, finish_reason=finish_reason, earlier_errors=earlier))
     return _fail('scope_phase_call_limit')
+
+def _carry_decisions(reply: dict[str, Any], task: AgentTask, decided: dict[str, dict[str, Any]]) -> bool:
+    """Keep each decision a review has already given, per finding: a later reply that drops one, or its status,
+    gets that decision back, and only what the correction names is redone. Returns whether any was carried.
+
+    Dettmore e2e-52: correcting one decision's missing status, the reviewer dropped the status from others, 39 times in
+    one generation (1, 5, 1, 7, 1, 6 errors), until the schema budget ran out before anything was installed.
+    """
+    payload = reply.get(task.envelope)
+    if task.envelope != 'assessment' or not isinstance(payload, dict) or not isinstance(payload.get('decisions'), list):
+        return False
+    wanted = set(task.decision_ids or ())
+    carried = False
+    decisions: list[Any] = []
+    for item in payload['decisions']:
+        identifier = item.get('finding_id') if isinstance(item, dict) else None
+        if isinstance(identifier, str) and 'status' not in item and identifier in decided:
+            item, carried = dict(decided[identifier]), True
+        decisions.append(item)
+    present = {item.get('finding_id') for item in decisions if isinstance(item, dict)}
+    for identifier in sorted(wanted - present):
+        if identifier in decided:
+            decisions.append(dict(decided[identifier]))
+            carried = True
+    payload['decisions'] = decisions
+    for item in decisions:
+        if isinstance(item, dict) and item.get('finding_id') in wanted and 'status' in item:
+            decided[item['finding_id']] = dict(item)
+    return carried
+
 
 def _error_key(error: dict[str, Any]) -> tuple[str, str]:
     return str(error.get('code')), canonical(error.get('location', [])).decode()

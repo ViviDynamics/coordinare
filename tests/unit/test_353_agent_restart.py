@@ -169,3 +169,47 @@ async def test_only_a_new_low_in_errors_is_free():
     assert result.code == 'attempt_schema_limit'
     assert budget.validation_codes.count('correction_progress') == 2
     assert budget.validation_codes.count('agent_restarted') == 1
+
+
+class _Ruling(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    finding_id: str
+    status: str
+    rationale: str
+
+
+class _Rulings(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    decisions: list[_Ruling]
+
+
+def _assessment(*decisions):
+    return json.dumps({'assessment': {'decisions': list(decisions)}})
+
+
+@pytest.mark.asyncio
+async def test_a_decision_given_earlier_is_kept_when_a_correction_drops_it():
+    """Dettmore e2e-52: correcting one decision's missing status, the reviewer dropped status from another, 39 times in
+    one generation, until the schema budget ran out. A decision already given is carried; only the named one is redone."""
+    queue = iter([READ,
+                  _assessment({'finding_id': 'F1', 'status': 'resolved', 'rationale': 'fixed'},
+                              {'finding_id': 'F2', 'rationale': 'still open'}),
+                  _assessment({'finding_id': 'F1', 'rationale': 'fixed'},
+                              {'finding_id': 'F2', 'status': 'open', 'rationale': 'still open'})])
+
+    async def chat(messages, **_kwargs):
+        return DiscoveryChatReply(text=next(queue), finish_reason='stop')
+
+    async def fetch(_path):
+        return '# readme\n'
+
+    budget = AttemptBudget(max_calls=32, max_reads=32)
+    inspection = SourceInspection(['README.md'], fetch, LIMITS, budget)
+    inspection.name = 'review'
+    result = await run_agent(AgentContext(budget, LIMITS, chat), inspection,
+                             [{'role': 'system', 'content': 'review'}, {'role': 'user', 'content': '{}'}],
+                             AgentTask('assessment', lambda data: _Rulings.model_validate(data['assessment']),
+                                       decision_ids=['F1', 'F2']))
+    assert [(d.finding_id, d.status) for d in result.decisions] == [('F1', 'resolved'), ('F2', 'open')]
+    assert budget.shard_schema_repairs == 1
+    assert budget.validation_codes.count('decision_carried') == 1

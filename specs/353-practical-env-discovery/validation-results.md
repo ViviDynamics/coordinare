@@ -584,3 +584,15 @@ fixed command must ask for an installation, activation or other service or check
 change. Separately, ruby-build kept the real failure in its build log for two
 generations: a failed command whose output names a `/tmp/*.log` build log now
 gets that log's redacted tail, within the same output bound.
+
+## Dettmore e2e-52: decisions dropped between review corrections, 2026-11-04
+
+e2e-52 (`9c1482c9`) held in generation 0 at `attempt_schema_limit` (2.6 hours,
+148 calls) before any installation. Its reviewers' first replies kept omitting
+the status of some finding decisions; each correction restored the named ones and
+dropped others (1, 5, 1, 7, 1, 6 errors), 39 such corrections in one generation.
+The same pattern appeared in e2e-46; e2e-49 to e2e-51 got through by chance.
+Ruling (Jason, 2026-11-04): within one review conversation, a decision already
+given for a finding is kept; a later reply that drops it, or its status, gets it
+back, so a correction redoes only what it names. The validator still judges the
+merged reply.
