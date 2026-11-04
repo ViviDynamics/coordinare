@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 # Failures a delta repair does not correct in place: the full repair runs instead while budget remains.
 DELTA_FALLBACK = frozenset({"attempt_schema_limit", "repair_delta_rejected", "executable_merge_invalid", "repair_triage_stale"})
 # Proposal fields a manifest's standing review depends on; provenance and cache-only facts never change a judgment.
-STANDING_EXCLUDED = frozenset({"manifest_digest", "probe_evidence", "untrusted_execution_history",
+STANDING_EXCLUDED = frozenset({"manifest_digest", "probe_evidence", "untrusted_execution_history", "fixed_ids",
                                "execution_capabilities", "capabilities_digest"})
 _PROPOSAL_FIELDS = ("runtime_endpoints", "criterion_checks", "requirements", "install", "checks", "activation", "services",
                     "empty_reason", "local_credentials")

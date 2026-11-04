@@ -227,6 +227,9 @@ EXECUTABLE_REVIEW_INSTRUCTIONS = (
     'Compare every prior rejected manifest and execution result in untrusted_execution_history with this candidate. '
     'Its failure_output shows why each failed command failed; global_part.install shows this candidate\'s install commands. '
     'A failed step resubmitted unchanged, with nothing it depends on changed, does not repair that failure. '
+    'fixed_ids lists commands an earlier execution ran: no repair may change them (only a longer timeout). A finding '
+    'about one must ask for what can change: installation, activation (for example its env or PATH), or another '
+    'service or check, and never for that command\'s own text. '
     'Installation and activation repairs must satisfy the original source obligation. Reject selective omission, '
     'filtering, retry-to-pass, or command shadowing through environment variables, wrappers or installed tools. '
     'Unchanged command text alone does not prove unchanged coverage. '
@@ -1274,6 +1277,7 @@ async def _review(attempt: _Attempt, build: DividedConstruction | None,
             "mandatory_evidence": mandatory_evidence, "probe_evidence": budget.probe_reports,
             "declared_services": attempt.options.declared_services,
             "untrusted_execution_history": budget.execution_review_evidence,
+            "fixed_ids": sorted(fixed_command_ids(budget.executed_manifests)),
             "finding_ledger": cast("FindingLedger", budget.finding_ledger).model_dump(mode='json'),
             "finding_responses": [response.model_dump(mode='json') for response in discovery.finding_responses]})},
     ])
@@ -1767,7 +1771,8 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
         mine = [record.model_dump(mode='json') for record in ledger.records if record.id in owned.get(owner, [])]
         system = SOURCE_TOOLS + REVIEW_PART_PREAMBLE + EXECUTABLE_REVIEW_INSTRUCTIONS
         shared = {**base, 'manifest_digest': manifest.digest(), 'global_part': summary, 'probe_evidence': budget.probe_reports,
-                  'untrusted_execution_history': budget.execution_review_evidence}
+                  'untrusted_execution_history': budget.execution_review_evidence,
+                  'fixed_ids': sorted(fixed_command_ids(budget.executed_manifests))}
         own: dict[str, Any] = {'part': part_manifest_view(manifest, group, groups=groups), 'mandatory_evidence': index, 'assigned_findings': mine,
              'required_decision_ids': owned.get(owner, []), 'findings_capacity': capacities[owner],
              'finding_responses': [r for r in responses if r.get('finding_id') in owned.get(owner, [])]}

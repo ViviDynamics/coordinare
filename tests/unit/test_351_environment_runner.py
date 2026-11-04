@@ -669,3 +669,30 @@ async def test_error_lines_before_the_kept_tail_are_reported(tmp_path, monkeypat
     assert 'sensitive-value-654' not in ruby.output
     assert ruby.output.rstrip().endswith("'Gem::Request#fetch'")
     assert 'error lines from earlier output' not in short.output
+
+
+@pytest.mark.asyncio
+async def test_a_failed_command_gets_the_tail_of_the_build_log_it_names(tmp_path, monkeypatch):
+    """Dettmore e2e-45..51: ruby-build printed only "See the full build log at /tmp/ruby-build.N.log"; the cause stayed
+    in that file for two repair generations."""
+    import tempfile
+
+    from coordinare_service_inference.environment.runner import OUTPUT_LIMIT
+
+    monkeypatch.setenv('TEST_SECRET', 'sensitive-value-777')
+    with tempfile.NamedTemporaryFile('w', dir='/tmp', prefix='ruby-build.', suffix='.log', delete=False) as handle:
+        handle.write('compiling\n' * 2000 + 'psych: Could not be configured (sensitive-value-777)\n')
+        log = handle.name
+    try:
+        failing = (f'import sys\nprint("BUILD FAILED (Debian 13 using ruby-build)")\n'
+                   f'print("See the full build log at {log}")\nsys.exit(1)\n')
+        passing = f'print("See the full build log at {log}")\n'
+        manifest = contract([{'id': 'ruby', 'argv': [sys.executable, '-c', failing]},
+                             {'id': 'ok', 'argv': [sys.executable, '-c', passing]}])
+        report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    finally:
+        os.unlink(log)
+    ruby, ok = report.results
+    assert 'psych: Could not be configured' in ruby.output and 'BUILD FAILED' in ruby.output
+    assert 'sensitive-value-777' not in ruby.output and len(ruby.output.encode()) <= OUTPUT_LIMIT
+    assert 'tail of the build log' not in ok.output

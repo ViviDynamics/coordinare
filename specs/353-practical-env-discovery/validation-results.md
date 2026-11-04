@@ -565,3 +565,22 @@ of the 120 second boot-and-command window at about 2.7 minutes. No probe guest
 or container from an earlier generation was left running; the host was loaded
 by unrelated work. Ruling (Jason, 2026-11-03): the window is widened to 300
 seconds. The batch's 30 minute allowance still bounds the whole batch.
+
+## Dettmore e2e-51: the attempt deadline, and reviewers asking for fixed commands, 2026-11-04
+
+e2e-51 (`a791b306`) is the furthest run so far: three generations reviewed,
+accepted and executed (generations 1 and 2 in about 15 minutes each), and no
+probe guest timed out. It held at `attempt_deadline` (6 hours) while reviewing
+generation 3, after 34 review calls. Generation 0 took about 2.5 hours, mostly
+the scope review every run repeats.
+
+Generation 3's review churned on a deadlock of the e2e-46 kind: the maxio mock's
+health failed in every execution because `svc-maxio-start` runs it without
+bundler, and since that start command ran, it is fixed. Reviewers, never told
+which commands are fixed, kept asking for that command to change; an activation
+repair (such as `RUBYOPT=-rbundler/setup`) was never proposed. Ruling (Jason,
+2026-11-04): reviewers now receive `fixed_ids` and are told a finding about a
+fixed command must ask for an installation, activation or other service or check
+change. Separately, ruby-build kept the real failure in its build log for two
+generations: a failed command whose output names a `/tmp/*.log` build log now
+gets that log's redacted tail, within the same output bound.

@@ -58,6 +58,10 @@ async def test_every_divided_review_request_parses_as_one_document_through_run_a
     budget = AttemptBudget(max_calls=1024, max_reads=8192, max_coverage_revisions=8)
     budget.finding_ledger = SimpleNamespace(records=[])
     budget.coverage_manifest = None
+    # Dettmore e2e-51: reviewers asked for a ran (fixed) service command to change, which no repair may do.
+    budget.executed_manifests = [SimpleNamespace(checks=[SimpleNamespace(id='c00-0', required=True)], services=[
+        SimpleNamespace(required=True, init=None, start=SimpleNamespace(id='svc-start'), health=SimpleNamespace(id='svc-health'),
+                        stop=SimpleNamespace(id='svc-stop'))])]
     inputs = {first.sources[0]: 'a' * 64, second.sources[0]: 'b' * 64, 'Makefile': 'c' * 64}
     requests: list[list[dict[str, str]]] = []
     reply = {'assessment': {'findings': [], 'decisions': [], 'capability_unavailable': False, 'verdict': 'accept',
@@ -90,4 +94,5 @@ async def test_every_divided_review_request_parses_as_one_document_through_run_a
     assert len(prefixes) == 1
     # Every part reviewer sees the install commands its checks rely on, not only their ids (Dettmore e2e-46).
     shared = json.loads(requests[0][1]['content'])['shared']
+    assert shared['fixed_ids'] == ['c00-0', 'svc-health', 'svc-start', 'svc-stop']
     assert shared['global_part']['install'] == [{'id': 'install-ruby', 'argv': ['build-ruby', '3.4.2'], 'cwd': '{repo}', 'env': {}}]

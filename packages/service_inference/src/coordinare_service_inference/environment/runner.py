@@ -560,8 +560,34 @@ async def _execute(
             excerpt = _redact(earlier.decode(errors="replace"), child_env, extra_values=known_secrets).encode()
             excerpt = b"[error lines from earlier output]\n" + excerpt[-ERROR_EXCERPT_LIMIT:] + b"\n[... output tail]\n"
             output = excerpt + output[-(OUTPUT_LIMIT - len(excerpt)):]
+        if result.status == "fail" and (log := _referenced_log_tail(output.decode(errors="ignore"))) is not None:
+            excerpt = _redact(log.decode(errors="replace"), child_env, extra_values=known_secrets).encode()
+            excerpt = b"[tail of the build log this output names]\n" + excerpt[-REFERENCED_LOG_LIMIT:] + b"\n[... output]\n"
+            output = excerpt + output[-(OUTPUT_LIMIT - len(excerpt)):]
         result.output = output.decode(errors="ignore")
     return result
+
+
+# Dettmore e2e-45..51: ruby-build prints only "BUILD FAILED ... See the full build log at /tmp/ruby-build.N.log"; the
+# cause stayed in that file, and two repair generations were spent without it. A failed command's output that names a
+# build log in the temporary directory gets that log's tail, redacted and within the same output bound.
+REFERENCED_LOG_LIMIT = 2048
+_REFERENCED_LOG = re.compile(r"build log (?:at|in) (/tmp/[A-Za-z0-9._/-]{1,200}\.log)\b")
+
+
+def _referenced_log_tail(output: str) -> bytes | None:
+    match = _REFERENCED_LOG.search(output)
+    if match is None or ".." in match.group(1):
+        return None
+    path = Path(match.group(1))
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        with path.open("rb") as handle:
+            handle.seek(max(0, handle.seek(0, os.SEEK_END) - REFERENCED_LOG_LIMIT))
+            return handle.read()
+    except OSError:
+        return None
 
 
 # A trivial command run with the activated environment after each install step. Maintainer ruling 2026-10-31: one
