@@ -79,11 +79,12 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
             "no_new_privileges": True, "uid_zero_restores_capabilities": False,
             "guest_docker_ready_before_manifest_commands": True,
             "manifest_execution_order": ["guest_readiness", "activation_environment", "install_if_requested",
-                "activation_path_validation", "service_init_start_health", "checks", "service_stop",
+                "activation_path_validation", "service_init_start_health_if_installs_passed", "checks", "service_stop",
                 "seal_if_install_passed", "runtime_teardown"],
             "runtime_ordering_guidance": "The coordinator opens the private guest and waits for its ready marker and "
                 "successful Docker health before manifest commands. It supplies guest Docker activation to carrier "
-                "commands. Manifest services run after the installer command phase. Startup readiness does not guarantee "
+                "commands. Manifest services run after the installer command phase, and only when every required "
+                "install passed: otherwise each service step is not_run, naming the failed installs. Startup readiness does not guarantee "
                 "continued daemon health; required checks and cleanup remain mandatory. Each service stop must remove every "
                 "Docker container, volume (including an image's anonymous volume: docker rm -f -v) and custom network "
                 "its service created; any left behind fails that stop. To stop a process, write its pid to a file under "
@@ -102,7 +103,23 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
                 "Installation, every check and the service lifecycle share one session_budget; the guest emulates its "
                 "CPU, so container image builds are slow. Prefer an official prebuilt release archive or an extracted "
                 "distribution package over compiling a language runtime, database or other large tool from source; "
-                "compile only what has no pinned prebuilt."}
+                "compile only what has no pinned prebuilt. "
+                # Dettmore e2e-49: install-ruby "passed" on ruby --version while openssl, psych and zlib were never
+                # built; e2e-54: unpacked -dev packages left libssl.so pointing at a runtime library never unpacked.
+                "An install's verification must load what it installs: a version flag proves only that a binary starts. "
+                "For a language runtime, load every native module or library the repository uses (for example its TLS, "
+                "compression, YAML or serialization and FFI modules) the way the repository loads it; for a library, "
+                "link or load it. A runtime build can skip a module it could not configure and still finish, so treat a "
+                "reported skipped or missing module as a failure. When you unpack .deb files with dpkg-deb -x, unpack "
+                "each -dev package's runtime library package beside it (the -dev package holds headers and an .so "
+                "symlink whose target is in the runtime package, such as libexample-dev with libexample3), and point "
+                "include, library, pkg-config and loader paths at the multiarch directories (usr/include/<triplet> and "
+                "usr/lib/<triplet>, for example aarch64-linux-gnu), not only usr/lib. Example, building a runtime "
+                "without privileges: unpack each native dependency's runtime and -dev packages under {cache}/deps; "
+                "build with CPPFLAGS=\"-I{cache}/deps/usr/include -I{cache}/deps/usr/include/<triplet>\", "
+                "LDFLAGS=\"-L{cache}/deps/usr/lib/<triplet> -Wl,-rpath,{cache}/deps/usr/lib/<triplet>\" and "
+                "PKG_CONFIG_PATH={cache}/deps/usr/lib/<triplet>/pkgconfig, installing under a {cache} prefix; then load "
+                "each native module the repository needs and fail the install if any does not load."}
 
 
 def _refuse_runtime(message: str) -> NoReturn:

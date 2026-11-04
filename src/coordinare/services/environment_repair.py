@@ -73,7 +73,7 @@ from coordinare.services.environment_scope_reopening import source_conflict_reop
 from coordinare.services.environment_scope_reuse import SCOPE_POLICY_VERSION, reusable_scope
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Collection, Mapping, Sequence
 
     from coordinare_service_inference.environment.models import CheckResult
 
@@ -86,7 +86,32 @@ JOURNAL_MAX_BYTES = 16 * 1024 * 1024
 MAX_ARCHIVED_ATTEMPTS = 3
 REPORT_MAX_BYTES = 256 * 1024
 FEEDBACK_MAX_BYTES = 16 * 1024
-OUTPUT_MAX_CHARS = 512
+# Dettmore e2e-54: 512 characters, cut from the end, removed the error excerpt and build-log tail the runner puts at
+# the start of a failed command's output, so no repair author saw "OpenSSL library directory could not be found".
+# A record keeps the runner's whole bounded output; only an oversized report shrinks it, from the middle.
+OUTPUT_MAX_CHARS = 8192
+OUTPUT_MIN_CHARS = 512
+# The runner closes each excerpt it puts before a failed command's output tail with one of these markers.
+_EXCERPT_END = re.compile(r'\n\[\.\.\. output(?: tail)?\]\n')
+_OMITTED = '\n[... {count} characters omitted ...]\n'
+
+
+def keep_ends(text: str, limit: int) -> tuple[str, bool]:
+    """Bound text by cutting its middle, so the runner's leading error excerpts and the output's last lines survive.
+
+    Returns the bounded text and whether anything was cut. With a leading excerpt, two thirds of the room keep it;
+    plain output keeps its last lines mostly, where a failure usually ends.
+    """
+    if len(text) <= limit:
+        return text, False
+    marker = _OMITTED.format(count=len(text))
+    room = limit - len(marker)
+    if room <= 0:
+        return text[len(text) - limit:], True
+    lead = max((match.end() for match in _EXCERPT_END.finditer(text)), default=0)
+    head = min(lead, room * 2 // 3) if lead else room // 4
+    tail = room - head
+    return text[:head] + _OMITTED.format(count=len(text) - head - tail) + text[len(text) - tail:], True
 
 
 CURRENT_JOURNAL_VERSION = 9
@@ -516,6 +541,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.repair_triage = repair_triage_for(journal)
     budget.delta_fallback = journal.delta_fallback
     budget.execution_review_evidence = execution_review_evidence(journal.rejected)
+    budget.execution_attempt_history = repair_attempt_history(journal.rejected)
     budget.calls, budget.reads = journal.calls, journal.reads
     budget.verification_reads = journal.verification_reads
     budget.probe_batches = journal.probe_batches
@@ -771,13 +797,29 @@ def _rejected_evidence(cache: EnvCacheState, data: dict[str, Any]) -> dict[str, 
         _refuse('execution repair evidence is unknown or indeterminate')
     original_digest = hashlib.sha256(report.model_dump_json().encode()).hexdigest()
     for result in report.results:
-        result.output = redact_command_text(result.output)[-OUTPUT_MAX_CHARS:]
-        result.output_truncated = True
+        result.output = redact_command_text(result.output)
+    report = _bounded_report(report)
     if len(report.model_dump_json().encode()) > REPORT_MAX_BYTES:
         _refuse('execution repair report exceeds its bound')
     return {'manifest_digest': manifest.digest(), 'manifest': manifest.model_dump(mode='json'),
             'assessment': cache.environment_assessment, 'report': report.model_dump(mode='json'),
             'original_report_digest': original_digest}
+
+
+def _bounded_report(report: VerificationReport) -> VerificationReport:
+    """Each output within the record bound, halved for every output only while the report exceeds its byte bound.
+
+    output_truncated stays the runner's, and becomes true only where this cut something.
+    """
+    limit = OUTPUT_MAX_CHARS
+    while True:
+        bounded = report.model_copy(deep=True)
+        for result in bounded.results:
+            result.output, cut = keep_ends(result.output, limit)
+            result.output_truncated = result.output_truncated or cut
+        if limit <= OUTPUT_MIN_CHARS or len(bounded.model_dump_json().encode()) <= REPORT_MAX_BYTES:
+            return bounded
+        limit //= 2
 
 
 def record_execution_failure(cache: EnvCacheState, report: dict[str, Any], *, cleanup_confirmed: bool,
@@ -828,6 +870,91 @@ def execution_review_evidence(rejected: Sequence[Mapping[str, Any]]) -> list[dic
             for entry in rejected]
 
 
+HISTORY_MAX_BYTES = 48 * 1024
+HISTORY_COMMAND_BYTES = 2048
+HISTORY_ENTRY_COMMANDS_BYTES = 8 * 1024
+_SUMMARY_IDS = 6
+_ERROR_WORDS = re.compile(r'(?i)could not be found|not found|no such file|loaderror|cannot|could not|denied|'
+                          r'\berror\b|\bfatal\b|\bfailed\b|returned error|undefined reference|missing')
+
+
+def _commands_by_id(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    commands: dict[str, Any] = {}
+    for group in ('install', 'checks'):
+        for command in manifest.get(group) or []:
+            if isinstance(command, dict) and isinstance(command.get('id'), str):
+                commands[command['id']] = command
+    for service in manifest.get('services') or []:
+        for stage in ('init', 'start', 'health', 'stop'):
+            command = service.get(stage) if isinstance(service, dict) else None
+            if isinstance(command, dict) and isinstance(command.get('id'), str):
+                commands[command['id']] = command
+    if isinstance(activation := manifest.get('activation'), dict):
+        commands['activation'] = activation
+    return commands
+
+
+def first_error_line(output: str) -> str:
+    """The first line of an output that states an error (the runner's leading excerpt first), else its last line."""
+    lines = [line.strip() for line in output.splitlines() if line.strip() and not line.startswith('[')]
+    found = next((line for line in lines if _ERROR_WORDS.search(line)), lines[-1] if lines else '')
+    return found[:FEEDBACK_FIELD_CHARS]
+
+
+def _history_line(number: int, changed: list[str], previous_exists: bool, failed: list[Mapping[str, Any]]) -> str:
+    if not previous_exists:
+        change = 'first execution'
+    elif changed:
+        change = 'changed ' + ', '.join(changed[:_SUMMARY_IDS]) + (f' and {len(changed) - _SUMMARY_IDS} more'
+                                                                   if len(changed) > _SUMMARY_IDS else '')
+    else:
+        change = 'no command changed'
+    failure = (f'{len(failed)} required failed; first error {failed[0]["id"]}: '
+               f'{first_error_line(str(failed[0].get("output") or "")) or "(no output)"}') if failed else 'no required failure'
+    return f'attempt {number}: {change}; {failure}'
+
+
+def repair_attempt_history(rejected: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Every earlier execution of this attempt for a repair's authors: one summary line each, the commands it changed,
+    and, for all but the latest (already the execution feedback), its bounded failure output.
+
+    Dettmore e2e-54: reviewers saw every earlier execution, authors only the latest, so each repair started over;
+    repair 4 could not see that repairs 2 and 3 had only fixed failures they introduced (a 404 URL, a pipefail abort).
+    """
+    history: list[dict[str, Any]] = []
+    before: dict[str, Any] | None = None
+    for number, entry in enumerate(rejected, 1):
+        commands = _commands_by_id(entry['manifest'])
+        changed = ([] if before is None else
+                   sorted(identifier for identifier in commands if commands[identifier] != before.get(identifier)))
+        removed = [] if before is None else sorted(set(before) - set(commands))
+        results = list(entry['report']['results'])
+        failed = [result for result in results if result.get('status') == 'fail' and result.get('required', True)]
+        item: dict[str, Any] = {'attempt': number, 'manifest_digest': entry['manifest_digest'],
+                                'summary': _history_line(number, changed + removed, before is not None, failed),
+                                'failed_ids': [str(result['id']) for result in failed][:MAX_FEEDBACK_RESULTS]}
+        if removed:
+            item['removed_ids'] = removed[:MAX_FEEDBACK_RESULTS]
+        shown: dict[str, Any] = {}
+        for identifier in changed:
+            text = json.dumps(commands[identifier])
+            if len(text.encode()) <= HISTORY_COMMAND_BYTES and len(json.dumps(shown).encode()) + len(text) <= HISTORY_ENTRY_COMMANDS_BYTES:
+                shown[identifier] = commands[identifier]
+        if shown:
+            item['changed_commands'] = shown
+        if number < len(rejected):
+            item['failure_output'] = _review_failure_output(entry)
+        history.append(item)
+        before = commands
+    # Oldest detail goes first: summaries always stay, then the newest entries' outputs and commands.
+    for key in ('failure_output', 'changed_commands'):
+        for item in history:
+            if len(json.dumps(history).encode()) <= HISTORY_MAX_BYTES:
+                return history
+            item.pop(key, None)
+    return history
+
+
 def _review_failure_output(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The failed commands' output, bounded exactly as the repair's authors receive it (repair_feedback).
 
@@ -835,9 +962,15 @@ def _review_failure_output(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
     install-ruby rewrite was judged indeterminate cycle after cycle. The output is the runner's redacted excerpt and
     stays untrusted data, as the history's name says.
     """
-    feedback = repair_feedback(entry["manifest_digest"], list(entry["report"]["results"]))
-    return [{"id": item["id"], "output": item["output"], "output_truncated": item["output_truncated"]}
+    feedback = repair_feedback(entry["manifest_digest"], list(entry["report"]["results"]),
+                               install_ids=_install_ids(entry["manifest"]))
+    return [{"id": item["id"], "output": item["output"], "output_truncated": item["output_truncated"],
+             **{key: item[key] for key in ("blocked_by", "probable_cause") if key in item}}
             for item in feedback["results"] if item["status"] in _FEEDBACK_ORDER and item["output"]]
+
+
+def _install_ids(manifest: Mapping[str, Any]) -> set[str]:
+    return {str(command.get("id")) for command in manifest.get("install") or [] if isinstance(command, dict)}
 
 
 MAX_FEEDBACK_RESULTS = 16
@@ -845,9 +978,48 @@ FEEDBACK_FIELD_CHARS = 256
 FEEDBACK_ID_CHARS = 128
 # Commands that ran and failed carry the reason; not_run results only say a prerequisite did not pass.
 _FEEDBACK_ORDER = {'fail': 0, 'indeterminate': 1}
+MAX_CAUSE_IDS = 8
+# Words in an install's id that name an action, not what it installs.
+_ACTION_WORDS = frozenset({'install', 'setup', 'build', 'fetch', 'download', 'deps', 'dependencies', 'tools', 'tool',
+                           'toolchain', 'env', 'environment', 'cache', 'extract', 'unpack', 'configure', 'prepare',
+                           'bootstrap', 'system', 'packages', 'package', 'global', 'local', 'dev', 'runtime', 'lib',
+                           'libs', 'bin', 'compile', 'make', 'init', 'link', 'copy', 'write', 'create'})
 
 
-def repair_feedback(rejected_digest: str, results: list[dict[str, Any]]) -> dict[str, Any]:
+def _id_words(identifier: str) -> set[str]:
+    return {word for word in re.split(r'[^a-z0-9]+', identifier.lower()) if len(word) >= 3 and word not in _ACTION_WORDS}
+
+
+def _failure_causes(results: Sequence[Mapping[str, Any]], install_ids: Collection[str]) -> dict[str, dict[str, Any]]:
+    """Failures that probably follow from an install that failed earlier in the same execution.
+
+    Dettmore e2e-54: with install-ruby failed, start-maxio's "env: 'ruby': No such file or directory" and a missing
+    activation path read as separate faults, and repairs spent effort on symptoms. blocked_by names the required
+    installs that had already failed when a check, service or activation step failed; probable_cause names one whose
+    id names what this output reports missing. Both are hints from ids and output words, never a verdict.
+    """
+    failed_installs: list[str] = []
+    causes: dict[str, dict[str, Any]] = {}
+    for result in results:
+        identifier, status = str(result.get('id')), result.get('status')
+        if status in _FEEDBACK_ORDER and failed_installs:
+            words = set(re.findall(r'[a-z0-9]+', str(result.get('output') or '').lower()))
+            named = [install for install in failed_installs if _id_words(install) & words]
+            cause: dict[str, Any] = {}
+            if identifier not in install_ids:
+                cause['blocked_by'] = failed_installs[:MAX_CAUSE_IDS]
+            if named:
+                cause['probable_cause'] = (f'{named[0]} failed earlier in this execution and this output names what it '
+                                           f'installs; repair {named[0]} first')[:FEEDBACK_FIELD_CHARS]
+            if cause:
+                causes[identifier] = cause
+        if identifier in install_ids and status == 'fail' and result.get('required', True):
+            failed_installs.append(identifier)
+    return causes
+
+
+def repair_feedback(rejected_digest: str, results: list[dict[str, Any]], *,
+                    install_ids: Collection[str] = ()) -> dict[str, Any]:
     """The bounded failures a repair's authors see: failed first, then indeterminate, then not_run, shared fairly
     between the parts that own them, and within the serialized byte bound.
 
@@ -869,7 +1041,8 @@ def repair_feedback(rejected_digest: str, results: list[dict[str, Any]]) -> dict
     chosen = sorted(chosen[:MAX_FEEDBACK_RESULTS], key=lambda entry: entry[:2])
     # Copies of a fixed projection, so the journal's rejected report is never altered and every field but the output
     # is bounded: the feedback already names the rejected manifest, so each result's digest is left out.
-    selected = [_feedback_projection(entry[2]) for entry in chosen]
+    causes = _failure_causes(results, install_ids)
+    selected = [{**_feedback_projection(entry[2]), **causes.get(str(entry[2]['id']), {})} for entry in chosen]
     feedback = {'rejected_manifest_digest': rejected_digest, 'results': selected}
 
     def size() -> int:
@@ -879,8 +1052,9 @@ def repair_feedback(rejected_digest: str, results: list[dict[str, Any]]) -> dict
         at = max(range(len(selected)), key=lambda position: len(selected[position].get('output') or ''), default=None)
         if at is None or len(selected[at].get('output') or '') <= floor:
             return False
-        selected[at] = {**selected[at], 'output': selected[at]['output'][:max(floor, len(selected[at]['output']) // 2)],
-                        'output_truncated': True}
+        # From the middle (e2e-54): the runner's leading error excerpt and the output's last lines both stay.
+        output, _ = keep_ends(selected[at]['output'], max(floor, len(selected[at]['output']) // 2))
+        selected[at] = {**selected[at], 'output': output, 'output_truncated': True}
         return True
 
     while size() > FEEDBACK_MAX_BYTES:
@@ -979,7 +1153,8 @@ def prepare_repair(cache: EnvCacheState) -> tuple[EnvironmentManifest, dict[str,
     cache.rendered_activate_sh = cache.rendered_verify_sh = None
     cache.provenance_digest = None
     cache.cache_dir_ready = False
-    feedback = repair_feedback(previous.digest(), entry['report']['results'])
+    feedback = repair_feedback(previous.digest(), entry['report']['results'],
+                               install_ids={command.id for command in previous.install})
     if len(json.dumps(feedback).encode()) > FEEDBACK_MAX_BYTES:
         _refuse('environment repair feedback exceeds its bound')
     return previous, feedback
@@ -1013,7 +1188,8 @@ def repair_context(cache: EnvCacheState) -> tuple[EnvironmentManifest | None, di
         _refuse('environment repair requires a prepared fresh cache generation')
     entry = journal.rejected[-1]
     previous = EnvironmentManifest.model_validate(entry['manifest'])
-    return previous, repair_feedback(previous.digest(), entry['report']['results'])
+    return previous, repair_feedback(previous.digest(), entry['report']['results'],
+                                     install_ids={command.id for command in previous.install})
 
 
 def finish_attempt(cache: EnvCacheState, success: bool, evidence: dict[str, Any] | None,

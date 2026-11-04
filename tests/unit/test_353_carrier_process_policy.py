@@ -36,7 +36,7 @@ def test_private_runtime_policy_does_not_equate_uid_zero_with_capabilities():
     assert 'group' in result['installation_guidance'] and '{cache}' in result['installation_guidance']
     assert result['guest_docker_ready_before_manifest_commands'] is True
     assert result['manifest_execution_order']==['guest_readiness','activation_environment','install_if_requested',
-        'activation_path_validation','service_init_start_health','checks','service_stop','seal_if_install_passed','runtime_teardown']
+        'activation_path_validation','service_init_start_health_if_installs_passed','checks','service_stop','seal_if_install_passed','runtime_teardown']
     assert 'continued daemon health' in result['runtime_ordering_guidance']
 
 

@@ -375,9 +375,28 @@ def test_bounded_repair_excerpt_retains_terminal_error_after_verbose_progress(tm
     assert record_execution_failure(cache,report,cleanup_confirmed=True,now=101)
     result=cache.environment_attempt['rejected'][0]['report']['results'][0]
     assert result['output'].endswith('terminal action failure\n')
-    assert len(result['output'])<=512 and result['output_truncated']
+    assert result['output'].startswith('progress: dependency download\n')  # within the bound, kept whole
+    assert not result['output_truncated']  # nothing was cut, so the record no longer claims it was
     assert 'private-secret-value' not in result['output']
     assert result['status']=='fail' and not cache.cache_dir_ready
+
+
+def test_the_runner_excerpt_at_the_start_of_an_output_survives_the_record_bound(tmp_path):
+    """Dettmore e2e-54: the record kept the last 512 characters, cutting the build-log excerpt the runner puts first,
+    so no repair author saw "OpenSSL library directory could not be found"."""
+    from coordinare.services.environment_repair import OUTPUT_MAX_CHARS
+
+    cache=cache_fixture(tmp_path)
+    started(cache)
+    report=failed_report(cache)
+    report['results'][0]['output']=('[tail of the build log this output names]\nopenssl: library directory could not be found\n'
+                                     '[... output]\n'+'compiling\n'*2000+'BUILD FAILED\n')
+    report['results'][0]['output_truncated']=True
+    assert record_execution_failure(cache,report,cleanup_confirmed=True,now=101)
+    result=cache.environment_attempt['rejected'][0]['report']['results'][0]
+    assert 'library directory could not be found' in result['output'] and result['output'].endswith('BUILD FAILED\n')
+    assert 'characters omitted' in result['output'] and len(result['output'])<=OUTPUT_MAX_CHARS
+    assert result['output_truncated']
 
 
 def test_every_generation_of_the_full_repair_budget_is_a_valid_journal(tmp_path):

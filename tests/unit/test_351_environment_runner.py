@@ -677,7 +677,7 @@ async def test_a_failed_command_gets_the_tail_of_the_build_log_it_names(tmp_path
     in that file for two repair generations."""
     import tempfile
 
-    from coordinare_service_inference.environment.runner import OUTPUT_LIMIT
+    from coordinare_service_inference.environment.runner import FAILED_OUTPUT_LIMIT
 
     monkeypatch.setenv('TEST_SECRET', 'sensitive-value-777')
     with tempfile.NamedTemporaryFile('w', dir='/tmp', prefix='ruby-build.', suffix='.log', delete=False) as handle:
@@ -694,5 +694,100 @@ async def test_a_failed_command_gets_the_tail_of_the_build_log_it_names(tmp_path
         os.unlink(log)
     ruby, ok = report.results
     assert 'psych: Could not be configured' in ruby.output and 'BUILD FAILED' in ruby.output
-    assert 'sensitive-value-777' not in ruby.output and len(ruby.output.encode()) <= OUTPUT_LIMIT
+    assert 'sensitive-value-777' not in ruby.output and len(ruby.output.encode()) <= FAILED_OUTPUT_LIMIT
     assert 'tail of the build log' not in ok.output
+
+
+@pytest.mark.asyncio
+async def test_a_failed_command_gets_the_error_lines_of_every_log_its_build_log_names(tmp_path, monkeypatch):
+    """Dettmore e2e-54: the build log named ext/openssl/mkmf.log (relative to the source tree) and others whose
+    lines say why each extension was not configured; only the build log's own tail reached the repair."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from coordinare_service_inference.environment.runner import FAILED_OUTPUT_LIMIT
+
+    monkeypatch.setenv('TEST_SECRET', 'sensitive-value-888')
+    build = Path(tempfile.mkdtemp(dir='/tmp', prefix='lang-build.'))
+    try:
+        source = build / 'lang-1.2'
+        (source / 'ext' / 'tls').mkdir(parents=True)
+        (source / 'ext' / 'yaml').mkdir(parents=True)
+        (source / 'ext' / 'tls' / 'mkmf.log').write_text(
+            'checking for tls.h... yes\n' * 500 + '/usr/bin/ld: cannot find -ltls (sensitive-value-888)\n')
+        (source / 'ext' / 'yaml' / 'mkmf.log').write_text('conftest.c:1:10: fatal error: yaml.h: No such file\n')
+        log = build / 'build.log'
+        log.write_text('make: entering\n' * 3000 + f'tls:\n\t{source}/ext/tls/extconf.rb:26: library could not be found\n'
+                       '\tCheck ext/tls/mkmf.log for more details.\n'
+                       f'yaml:\n\tCheck {source}/ext/yaml/mkmf.log for more details.\n')
+        failing = f'import sys\nprint("BUILD FAILED")\nprint("See the full build log at {log}")\nsys.exit(1)\n'
+        manifest = contract([{'id': 'lang', 'argv': [sys.executable, '-c', failing]}])
+        report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    finally:
+        shutil.rmtree(build)
+    output = report.results[0].output
+    assert output.startswith('[error lines from the logs this output names]')
+    assert 'cannot find -ltls' in output and 'fatal error: yaml.h: No such file' in output
+    assert 'library could not be found' in output and output.rstrip().endswith('See the full build log at ' + str(log))
+    assert 'sensitive-value-888' not in output and len(output.encode()) <= FAILED_OUTPUT_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_a_named_log_outside_the_allowed_roots_is_never_read(tmp_path):
+    outside = tmp_path / 'elsewhere' / 'secret.log'
+    outside.parent.mkdir()
+    outside.write_text('error: private detail\n')
+    failing = f'import sys\nprint("see {outside}")\nsys.exit(1)\n'
+    manifest = contract([{'id': 'x', 'argv': [sys.executable, '-c', failing]}])
+    report = await run_manifest(manifest, cache=tmp_path / 'cache', repo=tmp_path, scratch=tmp_path / 'scratch')
+    assert 'private detail' not in report.results[0].output
+
+
+@pytest.mark.asyncio
+async def test_a_failed_service_step_gets_the_log_its_start_command_writes(tmp_path):
+    """Dettmore e2e-54: health said only "maxio-mock not ready"; the reason was in the log the start redirected to."""
+    manifest = contract([{"id": "usable", "argv": ["true"]}], services=[{
+        "id": "mock",
+        "start": {"id": "start-mock", "argv": ["sh", "-c", "echo 'bind failed: port in use' > {scratch}/mock.log"]},
+        "health": {"id": "health-mock", "argv": ["sh", "-c", "echo 'mock not ready'; exit 1"]},
+        "stop": {"id": "stop-mock", "argv": ["true"]},
+    }])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    health = next(result for result in report.results if result.id == "health-mock")
+    assert health.status == "fail"
+    assert health.output.startswith("mock not ready\n[tail of ") and "bind failed: port in use" in health.output
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "linux", reason="only the Linux supervisor reports a started service's exit")
+async def test_a_service_that_fails_after_starting_keeps_its_later_output(tmp_path):
+    """Dettmore e2e-54: start-maxio exited 1 with no output; only its first 0.1 s had been kept."""
+    late = "import sys,time\ntime.sleep(0.4)\nprint('late failure reason', flush=True)\nsys.exit(1)\n"
+    manifest = contract([{"id": "usable", "argv": ["true"]}], services=[{
+        "id": "mock",
+        "start": {"id": "start-mock", "argv": [sys.executable, "-c", late]},
+        "health": {"id": "health-mock", "argv": [sys.executable, "-c", "import time\ntime.sleep(1)\nraise SystemExit(1)"]},
+        "stop": {"id": "stop-mock", "argv": ["true"]},
+    }])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path)
+    start = next(result for result in report.results if result.id == "start-mock")
+    assert start.status == "fail" and "late failure reason" in start.output
+
+
+@pytest.mark.asyncio
+async def test_services_never_start_when_a_required_install_failed(tmp_path):
+    """Dettmore e2e-54: with install-ruby failed, the services still started and their failures read as faults of
+    their own. Each service step is not_run and names the failed install; the start never runs."""
+    manifest = contract([{"id": "usable", "argv": ["true"]}],
+                        install=[{"id": "install-lang", "argv": ["false"]}, {"id": "install-tool", "argv": ["true"]}],
+                        services=[{"id": "mock",
+                                   "start": {"id": "start-mock", "argv": ["sh", "-c", "touch {scratch}/started"]},
+                                   "health": {"id": "health-mock", "argv": ["true"]},
+                                   "stop": {"id": "stop-mock", "argv": ["true"]}}])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path, install=True)
+    results = {result.id: result for result in report.results}
+    assert results["install-lang"].status == "fail" and results["install-tool"].status == "pass"
+    for step in ("start-mock", "health-mock", "stop-mock"):
+        assert results[step].status == "not_run" and results[step].output == "required install did not pass: install-lang"
+    assert results["usable"].status == "not_run" and not (tmp_path / "started").exists() and not report.passed
