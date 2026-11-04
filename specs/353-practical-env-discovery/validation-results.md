@@ -596,3 +596,14 @@ Ruling (Jason, 2026-11-04): within one review conversation, a decision already
 given for a finding is kept; a later reply that drops it, or its status, gets it
 back, so a correction redoes only what it names. The validator still judges the
 merged reply.
+
+## Dettmore e2e-53: two groups wrote the same check, 2026-11-04
+
+e2e-53 (`452d65eb`) held in generation 0 at `executable_merge_invalid` after 68
+minutes: c00 and c01 each wrote `bundle exec rspec`, only c01's after
+`c01-db-seed-reference`. Promotion to a shared global check was refused (a global
+check may not depend on a group's check), neither group may name the other's,
+and all three merge rounds rejected the pair. Ruling (Jason, 2026-11-04): two
+different groups' identical checks whose prerequisites differ both stand, since
+they run against different prior state. Copies within one group, copies with
+equal prerequisites, and group copies of a global check are still one obligation.

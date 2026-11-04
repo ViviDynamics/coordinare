@@ -494,9 +494,30 @@ def duplicate_content_pairs(commands: Iterable[Command]) -> list[list[str]]:
     return pairs
 
 
-def validate_unique_content(commands: Iterable[Command]) -> None:
+# A divided manifest's check groups own ids under their own prefix (c00-, c01a-, ...; see the shard construction).
+_CHECK_GROUP = re.compile(r"^(c[0-9]{2,3})[a-z]*-")
+
+
+def _separate_group_copies(first: Command, second: Command) -> bool:
+    """Two groups' identical checks with different prerequisites run against different prior state, so both stand.
+
+    Dettmore e2e-53 (ruling, Jason 2026-11-04): c00 and c01 each wrote `bundle exec rspec`, only c01's after seeding
+    reference data. Neither group may name the other's check and a global check may not depend on a group's, so no
+    merge could fold them and every round rejected the pair. Copies within one group, or with equal prerequisites,
+    are still one obligation.
+    """
+    groups = [match.group(1) if (match := _CHECK_GROUP.match(command.id)) else None for command in (first, second)]
+    return None not in groups and groups[0] != groups[1] and set(first.depends_on) != set(second.depends_on)
+
+
+def validate_unique_content(commands: Iterable[Command], *, checks: bool = False) -> None:
     """One obligation is one command: an identical copy under another id is rejected, listing every pair."""
-    if pairs := duplicate_content_pairs(commands):
+    commands = list(commands)
+    by_id = {command.id: command for command in commands}
+    pairs = duplicate_content_pairs(commands)
+    if checks:
+        pairs = [pair for pair in pairs if not _separate_group_copies(by_id[pair[0]], by_id[pair[1]])]
+    if pairs:
         raise PydanticCustomError("duplicate_command_content",
                                   "identical commands repeat an earlier command's argv, cwd, env and scope; "
                                   "keep one and remove the rest",
@@ -520,7 +541,7 @@ def validate_records(install: list[Command], checks: list[Command], services: li
     if (repeated := _repeated(command.id for command in commands)) or len(commands) > MAX_COMMANDS:
         raise _graph_error('duplicate_command_ids', 'duplicate command IDs or excessive commands', '', repeated)
     validate_unique_content(install)
-    validate_unique_content(checks)
+    validate_unique_content(checks, checks=True)
     # A lifecycle command repeated under another service repeats its obligation; one service's own phases may share content.
     owner = {command.id: service.id for service in services
              for command in [service.init, service.start, service.health, service.stop] if command}

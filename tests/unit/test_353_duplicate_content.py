@@ -70,3 +70,27 @@ def test_a_group_author_sees_its_own_duplicates_in_its_phase():
         ShardChecks.model_validate(part["shard_checks"])
 
     assert sorted(map(sorted, duplicate_error(exc))) == [["c00-a", "c00-b"]]
+
+
+def test_two_groups_copies_with_different_prerequisites_both_stand():
+    """Dettmore e2e-53 (ruling 2026-11-04): c00 and c01 each wrote `bundle exec rspec`, only c01's after seeding; no
+    merge could fold them. Different prerequisites mean different prior state, so both stand; anything else is still
+    one obligation."""
+    rspec = ("bundle", "exec", "rspec")
+    seed, prep = cmd("c01-seed", ["seed"]), cmd("check-prepare", ["prepare"])
+    EnvironmentManifest.model_validate(manifest_data(checks=[
+        prep, seed, cmd("c00-rspec", rspec, depends_on=["check-prepare"]),
+        cmd("c01-rspec", rspec, depends_on=["check-prepare", "c01-seed"])]))
+    for checks, pair in [
+        # Same prerequisites in two groups.
+        ([prep, cmd("c00-rspec", rspec, depends_on=["check-prepare"]), cmd("c01-rspec", rspec, depends_on=["check-prepare"])],
+         ["c00-rspec", "c01-rspec"]),
+        # One group's two copies, prerequisites aside.
+        ([prep, cmd("c00-rspec", rspec), cmd("c00-rspec-again", rspec, depends_on=["check-prepare"])],
+         ["c00-rspec", "c00-rspec-again"]),
+        # A group copy of a global check.
+        ([prep, cmd("rspec-all", rspec), cmd("c00-rspec", rspec, depends_on=["check-prepare"])], ["rspec-all", "c00-rspec"]),
+    ]:
+        with pytest.raises(ValidationError) as exc:
+            EnvironmentManifest.model_validate(manifest_data(checks=checks))
+        assert duplicate_error(exc) == [pair]
