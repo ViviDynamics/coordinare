@@ -10,6 +10,10 @@ from coordinare_service_inference.environment.guest_selection import guest_for
 from coordinare_service_inference.environment.models import ExecutionCapabilities
 from coordinare_service_inference.environment.runtime import RuntimeIdentity, RuntimePolicy
 from coordinare_service_inference.environment.runtime_guest import foreign_platforms, guest_cpus
+from coordinare_service_inference.environment.static_rules import (
+    UNPRIVILEGED_APT_OPTIONS,
+    UNPRIVILEGED_APT_RECIPE,
+)
 
 from coordinare.services.environment_acceptance import (
     accepted_environment,
@@ -95,11 +99,19 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
                 "or activation). Generate any other secret a check needs inside its command, for example "
                 "NAME=$(openssl rand -hex 64) before the test command.",
             "installation_guidance": "Even UID 0 cannot assume permission for user, group or ownership changes. "
-                "Use inspected tools and cache-local dependency artifacts under {cache}. System package managers cannot "
-                "run here: the carrier has no Linux capabilities, so apt-get or apt install, update and download (apt's "
-                "fetch helper needs setgroups), dpkg -i, apk add and dnf or yum install all fail; download a prebuilt "
-                "release archive, or fetch individual .deb files from a package mirror with curl and unpack them under "
-                "{cache} with dpkg-deb -x. Guest service privileges are daemon-owned. "
+                "Use inspected tools and cache-local dependency artifacts under {cache}. System packages cannot be "
+                "installed here: the carrier has no Linux capabilities, so apt-get or apt install, dpkg -i, apk add and "
+                "dnf or yum install all fail, and plain apt-get update and download fail too (apt's fetch helper needs "
+                "setgroups). apt-get can still fetch this carrier's own release packages without privileges, resolving "
+                "dependencies against what the carrier already has, when every apt-get call carries these options "
+                "written out in full (not through a variable): " + UNPRIVILEGED_APT_OPTIONS + ". To add native "
+                "libraries or headers: " + UNPRIVILEGED_APT_RECIPE + ". The last step points each -dev package's "
+                "lib<name>.so link at the carrier's own runtime library when apt did not fetch it because the carrier "
+                "already has it. Prefer this to fetching .deb files by URL: the packages match the carrier's release, "
+                "so they cannot clash with the libraries its own tools load. Load unpacked libraries through an rpath "
+                "(-Wl,-rpath,{cache}/deps/usr/lib/<triplet>), not LD_LIBRARY_PATH in activation: activation applies to "
+                "every later command, and a library there replaces the carrier's own copy for system tools such as "
+                "curl. Guest service privileges are daemon-owned. "
                 "Installation, every check and the service lifecycle share one session_budget; the guest emulates its "
                 "CPU, so container image builds are slow. Prefer an official prebuilt release archive or an extracted "
                 "distribution package over compiling a language runtime, database or other large tool from source; "
@@ -110,12 +122,10 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
                 "For a language runtime, load every native module or library the repository uses (for example its TLS, "
                 "compression, YAML or serialization and FFI modules) the way the repository loads it; for a library, "
                 "link or load it. A runtime build can skip a module it could not configure and still finish, so treat a "
-                "reported skipped or missing module as a failure. When you unpack .deb files with dpkg-deb -x, unpack "
-                "each -dev package's runtime library package beside it (the -dev package holds headers and an .so "
-                "symlink whose target is in the runtime package, such as libexample-dev with libexample3), and point "
-                "include, library, pkg-config and loader paths at the multiarch directories (usr/include/<triplet> and "
-                "usr/lib/<triplet>, for example aarch64-linux-gnu), not only usr/lib. Example, building a runtime "
-                "without privileges: unpack each native dependency's runtime and -dev packages under {cache}/deps; "
+                "reported skipped or missing module as a failure. Point include, library, pkg-config and loader paths "
+                "at the multiarch directories (usr/include/<triplet> and usr/lib/<triplet>, for example "
+                "aarch64-linux-gnu), not only usr/lib. Example, building a runtime without privileges: fetch and unpack "
+                "each native dependency's -dev package under {cache}/deps with the apt recipe above; "
                 "build with CPPFLAGS=\"-I{cache}/deps/usr/include -I{cache}/deps/usr/include/<triplet>\", "
                 "LDFLAGS=\"-L{cache}/deps/usr/lib/<triplet> -Wl,-rpath,{cache}/deps/usr/lib/<triplet>\" and "
                 "PKG_CONFIG_PATH={cache}/deps/usr/lib/<triplet>/pkgconfig, installing under a {cache} prefix; then load "

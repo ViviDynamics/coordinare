@@ -101,6 +101,7 @@ from coordinare.services.environment_source_provider import (
     source_refusal as _source_refusal,
 )
 from coordinare.services.environment_source_transport import execution_input
+from coordinare.services.environment_url_check import missing_install_urls
 from coordinare.services.environment_verification import verification_environment
 from coordinare.services.kubernetes_provenance import parse_summary, validate_summary
 from coordinare.services.kubernetes_verifier import (
@@ -2609,6 +2610,7 @@ class EnvCacheService:
                     fetch=fetch, chat=llm_chat, capabilities=capabilities, declared_services=declared_services,
                     limits=limits, budget=budget, previous_manifest=previous, execution_feedback=feedback, probe_executor=probe_executor, require_preflight=True,
                     execution_source_digest=source_bundle.identity.digest(), entries=entries,
+                    url_checker=missing_install_urls,
                 )
         except TimeoutError:
             budget.error_code, message = _timeout_label(attempt_timer.expired(), budget.stage)

@@ -65,6 +65,55 @@ def test_an_apt_fetch_is_corrected_in_a_carrier_without_capabilities(script):
     assert error.type == 'system_package_install'
 
 
+def _recipe(packages='libssl-dev libyaml-dev'):
+    from coordinare_service_inference.environment.static_rules import UNPRIVILEGED_APT_RECIPE
+
+    return 'set -euo pipefail; ' + UNPRIVILEGED_APT_RECIPE.replace('<packages>', packages).replace('<triplet>', 'aarch64-linux-gnu')
+
+
+def test_the_unprivileged_apt_recipe_is_allowed():
+    """Dettmore e2e-56 guessed Debian mirror URLs (a 404), then fetched another release's libssl3, which shadowed the
+    carrier's own for curl. apt run without its sandbox user and with its state under {cache} needs no capability."""
+    validate_static_rules([_cmd('install-native', 'bash', '-c', _recipe())], NO_ACTIVATION, 'linux/aarch64',
+                          system_packages=False)
+
+
+@pytest.mark.parametrize('script', [
+    # Each unprivileged setting is needed: without the sandbox user, apt calls setgroups; without the directories, it
+    # writes the carrier's read-only system state.
+    'apt-get -o Dir::State={cache}/a -o Dir::Cache={cache}/c update',
+    'apt-get -o APT::Sandbox::User=root -o Dir::Cache={cache}/c update',
+    'apt-get -o APT::Sandbox::User=root -o Dir::State=/var/lib/apt -o Dir::Cache={cache}/c update',
+    'apt-get -o APT::Sandbox::User=_apt -o Dir::State={cache}/a -o Dir::Cache={cache}/c download libpq5',
+    # Settings never make a system install possible.
+    'apt-get -o APT::Sandbox::User=root -o Dir::State={cache}/a -o Dir::Cache={cache}/c install -y libpq-dev',
+    'apt-get -oAPT::Sandbox::User=root install -y gcc',
+    # Review r6 left this unjudged while -o values could be read as the subcommand; -o always takes one.
+    'apt-get -o Debug::NoLocking=1 install gcc',
+    # build-dep installs what it fetches; a path leaving {cache} is not under it.
+    'apt-get -o APT::Sandbox::User=root -o Dir::State={cache}/a -o Dir::Cache={cache}/c build-dep gcc',
+    'apt-get -o APT::Sandbox::User=root -o Dir::State={cache}/../../var/lib/apt -o Dir::Cache={cache}/c update',
+])
+def test_an_apt_fetch_without_every_unprivileged_setting_or_an_apt_install_is_still_corrected(script):
+    error = _rejected([_cmd('install-native', 'bash', '-c', script)])
+    assert error.type == 'system_package_install'
+
+
+def test_the_correction_and_the_guidance_give_the_unprivileged_recipe():
+    from types import SimpleNamespace
+
+    from coordinare_service_inference.environment.static_rules import UNPRIVILEGED_APT_OPTIONS
+
+    from coordinare.services.environment_capabilities import carrier_process_policy
+
+    error = _rejected([_cmd('install-native', 'bash', '-c', 'apt-get update')])
+    assert UNPRIVILEGED_APT_OPTIONS in str(error)
+    resources = SimpleNamespace(max_seconds=7200, cpus=8)
+    guidance = carrier_process_policy(SimpleNamespace(runtime=SimpleNamespace(resources=resources)))['installation_guidance']
+    assert UNPRIVILEGED_APT_OPTIONS in guidance and 'dpkg-deb -x' in guidance and '-xtype l' in guidance
+    assert 'not LD_LIBRARY_PATH in activation' in guidance
+
+
 @pytest.mark.parametrize('script', ['apt-cache policy libpq5', 'apt-get --help', 'apt-get -s install gcc',
                                     'apt-get --print-uris install gcc'])
 def test_apt_requests_that_fetch_nothing_are_allowed(script):
@@ -250,7 +299,6 @@ def test_review_r5_valid_or_unjudged_commands_are_admitted(install, other):
     ('true', "pgrep -f 'w''orker' && echo ready"),
     ('true', 'pgrep -f foo\\ bar && echo ready'),
     ('apt-get -c install download libpq5', 'true'),
-    ('apt-get -o Debug::NoLocking=1 install gcc', 'true'),
 ])
 def test_review_r6_quoted_operands_downloads_and_valued_options_are_admitted(install, other):
     validate_static_rules([_cmd('install-x', 'bash', '-c', install)], NO_ACTIVATION, 'linux/aarch64',

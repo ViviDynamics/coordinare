@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+import httpx
 import structlog
 
 from coordinare.services.conductor_calls import (
@@ -332,12 +333,37 @@ SCHEMA_LIMIT_MARKERS = ("grammar is too large", "schema is too complex")
 
 
 _BAD_REQUEST = 400
+# Dettmore e2e-56 held after five hours on one HTTP 400 whose body was never kept; the same request, sent again, was
+# answered. In a call that carries a provider outage window (environment discovery), a 400 that is not a schema-limit
+# rejection is retried once after this wait; other callers never retry a 4xx. Every 4xx body is logged.
+BAD_REQUEST_RETRY_SECONDS = 30.0
+PROVIDER_ERROR_BODY_CHARS = 2048
+# A request too long for the model is rejected the same way every time it is sent.
+CONTEXT_LIMIT_MARKERS = ("context_length_exceeded", "maximum context length", "context window", "prompt is too long",
+                         "too many tokens")
+
+
+def _error_body(response: Any) -> str:
+    """The start of a provider's error body, for the log; never part of a prompt or the journal."""
+    try:
+        return str(getattr(response, "text", ""))[:PROVIDER_ERROR_BODY_CHARS]
+    except Exception:  # an unread streamed body raises httpx.ResponseNotRead; the status still explains the failure
+        return ""
 
 
 def _schema_limit_rejection(exc: Exception) -> bool:
     response = getattr(exc, "response", None)
-    return (getattr(response, "status_code", None) == _BAD_REQUEST
-            and any(marker in str(getattr(response, "text", "")).lower() for marker in SCHEMA_LIMIT_MARKERS))
+    return getattr(response, "status_code", None) == _BAD_REQUEST and _schema_limit_body(str(getattr(response, "text", "")))
+
+
+def _schema_limit_body(body: str) -> bool:
+    return any(marker in body.lower() for marker in SCHEMA_LIMIT_MARKERS)
+
+
+def _deterministic_rejection(body: str, *, schema: bool) -> bool:
+    """A 400 that resending unchanged cannot cure: a request too long for the model, or a schema the provider cannot
+    compile (which has its own fallback)."""
+    return any(marker in body.lower() for marker in CONTEXT_LIMIT_MARKERS) or (schema and _schema_limit_body(body))
 
 
 class OpenAiApiBackend:
@@ -475,10 +501,24 @@ class OpenAiApiBackend:
         except (ValueError, RecursionError):
             return resp, None, "invalid provider JSON"
 
+    async def _completion(self, payload: dict[str, Any], headers: dict[str, str], mode: str, *,
+                          schema: bool) -> tuple[Any, Any, str | None]:
+        """One request, sent once more after a 400 that resending may cure, when the call carries a provider outage
+        window (environment discovery). Dettmore e2e-56 held on one such 400; sent again, the request was answered."""
+        for resend in (True, False):
+            async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
+                resp, parsed, parse_error = await self._request_completion(
+                    client, f"{self._base_url}/chat/completions", payload, headers, mode)
+            if not (resend and resp.status_code == _BAD_REQUEST and provider_outage_seconds.get() > 0
+                    and not _deterministic_rejection(_error_body(resp), schema=schema)):
+                break
+            log.warning("openai_api_bad_request_retry", body=_error_body(resp))
+            await asyncio.sleep(BAD_REQUEST_RETRY_SECONDS)
+        return resp, parsed, parse_error
+
     async def _post_chat(self, messages: list[dict[str, str]], json_mode: bool, *, response_schema: dict[str, Any] | None = None,
                          transport: str | None = None) -> ModelReply:
         """The HTTP send with its retries. Failures come back as ``error``, never raised."""
-        import httpx
         if not self._api_key:
             log.error("openai_api_missing_key")
             return ModelReply(error="missing api key")
@@ -510,10 +550,9 @@ class OpenAiApiBackend:
         while True:
             attempt += 1
             try:
-                async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
-                    resp, parsed, parse_error = await self._request_completion(
-                        client, f"{self._base_url}/chat/completions", payload, headers,
-                        "stream" if stream else "strict" if response_schema is not None else "plain")
+                resp, parsed, parse_error = await self._completion(
+                    payload, headers, "stream" if stream else "strict" if response_schema is not None else "plain",
+                    schema=response_schema is not None)
                 # Retry only transient server-side conditions; 4xx auth/bad-
                 # request errors won't recover and burning the budget on them
                 # just delays the eventual empty-string return.
@@ -534,7 +573,7 @@ class OpenAiApiBackend:
                 return ModelReply(error=last_error, timed_out=isinstance(exc, httpx.TimeoutException))
             except httpx.HTTPError as exc:
                 # Non-retryable (e.g. 4xx after raise_for_status).
-                log.error("openai_api_http_error", error=str(exc))
+                log.error("openai_api_http_error", error=str(exc), body=_error_body(getattr(exc, "response", None)))
                 limited = response_schema is not None and _schema_limit_rejection(exc)
                 return ModelReply(error=SCHEMA_LIMIT_ERROR if limited else type(exc).__name__)
 

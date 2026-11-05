@@ -214,29 +214,93 @@ def _no_install(word: str) -> bool:
 
 # Subcommands that fetch from a package repository. apt's fetch helper drops to the _apt user with setgroups, which a
 # carrier without Linux capabilities refuses (Dettmore e2e-18 and e2e-22: "Failed to setgroups"), so these fail there
-# even though they install nothing.
+# even though they install nothing, unless they carry UNPRIVILEGED_APT_OPTIONS.
 _PACKAGE_FETCH = {"apt-get": {"update", "download", "source", "build-dep", "changelog"},
                   "apt": {"update", "download", "source", "build-dep", "changelog"},
                   "aptitude": {"update", "download", "changelog"}}
 _DOWNLOAD_ONLY = frozenset({"-d", "--download-only", "--downloadonly"})
 
+# apt run without privileges: no drop to the _apt sandbox user (so no setgroups), no system locks, and its lists and
+# downloads under {cache}, resolving dependencies against the carrier's installed packages. Verified on the Debian 13
+# carrier with --cap-drop ALL and no-new-privileges (Dettmore e2e-56 guessed mirror URLs and fetched another release's
+# libssl3, which then shadowed the carrier's own for curl).
+UNPRIVILEGED_APT_OPTIONS = ("-o APT::Sandbox::User=root -o Debug::NoLocking=1 -o Dir::State={cache}/apt/state "
+                            "-o Dir::State::status=/var/lib/dpkg/status -o Dir::Cache={cache}/apt/cache")
+UNPRIVILEGED_APT_RECIPE = (
+    "mkdir -p {cache}/apt/state/lists/partial {cache}/apt/cache/archives/partial {cache}/deps; "
+    f"apt-get {UNPRIVILEGED_APT_OPTIONS} update; "
+    f"apt-get {UNPRIVILEGED_APT_OPTIONS} install --download-only -y --no-install-recommends <packages>; "
+    'for deb in {cache}/apt/cache/archives/*.deb; do dpkg-deb -x "$deb" {cache}/deps; done; '
+    'find {cache}/deps -xtype l | while read -r l; do t=/usr/lib/<triplet>/$(basename "$(readlink "$l")"); '
+    'if [ -e "$t" ]; then ln -sf "$t" "$l"; fi; done')
+_APT_SETTING = frozenset({"-o", "--option"})
+
+
+def _apt_settings(arguments: Sequence[str]) -> tuple[list[str], list[str]]:
+    """The -o settings (also -oNAME=VALUE and --option=NAME=VALUE) and the other words, in order."""
+    settings: list[str] = []
+    rest: list[str] = []
+    words = iter(arguments)
+    for word in words:
+        if word in _APT_SETTING:
+            settings.append(next(words, ""))
+        elif word.startswith("--option="):
+            settings.append(word.split("=", 1)[1])
+        elif word.startswith("-o") and len(word) > 2 and not word.startswith("--"):
+            settings.append(word[2:])
+        else:
+            rest.append(word)
+    return settings, rest
+
+
+def _under_cache(path: str) -> bool:
+    return path.startswith(_CACHE) and ".." not in path.split("/")
+
+
+def _unprivileged_apt(settings: Sequence[str]) -> bool:
+    """No sandbox user to drop to, and apt's state and downloads under {cache}."""
+    values = {name.lower(): value for name, _, value in (setting.partition("=") for setting in settings)}
+    return (values.get("apt::sandbox::user") == "root" and _under_cache(values.get("dir::state", ""))
+            and _under_cache(values.get("dir::cache", "")))
+
 
 def package_fetch(command: Command) -> bool:
     """An apt-family subcommand that fetches from a repository, or an install asking only to download (apt-get
-    install -d): judged like system_package_install, by the first non-option word after self-contained options."""
+    install -d), without the unprivileged settings: judged like system_package_install, by the first non-option word
+    after self-contained options."""
     for words in _segments(command):
         words = _program(words)
         tool = words[0].rsplit("/", 1)[-1] if words else ""
         if tool not in _PACKAGE_FETCH:
             continue
-        arguments = words[1:]
+        settings, arguments = _apt_settings(words[1:])
         index = next((position for position, word in enumerate(arguments) if not word.startswith("-")), None)
         if index is None or not all(_SELF_CONTAINED.fullmatch(word) for word in arguments[:index]):
             continue
         verb = arguments[index]
-        if verb in _PACKAGE_FETCH[tool] or (verb in _PACKAGE_INSTALL[tool] and any(map(_download_only, arguments))):
+        fetches = verb in _PACKAGE_FETCH[tool] or (verb in _PACKAGE_INSTALL[tool] and any(map(_download_only, arguments)))
+        # build-dep installs what it fetches, so no setting makes it a fetch.
+        if fetches and not (tool == "apt-get" and verb != "build-dep" and _unprivileged_apt(settings)):
             return True
     return False
+
+
+_LITERAL_URL = re.compile(r"https?://\S+")
+# A word built from a variable, a placeholder, a glob or a curl URL range is not the URL the command will request.
+_UNRESOLVED_URL = re.compile(r"[$`{}*<>\\\[\]]")
+
+
+def fetched_urls(command: Command) -> list[str]:
+    """The literal http(s) URLs a command downloads: whole arguments of curl, wget or aria2c in simple commands the
+    lexer can follow, quotes removed. A URL in a heredoc, a comment, a printf template, or one built from a
+    variable is never returned."""
+    urls: list[str] = []
+    for words in _segments(command):
+        words = _program(words)
+        if not words or words[0].rsplit("/", 1)[-1] not in _FETCH:
+            continue
+        urls.extend(word for word in words[1:] if _LITERAL_URL.fullmatch(word) and not _UNRESOLVED_URL.search(word))
+    return urls
 
 
 def _download_only(word: str) -> bool:
@@ -247,15 +311,16 @@ def _download_only(word: str) -> bool:
 
 def system_package_install(command: Command) -> bool:
     """A package manager whose subcommand (its first non-option word) installs, or dpkg -i: an option before the
-    subcommand that takes a separate value hides it, which is an accepted miss."""
+    subcommand that takes a separate value hides it, which is an accepted miss; apt's -o settings are skipped, since
+    the unprivileged apt recipe puts them first."""
     for words in _segments(command):
         words = _program(words)
-        if not words or (verbs := _PACKAGE_INSTALL.get(words[0].rsplit("/", 1)[-1])) is None:
+        if not words or (verbs := _PACKAGE_INSTALL.get(tool := words[0].rsplit("/", 1)[-1])) is None:
             continue
-        arguments = words[1:]
+        arguments = _apt_settings(words[1:])[1] if tool in _PACKAGE_FETCH else words[1:]
         if any(_no_install(word) for word in arguments):
             continue
-        if words[0].rsplit("/", 1)[-1] == "dpkg":
+        if tool == "dpkg":
             if verbs & set(arguments):
                 return True
         else:
@@ -409,10 +474,9 @@ def validate_static_rules(install: Sequence[Command], activation: Activation, pl
     if not system_packages:
         for command in install:
             if system_package_install(command) or package_fetch(command):
-                raise _graph_error("system_package_install", "this carrier cannot run system package managers: it has "
-                                   "no Linux capabilities, so apt installs, apt update and apt download, dpkg -i, apk "
-                                   "and dnf are refused; fetch a prebuilt release archive or individual .deb files with "
-                                   "curl and unpack them under {cache} with dpkg-deb -x", command.id, set())
+                raise _graph_error("system_package_install", "this carrier cannot install system packages: it has "
+                                   "no Linux capabilities, so apt installs, dpkg -i, apk and dnf are refused, and apt "
+                                   "can fetch only without privileges: " + UNPRIVILEGED_APT_RECIPE, command.id, set())
     for command in [*install, *others]:
         if self_matching_process_pattern(command):
             raise _graph_error("self_matching_process_pattern", "a full-command-line pkill or pgrep inside a longer shell "

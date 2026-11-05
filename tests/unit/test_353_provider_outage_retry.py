@@ -12,6 +12,8 @@ from coordinare.services import conducting
 from coordinare.services.conducting import OpenAiApiBackend
 from coordinare.services.model_output_cap import provider_outage_seconds
 
+ORIGINAL_CLIENT = httpx.AsyncClient
+
 
 def backend_with(monkeypatch, statuses: list[int | type[Exception]], sleeps: list[float]) -> OpenAiApiBackend:
     """Replies in turn with each status (or raises each transport error); the clock advances by each sleep."""
@@ -71,14 +73,69 @@ async def test_an_outage_longer_than_the_window_still_ends_the_call(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_a_client_error_is_never_retried(monkeypatch):
+@pytest.mark.parametrize('status', [401, 403, 404, 422])
+async def test_a_client_error_is_never_retried(monkeypatch, status):
     sleeps: list[float] = []
-    backend = backend_with(monkeypatch, [400], sleeps)
+    backend = backend_with(monkeypatch, [status], sleeps)
     token = provider_outage_seconds.set(600.0)
     try:
         reply = await backend._post_chat([{'role': 'user', 'content': 'x'}], True)
     finally:
         provider_outage_seconds.reset(token)
+    assert reply.error and sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_a_bad_request_is_retried_once_and_its_body_logged(monkeypatch):
+    """Dettmore e2e-56 held after five hours on one HTTP 400 whose body was never kept; sent again, it was answered."""
+    from structlog.testing import capture_logs
+
+    sleeps: list[float] = []
+    backend = backend_with(monkeypatch, [400], sleeps)
+    token = provider_outage_seconds.set(600.0)
+    try:
+        with capture_logs() as logs:
+            reply = await backend._post_chat([{'role': 'user', 'content': 'x'}], True)
+    finally:
+        provider_outage_seconds.reset(token)
+    assert reply.error is None and reply.text == '{}' and sleeps == [conducting.BAD_REQUEST_RETRY_SECONDS]
+    assert any(entry['event'] == 'openai_api_bad_request_retry' and 'upstream' in entry['body'] for entry in logs)
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_bad_request_fails_with_its_body_logged(monkeypatch):
+    from structlog.testing import capture_logs
+
+    sleeps: list[float] = []
+    backend = backend_with(monkeypatch, [400, 400], sleeps)
+    token = provider_outage_seconds.set(600.0)
+    try:
+        with capture_logs() as logs:
+            reply = await backend._post_chat([{'role': 'user', 'content': 'x'}], True)
+    finally:
+        provider_outage_seconds.reset(token)
+    assert reply.error and sleeps == [conducting.BAD_REQUEST_RETRY_SECONDS]
+    assert any(entry['event'] == 'openai_api_http_error' and 'upstream' in entry['body'] for entry in logs)
+
+
+@pytest.mark.asyncio
+async def test_a_request_too_long_for_the_model_is_never_resent(monkeypatch):
+    sleeps: list[float] = []
+    backend = backend_with(monkeypatch, [], sleeps)
+    too_long = httpx.MockTransport(lambda request: httpx.Response(400, json={'error': {'code': 'context_length_exceeded'}}))
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: ORIGINAL_CLIENT(transport=too_long, **kwargs))
+    token = provider_outage_seconds.set(600.0)
+    try:
+        reply = await backend._post_chat([{'role': 'user', 'content': 'x'}], True)
+    finally:
+        provider_outage_seconds.reset(token)
+    assert reply.error and sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_outside_discovery_a_bad_request_is_still_never_retried(monkeypatch):
+    sleeps: list[float] = []
+    reply = await backend_with(monkeypatch, [400], sleeps)._post_chat([{'role': 'user', 'content': 'x'}], True)
     assert reply.error and sleeps == []
 
 

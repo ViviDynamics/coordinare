@@ -159,6 +159,7 @@ from coordinare.services.environment_shard_construction import (
     validate_review_part,
 )
 from coordinare.services.environment_shard_scope import AgentContext, AgentTask, _compact, run_agent
+from coordinare.services.environment_url_check import require_missing_urls_named, url_check_evidence
 from coordinare.services.kubernetes_verifier import check_project_files
 
 Fetch = Callable[[str], Awaitable[str | None]]
@@ -630,6 +631,11 @@ class _DiscoveryOptionKeywords(TypedDict):
     require_preflight: NotRequired[bool]
     execution_source_digest: NotRequired[str | None]
     entries: NotRequired[Mapping[str, InventoryEntry] | None]
+    url_checker: NotRequired[UrlChecker | None]
+
+
+# The install URLs a candidate downloads that the daemon found missing (environment_url_check); None checks nothing.
+UrlChecker = Callable[[EnvironmentManifest], Awaitable[list[dict[str, Any]]]]
 
 
 @dataclass(frozen=True)
@@ -645,6 +651,7 @@ class _DiscoveryOptions:
     require_preflight: bool = False
     execution_source_digest: str | None = None
     entries: Mapping[str, InventoryEntry] | None = None
+    url_checker: UrlChecker | None = None
 
 
 
@@ -1208,7 +1215,10 @@ async def _discover_attempt(
                 candidate = await _author_candidate(attempt, divided_build, validate_candidate)
                 manifest = validate_candidate(candidate)
                 prior_manifests.append(manifest)
+                attempt.missing_urls = [{**item, 'reported_before': True} if item['url'] in attempt.reported_urls else item
+                                        for item in await _missing_urls(attempt, manifest)]
                 assessment_data, reviewer_reads = await _review(attempt, divided_build, manifest)
+                attempt.reported_urls.update(item['url'] for item in attempt.missing_urls)
                 assessment = _validated_assessment(assessment_data, reviewer_reads, manifest, require_accept=False,
                                                    ledger=budget.finding_ledger)
                 await _require_delta_accepted(delta, budget, assessment)
@@ -1248,6 +1258,11 @@ class _Attempt:
     delta: DeltaPlan | None = None
     required_ids: dict[str, set[str]] = field(default_factory=dict)
     obligation_ledger: _ObligationLedger = field(default_factory=_ObligationLedger)
+    # The current candidate's install URLs the daemon found missing; its reviewer must report each before accepting,
+    # once per attempt: a URL an earlier manifest was already corrected for is evidence only (reported_before), so a
+    # daemon that is wrong about one URL costs one revision, never the attempt.
+    missing_urls: list[dict[str, Any]] = field(default_factory=list)
+    reported_urls: set[str] = field(default_factory=set)
 
 
 def _delta_plan(discovery: _Inspection, budget: AttemptBudget, prior_manifests: list[EnvironmentManifest]) -> DeltaPlan | None:
@@ -1296,20 +1311,41 @@ async def _revise(attempt: _Attempt, build: DividedConstruction | None, candidat
         await _reopen_for_release(attempt, released)
 
 
+def _url_checked_assessment(missing: Sequence[Mapping[str, Any]], data: dict[str, Any], **kwargs: Any) -> CoverageAssessment:
+    """A whole-manifest reviewer's assessment, refused for correction while it leaves a missing install URL unnamed."""
+    ledger = kwargs.get('ledger')
+    require_missing_urls_named(_CoverageProposal.model_validate(data), missing, ledger.records if ledger is not None else [])
+    return _validated_assessment(data, **kwargs)
+
+
+async def _missing_urls(attempt: _Attempt, manifest: EnvironmentManifest) -> list[dict[str, Any]]:
+    """The candidate's install URLs the daemon found missing, checked before its review; [] without a checker."""
+    checker = attempt.options.url_checker
+    if checker is None:
+        return []
+    stage, attempt.budget.stage = attempt.budget.stage, "url_check"
+    try:
+        return await checker(manifest)
+    finally:
+        attempt.budget.stage = stage
+
+
 async def _review(attempt: _Attempt, build: DividedConstruction | None,
                   manifest: EnvironmentManifest) -> tuple[dict[str, Any], dict[str, str]]:
-    """A fresh reviewer that has read every manifest input; divided into parts when construction was."""
+    """A fresh reviewer that has read every manifest input; divided into parts when construction was. The install URLs
+    the daemon found missing are a daemon fact the reviewer must turn into findings before it can accept."""
     budget, discovery = attempt.budget, attempt.discovery
     reviewer, mandatory_evidence = await _prepare_reviewer(attempt.options.entries or attempt.inventory, attempt.fetch,
                                                            attempt.bounds, budget, manifest)
     reviewer.observe_sources = attempt.construction.observe_sources
     await attempt.construction.observe_sources(reviewer.inputs)
+    missing = attempt.missing_urls
     if build is not None:
-        return await _divided_review(build, attempt, manifest, reviewer)
+        return await _divided_review(build, attempt, manifest, reviewer, missing=missing)
     data, reads = await _phase(
         inspection=reviewer, chat=attempt.chat, budget=budget,
-        validate=partial(_validated_assessment, reviewer_reads=reviewer.inputs, manifest=manifest, require_accept=False,
-                         ledger=budget.finding_ledger),
+        validate=partial(_url_checked_assessment, missing, reviewer_reads=reviewer.inputs, manifest=manifest,
+                         require_accept=False, ledger=budget.finding_ledger),
         messages=[
         {"role": "system", "content": SOURCE_TOOLS + EXECUTABLE_REVIEW_INSTRUCTIONS
             + 'Return the complete envelope matching this schema: ' + _json(assessment_envelope_schema())},
@@ -1320,7 +1356,8 @@ async def _review(attempt: _Attempt, build: DividedConstruction | None,
             "untrusted_execution_history": budget.execution_review_evidence,
             "fixed_ids": sorted(fixed_command_ids(budget.executed_manifests)),
             "finding_ledger": cast("FindingLedger", budget.finding_ledger).model_dump(mode='json'),
-            "finding_responses": [response.model_dump(mode='json') for response in discovery.finding_responses]})},
+            "finding_responses": [response.model_dump(mode='json') for response in discovery.finding_responses],
+            **url_check_evidence(missing)})},
     ])
     return data, reads
 
@@ -1782,7 +1819,7 @@ def review_part_messages(system: str, shared: Mapping[str, Any], own: Mapping[st
 
 
 async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifest: EnvironmentManifest,
-                          reviewer: _Inspection) -> tuple[dict[str, Any], dict[str, str]]:
+                          reviewer: _Inspection, *, missing: Sequence[Mapping[str, Any]] = ()) -> tuple[dict[str, Any], dict[str, str]]:
     """One fresh reviewer per check group and one for the global part, combined into one assessment."""
     budget = attempt.budget
     ledger = cast("FindingLedger", budget.finding_ledger)
@@ -1819,6 +1856,9 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
              'finding_responses': [r for r in responses if r.get('finding_id') in owned.get(owner, [])]}
         # A part's standing also depends on every record its checks depend on, not only on its own records.
         own['dependency_digest'] = dependency_digest(manifest, _dependency_ids(manifest, own['part'], group))
+        # Install commands are the global part's: it alone is told which of their URLs the daemon found missing.
+        if group is None:
+            own.update(url_check_evidence(missing))
         rulings: list[str] | None = None
         if (scope := _declared_scope(attempt.delta, manifest, group)) is not None:
             rulings = sorted({*scope['criteria'], *scope['touched_criteria']})
@@ -1828,7 +1868,8 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
                                   'entry per required_criterion_ids id and no others. An unchanged record keeps its standing.')
         messages = review_part_messages(system, shared, own)
         validate = partial(validate_review_part, inspection=inspection, owned=owned.get(owner, []), capacity=capacities[owner],
-                           known=ReviewIds(obligations, [record.id for record in ledger.records], rulings))
+                           known=ReviewIds(obligations, [record.id for record in ledger.records], rulings,
+                                           missing if group is None else (), ledger.records))
         # Standing: a part with unchanged content keeps its reviewed verdict, without a new judgment.
         key = hashlib.sha256(_json(review_part_messages(system, standing_view(shared), own)).encode()).hexdigest()
         saved = saved_part(budget, 'reviews', owner, key)

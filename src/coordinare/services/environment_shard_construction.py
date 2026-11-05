@@ -47,11 +47,12 @@ from coordinare.services.environment_shard_scope import (
     finding_capacities,
     run_agent,
 )
+from coordinare.services.environment_url_check import missing_url_error, unnamed_missing_commands
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
 
-    from coordinare_service_inference.environment.findings import FindingLedger
+    from coordinare_service_inference.environment.findings import FindingLedger, FindingRecord
     from coordinare_service_inference.environment.inventory import InventoryEntry
     from coordinare_service_inference.environment.models import EnvironmentManifest
     from coordinare_service_inference.environment.scope import ScopeContract, ScopeCriterion
@@ -923,11 +924,15 @@ def _decision_errors(proposal: CoverageAssessmentProposal, *, inspection: Source
 @dataclass(frozen=True)
 class ReviewIds:
     """What a review part may name: the manifest's obligation ids, the ledger's retained finding ids, and, for a repair, the
-    criteria whose part needs one ruling each (``rulings`` is None when the part is not a repair's)."""
+    criteria whose part needs one ruling each (``rulings`` is None when the part is not a repair's). ``missing_urls``
+    are the install URLs the daemon found missing, which the part must name in findings (the ledger's ``records``
+    say which commands an open decision keeps named)."""
 
     obligations: Collection[str] = ()
     retained: Collection[str] = ()
     rulings: Sequence[str] | None = None
+    missing_urls: Sequence[Mapping[str, Any]] = ()
+    records: Sequence[FindingRecord] = ()
 
 
 NO_REVIEW_IDS = ReviewIds()
@@ -937,6 +942,9 @@ def validate_review_part(data: dict[str, Any], *, inspection: SourceInspection, 
                          capacity: int, known: ReviewIds = NO_REVIEW_IDS) -> tuple[CoverageAssessmentProposal, dict[str, str]]:
     proposal = CoverageAssessmentProposal.model_validate(data.get('assessment') if isinstance(data, dict) else data)
     errors: list[dict[str, Any]] = []
+    # A part with no finding capacity left cannot report one, so the daemon fact is evidence only there.
+    if capacity > 0 and (unnamed := unnamed_missing_commands(proposal, known.missing_urls, known.records)):
+        errors.append(missing_url_error(unnamed, known.missing_urls))
     decided = [decision.finding_id for decision in proposal.decisions]
     if len(decided) != len(set(decided)) or set(decided) != set(owned):
         errors.append({'code': 'review_findings_invalid', 'location': ['assessment', 'decisions'],
