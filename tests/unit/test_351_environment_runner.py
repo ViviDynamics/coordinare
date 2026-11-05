@@ -733,14 +733,27 @@ async def test_a_failed_command_gets_the_error_lines_of_every_log_its_build_log_
     assert 'sensitive-value-888' not in output and len(output.encode()) <= FAILED_OUTPUT_LIMIT
 
 
+def _outside_roots():
+    """A directory outside /tmp, the cache and the scratch root: pytest's tmp_path is under /tmp on Linux."""
+    import tempfile
+    from pathlib import Path
+
+    return Path(tempfile.mkdtemp(dir=Path(__file__).resolve().parent, prefix='.outside-roots-'))
+
+
 @pytest.mark.asyncio
 async def test_a_named_log_outside_the_allowed_roots_is_never_read(tmp_path):
-    outside = tmp_path / 'elsewhere' / 'secret.log'
-    outside.parent.mkdir()
-    outside.write_text('error: private detail\n')
-    failing = f'import sys\nprint("see {outside}")\nsys.exit(1)\n'
-    manifest = contract([{'id': 'x', 'argv': [sys.executable, '-c', failing]}])
-    report = await run_manifest(manifest, cache=tmp_path / 'cache', repo=tmp_path, scratch=tmp_path / 'scratch')
+    import shutil
+
+    elsewhere = _outside_roots()
+    try:
+        outside = elsewhere / 'secret.log'
+        outside.write_text('error: private detail\n')
+        failing = f'import sys\nprint("see {outside}")\nsys.exit(1)\n'
+        manifest = contract([{'id': 'x', 'argv': [sys.executable, '-c', failing]}])
+        report = await run_manifest(manifest, cache=tmp_path / 'cache', repo=tmp_path, scratch=tmp_path / 'scratch')
+    finally:
+        shutil.rmtree(elsewhere)
     assert 'private detail' not in report.results[0].output
 
 
@@ -795,15 +808,19 @@ async def test_services_never_start_when_a_required_install_failed(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_log_reached_through_a_symlinked_parent_is_never_read(tmp_path):
-    outside = tmp_path / 'outside'
-    outside.mkdir()
-    (outside / 'secret.log').write_text('error: private detail\n')
-    scratch = tmp_path / 'scratch'
-    scratch.mkdir()
-    (scratch / 'link').symlink_to(outside)
-    failing = f'import sys\nprint("see {scratch}/link/secret.log")\nsys.exit(1)\n'
-    manifest = contract([{'id': 'x', 'argv': [sys.executable, '-c', failing]}])
-    report = await run_manifest(manifest, cache=tmp_path / 'cache', repo=tmp_path, scratch=scratch)
+    import shutil
+
+    outside = _outside_roots()
+    try:
+        (outside / 'secret.log').write_text('error: private detail\n')
+        scratch = tmp_path / 'scratch'
+        scratch.mkdir()
+        (scratch / 'link').symlink_to(outside)
+        failing = f'import sys\nprint("see {scratch}/link/secret.log")\nsys.exit(1)\n'
+        manifest = contract([{'id': 'x', 'argv': [sys.executable, '-c', failing]}])
+        report = await run_manifest(manifest, cache=tmp_path / 'cache', repo=tmp_path, scratch=scratch)
+    finally:
+        shutil.rmtree(outside)
     assert 'private detail' not in report.results[0].output
 
 
