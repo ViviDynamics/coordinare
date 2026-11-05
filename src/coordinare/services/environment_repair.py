@@ -992,6 +992,7 @@ FEEDBACK_ID_CHARS = 128
 # Commands that ran and failed carry the reason; not_run results only say a prerequisite did not pass.
 _FEEDBACK_ORDER = {'fail': 0, 'indeterminate': 1}
 MAX_CAUSE_IDS = 8
+MIN_ID_WORD = 3
 # Words in an install's id that name an action, not what it installs.
 _ACTION_WORDS = frozenset({'install', 'setup', 'build', 'fetch', 'download', 'deps', 'dependencies', 'tools', 'tool',
                            'toolchain', 'env', 'environment', 'cache', 'extract', 'unpack', 'configure', 'prepare',
@@ -1000,7 +1001,7 @@ _ACTION_WORDS = frozenset({'install', 'setup', 'build', 'fetch', 'download', 'de
 
 
 def _id_words(identifier: str) -> set[str]:
-    return {word for word in re.split(r'[^a-z0-9]+', identifier.lower()) if len(word) >= 3 and word not in _ACTION_WORDS}
+    return {word for word in re.split(r'[^a-z0-9]+', identifier.lower()) if len(word) >= MIN_ID_WORD and word not in _ACTION_WORDS}
 
 
 def _failure_causes(results: Sequence[Mapping[str, Any]], install_ids: Collection[str]) -> dict[str, dict[str, Any]]:

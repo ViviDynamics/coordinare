@@ -40,6 +40,7 @@ ACTIVATION = "activation"
 LIFECYCLE = ("init", "start", "health", "stop")
 WIDENING = frozenset({"capability", "service", "activation_path"})
 _CHECK_GROUP = re.compile(r"^(c[0-9]{2,3})[a-z]*-")
+COMMAND_NOT_FOUND = 127  # the shell's exit status for a command it could not find
 _MISSING_EXECUTABLE = re.compile(r"not found|No such file or directory", re.IGNORECASE)
 # An install's own output names missing files of the thing it builds (Dettmore e2e-54: "ls: cannot access
 # .../pg_config: No such file or directory"); only a command the shell could not find is a missing capability there.
@@ -96,7 +97,7 @@ def _root_class(command: Command, kind: str, service: str | None, output: str, e
     if kind == "install" and connectivity_probe(command):
         return "network_gate"
     if kind == "install":
-        return "capability" if exit_code == 127 or _MISSING_COMMAND.search(output) else "command"
+        return "capability" if exit_code == COMMAND_NOT_FOUND or _MISSING_COMMAND.search(output) else "command"
     if _MISSING_EXECUTABLE.search(output):
         return "capability"
     return "command"
