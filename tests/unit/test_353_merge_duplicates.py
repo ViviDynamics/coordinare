@@ -59,6 +59,21 @@ def test_copies_the_parts_could_not_reference_after_a_merge_are_left_to_the_auth
     assert len(merged['checks']) == len(global_data['checks']) + sum(len(part.checks) for part in parts)
 
 
+def test_a_copy_depending_on_the_global_check_it_duplicates_folds_into_it():
+    """Dettmore e2e-55: c00-postgres-ready ran check-postgres-service-ready's command after it (and after two more global
+    checks); the fold read the self-dependency as a cycle, and the author alternated between keeping and removing it."""
+    global_data = {'checks': [_cmd('check-tools', 'tools'), _cmd('check-ready', 'ready')]}
+    c00 = _part([_cmd('c00-ready', 'ready', depends_on=['check-tools', 'check-ready'], required=True),
+                 _cmd('c00-db', 'db', depends_on=['c00-ready'])], {'S1': ['c00-ready', 'c00-db']})
+    folded: dict[str, str] = {}
+    merged = merge_parts(global_data, [c00], folded=folded)
+    by_id = {check['id']: check for check in merged['checks']}
+    assert folded == {'c00-ready': 'check-ready'}
+    assert by_id['check-ready']['depends_on'] == ['check-tools']
+    assert by_id['c00-db']['depends_on'] == ['check-ready']
+    assert merged['criterion_checks'] == {'S1': ['check-ready', 'c00-db']}
+
+
 def test_checks_differing_in_scope_or_env_are_not_merged():
     c00 = _part([_cmd('c00-a', 'x', scope=['dev'])], {'S1': ['c00-a']})
     c01 = _part([_cmd('c01-a', 'x', scope=['ci'])], {'S2': ['c01-a']})

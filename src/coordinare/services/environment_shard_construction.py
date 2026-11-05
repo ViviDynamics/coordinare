@@ -582,7 +582,11 @@ def _fold_result(command: Command, model: Command, group_ids: set[str], graph: M
                  policy: FoldPolicy) -> Command | None:
     """The global check ``model`` after absorbing the identical group ``command``, or None when the fold is unsafe."""
     kept_before = policy.retained.get(command.id)
-    added = [dependency for dependency in command.depends_on if dependency not in model.depends_on]
+    # A copy ordered after the very check it duplicates becomes that check: the dependency is met by being it, not a
+    # cycle. Dettmore e2e-55's c00 wrote c00-node-toolchain depending on check-node-toolchain (and three more such
+    # copies); refused as cycles, removing them broke their pinned ids, and every merge round alternated between the two.
+    added = [dependency for dependency in command.depends_on
+             if dependency not in model.depends_on and dependency != model.id]
     unsafe = (command.id in policy.executed
               # It would change its retained obligation record's scope or required status.
               or (kept_before is not None
