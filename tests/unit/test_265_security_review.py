@@ -141,6 +141,18 @@ async def test_initial_and_recheck_images_are_daemon_pinned(tmp_path: Path) -> N
     service, ec, state, daemon, performer, runtime = setup(tmp_path, [(True, logs(summary())), (True, logs(summary()))])
     state["coordinare_config"].global_config.kubernetes_verifier_image = "trusted/verifier@sha256:" + "d" * 64
     performer._config.image = "symphony/untrusted:latest"
+    # A changed verifier target invalidates prior acceptance. Rebind the fixture
+    # to the newly configured installer/consumer target before testing its pin.
+    from coordinare_service_inference.environment.models import ExecutionCapabilities
+
+    from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
+
+    image = state["coordinare_config"].global_config.kubernetes_verifier_image
+    state["coordinare_config"].global_config.performer_image = image
+    reviewed_cache(ec, capabilities=ExecutionCapabilities(schema_version=1, image_ref=image,
+        platform="linux/x86_64", cache_mount_path="/devenv/sym-abc", install_network="enabled", verify_network="disabled"),
+        source_commit="e" * 40)
+    runtime.results[0] = (True, verification_output(ec.environment_manifest).decode())
     await freeze(service, state, daemon, performer)
     await service.run_full_pass("sym", ec)
     assert [spec.image for spec in runtime.specs] == ["trusted/verifier@sha256:" + "d" * 64] * 3

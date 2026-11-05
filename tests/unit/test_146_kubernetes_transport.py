@@ -83,19 +83,20 @@ def test_protocol_covers_only_what_actually_varies_by_runtime() -> None:
 def test_started_performer_is_not_container_shaped() -> None:
     """FR-001 — the returned type must not presuppose Docker.
 
-    The endpoint is the only thing downstream consumes, which is precisely why a
-    second runtime needs no changes to the HTTP client.
+    Image identity is shared across runtimes; no Docker handle semantics leak
+    into the result consumed by the HTTP client.
     """
     started = StartedPerformer(handle="abc123", endpoint="http://10.244.0.5:8088")
     assert started.handle == "abc123"
     assert started.endpoint == "http://10.244.0.5:8088"
 
     fields = set(StartedPerformer.__dataclass_fields__)
-    assert fields == {"handle", "endpoint"}, (
-        f"StartedPerformer grew {fields - {'handle', 'endpoint'}}; anything runtime-"
+    assert fields == {"handle", "endpoint", "image_ref"}, (
+        f"StartedPerformer grew {fields - {'handle', 'endpoint', 'image_ref'}}; anything runtime-"
         "specific belongs behind the opaque handle, not in the shared shape"
     )
     assert not any("container" in f for f in fields)
+    assert started.image_ref is None
 
     with pytest.raises((AttributeError, TypeError)):
         started.handle = "mutated"  # type: ignore[misc]

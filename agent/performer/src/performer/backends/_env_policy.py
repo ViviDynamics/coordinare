@@ -66,4 +66,11 @@ def build_subprocess_env(
                 seen.add(d)
         env["PATH"] = os.pathsep.join([image_path, *appended])
 
+    # This marker comes only from the trusted runtime lease; manifests cannot
+    # declare COORDINARE_ENV_* variables. The directory contains only its SSH
+    # transport wrapper, leaving image-first selection of other tools intact.
+    runtime_bin = cache_env.get("COORDINARE_ENV_RUNTIME_BIN")
+    if runtime_bin:
+        env["PATH"] = os.pathsep.join(dict.fromkeys([runtime_bin, *env.get("PATH", "").split(os.pathsep)]))
+
     return env

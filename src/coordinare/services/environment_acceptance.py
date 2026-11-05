@@ -3,14 +3,22 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from coordinare_service_inference.environment.models import (
     CoverageAssessment,
     EnvironmentManifest,
+    ExecutionCapabilities,
     VerificationReport,
+    validate_current_coverage,
 )
-from pydantic import ValidationError
+
+from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.environment_obligations import preserve_execution_obligations
+from coordinare.services.environment_runtime_evidence import (
+    validate_failed_installer_runtime,
+    validate_runtime_evidence,
+)
 
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import Command
@@ -32,10 +40,19 @@ def accepted_environment(cache: EnvCacheState) -> EnvironmentManifest | None:
     try:
         manifest = EnvironmentManifest.model_validate(cache.environment_manifest)
         assessment = CoverageAssessment.model_validate(cache.environment_assessment)
-    except (ValidationError, TypeError):
+        validate_current_coverage(manifest, assessment)
+        if cache.environment_attempt is not None:
+            if not isinstance(cache.environment_attempt, dict):
+                return None
+            preserve_execution_obligations(manifest, cache.environment_attempt.get('rejected', []))
+    except (ValueError, TypeError, EnvironmentDiscoveryError):
         return None
     if (
-        assessment.verdict != "accept"
+        not manifest.inventory_digest
+        or assessment.inventory_digest != manifest.inventory_digest
+        or not manifest.capabilities_digest
+        or assessment.capabilities_digest != manifest.capabilities_digest
+        or assessment.verdict != "accept"
         or assessment.manifest_digest != manifest.digest()
         or assessment.source_commit != manifest.source_commit
         or cache.bootstrap_commit_sha != manifest.source_commit
@@ -94,12 +111,14 @@ def _required_commands(manifest: EnvironmentManifest, scope: str) -> list[Comman
     return required
 
 
-def _validate_execution_results(report: VerificationReport, manifest: EnvironmentManifest) -> None:
+def _validate_execution_results(report: VerificationReport, manifest: EnvironmentManifest, *, installer: bool = False) -> None:
     by_id = {result.id: result for result in report.results}
     if len(by_id) != len(report.results):
         message = "required execution evidence contains duplicate checks"
         raise ValueError(message)
     required = _required_commands(manifest, report.scope)
+    if installer:
+        required.extend(command for command in manifest.install if command.required)
     digest = manifest.digest()
     if not required or any(
         check.id not in by_id or not by_id[check.id].required
@@ -116,8 +135,20 @@ def _validate_execution_results(report: VerificationReport, manifest: Environmen
         raise ValueError(message)
 
 
-def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True) -> VerificationReport:
+def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True,
+                     runtime_phase: Literal['installer', 'consumer'] = 'consumer') -> VerificationReport:
     """Validate parent-collected results; success text cannot substitute for execution."""
+    return _bound_execution_report(text, cache, publish=publish, runtime_phase=runtime_phase)
+
+
+def failed_installer_report(text: str, cache: EnvCacheState) -> VerificationReport:
+    """Retain failed installer evidence for repair; never publish readiness or a receipt."""
+    return _bound_execution_report(text, cache, publish=False, runtime_phase='installer', failed_installer=True)
+
+
+def _bound_execution_report(text: str, cache: EnvCacheState, *, publish: bool,
+                            runtime_phase: Literal['installer', 'consumer'],
+                            failed_installer: bool = False) -> VerificationReport:
     manifest = accepted_environment(cache)
     if manifest is None:
         message = "required accepted environment contract is missing"
@@ -132,7 +163,28 @@ def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True) -
     if report.manifest_digest != manifest.digest():
         message = "required execution evidence has the wrong manifest identity"
         raise ValueError(message)
-    _validate_execution_results(report, manifest)
+    target = ExecutionCapabilities.model_validate(cache.environment_capabilities)
+    if target.digest() != manifest.capabilities_digest or report.platform != target.platform:
+        message = 'required execution runtime target differs from accepted capabilities'
+        raise ValueError(message)
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
+
+    try:
+        source = ExecutionSourceIdentity.model_validate(cache.environment_execution_source)
+    except ValueError as exc:
+        message = 'required execution source identity is missing; rebuild the cache'
+        raise ValueError(message) from exc
+    if source.source_commit != manifest.source_commit or report.execution_source_digest != source.digest():
+        message = 'required execution source identity differs'
+        raise ValueError(message)
+    _validate_execution_results(report, manifest, installer=runtime_phase == 'installer')
+
+    if failed_installer:
+        if not any(result.required and result.status == 'fail' for result in report.results):
+            raise ValueError('failed installer evidence requires an actual required failure')
+        validate_failed_installer_runtime(report, manifest, cache)
+    else:
+        validate_runtime_evidence(report, manifest, cache, phase=runtime_phase)
     if publish:
         cache.environment_verification = report.model_dump(mode="json")
     return report
@@ -140,12 +192,17 @@ def execution_report(text: str, cache: EnvCacheState, *, publish: bool = True) -
 
 def saved_execution_accepted(cache: EnvCacheState) -> bool:
     """Persisted flags cannot claim readiness without complete bound execution evidence."""
+    if cache.environment_source_owner is not None or (cache.environment_attempt or {}).get("source_owner") is not None:
+        return False
     evidence = cache.environment_verification
     if not isinstance(evidence, dict):
         return False
     data = dict(evidence)
     try:
-        immutable_verifier_image(data.pop("image_ref", ""))
+        image = immutable_verifier_image(data.pop("image_ref", ""))
+        target = ExecutionCapabilities.model_validate(cache.environment_capabilities)
+        if image != target.image_ref:
+            return False
         return bool(execution_report(json.dumps(data), cache, publish=False).passed)
     except (ValueError, TypeError):
         return False

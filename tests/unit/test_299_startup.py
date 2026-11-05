@@ -122,7 +122,7 @@ def test_http_servers_leave_signal_ownership_to_process(monkeypatch: pytest.Monk
 @pytest.mark.asyncio
 async def test_hung_initializer_exits_and_liveness_fails(monkeypatch) -> None:
     config = ProjectConfiguration(github_org="example", human_reviewers=["operator"],
-                                  github_token=TOKEN, startup_deadline_seconds=0.03)
+                                  github_token=TOKEN)
     daemon = _daemon()
     servers = []
     entered = asyncio.Event()
@@ -147,26 +147,42 @@ async def test_hung_initializer_exits_and_liveness_fails(monkeypatch) -> None:
         finally:
             cancelled.set()
 
+    watch_startup = app_main._watch_startup
+
+    async def expire_after_initializer(daemon, deadline):
+        # Exercise a hung initializer, independent of listener setup speed.
+        # The real watchdog and liveness endpoint share this expired deadline.
+        await entered.wait()
+        deadline = min(deadline, app_main.monotonic())
+        daemon.state["startup_deadline_at"] = deadline
+        await watch_startup(daemon, deadline)
+
     monkeypatch.setattr(app_main, "CoordinareDaemon", MagicMock(return_value=daemon))
     monkeypatch.setattr(app_main, "StateStore", MagicMock())
     monkeypatch.setattr(app_main, "check_port_available", MagicMock())
     monkeypatch.setattr(app_main, "ManagedServer", FakeServer)
     monkeypatch.setattr(app_main, "_initialize_daemon", hung)
+    monkeypatch.setattr(app_main, "_watch_startup", expire_after_initializer)
     error_log = MagicMock()
     monkeypatch.setattr(app_main.logger, "error", error_log)
     task = asyncio.create_task(app_main._run_with_events(config, None, None, "legacy", MagicMock()))
-    await asyncio.wait_for(entered.wait(), WAIT_SECONDS)
-    with pytest.raises(app_main.RuntimeExecutionError, match="startup"):
-        await asyncio.wait_for(task, WAIT_SECONDS)
-    assert cancelled.is_set()
-    assert any(call.args[0] == "startup.deadline_exceeded" for call in error_log.call_args_list)
-    health = next(server.config.app for server in servers if server.config.port == config.health_check_port)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=health), base_url="http://health") as client:
-        response = await client.get("/live")
-        assert response.status_code == 503
-        assert response.json()["status"] == "startup_timeout"
-        daemon.state["startup_complete"] = True
-        assert (await client.get("/live")).status_code == 200
+    try:
+        await asyncio.wait_for(entered.wait(), WAIT_SECONDS)
+        with pytest.raises(app_main.RuntimeExecutionError, match="startup"):
+            await asyncio.wait_for(task, WAIT_SECONDS)
+        assert cancelled.is_set()
+        assert any(call.args[0] == "startup.deadline_exceeded" for call in error_log.call_args_list)
+        health = next(server.config.app for server in servers if server.config.port == config.health_check_port)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=health), base_url="http://health") as client:
+            response = await client.get("/live")
+            assert response.status_code == 503
+            assert response.json()["status"] == "startup_timeout"
+            daemon.state["startup_complete"] = True
+            assert (await client.get("/live")).status_code == 200
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -270,10 +286,14 @@ def test_startup_deadline_defaults_to_ten_minutes() -> None:
 @pytest.mark.asyncio
 async def test_event_store_shutdown_is_bounded(monkeypatch) -> None:
     config = ProjectConfiguration(github_org="example", human_reviewers=["operator"], github_token=TOKEN)
+    entered = asyncio.Event()
     cancelled = asyncio.Event()
+    close_tasks = []
 
     async def stuck_close():
+        close_tasks.append(asyncio.current_task())
         try:
+            entered.set()
             await asyncio.Event().wait()
         finally:
             cancelled.set()
@@ -283,8 +303,17 @@ async def test_event_store_shutdown_is_bounded(monkeypatch) -> None:
     monkeypatch.setattr(app_main, "_run_with_events", AsyncMock())
     monkeypatch.setattr(app_main, "load_unexpanded_config", MagicMock(return_value={}))
     monkeypatch.setattr(app_main, "EVENT_STORE_SHUTDOWN_SECONDS", 0.01, raising=False)
-    await asyncio.wait_for(app_main._run(config), 0.1)
-    await asyncio.wait_for(cancelled.wait(), WAIT_SECONDS)
+    task = asyncio.create_task(app_main._run(config))
+    try:
+        await asyncio.wait_for(entered.wait(), WAIT_SECONDS)
+        # Bound shutdown itself; cold startup work is not part of this limit.
+        await asyncio.wait_for(task, 0.1)
+        await asyncio.wait_for(cancelled.wait(), WAIT_SECONDS)
+    finally:
+        for owned in [task, *close_tasks]:
+            if not owned.done():
+                owned.cancel()
+        await asyncio.gather(task, *close_tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -494,7 +523,7 @@ async def test_the_daemon_preflight_accepts_its_own_bound_dashboard_port(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_the_daemon_marks_its_dashboard_before_the_runtime_preflight(monkeypatch) -> None:
+async def test_the_daemon_marks_its_dashboard_before_the_runtime_preflight(monkeypatch, tmp_path) -> None:
     from coordinare import launch_preflight
 
     seen: list[bool] = []
@@ -511,6 +540,7 @@ async def test_the_daemon_marks_its_dashboard_before_the_runtime_preflight(monke
     monkeypatch.setattr(app_main, "_bootstrap_services", AsyncMock())
     config = ProjectConfiguration(
         github_org="example", human_reviewers=["operator"], github_token=TOKEN, dashboard_port=0,
+        state_file_path=tmp_path / "state.json",
     )
     with pytest.raises((app_main.RuntimeExecutionError, SystemExit)):
         await asyncio.wait_for(app_main._run(config), timeout=20)

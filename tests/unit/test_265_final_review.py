@@ -8,6 +8,10 @@ from typing import Any
 
 import pytest
 from coordinare_service_inference.cache_provenance import MAX_SCRIPT_BYTES, RESULT_SENTINEL
+from coordinare_service_inference.environment.source_payload import (
+    SOURCE_FILE_MAX_BYTES,
+    encode_sources,
+)
 
 from coordinare.services.env_provenance import DEFAULT_LIMITS
 from coordinare.services.kubernetes_provenance import parse_summary
@@ -102,10 +106,20 @@ async def test_log_api_receives_both_bounds() -> None:
     assert detail == "unterminated"
 
 
+def _maximum_project(character: str) -> dict[str, str]:
+    # Fill the aggregate document using individually admissible source files.
+    width = len(json.dumps(character)[1:-1])
+    project = {f"part-{index}": character * (SOURCE_FILE_MAX_BYTES // width) for index in range(64)}
+    encoded = json.dumps(project, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    excess = len(encoded) - PROJECT_FILES_MAX_BYTES
+    if excess > 0:
+        project["part-63"] = project["part-63"][:-((excess + width - 1) // width)]
+    assert PROJECT_FILES_MAX_BYTES - width < encode_sources(project).size_bytes <= PROJECT_FILES_MAX_BYTES
+    return project
+
+
 def test_maximum_legal_project_and_verify_inputs_fit_with_margin() -> None:
-    project = {"Gemfile": ""}
-    overhead = len(json.dumps(project).encode())
-    project["Gemfile"] = "x" * (PROJECT_FILES_MAX_BYTES - overhead)
+    project = _maximum_project("x")
     pod = _manifest(project_files=project, verify_text="\0" * MAX_SCRIPT_BYTES)
     assert len(json.dumps(pod).encode()) <= VERIFIER_POD_MAX_BYTES - POD_MARGIN_BYTES
 
@@ -140,11 +154,11 @@ async def test_verify_pod_must_be_gone_before_walking(tmp_path: Path, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_runtime_runs_two_identically_hardened_pods_in_order(tmp_path: Path) -> None:
+async def test_runtime_runs_two_hardened_pods_with_same_cache_isolation_in_order(tmp_path: Path) -> None:
     class IsolatedCore(_FakeCoreV1):
         def create_namespaced_pod(self, namespace: str, body: dict[str, Any]) -> None:
             assert len(self.created) == len(self.deleted)
-            super().create_namespaced_pod(namespace, body)
+            return super().create_namespaced_pod(namespace, body)
 
         def read_namespaced_pod_log(self, **kwargs: Any) -> str:
             container = self.created[-1]["body"]["spec"]["containers"][0]
@@ -162,18 +176,23 @@ async def test_runtime_runs_two_identically_hardened_pods_in_order(tmp_path: Pat
     assert ec.verifier_provenance == summary()
     assert len(core.created) == len(core.deleted) == 2
     verify, walk = [item["body"]["spec"] for item in core.created]
-    assert verify["securityContext"] == walk["securityContext"]
-    for key in ("securityContext", "volumeMounts"):
-        assert verify["containers"][0][key] == walk["containers"][0][key]
+    assert verify["securityContext"] == {**walk["securityContext"], "fsGroup": 10001}
+    assert "fsGroup" not in walk["securityContext"]
+    assert verify["containers"][0]["securityContext"] == walk["containers"][0]["securityContext"]
+    cache_mounts = [next(mount for mount in spec["containers"][0]["volumeMounts"]
+                         if mount["name"] == "devenv-cache") for spec in (verify, walk)]
+    assert cache_mounts[0] == cache_mounts[1]
+    assert cache_mounts[0]["readOnly"] is True
+    scratch = next(mount for mount in verify["containers"][0]["volumeMounts"] if mount["name"] == "verifier-scratch")
+    assert scratch["mountPath"] == "/tmp"
+    assert not scratch.get("readOnly", False)
 
 
 @pytest.mark.parametrize("walk_only", [False, True])
 def test_maximum_inputs_with_escaping_fit_both_pods(walk_only: bool) -> None:
     script = "\0" * MAX_SCRIPT_BYTES
-    project_overhead = len(json.dumps({"Gemfile": ""}).encode())
-    escaped_chars = (PROJECT_FILES_MAX_BYTES - project_overhead) // len(r"\u0000")
     pod = _manifest(walk_only=walk_only, activate_text=script, verify_text="" if walk_only else script,
-                    project_files={} if walk_only else {"Gemfile": "\0" * escaped_chars})
+                    project_files={} if walk_only else _maximum_project("\0"))
     assert len(json.dumps(pod).encode()) <= VERIFIER_POD_MAX_BYTES - POD_MARGIN_BYTES
 
 

@@ -255,6 +255,10 @@ class TranscriptBuffer:
     def dropped_records(self) -> int:
         return self._dropped_records
 
+    def add_secret_values(self, values: Iterable[str]) -> None:
+        """Redact values created during the job, such as generated local service credentials."""
+        self._env_secrets.extend(value for value in values if value)
+
     def _secret_values(self) -> list[str]:
         values = list(self._env_secrets)
         if self._secrets is not None:
@@ -396,6 +400,13 @@ _transcript_var: contextvars.ContextVar[TranscriptBuffer | None] = contextvars.C
     "_transcript",
     default=None,
 )
+
+
+def redact_job_values(values: Iterable[str]) -> None:
+    """Add job-created secret values to the active transcript's exact-value redaction."""
+    buffer = _transcript_var.get()
+    if buffer is not None:
+        buffer.add_secret_values(values)
 
 
 def set_active_buffer(

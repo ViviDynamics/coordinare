@@ -384,6 +384,22 @@ class TestScoreModelContract:
             {"question": "Which ORM?", "answer": "ActiveRecord"},
         ]
 
+    @pytest.mark.asyncio
+    async def test_runtime_receipt_and_original_expiry_survive_dispatch(self) -> None:
+        from performer.models import Score
+
+        receipt = {'schema_version': 1, 'manifest_digest': 'a'*64, 'source_digest': 'b'*64,
+                   'runtime_digest': 'c'*64, 'sealed': True,
+                   'artifacts': [{'path': 'guest.disk', 'sha256': 'd'*64, 'bytes': 4096}]}
+        context = {'id': 'X', 'title': 'Runtime', 'description': 'Bound private runtime',
+                   'acceptance_criteria': [], 'repo_url': 'https://github.com/org/repo.git', 'branch': 'feature',
+                   'environment_runtime_artifacts': receipt, 'environment_attempt_expires_at': 1792512000.0}
+        transport = _CaptureTransport()
+        await AgentService(transport).dispatch_card(context)
+        score = Score(**transport.captured_payload)
+        assert score.environment_runtime_artifacts == receipt
+        assert score.environment_attempt_expires_at == 1792512000.0
+
     def test_score_defaults_for_minimal_payload(self) -> None:
         """Score with only required fields should have safe defaults."""
         from performer.models import Score

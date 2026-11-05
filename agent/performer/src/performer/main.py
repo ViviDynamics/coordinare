@@ -1,6 +1,8 @@
 """Performer entrypoint — wire protocol message loop."""
 from __future__ import annotations
 
+from coordinare_service_inference.environment.runtime_cli import run_cli
+
 import asyncio
 import json as _json_module
 import shlex
@@ -1626,42 +1628,16 @@ async def _stop_orchestration_proxy(perf: Performance) -> None:
             pass
 
 
-def _require_bootstrap_integrity(result: dict[str, Any]) -> None:
-    if result.get("integrity_failure"):
-        raise ValueError(result["reason"])
-
-
-async def _prepare_prose_bootstrap(score: Score, stand: Stand) -> None:
-    """Install the accepted contract before giving a repair harness the workspace."""
-    from performer.workflows.bootstrap_environment import BootstrapEnvironment
-
-    stand.bootstrap_environment = BootstrapEnvironment(stand, score)
-    snapshot = await stand.bootstrap_environment.run("snapshot")
-    if not snapshot["passed"]:
-        from performer.environment_contract import close_environment
-
-        await close_environment(stand)
-        cleanup_stand(stand)
-        raise ValueError(snapshot["reason"])
-    # A failed deterministic installation is repairable by the harness.
-    try:
-        installed = await stand.bootstrap_environment.run("install")
-        _require_bootstrap_integrity(installed)
-    except BaseException:
-        from performer.environment_contract import close_environment
-
-        await close_environment(stand)
-        cleanup_stand(stand)
-        raise
-    if not installed["passed"]:
-        score.persona_instructions += "\nRepair the accepted environment checks: " + installed.get("reason", "")
-
-
 def _require_dispatch_environment(score: Score) -> None:
     if score.role == "env_bootstrap" or score.env_cache_path:
         from performer.environment_contract import accepted_manifest
 
         accepted_manifest(score)
+    if score.role == "env_bootstrap":
+        if score.workflow.strip() not in {"", "env_bootstrap"}:
+            message = "reviewed bootstrap requires the env_bootstrap workflow"
+            raise ValueError(message)
+        score.workflow = "env_bootstrap"
 
 
 async def handle_dispatch(
@@ -1685,8 +1661,6 @@ async def handle_dispatch(
     apply_github_url_override(score.github_graphql_url, "GITHUB_GRAPHQL_URL", settings)
 
     stand: Stand = await clone_repository(score)
-    if role == "env_bootstrap" and score.workflow != "env_bootstrap":
-        await _prepare_prose_bootstrap(score, stand)
     try:
         orchestration_proxy = await _launch_dispatch_proxy(
             score, backend_name, model_name, stand, settings,
@@ -2713,77 +2687,79 @@ async def run_loop() -> None:
 
     line_iter = iter_lines_chunked(reader, timeout=_watchdog_remaining)
 
-    while True:
-        try:
-            raw = await line_iter.__anext__()
-        except StopAsyncIteration:
-            break
-        except asyncio.TimeoutError:
-            log.warning("session watchdog fired — stopping backend",
-                        session_id=perf.session_id if perf else "")
-            await _watchdog_fired(perf, settings)
-            break
-        except Exception:  # pragma: no cover
-            break
+    try:
+        while True:
+            try:
+                raw = await line_iter.__anext__()
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                log.warning("session watchdog fired — stopping backend",
+                            session_id=perf.session_id if perf else "")
+                await _watchdog_fired(perf, settings)
+                break
+            except Exception:  # pragma: no cover
+                break
 
-        line = raw.decode(errors="replace").strip()
-        if not line:
-            continue
+            line = raw.decode(errors="replace").strip()
+            if not line:
+                continue
 
-        msg, invalid = _parse_message(line)
-        if invalid is not None:
-            _write_response(invalid)
-            continue
+            msg, invalid = _parse_message(line)
+            if invalid is not None:
+                _write_response(invalid)
+                continue
 
-        try:
-            if msg.action == "health":
-                resp = handle_health(settings)
+            try:
+                if msg.action == "health":
+                    resp = handle_health(settings)
 
-            elif msg.action == "dispatch":
-                # Note: no per-dispatch timeout here — AGENT_TIMEOUT is the
-                # end-to-end session budget enforced by the watchdog above.
-                # A separate clone/setup timeout lives inside _run_git().
-                resp, new_perf = await _dispatch_action(msg, settings, perf)
-                if new_perf is not None:
-                    perf = new_perf
+                elif msg.action == "dispatch":
+                    # Note: no per-dispatch timeout here — AGENT_TIMEOUT is the
+                    # end-to-end session budget enforced by the watchdog above.
+                    # A separate clone/setup timeout lives inside _run_git().
+                    resp, new_perf = await _dispatch_action(msg, settings, perf)
+                    if new_perf is not None:
+                        perf = new_perf
 
-            elif msg.action == "status":
-                resp = await _status_action(msg, settings, perf)
+                elif msg.action == "status":
+                    resp = await _status_action(msg, settings, perf)
 
-            elif msg.action == "relay_feedback":
-                resp = await handle_relay_feedback(msg, perf)
+                elif msg.action == "relay_feedback":
+                    resp = await handle_relay_feedback(msg, perf)
 
-            else:  # pragma: no cover — Literal[action] makes this unreachable
+                else:  # pragma: no cover — Literal[action] makes this unreachable
+                    resp = PerformerResponse(
+                        status="error",
+                        session_id=msg.session_id,
+                        reason=f"unknown action: {msg.action}",
+                    )
+
+            except Exception as exc:  # pragma: no cover
+                log.exception("unhandled error in run_loop")
                 resp = PerformerResponse(
                     status="error",
                     session_id=msg.session_id,
-                    reason=f"unknown action: {msg.action}",
+                    reason=f"internal error: {type(exc).__name__}: {exc}",
                 )
 
-        except Exception as exc:  # pragma: no cover
-            log.exception("unhandled error in run_loop")
-            resp = PerformerResponse(
-                status="error",
-                session_id=msg.session_id,
-                reason=f"internal error: {type(exc).__name__}: {exc}",
-            )
+            _write_response(resp)
 
-        _write_response(resp)
+            if _loop_should_exit(resp, msg, perf):
+                break
+    finally:
+        # Cleanup regardless of outcome
+        if perf is not None:
+            try:
+                await perf.backend.stop()
+            except Exception:  # pragma: no cover
+                pass
+            await _stop_orchestration_proxy(perf)
+            from performer.environment_contract import close_environment
 
-        if _loop_should_exit(resp, msg, perf):
-            break
+            await close_environment(perf.stand)
+            cleanup_stand(perf.stand)
 
-    # Cleanup regardless of outcome
-    if perf is not None:
-        try:
-            await perf.backend.stop()
-        except Exception:  # pragma: no cover
-            pass
-        await _stop_orchestration_proxy(perf)
-        from performer.environment_contract import close_environment
-
-        await close_environment(perf.stand)
-        cleanup_stand(perf.stand)
 
 
 def _parse_message(
@@ -3242,4 +3218,4 @@ def main() -> None:  # pragma: no cover
     if args.serve:
         _run_server(args.port)
         return
-    asyncio.run(run_loop())
+    run_cli(run_loop())

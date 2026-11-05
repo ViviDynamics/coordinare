@@ -4,7 +4,19 @@ import asyncio
 import fnmatch
 import inspect
 import re
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
+
+from coordinare_service_inference.environment.execution_source import read_source_reference
+
+from coordinare.services.environment_source_provider import (
+    GitHubSourceRequest,
+    acquire_github_source,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
 from urllib.parse import quote
 
 import aiohttp
@@ -2538,6 +2550,16 @@ class GitHubService(CardIdentityMap):
             return []
         return [n for n in nodes if isinstance(n, dict)]
 
+    async def prepare_execution_source(
+        self, owner: str, repo: str, *, commit: str, destination: Path, deadline: float,
+    ) -> ExecutionSourceBundle:
+        """Read a complete pinned source tree through APIs, without a daemon clone."""
+
+        return await acquire_github_source(
+            GitHubSourceRequest(self._rest_api_base(), await self._current_token(), owner, repo, commit),
+            destination=destination, deadline=deadline,
+        )
+
     async def get_repository_paths(
         self, owner: str, repo: str, *, ref: str, max_entries: int = 100_000,
     ) -> list[str]:
@@ -2576,6 +2598,7 @@ class GitHubService(CardIdentityMap):
             message = "repository inventory is invalid or exceeds limit"
             raise GitHubError(message)
         paths: set[str] = set()
+        links: set[str] = set()
         for entry in entries:
             if not isinstance(entry, dict) or entry.get("type") not in {"blob", "tree"}:
                 message = "repository inventory contains unsupported entry"
@@ -2593,20 +2616,28 @@ class GitHubService(CardIdentityMap):
                     message = "repository inventory contains duplicate path"
                     raise GitHubError(message)
                 paths.add(path)
+                if entry.get("mode") == "120000":
+                    links.add(path)
+        self._execution_source_link_inventory = (owner, repo, ref, frozenset(links))
         return sorted(paths)
 
     async def get_file_content(
         self, owner: str, repo: str, path: str, ref: str = "HEAD",
     ) -> str | None:
-        expression = f"{ref}:{path}"
-        result = await self._guarded_execute(
-            GET_FILE_CONTENT_QUERY,
-            {"owner": owner, "repo": repo, "expression": expression},
-        )
-        obj = result.get("repository", {}).get("object")
-        if isinstance(obj, dict):
-            return obj.get("text")
-        return None
+
+
+        inventory = getattr(self, '_execution_source_link_inventory', None)
+        links = inventory[3] if inventory is not None and inventory[:3] == (owner, repo, ref) else frozenset()
+        async def fetch(current: str) -> str | None:
+            result = await self._guarded_execute(
+                GET_FILE_CONTENT_QUERY,
+                {'owner':owner, 'repo':repo, 'expression':f'{ref}:{current}'},
+            )
+            obj = result.get('repository', {}).get('object')
+            content = obj.get('text') if isinstance(obj, dict) else None
+            return content if isinstance(content, str) else None
+
+        return cast("str | None", await read_source_reference(path, links, fetch))
 
     async def get_file_blob_sha(
         self, owner: str, repo: str, path: str, ref: str = "HEAD",

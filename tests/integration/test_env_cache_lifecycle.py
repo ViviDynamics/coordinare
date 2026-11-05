@@ -28,7 +28,7 @@ from coordinare.services.env_cache import (
     get_env_volume_for_symphony,
     sanitise_symphony_name,
 )
-from tests.unit.env_manifest_fixture import verification_output
+from tests.unit.env_manifest_fixture import record_verified_cache_fixture, verification_output
 from tests.unit.test_060_env_cache import (
     _accepted_discovery as _accepted_discovery,
 )
@@ -121,6 +121,7 @@ async def test_full_lifecycle(tmp_path: Path) -> None:
     # content to exercise the success path.
     (state.cache_dir / "toolchain").mkdir(exist_ok=True)
     (state.cache_dir / "toolchain" / "ruby").write_text("bin")
+    record_verified_cache_fixture(state)
     svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
     assert state.cache_dir_ready is True
     assert state.bootstrap_in_flight is False
@@ -154,6 +155,7 @@ async def test_full_lifecycle(tmp_path: Path) -> None:
     assert state.readme_sha == _source_fingerprint({"README.md": new_sha})
 
     # ---- 4. on_bootstrap_complete(success=True) ----
+    record_verified_cache_fixture(state)
     svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
     assert state.bootstrap_in_flight is False
     assert state.last_bootstrap_succeeded is True
@@ -206,6 +208,7 @@ async def test_pending_sha_queued_while_bootstrap_in_flight(tmp_path: Path) -> N
     dispatch_fn = AsyncMock()
     full_state = {"env_cache": env_cache}
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
+    record_verified_cache_fixture(state)
     svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
 
     # Start a bootstrap for sha-v2.
@@ -224,6 +227,7 @@ async def test_pending_sha_queued_while_bootstrap_in_flight(tmp_path: Path) -> N
     assert state.pending_sha == _source_fingerprint({"README.md": "sha-v3"})
 
     # After bootstrap completes, readme_sha cleared so next cycle triggers re-dispatch.
+    record_verified_cache_fixture(state)
     svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
     assert state.bootstrap_in_flight is False
     assert state.readme_sha is None  # cleared so next cycle picks up pending change
@@ -253,6 +257,7 @@ async def test_bootstrap_failure_keeps_sha_and_gates_retry(tmp_path: Path) -> No
     dispatch_fn = AsyncMock()
     full_state = {"env_cache": env_cache}
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
+    record_verified_cache_fixture(state)
     svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
 
     github.get_branch_head_sha = AsyncMock(return_value=_head("sha-v2"))
@@ -330,6 +335,7 @@ async def test_multi_file_source_fingerprint(tmp_path: Path) -> None:
     initial_combined = _source_fingerprint({"head": "multi-initial"})
     assert state.readme_sha == initial_combined
     dispatch_fn.assert_called_once()
+    record_verified_cache_fixture(state)
     svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
 
     # A commit changing only a nested project's input changes source identity.

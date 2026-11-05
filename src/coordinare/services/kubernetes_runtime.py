@@ -26,8 +26,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import shutil
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from http import HTTPStatus
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, TypedDict, Unpack
@@ -38,6 +39,7 @@ from kubernetes.client.rest import ApiException
 from coordinare.env_placeholders import drop_unset_placeholders
 from coordinare.services import performer_lifecycle
 from coordinare.services.kubernetes_verifier import (
+    MAX_VERIFIER_SOURCE_SECRETS,
     OWNER_LABEL,
     VERIFIER_CONTAINER,
     VERIFIER_DEADLINE_S,
@@ -51,6 +53,8 @@ from coordinare.services.kubernetes_verifier import (
     VerifierSpec,
     build_verifier_credentials_secret,
     build_verifier_pod_manifest,
+    build_verifier_source_secrets,
+    source_secret_name,
     verifier_pod_name,
 )
 from coordinare.services.performer_runtime import StartedPerformer
@@ -70,9 +74,15 @@ class _VerifierAttempt:
     pod_attempted: bool = False
     removed: bool = True
     credentials_removed: bool = True
+    source_names: list[str] = field(default_factory=list)
+    sources_removed: bool = True
 
     def creation_conflict(self, resource: str) -> None:
-        if resource == 'secret':
+        if resource.startswith('source:'):
+            name = resource.removeprefix('source:')
+            if name in self.source_names:
+                self.source_names.remove(name)
+        elif resource == 'secret':
             self.secret_attempted = False
         else:
             self.pod_attempted = False
@@ -576,7 +586,7 @@ class KubernetesRuntime:
             await self.stop(pod_name)
             raise
 
-        return StartedPerformer(handle=pod_name, endpoint=endpoint_for(pod_ip))
+        return StartedPerformer(handle=pod_name, endpoint=endpoint_for(pod_ip), image_ref=config.image)
 
     async def _predecessor_is_owned(self, pod_name: str) -> bool:
         try:
@@ -783,6 +793,16 @@ class KubernetesRuntime:
         return True
 
     async def run_verifier(
+        self, *, slug: str, spec: VerifierSpec, poll_interval_s: float = VERIFIER_POLL_INTERVAL_S,
+    ) -> tuple[bool | None, str]:
+
+        try:
+            return await self._run_verifier_with_source(slug=slug, spec=spec, poll_interval_s=poll_interval_s)
+        finally:
+            if not spec.walk_only and spec.execution_source_workspace is not None:
+                shutil.rmtree(spec.execution_source_workspace)
+
+    async def _run_verifier_with_source(
         self,
         *,
         slug: str,
@@ -827,6 +847,8 @@ class KubernetesRuntime:
             await self._finish_verifier_attempt(attempt)
         if not attempt.removed:
             return None, 'verifier pod could not be confirmed removed; retry before starting another pod'
+        if not attempt.sources_removed:
+            return None, "verifier source Secrets could not be confirmed removed"
         if not attempt.credentials_removed:
             return None, 'verifier credential Secret could not be confirmed removed'
         if configuration_error is not None:
@@ -850,9 +872,33 @@ class KubernetesRuntime:
             return 'verifier pod could not be created'
         except Exception as exc:
             return f'verifier pod could not be created: {type(exc).__name__}'
+        if (spec.execution_source is not None or spec.project_files) and not spec.walk_only:
+            error = await self._prepare_verifier_sources(attempt, spec, pod)
+            if error is not None:
+                return error
         if not spec.transient_credentials:
             return None
         return await self._prepare_verifier_credentials(attempt, spec, pod)
+
+    async def _prepare_verifier_sources(self, attempt: _VerifierAttempt, spec: VerifierSpec, pod: Any) -> str | None:
+        metadata = pod.get("metadata", {}) if isinstance(pod, dict) else getattr(pod, "metadata", None)
+        pod_uid = metadata.get("uid") if isinstance(metadata, dict) else getattr(metadata, "uid", None)
+        if not isinstance(pod_uid, str) or not pod_uid:
+            return "verifier Pod UID is missing; refusing unowned source Secret"
+        for secret in build_verifier_source_secrets(spec, name=attempt.name, namespace=self._namespace,
+                                                   owner=self._owner, pod_uid=pod_uid):
+            secret_name = secret["metadata"]["name"]
+            attempt.source_names.append(secret_name)
+            try:
+                await _create_verifier_resource(self._api.create_namespaced_secret,
+                    attempt=attempt, resource="source:" + secret_name, namespace=self._namespace, body=secret)
+            except ApiException as exc:
+                if exc.status == HTTPStatus.CONFLICT:
+                    attempt.creation_conflict("source:" + secret_name)
+                return "verifier source Secret could not be created"
+            except Exception:
+                return "verifier source Secret could not be created"
+        return None
 
     async def _prepare_verifier_credentials(
         self, attempt: _VerifierAttempt, spec: VerifierSpec, pod: Any,
@@ -880,6 +926,12 @@ class KubernetesRuntime:
     async def _cleanup_verifier_attempt(self, attempt: _VerifierAttempt) -> None:
         if attempt.pod_attempted:
             attempt.removed = await self._remove_verifier(attempt.name)
+        if attempt.removed:
+            for name in attempt.source_names:
+                removed = await self._remove_verifier_credentials(name)
+                attempt.sources_removed = attempt.sources_removed and removed
+        elif attempt.source_names:
+            attempt.sources_removed = False
         if attempt.secret_attempted and attempt.removed:
             attempt.credentials_removed = await self._remove_verifier_credentials(attempt.name + '-credentials')
 
@@ -917,7 +969,9 @@ class KubernetesRuntime:
         while True:
             pod = await asyncio.to_thread(self._api.read_namespaced_pod, name=name, namespace=self._namespace)
             status = getattr(pod, "status", None)
-            for container in getattr(status, "container_statuses", None) or ():
+            statuses = list(getattr(status, "container_statuses", None) or ())
+            statuses.extend(getattr(status, "init_container_statuses", None) or ())
+            for container in statuses:
                 waiting = getattr(getattr(container, "state", None), "waiting", None)
                 reason = getattr(waiting, "reason", None)
                 if reason == "InvalidImageName":
@@ -1084,9 +1138,52 @@ class KubernetesRuntime:
             labels = getattr(pod.metadata, "labels", None) or {}
             if any(labels.get(key) != value for key, value in required.items()):
                 continue
-            if await self._remove_verifier(pod.metadata.name):
-                swept.append(pod.metadata.name)
+            metadata = pod.metadata
+            annotations = getattr(metadata, "annotations", None) or {}
+            try:
+                count = int(annotations.get("coordinare.vividynamics.com/source-secrets", "0"))
+            except (TypeError, ValueError):
+                continue
+            if not 0 <= count <= MAX_VERIFIER_SOURCE_SECRETS:
+                continue
+            source_names = []
+            for index in range(count):
+                secret_name = source_secret_name(metadata.name, index)
+                if not await self._source_secret_owned(secret_name, getattr(metadata, "uid", None)):
+                    break
+                source_names.append(secret_name)
+            else:
+                if await self._remove_verifier(metadata.name):
+                    removed = True
+                    for secret_name in source_names:
+                        gone = await self._remove_verifier_credentials(secret_name)
+                        removed = removed and gone
+                    if removed:
+                        swept.append(metadata.name)
         return swept
+
+    async def _source_secret_owned(self, name: str, pod_uid: str | None) -> bool:
+        """Never delete a colliding Secret belonging to another attempt/deployment."""
+        if not pod_uid:
+            return False
+        try:
+            secret = await asyncio.to_thread(self._api.read_namespaced_secret, name=name, namespace=self._namespace)
+        except ApiException as exc:
+            return bool(exc.status == HTTPStatus.NOT_FOUND)
+        except Exception:
+            return False
+        metadata = secret.get("metadata", {}) if isinstance(secret, dict) else getattr(secret, "metadata", None)
+        if isinstance(metadata, dict):
+            labels, references = metadata.get("labels", {}), metadata.get("ownerReferences", [])
+        else:
+            labels = getattr(metadata, "labels", None) or {}
+            references = getattr(metadata, "owner_references", None) or []
+        if (labels.get(OWNER_LABEL) != self._owner
+                or labels.get(VERIFIER_ROLE_LABEL) != "env-verifier-source"
+                or labels.get(MANAGED_BY_LABEL) != MANAGED_BY_VALUE):
+            return False
+        return any((ref.get("uid") if isinstance(ref, dict) else getattr(ref, "uid", None)) == pod_uid
+                   for ref in references)
 
     async def sweep_orphaned_sessions(
         self, active_session_ids: set[str],

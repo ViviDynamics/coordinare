@@ -44,7 +44,7 @@ async def test_bootstrap_requires_ephemeral_container_even_with_capability():
 
 @pytest.mark.asyncio
 async def test_capable_ephemeral_bootstrap_is_admitted():
-    await service()._require_provenance_capability(payload(), status(1))
+    await service()._require_provenance_capability(payload(image=IMAGE), status(1))
 
 
 @pytest.mark.asyncio

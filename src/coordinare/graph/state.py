@@ -513,6 +513,7 @@ class CoordinareState(TypedDict, total=False):
     # explicit flush a recorded success only reaches disk on the NEXT stage
     # transition — a restart in that window loads last_bootstrap_succeeded=False
     # and re-runs a full bootstrap for nothing.
+    snapshot_checkpoint_fn: Any
     snapshot_save_fn: Any
     # Performer service registry, keyed by performer id — same reason as above.
     performer_services_by_id: dict[str, Any]

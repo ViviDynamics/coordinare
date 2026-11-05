@@ -25,6 +25,8 @@ from coordinare.transport.http_transport import (
 )
 
 if TYPE_CHECKING:
+    from coordinare_service_inference.environment.runtime import RuntimePolicy
+
     from coordinare.models.performer_endpoint import (
         PerformerEndpointConfig,
         PerformerStatus,
@@ -141,6 +143,7 @@ async def start_ephemeral(
     *,
     extra_labels: dict[str, str] | None = None,
     backend: str | None = None,
+    runtime_policy: RuntimePolicy | None = None,
 ) -> StartedContainer:
     """Run a fresh container for *config* and return its id + endpoint URL.
 
@@ -198,6 +201,14 @@ async def start_ephemeral(
         for k, v in extra_labels.items():
             _validate_extra_label(k, v)
             args += ["--label", f"{k}={v}"]
+
+    if runtime_policy is not None:
+        if config.egress_allowlist:
+            raise ContainerStartError('private runtime forbids the egress adapter privilege gain')
+        limits = runtime_policy.resources
+        args += ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--cpus', str(limits.cpus),
+                 '--memory', str(limits.memory_mib)+'m', '--memory-swap', str(limits.memory_mib)+'m',
+                 '--pids-limit', '512']
 
     if config.egress_allowlist:
         args += ["--cap-add", "NET_ADMIN"]

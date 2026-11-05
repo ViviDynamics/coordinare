@@ -25,17 +25,21 @@ from coordinare.models.env_cache import EnvCacheState
 from coordinare.models.env_manifest import EnvManifest, ManifestItem
 from coordinare.services.env_cache import verify_env_cache_clean
 from coordinare.services.env_manifest import render_activate_sh, render_verify_sh
-from tests.unit.env_manifest_fixture import reviewed_metadata, verification_output
+from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
 
 
 @pytest.fixture(autouse=True)
-def _accepted_source_fixture(monkeypatch):
+def _accepted_source_fixture(monkeypatch, tmp_path):
+    from tests.unit.env_manifest_fixture import patch_clean_source_transport
+    patch_clean_source_transport(monkeypatch, tmp_path)
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr("coordinare.services.environment_verification.verification_sources",
                         AsyncMock(return_value={"tools.plan": "baseline"}))
+    monkeypatch.setattr("coordinare.services.environment_capabilities._docker_identity",
+        AsyncMock(return_value=("trusted/global@sha256:" + "a" * 64, "linux/x86_64")))
     # These tests exercise trusted verifier execution, not source archive materialisation.
-    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files: "")
+    monkeypatch.setattr("coordinare.services.environment_verification.source_setup", lambda files, **kwargs: "")
 
 
 SVC = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img@sha256:" + "1" * 64))
@@ -55,6 +59,7 @@ class _Docker:
         self.on_run = on_run
         self.argv: list[tuple[str, ...]] = []
         self.stdin: list[bytes | None] = []
+        self.manifest = _state(Path("/fixture-unused")).environment_manifest
 
     async def create_subprocess_exec(self, *argv: Any, **_kwargs: Any) -> _Proc:
         self.argv.append(tuple(str(a) for a in argv))
@@ -72,13 +77,14 @@ class _Proc:
         return self.returncode
 
     async def communicate(self, **kwargs: Any) -> tuple[bytes, None]:
-        data = kwargs.get("input")
+        from tests.unit.env_manifest_fixture import decode_test_execution_frame
+        data = decode_test_execution_frame(kwargs.get("input"))
         self._owner.stdin.append(data)
         if self._owner.on_run is not None:
             self._owner.on_run()
         if not self._owner.run_locally:
             self.returncode = self._owner.rc
-            return verification_output() if self._owner.rc == 0 else b"", None
+            return verification_output(self._owner.manifest) if self._owner.rc == 0 else b"", None
         proc = await _REAL_EXEC(
             "sh", "-s",
             stdin=asyncio.subprocess.PIPE,
@@ -105,15 +111,15 @@ def _cache(tmp_path: Path, activate: str = ACTIVATE_TEXT) -> Path:
 
 
 def _state(cache: Path, verify: str = VERIFY_TEXT, activate: str = ACTIVATE_TEXT) -> EnvCacheState:
-    return EnvCacheState(
+    return reviewed_cache(EnvCacheState(
         symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache,
         rendered_verify_sh=verify, rendered_activate_sh=activate,
-        bootstrap_commit_sha="a" * 40, **{key: value for key, value in reviewed_metadata().items() if key != "environment_manifest_digest"},
-    )
+        bootstrap_commit_sha="a" * 40,
+    ))
 
 
 def _ctx(state: EnvCacheState) -> dict[str, Any]:
-    return {"env_cache": {"sym": state}}
+    return {"env_cache": {"sym": state}, "config": SimpleNamespace(performer_image="trusted/global@sha256:" + "a" * 64, performer_endpoints=[])}
 
 
 def _docker_argv(fake: _Docker) -> tuple[str, ...]:
@@ -145,11 +151,12 @@ async def test_verify_container_disables_the_performer_profile(
     assert "ENV=" in env
     assert "_DEVENV_SOURCED=1" in env
     assert "_DEVENV_SKIP_SERVICES=1" in env
-    # Still the read-only cache mount, the bash entrypoint and stdin.
+    # The trusted interpreter validates the binary source frame before the daemon script.
     assert f"{cache}:{CACHE_PATH}:ro" in argv
-    assert argv[argv.index("--entrypoint") + 1] == "bash"
+    assert argv[argv.index("--entrypoint") + 1] == "/usr/local/bin/python"
+    assert argv[-1] == "coordinare_service_inference.environment.execution_source_stdin"
     assert "-i" in argv
-    assert argv[-1] == "-s"
+    assert argv[-1] == "coordinare_service_inference.environment.execution_source_stdin"
 
 
 @pytest.mark.asyncio
