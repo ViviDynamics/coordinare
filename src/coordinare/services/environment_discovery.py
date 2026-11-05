@@ -110,7 +110,12 @@ from coordinare.services.environment_proposal_patch import (
     PATCH_INSTRUCTION,
     apply_patch,
 )
-from coordinare.services.environment_repair_triage import GLOBAL, RepairTriage, part_of
+from coordinare.services.environment_repair_triage import (
+    GLOBAL,
+    RepairTriage,
+    install_only_failure,
+    part_of,
+)
 from coordinare.services.environment_response_schema import (
     ProbeRepairSchema,
     invoke_recorded,
@@ -122,6 +127,7 @@ from coordinare.services.environment_scope import (
     REMOTE_STATE_RULE,
     RUNTIME_NETWORK_RULE,
 )
+from coordinare.services.environment_scope_reuse import inventory_digest as source_inventory_digest
 from coordinare.services.environment_shard_construction import (
     FIXED_DELTA,
     GLOBAL_AUTHOR_INSTRUCTION,
@@ -849,6 +855,22 @@ def _capability_root(triage: RepairTriage | None) -> bool:
     return triage is not None and "capability" in triage.roots.values()
 
 
+def _install_only_repair(options: Any, budget: AttemptBudget, paths: Sequence[str]) -> bool:
+    """Maintainer ruling (2026-11-04): a failure of install commands alone, with the inventory and the reviewed scope
+    unchanged, repairs installation without rediscovering. Reuse is keyed on the inventory and scope digests, not on
+    the capabilities digest, whose cache mount path changes with every repair generation. Any change restarts.
+
+    The repaired manifest's changed commands are still independently reviewed before they run (acceptance requires it).
+    """
+    previous = options.previous_manifest
+    triage = budget.repair_triage
+    scope = budget.scope_contract
+    return (_execution_repair(options) and triage is not None and scope is not None
+            and install_only_failure(triage, previous)
+            and previous.inventory_digest == source_inventory_digest(paths) == scope.definition.inventory_digest
+            and previous.scope_contract_digest == scope.digest())
+
+
 def _execution_repair(options: Any) -> bool:
     """An execution repair relocates the cache, including one after an installer that never ran a command.
 
@@ -887,11 +909,14 @@ async def discover_and_review(
         async with asyncio.timeout_at(budget.deadline):
             history = list(budget.probe_reports)
             budget.repair_delta = _delta_repair(configured, bounds, budget)
+            install_only = _install_only_repair(configured, budget, paths)
             # Journal history remains append-only. A prepared execution repair may retire old-cache observations,
             # then must spend a fresh probe batch; a delta repair keeps those no command reads, unless a capability failed.
+            # An install-only repair keeps them too, also in the full repair it may fall back to (Dettmore e2e-54 spent
+            # four probe batches on an unchanged inventory).
             budget.probe_reports = select_current_probe_reports(history, commit, capabilities,
                 allow_cache_relocation=_execution_repair(configured),
-                reuse_unreferenced=budget.repair_delta and not _capability_root(budget.repair_triage))
+                reuse_unreferenced=(budget.repair_delta and not _capability_root(budget.repair_triage)) or install_only)
             selected = len(budget.probe_reports)
             try:
                 result = await _discover_attempt(source_identity=(symphony_name, commit), paths=paths,
@@ -903,7 +928,7 @@ async def discover_and_review(
                 budget.repair_delta, budget.delta_fallback, budget.error_code = False, True, None
                 # The full repair must not inherit a cache-only reuse decided for the delta.
                 budget.probe_reports = select_current_probe_reports(history + budget.probe_reports[selected:], commit,
-                    capabilities, allow_cache_relocation=_execution_repair(configured), reuse_unreferenced=False)
+                    capabilities, allow_cache_relocation=_execution_repair(configured), reuse_unreferenced=install_only)
                 result = await _discover_attempt(source_identity=(symphony_name, commit), paths=paths,
                     fetch=fetch, chat=chat, options=replace(configured, budget=budget))
             budget.outcome = "accepted"

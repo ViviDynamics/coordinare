@@ -426,3 +426,58 @@ def test_every_generation_of_the_full_repair_budget_is_a_valid_journal(tmp_path)
     report['results'][0]['duration_seconds'] = 99
     assert not record_execution_failure(cache, report, cleanup_confirmed=True, now=now)
     assert len(cache.environment_attempt['rejected']) == REPAIR_LIMITS['execution'] + 1
+
+
+def _measured_failure(tmp_path, *, executing_at=150, failed_at=400):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    cache.environment_attempt['executing_started_at'] = executing_at
+    assert record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=failed_at)
+    return cache
+
+
+def test_a_failed_generation_records_how_long_discovery_and_execution_took(tmp_path):
+    cache = _measured_failure(tmp_path)
+    assert cache.environment_attempt['rejected'][0]['timing'] == {
+        'generation': 0, 'install_only': False, 'discovery_seconds': 50.0, 'execution_seconds': 250.0}
+
+
+def test_a_repair_the_time_left_cannot_carry_holds_early_with_its_measurements(tmp_path):
+    """Maintainer ruling 2026-11-04 (Dettmore e2e-54's fifth generation ran 58 minutes and never installed)."""
+    from coordinare.services.environment_repair import REPAIR_TIME_MARGIN_SECONDS
+
+    cache = _measured_failure(tmp_path)
+    expires, began = cache.environment_attempt['expires_at'], cache.environment_attempt['started_at']
+    needed = 50 + 250 + min(REPAIR_TIME_MARGIN_SECONDS, 0.1 * (expires - began))
+    with pytest.raises(EnvironmentDiscoveryError) as raised:
+        prepare_repair(cache, now=expires - needed + 1)
+    assert raised.value.code == 'attempt_time_insufficient' and 'stopped early' in str(raised.value)
+    journal = cache.environment_attempt
+    assert journal['status'] == 'held' and journal['last_error'] == 'attempt_time_insufficient'
+    assert journal['diagnostics']['time_gate']['total_seconds'] == needed
+
+
+def test_a_repair_that_fits_the_time_left_proceeds(tmp_path):
+    from coordinare.services.environment_repair import REPAIR_TIME_MARGIN_SECONDS
+
+    cache = _measured_failure(tmp_path)
+    expires, began = cache.environment_attempt['expires_at'], cache.environment_attempt['started_at']
+    at = expires - (50 + 250 + min(REPAIR_TIME_MARGIN_SECONDS, 0.1 * (expires - began)))
+    prepare_repair(cache, now=at)
+    assert cache.environment_attempt['status'] == 'discovering'
+    assert cache.environment_attempt['generation_started_at'] == at
+
+
+def test_an_install_only_repair_is_estimated_from_earlier_install_only_repairs():
+    from coordinare.services.environment_repair import (
+        FIRST_REPAIR_DISCOVERY_SECONDS,
+        repair_time_estimate,
+    )
+
+    rejected = [{'timing': {'generation': 0, 'install_only': False, 'discovery_seconds': 9000, 'execution_seconds': 600}},
+                {'timing': {'generation': 1, 'install_only': False, 'discovery_seconds': 2400, 'execution_seconds': 500}},
+                {'timing': {'generation': 2, 'install_only': True, 'discovery_seconds': 700, 'execution_seconds': 450}}]
+    assert repair_time_estimate(rejected, install_only=True)['discovery_seconds'] == 700
+    assert repair_time_estimate(rejected, install_only=False)['discovery_seconds'] == 2400
+    assert repair_time_estimate(rejected[:1], install_only=True)['discovery_seconds'] == FIRST_REPAIR_DISCOVERY_SECONDS
+    assert repair_time_estimate([{'report': {}}], install_only=False) is None

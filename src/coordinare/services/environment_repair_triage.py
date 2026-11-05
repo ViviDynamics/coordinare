@@ -41,6 +41,10 @@ LIFECYCLE = ("init", "start", "health", "stop")
 WIDENING = frozenset({"capability", "service", "activation_path"})
 _CHECK_GROUP = re.compile(r"^(c[0-9]{2,3})[a-z]*-")
 _MISSING_EXECUTABLE = re.compile(r"not found|No such file or directory", re.IGNORECASE)
+# An install's own output names missing files of the thing it builds (Dettmore e2e-54: "ls: cannot access
+# .../pg_config: No such file or directory"); only a command the shell could not find is a missing capability there.
+_MISSING_COMMAND = re.compile(r"command not found|^\S+: (?:\d+: )?\S+: not found\s*$|^env: \S+: No such file or directory\s*$",
+                              re.IGNORECASE | re.MULTILINE)
 
 
 class RepairTriage(BaseModel):
@@ -86,11 +90,13 @@ def _prerequisites(manifest: EnvironmentManifest, records: dict[str, tuple[Comma
     return edges
 
 
-def _root_class(command: Command, kind: str, service: str | None, output: str) -> RootClass:
+def _root_class(command: Command, kind: str, service: str | None, output: str, exit_code: int | None = None) -> RootClass:
     if service is not None:
         return "service"
     if kind == "install" and connectivity_probe(command):
         return "network_gate"
+    if kind == "install":
+        return "capability" if exit_code == 127 or _MISSING_COMMAND.search(output) else "command"
     if _MISSING_EXECUTABLE.search(output):
         return "capability"
     return "command"
@@ -137,7 +143,7 @@ def triage_failure(manifest: EnvironmentManifest, report: VerificationReport) ->
             roots[result.id] = "activation_path"
         elif result.id in records:
             command, service, kind = records[result.id]
-            roots[result.id] = _root_class(command, kind, service, result.output)
+            roots[result.id] = _root_class(command, kind, service, result.output, result.exit_code)
     if not roots:
         message = "execution failure has no failed result to triage"
         raise ValueError(message)
@@ -153,7 +159,11 @@ def triage_failure(manifest: EnvironmentManifest, report: VerificationReport) ->
             seeds |= members[service]
     closure = _closure(seeds, _prerequisites(manifest, records))
     # A capability, service or activation root may be an install's missing product, which no depends_on edge names.
-    clean_root = any(root_class in WIDENING or (identifier in records and records[identifier][2] != "install")
+    # Beside a failed install, a missing activation path is taken as that install's missing product (Dettmore e2e-54),
+    # so it no longer pulls every install into the closure.
+    install_root = any(identifier in records and records[identifier][2] == "install" for identifier in roots)
+    clean_root = any((root_class in WIDENING and not (identifier == ACTIVATION and install_root))
+                     or (identifier in records and records[identifier][2] != "install")
                      for identifier, root_class in roots.items())
     if clean_root:
         closure |= {identifier for identifier, (_command, _service, kind) in records.items() if kind == "install"}
@@ -176,3 +186,14 @@ def triage_failure(manifest: EnvironmentManifest, report: VerificationReport) ->
     return RepairTriage(manifest_digest=manifest.digest(), roots=dict(sorted(roots.items())), consequences=tuple(consequences),
                         closure_ids=tuple(sorted(closure)), criterion_ids=tuple(criteria), requirement_ids=tuple(requirements),
                         touched_parts=tuple(touched), digest=digest)
+
+
+def install_only_failure(triage: RepairTriage, manifest: EnvironmentManifest) -> bool:
+    """Every root is an install command that failed on its own (not a missing capability), or the activation path
+    beside one: nothing but installation needs repair."""
+    installs = {command.id for command in manifest.install}
+    roots = triage.roots
+    return (any(identifier in installs for identifier in roots)
+            and all((identifier in installs and root_class in {"command", "network_gate"})
+                    or (identifier == ACTIVATION and root_class == "activation_path")
+                    for identifier, root_class in roots.items()))

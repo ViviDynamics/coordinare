@@ -66,7 +66,12 @@ from coordinare.services.environment_probes import (
     ProbeReport,
     bind_probe_report,
 )
-from coordinare.services.environment_repair_triage import RepairTriage, part_of, triage_failure
+from coordinare.services.environment_repair_triage import (
+    RepairTriage,
+    install_only_failure,
+    part_of,
+    triage_failure,
+)
 from coordinare.services.environment_scope import preserve_scope, released_criteria
 from coordinare.services.environment_scope_investigation import validate_investigation_history
 from coordinare.services.environment_scope_reopening import source_conflict_reopenings
@@ -195,6 +200,11 @@ class RepairJournal(BaseModel):
     repair_triage_unavailable: bool = False
     last_error: str | None = None
     diagnostics: dict[str, Any] = Field(default_factory=dict)
+    # Wall-clock marks for the time gate (2026-11-04): when this generation began discovering and began executing, and
+    # whether its repair was install-only. Journals written earlier have none; the gate then has no measurement.
+    generation_started_at: float | None = None
+    executing_started_at: float | None = None
+    generation_install_only: bool = False
 
 
 def _refuse(message: str, *, code: str = 'execution_repair_held') -> NoReturn:
@@ -651,6 +661,8 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
         ):
             _refuse('environment repair runtime identity changed')
         journal.target = capabilities
+        if journal.status != 'executing':
+            journal.executing_started_at = time.time()
         journal.status = 'executing'
     _publish(cache, journal)
 
@@ -835,6 +847,7 @@ def record_execution_failure(cache: EnvCacheState, report: dict[str, Any], *, cl
         if cleanup_confirmed is not True:
             _refuse('executable repair cleanup was not confirmed', code='cleanup_unconfirmed')
         evidence = _rejected_evidence(cache, report)
+        evidence['timing'] = _generation_timing(journal, time.time() if now is None else now)
         journal.rejected.append(evidence)
         budget = _budget(journal, time.time() if now is None else now)
         budget.reserve_repair("execution")
@@ -1119,7 +1132,67 @@ def restore_attempt_generation(cache: EnvCacheState, *, interrupted: bool = Fals
         cache.last_bootstrap_error = 'interrupted environment execution requires confirmed cleanup'
 
 
-def prepare_repair(cache: EnvCacheState) -> tuple[EnvironmentManifest, dict[str, Any]]:
+# Maintainer ruling (2026-11-04): never start a repair generation the time left cannot carry through discovery, review
+# and one execution. Dettmore e2e-54 spent its last 58 minutes on a fifth generation that never reached installation.
+REPAIR_TIME_MARGIN_SECONDS = 600
+REPAIR_TIME_MARGIN_FRACTION = 0.1
+# Before any repair generation has been measured, the first generation's discovery (which includes the scope review)
+# overstates a repair's; it is capped at this.
+FIRST_REPAIR_DISCOVERY_SECONDS = 1800
+
+
+def _generation_timing(journal: RepairJournal, now: float) -> dict[str, Any] | None:
+    started = journal.generation_started_at if journal.generation else journal.started_at
+    executing = journal.executing_started_at
+    if started is None or executing is None or not started <= executing <= now:
+        return None
+    return {'generation': journal.generation, 'install_only': journal.generation_install_only,
+            'discovery_seconds': round(executing - started, 1), 'execution_seconds': round(now - executing, 1)}
+
+
+def repair_time_estimate(rejected: Sequence[Mapping[str, Any]], *, install_only: bool,
+                         margin: float = REPAIR_TIME_MARGIN_SECONDS) -> dict[str, float] | None:
+    """Seconds the next repair generation is expected to need, from this attempt's own measured generations.
+
+    Discovery: the latest measured repair of the same kind (install-only or not), else the latest repair, else the
+    first generation's, capped. Execution: the latest execution. None without any measurement.
+    """
+    timings = [entry['timing'] for entry in rejected if isinstance(entry.get('timing'), dict)]
+    if not timings:
+        return None
+    repairs = [timing for timing in timings if timing.get('generation')]
+    same = [timing for timing in repairs if bool(timing.get('install_only')) == install_only]
+    source = (same or repairs or [None])[-1]
+    discovery = (float(source['discovery_seconds']) if source is not None
+                 else min(float(timings[0]['discovery_seconds']), FIRST_REPAIR_DISCOVERY_SECONDS))
+    execution = float(timings[-1]['execution_seconds'])
+    return {'discovery_seconds': discovery, 'execution_seconds': execution, 'margin_seconds': margin,
+            'total_seconds': discovery + execution + margin}
+
+
+def _time_gate(cache: EnvCacheState, journal: RepairJournal, *, install_only: bool, now: float) -> None:
+    """Hold early, with the measurements, rather than start a generation that cannot finish.
+
+    An install-only repair (no rediscovery, a smaller closure) is estimated from earlier install-only repairs, so it can
+    still fit when a full repair would not.
+    """
+    # The margin is 10 minutes, or a tenth of a shorter attempt.
+    margin = min(REPAIR_TIME_MARGIN_SECONDS, REPAIR_TIME_MARGIN_FRACTION * (journal.expires_at - journal.started_at))
+    estimate = repair_time_estimate(journal.rejected, install_only=install_only, margin=margin)
+    remaining = journal.expires_at - now
+    if estimate is None or remaining >= estimate['total_seconds']:
+        return
+    journal.status, journal.last_error = 'held', 'attempt_time_insufficient'
+    journal.diagnostics = {**journal.diagnostics, 'time_gate': {**estimate, 'remaining_seconds': round(remaining, 1),
+                                                                'install_only': install_only}}
+    _publish(cache, journal)
+    kind = 'install-only repair' if install_only else 'repair'
+    _refuse(f'stopped early: {round(remaining)} s remain, but the next {kind} needs about '
+            f'{round(estimate["discovery_seconds"])} s of discovery and review, {round(estimate["execution_seconds"])} s '
+            f'of execution and a {round(margin)} s margin', code='attempt_time_insufficient')
+
+
+def prepare_repair(cache: EnvCacheState, *, now: float | None = None) -> tuple[EnvironmentManifest, dict[str, Any]]:
     """Move a pending repair to a never-used cache generation, retaining rejected proof."""
     journal = journal_for(cache)
     if journal.status != 'repair_pending' or not journal.rejected:
@@ -1128,10 +1201,15 @@ def prepare_repair(cache: EnvCacheState) -> tuple[EnvironmentManifest, dict[str,
         _refuse('environment repair generation differs from configured cache parent')
     entry = journal.rejected[-1]
     previous = EnvironmentManifest.model_validate(entry['manifest'])
+    triage = _triage_or_none(entry)
+    install_only = triage is not None and install_only_failure(triage, previous)
+    _time_gate(cache, journal, install_only=install_only, now=time.time() if now is None else now)
     journal.generation = len(journal.rejected)
     journal.generation_nonce = uuid.uuid4().hex[:12]
+    journal.generation_started_at = time.time() if now is None else now
+    journal.executing_started_at = None
+    journal.generation_install_only = install_only
     # Persisted before any author call, so a restart resumes the same closure. Without one the full repair runs.
-    triage = _triage_or_none(entry)
     journal.repair_triage = triage.model_dump(mode='json') if triage is not None else None
     journal.repair_triage_unavailable = triage is None
     # Each generation starts from delta repair again; a fallback applies to the generation that needed it.

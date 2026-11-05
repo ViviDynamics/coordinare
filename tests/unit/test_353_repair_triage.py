@@ -209,3 +209,49 @@ def test_sample_install_replay_closes_over_the_failing_helm_install_only():
     assert triage.criterion_ids == () and triage.requirement_ids == ()
     assert len(triage.consequences) == sum(1 for result in run.results if result.status == "not_run")
     assert len(triage.closure_ids) <= 3
+
+
+def test_an_install_whose_output_names_a_missing_file_is_its_own_failure_not_a_capability():
+    """Dettmore e2e-54: install-pgconfig's "ls: cannot access .../pg_config: No such file or directory" was classed a
+    missing capability, which forced fresh probes and pulled every install into the repair."""
+    from coordinare.services.environment_repair_triage import install_only_failure
+
+    manifest = build(install=[cmd("install-db-tools", ["sh", "-c", "ls x"]), cmd("install-other", ["make", "other"])])
+    output = {"install-db-tools": "ls: cannot access '/cache/db/bin/pg_config': No such file or directory\n"}
+    triage = triage_failure(manifest, report(manifest, ["install-db-tools"], output=output))
+    assert triage.roots == {"install-db-tools": "command"}
+    assert "install-other" not in triage.closure_ids
+    assert install_only_failure(triage, manifest)
+
+
+def test_an_install_the_shell_could_not_find_a_tool_for_is_a_capability():
+    from coordinare.services.environment_repair_triage import install_only_failure
+
+    manifest = build(install=[cmd("install-chart-tool", ["sh", "-c", "fetcher x"])])
+    for output in ("sh: 1: fetcher: not found\n", "bash: fetcher: command not found\n",
+                   "env: fetcher: No such file or directory\n"):
+        triage = triage_failure(manifest, report(manifest, ["install-chart-tool"], output={"install-chart-tool": output}))
+        assert triage.roots == {"install-chart-tool": "capability"}, output
+        assert not install_only_failure(triage, manifest)
+
+
+def test_a_missing_activation_path_beside_a_failed_install_does_not_pull_in_every_install():
+    from coordinare.services.environment_repair_triage import install_only_failure
+
+    manifest = build(install=[cmd("install-lang", ["make", "lang"]), cmd("install-other", ["make", "other"])],
+                     activation={"path": ["{cache}/lang/bin"]})
+    failed = report(manifest, ["install-lang"])
+    failed.results.append(CheckResult(id="activation", status="fail", required=True, output="declared activation path missing",
+                                      manifest_digest=manifest.digest()))
+    triage = triage_failure(manifest, failed)
+    assert triage.roots == {"activation": "activation_path", "install-lang": "command"}
+    assert "install-other" not in triage.closure_ids and "activation" in triage.closure_ids
+    assert install_only_failure(triage, manifest)
+
+
+def test_a_failed_check_or_service_is_never_an_install_only_failure():
+    from coordinare.services.environment_repair_triage import install_only_failure
+
+    manifest = build(install=[cmd("install-lang", ["make", "lang"])], checks=[cmd("check-suite", ["suite"])])
+    assert not install_only_failure(triage_failure(manifest, report(manifest, ["install-lang", "check-suite"])), manifest)
+    assert not install_only_failure(triage_failure(manifest, report(manifest, ["check-suite"])), manifest)
