@@ -23,6 +23,11 @@ The discovery and review code it imports is the 353 branch at the commit that
 produced the baseline runs, not ``main``: run it with ``PYTHONPATH`` pointing at a
 checkout of that commit (see specs/376-nare-discovery-spike/research.md).
 
+Two authoring modes. ``run`` drives the nare CLI and sends each correction back by ``--resume``
+(the 0501d80 runs in research.md). ``inloop`` (nare 2026.11.26 and later) uses nare's Python API with
+coordinare's validator as its ``check``, so corrections stay in one nare session, with
+``--max-corrections`` and ``--require-reads``. Both modes judge the admitted manifest the same way.
+
 Keys are read from the environment only (``OPENAI_API_KEY``) and never logged.
 """
 
@@ -30,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import concurrent.futures
 import contextlib
 import json
 import os
@@ -594,6 +600,208 @@ async def rejudge(args: argparse.Namespace) -> dict[str, Any]:
     return record
 
 
+# --- in-loop (nare 2026.11.26+): corrections stay inside one nare session ---------------------
+
+
+def _check_errors(feedback: list[dict[str, Any]], instruction: str) -> list[dict[str, Any]]:
+    """coordinare's refusal as nare check errors (code, location, message, guidance).
+
+    The coordinare correction instruction is stated once, on the first error, so the model reads it
+    with the refusal; each error keeps its own guidance.
+    """
+    errors = []
+    for index, detail in enumerate(feedback[:16]):
+        parts = [instruction if index == 0 else None, detail.get("guidance")]
+        errors.append({
+            "code": str(detail.get("code", "invalid_contract_value")),
+            "location": list(detail.get("location") or []),
+            "message": json.dumps({k: v for k, v in detail.items() if k != "guidance"}, ensure_ascii=False,
+                                  default=str),
+            "guidance": " ".join(p for p in parts if p) or None,
+        })
+    return errors
+
+
+def patch_check_passes() -> bool:
+    """Spike-side workaround for nare#192, applied in this process only.
+
+    nare's ``_check_passes`` lets a ``ValueError`` from ``extract_json`` escape on a tool turn whose text
+    holds no JSON, which ends the run when ``check`` is set. The function's own docstring says such a
+    candidate is simply not kept, so a non-JSON tool-turn candidate is treated as not kept here.
+    Returns whether the patch is in place.
+    """
+    from nare import loop as nare_loop
+
+    if getattr(nare_loop._check_passes, "_spike_patched", False):
+        return True
+
+    def _check_passes_safe(text: str, check: Any) -> bool:
+        if check is None:
+            return True
+        try:
+            return not nare_loop._check_errors(nare_loop.extract_json(text), check)
+        except (nare_loop.CheckRaised, ValueError):
+            return False
+
+    _check_passes_safe._spike_patched = True  # type: ignore[attr-defined]
+    nare_loop._check_passes = _check_passes_safe
+    return True
+
+
+async def inloop(args: argparse.Namespace) -> dict[str, Any]:
+    """Author on nare with coordinare's validator as nare's ``check``, then review once.
+
+    One nare session for the whole attempt. A refused manifest is not resumed through the CLI: nare
+    returns coordinare's errors into its own correction loop (``max_corrections``, shared with
+    ``require_reads``). The validator is one object across the run, as production keeps one across
+    repair rounds, so an obligation the model drops after a refusal is still refused.
+    """
+    import nare as nare_package
+    nare_patched = patch_check_passes()
+    from nare import Policy, make_transport, new_session, run as nare_run
+    from nare.loop import RetryPolicy
+    from nare.session import save
+    from nare.tools import approve_all
+    from pydantic import ValidationError
+
+    from coordinare_service_inference.environment.findings import FindingResponse
+    from coordinare.services import environment_discovery as discovery_module
+    from coordinare.services.environment_admission import _validation_feedback
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+    from coordinare.services.environment_discovery_prompts import _MANIFEST_ENVELOPE, correction_instruction
+
+    out = args.out
+    out.mkdir(parents=True)
+    root = out / "source"
+    export_source(args.clone, args.commit, root)
+    schema, loosened = _MANIFEST_ENVELOPE.model_json_schema(), []
+    if args.loosen_schema:
+        schema, loosened = nare_schema(schema)
+    _write(out / "manifest-envelope.schema.json", schema)
+    context = await context_for(args, out)
+    discovery, budget, construction, scope = (context[k] for k in ("discovery", "budget", "construction", "scope"))
+    # As _discover_attempt does before authoring: the scope's inputs are bound before any answer is admitted.
+    await discovery.bind_verified(scope.all_inputs, phase="construction",
+                                  cited_by=discovery_module.scope_citations(scope))
+    context["scope_bound"] = True
+    system = system_prompt()
+    (out / "system.txt").write_text(system)
+    (out / "task.json").write_text(json.dumps(context["task"], ensure_ascii=False))
+    instruction = correction_instruction("manifest")
+    validator = discovery_module._CandidateValidator(
+        discovery, construction, {g: set() for g in ("requirements", "install", "checks", "services")},
+        [], discovery_module._ObligationLedger(), budget)
+    session = new_session((out / "task.json").read_text())
+    session.system = system
+    admitted: dict[str, Any] = {}
+    attempts: list[dict[str, Any]] = []
+
+    def ingest(paths: list[str]) -> None:
+        """Bind every file nare has read so far, as the judge does, from a worker thread's own loop."""
+        async def fetch_all() -> None:
+            for start in range(0, len(paths), 8):
+                batch = [p for p in paths[start:start + 8] if p not in discovery.inputs]
+                if batch:
+                    await discovery.read_files(batch, verification=True)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(lambda: asyncio.run(fetch_all())).result()
+
+    def check(answer: Any) -> list[dict[str, Any]]:
+        envelope = answer if isinstance(answer, dict) else {}
+        try:
+            ingest(sorted(read_records(session.evidence)))
+            discovery.finding_responses = [FindingResponse.model_validate(r)
+                                           for r in envelope.get("finding_responses", [])]
+            manifest = validator(envelope["manifest"])
+        except ValidationError as exc:
+            errors = _check_errors(_validation_feedback(exc), instruction)
+        except (EnvironmentDiscoveryError, ValueError) as exc:
+            errors = [{"code": getattr(exc, "code", type(exc).__name__), "location": [], "message": str(exc),
+                       "guidance": instruction}]
+        else:
+            admitted.update(envelope=envelope, manifest=manifest, input=session.usage.input,
+                            output=session.usage.output, turns=session.turns,
+                            reads=len(read_records(session.evidence)))
+            attempts.append({"check": len(attempts) + 1, "admitted": True, "codes": [],
+                             "input": session.usage.input, "output": session.usage.output, "turns": session.turns})
+            return []
+        attempts.append({"check": len(attempts) + 1, "admitted": False,
+                         "codes": sorted({e["code"] for e in errors}),
+                         "input": session.usage.input, "output": session.usage.output, "turns": session.turns})
+        return errors
+
+    policy = Policy(tools=frozenset({"read", "list", "search"}), root=root, pending=frozenset(),
+                    bash_credentials=False)
+    if args.replay is not None:
+        # Offline smoke test: nare replays a script and talks to nothing; the check path is the real one.
+        transport = make_transport("fake", model=args.model, replay=args.replay, system=system)
+    else:
+        transport = make_transport("openai", model=args.model, base_url=args.base_url,
+                                   api_key=os.environ["OPENAI_API_KEY"], max_tokens=args.max_tokens,
+                                   effort=args.effort, system=system, streaming=args.stream,
+                                   request_timeout=args.request_timeout)
+    error = None
+    started = time.monotonic()
+    try:
+        with (out / "inloop.jsonl").open("w") as events_file:
+            async for event in nare_run(
+                    session, transport=transport, approve=approve_all, policy=policy, schema=schema,
+                    max_turns=args.max_turns, budget_tokens=args.budget_tokens,
+                    context_window=args.context_window,
+                    retry=RetryPolicy(retries=args.request_retries, seconds=args.request_retry_seconds),
+                    max_corrections=args.max_corrections, max_cutoffs=args.max_cutoffs,
+                    require_reads=args.require_reads, check=check):
+                events_file.write(json.dumps(event.wire(), ensure_ascii=False) + "\n")
+    except Exception as exc:  # recorded: a run that dies in nare is a result, not a crash of the spike
+        error = f"{type(exc).__name__}: {exc}"
+    finally:
+        save(session, out / "session.json")
+        make_writable(root)
+        shutil.rmtree(root)
+    seconds = round(time.monotonic() - started, 1)
+    reads = read_records(session.evidence)
+    digests = dict(discovery.inputs)
+    record: dict[str, Any] = {
+        "mode": "inloop", "nare_module": str(nare_package.__file__), "nare_192_workaround": nare_patched,
+        "nare_version": nare_package.__version__, "schema_loosened": loosened,
+        "max_corrections": args.max_corrections, "require_reads": args.require_reads, "stream": args.stream,
+        "request_retries": args.request_retries, "seconds": seconds, "error": error,
+        "status": session.status, "stop_reason": session.stop_reason, "nare_error": session.error,
+        "turns": session.turns, "usage": session.usage.wire(), "retries": session.retries,
+        "cutoffs": session.cutoffs, "corrections": session.schema_correction_log,
+        "checks": attempts, "admitted_usage": {k: admitted.get(k) for k in ("input", "output", "turns", "reads")}
+        if admitted else None,
+        "files_read": len(reads),
+        "reads_whole_file": sum(1 for r in reads.values() if r["whole_file"]),
+    }
+    judgements = []
+    if admitted:
+        envelope = admitted["envelope"]
+        try:
+            judgement = await judge(args, out, envelope, reads, context)
+        except Exception as exc:  # recorded: the nare numbers are the result even if coordinare's review fails
+            judgement = {"admitted": True, "review": {"completed": False,
+                                                      "error": f"{type(exc).__name__}: {exc}"}}
+        judgements.append({"evidence": cross_check(reads, {p: digests.get(p) for p in reads},
+                                                   cited_paths(envelope)),
+                           "reads_outside_reviewed_scope": sorted(context["outside_scope"]),
+                           **{k: v for k, v in judgement.items() if k != "manifest"}})
+        if (manifest := judgement.get("manifest")) is not None:
+            record["manifest_shape"] = {g: len(getattr(manifest, g)) for g in
+                                        ("requirements", "install", "checks", "services")}
+            record["manifest_shape"]["criteria_mapped"] = len(manifest.criterion_checks)
+    else:
+        envelope = session.output if isinstance(session.output, dict) else {}
+        judgements.append({"admitted": False, "evidence": cross_check(reads, {p: digests.get(p) for p in reads},
+                                                                       cited_paths(envelope))})
+    record["judgements"] = judgements
+    record["review_calls"] = context["chat"].calls
+    record["review_usage"] = dict(sum((Counter(c["usage"]) for c in context["chat"].calls), Counter()))
+    _write(out / "record.json", record)
+    return record
+
+
 # --- baseline -------------------------------------------------------------------------------
 
 
@@ -705,6 +913,26 @@ def main() -> int:
     spike.add_argument("--keep-source", action="store_true")
     spike.add_argument("--continue", dest="continue_run", action="store_true",
                        help="continue an existing run directory from its last answer")
+    loop = sub.add_parser("inloop", parents=[shared],
+                          help="author on nare with coordinare's validator as nare's check (in-session corrections)")
+    loop.add_argument("--out", type=Path, required=True)
+    loop.add_argument("--context-window", type=int, default=262144)
+    loop.add_argument("--budget-tokens", type=int, default=4_000_000)
+    loop.add_argument("--max-turns", type=int, default=80)
+    loop.add_argument("--max-corrections", type=int, default=8,
+                      help="nare's correction budget, shared by schema, check and read corrections")
+    loop.add_argument("--max-cutoffs", type=int, default=None)
+    loop.add_argument("--require-reads", type=int, default=0,
+                      help="hold a final answer until this many distinct files were read (nare --require-reads)")
+    loop.add_argument("--request-timeout", type=float, default=None,
+                      help="per-request timeout seconds (nare default 600)")
+    loop.add_argument("--request-retries", type=int, default=3)
+    loop.add_argument("--request-retry-seconds", type=float, default=60.0)
+    loop.add_argument("--stream", action="store_true")
+    loop.add_argument("--replay", type=Path, default=None,
+                      help="offline smoke test: replay this nare script (provider fake) instead of the gateway")
+    loop.add_argument("--loosen-schema", action="store_true",
+                      help="open the map-valued additionalProperties (only needed before nare 2026.11.26)")
     again = sub.add_parser("rejudge", parents=[shared], help="judge a saved envelope again with coordinare")
     again.add_argument("--run", type=Path, required=True, help="a run directory from 'run'")
     again.add_argument("--round", type=int, default=0)
@@ -716,7 +944,8 @@ def main() -> int:
         return 0
     if not os.environ.get("OPENAI_API_KEY"):
         parser.error("OPENAI_API_KEY must be set in the environment")
-    record = asyncio.run(run(args) if args.command == "run" else rejudge(args))
+    runners = {"run": run, "rejudge": rejudge, "inloop": inloop}
+    record = asyncio.run(runners[args.command](args))
     _out(json.dumps({k: v for k, v in record.items() if k != "review_calls"}, indent=1, default=str))
     return 0
 
