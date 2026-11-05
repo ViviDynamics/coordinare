@@ -921,7 +921,8 @@ def main() -> int:
     loop.add_argument("--max-turns", type=int, default=80)
     loop.add_argument("--max-corrections", type=int, default=8,
                       help="nare's correction budget, shared by schema, check and read corrections")
-    loop.add_argument("--max-cutoffs", type=int, default=None)
+    loop.add_argument("--max-cutoffs", type=int, default=2,
+                      help="cut-off replies corrected per invocation (nare CLI default 2; None in the Python API means none)")
     loop.add_argument("--require-reads", type=int, default=0,
                       help="hold a final answer until this many distinct files were read (nare --require-reads)")
     loop.add_argument("--request-timeout", type=float, default=None,

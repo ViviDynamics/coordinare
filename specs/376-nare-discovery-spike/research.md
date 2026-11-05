@@ -384,99 +384,116 @@ that keeps coordinare's divided authoring structure (global author plus group au
 nare session with the corresponding instructions) and adds probes through nare, measured over
 several runs. That is a different question from this one.
 
-## Re-run on nare ba35b2a (2026-11-04)
+## Re-run on nare ba35b2a (2026-11-04 and 2026-11-05)
 
-**Status: two of three planned in-loop runs completed. Run 3 did not start.** The gateway key file that the launcher reads (under `~/.t3/userdata/secrets/files/`) is no longer present, so the launcher cannot authenticate. No other credential was substituted. Runs 1 and 2 are below. The recommendation is revisited at the end of this section.
+**Status: five in-loop runs. Three were admitted and reviewed (a1, a2, a3). One was aborted by a harness bug (a4, my cut-off default). One failed on nare after eight corrections (a4r). The run cap of five is reached.** The gateway key moved to a new file mid-round, and the launcher now reads that file. The recommendation holds, for reasons that changed (see the end of this section).
+
+nare main has since moved to contract 3 and closed #192. Re-pinning `inloop` needs `--contract 3` on the CLI path. Check the Python API for the same field before re-pinning, and drop the #192 workaround then. Nothing was re-pinned in this round.
 
 ### Short answer
 
-nare's new features close most of the gaps this spike found, and the cost picture moved a long way. Authoring to an admitted manifest now costs 1.08 to 1.24 times the baseline input (was 1.66), and authoring plus the first review costs 0.75 to 0.80 times (was 1.04). Output stays at 1.9 to 3.9 times the baseline (was 3.1 to 4.2). Both admitted manifests drew no blocking finding from coordinare's review, where the baseline never accepted on its first review (0 of 33). One of the two left cited files unread, and no run shows a cache hit. Two runs cannot separate a real saving from run-to-run variation (the two runs differ by 6 model turns and 2.4 times in citations).
+Authoring to an admitted manifest now costs 0.89 to 1.24 times the baseline input (median 1.08; was 1.66 on run 10). Authoring plus the first review costs 0.67 to 0.80 times (median 0.75; was 1.04). Output stays at 1.96 to 3.88 times the baseline (was 3.1 to 4.2). Two of three admitted manifests drew no finding on the divided review, and one drew five findings, mostly coverage. The baseline's first review never accepted (0 of 33). Reliability is the weak point: two of five runs did not admit, and both failures came from nare or the harness, not from the model's manifest quality. The recommendation holds: do not adopt discovery authoring on nare yet.
 
 ### Setup
 
-- **nare.** `origin/main` at `ba35b2a` (release 2026.11.26), in a detached worktree (`nare-spike-2`, removed at the end; the SHA is the record). The old `nare-spike` worktree at `0501d80` is untouched.
-- **Pinned baseline and model.** Unchanged from the original runs: `dettmore-platform` at `bf498e8`, the reference scope and capabilities from e2e-50 attempt 000, the first discovery call (chat-043) for the execution rules, `spark/glm-5.3-flash` through the same gateway, reasoning effort low, 32,768 max output tokens, 262,144 context tokens, a 4,000,000 token budget and 80 turns. Streaming is on, as in runs 8 to 12.
-- **Flags.** `--max-corrections 8` (the baseline profile's repair allowance, shared by schema, check and read corrections), `--require-reads 20` (about half of run 10's 44 distinct reads, fixed before the runs), nare's default retries (3, 60 s apart) and its 600 s request timeout. The envelope schema is coordinare's, unmodified, because nare now accepts map-valued `additionalProperties` (#131).
-- **Mode.** The script's `inloop` subcommand (the `run` mode is unchanged). nare's Python API takes `check=` (the CLI cannot). The check is coordinare's `_CandidateValidator`, one object for the whole run, as production keeps one across repair rounds. Before each validation it binds every file nare has read so far, from a worker thread. A refusal goes back to nare as check errors (code, location, message, and guidance carrying coordinare's correction instruction on the first error). An admitted envelope goes through the same divided review as `run`. Nothing is resumed through the CLI.
-- **Workaround for nare#192.** `_check_passes` lets a `ValueError` escape on a tool turn with no JSON when `check` is set. The spike wraps that one function in its own process and records `nare_192_workaround: true` in every record.
-- **Environment.** One Python 3.12 venv with coordinare's pinned dependencies and nare installed editable from `nare-spike-2`. nare needed `anthropic` 2.5.0 in place of 0.79.0. The unit tests (`tests/unit/test_376_nare_spike_evidence.py`) pass under the launcher's venv.
-- **Command.** `bash .agents/state/376-nare-spike/launch-inloop.sh inloop-a1 --stream --max-corrections 8 --require-reads 20`. The key is read from its file inside the command.
-- **Offline checks (no model calls).** A replayed run admitted the run 10 envelope on the first check (42 requirements, 8 install, 30 checks, 43 criteria mapped, the same shape as run 10). A replayed envelope with a wrong citation was refused by coordinare and then admitted after nare's correction. A replayed tool read was digest-matched. `--require-reads` held an answer with 2 of 3 reads. A JSON answer followed by prose finished `done` with a check set (#133).
+- **nare.** `origin/main` at `ba35b2a` (release 2026.11.26), in a detached worktree (`nare-spike-2`, removed at the end). Recreated at the same commit the a1 and a2 runs used, so the runs are comparable.
+- **Pinned baseline and model.** Unchanged: `dettmore-platform` at `bf498e8`, the e2e-50 reference scope and capabilities, the chat-043 execution rules, `spark/glm-5.3-flash` through the same gateway, reasoning effort low, 32,768 max output, 262,144 context, a 4,000,000 token budget, 80 turns, streaming on.
+- **Flags.** `--max-corrections 8` (shared by schema, check and read corrections), `--require-reads 20`, nare's default retries (3, 60 s) and 600 s request timeout, and `--max-cutoffs 2` (see a4 below). The envelope schema is coordinare's, unmodified.
+- **Mode.** The script's `inloop` subcommand. nare's Python API takes `check=`, which the CLI does not. The check is coordinare's `_CandidateValidator`, one object for the whole run. Before each validation it binds every file nare has read so far. A refusal goes back to nare as check errors. An admitted envelope goes through the same divided review as the `run` mode.
+- **Workaround for nare#192 (closed upstream).** `_check_passes` lets a `ValueError` escape on a tool turn with no JSON when `check` is set. The spike wraps that function in its own process, and each record says so.
+- **Environment.** One Python 3.12 venv with coordinare's pinned dependencies and nare installed editable from `nare-spike-2`. nare needed `anthropic` 2.5.0 in place of 0.79.0.
+- **Command.** `bash .agents/state/376-nare-spike/launch-inloop.sh <label> --stream --max-corrections 8 --require-reads 20`. The key is read from its file inside the command, never printed.
 
-### Results
+### Runs
 
-Baseline is the median across the 47 saved runs (first authoring round and first review, as in the table above). Run 10 is the original nare run. Runs a1 and a2 are the in-loop runs. "To admitted" is the envelope the run ended on.
+| Run | Outcome | nare turns | Input to end | Output to end | Review input, output | Refusals | Corrections (charged, free, read hold) | Files read | Cited (unread, partial) |
+|---|---|---:|---:|---:|---:|---:|---|---:|---|
+| a1 | admitted, accept | 16 | 687,656 | 117,284 | 144,122, 7,768 | 3 | 4, 0, 0 | 35 | 36 (13, 8) |
+| a2 | admitted, accept | 10 | 600,618 | 67,481 | 287,897, 18,134 | 5 | 4, 1, 1 | 23 | 15 (0, 0) |
+| a3 | admitted, revise (5 findings) | 10 | 491,997 | 79,695 | 247,417, 8,847 | 2 | 3, 0, 0 | 34 | 22 (3, 0) |
+| a4 | aborted (harness: cut-off off) | 5 | 112,328 | 3,655 | not run | 0 | none | 14 | n/a |
+| a4r | failed: schema_violation | 14 | 817,031 | 75,424 | not run | 0 | 8, 0, 0 (budget spent) | 11 | n/a |
 
-| Metric | Baseline (median) | nare run 10 (0501d80, CLI) | in-loop a1 | in-loop a2 |
-| --- | ---: | ---: | ---: | ---: |
-| nare model calls (turns), to admitted | 9 (first round) | 15 | 16 | 10 |
-| Input tokens, authoring to admitted | 553,579 | 919,854 | 687,656 | 600,618 |
-| Output tokens, authoring to admitted | 30,264 | 128,168 | 117,284 | 67,481 |
-| Input, authoring plus first review | 1,106,948 | 1,146,530 | 831,778 | 888,515 |
-| Output, authoring plus first review | 45,133 | 139,701 | 125,052 | 85,615 |
-| Cache-read tokens | 0 | 0 | 0 | 0 |
-| Corrections: nare (charged, free) | n/a | 4 (all charged) | 4 charged (1 non-JSON, 3 coordinare refusals) | 4 charged, 1 free (5 coordinare refusals), plus 1 charged read hold |
-| Coordinare refusals before admission | n/a | 4 | 3 | 5 |
-| Distinct files read | n/a | 44 | 35 (25 whole, 10 partial) | 23 (all whole) |
-| Cited paths (unread / partial) | n/a | 34 (9 / 1) | 36 (13 / 8) | 15 (0 / 0) |
-| Digests matched (of files read) | n/a | 44 of 44 | 35 of 35 | 23 of 23 |
-| Admitted by coordinare | n/a | yes | yes | yes (the 6th check was admitted and then held for reads; the 7th was final) |
-| Review verdict (divided, first pass) | 0 of 33 accept; median 3 findings | revise, 1 finding | accept, 0 findings | accept, 0 findings |
-| Review input, output | 495,465, 12,145 | 226,676, 11,533 | 144,122, 7,768 | 287,897, 18,134 |
-| Wall time to admitted (s) | n/a (whole baseline run: median 6,191) | 9,655 | 5,210 | 1,614 |
-| Provider failures or retries | n/a | 0 | 0 | 0 |
+**a2 detail.** The first valid-looking answer (check 6, turn 8) was held for reads: four distinct files had been read. The model then read 19 more files and answered again (check 7, turn 10). The five earlier answers were refused by coordinare, not held, and each came after the same four reads. So `--require-reads` acted only once an answer passed validation, as the flag is documented to.
 
-Ratios to the baseline first round plus first review: authoring input 1.66 (run 10), 1.24 (a1), 1.08 (a2). Authoring output 4.23, 3.88, 2.23. Authoring plus review input 1.04, 0.75, 0.80. Authoring plus review output 3.10, 2.77, 1.90.
+**a3 findings.** Five findings: four `coverage` and one `execution_definition`. The manifest had 24 requirements and 24 checks, against 42 to 43 and 29 in a1 and a2. The smaller manifest is a plausible source of the coverage findings, but n = 3 cannot show it.
 
-The baseline's first round includes a probe preflight that the nare runs omit, so the comparison favours nare slightly.
+**a4 (aborted).** Stopped at turn 5 by nare's repetition cut-off, with no coordinare check and no correction. The cause was mine: in the Python API, `max_cutoffs=None` creates no cut-off limit, and the CLI default is 2. The spike now defaults `--max-cutoffs` to 2 and says so in the help text. Its 116k tokens are counted in the spend below and not in the comparison.
+
+**a4r (failed).** Admission failed after 8 charged corrections, all saying the answer "ends before it closes" or had no JSON. The saved transcript shows the answer (16 to 52 KB) broken at the `local_credentials` key, after `runtime_endpoints`. The rest of the answer is replaced by `[redacted]`. That key name matches nare's `credential-assignment` rule. This is the open #68 (redaction), not a model failure, and it is not bypassed in-process as I wrote earlier. A small offline replay with the same key parsed correctly, streamed or not. I have not reproduced the failure offline. A comment with the evidence is on #68.
+
+### Comparison
+
+Baseline is the median across the 47 saved runs (first authoring round and first review). Run 10 is the original CLI run on `0501d80`. "a1 to a3" are the admitted in-loop runs.
+
+| Metric | Baseline (median) | nare run 10 (CLI) | a1 | a2 | a3 | in-loop median (a1 to a3) |
+|---|---:|---:|---:|---:|---:|---:|
+| nare turns to admitted | 9 calls (first round) | 15 | 16 | 10 | 10 | 10 |
+| Input, authoring to admitted | 553,579 | 919,854 | 687,656 | 600,618 | 491,997 | 600,618 |
+| Output, authoring to admitted | 30,264 | 128,168 | 117,284 | 67,481 | 79,695 | 79,695 |
+| Input, authoring plus first review | 1,106,948 | 1,146,530 | 831,778 | 888,515 | 739,414 | 831,778 |
+| Output, authoring plus first review | 45,133 | 139,701 | 125,052 | 85,615 | 88,542 | 88,542 |
+| Ratio, authoring input | 1.00 | 1.66 | 1.24 | 1.08 | 0.89 | 1.08 |
+| Ratio, authoring output | 1.00 | 4.23 | 3.88 | 2.23 | 2.63 | 2.63 |
+| Ratio, authoring plus review input | 1.00 | 1.04 | 0.75 | 0.80 | 0.67 | 0.75 |
+| Ratio, authoring plus review output | 1.00 | 3.10 | 2.77 | 1.90 | 1.96 | 1.96 |
+| Admitted by coordinare | 44 of 47 held | yes | yes | yes | yes | 3 of 3 |
+| First review | 0 of 33 accept; median 3 findings | revise, 1 finding | accept | accept | revise, 5 findings | 2 of 3 accept |
+| Cache-read tokens | 0 | 0 | 0 | 0 | 0 | 0 |
+| Wall time (s) | 6,191 (whole run, median) | 9,655 | 5,210 | 1,614 | 6,620 | n/a |
+| Provider retries | n/a | 0 | 0 | 0 | 1 | n/a |
+
+The baseline's first round includes a probe preflight that the nare runs omit, so the comparison favours nare slightly. Ratios use the baseline's first-round input (553,579) and first-round plus first-review input (1,106,948) and output (30,264, 45,133).
 
 ### Gap status
 
-| Gap (spike) | Status on ba35b2a | Evidence |
-| --- | --- | --- |
-| Map-valued schemas refused ([#131](https://github.com/ViviDynamics/nare/issues/131)) | Closed | `check_supported` accepts the unmodified envelope schema. Both in-loop runs used it unchanged. |
-| One slow or dropped request ends the run ([#134](https://github.com/ViviDynamics/nare/issues/134)) | Closed in code, not exercised | Retries (3, 60 s) and a configurable timeout exist. Neither run had a provider failure, so the retry path was not tested under load. |
-| System prompt not kept for a resume ([#132](https://github.com/ViviDynamics/nare/issues/132)) | Closed | The session records the system prompt. The in-loop path does not resume at all. |
-| `${NAME}` redaction corrupts the saved answer ([#68](https://github.com/ViviDynamics/nare/issues/68)) | Open upstream, bypassed | The saved transcript is still redacted. In-process, the model sees its own answers unredacted, so corrections do not depend on the copy. |
-| Prose around a JSON answer refused ([#133](https://github.com/ViviDynamics/nare/issues/133)) | Closed | Offline: JSON followed by prose with a check set finished `done`. Neither live run hit this case. |
-| Corrections cost a resume each | Closed as a mechanism | Corrections run in one session with no resume and no spike-side repair loop. See the cost note below. |
-| Answer after few or no reads (runs 6 and 11) | Partly closed | `--require-reads` holds a valid answer (a2: held at 4 reads, then 19 more reads before the final answer). It counts partial reads as reads, and it only applies once an answer passes validation. In a2 the first five answers came after 4 reads and were refused by coordinare, not held. |
-| Citations of files never read (runs 10 and 11) | Open | Run 10: 9 of 34 unread. a1: 13 of 36 unread, despite 35 reads. `--require-reads` counts files, not the files a manifest cites. a2 had 0 of 15 unread. |
-| Caching (`--cache-breakpoints`, prefix cache) | Still open | `cache_read` was 0 on every turn of both runs. |
-| `check=` crashes on a tool turn with no JSON | New, [#192](https://github.com/ViviDynamics/nare/issues/192) | Found while building the in-loop mode. Workaround in the spike (see Setup). |
+| Gap (spike) | Status | Evidence |
+|---|---|---|
+| Map-valued schemas refused (#131) | Closed | The unmodified envelope schema is accepted. All in-loop runs used it. |
+| One slow or dropped request ends the run (#134) | Closed in code, partly exercised | Retries exist. a3 retried once and continued. |
+| System prompt not kept on resume (#132) | Closed | The session records the system prompt. The in-loop path does not resume. |
+| `${NAME}` and credential-named keys redacted (#68) | Open, not bypassed | a4r lost the tail of a streamed answer at `local_credentials`. See a4r. |
+| Prose around a JSON answer (#133) | Closed | Offline: JSON followed by prose with a check set finished `done`. |
+| Corrections re-driven through `--resume` | Closed for the in-loop mode | Corrections run in one session. Eight corrections ran in a4r without a resume. |
+| Answer after few or no reads | Partly closed | `--require-reads` held a valid answer in a2. It counts partial reads, and it only applies after validation. |
+| Citations of files never read | Open | a1 cited 13 unread files despite 35 reads. a3 cited 3. a2 cited none. The count gate does not check citations. |
+| Caching (`--cache-breakpoints`) | Still open | `cache_read` was 0 on every turn of every run. |
+| `check=` crashes on a tool turn with no JSON (nare#192) | Closed upstream | Confirmed by the repro in the issue. Workaround still in the spike until re-pin. |
+| Cut-off replies in the Python API | Not a nare gap | The Python default for `max_cutoffs` is no correction. The CLI default is 2. Spike-side bug (a4), fixed. |
 
 ### Cost note
 
-The original section blamed the cost of correction on the resume resending the whole transcript. That is only part of the story. Every request in either harness carries the whole transcript, so moving corrections in-process does not remove that cost. What changed is the number of turns and what the model wrote. The in-loop runs still rewrote whole envelopes (output 67,481 to 117,284 tokens), so most of the output gap is the model's writing, not the harness. The two in-loop runs differ from each other by 87,038 input tokens to admission (600,618 and 687,656), more than a2's whole gap to the baseline (47,000). The difference from run 10 is therefore not attributable to the correction mechanism on this evidence.
+Every request in either harness carries the whole transcript, so moving corrections in-process does not remove that cost. The earlier note blamed resends on the resume alone. The difference between harnesses is in the number of turns and in what the model wrote (output 67k to 117k tokens in the admitted in-loop runs). Output is still the larger gap, and most of it is the model rewriting whole envelopes.
 
 ### Quality
 
-- Both in-loop manifests were admitted by coordinare's validator and drew no finding on the divided review. The baseline's first review never accepted outright. This is the strongest quality signal so far, but it is n = 2, the reviewer had no probe evidence, and it is not evidence that the manifests are better.
-- Evidence provenance held for every file read: 35 of 35 and 23 of 23 digests matched coordinare's re-derivation from the pinned Git objects.
-- a1 cited 13 files it never read (among them `Gemfile.lock`, `package-lock.json`, `spec/rails_helper.rb`). Coordinare admitted them because the daemon binds every reviewed-scope input before authoring, as in the original runs. This is coordinare's admission rule working as designed, and it means the citation gap is a property of the policy, not only of nare.
-- The check callable saw an answer that nare then held for reads (a2, check 6). A caller using `check` for its own state (here, the validator's obligation ledger) therefore sees "admitted" before the run's final answer. The final answer was the 7th check.
+- Two of three admitted manifests drew no finding on the divided review. That is the strongest quality signal so far, but n = 3, the reviewer had no probe evidence, and one review found five issues.
+- Evidence provenance held. 35 of 35, 23 of 23 and 34 of 34 read digests matched coordinare's re-derivation from the pinned Git objects.
+- Citations of unread files remain the main quality gap. a1 cited 13 unread files and coordinare admitted them, because the daemon binds every reviewed-scope input before authoring. That is coordinare's admission rule working as designed, so the gap sits in the policy as much as in nare.
 
-### Issues filed
+### Spend
 
-- [ViviDynamics/nare#192](https://github.com/ViviDynamics/nare/issues/192): `check=` ends the run when a tool turn's text has no JSON. The defect is in `_check_passes`, which lets `extract_json`'s `ValueError` escape. The repro runs as written on `ba35b2a`.
+Tokens across all five runs, nare and review: input 3,389,066 and output 378,288 (3,767,354 in total). By run (input, output): a1 831,778 and 125,052; a2 888,515 and 85,615; a3 739,414 and 88,542; a4 112,328 and 3,655; a4r 817,031 and 75,424. No cache reads were reported.
 
-Checked before filing: no open or closed issue covered `_check_passes` or the `check` tool-turn path.
+### Issues
+
+- [ViviDynamics/nare#192](https://github.com/ViviDynamics/nare/issues/192): `check=` ends the run when a tool turn has no JSON. Now closed upstream.
+- Comment on [ViviDynamics/nare#68](https://github.com/ViviDynamics/nare/issues/68#issuecomment-6651532286): a4r lost the tail of a streamed answer at a credential-named key. Not reproduced offline.
 
 ### Recommendation
 
-**The recommendation changes in substance, but not in action: still do not adopt discovery authoring on nare now.** The old reason was that nare was not cheaper. On two in-loop runs it is close to baseline on input (1.08 to 1.24 times for authoring) and below baseline on authoring plus review (0.75 to 0.80 times), and the two admitted manifests passed review on the first pass. Output is still 2 to 4 times the baseline, and two runs cannot show a saving that is larger than the spread between them. The reason moves from "not cheaper" to "not yet shown", and the next step moves from "fix nare" to "finish the measurement".
+**The recommendation holds: do not adopt discovery authoring on nare yet.** The cost case has improved and is now plausible: authoring input is about the baseline (median 1.08 times), and authoring plus the first review is below it (median 0.75 times). Quality is mixed: two of three admitted manifests were accepted on the first pass, one drew five findings, and the baseline never accepted on its first pass. But the case is not ready for three reasons:
 
-To finish it:
+1. **Reliability.** Two of five runs did not admit. One was a harness bug I fixed. The other is a redaction failure on a credential-named key, which is an open nare issue. A pipeline that fails 40% of runs needs more than the cost gain.
+2. **Output.** Output is still 2 to 4 times the baseline, and most of it is whole-envelope rewriting.
+3. **Citations.** A manifest can cite files it never read, and the count-based read gate does not stop that. That is a coordinare policy question before it is a nare one.
 
-1. Run the third in-loop run (blocked on the gateway key file), then two more if the spread stays this wide. Stop at five.
-2. Decide whether to enforce that cited files were read. That is a coordinare policy question, and the `check` callable could enforce it in the spike. Keep it out of the baseline comparison until the policy is settled.
-3. Fix nare#192 upstream. The spike workaround is only for measurement.
+What would change the answer: #68 fixed for credential-named keys, a decision on citation reads, and enough admitted runs to show the cost spread. The run cap is reached, so the next step is a decision, not another run.
 
 ### Caveats
 
-- **n = 2.** One run is missing. a1 and a2 differ by 6 model turns, 2.4 times in citations, and 3,596 s of wall time (5,210 s and 1,614 s).
-- **Same fixed scope and no probes.** As in the original runs. The baseline's per-run totals include probes, installs and execution repairs, so only the first-round slice is comparable.
-- **Prompt gap kept on purpose.** The spike prompt still omits `GLOBAL_AUTHOR_INSTRUCTION`, so every run is refused for reusing criterion ids (`scope_id_collision`). That is the spike's prompt, not nare.
-- **Read threshold chosen before the runs.** 20 was about half of run 10's reads. a2 shows the threshold holding a valid answer after 4 reads, and a1 read 35 without a hold.
-- **Nothing is cached.** `cache_read` was 0 on every turn.
-- **Crashed first attempt.** A first launch stopped on a missing argument (`--request-timeout`) before any model call. Its directory was deleted. It is not counted.
+- **n = 3 admitted, 5 total.** a1 to a3 spread from 0.89 to 1.24 times the baseline authoring input and from 0.67 to 0.80 times the authoring-plus-review input. That spread is wide enough that the median is a weak estimate.
+- **Fixed scope, no probes, no installer, no execution.** As in the original runs. The baseline's per-run totals include those, so only the first-round slice is comparable.
+- **Prompt gap kept on purpose.** The spike prompt still omits `GLOBAL_AUTHOR_INSTRUCTION`, so every run is refused at least once for reusing criterion ids (`scope_id_collision`). That is the spike's prompt, not nare.
+- **Read threshold chosen before the runs.** 20 was about half of run 10's reads.
+- **Harness bugs.** a4 was aborted by the cut-off default, now fixed.
