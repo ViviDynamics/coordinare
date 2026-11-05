@@ -4,7 +4,7 @@ description: Use when a pull request has CI running or red and you need to wait 
 license: Proprietary
 compatibility: Requires gh, jq, git and a repo.env in the consumer repo (see ADOPTING.md). Scripts are bash 3.2 compatible.
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
   owner: Vivi Dynamics
   requires: ci-safety
 ---
@@ -48,7 +48,12 @@ Read the budget already spent before acting: `$S/state get <issue>`.
    - exit 0, `state: green`: go to step 6.
    - exit 4, `state: timed_out`: report the last state and elapsed time (ci-safety §6),
      go to step 6.
-   - exit 1, `state: failed`: continue.
+   - exit 5, `state: parked`: runs on the head concluded `action_required` or executed
+     zero jobs, so CI never ran. Never green. Follow ci-safety §7 to release it, then
+     watch the new head; on a PR that is not yours, report `parked` and stop.
+   - exit 1, `state: failed`: continue. A run in `failed_runs` failed before any job
+     started (for example `startup_failure`); it has no job log to classify, so read
+     the run in the Actions UI and treat it as `real` until shown otherwise.
    - any other exit: the JSON has an `error`; report it and stop.
 
 3. Save what you saw, mechanically; do not retype values from the JSON:

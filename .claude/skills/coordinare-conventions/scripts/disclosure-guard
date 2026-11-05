@@ -2,6 +2,7 @@
 # Block infrastructure detail from reaching a public repository.
 # usage: disclosure-guard [--body-file <file>]   local diff: merge-base(origin/<default>)..HEAD
 #        disclosure-guard --pr <pr>              the PR's diff, body and commits from GitHub
+#          (a diff GitHub refuses as too large is rebuilt from git: needs full history)
 # exit: 0 clean, justified or not public; 1 blocked
 # Scans added lines, changed file paths, commit messages and the PR body. Generic hits
 # (private IPv4 addresses, literal *.svc.cluster.local names, personal home directories)
@@ -55,7 +56,23 @@ private_terms=false; [ -s "$tmp/terms" ] && private_terms=true
 
 if [ -n "$pr" ]; then
   coordinare_require COORDINARE_REPO
-  coordinare_gh pr diff "$pr" --repo "$COORDINARE_REPO" > "$tmp/diff" || exit $?
+  code=0; coordinare_gh pr diff "$pr" --repo "$COORDINARE_REPO" > "$tmp/diff" 2> "$tmp/diff.err" || code=$?
+  if [ "$code" -ne 0 ]; then
+    grep -q 'too_large' "$tmp/diff.err" || { cat "$tmp/diff.err" >&2; exit "$code"; }
+    # GitHub serves no PR diff above 300 files or 20,000 lines. Rebuild the same
+    # diff from git, so a large PR is still scanned line by line rather than skipped.
+    base_oid=$(coordinare_gh pr view "$pr" --repo "$COORDINARE_REPO" --json baseRefOid --jq .baseRefOid) || exit $?
+    head_oid=$(coordinare_gh pr view "$pr" --repo "$COORDINARE_REPO" --json headRefOid --jq .headRefOid) || exit $?
+    if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+      git fetch -q --no-tags --unshallow origin || coordinare_die 2 "cannot unshallow the checkout: check out with fetch-depth: 0"
+    fi
+    for oid in "$base_oid" "$head_oid"; do
+      git cat-file -e "$oid^{commit}" 2>/dev/null || git fetch -q --no-tags origin "$oid" \
+        || coordinare_die 2 "PR $pr commit $oid is not available locally"
+    done
+    merge_base=$(git merge-base "$base_oid" "$head_oid") || coordinare_die 2 "PR $pr has no merge base with its base branch"
+    git diff "$merge_base" "$head_oid" > "$tmp/diff"
+  fi
   coordinare_gh pr view "$pr" --repo "$COORDINARE_REPO" --json body --jq .body > "$tmp/body" || exit $?
   coordinare_gh pr view "$pr" --repo "$COORDINARE_REPO" --json commits --jq '.commits[].messageHeadline,.commits[].messageBody' > "$tmp/messages" || exit $?
 else

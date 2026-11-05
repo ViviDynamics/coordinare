@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Merge a PR with the consumer's configured flags and verify state == MERGED.
-# usage: merge-verified <pr>      exit: 0 merged, 1 not merged
+# usage: merge-verified <pr>      exit: 0 merged, 1 not merged, 4 preconditions failed
+# Before merging it reads ci-runs for the PR's current head and refuses unless
+# the state is green: every workflow run on the head concluded success (or a
+# documented skip). A parked head (runs at action_required, or completed with
+# zero jobs) never ran CI and is refused, as are pending, failed and none
+# (none passes only with COORDINARE_ALLOW_NO_CI=true, for a repo with no CI at all).
+# The merge is pinned to the head it verified with --match-head-commit, so a
+# push between the check and the merge cannot slip in untested code.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 coordinare_load_env; coordinare_require COORDINARE_REPO COORDINARE_MERGE_FLAGS
@@ -22,11 +29,34 @@ fi
 if [ "$before_state" != "OPEN" ]; then
   emit preconditions_failed "" "PR is $before_state, not OPEN"; exit 4
 fi
+ci=$("$(dirname "$0")/ci-runs" "$pr" 2>"$tmp_err") || {
+  code=$?
+  [ "$code" -eq 3 ] && exit 3
+  emit preconditions_failed "" "ci-runs failed: $(head -n1 "$tmp_err")"; exit 4
+}
+ci_state=$(printf '%s' "$ci" | jq -r .state)
+head=$(printf '%s' "$ci" | jq -r .head_sha)
+# none is acceptable only where repo.env says the repo has no CI at all.
+# A configured required workflow (COORDINARE_CI_WORKFLOW) means the repo has CI, so
+# none there is "not started yet", never "no CI".
+if [ "$ci_state" = "none" ] && [ "${COORDINARE_ALLOW_NO_CI:-}" = "true" ] && [ -z "${COORDINARE_CI_WORKFLOW:-}" ]; then ci_state=green; fi
+if [ "$ci_state" != "green" ]; then
+  detail=$(printf '%s' "$ci" | jq -r '
+    [ (.parked_runs[]? | "parked run \(.run_id) \(.name) (\(.conclusion), \(.jobs) jobs)"),
+      (.failed_runs[]? | "failed run \(.run_id) \(.name) (\(.conclusion))"),
+      (.failed_jobs[]? | "failed job \(.job) in run \(.run_id) (\(.conclusion))"),
+      (.runs[]? | select(.status!="completed") | "run \(.id) \(.name) still \(.status)"),
+      (.runs[]? | select(.status=="completed") | .id as $rid | .jobs[]? | select(.status!="completed" or .conclusion==null or .conclusion=="stale") | "job \(.name) in run \($rid) still \(.status)"),
+      (.pending_checks[]? | "check \(.name) still \(.status)"),
+      (if .missing_workflow then "no \(.missing_workflow) run at the head yet" else empty end)
+    ] | join("; ")')
+  emit preconditions_failed "" "CI on head $head is $ci_state, not green${detail:+: $detail}"; exit 4
+fi
 # The consumer's flags are word-split on purpose; set -f keeps the shell from
 # glob-expanding any of them against the working directory.
 # shellcheck disable=SC2086
 set -f
-merge_out=$(coordinare_gh pr merge "$pr" --repo "$COORDINARE_REPO" $COORDINARE_MERGE_FLAGS 2>&1) || true
+merge_out=$(coordinare_gh pr merge "$pr" --repo "$COORDINARE_REPO" $COORDINARE_MERGE_FLAGS --match-head-commit "$head" 2>&1) || true
 set +f
 after=$(view 2>"$tmp_err") || {
   code=$?
