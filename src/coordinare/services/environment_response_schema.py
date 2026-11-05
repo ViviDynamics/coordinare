@@ -167,9 +167,10 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
     return {'type': 'object', 'anyOf': [*tools, declaration], '$defs': definitions}
 
 
-# Maintainer ruling 2026-10-31: a discovery call rides out a provider outage for up to ten minutes before the attempt
-# holds. The waits spend the attempt's own clock, never a repair budget.
-PROVIDER_OUTAGE_SECONDS = 600.0
+# Maintainer ruling 2026-10-31, raised 2026-11-05: a discovery call rides out a provider outage for up to thirty minutes
+# before the attempt holds (Dettmore e2e-57 lost a 2.6 hour attempt to a gateway outage longer than the first ten).
+# The waits spend the attempt's own clock, never a repair budget, and stay within each call's phase timeout.
+PROVIDER_OUTAGE_SECONDS = 1800.0
 
 
 async def invoke_recorded(budget: AttemptBudget, chat: Callable[..., Awaitable[str | DiscoveryChatReply]],

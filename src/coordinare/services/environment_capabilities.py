@@ -10,9 +10,11 @@ from coordinare_service_inference.environment.guest_selection import guest_for
 from coordinare_service_inference.environment.models import ExecutionCapabilities
 from coordinare_service_inference.environment.runtime import RuntimeIdentity, RuntimePolicy
 from coordinare_service_inference.environment.runtime_guest import foreign_platforms, guest_cpus
-from coordinare_service_inference.environment.static_rules import (
-    UNPRIVILEGED_APT_OPTIONS,
-    UNPRIVILEGED_APT_RECIPE,
+from coordinare_service_inference.environment.system_packages import (
+    COMMAND as SYSTEM_PACKAGES_COMMAND,
+)
+from coordinare_service_inference.environment.system_packages import (
+    ENV_FILE as SYSTEM_PACKAGES_ENV_FILE,
 )
 
 from coordinare.services.environment_acceptance import (
@@ -102,16 +104,25 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
                 "Use inspected tools and cache-local dependency artifacts under {cache}. System packages cannot be "
                 "installed here: the carrier has no Linux capabilities, so apt-get or apt install, dpkg -i, apk add and "
                 "dnf or yum install all fail, and plain apt-get update and download fail too (apt's fetch helper needs "
-                "setgroups). apt-get can still fetch this carrier's own release packages without privileges, resolving "
-                "dependencies against what the carrier already has, when every apt-get call carries these options "
-                "written out in full (not through a variable): " + UNPRIVILEGED_APT_OPTIONS + ". To add native "
-                "libraries or headers: " + UNPRIVILEGED_APT_RECIPE + ". The last step points each -dev package's "
-                "lib<name>.so link at the carrier's own runtime library when apt did not fetch it because the carrier "
-                "already has it. Prefer this to fetching .deb files by URL: the packages match the carrier's release, "
-                "so they cannot clash with the libraries its own tools load. Load unpacked libraries through an rpath "
-                "(-Wl,-rpath,{cache}/deps/usr/lib/<triplet>), not LD_LIBRARY_PATH in activation: activation applies to "
-                "every later command, and a library there replaces the carrier's own copy for system tools such as "
-                "curl. Guest service privileges are daemon-owned. "
+                "setgroups). To add native libraries or headers, run the daemon's own command: "
+                + SYSTEM_PACKAGES_COMMAND + " (Debian package names, for example libssl-dev zlib1g-dev libyaml-dev). It "
+                "fetches this carrier's own release packages without privileges, resolving dependencies against what "
+                "the carrier already has, unpacks them under {cache}/deps, points each -dev package's lib<name>.so link "
+                "at the carrier's runtime library when the carrier already has it, moves their pkg-config files under "
+                "{cache}/deps, and writes {cache}/deps/" + SYSTEM_PACKAGES_ENV_FILE + ". Source that file in each "
+                "command that builds against the packages (. {cache}/deps/" + SYSTEM_PACKAGES_ENV_FILE + " && "
+                "./configure ...): it sets CPATH, LIBRARY_PATH, CPPFLAGS, LDFLAGS with an rpath, and PKG_CONFIG_PATH, so "
+                "libraries load at run time without LD_LIBRARY_PATH. Call it again with more packages whenever needed. "
+                "Prefer it to fetching .deb files by URL or calling apt-get yourself: the packages match the carrier's "
+                "release, so they cannot clash with the libraries its own tools load, and no step is left out. Never "
+                "put LD_LIBRARY_PATH in activation: activation applies to every later command, and a library there "
+                "replaces the carrier's own copy for system tools such as curl. Guest service privileges are "
+                "daemon-owned. "
+                # Dettmore e2e-57: PostgreSQL's PGXS called clang-19 for LLVM bitcode, the repair replaced clang with a
+                # stub script, and the extension's install then failed further on.
+                "When a build calls an optional tool the carrier lacks, turn that feature off with the build's own "
+                "option (for a PostgreSQL extension built with PGXS, make with_llvm=no) rather than installing a "
+                "stand-in or faking the tool. "
                 "Installation, every check and the service lifecycle share one session_budget; the guest emulates its "
                 "CPU, so container image builds are slow. Prefer an official prebuilt release archive or an extracted "
                 "distribution package over compiling a language runtime, database or other large tool from source; "
@@ -124,11 +135,9 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
                 "link or load it. A runtime build can skip a module it could not configure and still finish, so treat a "
                 "reported skipped or missing module as a failure. Point include, library, pkg-config and loader paths "
                 "at the multiarch directories (usr/include/<triplet> and usr/lib/<triplet>, for example "
-                "aarch64-linux-gnu), not only usr/lib. Example, building a runtime without privileges: fetch and unpack "
-                "each native dependency's -dev package under {cache}/deps with the apt recipe above; "
-                "build with CPPFLAGS=\"-I{cache}/deps/usr/include -I{cache}/deps/usr/include/<triplet>\", "
-                "LDFLAGS=\"-L{cache}/deps/usr/lib/<triplet> -Wl,-rpath,{cache}/deps/usr/lib/<triplet>\" and "
-                "PKG_CONFIG_PATH={cache}/deps/usr/lib/<triplet>/pkgconfig, installing under a {cache} prefix; then load "
+                "aarch64-linux-gnu), not only usr/lib. Example, building a runtime without privileges: fetch each "
+                "native dependency's -dev package with the daemon's command above, then in the build command source "
+                "{cache}/deps/" + SYSTEM_PACKAGES_ENV_FILE + " and configure with a {cache} prefix; then load "
                 "each native module the repository needs and fail the install if any does not load."}
 
 

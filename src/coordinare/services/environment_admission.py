@@ -178,10 +178,11 @@ GRAPH_GUIDANCE = {
     'system_package_install': ('The named install runs a system package manager install (apt-get or apt install, '
                                'dpkg -i, apk add, dnf or yum install), or an apt fetch (update, download, install -d) '
                                'without the unprivileged options, which this carrier refuses: it has no Linux '
-                               'capabilities. Fetch native packages with apt-get carrying, written out in full, the '
-                               'options the installation guidance gives, download into {cache}/apt and unpack them '
-                               'under {cache}/deps with dpkg-deb -x, as its recipe shows; or download a prebuilt release '
-                               'archive for execution_capabilities.platform.'),
+                               'capabilities. Fetch native packages with the daemon command the installation guidance '
+                               'gives (python3 -m coordinare_service_inference.environment.system_packages --into '
+                               '{cache}/deps <packages>) and source {cache}/deps/system-packages.env in each command '
+                               'that builds against them; or download a prebuilt release archive for '
+                               'execution_capabilities.platform.'),
     'self_matching_process_pattern': ('The named command runs pkill -f or pgrep -f inside a shell script that does more than '
                                       'that, so the pattern matches the script\'s own shell and kills or finds it. Write the '
                                       'process id to a file under {scratch} when it starts, and stop it by killing that '

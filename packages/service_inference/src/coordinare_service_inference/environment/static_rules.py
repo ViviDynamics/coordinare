@@ -11,6 +11,8 @@ import shlex
 from typing import TYPE_CHECKING
 
 from .models import _graph_error
+from .system_packages import COMMAND as SYSTEM_PACKAGES_COMMAND
+from .system_packages import ENV_FILE as SYSTEM_PACKAGES_ENV_FILE
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -476,7 +478,10 @@ def validate_static_rules(install: Sequence[Command], activation: Activation, pl
             if system_package_install(command) or package_fetch(command):
                 raise _graph_error("system_package_install", "this carrier cannot install system packages: it has "
                                    "no Linux capabilities, so apt installs, dpkg -i, apk and dnf are refused, and apt "
-                                   "can fetch only without privileges: " + UNPRIVILEGED_APT_RECIPE, command.id, set())
+                                   "can fetch only without privileges. Fetch native packages with the daemon's command, which fetches "
+                                   "this carrier's own release packages, unpacks and relinks them: " + SYSTEM_PACKAGES_COMMAND
+                                   + "; then source {cache}/deps/" + SYSTEM_PACKAGES_ENV_FILE + " in each command that "
+                                   "builds against them", command.id, set())
     for command in [*install, *others]:
         if self_matching_process_pattern(command):
             raise _graph_error("self_matching_process_pattern", "a full-command-line pkill or pgrep inside a longer shell "

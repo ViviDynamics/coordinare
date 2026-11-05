@@ -48,7 +48,7 @@ from coordinare.services.environment_attempt import (
     DiscoveryChatReply,
     EnvironmentDiscoveryError,
 )
-from coordinare.services.environment_repair import journal_for, remaining_seconds
+from coordinare.services.environment_repair import journal_for, remaining_seconds, resumable_attempt
 from coordinare.services.environment_runtime import (
     admit_installer_runtime,
     guest_expiry,
@@ -331,6 +331,18 @@ async def _remove_container(name: str) -> bool:
 
 
 INSTALLER_TAIL_BYTES = 2000
+
+
+def _time_left(cache: EnvCacheState) -> bool:
+    try:
+        return remaining_seconds(cache) > 0
+    except (ValueError, RuntimeError):
+        return False
+
+
+# Each discovery call already rides out a thirty-minute provider outage; a longer one resumes the same attempt from
+# its journal this many times, within its original deadline, as the daemon's next bootstrap cycle would.
+MAX_PROVIDER_RESUMES = 2
 
 
 async def _install(
@@ -827,6 +839,7 @@ async def validate_repository(
     state["environment_probe_authorize"] = approve_probe
     service.bind_kubernetes_state(state)
     attempts = []
+    provider_resumes: list[dict[str, Any]] = []
     attempt_target = output
     try:
         await snapshot.verify()
@@ -837,13 +850,25 @@ async def validate_repository(
             attempt_target = output / f"attempt-{generation:03}"
             new_profile_directory(attempt_target)
             result["stage"] = "repair_discovery" if generation else "discovery"
-            await service._build_manifest_artifacts(
-                performer_mounts=(output,), symphony_name=snapshot.name, repo=snapshot.name,
-                github_org=snapshot.org, github_service=snapshot, readme_contents={},
-                current_sha=snapshot.commit, cache_dir=cache.cache_dir,
-                cache_mount_path="/devenv/" + cache.sanitised_name,
-                llm_chat=recorded, cache_state=cache,
-            )
+            for resume in range(MAX_PROVIDER_RESUMES + 1):
+                try:
+                    await service._build_manifest_artifacts(
+                        performer_mounts=(output,), symphony_name=snapshot.name, repo=snapshot.name,
+                        github_org=snapshot.org, github_service=snapshot, readme_contents={},
+                        current_sha=snapshot.commit, cache_dir=cache.cache_dir,
+                        cache_mount_path="/devenv/" + cache.sanitised_name,
+                        llm_chat=recorded, cache_state=cache,
+                    )
+                    break
+                except EnvironmentDiscoveryError as exc:
+                    if resume == MAX_PROVIDER_RESUMES or not resumable_attempt(cache) or not _time_left(cache):
+                        raise
+                    await persist_attempt()
+                    result["outer_retry_loop_exercised"] = True
+                    provider_resumes.append({"generation": generation, "reason_code": exc.code, "at": time.time()})
+                    result["provider_resumes"] = provider_resumes
+                    _event(repository=snapshot.name, stage=result["stage"], status="resuming",
+                           generation=generation, reason_code=exc.code)
             for name, data in (("accepted-manifest.json", cache.environment_manifest),
                                ("accepted-assessment.json", cache.environment_assessment),
                                ("execution-capabilities.json", cache.environment_capabilities),

@@ -99,21 +99,6 @@ def test_an_apt_fetch_without_every_unprivileged_setting_or_an_apt_install_is_st
     assert error.type == 'system_package_install'
 
 
-def test_the_correction_and_the_guidance_give_the_unprivileged_recipe():
-    from types import SimpleNamespace
-
-    from coordinare_service_inference.environment.static_rules import UNPRIVILEGED_APT_OPTIONS
-
-    from coordinare.services.environment_capabilities import carrier_process_policy
-
-    error = _rejected([_cmd('install-native', 'bash', '-c', 'apt-get update')])
-    assert UNPRIVILEGED_APT_OPTIONS in str(error)
-    resources = SimpleNamespace(max_seconds=7200, cpus=8)
-    guidance = carrier_process_policy(SimpleNamespace(runtime=SimpleNamespace(resources=resources)))['installation_guidance']
-    assert UNPRIVILEGED_APT_OPTIONS in guidance and 'dpkg-deb -x' in guidance and '-xtype l' in guidance
-    assert 'not LD_LIBRARY_PATH in activation' in guidance
-
-
 @pytest.mark.parametrize('script', ['apt-cache policy libpq5', 'apt-get --help', 'apt-get -s install gcc',
                                     'apt-get --print-uris install gcc'])
 def test_apt_requests_that_fetch_nothing_are_allowed(script):
@@ -157,7 +142,7 @@ def test_the_carrier_guidance_states_both_rules_and_the_teardown_duty():
     resources = SimpleNamespace(max_seconds=7200, cpus=8)
     policy = carrier_process_policy(SimpleNamespace(runtime=SimpleNamespace(resources=resources)))
     assert 'apt-get or apt install' in policy['installation_guidance']
-    assert 'dpkg-deb -x' in policy['installation_guidance'] and 'update and download' in policy['installation_guidance']
+    assert 'environment.system_packages' in policy['installation_guidance'] and 'update and download' in policy['installation_guidance']
     assert 'may require' not in policy['installation_guidance']
     assert 'docker rm -f -v' in policy['runtime_ordering_guidance']
     assert 'pid to a file' in policy['runtime_ordering_guidance']

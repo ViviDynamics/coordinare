@@ -91,6 +91,10 @@ JOURNAL_MAX_BYTES = 16 * 1024 * 1024
 MAX_ARCHIVED_ATTEMPTS = 3
 REPORT_MAX_BYTES = 256 * 1024
 FEEDBACK_MAX_BYTES = 16 * 1024
+# A discovery stopped by its model provider (after riding out the outage window) stays resumable: the journal keeps
+# every checkpoint, so the next run of the same attempt continues it within the original deadline and budgets, instead
+# of the hold discarding hours of accepted scope, review and execution history (Dettmore e2e-57, 2.6 hours).
+RESUMABLE_ERRORS = frozenset({"provider_request_failed"})
 # Dettmore e2e-54: 512 characters, cut from the end, removed the error excerpt and build-log tail the runner puts at
 # the start of a failed command's output, so no repair author saw "OpenSSL library directory could not be found".
 # A record keeps the runner's whole bounded output; only an oversized report shrinks it, from the middle.
@@ -593,6 +597,8 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
             journal.scope_reuse = reusable_scope(cache.environment_attempt_archive, cache.bootstrap_commit_sha)
     else:
         journal = previous
+        if journal.last_error in RESUMABLE_ERRORS:
+            journal.last_error = None
         journal.expires_at = min(journal.expires_at, journal.started_at+seconds)
         journal.max_calls = min(journal.max_calls, limits.max_model_calls)
         journal.max_reads = min(journal.max_reads, limits.max_total_reads)
@@ -642,7 +648,9 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
         _refuse('coverage findings require established candidate', code='review_findings_invalid')
     journal.coverage_manifest = candidate
     journal.finding_ledger = current
-    if budget.error_code is not None:
+    if budget.error_code in RESUMABLE_ERRORS and journal.status == 'discovering':
+        journal.last_error = budget.error_code
+    elif budget.error_code is not None:
         journal.status, journal.last_error = 'held', budget.error_code
     journal.diagnostics = budget.summary()
     journal.probe_batches = max(journal.probe_batches, budget.probe_batches)
@@ -1282,10 +1290,18 @@ def finish_attempt(cache: EnvCacheState, success: bool, evidence: dict[str, Any]
     journal = journal_for(cache)
     if journal.status == 'executing':
         record_execution_failure(cache, evidence or {}, cleanup_confirmed=cleanup_confirmed)
-    elif journal.status == 'discovering':
+    elif journal.status == 'discovering' and journal.last_error not in RESUMABLE_ERRORS:
         journal.status = 'held'
         journal.last_error = 'discovery_refused'
         _publish(cache, journal)
+
+
+def resumable_attempt(cache: EnvCacheState) -> bool:
+    """The attempt stopped for a reason its next run may continue past, with its checkpoints intact."""
+    if cache.environment_attempt is None:
+        return False
+    journal = journal_for(cache)
+    return journal.status == 'discovering' and journal.last_error in RESUMABLE_ERRORS
 
 
 def dispatch_refusal(cache: EnvCacheState, commit: str) -> str | None:

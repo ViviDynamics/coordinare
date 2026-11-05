@@ -139,7 +139,7 @@ async def test_outside_discovery_a_bad_request_is_still_never_retried(monkeypatc
     assert reply.error and sleeps == []
 
 
-def test_discovery_calls_carry_the_ten_minute_window():
+def test_discovery_calls_carry_the_thirty_minute_window():
     from coordinare.services.environment_response_schema import PROVIDER_OUTAGE_SECONDS
 
-    assert PROVIDER_OUTAGE_SECONDS == 600.0
+    assert PROVIDER_OUTAGE_SECONDS == 1800.0
