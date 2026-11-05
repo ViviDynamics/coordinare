@@ -622,30 +622,18 @@ def _check_errors(feedback: list[dict[str, Any]], instruction: str) -> list[dict
     return errors
 
 
-def patch_check_passes() -> bool:
-    """Spike-side workaround for nare#192, applied in this process only.
+def cli_defaults() -> dict[str, Any]:
+    """nare's own CLI defaults for the run flags the harness does not set, read from its parser.
 
-    nare's ``_check_passes`` lets a ``ValueError`` from ``extract_json`` escape on a tool turn whose text
-    holds no JSON, which ends the run when ``check`` is set. The function's own docstring says such a
-    candidate is simply not kept, so a non-JSON tool-turn candidate is treated as not kept here.
-    Returns whether the patch is in place.
+    The Python API does not apply these defaults for us (for example ``max_cutoffs=None`` means no
+    cut-off correction there, while the CLI default is 2), so the harness passes them explicitly and
+    records them in each run. Imported lazily: the unit tests load this file without nare installed.
     """
-    from nare import loop as nare_loop
+    from nare.cli import build_parser
 
-    if getattr(nare_loop._check_passes, "_spike_patched", False):
-        return True
-
-    def _check_passes_safe(text: str, check: Any) -> bool:
-        if check is None:
-            return True
-        try:
-            return not nare_loop._check_errors(nare_loop.extract_json(text), check)
-        except (nare_loop.CheckRaised, ValueError):
-            return False
-
-    _check_passes_safe._spike_patched = True  # type: ignore[attr-defined]
-    nare_loop._check_passes = _check_passes_safe
-    return True
+    parsed = build_parser().parse_args(["run", "--provider", "openai", "--model", "m", "x"])
+    return {"max_cutoffs": parsed.max_cutoffs, "request_retries": parsed.request_retries,
+            "request_retry_seconds": parsed.request_retry_seconds, "max_turns": parsed.max_turns}
 
 
 async def inloop(args: argparse.Namespace) -> dict[str, Any]:
@@ -656,8 +644,9 @@ async def inloop(args: argparse.Namespace) -> dict[str, Any]:
     ``require_reads``). The validator is one object across the run, as production keeps one across
     repair rounds, so an obligation the model drops after a refusal is still refused.
     """
+    import subprocess as _sp
+
     import nare as nare_package
-    nare_patched = patch_check_passes()
     from nare import Policy, make_transport, new_session, run as nare_run
     from nare.loop import RetryPolicy
     from nare.session import save
@@ -669,6 +658,14 @@ async def inloop(args: argparse.Namespace) -> dict[str, Any]:
     from coordinare.services.environment_admission import _validation_feedback
     from coordinare.services.environment_attempt import EnvironmentDiscoveryError
     from coordinare.services.environment_discovery_prompts import _MANIFEST_ENVELOPE, correction_instruction
+
+    cli = cli_defaults()
+    max_cutoffs = cli["max_cutoffs"] if args.max_cutoffs is None else args.max_cutoffs
+    retries = cli["request_retries"] if args.request_retries is None else args.request_retries
+    retry_seconds = (cli["request_retry_seconds"] if args.request_retry_seconds is None
+                     else args.request_retry_seconds)
+    nare_sha = _sp.run(["git", "-C", str(Path(nare_package.__file__).resolve().parents[2]), "rev-parse", "HEAD"],
+                       capture_output=True, text=True, check=False).stdout.strip() or None
 
     out = args.out
     out.mkdir(parents=True)
@@ -749,8 +746,8 @@ async def inloop(args: argparse.Namespace) -> dict[str, Any]:
                     session, transport=transport, approve=approve_all, policy=policy, schema=schema,
                     max_turns=args.max_turns, budget_tokens=args.budget_tokens,
                     context_window=args.context_window,
-                    retry=RetryPolicy(retries=args.request_retries, seconds=args.request_retry_seconds),
-                    max_corrections=args.max_corrections, max_cutoffs=args.max_cutoffs,
+                    retry=RetryPolicy(retries=retries, seconds=retry_seconds),
+                    max_corrections=args.max_corrections, max_cutoffs=max_cutoffs,
                     require_reads=args.require_reads, check=check):
                 events_file.write(json.dumps(event.wire(), ensure_ascii=False) + "\n")
     except Exception as exc:  # recorded: a run that dies in nare is a result, not a crash of the spike
@@ -763,7 +760,8 @@ async def inloop(args: argparse.Namespace) -> dict[str, Any]:
     reads = read_records(session.evidence)
     digests = dict(discovery.inputs)
     record: dict[str, Any] = {
-        "mode": "inloop", "nare_module": str(nare_package.__file__), "nare_192_workaround": nare_patched,
+        "mode": "inloop", "nare_module": str(nare_package.__file__), "nare_sha": nare_sha,
+        "cli_defaults": cli, "max_cutoffs_used": max_cutoffs, "request_retries_used": retries,
         "nare_version": nare_package.__version__, "schema_loosened": loosened,
         "max_corrections": args.max_corrections, "require_reads": args.require_reads, "stream": args.stream,
         "request_retries": args.request_retries, "seconds": seconds, "error": error,
@@ -921,14 +919,16 @@ def main() -> int:
     loop.add_argument("--max-turns", type=int, default=80)
     loop.add_argument("--max-corrections", type=int, default=8,
                       help="nare's correction budget, shared by schema, check and read corrections")
-    loop.add_argument("--max-cutoffs", type=int, default=2,
-                      help="cut-off replies corrected per invocation (nare CLI default 2; None in the Python API means none)")
+    loop.add_argument("--max-cutoffs", type=int, default=None,
+                      help="cut-off replies corrected per invocation; default is nare's CLI default")
     loop.add_argument("--require-reads", type=int, default=0,
                       help="hold a final answer until this many distinct files were read (nare --require-reads)")
     loop.add_argument("--request-timeout", type=float, default=None,
                       help="per-request timeout seconds (nare default 600)")
-    loop.add_argument("--request-retries", type=int, default=3)
-    loop.add_argument("--request-retry-seconds", type=float, default=60.0)
+    loop.add_argument("--request-retries", type=int, default=None,
+                      help="model request retries; default is nare's CLI default")
+    loop.add_argument("--request-retry-seconds", type=float, default=None,
+                      help="seconds between retries; default is nare's CLI default")
     loop.add_argument("--stream", action="store_true")
     loop.add_argument("--replay", type=Path, default=None,
                       help="offline smoke test: replay this nare script (provider fake) instead of the gateway")

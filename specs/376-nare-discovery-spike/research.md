@@ -497,3 +497,108 @@ What would change the answer: #68 fixed for credential-named keys, a decision on
 - **Prompt gap kept on purpose.** The spike prompt still omits `GLOBAL_AUTHOR_INSTRUCTION`, so every run is refused at least once for reusing criterion ids (`scope_id_collision`). That is the spike's prompt, not nare.
 - **Read threshold chosen before the runs.** 20 was about half of run 10's reads.
 - **Harness bugs.** a4 was aborted by the cut-off default, now fixed.
+
+## Re-run on nare 91e75a8 (main, 2026-11-05)
+
+**Status: three in-loop runs on current `origin/main` (`91e75a8`, release 2026.11.44, contract 3). All three were admitted by coordinare. Two were GLM runs comparable to a1 to a3; one was claude-haiku-5-5, which is not comparable to the GLM baseline.** No nare defect was found in these runs, so nothing new was filed. The #192 workaround is removed from the harness.
+
+### Short answer
+
+On main, the admission problem did not recur. Three of three runs were admitted. Across the five GLM runs that were admitted (a1, a2, a3, b1, b2), authoring to admission costs a median 1.09 times the baseline input (range 0.89 to 1.94), and authoring plus the first review costs a median 0.76 times (range 0.67 to 1.16). Output stays at 2.8 times the baseline (median). First review accepts 2 of 5 manifests, against 0 of 33 baseline first reviews. The citation gap persists: 13 to 19 files cited but never read in three of the five GLM runs.
+
+The recommendation holds for adoption (not yet), but its basis has changed. Reliability, which blocked adoption last round, no longer blocks it on main. What blocks it now is the citation-read policy and output volume, with five runs of spread that is still wide.
+
+### Setup
+
+- **nare.** `origin/main` at `91e75a8` (release 2026.11.44, contract 3), detached worktree `nare-spike-3`, removed at the end. The SHA is recorded in every run record as `nare_sha`.
+- **Comparable settings.** Same pinned baseline (`dettmore-platform` at `bf498e8`), same reference scope and capabilities, same execution rules, same gateway, effort low, 32,768 max output, 262,144 context, a 4,000,000 token budget, 80 turns, streaming on, `--max-corrections 8`, `--require-reads 20`.
+- **Harness changes for main.** The #192 workaround is removed. Contract 3 is set by nare's Python API automatically (each session records `contract` 3), so no flag is needed on this path. The CLI-only `--contract 3` flag is not used. The harness now reads its unset flags from nare's own CLI parser at run time (`cli_defaults()`): `max_cutoffs` 2, `request_retries` 3, `request_retry_seconds` 60. Each record stores the values used, so a Python-API default cannot silently differ from the CLI again. This matters: `max_cutoffs=None` in the Python API means no cut-off correction. Haiku b-run h1 hit a max-tokens cut-off, which was corrected under the new default.
+- **Model.** `spark/glm-5.3-flash` for b1 and b2. `claude-haiku-5-5` for h1, through the same OpenAI-compatible gateway route.
+- **Commands.** `bash .agents/state/376-nare-spike/launch-inloop.sh inloop-b1 --stream --max-corrections 8 --require-reads 20`, and the same with `SPIKE_MODEL=claude-haiku-5-5` for h1. The key is read from its file inside the command and never printed.
+- **Offline smoke tests on main** (no model calls): replayed admit, refusal with correction, and read hold all behaved as on `ba35b2a`.
+
+### Runs
+
+| Run | Model | Outcome | nare turns | Input to end | Output to end | Review in, out | Refusals | Corrections (charged, free) | Files read | Cited (unread, partial) | First review | Wall (s) |
+|---|---|---|---:|---:|---:|---|---:|---|---:|---|---|---:|
+| b1 | GLM | admitted | 19 | 1,076,682 | 124,826 | 209,971, 13,763 | 3 | 6, 0 | 37 | 35 (13, 2) | revise, 3 findings | 5,616 |
+| b2 | GLM | admitted | 13 | 603,577 | 85,736 | 236,221, 16,588 | 3 | 4, 0 | 22 | 40 (19, 2) | revise, 5 findings | 4,556 |
+| h1 | haiku | admitted | 10 | 814,449 | 119,337 | 391,547, 12,041 | 3 | 3, 1 | 34 | 26 (1, 1) | revise, 12 findings | 479 |
+
+The 6 corrections in b1 are three no-JSON replies, one id collision, one removed obligation and one criterion-mapping refusal. All three refusals were coordinare's: `scope_id_collision`, `obligation_removed` (enforced across checks, since one validator spans the run), and `scope_required_check_mapping`. The h1 corrections are three charged and one free. Separately, h1 had one max-tokens cut-off, corrected under the default of 2 (cut-offs are counted apart from corrections). Nothing was retried at the provider (retries 0 in every run).
+
+### Comparison
+
+Baseline is the median across the 47 saved runs. Run 10 is the original CLI run on `0501d80`. a1 to a3 are the earlier in-loop runs on `ba35b2a`. a4r is the failed run on `ba35b2a`. Ratios use the baseline's first-round input (553,579) and output (30,264), and first-round plus first-review input (1,106,948) and output (45,133).
+
+| Metric | Baseline (median) | run 10 (CLI, 0501d80) | a1 | a2 | a3 | a4r (failed, ba35b2a) | b1 | b2 | h1 (haiku) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Admitted | 44 of 47 held | yes | yes | yes | yes | no | yes | yes | yes |
+| Input to admission | 553,579 | 919,854 | 687,656 | 600,618 | 491,997 | n/a | 1,076,682 | 603,577 | 814,449 |
+| Output to admission | 30,264 | 128,168 | 117,284 | 67,481 | 79,695 | n/a | 124,826 | 85,736 | 119,337 |
+| Input, authoring plus first review | 1,106,948 | 1,146,530 | 831,778 | 888,515 | 739,414 | n/a | 1,286,653 | 839,798 | 1,205,996 |
+| Output, authoring plus first review | 45,133 | 139,701 | 125,052 | 85,615 | 88,542 | n/a | 138,589 | 102,324 | 131,378 |
+| Ratio, authoring input | 1.00 | 1.66 | 1.24 | 1.08 | 0.89 | n/a | 1.94 | 1.09 | 1.47 |
+| Ratio, authoring output | 1.00 | 4.23 | 3.88 | 2.23 | 2.63 | n/a | 4.12 | 2.83 | 3.94 |
+| Ratio, authoring plus review input | 1.00 | 1.04 | 0.75 | 0.80 | 0.67 | n/a | 1.16 | 0.76 | 1.09 |
+| Ratio, authoring plus review output | 1.00 | 3.10 | 2.77 | 1.90 | 1.96 | n/a | 3.07 | 2.27 | 2.91 |
+| First review | 0 of 33 accept | revise, 1 finding | accept | accept | revise, 5 findings | not run | revise, 3 findings | revise, 5 findings | revise, 12 findings |
+| Cited paths never read | n/a | 9 of 34 | 13 of 36 | 0 of 15 | 3 of 22 | n/a | 13 of 35 | 19 of 40 | 1 of 26 |
+| Cache-read tokens | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Wall time (s) | 6,191 (whole run, median) | 9,655 | 5,210 | 1,614 | 6,620 | 3,320 | 5,616 | 4,556 | 479 |
+
+GLM medians over the five admitted GLM runs (a1, a2, a3, b1, b2): authoring input 1.09 times the baseline (0.89 to 1.94); authoring output 2.83 (2.23 to 4.12); authoring plus review input 0.76 (0.67 to 1.16); authoring plus review output 2.27 (1.90 to 3.07). The median first-review verdict is revise, and 2 of 5 accept.
+
+The baseline's first round includes a probe preflight that the nare runs omit, so the comparison favours nare slightly.
+
+### Admission outcomes
+
+- **On main:** 3 of 3 admitted (b1, b2, h1). No redaction-caused failure. The envelope carries the `local_credentials` key the a4r answer broke on.
+- **On ba35b2a:** 3 of 4 admitted (a1, a2, a3). a4r failed on the redaction of `local_credentials` (nare#68). A separate a4 run was aborted by the harness default (`max_cutoffs=None`), now fixed, and is not counted.
+- **Across all in-loop runs with a valid configuration (a1 to a3, a4r, b1, b2, h1):** 6 of 7 admitted. The one failure is the #68 failure on the earlier nare, which main has fixed. Three runs on main is a small sample, so this is consistent with the fix, not proof of it.
+
+So the admission failures from last round went away on main, for the reason we identified. The cut-off failure was the harness, not nare, and is fixed in the harness.
+
+### Gap status
+
+| Gap | Status on 91e75a8 | Evidence |
+|---|---|---|
+| Redaction of credential-named keys (#68) | Closed on main | b1, b2 and h1 admitted with the envelope key that broke a4r. The fix is the PR the coordinator confirmed offline. |
+| `check=` crash on tool turns (#192) | Closed on main, workaround removed | The harness no longer patches `_check_passes`. Records carry no workaround flag. |
+| Cut-off replies in the Python API | Harness fixed, not a nare gap | The Python default for `max_cutoffs` is no correction. The harness now reads the CLI default. h1 used one correction. |
+| Map-valued schemas (#131) | Closed | Unchanged. The envelope schema is used as is. |
+| Prose around JSON (#133) | Closed | Unchanged from the `ba35b2a` check. |
+| Citations of files never read | Open | 13 to 19 unread citations in b1 and b2 (and a1). The count gate does not check citations. This is the main quality gap. |
+| Caching | Still open | `cache_read` 0 in every run. |
+
+### Cost note
+
+Output is still the larger gap. The admitted GLM runs produced 2.3 to 4.1 times the baseline's output for authoring. Most of it is whole-envelope rewriting, which the earlier note already described.
+
+### Quality
+
+- First review accepted 2 of 5 GLM manifests on the divided review (a1, a2). The other three were revise, with 3 to 5 findings each. The baseline never accepted on first review (0 of 33).
+- Evidence provenance held for every read: 37 of 37, 22 of 22, 34 of 34 read digests matched coordinare's re-derivation from the pinned Git objects.
+- Citations of unread files remain the main quality gap, and they are a coordinare admission-policy question as much as a nare one. The daemon binds every reviewed-scope input before authoring, so an unread citation to a bound file is admitted.
+
+### Recommendation
+
+**The recommendation holds: do not adopt discovery authoring on nare yet, but the reason has changed.** Reliability is no longer the blocker on main: three of three runs were admitted, and the redaction failure is fixed upstream. Cost is roughly at baseline on authoring (median 1.09 times) and below it on authoring plus first review (median 0.76 times), so the case for adopting on cost is plausible. Two things still stop adoption:
+
+1. **Citation policy.** Unread citations in four of five GLM runs. Before any adoption, decide whether a manifest may cite a file the model never read. If it may not, enforce it in the check callable and measure the cost again.
+2. **Output volume and the first-review verdict.** Output is 2.3 to 4.1 times the baseline, and the first review accepts 2 of 5 runs. Five runs of GLM is still a small sample with a wide spread.
+
+Haiku (h1) is not comparable to the GLM baseline. It was admitted on turn 10 with 1.47 times the baseline authoring input, and drew the most review findings (12). One run does not establish a model comparison.
+
+### New nare defects
+
+None found in these runs. The behaviours I checked are the cut-off correction, the schema refusals for `pattern` and `required` properties (which now report the expected pattern), the read hold, and the check error path. No new issue was filed. The harness's Python-API defaults were the one real defect in this round, and they are in the spike, not nare.
+
+### Caveats
+
+- **n = 5 GLM admitted, 1 haiku.** The spread is wide: b1 used 1.08 million input tokens to admission and b2 used 0.60 million on the same settings. The medians are weak estimates.
+- **Fixed scope and no probes or execution.** As in every run in this spike. The baseline's per-run totals include those phases, so only the first-round slice is comparable.
+- **Prompt gap kept on purpose.** The spike prompt still omits `GLOBAL_AUTHOR_INSTRUCTION`, so every run is refused at least once for reusing criterion ids. That is the spike's prompt, not nare.
+- **Reads threshold fixed before the runs.** 20 files, as in a1 to a3.
+- **Gateway.** No 502s and no non-200 responses appear in the stderr of b1, b2 or h1, and each record shows 0 provider retries.
+- **Spend this round.** Input 3,332,447 and output 372,291 (nare plus review), about 3.70 million tokens. Cumulative across the spike's in-loop runs, including the earlier round: about 7.47 million tokens.
