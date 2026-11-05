@@ -649,7 +649,7 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
     journal.coverage_manifest = candidate
     journal.finding_ledger = current
     if budget.error_code in RESUMABLE_ERRORS and journal.status == 'discovering':
-        journal.last_error = budget.error_code
+        journal.last_error = redact_state_value(budget.error_code)
     elif budget.error_code is not None:
         journal.status, journal.last_error = 'held', budget.error_code
     journal.diagnostics = budget.summary()
