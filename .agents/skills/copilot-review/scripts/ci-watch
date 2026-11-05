@@ -1,26 +1,36 @@
 #!/usr/bin/env bash
 # Poll CI for a PR to a terminal state and emit CI_RESULT JSON.
 # usage: ci-watch <pr> [--expect-head SHA] [--timeout-min N] [--timeout-sec N] [--interval-sec S]
+#                      [--parked-grace-sec N]
 # --expect-head: only a run for this head (or a head it prefixes) may end the
 # watch. Right after a push GitHub can still report the previous head, whose
 # run is already green; without this the watch reports green on poll 1 for
 # code that was never tested. A caller that just pushed knows the SHA.
 # --timeout-min and --timeout-sec both set the deadline; if both are given,
 # whichever one appears later on the command line wins.
-# exit: 0 green, 1 failed, 4 timed out / no runs by the deadline
+# Every workflow run on the head counts (see ci-runs). A head whose runs are
+# parked (action_required, or completed with zero jobs) never ran CI and is
+# never green. The watch keeps polling a parked head for --parked-grace-sec
+# (default 600), long enough for the retrigger sweep's verification step to
+# approve runs it parked, then reports parked. A head still parked at the
+# deadline also reports parked, not timed_out. ci-safety says how to release it.
+# A failed check run from another app (external: true in failed_jobs) has no
+# Actions job log, so none is fetched for it.
+# exit: 0 green, 1 failed, 4 timed out / no runs by the deadline, 5 parked
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/_lib.sh"
 coordinare_load_env; coordinare_require COORDINARE_REPO
-pr=${1:-}; [ -n "$pr" ] || coordinare_die 2 "usage: ci-watch <pr> [--expect-head SHA] [--timeout-min N] [--timeout-sec N] [--interval-sec S]"
+pr=${1:-}; [ -n "$pr" ] || coordinare_die 2 "usage: ci-watch <pr> [--expect-head SHA] [--timeout-min N] [--timeout-sec N] [--interval-sec S] [--parked-grace-sec N]"
 shift
-timeout_total_sec=$((60 * 60)); interval=30; expect_head=""
+timeout_total_sec=$((60 * 60)); interval=30; expect_head=""; parked_grace=600
 while [ $# -gt 0 ]; do
   case "$1" in
     --timeout-min) timeout_total_sec=$((${2} * 60)); shift 2;;
     --timeout-sec) timeout_total_sec=$2; shift 2;;
     --interval-sec) interval=$2; shift 2;;
     --expect-head) expect_head=$2; shift 2;;
+    --parked-grace-sec) parked_grace=$2; shift 2;;
     *) coordinare_die 2 "unknown option $1";;
   esac
 done
@@ -33,12 +43,14 @@ if [ -n "${COORDINARE_FLAKE_SIGNATURES_FILE:-}" ]; then
   [ -f "$sigfile" ] || sigfile=""
 fi
 start=$(date +%s); deadline=$((start + timeout_total_sec))
-first_head=""; head_changed=false; polls=0
+first_head=""; head_changed=false; polls=0; parked_since=""
 while :; do
   code=0
   new_snap=$("$here/ci-runs" "$pr") || code=$?
   if [ "$code" -ne 0 ]; then
-    if [ "$code" -ne 3 ]; then exit "$code"; fi
+    # 5 means parked from this script; any other ci-runs error (a jq failure
+    # also exits 5) is reported as 2 so a caller never reads it as parked.
+    if [ "$code" -ne 3 ]; then [ "$code" -ne 5 ] || code=2; exit "$code"; fi
     echo "transient error from ci-runs, will retry" >&2
     if [ "$(date +%s)" -ge "$deadline" ]; then
       state=timed_out
@@ -60,28 +72,44 @@ while :; do
     esac
   fi
   if [ -z "$first_head" ]; then first_head=$head; fi
-  if [ "$head" != "$first_head" ]; then head_changed=true; echo "head moved $first_head -> $head, following the new run" >&2; first_head=$head; fi
+  if [ "$head" != "$first_head" ]; then head_changed=true; echo "head moved $first_head -> $head, following the new run" >&2; first_head=$head; parked_since=""; fi
   state=$(printf '%s' "$snap" | jq -r .state)
   echo "poll $polls: $state (head $head)" >&2
   case "$state" in green|failed) break;; esac
-  if [ "$(date +%s)" -ge "$deadline" ]; then state=timed_out; break; fi
+  if [ "$state" = "parked" ]; then
+    [ -n "$parked_since" ] || parked_since=$(date +%s)
+    if [ $(( $(date +%s) - parked_since )) -ge "$parked_grace" ]; then break; fi
+  else
+    parked_since=""
+  fi
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    [ "$state" = "parked" ] || state=timed_out
+    break
+  fi
   coordinare_sleep "$interval"
 done
 failures='[]'
 if [ "$state" = "failed" ]; then
-  for row in $(printf '%s' "$snap" | jq -r '.failed_jobs[] | "\(.run_id):\(.job_id)"'); do
-    rid=${row%%:*}; jid=${row##*:}
+  for row in $(printf '%s' "$snap" | jq -r '.failed_jobs[] | "\(.run_id):\(.job_id):\(.external // false)"'); do
+    rid=${row%%:*}; rest=${row#*:}; jid=${rest%%:*}; ext=${rest#*:}
     log_error=false
-    log=$(coordinare_gh run view --job "$jid" --log-failed --repo "$COORDINARE_REPO" 2>/dev/null) || { log_error=true; log="(log unavailable)"; }
-    if ! $log_error && [ -z "$log" ]; then
-      log=$(coordinare_gh api "repos/$COORDINARE_REPO/actions/jobs/$jid/logs" 2>/dev/null) || log=""
-      last_error=$(printf '%s\n' "$log" | grep -n '##\[error\]' | tail -n 1 | cut -d: -f1 || true)
-      if [ -n "$last_error" ]; then log=$(printf '%s\n' "$log" | head -n "$last_error"); fi
-      if [ -z "$log" ]; then log_error=true; log="(log unavailable)"; fi
+    # An external check run has no Actions job behind it, so its id must never be
+    # passed to `run view --job`: that would fetch some other job's log.
+    if [ "$ext" = true ]; then
+      log="(external check run: no Actions job log)"
+    else
+      log=$(coordinare_gh run view --job "$jid" --log-failed --repo "$COORDINARE_REPO" 2>/dev/null) || { log_error=true; log="(log unavailable)"; }
+      if ! $log_error && [ -z "$log" ]; then
+        log=$(coordinare_gh api "repos/$COORDINARE_REPO/actions/jobs/$jid/logs" 2>/dev/null) || log=""
+        last_error=$(printf '%s\n' "$log" | grep -n '##\[error\]' | tail -n 1 | cut -d: -f1 || true)
+        if [ -n "$last_error" ]; then log=$(printf '%s\n' "$log" | head -n "$last_error"); fi
+        if [ -z "$log" ]; then log_error=true; log="(log unavailable)"; fi
+      fi
     fi
     tail_=$(printf '%s\n' "$log" | tail -n 60)
     hint=unknown; match=null
-    if $log_error; then :
+    if [ "$ext" = true ]; then :
+    elif $log_error; then :
     elif printf '%s' "$log" | grep -qE "$INFRA"; then hint=infra
     elif [ -n "$sigfile" ]; then
       m=""
@@ -102,5 +130,6 @@ fi
 attempt=$(printf '%s' "$snap" | jq '[.runs[].run_attempt] | max // 0')
 printf '%s' "$snap" | jq -c --arg state "$state" --argjson failures "$failures" --argjson hc "$head_changed" --argjson attempt "$attempt" --argjson el "$(( $(date +%s) - start ))" '
   {schema:"CI_RESULT", pr, head_sha, run_ids:[.runs[].id], attempt:$attempt, state:$state, failures:$failures,
+   failed_runs:(.failed_runs // []), parked_runs:(.parked_runs // []),
    retries_verified:0, retries_unverified:0, elapsed_sec:$el, head_changed:$hc}'
-case "$state" in green) exit 0;; failed) exit 1;; *) exit 4;; esac
+case "$state" in green) exit 0;; failed) exit 1;; parked) exit 5;; *) exit 4;; esac

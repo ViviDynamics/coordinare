@@ -1,6 +1,31 @@
 #!/usr/bin/env bash
 # Runs and jobs for a PR's CURRENT head SHA, from the Actions API.
 # usage: ci-runs <pr>
+#
+# Every workflow run on the head counts, not only COORDINARE_CI_WORKFLOW. state is:
+#   none     no runs at the head yet
+#   pending  a run is not completed, a job of a completed run is still queued or
+#            running (or concluded something unknown), a check run on the head
+#            is not completed, or COORDINARE_CI_WORKFLOW (when set) has no run at the
+#            head yet (missing_workflow names it)
+#   failed   a job concluded failure/cancelled/timed_out/startup_failure
+#            (failed_jobs), a check run from another app did (external: true
+#            in failed_jobs), or a run did with no job to blame (failed_runs)
+#   parked   a run (or one of its jobs) concluded action_required, or a run
+#            completed having executed zero jobs (parked_runs). It is waiting
+#            for approval or never ran; either way it is never green.
+#   green    every run concluded success, or skipped/neutral (a documented skip),
+#            every job of every run is completed with that conclusion, and every
+#            check run on the head is completed with it too
+#
+# Check runs come from the head's commit check-runs API. Actions' own check runs
+# mirror the jobs above and are not counted twice; the others (a third-party app,
+# or a check reported outside Actions) gate the head like a job does.
+#
+# Runs of workflows listed in COORDINARE_CI_IGNORE_WORKFLOWS (space-separated file
+# names, each documented in repo.env as advisory) are left out and reported in
+# ignored_run_ids. Per (workflow, event) only the newest run counts; older ones
+# are reported in superseded_run_ids.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 coordinare_load_env; coordinare_require COORDINARE_REPO
@@ -8,22 +33,82 @@ pr=${1:-}; [ -n "$pr" ] || coordinare_die 2 "usage: ci-runs <pr>"
 head=$(coordinare_gh pr view "$pr" --repo "$COORDINARE_REPO" --json headRefOid --jq .headRefOid) || exit $?
 runs=$(coordinare_gh api "repos/$COORDINARE_REPO/actions/runs?head_sha=$head&per_page=100") || exit $?
 wf=${COORDINARE_CI_WORKFLOW:-}
-selected=$(printf '%s' "$runs" | jq -c --arg head "$head" --arg wf "$wf" '
-  [.workflow_runs[] | select(.head_sha==$head) | select($wf=="" or (.path|endswith("/"+$wf)) or (.path==$wf))
-   | {id, name, path, status, conclusion, run_attempt, head_sha}]')
+ignore=${COORDINARE_CI_IGNORE_WORKFLOWS:-}
+# All runs on the head, minus ignored workflows, newest run per (workflow, event).
+# An older run of the same workflow and event on the same head (cancelled by a
+# concurrency group, or parked and then re-run) is superseded, not a verdict.
+selected=$(printf '%s' "$runs" | jq -c --arg head "$head" --arg ignore "$ignore" '
+  def wfmatch($f): ((.path // "") | endswith("/"+$f)) or (.path // "") == $f;
+  ($ignore | split(" ") | map(select(. != ""))) as $ign |
+  [.workflow_runs[] | select(.head_sha==$head)
+   | {id, name, path, event, status, conclusion, run_attempt, head_sha}
+   | . + {ignored: (. as $r | any($ign[]; . as $f | $r | wfmatch($f)))}]
+  | (map(select(.ignored)) | map(.id)) as $ignored
+  | map(select(.ignored | not) | del(.ignored)) as $kept
+  | ($kept | group_by([.path, .event]) | map(max_by(.id)) | sort_by(.id)) as $latest
+  | {runs:$latest, ignored:$ignored, superseded: ($kept | map(.id) - ($latest | map(.id)))}
+') || coordinare_die 2 "ci-runs: unreadable runs response for head $head"
 out='[]'
-for id in $(printf '%s' "$selected" | jq -r '.[].id'); do
-  jobs=$(coordinare_gh api "repos/$COORDINARE_REPO/actions/runs/$id/jobs?per_page=100&filter=latest") || exit $?
-  run=$(printf '%s' "$selected" | jq -c --argjson id "$id" '.[] | select(.id==$id)')
-  run=$(printf '%s' "$run" | jq -c --argjson j "$(printf '%s' "$jobs" | jq -c '[.jobs[] | {id, name, status, conclusion, started_at, completed_at}]')" '.jobs=$j')
+for id in $(printf '%s' "$selected" | jq -r '.runs[].id'); do
+  run=$(printf '%s' "$selected" | jq -c --argjson id "$id" '.runs[] | select(.id==$id)')
+  # Jobs only matter once a run completed; skip the call for one still going.
+  if [ "$(printf '%s' "$run" | jq -r .status)" = "completed" ]; then
+    jobs=$(coordinare_gh api "repos/$COORDINARE_REPO/actions/runs/$id/jobs?per_page=100&filter=latest") || exit $?
+    jobs=$(printf '%s' "$jobs" | jq -c '[.jobs[] | {id, name, status, conclusion, started_at, completed_at}]') \
+      || coordinare_die 2 "ci-runs: unreadable jobs response for run $id"
+  else
+    jobs='[]'
+  fi
+  run=$(printf '%s' "$run" | jq -c --argjson j "$jobs" '.jobs=$j')
   out=$(printf '%s' "$out" | jq -c --argjson r "$run" '. + [$r]')
 done
-printf '%s' "$out" | jq -c --argjson pr "$pr" --arg head "$head" '
-  def bad: ["failure","cancelled","timed_out","action_required","startup_failure"];
+# --paginate: a head with more than one page of check runs must be read in full,
+# or a queued check on the last page would be invisible. jq -s joins the pages.
+checks=$(coordinare_gh api --paginate "repos/$COORDINARE_REPO/commits/$head/check-runs?filter=latest&per_page=100") || exit $?
+external=$(printf '%s' "$checks" | jq -c -s '[ .[].check_runs[]?
+  | select((.app.slug // "") != "github-actions")
+  | {id, name, status, conclusion, check_suite_id: (.check_suite.id // 0)} ]') \
+  || coordinare_die 2 "ci-runs: unreadable check-runs response for head $head"
+printf '%s' "$out" | jq -c --argjson pr "$pr" --arg head "$head" --arg wf "$wf" --argjson sel "$selected" --argjson ext "$external" '
+  def bad: ["failure","cancelled","timed_out","startup_failure"];
+  def ok: ["success","skipped","neutral"];
   . as $runs |
   ($runs | map(select(.status!="completed")) | length > 0) as $pending |
-  [ $runs[] | .id as $rid | .jobs[] | select(.conclusion as $c | bad | index($c)) | {run_id:$rid, job_id:.id, job:.name, conclusion} ] as $failed |
+  (if $wf == "" or ($runs | map(select(((.path // "")|endswith("/"+$wf)) or .path==$wf)) | length > 0)
+   then null else $wf end) as $missing |
+  # A run can be completed while one of its jobs is still queued (nare#160), so
+  # the run status alone is not enough: every job of a completed run must be
+  # completed with a known conclusion. action_required is a parked job, below.
+  ([ $runs[] | select(.status=="completed") | .jobs[]
+     | select(.status != "completed" or ((.conclusion as $c | ok + bad + ["action_required"] | index($c)) | not)) ]
+   | length > 0) as $job_pending |
+  [ $ext[] | select(.status != "completed" or ((.conclusion as $c | ok + bad | index($c)) | not))
+    | {id, name, status, conclusion} ] as $checks_pending |
+  [ $ext[] | select(.status=="completed") | select(.conclusion as $c | bad | index($c))
+    | {run_id:.check_suite_id, job_id:.id, job:.name, conclusion, external:true} ] as $ext_failed |
+  [ $runs[] | .id as $rid | .jobs[] | select(.conclusion as $c | bad | index($c)) | {run_id:$rid, job_id:.id, job:.name, conclusion} ] as $failed_jobs |
+  [ $runs[] | select(.status=="completed")
+    | select(.conclusion=="action_required"
+             or ([.jobs[] | select(.conclusion=="action_required")] | length > 0)
+             or ((.jobs|length)==0 and ((.conclusion as $c | ["skipped","neutral"] | index($c)) | not)
+                 and ((.conclusion as $c | bad | index($c)) | not)))
+    | {run_id:.id, name, path, conclusion, jobs:(.jobs|length)} ] as $parked |
+  ($parked | map(.run_id)) as $parked_ids |
+  [ $runs[] | select(.status=="completed") | .id as $rid
+    | select((.conclusion as $c | ok | index($c)) | not)
+    | select($parked_ids | index($rid) | not)
+    | select([$failed_jobs[] | select(.run_id==$rid)] | length == 0)
+    | {run_id:.id, name, path, conclusion} ] as $failed_runs |
+  ($failed_jobs + $ext_failed) as $failed |
+  ([$failed[].conclusion, $failed_runs[].conclusion]) as $fc |
   { pr:$pr, head_sha:$head,
-    state: (if ($runs|length)==0 then "none" elif $pending then "pending" elif ($failed|length)>0 then "failed" else "green" end),
-    all_cancelled: (($failed|length)>0 and ([$failed[] | select(.conclusion=="cancelled")] | length) == ($failed|length)),
-    runs:$runs, failed_jobs:$failed }'
+    state: (if ($runs|length)==0 then "none"
+            elif $pending or $job_pending or ($checks_pending|length) > 0 or $missing != null then "pending"
+            elif ($failed|length)>0 or ($failed_runs|length)>0 then "failed"
+            elif ($parked|length)>0 then "parked"
+            else "green" end),
+    all_cancelled: (($fc|length)>0 and ([$fc[] | select(.=="cancelled")] | length) == ($fc|length)),
+    missing_workflow:$missing,
+    ignored_run_ids:$sel.ignored, superseded_run_ids:$sel.superseded,
+    runs:$runs, failed_jobs:$failed, failed_runs:$failed_runs, parked_runs:$parked,
+    pending_checks:$checks_pending }'

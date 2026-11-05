@@ -9,17 +9,28 @@
     "head_sha": { "type": "string" },
     "run_ids": { "type": "array" },
     "attempt": { "type": "integer" },
-    "state": { "type": "string", "enum": ["green", "failed", "pending", "timed_out", "none"] },
+    "state": { "type": "string", "enum": ["green", "failed", "pending", "timed_out", "none", "parked"] },
     "failures": {
       "type": "array",
       "items": {
         "required": ["run_id", "job_id", "job", "conclusion", "bucket_hint"],
         "properties": {
           "bucket_hint": { "enum": ["infra", "known_flake", "unknown"] },
-          "conclusion": { "enum": ["failure", "cancelled", "timed_out", "action_required", "startup_failure"] },
-          "log_error": { "type": "boolean" }
+          "conclusion": { "enum": ["failure", "cancelled", "timed_out", "startup_failure"] },
+          "log_error": { "type": "boolean" },
+          "external": { "type": "boolean", "description": "A check run from another app, not an Actions job: it has no job log." }
         }
       }
+    },
+    "failed_runs": {
+      "type": "array",
+      "description": "Runs that concluded badly with no failed job to blame, for example startup_failure before any job started.",
+      "items": { "required": ["run_id", "conclusion"] }
+    },
+    "parked_runs": {
+      "type": "array",
+      "description": "Runs that concluded action_required, or completed having executed zero jobs. Nothing ran; never green.",
+      "items": { "required": ["run_id", "conclusion", "jobs"] }
     },
     "retries_verified": { "type": "integer" },
     "retries_unverified": {
