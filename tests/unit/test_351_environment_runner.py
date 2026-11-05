@@ -791,3 +791,30 @@ async def test_services_never_start_when_a_required_install_failed(tmp_path):
     for step in ("start-mock", "health-mock", "stop-mock"):
         assert results[step].status == "not_run" and results[step].output == "required install did not pass: install-lang"
     assert results["usable"].status == "not_run" and not (tmp_path / "started").exists() and not report.passed
+
+
+@pytest.mark.asyncio
+async def test_a_log_reached_through_a_symlinked_parent_is_never_read(tmp_path):
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    (outside / 'secret.log').write_text('error: private detail\n')
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    (scratch / 'link').symlink_to(outside)
+    failing = f'import sys\nprint("see {scratch}/link/secret.log")\nsys.exit(1)\n'
+    manifest = contract([{'id': 'x', 'argv': [sys.executable, '-c', failing]}])
+    report = await run_manifest(manifest, cache=tmp_path / 'cache', repo=tmp_path, scratch=scratch)
+    assert 'private detail' not in report.results[0].output
+
+
+@pytest.mark.asyncio
+async def test_an_out_of_scope_install_never_blocks_the_services(tmp_path):
+    manifest = contract([{"id": "usable", "argv": ["true"], "scope": ["unit"]}],
+                        install=[{"id": "install-other", "argv": ["false"], "scope": ["e2e"]}],
+                        services=[{"id": "mock", "start": {"id": "start-mock", "argv": ["true"]},
+                                   "health": {"id": "health-mock", "argv": ["true"]},
+                                   "stop": {"id": "stop-mock", "argv": ["true"]}}])
+    report = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path, install=True, scope="unit")
+    results = {result.id: result for result in report.results}
+    assert results["install-other"].output == "outside requested scope"
+    assert results["start-mock"].status == "pass" and results["usable"].status == "pass"

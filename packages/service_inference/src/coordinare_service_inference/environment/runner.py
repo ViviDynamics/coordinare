@@ -603,9 +603,14 @@ def _allowed_log(path: str, roots: Mapping[str, str]) -> Path | None:
         return None
     candidate = Path(path)
     try:
-        return candidate if not candidate.is_symlink() and candidate.is_file() else None
-    except OSError:
+        # Resolved, so a symlinked parent (ln -s / /tmp/r) cannot reach outside the allowed roots.
+        resolved = candidate.resolve(strict=True)
+        if candidate.is_symlink() or not resolved.is_file() or not any(
+                resolved.is_relative_to(Path(base).resolve()) for base in bases):
+            return None
+    except (OSError, RuntimeError):
         return None
+    return resolved
 
 
 def _named_logs(text: str, roots: Mapping[str, str]) -> list[Path]:
@@ -880,12 +885,15 @@ async def manifest_services(
             for pid, final_output in finalizers.items():
                 start_result = results.get(supervisors.get(pid, ""))
                 if start_result is not None and start_result.status != "pass" and (late := final_output()):
-                    start_result.output = late
+                    # The late output replaces the early capture it extends; service logs appended after it stay.
+                    marker = _SERVICE_LOG_MARKER.search(start_result.output)
+                    start_result.output = late + (start_result.output[marker.start():] if marker else "")
 
 
 # Dettmore e2e-54: a service step failed with "maxio-mock not ready" or nothing at all, while the reason was in the
 # service's own log: a container's (docker logs) or a file its start command writes. Both reach the failed step.
 SERVICE_LOG_LINES = 40
+_SERVICE_LOG_MARKER = re.compile(r"\n\[(?:docker logs --tail \d+ |tail of /)")
 SERVICE_LOG_LIMIT = 2048
 MAX_SERVICE_LOGS = 3
 
@@ -895,6 +903,15 @@ async def _service_logs(service: Any, *, roots: dict[str, str], env: dict[str, s
 
     parts: list[str] = []
     commands = [command for command in (service.init, service.start) if command is not None]
+    expanded: list[list[str]] = []
+    for command in commands:
+        try:
+            child_env, argv, _ = _command_values(command, roots, dict(env))
+        except ValueError:
+            continue
+        expanded.append(argv)
+        # Secret values expanded into a service command's own env are redacted too.
+        redactions = redactions | frozenset(_secret_values(child_env))
     names = sorted({name for command in commands for name in docker_created(command.argv)["containers"]})
     docker = shutil.which("docker", path=env.get("PATH")) if names else None
     for name in names[:MAX_SERVICE_LOGS] if docker else ():
@@ -912,11 +929,7 @@ async def _service_logs(service: Any, *, roots: dict[str, str], env: dict[str, s
         if process.returncode == 0 and output.strip():
             parts.append(f"[docker logs --tail {SERVICE_LOG_LINES} {name}]\n"
                          + output.decode(errors="replace")[-SERVICE_LOG_LIMIT:])
-    for command in commands:
-        try:
-            _, argv, _ = _command_values(command, roots, dict(env))
-        except ValueError:
-            continue
+    for argv in expanded:
         for path in _named_logs(" ".join(argv), roots)[:MAX_SERVICE_LOGS]:
             if tail := _read_tail(path, SERVICE_LOG_LIMIT).decode(errors="replace"):
                 parts.append(f"[tail of {path}]\n{tail}")
@@ -969,8 +982,12 @@ async def _run_manifest_commands(
     # Dettmore e2e-54: with install-ruby failed, every generation still started the services, whose ruby-based mock
     # failed with "env: 'ruby': No such file or directory" and read as a fault of its own. A service starts only when
     # every required install passed; otherwise its steps are not_run and name the installs.
+    def in_scope(command: Command) -> bool:
+        return not (scope and command.scope and scope not in command.scope)
+
     blocked = [command.id for command in manifest.install
-               if install and command.required and (command.id not in results or results[command.id].status != "pass")]
+               if install and command.required and in_scope(command)
+               and (command.id not in results or results[command.id].status != "pass")]
     if blocked:
         note = "required install did not pass: " + ", ".join(blocked[:8])
         for service in manifest.services:
@@ -981,9 +998,10 @@ async def _run_manifest_commands(
                     results[command.id] = CheckResult(id=command.id, status="not_run", required=service.required,
                                                       output=note, manifest_digest=digest, context=scope)
         for check in manifest.checks:
-            results[check.id] = CheckResult(id=check.id, status="not_run", required=check.required,
-                                            output="environment prerequisite failed", manifest_digest=digest,
-                                            context=scope)
+            results[check.id] = CheckResult(
+                id=check.id, status="not_run", required=check.required and in_scope(check),
+                output="environment prerequisite failed" if in_scope(check) else "outside requested scope",
+                manifest_digest=digest, context=scope)
     else:
         async with manifest_services(manifest, **roots, _results=results, scope=scope, secret_names=secret_names,
                                      runtime_env=runtime_env, credentials=credentials) as services:
