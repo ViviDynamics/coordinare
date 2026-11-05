@@ -501,14 +501,13 @@ class OpenAiApiBackend:
         except (ValueError, RecursionError):
             return resp, None, "invalid provider JSON"
 
-    async def _completion(self, payload: dict[str, Any], headers: dict[str, str], mode: str, *,
-                          schema: bool) -> tuple[Any, Any, str | None]:
+    async def _completion(self, url: str, payload: dict[str, Any], headers: dict[str, str], *,
+                          mode: str, schema: bool) -> tuple[Any, Any, str | None]:
         """One request, sent once more after a 400 that resending may cure, when the call carries a provider outage
         window (environment discovery). Dettmore e2e-56 held on one such 400; sent again, the request was answered."""
         for resend in (True, False):
             async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
-                resp, parsed, parse_error = await self._request_completion(
-                    client, f"{self._base_url}/chat/completions", payload, headers, mode)
+                resp, parsed, parse_error = await self._request_completion(client, url, payload, headers, mode)
             if not (resend and resp.status_code == _BAD_REQUEST and provider_outage_seconds.get() > 0
                     and not _deterministic_rejection(_error_body(resp), schema=schema)):
                 break
@@ -551,7 +550,8 @@ class OpenAiApiBackend:
             attempt += 1
             try:
                 resp, parsed, parse_error = await self._completion(
-                    payload, headers, "stream" if stream else "strict" if response_schema is not None else "plain",
+                    f"{self._base_url}/chat/completions", payload, headers,
+                    mode="stream" if stream else "strict" if response_schema is not None else "plain",
                     schema=response_schema is not None)
                 # Retry only transient server-side conditions; 4xx auth/bad-
                 # request errors won't recover and burning the budget on them
