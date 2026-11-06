@@ -366,6 +366,10 @@ def _deterministic_rejection(body: str, *, schema: bool) -> bool:
     return any(marker in body.lower() for marker in CONTEXT_LIMIT_MARKERS) or (schema and _schema_limit_body(body))
 
 
+# The longest a streamed reply may go without a byte before it is treated as dropped (see _client_timeout).
+STREAM_IDLE_SECONDS = 600.0
+
+
 class OpenAiApiBackend:
     """Direct OpenAI Chat Completions call via httpx — no SDK dep required.
 
@@ -501,12 +505,22 @@ class OpenAiApiBackend:
         except (ValueError, RecursionError):
             return resp, None, "invalid provider JSON"
 
+    def _client_timeout(self, mode: str) -> float | httpx.Timeout:
+        """A streamed reply keeps sending tokens (reasoning included), so a long silence means the stream was dropped.
+
+        httpx's read timeout is the longest wait for the next bytes. Dettmore e2e-61 waited the full 3,600 s twice for a
+        stream that had stopped; a streamed call now gives up after STREAM_IDLE_SECONDS without a byte and is retried.
+        """
+        if mode != "stream":
+            return self._TIMEOUT
+        return httpx.Timeout(self._TIMEOUT, read=min(self._TIMEOUT, STREAM_IDLE_SECONDS))
+
     async def _completion(self, url: str, payload: dict[str, Any], headers: dict[str, str], *,
                           mode: str, schema: bool) -> tuple[Any, Any, str | None]:
         """One request, sent once more after a 400 that resending may cure, when the call carries a provider outage
         window (environment discovery). Dettmore e2e-56 held on one such 400; sent again, the request was answered."""
         for resend in (True, False):
-            async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=self._client_timeout(mode)) as client:
                 resp, parsed, parse_error = await self._request_completion(client, url, payload, headers, mode)
             if not (resend and resp.status_code == _BAD_REQUEST and provider_outage_seconds.get() > 0
                     and not _deterministic_rejection(_error_body(resp), schema=schema)):
