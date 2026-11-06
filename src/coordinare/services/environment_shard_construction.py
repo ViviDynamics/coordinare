@@ -236,6 +236,8 @@ class Inheritance:
     usable_siblings: frozenset[str] = frozenset()
     # Per assigned criterion, the checks a reviewed manifest mapped to it: obligations a revision keeps.
     mapped: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    # Checks that failed and never passed (retirable_check_ids): a retired one may leave the criteria it mapped.
+    retirable: frozenset[str] = frozenset()
 
 
 def inherit(previous: Mapping[str, dict[str, Any]], group: CheckGroup, parent: CheckGroup | None) -> Inheritance:
@@ -274,8 +276,7 @@ def inherit(previous: Mapping[str, dict[str, Any]], group: CheckGroup, parent: C
 
 
 def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[str, Any],
-                   inherited: Inheritance | None = None, frozen: Collection[str] = (),
-                   retirable: Collection[str] = ()) -> ShardChecks:
+                   inherited: Inheritance | None = None, frozen: Collection[str] = ()) -> ShardChecks:
     """Own prefix, known dependencies, and exactly the assigned criteria mapped to required unscoped checks."""
     inherited = inherited or Inheritance()
     part = ShardChecksEnvelope.model_validate(data).shard_checks
@@ -312,7 +313,7 @@ def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[
                        'guidance': 'Keep every keep_check_ids check that was required; revise it in place (a '
                                    'fixed_checks check exactly as fixed_checks gives it), never drop it.'})
     # A retired check leaves its criteria to new checks; admission judges that the replacements are there.
-    retired = {identifier for identifier, check in own.items() if identifier in retirable and not check.required}
+    retired = {identifier for identifier, check in own.items() if identifier in inherited.retirable and not check.required}
     unmapped = {criterion: sorted(ids - set(part.criterion_checks.get(criterion, [])) - retired)
                 for criterion, ids in sorted(inherited.mapped.items())
                 if ids - set(part.criterion_checks.get(criterion, [])) - retired}
@@ -707,7 +708,8 @@ class DividedConstruction:
         index = await inspection.bind_verified({path: digest for path, digest in self._citations(group).items()
                                                 if path in cited_by}, phase='construction', cited_by=cited_by)
         parent = next((candidate for candidate in self.groups if candidate.prefix == base_prefix(group.prefix)), None)
-        inherited = replace(inherit(self.previous, group, parent), mapped=self._kept_mappings(group))
+        inherited = replace(inherit(self.previous, group, parent), mapped=self._kept_mappings(group),
+                            retirable=self.retirable)
         brief = canonical({
             'check_id_prefix': group.prefix, 'delta_instruction': DELTA_CHECK_INSTRUCTION,
             **({'carrier_process_policy': self.carrier_process_policy} if self.carrier_process_policy is not None else {}),
@@ -726,8 +728,7 @@ class DividedConstruction:
             captured['patch'] = patch
             applied = {'shard_checks': plan.restore_frozen(plan.base_group(group) or {},
                                                            apply_group_delta(plan.base_group(group), patch))}
-            admitted = validate_group(applied, group=group, summary=summary, inherited=inherited, frozen=self.fixed,
-                       retirable=self.retirable)
+            admitted = validate_group(applied, group=group, summary=summary, inherited=inherited, frozen=self.fixed)
             plan.guard_part(plan.base_group(group) or {}, applied['shard_checks'])
             return admitted
 
@@ -758,7 +759,8 @@ class DividedConstruction:
                 cited_by.setdefault(path, []).append(criterion.id)
         index = await inspection.bind_verified(self._citations(group), phase='construction', cited_by=cited_by)
         parent = next((candidate for candidate in self.groups if candidate.prefix == base_prefix(group.prefix)), None)
-        inherited = replace(inherit(self.previous, group, parent), mapped=self._kept_mappings(group))
+        inherited = replace(inherit(self.previous, group, parent), mapped=self._kept_mappings(group),
+                            retirable=self.retirable)
         brief = canonical({
             'check_id_prefix': group.prefix,
             **({'carrier_process_policy': self.carrier_process_policy} if self.carrier_process_policy is not None else {}),
@@ -770,8 +772,7 @@ class DividedConstruction:
             **({'retirable_check_ids': retirable} if (retirable := sorted(inherited.own & self.retirable)) else {}),
             'sibling_check_ids': sorted(inherited.siblings),
             'untrusted_feedback': self.feedback.get(group.prefix, self.feedback.get(base_prefix(group.prefix)))}).decode()
-        validate = partial(validate_group, group=group, summary=summary, inherited=inherited, frozen=self.fixed,
-                       retirable=self.retirable)
+        validate = partial(validate_group, group=group, summary=summary, inherited=inherited, frozen=self.fixed)
         key = hashlib.sha256(brief.encode()).hexdigest()
         saved = saved_part(self.context.budget, 'groups', group.prefix, key)
         if saved is not None:
@@ -792,10 +793,11 @@ class DividedConstruction:
     def admits(self, group: CheckGroup, part: ShardChecks, *, summary: Mapping[str, Any]) -> bool:
         """Whether a part authored from an earlier global summary passes the same admission under the final one."""
         parent = next((candidate for candidate in self.groups if candidate.prefix == base_prefix(group.prefix)), None)
-        inherited = replace(inherit(self.previous, group, parent), mapped=self._kept_mappings(group))
+        inherited = replace(inherit(self.previous, group, parent), mapped=self._kept_mappings(group),
+                            retirable=self.retirable)
         try:
             validate_group({'shard_checks': part.model_dump(mode='json')}, group=group, summary=summary, inherited=inherited,
-                           frozen=self.fixed, retirable=self.retirable)
+                           frozen=self.fixed)
         except _ResponseReferenceError:
             return False
         return True

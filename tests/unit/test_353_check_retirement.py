@@ -7,6 +7,7 @@ requirements to new checks the independent review judges; a check that ever pass
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
 
@@ -123,8 +124,8 @@ def test_a_check_author_may_drop_a_retired_checks_mapping_but_no_other():
     part = {'checks': [{'id': 'c00-suite', 'argv': ['quality-runner', 'suite'], 'required': False},
                        {'id': 'c00-suite-corrected', 'argv': ['quality-runner', 'suite', '--fixed']}],
             'criterion_checks': {CRITERION: ['c00-suite-corrected']}}
-    assert isinstance(validate_group({'shard_checks': part}, group=group, summary=summary, inherited=inherited,
-                                     retirable={'c00-suite'}), ShardChecks)
+    assert isinstance(validate_group({'shard_checks': part}, group=group, summary=summary,
+                                     inherited=replace(inherited, retirable=frozenset({'c00-suite'}))), ShardChecks)
     with pytest.raises(_ResponseReferenceError) as refused:
         validate_group({'shard_checks': part}, group=group, summary=summary, inherited=inherited)
     assert 'inherited_mapping_missing' in str(refused.value.errors)

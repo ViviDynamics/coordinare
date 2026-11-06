@@ -209,14 +209,15 @@ def _retirement_errors(manifest: EnvironmentManifest, previous: Sequence[Environ
                 identifier in requirement.checks for requirement in manifest.requirements):
             errors.append(f"{_id(identifier)} must leave criterion_checks and every requirement")
         for old in previous:
-            for criterion, ids in old.criterion_checks.items():
-                if identifier in ids and not set(manifest.criterion_checks.get(criterion, [])) - set(ids):
-                    errors.append(f"criterion {_id(criterion)} needs a new required check in place of {_id(identifier)}")
+            errors.extend(f"criterion {_id(criterion)} needs a new required check in place of {_id(identifier)}"
+                          for criterion, ids in old.criterion_checks.items()
+                          if identifier in ids and not set(manifest.criterion_checks.get(criterion, [])) - set(ids))
             current = {requirement.id: requirement for requirement in manifest.requirements}
-            for requirement in old.requirements:
-                if identifier in requirement.checks and (
-                        requirement.id not in current or not set(current[requirement.id].checks) - set(requirement.checks)):
-                    errors.append(f"requirement {_id(requirement.id)} needs a new check in place of {_id(identifier)}")
+            errors.extend(f"requirement {_id(requirement.id)} needs a new check in place of {_id(identifier)}"
+                          for requirement in old.requirements
+                          if identifier in requirement.checks and (
+                              requirement.id not in current
+                              or not set(current[requirement.id].checks) - set(requirement.checks)))
     return sorted(set(errors))
 
 
