@@ -158,6 +158,8 @@ class AttemptBudget:
     scope_assessment: SourceAssessmentRecord | None = field(default=None, repr=False)
     coverage_manifest: EnvironmentManifest | None = field(default=None, repr=False)
     executed_manifests: list[EnvironmentManifest] = field(default_factory=list, repr=False)
+    # Required checks that failed after running and never passed (retirable_check_ids): only these may be retired.
+    retirable_checks: frozenset[str] = frozenset()
     execution_review_evidence: list[dict[str, Any]] = field(default_factory=list, repr=False)
     execution_attempt_history: list[dict[str, Any]] = field(default_factory=list, repr=False)
     # The failed execution's triage while a repair is pending; its closure is the only part a repair may change.

@@ -616,7 +616,7 @@ def test_a_divided_revision_restarts_from_the_global_part_alone():
                 *({'role': 'assistant', 'content': 'x' * 1000} for _ in range(10))]
     assessment = SimpleNamespace(rationale='gaps', sources=['a.md'],
                                  finding_ledger=FindingLedger(source_commit='a' * 40))
-    ledger = SimpleNamespace(coverage={}, fixed=frozenset())
+    ledger = SimpleNamespace(coverage={}, fixed=frozenset(), retirable=frozenset())
     attempt = SimpleNamespace(messages=messages, prior_manifests=[SimpleNamespace(checks=[], criterion_checks={})])
     discovery_module._divided_revision(attempt, build, assessment, {'checks': {'toolchain', 'c00-0', 'c01a-1'}}, ledger)
     assert len(messages) == 4
@@ -637,7 +637,7 @@ def test_an_id_that_reuses_a_criterion_id_is_never_locked_and_can_be_renamed():
         admit=lambda data, inputs: (_ for _ in ()).throw(RejectedError()))
     validator = discovery_module._CandidateValidator(
         discovery=SimpleNamespace(inputs={}), construction=construction, required_ids={'requirements': set()},
-        prior_manifests=[], obligation_ledger=discovery_module._ObligationLedger(), budget=SimpleNamespace(executed_manifests=[]))
+        prior_manifests=[], obligation_ledger=discovery_module._ObligationLedger(), budget=SimpleNamespace(executed_manifests=[], retirable_checks=frozenset()))
     with pytest.raises(RejectedError):
         validator({'requirements': [{'id': criterion.id, 'required': True}, {'id': 'req-node', 'required': True}]})
     with pytest.raises(RejectedError):  # renaming the colliding id is not "removing a required obligation"
@@ -794,7 +794,7 @@ def test_the_global_author_hears_of_a_criterion_id_and_a_dropped_obligation_in_i
     """v25: both surfaced only at the merge, one per round, until the rounds ran out."""
     criterion = make_criterion(1)
     merge = discovery_module._CandidateValidator.__new__(discovery_module._CandidateValidator)
-    merge.budget = SimpleNamespace(executed_manifests=[])
+    merge.budget = SimpleNamespace(executed_manifests=[], retirable_checks=frozenset())
     merge.construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=scope_of([criterion])),
                                          capabilities=SimpleNamespace(runtime=None, platform='linux/aarch64'))
     merge.required_ids = {'requirements': set(), 'checks': {'toolchain', 'c00-owned'}, 'install': set(),
@@ -829,7 +829,7 @@ def test_without_the_attempt_validator_the_global_part_keeps_only_its_own_rules(
 def test_record_rules_reach_the_global_author_in_its_own_phase_with_the_ids_they_name(changes, code, command_id, unavailable):
     """v28: DOCKER_CONFIG in activation and an optional stop on a required service reached the merge unlocated."""
     merge = discovery_module._CandidateValidator.__new__(discovery_module._CandidateValidator)
-    merge.budget = SimpleNamespace(executed_manifests=[])
+    merge.budget = SimpleNamespace(executed_manifests=[], retirable_checks=frozenset())
     merge.construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=None),
                                          capabilities=SimpleNamespace(runtime=object(), platform='linux/aarch64'))
     merge.required_ids = {}
@@ -864,7 +864,7 @@ def test_a_part_duplicate_decision_left_open_is_corrected_by_its_reviewer():
 def test_a_requirement_sharing_a_check_id_is_its_own_correction_and_never_locked():
     """v35: a requirement and a check shared ids; called a criterion collision, the author renamed the checks."""
     merge = discovery_module._CandidateValidator.__new__(discovery_module._CandidateValidator)
-    merge.budget = SimpleNamespace(executed_manifests=[])
+    merge.budget = SimpleNamespace(executed_manifests=[], retirable_checks=frozenset())
     merge.construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=None), capabilities=SimpleNamespace(runtime=None, platform='linux/aarch64'))
     merge.required_ids = {}
     requirement = {'id': 'toolchain', 'description': 'zog 7', 'source': 'README.md', 'checks': ['toolchain']}
@@ -1078,7 +1078,7 @@ def _rollback(*, required, coverage, ledger_checks=(), after_required, after_cov
     attempt = SimpleNamespace(required_ids=required_ids, obligation_ledger=ledger)
     validator = discovery_module._CandidateValidator(
         discovery=SimpleNamespace(inputs={}), construction=SimpleNamespace(budget=SimpleNamespace(scope_contract=None)),
-        required_ids=required_ids, prior_manifests=[], obligation_ledger=ledger, budget=SimpleNamespace(executed_manifests=[]))
+        required_ids=required_ids, prior_manifests=[], obligation_ledger=ledger, budget=SimpleNamespace(executed_manifests=[], retirable_checks=frozenset()))
     before = discovery_module._fold_state(attempt)
     required_ids['checks'] = set(after_required)
     ledger.coverage = {name: set(ids) for name, ids in after_coverage.items()}

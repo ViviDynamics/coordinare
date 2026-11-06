@@ -58,6 +58,16 @@ LOCAL_CREDENTIAL_AUTHORING = (
     'starts goes in local_credentials as {name, service, purpose} and is referenced as ${NAME}; the runner generates '
     'a fresh value every run, so data that stores it lives under {scratch}, and neither install commands nor activation can use it. '
     'For a credential environment variable named K the value is exactly ${K}.')
+# Dettmore e2e-58: bin/bundler-audit failed on ransack, sanitize, rack and nokogiri advisories published after the
+# pinned commit. No environment change could pass it, and checks that ran are fixed, so the attempt spent its
+# remaining coverage revisions on a failure only the project could fix.
+ADVISORY_AUDIT_CHECKS = (
+    'An advisory audit (bundler-audit, npm audit, pip-audit, cargo audit and the like) reports advisories published '
+    'after the pinned commit, so its findings are the project\'s state, not the environment\'s. Its required check '
+    'proves the tool runs against the locked dependency set and completes its report: accept the exit status the tool '
+    'documents for "advisories found" as well as success, and fail on any other status (for bundler-audit, 0 or 1 '
+    'with its report printed). Never require that no advisories are found, and never ignore advisories to make one '
+    'pass.')
 LOCAL_CREDENTIAL_REVIEW = (
     'Judge every local_credentials entry: it must belong to a service this manifest starts. A credential the source '
     'shows comes from outside the environment, such as a cloud key or registry token, is a blocking finding.')
@@ -93,6 +103,7 @@ _MANIFEST_INSTRUCTIONS = (
     'The runner expands ${NAME} before starting the command: use it only for runtime environment variables. '
     'For shell-local variables assigned inside bash -c, use $name rather than ${name}. '
     f'{LOCAL_CREDENTIAL_AUTHORING} '
+    f'{ADVISORY_AUDIT_CHECKS} '
     'Create every declared activation directory during installation; do not hide a missing path by removing useful activation. '
     'List tool directories in activation.path, which is prepended to the guest PATH; never set PATH in activation.env. '
     'The project environment scope is fixed by pinned development/test evidence, never by image convenience. '

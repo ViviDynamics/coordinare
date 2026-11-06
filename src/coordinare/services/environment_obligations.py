@@ -23,7 +23,7 @@ from coordinare.services.environment_repair_triage import ACTIVATION
 from coordinare.services.environment_scope import preserve_scope, released_criteria
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Collection, Mapping, Sequence
 
     from coordinare.services.environment_repair_triage import RepairTriage
 
@@ -143,15 +143,125 @@ def fixed_commands(manifests: Sequence[EnvironmentManifest]) -> dict[str, dict[s
     return fixed
 
 
-def _restored(item: dict[str, Any], old: Command, restored: list[str]) -> dict[str, Any]:
-    """The executed record, keeping a longer timeout (the one change preservation allows), or the item if unchanged."""
+# Dettmore e2e-58: three required checks were wrong in themselves (an advisory audit required to find nothing,
+# `ruby -e 'require "rspec"'` outside Bundler, a jq call on multi-line output). Once they ran they were fixed, so no
+# repair could correct them, and the attempt spent its remaining coverage revisions until it held. A check that failed
+# and never passed may be retired: kept exactly as it ran but no longer required, its criteria and requirements served
+# by new checks the independent review judges. A check that ever passed stays fixed.
+RETIRE_FAILED_CHECK = (
+    'A check in retirable_check_ids failed in an execution and never passed. When its failure output shows the check '
+    'itself is wrong (not the environment), retire it: keep it exactly as it ran but set required to false, remove it '
+    'from criterion_checks and from every requirement, map each of its criteria and requirements to a new required '
+    'check with a new id that verifies the same obligation and is no weaker, and make no required command depend on '
+    'it. Never retire a check the environment failed: repair installation, activation or a service instead.')
+RETIREMENT_REVIEW = (
+    'A retired check (a check in retirable_check_ids the candidate keeps with required false) is a blocking finding '
+    'unless its failure_output shows the check itself was wrong rather than the environment, and the new checks now '
+    'mapped to its criteria verify the same obligation and are no weaker.')
+
+
+def retirable_check_ids(history: object, *, source_commit: str) -> frozenset[str]:
+    """Required checks that failed after running in some execution and passed in none: only these may be retired."""
+    failed: set[str] = set()
+    passed: set[str] = set()
+    try:
+        for entry in _bounded_history(history):
+            if _executed_manifest(entry, source_commit) is None:
+                continue
+            checks = {check.id for check in EnvironmentManifest.model_validate(entry["manifest"]).checks}
+            data = dict(entry["report"])
+            data.pop("passed", None)
+            for result in VerificationReport.model_validate(data).results:
+                if result.id not in checks:
+                    continue
+                if result.status == "pass":
+                    passed.add(result.id)
+                elif result.required and result.status == "fail" and (
+                        result.exit_code is not None or result.duration_seconds > 0):
+                    failed.add(result.id)
+    except (KeyError, TypeError, ValueError):
+        message = "execution history is malformed or unbound"
+        raise EnvironmentDiscoveryError(message, code="execution_history_invalid") from None
+    return frozenset(failed - passed)
+
+
+def retired_checks(manifest: EnvironmentManifest, retirable: Collection[str]) -> frozenset[str]:
+    """The retirable checks this manifest keeps but no longer requires."""
+    return frozenset(check.id for check in manifest.checks if check.id in retirable and not check.required)
+
+
+def _retirement_errors(manifest: EnvironmentManifest, previous: Sequence[EnvironmentManifest],
+                       retired: frozenset[str], fixed: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    errors: list[str] = []
+    checks = {check.id: check for check in manifest.checks}
+    commands = [*manifest.install, *manifest.checks,
+                *(command for service in manifest.services if service.required
+                  for command in (service.init, service.start, service.health, service.stop) if command is not None)]
+    for identifier in sorted(retired):
+        record = fixed.get(identifier)
+        if record is not None and ({**checks[identifier].model_dump(mode="json"), "required": True, "timeout_seconds": 0}
+                                   != {**record, "timeout_seconds": 0}
+                                   or checks[identifier].timeout_seconds < record["timeout_seconds"]):
+            errors.append(f"{_id(identifier)} must keep exactly what it ran (only required may become false)")
+        if dependents := {command.id for command in commands if command.required and identifier in command.depends_on}:
+            errors.append(f"required {_ids(dependents)} still depend on {_id(identifier)}")
+        if any(identifier in ids for ids in manifest.criterion_checks.values()) or any(
+                identifier in requirement.checks for requirement in manifest.requirements):
+            errors.append(f"{_id(identifier)} must leave criterion_checks and every requirement")
+        for old in previous:
+            for criterion, ids in old.criterion_checks.items():
+                if identifier in ids and not set(manifest.criterion_checks.get(criterion, [])) - set(ids):
+                    errors.append(f"criterion {_id(criterion)} needs a new required check in place of {_id(identifier)}")
+            current = {requirement.id: requirement for requirement in manifest.requirements}
+            for requirement in old.requirements:
+                if identifier in requirement.checks and (
+                        requirement.id not in current or not set(current[requirement.id].checks) - set(requirement.checks)):
+                    errors.append(f"requirement {_id(requirement.id)} needs a new check in place of {_id(identifier)}")
+    return sorted(set(errors))
+
+
+def validate_retirements(manifest: EnvironmentManifest, previous: Sequence[EnvironmentManifest],
+                         retirable: Collection[str], fixed: Mapping[str, Mapping[str, Any]]) -> frozenset[str]:
+    """The checks this manifest retires, refusing a retirement that keeps any of its obligation unserved."""
+    retired = retired_checks(manifest, retirable)
+    if errors := _retirement_errors(manifest, previous, retired, fixed):
+        message = f"a retired check must leave its obligations to new checks: {'; '.join(errors[:16])}"
+        raise EnvironmentDiscoveryError(message, code="obligation_removed")
+    return retired
+
+
+def preservation_view(manifest: EnvironmentManifest, previous: EnvironmentManifest,
+                      retired: Collection[str]) -> EnvironmentManifest:
+    """The manifest as preservation judges it against ``previous``: each retired check still required and still
+    mapped where ``previous`` mapped it. Its replacements were judged by validate_retirements; nothing else changes."""
+    retired = set(retired)
+    if not retired:
+        return manifest
+    checks = [check.model_copy(update={"required": True}) if check.id in retired else check for check in manifest.checks]
+    mapping = {criterion: [*ids, *(item for item in previous.criterion_checks.get(criterion, [])
+                                   if item in retired and item not in ids)]
+               for criterion, ids in manifest.criterion_checks.items()}
+    before = {requirement.id: requirement for requirement in previous.requirements}
+    requirements = [requirement.model_copy(update={"checks": [*requirement.checks, *(
+                        item for item in before[requirement.id].checks if item in retired and item not in requirement.checks)]})
+                    if requirement.id in before else requirement for requirement in manifest.requirements]
+    return manifest.model_copy(update={"checks": checks, "criterion_checks": mapping, "requirements": requirements})
+
+
+def _restored(item: dict[str, Any], old: Command, restored: list[str], retirable: Collection[str] = ()) -> dict[str, Any]:
+    """The executed record, keeping a longer timeout (the one change preservation allows), or the item if unchanged.
+    A retirable check the item retires stays retired: only its content is put back."""
     try:
         current = Command.model_validate(item)
     except ValidationError:
         current = None
-    if current is not None and current.model_dump(exclude={"timeout_seconds"}) == old.model_dump(exclude={"timeout_seconds"}):
+    retiring = old.id in retirable and current is not None and not current.required
+    excluded = {"timeout_seconds", "required"} if retiring else {"timeout_seconds"}
+    if current is not None and current.model_dump(exclude=excluded) == old.model_dump(exclude=excluded):
         return item
     record: dict[str, Any] = old.model_dump(mode="json")
+    if retiring:
+        record["required"] = False
     timeout = item.get("timeout_seconds")
     if type(timeout) in {int, float} and timeout > old.timeout_seconds:
         record["timeout_seconds"] = timeout
@@ -159,7 +269,8 @@ def _restored(item: dict[str, Any], old: Command, restored: list[str]) -> dict[s
     return record
 
 
-def restore_execution_commands(data: dict[str, Any], executed: Sequence[EnvironmentManifest]) -> list[str]:
+def restore_execution_commands(data: dict[str, Any], executed: Sequence[EnvironmentManifest],
+                               retirable: Collection[str] = ()) -> list[str]:
     """Put back every executed required check or service command a merged candidate changed; return their ids.
 
     Dettmore e2e-25: after the first execution, a check group added a dependency to an executed check and the global
@@ -171,7 +282,7 @@ def restore_execution_commands(data: dict[str, Any], executed: Sequence[Environm
     for previous in executed:
         frozen = {check.id: check for check in previous.checks if check.required}
         if isinstance(checks := data.get("checks"), list):
-            data["checks"] = [_restored(item, frozen[item["id"]], restored)
+            data["checks"] = [_restored(item, frozen[item["id"]], restored, retirable)
                               if isinstance(item, dict) and item.get("id") in frozen else item for item in checks]
         services = {service.id: service for service in previous.services if service.required}
         for service in data.get("services") or []:
@@ -208,8 +319,11 @@ def preserve_execution_commands(
 
 
 def preserve_execution_obligations(manifest: EnvironmentManifest, history: object) -> None:
-    for previous in executed_manifests(history, source_commit=manifest.source_commit):
-        preserve_execution_commands(manifest, previous)
+    executed = executed_manifests(history, source_commit=manifest.source_commit)
+    retired = validate_retirements(manifest, executed, retirable_check_ids(history, source_commit=manifest.source_commit),
+                                   fixed_commands(executed))
+    for previous in executed:
+        preserve_execution_commands(preservation_view(manifest, previous, retired), previous)
 
 
 SAFE_ID = re.compile(r'[A-Za-z0-9_.:-]{1,128}')
@@ -273,8 +387,11 @@ def _mapped(manifest: EnvironmentManifest, criterion: str) -> list[str]:
     return list(manifest.criterion_checks.get(criterion, []))
 
 
-def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentManifest) -> None:
-    """A fresh judgment can add coverage, never waive a previously required obligation."""
+def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentManifest,
+                         retired: Collection[str] = ()) -> None:
+    """A fresh judgment can add coverage, never waive a previously required obligation (a retired check's obligations
+    are judged by validate_retirements, so it is judged here as still required)."""
+    manifest = preservation_view(manifest, previous, retired)
     aliases = duplicate_aliases(previous, manifest)
     if previous.scope_contract is not None and manifest.scope_contract is None:
         message = 'required source scope removed during repair'

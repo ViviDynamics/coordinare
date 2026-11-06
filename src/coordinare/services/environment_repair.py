@@ -57,8 +57,11 @@ from coordinare.services.environment_attempt import (
 from coordinare.services.environment_obligations import (
     MAX_REJECTED_EXECUTIONS,
     executed_manifests,
+    fixed_commands,
     preserve_execution_obligations,
     preserve_obligations,
+    retirable_check_ids,
+    validate_retirements,
 )
 from coordinare.services.environment_probes import (
     ProbeAbandonment,
@@ -552,6 +555,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.finding_ledger = journal.finding_ledger.model_copy(deep=True) if journal.finding_ledger is not None else None
     budget.coverage_manifest = journal.coverage_manifest.model_copy(deep=True) if journal.coverage_manifest is not None else None
     budget.executed_manifests = executed_manifests(journal.rejected, source_commit=journal.source_commit)
+    budget.retirable_checks = retirable_check_ids(journal.rejected, source_commit=journal.source_commit)
     budget.repair_triage = repair_triage_for(journal)
     budget.delta_fallback = journal.delta_fallback
     budget.execution_review_evidence = execution_review_evidence(journal.rejected)
@@ -615,7 +619,11 @@ def _validate_established_candidate(journal: RepairJournal, candidate: Environme
     if journal.coverage_manifest is not None:
         if candidate is None:
             _refuse('established candidate cannot be removed', code='obligation_removed')
-        preserve_obligations(candidate, journal.coverage_manifest)
+        executed = executed_manifests(journal.rejected, source_commit=journal.source_commit)
+        retired = validate_retirements(candidate, [journal.coverage_manifest],
+                                       retirable_check_ids(journal.rejected, source_commit=journal.source_commit),
+                                       fixed_commands(executed))
+        preserve_obligations(candidate, journal.coverage_manifest, retired)
         if any(candidate.inputs.get(path) != digest for path, digest in journal.coverage_manifest.inputs.items()):
             _refuse('established source evidence changed', code='source_identity')
     if candidate is not None and candidate.source_commit != journal.source_commit:

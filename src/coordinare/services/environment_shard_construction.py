@@ -36,9 +36,13 @@ from coordinare.services.environment_admission import GRAPH_GUIDANCE
 from coordinare.services.environment_agent_pool import ShardOverflowError, run_pool
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_delta_schema import apply_group_delta
-from coordinare.services.environment_discovery_prompts import SOURCE_NAVIGATION
+from coordinare.services.environment_discovery_prompts import (
+    ADVISORY_AUDIT_CHECKS,
+    SOURCE_NAVIGATION,
+)
 from coordinare.services.environment_findings import BARE_INDETERMINATE, MAX_FINDINGS
 from coordinare.services.environment_inspection import SourceInspection
+from coordinare.services.environment_obligations import RETIRE_FAILED_CHECK
 from coordinare.services.environment_scope import _ResponseReferenceError, released_criteria
 from coordinare.services.environment_shard_scope import (
     MIN_SPLIT,
@@ -113,11 +117,11 @@ CHECK_AUTHOR_INSTRUCTIONS = (
     'write must start with check_id_prefix; keep every id in keep_check_ids unchanged, and you may map or depend on '
     'sibling_check_ids, which another author keeps. Each check in fixed_checks ran in an earlier execution and is fixed: '
     'return it exactly as fixed_checks gives it, whatever previous_part shows (only timeout_seconds may grow), and answer '
-    'a finding about it with a new check. '
+    'a finding about it with a new check. ' + RETIRE_FAILED_CHECK + ' '
     'depends_on may name your checks, global checks, or service init, start '
     'and health ids. You cannot declare installation, services or activation. bound_inputs indexes verified repository '
     'files with the criteria citing each; read the files you need with read_files. Never write literal credentials. '
-    + INSTALL_ARTIFACT_RULE +
+    + INSTALL_ARTIFACT_RULE + ADVISORY_AUDIT_CHECKS + ' ' +
     'Return {"shard_checks":{"checks":[...],"criterion_checks":{...}}}. '
 )
 DELTA_CHECK_INSTRUCTION = (
@@ -128,6 +132,7 @@ DELTA_CHECK_INSTRUCTION = (
     'obligation. Read the bound_inputs you need with read_files. Never write literal credentials. A check in '
     'fixed_check_ids ran in an earlier execution: keep its argv, cwd, env, dependencies, scope and required status, '
     'never shorten its timeout_seconds (you may only lengthen it), and leave what it needs to the global repair. '
+    + RETIRE_FAILED_CHECK + ' '
 )
 # Dettmore e2e-14 review: a closure record a past execution fixed may change only its timeout, which the delta authors
 # were never told; the fix belongs in installation, activation or a service instead.
@@ -269,7 +274,8 @@ def inherit(previous: Mapping[str, dict[str, Any]], group: CheckGroup, parent: C
 
 
 def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[str, Any],
-                   inherited: Inheritance | None = None, frozen: Collection[str] = ()) -> ShardChecks:
+                   inherited: Inheritance | None = None, frozen: Collection[str] = (),
+                   retirable: Collection[str] = ()) -> ShardChecks:
     """Own prefix, known dependencies, and exactly the assigned criteria mapped to required unscoped checks."""
     inherited = inherited or Inheritance()
     part = ShardChecksEnvelope.model_validate(data).shard_checks
@@ -305,8 +311,11 @@ def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[
         errors.append({'code': 'inherited_check_missing', 'location': ['shard_checks', 'checks'], 'missing': missing[:32],
                        'guidance': 'Keep every keep_check_ids check that was required; revise it in place (a '
                                    'fixed_checks check exactly as fixed_checks gives it), never drop it.'})
-    unmapped = {criterion: sorted(ids - set(part.criterion_checks.get(criterion, [])))
-                for criterion, ids in sorted(inherited.mapped.items()) if ids - set(part.criterion_checks.get(criterion, []))}
+    # A retired check leaves its criteria to new checks; admission judges that the replacements are there.
+    retired = {identifier for identifier, check in own.items() if identifier in retirable and not check.required}
+    unmapped = {criterion: sorted(ids - set(part.criterion_checks.get(criterion, [])) - retired)
+                for criterion, ids in sorted(inherited.mapped.items())
+                if ids - set(part.criterion_checks.get(criterion, [])) - retired}
     if unmapped:
         errors.append({'code': 'inherited_mapping_missing', 'location': ['shard_checks', 'criterion_checks'],
                        'missing': dict(list(unmapped.items())[:32]),
@@ -664,6 +673,8 @@ class DividedConstruction:
     delta: DeltaPlan | None = None
     # Commands an earlier execution fixed, as executed (fixed_commands); check authors are given theirs.
     fixed: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Checks that failed and never passed (retirable_check_ids): an author may retire its own.
+    retirable: frozenset[str] = frozenset()
     carrier_process_policy: dict[str, Any] | None = None
 
     @property
@@ -703,6 +714,8 @@ class DividedConstruction:
             'closure_checks': plan.closure_checks(group), 'closure_criteria': plan.closure_criteria(frozenset(group.ids)),
             **({'fixed_check_ids': fixed} if (fixed := sorted(identifier for identifier in plan.closure & plan.fixed
                                                             if owns(group.prefix, identifier))) else {}),
+            **({'retirable_check_ids': retirable} if (retirable := sorted(identifier for identifier in self.retirable
+                                                                       if owns(group.prefix, identifier))) else {}),
             'assigned_criteria': [criterion.model_dump(mode='json') for criterion in assigned],
             'global_part': dict(summary), 'probe_evidence': list(probes), 'bound_inputs': index,
             'untrusted_feedback': self.feedback.get(group.prefix, self.feedback.get(base_prefix(group.prefix)))}).decode()
@@ -713,7 +726,8 @@ class DividedConstruction:
             captured['patch'] = patch
             applied = {'shard_checks': plan.restore_frozen(plan.base_group(group) or {},
                                                            apply_group_delta(plan.base_group(group), patch))}
-            admitted = validate_group(applied, group=group, summary=summary, inherited=inherited, frozen=self.fixed)
+            admitted = validate_group(applied, group=group, summary=summary, inherited=inherited, frozen=self.fixed,
+                       retirable=self.retirable)
             plan.guard_part(plan.base_group(group) or {}, applied['shard_checks'])
             return admitted
 
@@ -753,9 +767,11 @@ class DividedConstruction:
             'previous_part': inherited.part, 'keep_check_ids': sorted(inherited.own),
             **({'fixed_checks': fixed} if (fixed := [self.fixed[identifier] for identifier in sorted(inherited.own)
                                                        if identifier in self.fixed]) else {}),
+            **({'retirable_check_ids': retirable} if (retirable := sorted(inherited.own & self.retirable)) else {}),
             'sibling_check_ids': sorted(inherited.siblings),
             'untrusted_feedback': self.feedback.get(group.prefix, self.feedback.get(base_prefix(group.prefix)))}).decode()
-        validate = partial(validate_group, group=group, summary=summary, inherited=inherited, frozen=self.fixed)
+        validate = partial(validate_group, group=group, summary=summary, inherited=inherited, frozen=self.fixed,
+                       retirable=self.retirable)
         key = hashlib.sha256(brief.encode()).hexdigest()
         saved = saved_part(self.context.budget, 'groups', group.prefix, key)
         if saved is not None:
@@ -779,7 +795,7 @@ class DividedConstruction:
         inherited = replace(inherit(self.previous, group, parent), mapped=self._kept_mappings(group))
         try:
             validate_group({'shard_checks': part.model_dump(mode='json')}, group=group, summary=summary, inherited=inherited,
-                           frozen=self.fixed)
+                           frozen=self.fixed, retirable=self.retirable)
         except _ResponseReferenceError:
             return False
         return True

@@ -28,6 +28,19 @@ if TYPE_CHECKING:
     from coordinare.models.env_cache import EnvCacheState
 
 
+# Dettmore e2e-58: postgres ran in guest Docker with -p 127.0.0.1:5439:5432 and no runtime_endpoints forward, so
+# docker exec health checks passed while every carrier-side database client got "connection refused".
+GUEST_PORT_GUIDANCE = (
+    "Guest Docker runs in a separate virtual machine, so a port a container publishes is open on the guest, never on "
+    "the carrier: carrier commands reach it only through a runtime_endpoints forward. Publish the container port on "
+    "every guest interface (docker run -p 5432:5432, never -p 127.0.0.1:5432:5432, which the forward cannot reach), "
+    "declare {\"id\": \"postgres\", \"bind_address\": \"127.0.0.1\", \"guest_port\": 5432, \"outer_port\": 5432} in "
+    "runtime_endpoints, and connect carrier clients to 127.0.0.1 at outer_port. docker exec runs inside the container, "
+    "so a docker exec health check does not prove carrier clients can connect: check readiness from the carrier "
+    "through the forwarded port as well."
+)
+
+
 class EnvironmentCapabilityError(ValueError):
     """A trusted actionable configuration reason, never provider/source prose."""
 
@@ -93,7 +106,7 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
                 "install passed: otherwise each service step is not_run, naming the failed installs. Startup readiness does not guarantee "
                 "continued daemon health; required checks and cleanup remain mandatory. Each service stop must remove every "
                 "Docker container, volume (including an image's anonymous volume: docker rm -f -v) and custom network "
-                "its service created; any left behind fails that stop. To stop a process, write its pid to a file under "
+                "its service created; any left behind fails that stop. " + GUEST_PORT_GUIDANCE + " To stop a process, write its pid to a file under "
                 "{scratch} when it starts and kill that pid: pkill -f or pgrep -f inside a longer shell script "
                 "matches the script's own shell, whose command line contains the pattern. A ${NAME} reference "
                 "resolves only from activation variables, operator-supplied runtime variables, and local credentials "
