@@ -107,7 +107,10 @@ async def _command(argv: list[str], *, deadline: float, check: bool = True) -> t
             await process.wait()
 
 
-CLEANUP_SECONDS = 60
+# The guest's clean shutdown (sync, fstrim, poweroff) gets this long. Dettmore e2e-61's took over 60 s on a host at
+# load 27 on 20 cores, so a teardown that would have completed went unconfirmed and the attempt held instead of
+# repairing. A guest that shuts down sooner still returns at once.
+CLEANUP_SECONDS = 180
 
 
 @dataclass(frozen=True)

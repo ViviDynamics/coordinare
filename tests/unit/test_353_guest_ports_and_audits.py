@@ -12,7 +12,11 @@ from types import SimpleNamespace
 
 from coordinare_service_inference.environment.runtime import RuntimeEndpoint
 
-from coordinare.services.environment_capabilities import GUEST_PORT_GUIDANCE, carrier_process_policy
+from coordinare.services.environment_capabilities import (
+    GUEST_IMAGE_GUIDANCE,
+    GUEST_PORT_GUIDANCE,
+    carrier_process_policy,
+)
 from coordinare.services.environment_discovery import EXECUTABLE_REVIEW_INSTRUCTIONS
 from coordinare.services.environment_discovery_prompts import (
     _MANIFEST_INSTRUCTIONS,
@@ -44,3 +48,15 @@ def test_every_author_and_reviewer_of_checks_gets_the_advisory_audit_rule():
         assert ADVISORY_AUDIT_CHECKS in instructions
     assert 'Never require that no advisories are found' in ADVISORY_AUDIT_CHECKS
     assert 'never ignore advisories to make one pass' in ADVISORY_AUDIT_CHECKS
+
+
+def test_the_runtime_guidance_says_to_pull_service_images_at_install():
+    # Dettmore e2e-61: the service start had to pull pgvector itself and its health check ran out first.
+    assert GUEST_IMAGE_GUIDANCE in _policy()['runtime_ordering_guidance']
+    assert 'docker pull' in GUEST_IMAGE_GUIDANCE and 'no network' in GUEST_IMAGE_GUIDANCE
+
+
+def test_a_guest_shutdown_gets_three_minutes_on_a_loaded_host():
+    from coordinare_service_inference.environment.runtime_supervisor import CLEANUP_SECONDS
+
+    assert CLEANUP_SECONDS == 180

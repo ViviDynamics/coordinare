@@ -39,6 +39,12 @@ GUEST_PORT_GUIDANCE = (
     "so a docker exec health check does not prove carrier clients can connect: check readiness from the carrier "
     "through the forwarded port as well."
 )
+# Dettmore e2e-61: no install step pulled pgvector/pgvector:pg17, so the service start had to pull it and its health
+# check ran out first; clean verification has no network, so it could never pull it there.
+GUEST_IMAGE_GUIDANCE = (
+    "Pull every image a service or check runs in an install step (docker pull IMAGE, at a pinned tag or digest): clean "
+    "verification has no network, and a service start that must pull its image can outrun its health check."
+)
 
 
 class EnvironmentCapabilityError(ValueError):
@@ -106,7 +112,7 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
                 "install passed: otherwise each service step is not_run, naming the failed installs. Startup readiness does not guarantee "
                 "continued daemon health; required checks and cleanup remain mandatory. Each service stop must remove every "
                 "Docker container, volume (including an image's anonymous volume: docker rm -f -v) and custom network "
-                "its service created; any left behind fails that stop. " + GUEST_PORT_GUIDANCE + " To stop a process, write its pid to a file under "
+                "its service created; any left behind fails that stop. " + GUEST_PORT_GUIDANCE + " " + GUEST_IMAGE_GUIDANCE + " To stop a process, write its pid to a file under "
                 "{scratch} when it starts and kill that pid: pkill -f or pgrep -f inside a longer shell script "
                 "matches the script's own shell, whose command line contains the pattern. A ${NAME} reference "
                 "resolves only from activation variables, operator-supplied runtime variables, and local credentials "
