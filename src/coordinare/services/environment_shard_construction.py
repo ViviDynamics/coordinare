@@ -109,12 +109,21 @@ INSTALL_ARTIFACT_RULE = (
     'A check consumes an artifact that installation persisted (an image, tool, package or cache entry) by inspecting or '
     'running it; it never rebuilds that artifact from source or pulls it again, because clean verification has no network. '
 )
+# Dettmore e2e-60: told to "keep every id in keep_check_ids unchanged", the c00 author read it as keeping the check
+# itself unchanged. Asked three reviews running to give c00-npm-build the offline npm cache, it left the bare `npm ci`
+# and added corrected copies beside it (c00-npm-offline, c00-npm-build-cached, c00-npm-build-offline), so the
+# uncorrected required check kept every finding open. Only a check that already ran (fixed_checks) is frozen.
+KEEP_AND_CORRECT = (
+    'Keep every id in keep_check_ids: never rename or drop one. When a finding or untrusted_feedback names one that is '
+    'not in fixed_checks, correct that check itself (its argv, env, dependencies or timeout) under the same id. Never '
+    'leave it as it was and add a corrected copy beside it: the uncorrected check stays required and its finding stays '
+    'open. ')
 CHECK_AUTHOR_INSTRUCTIONS = (
     'You are a check author for one group of required source criteria in a divided environment manifest. The global '
     'environment author already declared installation, activation and services (global_part). For every criterion in '
     'assigned_criteria, write required, unscoped checks that prove its obligation and observable result in the clean '
     'consumer, and map it in criterion_checks to those checks or to global checks in global_part. Every new check id you '
-    'write must start with check_id_prefix; keep every id in keep_check_ids unchanged, and you may map or depend on '
+    'write must start with check_id_prefix. ' + KEEP_AND_CORRECT + 'You may map or depend on '
     'sibling_check_ids, which another author keeps. Each check in fixed_checks ran in an earlier execution and is fixed: '
     'return it exactly as fixed_checks gives it, whatever previous_part shows (only timeout_seconds may grow), and answer '
     'a finding about it with a new check. ' + RETIRE_FAILED_CHECK + ' '

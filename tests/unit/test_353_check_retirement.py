@@ -136,3 +136,12 @@ def test_authors_are_told_when_they_may_retire_and_reviewers_how_to_judge_it():
         assert RETIRE_FAILED_CHECK in instructions
     assert RETIREMENT_REVIEW in EXECUTABLE_REVIEW_INSTRUCTIONS
     assert 'Never retire a check the environment failed' in RETIRE_FAILED_CHECK
+
+
+def test_check_authors_correct_a_named_unexecuted_check_in_place_rather_than_copying_it():
+    from coordinare.services.environment_shard_construction import KEEP_AND_CORRECT
+
+    # Dettmore e2e-60: "keep every id in keep_check_ids unchanged" read as keeping the check itself unchanged.
+    assert 'keep_check_ids unchanged' not in CHECK_AUTHOR_INSTRUCTIONS
+    assert KEEP_AND_CORRECT in CHECK_AUTHOR_INSTRUCTIONS
+    assert 'correct that check itself' in KEEP_AND_CORRECT and 'Never leave it as it was' in KEEP_AND_CORRECT
