@@ -1409,6 +1409,23 @@ async def _rescope(attempt: _Attempt, build: DividedConstruction | None) -> Divi
     return _divided_construction(rescoped, attempt)
 
 
+def review_summary(manifest: EnvironmentManifest) -> dict[str, Any]:
+    """The global part as every part reviewer sees it: what a check author may reference, plus its commands.
+
+    A part reviewer judges its checks against the commands that install what they run, not only their ids: Dettmore
+    e2e-46's c00 reviewers, shown install_ids, could not see install-ruby was resubmitted unchanged after it failed.
+    Dettmore e2e-59's check-group reviewers were shown each service as lifecycle ids only, and runtime_endpoints read
+    from a key a manifest does not have (its forwards are runtime.endpoints), so they reported the declared postgres
+    commands and forward missing in every review.
+    """
+    data = manifest.model_dump(mode='json')
+    return {**global_summary(data),
+            'install': [{'id': command.id, 'argv': command.argv, 'cwd': command.cwd, 'env': dict(command.env)}
+                        for command in manifest.install],
+            'services': data.get('services', []),
+            'runtime_endpoints': (data.get('runtime') or {}).get('endpoints', [])}
+
+
 def _divided_construction(scope: ScopeContract, attempt: _Attempt) -> DividedConstruction | None:
     """A sharded scope too large for one author is constructed by a global author and parallel check authors."""
     if attempt.budget.scope_shards is None or not divided(scope):
@@ -1847,11 +1864,7 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
     groups = build.groups
     owned = review_owners(ledger, groups)
     capacities = review_capacities(ledger, [*(group.prefix for group in groups), GLOBAL_OWNER])
-    # A part reviewer judges its checks against the commands that install what they run, not only their ids: Dettmore
-    # e2e-46's c00 reviewers, shown install_ids, could not see install-ruby was resubmitted unchanged after it failed.
-    summary = {**global_summary(manifest.model_dump(mode='json')),
-               'install': [{'id': command.id, 'argv': command.argv, 'cwd': command.cwd, 'env': dict(command.env)}
-                           for command in manifest.install]}
+    summary = review_summary(manifest)
     responses = [response.model_dump(mode='json') for response in attempt.discovery.finding_responses]
     base = compact_scope_identity({key: value for key, value in attempt.identity.items() if key != 'bound_scope_inputs'},
                                   build.scope)

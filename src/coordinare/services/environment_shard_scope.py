@@ -169,6 +169,28 @@ SHARED_CONTEXT_NOTE = (' Context shared by every agent in your role (for example
                        'scope_digest) is under _shared_context; the rest is yours alone. ')
 
 
+# Dettmore e2e-59: the merge reviewer resolved the stale "Flow canvas bundle" row (F0001, F0002 its duplicate), but
+# each shard reviewer sees only the findings it owns, so a shard citing the same files raised it again as F0003 and
+# the scope spent another revision. A shard reviewer is shown what was already resolved about its files.
+RESOLVED_ELSEWHERE = (' resolved_findings lists findings another reviewer already resolved that cite this shard\'s '
+                      'files, each with its resolution. Do not raise one again unless you cite evidence its resolution '
+                      'did not consider; a new finding repeating one is a duplicate. ')
+MAX_RESOLVED_SHOWN = 16
+
+
+def resolved_elsewhere(ledger: FindingLedger | None, owned: Collection[str], paths: Collection[str]) -> list[dict[str, Any]]:
+    """Resolved findings this reviewer does not own that cite one of ``paths``, each with its latest resolution."""
+    if ledger is None:
+        return []
+    latest = {decision.finding_id: decision for review in ledger.reviews for decision in review.decisions}
+    cited = set(paths)
+    return [{'id': record.id, 'issue': record.proposal.issue[:1024], 'sources': record.proposal.sources,
+             'resolution': latest[record.id].rationale[:1024]}
+            for record in ledger.records
+            if record.id not in owned and record.id in latest and latest[record.id].status == 'resolved'
+            and cited & set(record.proposal.sources)][:MAX_RESOLVED_SHOWN]
+
+
 def agent_context(shared: Mapping[str, Any], own: Mapping[str, Any]) -> str:
     return str(canonical({SHARED_CONTEXT: dict(shared), **own}).decode())
 
@@ -796,8 +818,11 @@ class ShardedScope:
         records = [record.model_dump(mode='json') for record in ledger.records if record.id in owned] if ledger else []
         responses = [response for response in self.budget.scope_responses if response.get('finding_id') in owned]
         released = [c.id for c in criteria if c.id in self.budget.release_requests]
+        cited = sorted({path for c in criteria for path in c.sources}
+                       | {path for record in records for path in record['proposal']['sources']})
+        resolved = resolved_elsewhere(ledger, owned, {*cited, *material.paths})
         return [{'role': 'system', 'content': SOURCE_NAVIGATION + preamble + REVIEW_INSTRUCTIONS + PHASE_CONTRACT
-                 + SHARED_CONTEXT_NOTE},
+                 + SHARED_CONTEXT_NOTE + (RESOLVED_ELSEWHERE if resolved else '')},
                 {'role': 'user', 'content': agent_context(
                     {'requested_scope': 'whole_documented_development_test_environment',
                      'phase_contract': {'subject': 'source_obligations', 'runtime_evidence': 'required_after_scope_acceptance',
@@ -807,8 +832,8 @@ class ShardedScope:
                     'root_directory': inspection.list_directory(), 'shard_files': self.file_list(material.paths),
                     'scope_criteria': [c.model_dump(mode='json') for c in criteria],
                     'mandatory_evidence': evidence, 'assigned_findings': records,
-                    'cited_files': sorted({path for c in criteria for path in c.sources}
-                                          | {path for record in records for path in record['proposal']['sources']}),
+                    'cited_files': cited,
+                    **({'resolved_findings': resolved} if resolved else {}),
                     'required_decision_ids': list(owned), 'finding_responses': responses, 'findings_capacity': capacity,
                     'release_requests': released,
                     **({'exclusions': [item.model_dump(mode='json') for item in definition.exclusions],
