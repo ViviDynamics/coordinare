@@ -6,6 +6,7 @@ and the execution repairs that would have fixed apt, the stop command and the re
 """
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -45,7 +46,7 @@ async def _run(tmp_path, monkeypatch, *, report, manifest, listing=LISTING, clea
                shutdown_error=None, secret_names=(), redact_values=frozenset()):
     scripts: list[str] = []
     sealed: list[bool] = []
-    lease = SimpleNamespace(activation_env={}, installation_passed=False, shutdown_error=None)
+    lease = SimpleNamespace(activation_env={}, installation_passed=False, shutdown_error=None, deadline=time.monotonic()+600)
 
     async def ssh(script, *, deadline, check=True):
         scripts.append(script)
