@@ -71,19 +71,28 @@ def _executed_manifest(entry: Any, source_commit: str) -> EnvironmentManifest | 
     if any(command.id not in by_id or not by_id[command.id].required for command in required):
         message = "execution history omits required commands"
         raise ValueError(message)
-    return _ran(manifest, ran)
+    failed = {result.id for result in report.results if result.id in ran and result.status != "pass"}
+    return _ran(manifest, ran, failed)
 
 
-def _ran(manifest: EnvironmentManifest, ran: set[str]) -> EnvironmentManifest:
+def _ran(manifest: EnvironmentManifest, ran: set[str], failed: Collection[str] = ()) -> EnvironmentManifest:
     """The executed manifest as far as it ran: only a command that executed (an exit code or a duration) is fixed.
 
     Dettmore e2e-46: ruby failed to install, so every c01 check stayed not_run, yet each was fixed with the wrong
     database port it exported. The reviewer named that port in all 8 coverage revisions and no repair could change it.
     A check that never ran has no result to protect; the obligation ledger still keeps it from being dropped, and the
-    independent review judges its revision like any unexecuted check. A service stays fixed once any of its commands ran.
+    independent review judges its revision like any unexecuted check. A service stays fixed once its commands ran and
+    passed. One whose lifecycle command ran and did not pass stays editable, since that execution established no result
+    for it: Dettmore e2e-62's postgres health command was itself a Ruby syntax error, and fixing it would have repaired
+    the attempt, but it was frozen, so every repair kept the broken command. An execution where the service passed
+    still fixes it, and preservation still keeps the service required with its lifecycle ids.
     """
-    services = [service if any(command.id in ran for command in (service.init, service.start, service.health, service.stop)
-                               if command is not None) else service.model_copy(update={"required": False})
+    def fixed(service: Service) -> bool:
+        commands = [command.id for command in (service.init, service.start, service.health, service.stop)
+                    if command is not None]
+        return any(identifier in ran for identifier in commands) and not any(identifier in failed for identifier in commands)
+
+    services = [service if fixed(service) else service.model_copy(update={"required": False})
                 for service in manifest.services]
     return manifest.model_copy(update={"checks": [check for check in manifest.checks if check.id in ran],
                                        "services": services})
