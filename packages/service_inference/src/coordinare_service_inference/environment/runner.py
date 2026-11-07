@@ -394,6 +394,12 @@ async def _notify_service_stop(controls: tuple[int, int]) -> bool:
         return False
 
 
+# Commands stop before a private runtime's teardown allowance (see runtime_execution). Service stops still run after
+# that point, for residual-state cleanup, each within this window past the command deadline.
+SESSION_DEADLINE_NOT_RUN = 'session deadline reached before this command ran'
+TEARDOWN_STOP_SECONDS = 60.0
+
+
 async def _execute(
     command: Command,
     *,
@@ -409,7 +415,11 @@ async def _execute(
     ignore_dependencies: bool = False,
     redactions: frozenset[str] = frozenset(),
     finalizers: dict[int, Callable[[], str]] | None = None,
+    budget: float | None = None,
+    teardown: bool = False,
 ) -> CheckResult:
+    """``budget`` is a monotonic deadline for the command: once it has passed a non-teardown command does not run, and a
+    command still running at it is cut short. A teardown command runs regardless, with at least a second."""
     result = CheckResult(
         id=command.id,
         status="not_run",
@@ -417,11 +427,19 @@ async def _execute(
         manifest_digest=digest,
         context=scope,
     )
+    if budget is not None and not teardown and time.monotonic() >= budget:
+        result.output = SESSION_DEADLINE_NOT_RUN
+        return result
     if not ignore_dependencies and any(
         key not in results or results[key].status != "pass" for key in command.depends_on
     ):
         result.output = "prerequisite did not pass"
         return result
+    timeout, cut_short = command.timeout_seconds, False
+    if budget is not None:
+        left = budget - time.monotonic()
+        timeout = min(timeout, max(left, 1.0) if teardown else left)
+        cut_short = timeout < command.timeout_seconds
     started = time.monotonic()
     process = None
     ack_read = ack_write = None
@@ -525,12 +543,12 @@ async def _execute(
                     tail.extend(b"\nbackground service completion requires Linux supervision")
                 return result
         try:
-            await asyncio.wait_for(process.wait(), command.timeout_seconds)
+            await asyncio.wait_for(process.wait(), timeout)
             result.exit_code = process.returncode
             result.status = "pass" if process.returncode == 0 else "fail"
         except TimeoutError:
             result.status = "indeterminate"
-            tail.extend(b"\ncommand timed out")
+            tail.extend(b"\ncommand cut short: session deadline reached" if cut_short else b"\ncommand timed out")
     except (OSError, ValueError) as exc:
         result.status = "fail"
         tail.extend(str(exc).encode())
@@ -694,6 +712,7 @@ async def _commands(
     results: dict[str, CheckResult],
     redactions: frozenset[str] = frozenset(),
     health: bool = False,
+    budget: float | None = None,
 ) -> None:
     pending = {command.id: command for command in commands}
     while pending:
@@ -723,6 +742,7 @@ async def _commands(
                     scope=scope,
                     results=results,
                     redactions=redactions,
+                    budget=budget,
                 )
                 if health and results[command.id].status in {"pass", "fail"} and (broken := await _environment_health(
                         roots=roots, env=env, digest=digest, scope=scope, redactions=redactions)) is not None:
@@ -744,8 +764,13 @@ async def manifest_services(
     secret_names: Sequence[str] = (),
     runtime_env: Mapping[str, str] | None = None,
     credentials: Mapping[str, str] | None = None,
+    command_deadline: float | None = None,
 ) -> AsyncIterator[list[CheckResult]]:
-    """Hold explicitly declared services until exit; expose lifecycle failures to callers."""
+    """Hold explicitly declared services until exit; expose lifecycle failures to callers.
+
+    ``command_deadline`` bounds init, start and health like the checks; stops run after it, within TEARDOWN_STOP_SECONDS.
+    """
+    stop_budget = None if command_deadline is None else command_deadline + TEARDOWN_STOP_SECONDS
     roots = {"cache": str(cache), "repo": str(repo), "scratch": str(scratch)}
     redactions = _runtime_secret_values(secret_names) | frozenset((credentials or {}).values())
     env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env, credentials=credentials)
@@ -790,6 +815,7 @@ async def manifest_services(
                         service_controls=service_controls,
                         redactions=redactions,
                         finalizers=finalizers,
+                        budget=command_deadline,
                     )
                 else:
                     result = CheckResult(
@@ -839,6 +865,8 @@ async def manifest_services(
                         results=results,
                         ignore_dependencies=True,
                         redactions=redactions,
+                        budget=stop_budget,
+                        teardown=True,
                     )
                     result.required = service.required
                     results[result.id] = result
@@ -949,8 +977,10 @@ async def _run_manifest_commands(
     runtime_env: Mapping[str, str] | None = None,
     credentials: Mapping[str, str] | None = None,
     progress: dict[str, CheckResult] | None = None,
+    command_deadline: float | None = None,
 ) -> VerificationReport:
-    """``progress``, when given, receives each result as it lands, so an owner keeps finished results if cancelled."""
+    """``progress``, when given, receives each result as it lands, so an owner keeps finished results if cancelled.
+    ``command_deadline`` (monotonic) bounds the install, lifecycle and check commands; see ``_execute``."""
     roots = {"cache": str(cache), "repo": str(repo), "scratch": str(scratch)}
     redactions = _runtime_secret_values(secret_names) | frozenset((credentials or {}).values())
     preflight = _template_preflight(manifest, roots, install=install, scope=scope, secret_names=secret_names,
@@ -964,7 +994,7 @@ async def _run_manifest_commands(
     if install:
         await _commands(
             manifest.install, roots=roots, env=env, digest=digest, scope=scope, results=results, redactions=redactions,
-            health=True,
+            health=True, budget=command_deadline,
         )
     # Activation paths are execution prerequisites, even when a command uses absolute argv.
     missing = [
@@ -1004,7 +1034,8 @@ async def _run_manifest_commands(
                 manifest_digest=digest, context=scope)
     else:
         async with manifest_services(manifest, **roots, _results=results, scope=scope, secret_names=secret_names,
-                                     runtime_env=runtime_env, credentials=credentials) as services:
+                                     runtime_env=runtime_env, credentials=credentials,
+                                     command_deadline=command_deadline) as services:
             if missing or any(
                 r.required and r.status != "pass" for r in [*results.values(), *services]
             ):
@@ -1020,7 +1051,7 @@ async def _run_manifest_commands(
             else:
                 await _commands(
                     manifest.checks, roots=roots, env=env, digest=digest, scope=scope, results=results,
-                    redactions=redactions,
+                    redactions=redactions, budget=command_deadline,
                 )
     if not any(
         check.required and (not scope or not check.scope or scope in check.scope) for check in manifest.checks

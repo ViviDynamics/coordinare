@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from .runtime_io import settle as _settle
-from .runtime_supervisor import RuntimeScanStoppedError, open_runtime, seal_runtime
+from .runtime_supervisor import CLEANUP_SECONDS, RuntimeScanStoppedError, open_runtime, seal_runtime
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -420,8 +420,12 @@ async def execute_with_runtime(
         progress: dict[str, CheckResult] = {}
         try:
             try:
+                # Dettmore e2e-67: the commands stop CLEANUP_SECONDS before the lease's deadline (the run's, capped by its
+                # resources), so close() can still shut the guest down cleanly. A command that overruns is an ordinary
+                # failure, not a held deadline_exhausted.
                 report = await run_guarded(lease, commands(manifest, **kwargs, progress=progress,
-                                                            runtime_env=lease.activation_env))
+                                                            runtime_env=lease.activation_env,
+                                                            command_deadline=lease.deadline-CLEANUP_SECONDS))
                 await _scan_bounds(lease)
             except TimeoutError as exc:
                 if _cancelling():

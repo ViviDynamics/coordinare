@@ -130,7 +130,8 @@ async def exercise(tmp_path, monkeypatch, *, install, health_fails, never_ready=
     monkeypatch.setattr(runtime_execution, 'seal_runtime', seal)
     kwargs = {'cache':cache,'repo':repo,'scratch':scratch,'install':install,
         'execution_source_digest':'2'*64,'runtime_artifacts':None if install else receipt,
-        'runtime_deadline':time.monotonic()+15,'credentials':{}}
+        # Commands stop CLEANUP_SECONDS before the deadline, so the 15 s of work needs that reserve on top.
+        'runtime_deadline':time.monotonic()+15+runtime_supervisor.CLEANUP_SECONDS,'credentials':{}}
     if never_ready:
         with pytest.raises(TimeoutError):
             await run_manifest(manifest, **kwargs)

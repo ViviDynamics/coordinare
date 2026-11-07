@@ -231,7 +231,10 @@ class RuntimeLease:
                 respected = True
             if self.process is not None and self.process.returncode is None:
                 try:
-                    await asyncio.wait_for(self.stop_guest(deadline=cleanup_deadline), timeout=_remaining(cleanup_deadline))
+                    # Time is checked before stop_guest() is called, so an expired deadline leaves no unawaited
+                    # coroutine. The guest is then killed in the finally block.
+                    timeout = _remaining(cleanup_deadline)
+                    await asyncio.wait_for(self.stop_guest(deadline=cleanup_deadline), timeout=timeout)
                 except (OSError, RuntimeError, TimeoutError) as exc:
                     # Kept so the incomplete report says why; the caller redacts before keeping it.
                     self.shutdown_error = f'{type(exc).__name__}: {exc}'

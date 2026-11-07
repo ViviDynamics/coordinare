@@ -5,6 +5,7 @@ returning its report, so the only evidence left was one exception line.
 """
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -33,7 +34,7 @@ def _report() -> VerificationReport:
 
 
 async def _run(tmp_path, monkeypatch, cleanup, *, commands=None, seal=None):
-    lease = SimpleNamespace(activation_env={}, installation_passed=False, ssh=_quiet_ssh)
+    lease = SimpleNamespace(activation_env={}, installation_passed=False, ssh=_quiet_ssh, deadline=time.monotonic()+600)
 
     async def close(**_kwargs):
         return cleanup
@@ -154,7 +155,8 @@ def _opened(cleanup):
         return cleanup
 
     async def opened(*_args, **_kwargs):
-        return SimpleNamespace(activation_env={}, installation_passed=False, ssh=_quiet_ssh, close=close)
+        return SimpleNamespace(activation_env={}, installation_passed=False, ssh=_quiet_ssh, close=close,
+                               deadline=time.monotonic()+600)
 
     return opened
 
@@ -281,7 +283,8 @@ async def test_a_failed_close_is_an_unconfirmed_teardown_that_keeps_the_evidence
         raise TimeoutError('qemu did not exit after kill')
 
     async def opened(*_args, **_kwargs):
-        return SimpleNamespace(activation_env={}, installation_passed=False, ssh=_quiet_ssh, close=close)
+        return SimpleNamespace(activation_env={}, installation_passed=False, ssh=_quiet_ssh, close=close,
+                               deadline=time.monotonic()+600)
 
     async def passthrough(_lease, operation):
         return await operation
@@ -332,7 +335,8 @@ async def test_a_close_failure_during_cancellation_still_cancels(tmp_path, monke
         raise TimeoutError('qemu did not exit after kill')
 
     async def opened(*_args, **_kwargs):
-        return SimpleNamespace(activation_env={}, installation_passed=False, ssh=_quiet_ssh, close=close)
+        return SimpleNamespace(activation_env={}, installation_passed=False, ssh=_quiet_ssh, close=close,
+                               deadline=time.monotonic()+600)
 
     async def passthrough(_lease, operation):
         return await operation
