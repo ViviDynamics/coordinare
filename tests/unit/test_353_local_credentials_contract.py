@@ -14,7 +14,7 @@ POSTGRES = {'id': 'postgres',
             'init': {'id': 'postgres-init', 'argv': ['sh', '-c', 'initdb --pwfile=<(printf %s "$PGPASSWORD") {scratch}/pg'],
                      'env': {'PGPASSWORD': '${PGPASSWORD}'}}}
 CHECK = {'id': 'finance-suites', 'argv': ['bash', 'scripts/ci/run_finance_postgres_suites.sh'],
-         'env': {'TEST_DATABASE_URL': 'postgres://postgres:${PGPASSWORD}@localhost:5432/elm'},
+         'env': {'TEST_DATABASE_URL': 'postgres://postgres:${PGPASSWORD}@localhost:5432/sampledb'},
          'depends_on': ['postgres-health']}
 CREDENTIAL = {'name': 'PGPASSWORD', 'service': 'postgres', 'purpose': 'PostgreSQL superuser password for the test database'}
 
@@ -32,7 +32,7 @@ def codes(data):
     return [error['type'] for error in failure.value.errors()]
 
 
-def test_elm_shaped_manifest_with_a_generated_database_password_validates():
+def test_sampledb_shaped_manifest_with_a_generated_database_password_validates():
     validated = EnvironmentManifest.model_validate(manifest())
     assert [credential.name for credential in validated.local_credentials] == ['PGPASSWORD']
     assert validated.model_dump()['local_credentials'][0]['service'] == 'postgres'
@@ -46,7 +46,7 @@ def test_without_local_credentials_the_digest_is_unchanged():
 
 
 def test_literal_passwords_are_still_rejected():
-    check = {**CHECK, 'env': {'TEST_DATABASE_URL': 'postgres://postgres:postgres@localhost:5432/elm'}}
+    check = {**CHECK, 'env': {'TEST_DATABASE_URL': 'postgres://postgres:postgres@localhost:5432/sampledb'}}
     assert 'runtime_credential_reference' in codes(manifest(checks=[check]))
 
 
@@ -84,7 +84,7 @@ def test_runtime_owned_names_cannot_be_generated(name):
 
 
 def test_purpose_cannot_carry_a_literal_credential():
-    purpose = 'connect with postgres://postgres:postgres@localhost/elm'
+    purpose = 'connect with postgres://postgres:postgres@localhost/sampledb'
     assert 'runtime_credential_reference' in codes(manifest(local_credentials=[{**CREDENTIAL, 'purpose': purpose}]))
 
 

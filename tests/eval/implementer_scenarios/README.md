@@ -32,7 +32,7 @@ phase_durations_ms present for every phase reached (FR-018).
 Deterministic fake harness, fake test runner, fake git remote, fast:
 
 ```bash
-cd ~/Workspaces/ViviDynamics/coordinare-167
+cd ~/work/coordinare-example
 PYTHONPATH=src:agent/performer/src .venv/bin/pytest tests/eval/implementer_scenarios -q -p no:cacheprovider
 PYTHONPATH=src:agent/performer/src .venv/bin/python -m coordinare.eval.implementer_scenarios
 ```

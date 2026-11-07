@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from coordinare_service_inference.environment.inventory import InventoryEntry
@@ -13,6 +14,7 @@ from coordinare_service_inference.environment.models import source_path
 __all__ = ['InventoryEntry', 'SourceInspection']
 
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
+from coordinare.services.environment_evidence import prepare_mandatory_evidence
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -21,6 +23,8 @@ if TYPE_CHECKING:
 
 
 MAX_BATCH_FILES = 8
+# Binding is daemon verification, not conversation context: it may cover more bytes than one conversation holds.
+BIND_SOURCE_BYTES = 64 * 1024 * 1024
 
 
 PolicyStatus = Literal['readable', 'too_large', 'link']
@@ -124,16 +128,18 @@ class SourceInspection:
         self.source_files[path] = content
         return {"path": path, "content": content, "sha256": digest}
 
-    async def read_files(self, paths: Sequence[str], *, navigation: bool = False) -> dict[str, list[dict[str, str]]]:
+    async def read_files(self, paths: Sequence[str], *, navigation: bool = False,
+                         verification: bool = False) -> dict[str, list[dict[str, str]]]:
         if (not isinstance(paths, list | tuple) or not 1 <= len(paths) <= MAX_BATCH_FILES
                 or any(not isinstance(path, str) or path not in self.inventory for path in paths)
                 or len(set(paths)) != len(paths)):
             message = f"{self.name} requested invalid source batch or paths"
             raise EnvironmentDiscoveryError(message, code="invalid_tool_arguments")
         if self.budget is not None:
-            self.budget.reserve_reads(len(paths))
+            self.budget.reserve_reads(len(paths), verification=verification)
             await self.budget.flush()
-        self.reads += len(paths)
+        if not verification:
+            self.reads += len(paths)
         if self.reads > self.limits.max_reads:
             message = f"{self.name} file read limit exceeded"
             raise EnvironmentDiscoveryError(message)
@@ -147,6 +153,26 @@ class SourceInspection:
             await asyncio.gather(*tasks, return_exceptions=True)
             if self.retained_inputs is not None and self.budget is not None:
                 await self.budget.flush()
+
+    async def bind_verified(self, expected: Mapping[str, str], *, phase: str,
+                            cited_by: Mapping[str, Sequence[str]] | None = None) -> list[dict[str, Any]]:
+        """Verify inputs by digest and bind them here without loading their contents into the conversation.
+
+        The daemon reads through a separately bounded verifier (charged to the attempt). The conversation receives
+        an index; the agent reads content on demand, and any later read must match the bound digest.
+        """
+        missing = {path: digest for path, digest in expected.items() if self.inputs.get(path) != digest}
+        if missing:
+            limits = replace(self.limits, max_reads=max(self.limits.max_reads, len(missing)),
+                             max_source_bytes=max(self.limits.max_source_bytes, BIND_SOURCE_BYTES))
+            verifier = SourceInspection(self.entries if self.entries is not None else self.paths, self.fetch, limits,
+                                        self.budget, retained_inputs=self.retained_inputs)
+            verifier.name = f'{self.name}_binding'
+            for item in await prepare_mandatory_evidence(verifier, missing, phase=phase):
+                self.inputs[item['path']] = item['sha256']
+        return [{'path': path, 'sha256': expected[path],
+                 'bytes': self.entries[path].size if self.entries is not None and path in self.entries else None,
+                 'cited_by': sorted((cited_by or {}).get(path, []))} for path in sorted(expected)]
 
     def policy_status(self, path: str) -> PolicyStatus:
         """Symlinks and files over the per-file limit are listed but never read or followed."""
@@ -203,9 +229,10 @@ class SourceInspection:
                     raise
                 return {"errors": [{"code": "invalid_directory_or_cursor"}],
                         "guidance": "Use a listed directory path (root: empty or '.'); start at cursor 0, then use next_cursor."}
-        if set(reply) == {"tool", "paths"} and reply.get("tool") == "read_files":
+        # A cursor belongs to list_files; on a read it carries no meaning and is ignored.
+        if set(reply) - {"cursor"} == {"tool", "paths"} and reply.get("tool") == "read_files":
             return await self._navigation_reads(reply["paths"])
-        if set(reply) == {"tool", "path"} and reply.get("tool") == "read_file":
+        if set(reply) - {"cursor"} == {"tool", "path"} and reply.get("tool") == "read_file":
             return await self._navigation_reads([reply["path"]], single=True)
         message = f"{self.name} returned an unsupported tool or envelope"
         raise EnvironmentDiscoveryError(message, code="unsupported_envelope")

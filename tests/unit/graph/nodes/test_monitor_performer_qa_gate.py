@@ -38,7 +38,7 @@ def _qa_state(response: dict, *, env_cache_svc: object | None = None) -> dict:
     state["lifecycle_sequence"] = ["implementing", "qa", "closing_review"]
     state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
     state["agent_dispatch"] = {"session_id": "s1"}
-    state["current_symphony"] = "website"
+    state["current_symphony"] = "sampleweb"
     if env_cache_svc is not None:
         state["env_cache_service"] = env_cache_svc
     return state
@@ -68,7 +68,7 @@ async def test_zero_criteria_with_env_error_holds_not_advances():
 
     assert result["performer_stage"] == "qa"  # held on same stage, not advanced
     assert "qa_evidence_floor" in str(result.get("env_health_hold_reason", ""))
-    assert svc.marked == ["website"]
+    assert svc.marked == ["sampleweb"]
     assert result.get("phase") == "dispatching"
 
 
@@ -85,7 +85,7 @@ async def test_zero_criteria_with_health_failed_flag_holds():
     result = await monitor_performer(state)
     assert result["performer_stage"] == "qa"
     # Idempotent mark (sets a bool); pre-existing 063 wiring may also mark it.
-    assert "website" in svc.marked
+    assert "sampleweb" in svc.marked
 
 
 # --- BOUNCE: zero criteria, no environment signal -------------------------

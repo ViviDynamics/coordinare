@@ -70,9 +70,9 @@ def test_export_redacts_named_credentials(name: str, separator: str) -> None:
 
 def test_redaction_keeps_ordinary_text() -> None:
     message = 'token counts, api-key documentation, x-api-key format and password policy'
-    safe = _safe_row(json.dumps(row(message=message, data={'token_count': 12, 'team': 'garden'})))
+    safe = _safe_row(json.dumps(row(message=message, data={'token_count': 12, 'team': 'samplehost'})))
     assert safe['message'] == message
-    assert json.loads(safe['data']) == {'token_count': 12, 'team': 'garden'}
+    assert json.loads(safe['data']) == {'token_count': 12, 'team': 'samplehost'}
 
 
 def test_oversize_data_retains_bounded_json_prefix() -> None:

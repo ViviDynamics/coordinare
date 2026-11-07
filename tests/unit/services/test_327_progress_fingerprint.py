@@ -1,6 +1,6 @@
 """327: progress fingerprinting must not read a repetition loop as progress.
 
-Live incident (website #160, 2026-09-09): a codex-ephemeral architect streamed a
+Live incident (sampleweb #160, 2026-09-09): a codex-ephemeral architect streamed a
 degenerate ``Go. / Tool. / No.`` cycle for ~50 minutes -- zero tool calls, zero
 commits -- while ``stall_timeout_seconds: 900`` was configured and enabled. The
 watchdog never tripped because it fingerprinted the text of the last three

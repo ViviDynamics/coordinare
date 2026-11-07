@@ -22,8 +22,8 @@ class TestTestEnvConfigSource:
         assert cfg.host_path is None
 
     def test_host_path_alone_accepted(self) -> None:
-        cfg = TestEnvConfig(host_path="/run/secrets/website-test.env")
-        assert cfg.host_path == "/run/secrets/website-test.env"
+        cfg = TestEnvConfig(host_path="/run/secrets/sampleweb-test.env")
+        assert cfg.host_path == "/run/secrets/sampleweb-test.env"
         assert cfg.repo_path is None
 
     def test_both_set_rejected(self) -> None:
@@ -63,12 +63,12 @@ class TestSymphonyConfigTestEnv:
     """SymphonyConfig round-trips with and without the block."""
 
     def test_symphony_without_test_env(self) -> None:
-        sym = SymphonyConfig(name="website", github_project_number=51)
+        sym = SymphonyConfig(name="sampleweb", github_project_number=51)
         assert sym.test_env is None
 
     def test_symphony_with_repo_path_test_env(self) -> None:
         sym = SymphonyConfig(
-            name="website",
+            name="sampleweb",
             github_project_number=51,
             test_env={"repo_path": ".env.test"},
         )
@@ -77,16 +77,16 @@ class TestSymphonyConfigTestEnv:
 
     def test_symphony_with_host_path_test_env(self) -> None:
         sym = SymphonyConfig(
-            name="website",
+            name="sampleweb",
             github_project_number=51,
-            test_env={"host_path": "/run/secrets/website-test.env"},
+            test_env={"host_path": "/run/secrets/sampleweb-test.env"},
         )
         assert sym.test_env is not None
-        assert sym.test_env.host_path == "/run/secrets/website-test.env"
+        assert sym.test_env.host_path == "/run/secrets/sampleweb-test.env"
 
     def test_symphony_round_trip_preserves_test_env(self) -> None:
         sym = SymphonyConfig(
-            name="website",
+            name="sampleweb",
             github_project_number=51,
             test_env={"repo_path": ".env.test"},
         )
@@ -97,7 +97,7 @@ class TestSymphonyConfigTestEnv:
     def test_symphony_with_invalid_test_env_block_rejected(self) -> None:
         with pytest.raises(ValidationError):
             SymphonyConfig(
-                name="website",
+                name="sampleweb",
                 github_project_number=51,
                 test_env={"repo_path": ".env.test", "host_path": "/x.env"},
             )

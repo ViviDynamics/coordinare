@@ -26,6 +26,46 @@
 - **Byte bounds scale with the count caps** (the design kept byte limits implicit): scope definition 1 MiB, scope contract 2 MiB, finding ledger 512 KiB, manifest document 4 MiB, repair journal 16 MiB. The design's executor note that the 4 MiB journal bound "still applies" cannot hold once a 512-criterion definition is persisted alongside its contract.
 - **Open item outside the approved design:** executable manifest construction and executable review still load all scope inputs into one conversation (`environment_discovery._discover_attempt`, `prepare_mandatory_evidence(..., scope.all_inputs)`). On a repository whose sharded scope succeeds, that stage would hit the same context wall. This plan does not change it; a follow-up design is needed before readiness can be reached on large repositories.
 
+## Maintainer rulings during Phase 2 (2026-10-21)
+
+- Schema repairs: each shard agent has its own allowance of 2 corrections; an agent that exhausts it holds the attempt with `attempt_schema_limit`. The single-conversation path keeps the attempt-wide 8. Calls (1,024), reads (8,192), coverage revisions (8) and the deadline remain shared.
+- Concurrency stays at 12 agents.
+- Trigger: the GLM Elm attempt `...-creds-v3` held with `scope_revision_context_limit` (1.8 MB of retained evidence against the 1 MiB conversation cap).
+
+## Review fix pass (2026-10-21)
+
+The maintainer approved fixing every Critical and Important finding of the Phase 2-5 review, plus inexpensive minors:
+
+- Cross-references are routed until none remain, recorded only after their follow-ups finish, under their own id namespace.
+- Root-level (merge-owned) criteria reach the merge reviewer in full; the criterion index carries ids, short descriptions and applicability only.
+- Review re-runs compare complete criterion content, so a rationale-only reassessment is reviewed again.
+- Reviewers read their own evidence (shard inputs, spine, their findings' investigations) over the full inventory, and receive investigation evidence.
+- Shards are bounded by half the per-conversation read allowance as well as by bytes; overflow splits by bytes.
+- An accepted sharded scope resumes with daemon verification limits sized to its inputs.
+- Revisions combine identical additions and follow reassessed IDs in responses; true conflicts hold with `scope_revision_conflict`.
+- Revision agents receive only the criteria their findings name, so splitting findings shrinks evidence.
+- Each review part reports at most its share of the ledger's remaining finding capacity (`review_findings_limit` correction).
+- Shard summaries merge by exact criterion identity only; distinct obligations are never folded and citations never dropped.
+- Sharded configuration defaults to the ruled budget (1,024 calls, 8,192 reads, 3,600 s) unless a value is set.
+
+Second review fixes: shard reviewers navigate the whole repository (needed for investigations and references) with
+their prompt saying so, and a spent per-conversation read allowance is reported to the agent instead of holding;
+finding capacity is split exactly across parts; resume verification and revision investigation are daemon work that
+does not spend a conversation's or the attempt's model read allowance; a readable file larger than one share is
+assigned its own shard (its agent may overflow and hold, never silently skip it); combined revisions over 512 criteria hold as `scope_size_limit` and identical
+reassessments from two groups count once.
+
+Run setting: as in the single-conversation path, `phase_timeout_seconds` bounds a whole agent conversation, not one
+call. Live sharded runs set it to the attempt deadline.
+
+Known limits, not addressed here: when the ledger is nearly full, later parts (the merge reviewer first) may receive
+no finding capacity and must return indeterminate; a reviewer's reads are bounded by count, not bytes, so navigation
+can still overflow its context and hold with `shard_context_limit`; identical reassessments keep the first rationale; a rationale-only duplicate between shards keeps the first rationale; a split parent's
+spent work is re-spent after a restart; reviewed state is tracked per owning shard; review and merge conversations do not split on overflow (they hold with
+`shard_context_limit`); inputs read by an agent that later overflowed stay in the scope inputs; shard questions are
+not yet surfaced to reviewers; the contract's 2 MiB bound caps an accepted scope at roughly 3,000 inspected files;
+executable construction still preloads every scope input (see sharded-executable-amendment.md).
+
 ## Review Focus
 
 1. A directory with one huge readable file and many tiny ones: the huge file becomes its own shard, tiny files pack together. Test in Task 3.

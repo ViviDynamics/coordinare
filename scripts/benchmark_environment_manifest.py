@@ -54,7 +54,7 @@ def fixture(count: int = 1000) -> tuple[dict, dict, dict]:
         "inputs": {"x": hashlib.sha256(b"benchmark requirements").hexdigest()},
         "requirements": [{"id": f"r{i}", "description": "x", "source": "x", "checks": [f"c{i}"]}
                          for i in range(count)],
-        "checks": [{"id": f"c{i}", "argv": ["true"]} for i in range(count)],
+        "checks": [{"id": f"c{i}", "argv": ["check", f"c{i}"]} for i in range(count)],
         "install": [], "activation": {}, "services": [], "empty_reason": None, "policy_version": "353-scope-v1",
     }
     criterion = ScopeCriterionProposal(description='Synthetic benchmark obligations', sources=['x'],

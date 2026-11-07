@@ -13,7 +13,7 @@ import threading
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import structlog
 
@@ -24,6 +24,7 @@ from performer.degeneracy import (
 from performer.env_provenance import ProvenanceMaterialiseError, frozen_scripts_dir, write_replacing
 from performer.models import Score, Stand
 from performer.noise_paths import exclude_globs, path_has_agent_config
+from performer.process_reaping import kill_and_reap, reap_owned
 from performer.workflows.implementer.commits import (
     classify_staged_blob as _classify_staged_blob,
 )
@@ -219,8 +220,7 @@ async def _run_git(
     try:
         _stdout, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await kill_and_reap(proc)
         # Credentials are in env vars, not args, so joining is safe
         cmd_str = " ".join(args)
         raise WorkspaceSetupError(
@@ -251,8 +251,7 @@ async def _run_git_stdout(
     try:
         stdout_bytes, _stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await kill_and_reap(proc)
         raise WorkspaceSetupError(
             f"git command timed out after {timeout}s: {' '.join(args)}",
         ) from None
@@ -890,7 +889,32 @@ async def _kill_cache_process_group(proc: asyncio.subprocess.Process) -> None:
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    await proc.wait()
+    await reap_owned(proc)
+
+
+async def _drain_cancelled_cache_spawn(spawn: asyncio.Task[asyncio.subprocess.Process]) -> None:
+    try:
+        proc = await spawn
+    except Exception:
+        # A failed creation supplies no process handle; the caller is already cancelled.
+        return
+    await _kill_cache_process_group(proc)
+
+
+async def _spawn_cache_process(script: Path, **kwargs: Any) -> asyncio.subprocess.Process:
+    """Keep ownership across the gap between OS creation and handle publication."""
+    spawn = asyncio.create_task(asyncio.create_subprocess_exec("bash", str(script), **kwargs))
+    try:
+        return await asyncio.shield(spawn)
+    except asyncio.CancelledError:
+        cleanup = asyncio.create_task(_drain_cancelled_cache_spawn(spawn))
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                pass
+        cleanup.result()
+        raise
 
 
 def _stringify_env(env: dict[str, str]) -> dict[str, str]:
@@ -975,8 +999,8 @@ async def _start_env_cache_services(
     try:
         try:
             with os.fdopen(out_fd, "wb") as out_fh:
-                proc = await asyncio.create_subprocess_exec(
-                    "bash", str(start),
+                proc = await _spawn_cache_process(
+                    start,
                     stdout=out_fh,
                     stderr=asyncio.subprocess.STDOUT,
                     env=env,
@@ -1041,8 +1065,8 @@ async def _run_env_cache_health_check(
         return
     proc = None
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "bash", str(health),
+        proc = await _spawn_cache_process(
+            health,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
@@ -1715,8 +1739,7 @@ async def get_head_sha(stand: Stand) -> str:
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await kill_and_reap(proc)
         raise WorkspaceSetupError("git rev-parse HEAD timed out") from None
     if proc.returncode != 0:
         raise WorkspaceSetupError(
@@ -2129,10 +2152,9 @@ def _fail_result(
 
 
 async def _kill_proc(proc: asyncio.subprocess.Process | None) -> None:
-    """Kill a subprocess and wait for it to exit (if it's still running)."""
-    if proc is not None and proc.returncode is None:
-        proc.kill()
-        await proc.wait()
+    """Kill a subprocess (if it's still running) and reap it without waiting on pipes a descendant kept open."""
+    if proc is not None:
+        await kill_and_reap(proc)
 
 
 def _truncate(

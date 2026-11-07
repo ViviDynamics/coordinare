@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
 from pydantic import Field, field_validator, model_serializer, model_validator
@@ -23,7 +24,6 @@ from .findings import (
     validate_finding_ledger,
 )
 from .scope_investigation import ScopeInspectionRequest, unique_requests
-
 
 MAX_SCOPE_CRITERIA = 512
 MAX_SCOPE_FINDINGS = 128
@@ -86,6 +86,87 @@ class ScopeEnvelope(FindingEvidence):
     finding_responses: list[FindingResponse] = Field(max_length=MAX_SCOPE_FINDINGS)
 
 
+MAX_CROSS_REFERENCES = 64
+MAX_SHARD_QUESTIONS = 16
+
+
+class ShardSummaryProposal(FindingEvidence):
+    """One shard author's cited obligations; the daemon merges shards into one definition."""
+
+    criteria: list[ScopeCriterionProposal] = Field(max_length=MAX_SCOPE_CRITERIA)
+    cross_references: list[str] = Field(default_factory=list, max_length=MAX_CROSS_REFERENCES)
+    questions: list[str] = Field(default_factory=list, max_length=MAX_SHARD_QUESTIONS)
+
+    @field_validator('questions')
+    @classmethod
+    def bounded_questions(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() or len(item.encode()) > 2048 for item in value):
+            raise ValueError('shard questions must be nonblank and at most 2048 UTF-8 bytes')
+        return value
+
+
+class ShardSummaryEnvelope(FindingEvidence):
+    shard_summary: ShardSummaryProposal
+
+
+class ShardSummary(ShardSummaryProposal):
+    """A completed shard, bound to the exact inputs its agent inspected."""
+
+    shard_id: str = Field(pattern=r'^shard-[0-9]{3}-[0-9a-f]{8}(?:\.r?[0-9]+)*$')
+    inputs: dict[str, Digest]
+
+
+MAX_TRIAGE_VERDICTS = 2048
+MAX_SCOPE_EXCLUSIONS = 512
+
+
+class TriageVerdict(FindingEvidence):
+    """A listing-only judgment on a directory (covering its descendants) or a file."""
+
+    path: str = Field(min_length=1, max_length=1024)
+    verdict: Literal['environment', 'unrelated', 'unsure']
+    rationale: str = Field(min_length=1, max_length=512)
+
+
+class ListingTriage(FindingEvidence):
+    verdicts: list[TriageVerdict] = Field(min_length=1, max_length=MAX_TRIAGE_VERDICTS)
+
+
+class ListingTriageEnvelope(FindingEvidence):
+    listing_triage: ListingTriage
+
+
+class ScopeExclusion(FindingEvidence):
+    """An area left unread because two independent listing triages both judged it unrelated."""
+
+    path: str = Field(min_length=1, max_length=1024)
+    files: int = Field(ge=1)
+    rationale: str = Field(min_length=1, max_length=1100)
+
+
+class ConsolidationGroup(FindingEvidence):
+    """Criteria describing one environment obligation, replaced by one criterion citing all their sources."""
+
+    member_ids: list[str] = Field(min_length=2, max_length=MAX_SCOPE_CRITERIA)
+    criterion: ScopeCriterionProposal
+
+
+class ScopeConsolidation(FindingEvidence):
+    groups: list[ConsolidationGroup] = Field(max_length=MAX_SCOPE_CRITERIA)
+
+
+class ScopeConsolidationEnvelope(FindingEvidence):
+    scope_consolidation: ScopeConsolidation
+
+
+class ConsolidationRecord(FindingEvidence):
+    """Which authored criteria a consolidated criterion replaced, for reviewers."""
+
+    criterion_id: str = Field(pattern=r'^S[0-9a-f]{16}$')
+    member_ids: list[str] = Field(min_length=2, max_length=MAX_SCOPE_CRITERIA)
+    member_descriptions: list[str] = Field(default_factory=list, max_length=MAX_SCOPE_CRITERIA)
+
+
 class ScopeDefinition(FindingEvidence):
     schema_version: Literal[1] = 1
     requested_scope: Literal['whole_documented_development_test_environment'] = 'whole_documented_development_test_environment'
@@ -93,6 +174,17 @@ class ScopeDefinition(FindingEvidence):
     inventory_digest: Digest
     inputs: dict[str, Digest] = Field(min_length=1)
     criteria: list[ScopeCriterion] = Field(min_length=1, max_length=MAX_SCOPE_CRITERIA)
+    exclusions: list[ScopeExclusion] = Field(default_factory=list, max_length=MAX_SCOPE_EXCLUSIONS)
+    unread_unsure: list[ScopeExclusion] = Field(default_factory=list, max_length=MAX_SCOPE_EXCLUSIONS)
+    consolidated: list[ConsolidationRecord] = Field(default_factory=list, max_length=MAX_SCOPE_CRITERIA)
+
+    @model_serializer(mode='wrap')
+    def omit_empty_exclusions(self, handler: Any) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        for key in ('exclusions', 'unread_unsure', 'consolidated'):
+            if not getattr(self, key):
+                data.pop(key, None)
+        return data
 
     @model_validator(mode='after')
     def source_owned(self) -> Self:
@@ -109,7 +201,8 @@ class ScopeDefinition(FindingEvidence):
 
 
 SourceGapKind = Literal['missing_obligation', 'unread_source', 'source_conflict', 'unknown_applicability',
-                        'incomplete_runtime_needs', 'incomplete_success_condition']
+                        'incomplete_runtime_needs', 'incomplete_success_condition', 'remote_state',
+                        'runtime_network', 'deployment_image']
 
 
 def _unique_ids(value: list[str]) -> list[str]:
@@ -178,6 +271,21 @@ _DECISION_BRANCHES: dict[str, type[_SourceDecision]] = {'covered': CoveredDecisi
     'source_correction': SourceCorrectionDecision, 'source_gap': SourceGapDecision, 'duplicate': DuplicateDecision}
 
 
+RATIONALE_LIMIT = 2048
+TRUNCATION_MARK = ' [truncated]'
+
+
+def bounded_rationale(text: str) -> str:
+    """An assessment's explanatory rationale, cut to its limit with an explicit mark.
+
+    The rationale explains a judgment; the verdict, findings, decisions and sources carry it and are never cut.
+    """
+    if len(text) <= RATIONALE_LIMIT and len(text.encode()) <= RATIONALE_LIMIT:
+        return text
+    room = RATIONALE_LIMIT - len(TRUNCATION_MARK.encode())
+    return text.encode()[:room].decode(errors='ignore').rstrip() + TRUNCATION_MARK
+
+
 def normalize_source_assessment(data: object) -> object:
     """Map the flat provider wire decision onto its strict branch.
 
@@ -185,6 +293,9 @@ def normalize_source_assessment(data: object) -> object:
     any populated inapplicable field is kept so strict validation rejects it.
     """
     assessment = data.get('scope_assessment') if isinstance(data, dict) else None
+    if isinstance(data, dict) and isinstance(assessment, dict) and isinstance(assessment.get('rationale'), str):
+        assessment = {**assessment, 'rationale': bounded_rationale(assessment['rationale'])}
+        data = {**data, 'scope_assessment': assessment}
     decisions = assessment.get('decisions') if isinstance(assessment, dict) else None
     if not isinstance(data, dict) or not isinstance(assessment, dict) or not isinstance(decisions, list):
         return data
@@ -344,13 +455,24 @@ def validate_scope_mapping(scope: ScopeContract, manifest: EnvironmentManifest) 
         if service.required and any(not c.required for c in lifecycle):
             raise PydanticCustomError('scope_required_service', 'required service lifecycle cannot be optional')
         commands.extend(lifecycle)
-    identifiers = [*(c.id for c in checked.definition.criteria), *(r.id for r in manifest.requirements),
-                   *(s.id for s in manifest.services), *(c.id for c in commands)]
-    if len(identifiers) != len(set(identifiers)):
-        raise PydanticCustomError('scope_id_collision', 'scope, obligation, service and command IDs must be unambiguous')
+    records = [*(r.id for r in manifest.requirements), *(s.id for s in manifest.services), *(c.id for c in commands)]
+    criteria = {c.id for c in checked.definition.criteria}
+    if reused := sorted(criteria.intersection(records)):
+        raise PydanticCustomError('scope_id_collision', 'scope, obligation, service and command IDs must be unambiguous',
+                                  {'unavailable': reused[:16]})
+    # v35: a requirement and a check shared ids; reported as a criterion collision, the author renamed the checks.
+    if repeated := sorted(identifier for identifier, count in Counter(records).items() if count > 1):
+        raise PydanticCustomError('record_id_collision', 'requirement, service and command IDs must be unambiguous',
+                                  {'unavailable': repeated[:16]})
     required = {c.id for c in checked.definition.criteria if c.applicability == 'required'}
     checks = {c.id: c for c in manifest.checks}
-    if set(manifest.criterion_checks) != required or any(
-            not ids or len(ids) != len(set(ids)) or any(identifier not in checks or not checks[identifier].required
-                or checks[identifier].scope for identifier in ids) for ids in manifest.criterion_checks.values()):
-        raise PydanticCustomError('scope_required_check_mapping', 'every required scope criterion needs required unscoped consumer checks')
+    invalid = sorted(criterion for criterion, ids in manifest.criterion_checks.items() if criterion in required and (
+        not ids or len(ids) != len(set(ids)) or any(identifier not in checks or not checks[identifier].required
+            or checks[identifier].scope for identifier in ids)))
+    missing = sorted(required - set(manifest.criterion_checks))
+    unexpected = len(set(manifest.criterion_checks) - required)
+    if missing or invalid or unexpected:
+        # Criterion ids are the reviewed scope's own; unexpected keys are the author's, so only their count is named.
+        raise PydanticCustomError('scope_required_check_mapping',
+            'every required scope criterion needs required unscoped consumer checks',
+            {'missing_criteria': missing[:64], 'invalid_criteria': invalid[:64], 'unexpected_keys': unexpected})

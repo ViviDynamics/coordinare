@@ -28,7 +28,7 @@ def response():
 
 
 @pytest.mark.asyncio
-async def test_elm_objection_survives_nonblocking_review():
+async def test_sampledb_objection_survives_nonblocking_review():
     budget = AttemptBudget()
     replies = Replies([{'tool': 'read_file', 'path': PATH}, {'manifest': candidate()},
         review(verdict='revise', findings=[finding()]),

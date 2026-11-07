@@ -317,6 +317,12 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .status-strip { max-width: 100%; min-width: 0; box-sizing: border-box; }
 .status-strip .status-headline { flex: 0 0 360px; min-width: 0; max-width: 100%; }
 .status-strip .status-bootstrap { flex: 0 1 auto; min-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The live countdown can wrap the facts onto a second row. Keep that row compact
+   so the board still clears the desktop fold with four runs and an attention banner. */
+@media (min-width: 1100px) {
+  .status-strip { row-gap: 0; padding-block: var(--space-1); }
+  .status-strip .status-actions .action-btn { padding-block: 2px; }
+}
 
 /* 154 review 2: a board column that overflows fades at its foot and says how many cards are below. */
 #swimlane-section .swimlane-col-body { position: relative; }

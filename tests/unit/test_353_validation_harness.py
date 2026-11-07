@@ -711,3 +711,107 @@ async def test_source_review_count_is_visible_before_executable_review(tmp_path,
     assert result['independent_review_reached'] is False
     assert result['status'] == 'held' and result['ready_at_validation'] is False
     assert result['installer_ran'] is False and result['clean_consumer_ran'] is False
+
+
+@pytest.mark.parametrize(('parse', 'good', 'bad'), [('_model_call_allowance', '1024', '5000'),
+                                                     ('_context_tokens', '262144', '100'),
+                                                     ('_agent_concurrency', '12', '17')])
+def test_sharded_discovery_flags_use_product_bounds(parse, good, bad):
+    import argparse
+
+    from scripts import validate_environment_repositories as harness
+    assert getattr(harness, parse)(good) == int(good)
+    with pytest.raises(argparse.ArgumentTypeError):
+        getattr(harness, parse)(bad)
+
+
+def test_profile_carries_sharded_discovery_settings_into_limits():
+    from coordinare.config import EnvCacheConfig
+    settings = EnvCacheConfig(manifest_max_model_calls=1024, manifest_shard_context_tokens=262144,
+                              manifest_agent_concurrency=12, manifest_max_total_reads=8192)
+    assert (settings.manifest_max_model_calls, settings.manifest_shard_context_tokens,
+            settings.manifest_agent_concurrency) == (1024, 262144, 12)
+    assert EnvCacheConfig().manifest_shard_context_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_unattended_probes_run_without_operator_approval(tmp_path, monkeypatch):
+    """Dettmore e2e-41 and e2e-44 held at probe_authorization while no operator was watching; the daemon has no such gate."""
+    from tests.unit.test_353_bootstrap_pipeline import SOURCE, Proposal, probe_transport
+
+    async def forbidden_wait(*args, **kwargs):
+        raise AssertionError('an unattended run waited for probe approval')
+
+    monkeypatch.setattr('coordinare.services.environment_probe_service.execute_environment_probe', probe_transport)
+    monkeypatch.setattr('scripts.validate_environment_repositories.await_probe_approval', forbidden_wait)
+    source = tmp_path / 'source'
+    source.mkdir()
+    subprocess.run(['git', 'init', '-q', str(source)], check=True)
+    (source/'guide').write_text(SOURCE)
+    subprocess.run(['git', '-C', str(source), 'add', '.'], check=True)
+    subprocess.run(['git', '-C', str(source), '-c', 'user.name=Fixture', '-c',
+        'user.email=fixture@example.invalid', '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'source'], check=True)
+    commit = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+    image = 'trusted@sha256:'+'a'*64
+
+    async def identity(_image):
+        return image, 'linux/x86_64'
+
+    async def cleanup(target, cache, image):
+        return True
+
+    executed = []
+
+    async def execute(snapshot, service, state, *, target, result, profile, **kwargs):
+        executed.append(profile.unattended)
+        result.update(status='held', reason_code='fixture_stop')
+
+    monkeypatch.setattr('coordinare.services.environment_capabilities._docker_identity', identity)
+    monkeypatch.setattr('scripts.validate_environment_repositories._cleanup_case', cleanup)
+    monkeypatch.setattr('scripts.validate_environment_repositories.execute_accepted', execute)
+    output = tmp_path/'profile'
+    await validate_repository(Snapshot(source, commit, 'fixture', 'suite'), image=image, output=output,
+        profile=Profile(model='fixture', base_url='http://localhost:1', execute=True, unattended=True),
+        chat=ScopeChatFixture(Proposal(), 'guide'))
+    assert executed and executed[0] is True
+    assert (output/'probe-000'/'probe-proposal.json').is_file()
+    assert not (output/'probe-000'/'probe-approved.json').exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('unattended', [True, False])
+async def test_execution_gate_is_skipped_only_when_unattended(tmp_path, monkeypatch, unattended):
+    from types import SimpleNamespace
+
+    from scripts.validate_environment_repositories import execute_accepted
+
+    from tests.unit.env_manifest_fixture import reviewed_cache
+    from tests.unit.test_353_bootstrap_pipeline import setup
+
+    service, cache, state, capabilities = setup(tmp_path)
+    reviewed_cache(cache, capabilities=capabilities)
+    target = tmp_path / 'case'
+    target.mkdir()
+    snapshot = SimpleNamespace(name='suite', commit=cache.bootstrap_commit_sha)
+
+    async def verify():
+        return None
+
+    snapshot.verify = verify
+    installs = []
+
+    async def installer(*args):
+        installs.append(args)
+        raise TimeoutError
+
+    monkeypatch.setattr('scripts.validate_environment_repositories._install', installer)
+    result: dict = {}
+    await execute_accepted(snapshot, service, state, image=capabilities.image_ref, target=target,
+        profile=Profile(model='fixture', base_url='http://localhost:1', approval_timeout=0.01, unattended=unattended),
+        result=result)
+    assert not (target / 'execution-approved.json').exists()
+    assert result['execution_authorization'] == ('unattended' if unattended else 'operator')
+    if unattended:
+        assert len(installs) == 1 and result['reason_code'] == 'installer_timeout'
+    else:
+        assert not installs and result['reason_code'] == 'execution_scope_not_approved'

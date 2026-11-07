@@ -549,7 +549,7 @@ def test_build_snapshot_board_summary_aggregates_symphony_boards() -> None:
     sym_a.board_snapshot = {"TODO": ["1", "2"], "IN_REVIEW": ["3"], "DONE": []}
     sym_b = MagicMock()
     sym_b.board_snapshot = {"TODO": ["4"], "IN_PROGRESS": ["5"], "IN_REVIEW": ["6"]}
-    daemon.state["symphony_states"] = {"website": sym_a, "other": sym_b}
+    daemon.state["symphony_states"] = {"sampleweb": sym_a, "other": sym_b}
 
     metrics = _make_mock_metrics()
     health = _make_mock_health()
@@ -2312,9 +2312,9 @@ def test_config_tabs_support_keyboard_navigation() -> None:
 def _daemon_with_symphony(wiki_in_flight: bool = False, has_cache: bool = True) -> MagicMock:
     import types
     daemon = _make_mock_daemon()
-    daemon.state["symphony_configs"] = {"website": object()}
+    daemon.state["symphony_configs"] = {"sampleweb": object()}
     daemon.state["env_cache"] = (
-        {"website": types.SimpleNamespace(wiki_in_flight=wiki_in_flight)} if has_cache else {}
+        {"sampleweb": types.SimpleNamespace(wiki_in_flight=wiki_in_flight)} if has_cache else {}
     )
     daemon._wiki_init_requests = set()
     daemon._webhook_trigger = MagicMock()
@@ -2338,10 +2338,10 @@ def test_symphony_detail_is_read_only() -> None:
 def test_wiki_init_endpoint_accepts_and_records_request() -> None:
     daemon = _daemon_with_symphony()
     client = _make_app(daemon=daemon)
-    r = client.post("/api/symphonies/website/wiki-init")
+    r = client.post("/api/symphonies/sampleweb/wiki-init")
     assert r.status_code == 202
     assert r.json()["status"] == "accepted"
-    assert "website" in daemon._wiki_init_requests  # queued for the daemon to drain
+    assert "sampleweb" in daemon._wiki_init_requests  # queued for the daemon to drain
     daemon._webhook_trigger.set.assert_called_once()
 
 
@@ -2354,13 +2354,13 @@ def test_wiki_init_endpoint_404_for_unknown_symphony() -> None:
 
 def test_wiki_init_endpoint_409_when_in_flight() -> None:
     daemon = _daemon_with_symphony(wiki_in_flight=True)
-    r = _make_app(daemon=daemon).post("/api/symphonies/website/wiki-init")
+    r = _make_app(daemon=daemon).post("/api/symphonies/sampleweb/wiki-init")
     assert r.status_code == 409
     assert r.json()["status"] == "wiki_in_flight"
-    assert "website" not in daemon._wiki_init_requests  # not queued
+    assert "sampleweb" not in daemon._wiki_init_requests  # not queued
 
 
 def test_wiki_init_endpoint_503_when_cache_not_ready() -> None:
     daemon = _daemon_with_symphony(has_cache=False)
-    r = _make_app(daemon=daemon).post("/api/symphonies/website/wiki-init")
+    r = _make_app(daemon=daemon).post("/api/symphonies/sampleweb/wiki-init")
     assert r.status_code == 503

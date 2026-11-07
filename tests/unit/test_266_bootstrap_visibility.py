@@ -62,9 +62,9 @@ THREE = 3
 
 def _cache(**fields: Any) -> EnvCacheState:
     base: dict[str, Any] = {
-        "symphony_name": "dettmore",
-        "sanitised_name": "dettmore-1",
-        "cache_dir": Path("/devenv/dettmore-1"),
+        "symphony_name": "sampleapp",
+        "sanitised_name": "sampleapp-1",
+        "cache_dir": Path("/devenv/sampleapp-1"),
     }
     base.update(fields)
     return EnvCacheState(**base)
@@ -248,9 +248,9 @@ def test_a_failed_hold_names_the_failing_line_and_an_exhausted_one_names_the_res
 
 def test_a_selected_card_is_held_with_the_bootstrap_words_and_a_card_with_a_reason_keeps_it() -> None:
     state: dict[str, Any] = {
-        "current_symphony": "dettmore",
-        "symphony_configs": {"dettmore": SimpleNamespace(env_bootstrap_performer_id="perf-1")},
-        "env_cache": {"dettmore": _cache(bootstrap_in_flight=True, bootstrap_attempts=1)},
+        "current_symphony": "sampleapp",
+        "symphony_configs": {"sampleapp": SimpleNamespace(env_bootstrap_performer_id="perf-1")},
+        "env_cache": {"sampleapp": _cache(bootstrap_in_flight=True, bootstrap_attempts=1)},
         "bootstrap_history": BootstrapHistory(),
         "coordinare_config": None,
     }
@@ -295,14 +295,14 @@ def test_history_keeps_only_the_newest_attempts_per_symphony() -> None:
     history = BootstrapHistory(limit=THREE)
     for index in range(FIVE):
         _begin(history,
-            "dettmore", commit=f"sha{index}", started_at=NOW + timedelta(minutes=index), attempt=index + 1,
+            "sampleapp", commit=f"sha{index}", started_at=NOW + timedelta(minutes=index), attempt=index + 1,
             backend="b", model="m", performer_id="p",
         )
         _finish(history,
-            "dettmore", ended_at=NOW + timedelta(minutes=index, seconds=5), succeeded=False,
+            "sampleapp", ended_at=NOW + timedelta(minutes=index, seconds=5), succeeded=False,
             reason=GEMFILE_LINE, commit=f"sha{index}", attempt=index + 1,
         )
-    recent = history.recent("dettmore", limit=HISTORY_LIMIT)
+    recent = history.recent("sampleapp", limit=HISTORY_LIMIT)
     assert [record.commit for record in recent] == ["sha4", "sha3", "sha2"]
     assert all(record.outcome == "failed" for record in recent)
 
@@ -320,20 +320,20 @@ def test_history_is_per_symphony_and_recent_respects_its_limit() -> None:
 def test_finish_without_a_running_attempt_records_a_closed_one() -> None:
     history = BootstrapHistory()
     record = _finish(history,
-        "dettmore", ended_at=NOW, succeeded=True, reason=None, commit="abc", attempt=1,
+        "sampleapp", ended_at=NOW, succeeded=True, reason=None, commit="abc", attempt=1,
     )
     assert record.outcome == "succeeded"
     assert record.ended_at == NOW
-    assert history.open_attempt("dettmore") is None
+    assert history.open_attempt("sampleapp") is None
 
 
 def test_the_symphony_view_carries_its_recent_attempts_newest_first() -> None:
     history = BootstrapHistory()
     state: dict[str, Any] = {"bootstrap_history": history, "env_cache": {}}
-    _begin(history, "dettmore", commit="one", started_at=NOW, attempt=1, backend="", model="", performer_id="")
-    _finish(history, "dettmore", ended_at=NOW, succeeded=False, reason=GEMFILE_LINE, commit="one", attempt=1)
-    _begin(history, "dettmore", commit="two", started_at=NOW, attempt=2, backend="", model="", performer_id="")
-    view = symphony_view(state, "dettmore", configured=True, now=NOW)
+    _begin(history, "sampleapp", commit="one", started_at=NOW, attempt=1, backend="", model="", performer_id="")
+    _finish(history, "sampleapp", ended_at=NOW, succeeded=False, reason=GEMFILE_LINE, commit="one", attempt=1)
+    _begin(history, "sampleapp", commit="two", started_at=NOW, attempt=2, backend="", model="", performer_id="")
+    view = symphony_view(state, "sampleapp", configured=True, now=NOW)
     assert [row["commit"] for row in view["history"]] == ["two", "one"]
     assert view["history"][1]["reason"] == GEMFILE_LINE
     assert view["history"][0]["running"] is True
@@ -354,16 +354,16 @@ def _state_with_feed() -> tuple[dict[str, Any], ActivityLog]:
 def test_a_failed_attempt_with_retry_and_then_exhaustion_is_in_the_feed() -> None:
     state, log = _state_with_feed()
     _begin(state["bootstrap_history"],
-        "dettmore", commit="abc1234", started_at=NOW, attempt=1, backend="claude_code", model="sonnet",
+        "sampleapp", commit="abc1234", started_at=NOW, attempt=1, backend="claude_code", model="sonnet",
         performer_id="perf-1",
     )
     _report(
-        state, "dettmore", succeeded=False, reason=f"verify {SECRET}\n{GEMFILE_LINE}", commit="abc1234",
+        state, "sampleapp", succeeded=False, reason=f"verify {SECRET}\n{GEMFILE_LINE}", commit="abc1234",
         attempt=1, max_attempts=THREE, exhausted_now=False, infra=False, ended_at=NOW,
         retry_at=NOW + timedelta(minutes=4),
     )
     _report(
-        state, "dettmore", succeeded=False, reason=GEMFILE_LINE, commit="abc1234", attempt=3,
+        state, "sampleapp", succeeded=False, reason=GEMFILE_LINE, commit="abc1234", attempt=3,
         max_attempts=THREE, exhausted_now=True, infra=False, ended_at=NOW, retry_at=None,
     )
     types = [entry["activity_type"] for entry in log.snapshot()]
@@ -372,15 +372,15 @@ def test_a_failed_attempt_with_retry_and_then_exhaustion_is_in_the_feed() -> Non
     assert GEMFILE_LINE in failed["text"]
     assert "Verify failed" in failed["text"]
     assert SECRET not in str(log.snapshot())
-    assert all(entry["card_id"] == "" and entry["card_title"] == "dettmore" for entry in log.snapshot())
+    assert all(entry["card_id"] == "" and entry["card_title"] == "sampleapp" for entry in log.snapshot())
 
 
 def test_dispatch_budget_reset_and_ready_are_in_the_feed() -> None:
     state, log = _state_with_feed()
-    record_activity(state, "dettmore", ACT_DISPATCHED, "Bootstrap run 1 of 3 started on claude_code.")
-    record_activity(state, "dettmore", ACT_BUDGET_RESET, "Budget reset for commit abc1234.")
+    record_activity(state, "sampleapp", ACT_DISPATCHED, "Bootstrap run 1 of 3 started on claude_code.")
+    record_activity(state, "sampleapp", ACT_BUDGET_RESET, "Budget reset for commit abc1234.")
     _report(
-        state, "dettmore", succeeded=True, reason=None, commit="abc1234", attempt=1, max_attempts=THREE,
+        state, "sampleapp", succeeded=True, reason=None, commit="abc1234", attempt=1, max_attempts=THREE,
         exhausted_now=False, infra=False, ended_at=NOW, retry_at=None,
     )
     types = [entry["activity_type"] for entry in log.snapshot()]
@@ -388,13 +388,13 @@ def test_dispatch_budget_reset_and_ready_are_in_the_feed() -> None:
 
 
 def test_the_feed_is_best_effort_and_a_missing_feed_changes_nothing() -> None:
-    record_activity({}, "dettmore", ACT_READY, "no feed")
+    record_activity({}, "sampleapp", ACT_READY, "no feed")
     state: dict[str, Any] = {"bootstrap_history": BootstrapHistory()}
     _report(
-        state, "dettmore", succeeded=False, reason=GEMFILE_LINE, commit="abc", attempt=1, max_attempts=THREE,
+        state, "sampleapp", succeeded=False, reason=GEMFILE_LINE, commit="abc", attempt=1, max_attempts=THREE,
         exhausted_now=False, infra=False, ended_at=NOW, retry_at=None,
     )
-    assert state["bootstrap_history"].recent("dettmore", limit=5)[0].outcome == "failed"
+    assert state["bootstrap_history"].recent("sampleapp", limit=5)[0].outcome == "failed"
 
 
 def test_the_completion_path_of_the_env_cache_records_history_and_feed_with_redaction() -> None:
@@ -402,18 +402,18 @@ def test_the_completion_path_of_the_env_cache_records_history_and_feed_with_reda
     service = EnvCacheService(config)
     cache = _cache(bootstrap_in_flight=True, readme_sha="abc1234", bootstrap_attempts=0)
     state, log = _state_with_feed()
-    state["env_cache"] = {"dettmore": cache}
+    state["env_cache"] = {"sampleapp": cache}
     _begin(state["bootstrap_history"],
-        "dettmore", commit="abc1234", started_at=NOW, attempt=1, backend="claude_code", model="sonnet",
+        "sampleapp", commit="abc1234", started_at=NOW, attempt=1, backend="claude_code", model="sonnet",
         performer_id="perf-1",
     )
-    service.on_bootstrap_complete("dettmore", False, state, error=f"env token {SECRET}\n{GEMFILE_LINE}")
+    service.on_bootstrap_complete("sampleapp", False, state, error=f"env token {SECRET}\n{GEMFILE_LINE}")
     assert cache.bootstrap_attempts == 1
     assert cache.last_bootstrap_succeeded is False
     assert SECRET not in str(cache.last_bootstrap_error)
     assert SECRET not in str(log.snapshot())
     assert cache.last_bootstrap_at is not None
-    view = symphony_view(state, "dettmore", configured=True, now=cache.last_bootstrap_at)
+    view = symphony_view(state, "sampleapp", configured=True, now=cache.last_bootstrap_at)
     assert view["state"] == STATE_WAITING
     assert view["reason"] == GEMFILE_LINE
     assert view["history"][0]["outcome"] == "failed"
@@ -426,11 +426,11 @@ def test_the_last_failure_exhausts_the_budget_and_says_so_in_the_feed() -> None:
     service = EnvCacheService(config)
     cache = _cache(bootstrap_in_flight=True, readme_sha="abc1234", bootstrap_attempts=0)
     state, log = _state_with_feed()
-    state["env_cache"] = {"dettmore": cache}
-    service.on_bootstrap_complete("dettmore", False, state, error=GEMFILE_LINE)
+    state["env_cache"] = {"sampleapp": cache}
+    service.on_bootstrap_complete("sampleapp", False, state, error=GEMFILE_LINE)
     assert cache.bootstrap_exhausted is True
     assert [entry["activity_type"] for entry in log.snapshot()] == [ACT_EXHAUSTED]
-    assert symphony_view(state, "dettmore", configured=True, now=NOW)["state"] == STATE_EXHAUSTED
+    assert symphony_view(state, "sampleapp", configured=True, now=NOW)["state"] == STATE_EXHAUSTED
 
 
 # --- the health row -------------------------------------------------------------------------------------
@@ -447,10 +447,10 @@ def _row(failures: tuple[tuple[str, str], ...], failed: tuple[str, ...]) -> dict
 
 
 def test_the_health_row_names_each_failing_symphony_with_its_reason() -> None:
-    row = _row((("dettmore", GEMFILE_LINE),), ("dettmore",))
+    row = _row((("sampleapp", GEMFILE_LINE),), ("sampleapp",))
     assert row["status"] == "degraded"
-    assert row["reason"] == f"env cache bootstrap failed for 1 symphony: dettmore: {GEMFILE_LINE}"
-    assert row["env_failures"] == [{"symphony": "dettmore", "reason": GEMFILE_LINE}]
+    assert row["reason"] == f"env cache bootstrap failed for 1 symphony: sampleapp: {GEMFILE_LINE}"
+    assert row["env_failures"] == [{"symphony": "sampleapp", "reason": GEMFILE_LINE}]
 
 
 def test_the_health_row_carries_every_failing_symphony_for_the_browser_to_scope() -> None:
@@ -460,7 +460,7 @@ def test_the_health_row_carries_every_failing_symphony_for_the_browser_to_scope(
 
 
 def test_the_health_row_without_a_reason_keeps_the_count() -> None:
-    row = _row((), ("dettmore",))
+    row = _row((), ("sampleapp",))
     assert row["reason"] == "env cache bootstrap failed for 1 symphony"
     assert row["env_failures"] == []
 
@@ -496,19 +496,19 @@ def test_infrastructure_failures_are_counted_beside_the_run_not_in_it() -> None:
 
 def test_a_dispatch_that_raises_closes_its_run_as_failed_through_the_one_exit() -> None:
     state, log = _state_with_feed()
-    _begin(state["bootstrap_history"], "dettmore", commit="abc1234", started_at=NOW, attempt=1,
+    _begin(state["bootstrap_history"], "sampleapp", commit="abc1234", started_at=NOW, attempt=1,
            backend="claude_code", model="sonnet", performer_id="perf-1")
-    _close_raised_dispatch(state, "dettmore", RuntimeError("container start refused"))
-    record = state["bootstrap_history"].recent("dettmore", limit=1)[0]
+    _close_raised_dispatch(state, "sampleapp", RuntimeError("container start refused"))
+    record = state["bootstrap_history"].recent("sampleapp", limit=1)[0]
     assert record.outcome == "failed"
     assert record.reason is not None and "container start refused" in record.reason
-    assert state["bootstrap_history"].open_attempt("dettmore") is None
+    assert state["bootstrap_history"].open_attempt("sampleapp") is None
     assert [entry["activity_type"] for entry in log.snapshot()] == [ACT_FAILED]
 
 
 def test_a_dispatch_that_raises_with_no_open_run_changes_nothing() -> None:
     state, log = _state_with_feed()
-    _close_raised_dispatch(state, "dettmore", RuntimeError("boom"))
+    _close_raised_dispatch(state, "sampleapp", RuntimeError("boom"))
     assert log.snapshot() == []
 
 
@@ -537,9 +537,9 @@ def test_the_symphony_field_keeps_two_symphonies_same_text_rows_apart() -> None:
 def test_a_symphony_the_gate_holds_for_no_reason_names_no_card(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("coordinare.daemon.env_cache_current", lambda state, cache: True)
     state: dict[str, Any] = {
-        "current_symphony": "dettmore",
-        "symphony_configs": {"dettmore": SimpleNamespace(env_bootstrap_performer_id="perf-1")},
-        "env_cache": {"dettmore": _cache(last_bootstrap_succeeded=True, cache_dir_ready=True)},
+        "current_symphony": "sampleapp",
+        "symphony_configs": {"sampleapp": SimpleNamespace(env_bootstrap_performer_id="perf-1")},
+        "env_cache": {"sampleapp": _cache(last_bootstrap_succeeded=True, cache_dir_ready=True)},
         "bootstrap_history": BootstrapHistory(),
     }
     skip_reasons: dict[str, dict[str, Any]] = {}
@@ -549,9 +549,9 @@ def test_a_symphony_the_gate_holds_for_no_reason_names_no_card(monkeypatch: pyte
 
 def test_a_card_is_named_only_when_the_gate_predicate_says_it_is_held() -> None:
     state: dict[str, Any] = {
-        "current_symphony": "dettmore",
-        "symphony_configs": {"dettmore": SimpleNamespace(env_bootstrap_performer_id="perf-1")},
-        "env_cache": {"dettmore": _cache(bootstrap_in_flight=True, bootstrap_attempts=1)},
+        "current_symphony": "sampleapp",
+        "symphony_configs": {"sampleapp": SimpleNamespace(env_bootstrap_performer_id="perf-1")},
+        "env_cache": {"sampleapp": _cache(bootstrap_in_flight=True, bootstrap_attempts=1)},
         "bootstrap_history": BootstrapHistory(),
     }
     skip_reasons: dict[str, dict[str, Any]] = {}

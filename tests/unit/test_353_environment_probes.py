@@ -330,3 +330,97 @@ def test_repaired_cache_cannot_retire_probe_evidence_for_other_runtime_changes()
         'install_network': 'disabled' if previous.capabilities.install_network == 'enabled' else 'enabled'})
     with pytest.raises(EnvironmentDiscoveryError):
         select_current_probe_reports([report_data(previous)], COMMIT, changed, allow_cache_relocation=True)
+
+
+def test_an_execution_repair_relocates_the_cache_even_when_nothing_was_executed():
+    """v36: an installer that failed its template preflight left no executed manifest, and the repair then held."""
+    from types import SimpleNamespace
+
+    from coordinare.services.environment_discovery import _execution_repair
+
+    assert _execution_repair(SimpleNamespace(previous_manifest=object(), execution_feedback={'results': []}))
+    assert not _execution_repair(SimpleNamespace(previous_manifest=None, execution_feedback=None))
+    assert not _execution_repair(SimpleNamespace(previous_manifest=object(), execution_feedback=None))
+
+
+@pytest.mark.parametrize('result', [{'status': 'timed_out', 'exit_code': None, 'output': 'partial', 'truncated': False},
+                                    {'status': 'completed', 'exit_code': 0, 'output': 'x' * 100, 'truncated': True}],
+                         ids=['timed_out', 'truncated'])
+def test_a_timed_out_or_truncated_probe_is_evidence_with_its_status(result):
+    """Dettmore e2e-15 held a whole attempt, after 58 minutes, on one probe of seven; the timeout is the observation."""
+    from coordinare.services.environment_probes import ProbeReport, bind_probe_report
+    p = plan()
+    data = report_data(p)
+    data['results'][0].update(result)
+    bound = bind_probe_report(p, ProbeReport.model_validate(data))
+    assert bound.results[0].status == result['status'] and bound.results[0].truncated is result['truncated']
+
+
+def test_a_probe_the_machinery_failed_to_run_still_holds():
+    from coordinare.services.environment_probes import ProbeReport, validate_probe_report
+    p = plan()
+    data = report_data(p)
+    data['results'][0].update(status='execution_error', exit_code=None, output='guest boot failed')
+    with pytest.raises(EnvironmentDiscoveryError) as held:
+        validate_probe_report(p, ProbeReport.model_validate(data))
+    assert held.value.code == 'probe_observation_incomplete' and str(held.value) == 'probe execution failed: tool'
+    # Text the observer did not compose is withheld from the journaled detail.
+    assert held.value.detail == 'tool: execution_error'
+
+
+@pytest.mark.parametrize('output', ['private probe guest unavailable: TimeoutError',
+                                    'probe batch time ran out while this probe ran'])
+def test_a_machinery_failure_records_its_probe_and_reason(output):
+    """Dettmore e2e-27 held with neither the failed probe nor its cause on record."""
+    from coordinare.services.environment_probes import ProbeReport, validate_probe_report
+    p = plan()
+    data = report_data(p)
+    data['results'][0].update(status='execution_error', exit_code=None, output=output)
+    with pytest.raises(EnvironmentDiscoveryError) as held:
+        validate_probe_report(p, ProbeReport.model_validate(data))
+    assert held.value.detail == f'tool: {output}'
+
+
+@pytest.mark.parametrize('result', [{'status': 'timed_out', 'exit_code': None, 'output': 'partial', 'truncated': False},
+                                    {'status': 'completed', 'exit_code': 0, 'output': 'x', 'truncated': True}],
+                         ids=['timed_out', 'truncated'])
+def test_a_saved_report_with_a_timed_out_or_truncated_probe_survives_a_restart(result):
+    """Review: a report accepted live was refused after restart or in an execution repair."""
+    from coordinare.services.environment_probes import validate_saved_probe_reports
+    data = report_data()
+    data['results'][0].update(result)
+    validate_saved_probe_reports([data], COMMIT, CAPABILITIES)
+    data['results'][0].update(status='execution_error', exit_code=None, truncated=False)
+    with pytest.raises(EnvironmentDiscoveryError):
+        validate_saved_probe_reports([data], COMMIT, CAPABILITIES)
+
+
+def test_a_probe_the_batch_never_started_is_not_reported_as_timed_out(monkeypatch):
+    """Review: an unstarted probe read as a timeout, an observation it never made."""
+    import io
+    import json as json_module
+    import sys
+
+    from coordinare_service_inference.environment import observation
+
+    command = {'id': 'late', 'argv': ['true'], 'cwd': '/tmp', 'env': {}, 'timeout_seconds': 1}
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json_module.dumps({'commands': [command], 'seconds': 0})))
+    out = io.StringIO()
+    monkeypatch.setattr(sys, 'stdout', out)
+    observation.main()
+    [result] = json_module.loads(out.getvalue())
+    assert result['status'] == 'execution_error' and 'ran out before this probe started' in result['output']
+
+
+def test_a_probe_the_batch_cut_short_is_not_reported_as_its_own_timeout():
+    """Review r2: a 30 second command stopped by a 0.03 second batch budget read as timed_out."""
+    import sys
+
+    from coordinare_service_inference.environment import observation
+
+    command = {'id': 'slow', 'argv': [sys.executable, '-c', 'import time; time.sleep(0.5)'], 'cwd': '/tmp', 'env': {},
+               'timeout_seconds': 30}
+    result = observation.execute(command, 0.05)
+    assert result['status'] == 'execution_error' and 'batch time ran out' in result['output']
+    own = observation.execute({**command, 'timeout_seconds': 0.05}, 30)
+    assert own['status'] == 'timed_out'

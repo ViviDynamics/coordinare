@@ -195,8 +195,8 @@ async def test_cli_env_appends_cache_path_after_image_path(tmp_path: Path, monke
 
     stand = Stand(path=tmp_path, branch="main")
     stand.cache_env = {
-        "PATH": "/devenv/website-3ab3e0/node-v18.12.1/bin:/usr/bin:/bin",
-        "RBENV_ROOT": "/devenv/website-3ab3e0/rbenv",
+        "PATH": "/devenv/sampleweb-3ab3e0/node-v18.12.1/bin:/usr/bin:/bin",
+        "RBENV_ROOT": "/devenv/sampleweb-3ab3e0/rbenv",
     }
     score = Score(title="Close it", repo_url="https://github.com/x/y", branch="main", github_token="t")
 
@@ -208,4 +208,4 @@ async def test_cli_env_appends_cache_path_after_image_path(tmp_path: Path, monke
     assert env["PATH"].startswith(image_path)
     # Cache toolchain dirs APPENDED — reachable, never shadowing the image.
     assert env["PATH"].index(image_path) < env["PATH"].index("node-v18.12.1")
-    assert env.get("RBENV_ROOT") == "/devenv/website-3ab3e0/rbenv"
+    assert env.get("RBENV_ROOT") == "/devenv/sampleweb-3ab3e0/rbenv"

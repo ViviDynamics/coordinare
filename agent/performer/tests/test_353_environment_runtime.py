@@ -19,6 +19,11 @@ from .source_contract_fixture import current_review_fixture
 from .test_351_environment_contract import contract_score
 
 
+async def _clean_guest(_script, **_kwargs):
+    """A guest whose Docker holds nothing once the commands have run."""
+    return 0, b'containers=\nvolumes=\nnetworks=\n'
+
+
 def private_score(tmp_path):
     score = contract_score(tmp_path)
     score.role = 'implementing'
@@ -57,7 +62,7 @@ async def test_regular_shell_keeps_the_same_runtime_until_job_cleanup(tmp_path, 
         state['closed'] = True
         return RuntimeCleanupReport(True, True, True, True, True)
     lease = SimpleNamespace(spec=manifest.runtime, manifest_digest=manifest.digest(), source_digest=source.digest(),
-        install=False, deadline=time.monotonic()+10, scratch=tmp_path, close=close, check_bounds=lambda: None,
+        install=False, deadline=time.monotonic()+10, scratch=tmp_path, close=close, check_bounds=lambda: None, ssh=_clean_guest,
         activation_env={'DOCKER_HOST': 'ssh://private-fixture', 'DOCKER_CONFIG': '/owned/config',
                         'DOCKER_CONTEXT': '', 'PATH': os.environ['PATH']})
     async def open_runtime(*args, **kwargs):
@@ -132,7 +137,7 @@ async def test_failed_installer_returns_actual_cleanup_without_success_receipt(t
         return RuntimeCleanupReport(True, True, True, True, True)
     lease = SimpleNamespace(spec=manifest.runtime, manifest_digest=manifest.digest(), source_digest=source.digest(),
         install=True, installation_passed=False, deadline=time.monotonic()+10, scratch=tmp_path, close=close,
-        check_bounds=lambda: None, activation_env={'PATH': os.environ['PATH']})
+        check_bounds=lambda: None, ssh=_clean_guest, activation_env={'PATH': os.environ['PATH']})
     stand = Stand(path=tmp_path, branch='main', environment_runtime=lease)
     result = await execute_contract(score, stand, install=True)
     assert not result['passed']

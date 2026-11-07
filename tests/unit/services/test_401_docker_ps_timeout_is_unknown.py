@@ -1,6 +1,6 @@
 """#401: a Docker that did not answer in 5s is not a container that is gone.
 
-Card website#111 was restarted twice in 27 minutes while its performer was
+Card sampleweb#111 was restarted twice in 27 minutes while its performer was
 running normally. Each time, ``docker ps`` (filtered by session label, 5s
 deadline) timed out under load, ``handle_potentially_stale_session`` treated
 ``DockerUnreachableError`` exactly like "no container found", cleared the

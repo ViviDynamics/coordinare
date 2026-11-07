@@ -18,7 +18,7 @@ from tests.unit.test_353_scope_contract import (
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('total_reads', [6, 4])
+@pytest.mark.parametrize('total_reads', [2, 1])
 async def test_revision_has_own_phase_reads_but_shared_attempt_limit(total_reads):
     finding = {'category': 'coverage', 'issue': 'Nested service obligation missing',
                'sources': ['odd/nest'], 'affected_ids': []}
@@ -31,7 +31,7 @@ async def test_revision_has_own_phase_reads_but_shared_attempt_limit(total_reads
                           'rationale': 'Nested obligation retained', 'sources': ['odd/nest'],
                           'duplicate_of': None}], sources=list(SOURCES)),
     ])
-    budget = AttemptBudget(max_reads=total_reads)
+    budget = AttemptBudget(max_reads=total_reads, max_coverage_revisions=0)
 
     async def fetch(path):
         return SOURCES.get(path)
@@ -40,7 +40,7 @@ async def test_revision_has_own_phase_reads_but_shared_attempt_limit(total_reads
         return await discover_scope(paths=list(SOURCES), fetch=fetch, chat=replies, commit=COMMIT,
                                     limits=DiscoveryLimits(max_reads=2), budget=budget)
 
-    if total_reads == 4:
+    if total_reads == 1:
         with pytest.raises(EnvironmentDiscoveryError) as failure:
             await run()
         assert failure.value.code == 'attempt_read_limit'
@@ -51,6 +51,8 @@ async def test_revision_has_own_phase_reads_but_shared_attempt_limit(total_reads
     assert scope.finding_ledger.open_ids() == []
     assert scope.definition.inputs == scope.all_inputs
     assert set(scope.all_inputs) == set(SOURCES)
-    assert budget.reads == 6
-    assert budget.coverage_revisions == 1
+    # Only the model's two reads are charged; the daemon's fresh per-role verification is counted apart.
+    assert budget.reads == 2 and budget.verification_reads == 4
+    assert budget.scope_revisions == 1
+    assert budget.coverage_revisions == 0
     assert len(scope.finding_ledger.reviews) == 2

@@ -49,7 +49,7 @@ def test_private_probe_container_keeps_readonly_inputs_and_uses_policy_limits(tm
     assert any('target=/cache,readonly' in item for item in mounts)
     assert any('target=/scratch' in item and 'readonly' not in item for item in mounts)
     assert not any('docker.sock' in item or 'privileged' in item for item in args)
-    assert probe_container_argv(plan(), tmp_path/'repo', tmp_path/'cache')[-1] == 'import time;time.sleep(180)'
+    assert probe_container_argv(plan(), tmp_path/'repo', tmp_path/'cache')[-1] == 'import time;time.sleep(600)'
 
 
 def test_probe_trusted_runtime_activation_preserves_wrapper_and_is_not_ambient(monkeypatch):
@@ -187,3 +187,83 @@ def test_observation_templates_home_and_cwd_use_the_exported_private_scratch(tmp
         roots={'repo': str(tmp_path/'repo'), 'cache': str(tmp_path/'cache'), 'scratch': str(scratch)})
     assert result['status'] == 'completed' and result['exit_code'] == 0
     assert result['output'].splitlines() == [str(scratch)]*3
+
+
+@pytest.mark.asyncio
+async def test_a_full_batch_reserves_teardown_time_and_names_the_failed_cleanup(tmp_path, monkeypatch):
+    import sys
+    import time
+    from types import SimpleNamespace
+
+    from coordinare_service_inference.environment import runtime_observation as runner
+
+    observed = {}
+
+    class Lease:
+        deadline = time.monotonic() + 600
+
+        def __init__(self):
+            self.activation_env = {'DOCKER_HOST': 'ssh://root@127.0.0.1:2222', 'COORDINARE_ENV_RUNTIME_BIN': '/private/job/bin'}
+
+        def check_bounds(self):
+            pass
+
+        async def close(self, *, deadline):
+            observed['close_deadline'] = deadline
+            return SimpleNamespace(confirmed=True, qemu_reaped=True, keys_absent=True, listeners_absent=True,
+                                   artifacts_unchanged=True, clean_shutdown=False, bounds_respected=True)
+
+    async def open_runtime(spec, **kwargs):
+        observed.update(kwargs)
+        return Lease()
+
+    monkeypatch.setattr(runner, 'open_runtime', open_runtime)
+    data = {'commands': [{'id': 'probe', 'argv': [sys.executable, '-c', 'print(1)'], 'cwd': str(tmp_path), 'env': {},
+                          'timeout_seconds': 2}], 'seconds': 1800, 'expires_at': time.time() + 1800,
+            'runtime': policy_data(), 'execution_source_digest': 'a' * 64}
+    started = time.monotonic()
+    with pytest.raises(runner.PrivateTeardownError, match='clean_shutdown'):
+        await runner.observe_private(data, repo=tmp_path / 'repo', cache=tmp_path / 'cache', scratch=tmp_path)
+    window = runner.COMMAND_SECONDS + runner.TEARDOWN_SECONDS
+    assert window - 1 <= observed['deadline'] - started <= window + 1
+    assert observed['close_deadline'] == observed['deadline']
+
+
+@pytest.mark.asyncio
+async def test_a_private_guest_gets_a_five_minute_window_when_the_batch_allows_it(tmp_path, monkeypatch):
+    """Dettmore e2e-50: emulated guest boots outran a 120 s window on a loaded host, retries included."""
+    import time
+    from types import SimpleNamespace
+
+    from coordinare_service_inference.environment import runtime_observation as runner
+
+    observed = {}
+
+    class Lease:
+        def __init__(self):
+            self.activation_env = {}
+
+        async def close(self, *, deadline):
+            return SimpleNamespace(confirmed=True, clean_shutdown=True, bounds_respected=True)
+
+    async def open_runtime(spec, **kwargs):
+        observed['lease'] = kwargs['deadline'] - time.monotonic()
+        return Lease()
+
+    async def run_guarded(lease, awaitable):
+        awaitable.close()
+        return [{'id': 'probe', 'status': 'completed', 'exit_code': 0, 'output': '', 'truncated': False}]
+
+    def observe(data, *, environment, deadline):
+        observed['command'] = deadline - time.monotonic()
+        async def done():
+            return None
+        return done()
+
+    monkeypatch.setattr(runner, 'open_runtime', open_runtime)
+    monkeypatch.setattr(runner, 'run_guarded', run_guarded)
+    monkeypatch.setattr(runner, '_observe_command', observe)
+    await runner.observe_private({'commands': [{'id': 'probe'}], 'seconds': 1800, 'expires_at': time.time() + 1800,
+                                  'runtime': policy_data(), 'execution_source_digest': 'a' * 64}, scratch=tmp_path)
+    assert 295 < observed['command'] <= 300
+    assert 355 < observed['lease'] <= 360

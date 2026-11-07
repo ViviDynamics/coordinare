@@ -34,13 +34,13 @@ from coordinare_service_inference.validator import validate
 from coordinare.config import TestEnvConfig
 from coordinare.services.env_cache import resolve_test_env_vars
 
-# The website symphony's postgres admin-secret env var name (a NAME, never a value).
+# The sampleweb symphony's postgres admin-secret env var name (a NAME, never a value).
 PW_VAR = "POSTGRESQL_PASSWORD"
 GATE_EXIT = 75  # EX_TEMPFAIL — the unset-secret gate in services-start.sh.
 
 DISCOVERED_PATH = ".env.test"
 ORG = "vivi-org"
-REPO = "website"
+REPO = "sampleweb"
 
 
 class _FakeGitHub:
@@ -124,7 +124,7 @@ class TestDiscoveredTestEnvFallback:
         # This single call models every later context (dry-run, QA-runtime, performer)
         # reloading the SAME persisted path.
         loaded = await resolve_test_env_vars(
-            symphony_name="website",
+            symphony_name="sampleweb",
             performer_mounts=(),
             test_env=None,
             github_org=ORG,
@@ -148,7 +148,7 @@ class TestDiscoveredTestEnvFallback:
         github = _FakeGitHub({DISCOVERED_PATH: f"{PW_VAR}=disc-pw-789\n"})
 
         loaded = await resolve_test_env_vars(
-            symphony_name="website",
+            symphony_name="sampleweb",
             performer_mounts=(),
             test_env=TestEnvConfig(host_path=str(host_file)),
             github_org=ORG,
@@ -168,7 +168,7 @@ class TestDiscoveredTestEnvFallback:
         github = _FakeGitHub({})  # discovered file vanished / never existed.
 
         loaded = await resolve_test_env_vars(
-            symphony_name="website",
+            symphony_name="sampleweb",
             performer_mounts=(),
             test_env=None,
             github_org=ORG,

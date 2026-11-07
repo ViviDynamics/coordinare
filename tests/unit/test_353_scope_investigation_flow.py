@@ -74,7 +74,7 @@ async def test_old_file_read_does_not_satisfy_pending_request():
         review(sources=list(sources), decisions=[{'finding_id': 'F0001', 'status': 'resolved',
             'rationale': 'Nested obligation retained', 'sources': ['nested'], 'duplicate_of': None}])]
     await discover(values, sources, fetch=fetch, budget=budget)
-    assert budget.schema_repairs == 1 and budget.coverage_revisions == 1
+    assert budget.schema_repairs == 1 and budget.scope_revisions == 1
 
 
 @pytest.mark.asyncio
@@ -148,6 +148,6 @@ async def test_investigation_cannot_renew_attempt_deadline_or_submit_revision():
         await discover(values, sources, fetch=fetch, budget=budget)
     assert held.value.code == 'attempt_deadline'
     assert time.monotonic()-started < 0.5
-    assert budget.deadline == deadline and budget.coverage_revisions == 1
+    assert budget.deadline == deadline and budget.scope_revisions == 1
     assert budget.scope_contract is None and budget.scope_findings.open_ids() == ['F0001']
     assert budget.scope_investigation_results == []

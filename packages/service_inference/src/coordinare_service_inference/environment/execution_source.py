@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .inventory import InventoryEntry
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping
+    from collections.abc import Awaitable, Callable, Collection, Iterable, Iterator, Mapping
     from pathlib import Path
 
 MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
@@ -249,6 +249,55 @@ def bundle_inventory(
             targets[checked_path(member.name[len("files/"):])] = member.linkname
     return {path: replace(entry, target=targets.get(path)) if entry.mode == "120000" else entry
             for path, entry in entries.items()}
+
+
+def _blob_matches(entry: SourceEntry, data: bytes) -> bool:
+    digest = hashlib.new("sha1" if len(entry.object_id) == 40 else "sha256")
+    digest.update(b"blob " + str(entry.size).encode() + b"\0" + data)
+    return digest.hexdigest() == entry.object_id
+
+
+def bundle_texts(
+    path: Path, names: Iterable[str], *, expected: ExecutionSourceIdentity, limit: int,
+) -> tuple[dict[str, str], list[str]]:
+    """Pinned text of the named regular files, read from the packed archive: no network and no working tree.
+
+    Each file's bytes are checked against its pinned blob identity, so the text is exactly the pinned content. Symlinks
+    and other non-files are never read. Files over ``limit`` are returned by name rather than read.
+    """
+    wanted = {checked_path(name) for name in names}
+    entries: dict[str, SourceEntry] = {}
+    texts: dict[str, str] = {}
+    oversize: list[str] = []
+    for archive, member in bundle_members(path):
+        if member.name == "metadata.json" and not entries:
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise ExecutionSourceError("execution source metadata missing")
+            data = json.loads(stream.read(MAX_METADATA_BYTES + 1), object_pairs_hook=_unique)
+            declared = ExecutionSourceIdentity.model_validate(data["identity"])
+            ordered = [SourceEntry.model_validate(item) for item in data["entries"]]
+            if source_identity(declared.source_commit, ordered) != declared or declared != expected:
+                raise ExecutionSourceError("execution source identity differs")
+            entries = {entry.path: entry for entry in ordered}
+            continue
+        if not member.name.startswith("files/"):
+            continue
+        name = checked_path(member.name[len("files/"):])
+        entry = entries.get(name)
+        if name not in wanted or entry is None or entry.mode == "120000" or not member.isfile():
+            continue
+        if entry.size > limit:
+            oversize.append(name)
+            continue
+        stream = archive.extractfile(member)
+        if stream is None or member.size != entry.size:
+            raise ExecutionSourceError("execution source file differs from pinned size")
+        data = stream.read(entry.size + 1)
+        if len(data) != entry.size or not _blob_matches(entry, data):
+            raise ExecutionSourceError("execution source blob identity differs")
+        texts[name] = data.decode("utf-8", "replace")
+    return texts, sorted(oversize)
 
 
 def validate_execution_bundle(

@@ -196,3 +196,111 @@ def test_revision_envelope_is_required_strict_and_rejects_model_ids():
     ):
         with pytest.raises(ValidationError):
             ScopeRevisionEnvelope.model_validate(invalid)
+
+
+def test_only_a_required_criterion_released_as_remote_state_can_leave_the_required_set():
+    from coordinare.services.environment_scope import preserve_scope, released_criteria
+
+    model, merge = revision_api()
+    base = definition({**criterion(), "description": "Branch protection is verifiable through an authorized gh session"})
+    target = base.criteria[0]
+    remote = {**target.model_dump(exclude={"id"}), "applicability": "not_applicable",
+              "rationale": "Branch protection is GitHub repository state, outside the environment."}
+    revision = model.model_validate(delta(base, reassess=[{"criterion_id": target.id, "criterion": remote}]))
+    with pytest.raises(PydanticCustomError):
+        merge(base, revision, inspected_inputs=dict(base.inputs))
+    released = merge(base, revision, inspected_inputs=dict(base.inputs), releasable={target.id})
+    assert released.criteria[0].applicability == "not_applicable"
+    still_required = model.model_validate(delta(base, reassess=[{"criterion_id": target.id, "criterion": {
+        **remote, "applicability": "required"}}]))
+    with pytest.raises(PydanticCustomError):
+        merge(base, still_required, inspected_inputs=dict(base.inputs), releasable={target.id})
+    with pytest.raises(Exception, match="scope_obligation_removed"):
+        preserve_scope(base, released)
+    preserve_scope(base, released, released={target.id})
+    from types import SimpleNamespace
+
+    def record(category, affected):
+        return SimpleNamespace(proposal=SimpleNamespace(category=category, affected_ids=affected))
+
+    ledger = SimpleNamespace(records=[record("remote_state", [target.id]), record("coverage", ["S0000000000000000"])])
+    assert released_criteria(ledger) == {target.id} and released_criteria(None) == set()
+
+
+def test_a_criterion_needing_the_network_on_every_run_is_released_like_remote_state():
+    """Maintainer decision 2026-10-24: SampleApp's dev compose stack runs apt-get on every start; v38's reviewers kept
+    finding residual network fetches in offline workarounds for it."""
+    from types import SimpleNamespace
+
+    from coordinare_service_inference.environment.findings import FindingProposal
+
+    from coordinare.services.environment_scope import (
+        GRANULARITY_GUIDANCE,
+        REVIEW_INSTRUCTIONS,
+        RUNTIME_NETWORK_RULE,
+        released_criteria,
+    )
+
+    def record(category, affected):
+        return SimpleNamespace(proposal=SimpleNamespace(category=category, affected_ids=affected))
+
+    ledger = SimpleNamespace(records=[record("runtime_network", ["S0000000000000001"]),
+                                      record("remote_state", ["S0000000000000002"]),
+                                      record("execution_definition", ["S0000000000000003"])])
+    assert released_criteria(ledger) == {"S0000000000000001", "S0000000000000002"}
+    assert RUNTIME_NETWORK_RULE in REVIEW_INSTRUCTIONS and RUNTIME_NETWORK_RULE in GRANULARITY_GUIDANCE
+    assert "installing the tools it uses" in RUNTIME_NETWORK_RULE
+    assert "runtime_network" in FindingProposal.model_json_schema()["properties"]["category"]["enum"]
+
+
+def test_building_or_running_the_apps_own_deployment_images_is_released_like_remote_state():
+    """Maintainer decision 2026-10-27: building SampleApp's own production and QA images under the validation runtime's
+    emulation exceeded an hour on every diagnostic; agents need the development and test environment, not deployment
+    images or stacks."""
+    from types import SimpleNamespace
+
+    from coordinare_service_inference.environment.findings import FindingProposal
+    from coordinare_service_inference.environment.scope import SourceGapKind
+
+    from coordinare.services.environment_scope import (
+        DEPLOYMENT_IMAGE_RULE,
+        GRANULARITY_GUIDANCE,
+        RELEASE_CATEGORIES,
+        REVIEW_INSTRUCTIONS,
+        REVISION_INSTRUCTIONS,
+        released_criteria,
+    )
+
+    def record(category, affected):
+        return SimpleNamespace(proposal=SimpleNamespace(category=category, affected_ids=affected))
+
+    ledger = SimpleNamespace(records=[record("deployment_image", ["S0000000000000004"]),
+                                      record("execution_definition", ["S0000000000000005"])])
+    assert released_criteria(ledger) == {"S0000000000000004"}
+    assert "deployment_image" in RELEASE_CATEGORIES
+    assert DEPLOYMENT_IMAGE_RULE in REVIEW_INSTRUCTIONS and DEPLOYMENT_IMAGE_RULE in GRANULARITY_GUIDANCE
+    assert "deployment_image" in REVISION_INSTRUCTIONS
+    assert "third-party service images" in DEPLOYMENT_IMAGE_RULE and "stay required" in DEPLOYMENT_IMAGE_RULE
+    assert "documented development container or compose environment" in DEPLOYMENT_IMAGE_RULE
+    assert "a test suite itself performs" in DEPLOYMENT_IMAGE_RULE
+    assert "deployment_image" in FindingProposal.model_json_schema()["properties"]["category"]["enum"]
+    assert "deployment_image" in SourceGapKind.__args__
+
+
+def test_finding_responses_nested_in_the_revision_are_moved_to_the_envelope():
+    """Dettmore e2e-17: the author kept the responses one level too deep through every correction and both restarts."""
+    from coordinare_service_inference.environment.scope_revision import ScopeRevisionEnvelope
+
+    base = definition()
+    nested = {"scope_revision": {**delta(base), "finding_responses": []}}
+    envelope = ScopeRevisionEnvelope.model_validate(nested)
+    assert envelope.finding_responses == [] and envelope.scope_revision.add == []
+    assert "finding_responses" in nested["scope_revision"]
+    response = {"finding_id": "F0001", "rationale": "Added the missing obligation", "sources": ["guide"],
+                "affected_ids": []}
+    # Dettmore e2e-24: an empty list beside the nested responses says nothing, so they still move.
+    beside = {"scope_revision": {**delta(base), "finding_responses": [response]}, "finding_responses": []}
+    assert [r.finding_id for r in ScopeRevisionEnvelope.model_validate(beside).finding_responses] == ["F0001"]
+    # Responses at both levels stay ambiguous and are reported, never merged.
+    with pytest.raises(ValidationError):
+        ScopeRevisionEnvelope.model_validate({**beside, "finding_responses": [response]})

@@ -40,7 +40,7 @@ def _session(cid: str, status: str, phase: str, **extra: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "card_id": cid,
         "performer_stage": "implementing",
-        "current_symphony": "website",
+        "current_symphony": "sampleweb",
         "workspace_branch": f"coordinare/{cid}/x",
         "current_card": _card(cid, status),
         "blueprint": _BP,
@@ -123,8 +123,8 @@ class _Cfg:
 
 
 class _GitHub:
-    org = "ViviDynamics"
-    _project_name = "website"
+    org = "ExampleOrg"
+    _project_name = "sampleweb"
 
 
 @pytest.fixture(autouse=True)
@@ -137,7 +137,7 @@ def _daemon(sessions: dict[str, Any], svc: _Svc, limit: int) -> CoordinareDaemon
     d._state = {
         "active_sessions": sessions,
         "performer_services": {"documenting": svc},
-        "symphony_workspace_managers": {"website": _WM()},
+        "symphony_workspace_managers": {"sampleweb": _WM()},
         "config": _Cfg(limit),
     }
     d._documenting_side_tasks = set()
@@ -146,7 +146,7 @@ def _daemon(sessions: dict[str, Any], svc: _Svc, limit: int) -> CoordinareDaemon
 
 async def _run(d: CoordinareDaemon, sessions: dict[str, Any], dispatchable: set[str]) -> None:
     await d._dispatch_documenting_side_runs(
-        {"website": _GitHub()}, sessions=sessions, dispatchable_card_ids=dispatchable,
+        {"sampleweb": _GitHub()}, sessions=sessions, dispatchable_card_ids=dispatchable,
     )
 
 

@@ -498,3 +498,112 @@ genuinely unread source or missing explicit obligations. This diagnostic does
 not resolve any finding, grant source acceptance or waive runtime proof. The
 citation correction alone does not establish that those semantic problems are
 fixed. Elm acceptance and subsequent Dettmore validation remain pending.
+
+## Only commands that ran are fixed after execution, 2026-11-02
+
+Dettmore e2e-46 (unattended) held at `attempt_coverage_limit` after 8 coverage
+revisions with only 1 of 4 execution repairs used. Every review reply validated;
+the reviewer kept answering revise for a real defect no repair could fix. Ruby
+failed to install, so all 15 required c01 checks stayed `not_run`, yet the
+2026-10-18 rule pinned every required check once any project command executed,
+including unrun ones. Those checks export `DATABASE_PORT=5432`, while the pg17
+service, which did run and is therefore pinned, publishes 5439.
+
+Ruling (Jason, 2026-11-02): a command is fixed only if it executed (an exit code
+or a nonzero duration). A required service's lifecycle stays fixed once any of
+its commands executed. The Nare case is unchanged: a check that ran and failed
+keeps its definition, so exclusions and retry wrappers are still rejected. A
+check that never ran may be corrected but not dropped (the obligation ledger
+and criterion coverage still bind it), and the independent review judges the
+change like any unexecuted check.
+
+## Dettmore e2e-47 and the review's execution evidence, 2026-11-03
+
+e2e-47 (unattended, `51d16270`) was the first run in which every generation's
+repair was accepted and executed. Each repair fixed real failures (an invalid
+downloaded package, then a missing libreadline8). It held as `installer_failed`
+after its third execution, with one configured execution repair unused.
+
+Two corrections follow. The repair reviewer saw only install ids and per-command
+statuses, so neither the daemon nor a Pi review spike (#375) could tell that a
+failed install-ruby step was resubmitted unchanged: part reviewers now see the
+candidate's install commands, and the execution history carries each failed
+command's output, bounded exactly as the repair's authors receive it and still
+marked untrusted. Install text is left out of a part's standing, so an install
+repair still re-reviews only the global part. Second, the execution history held
+three rejected executions while the repair budget allows four repairs: the bound
+is now the first execution plus one per repair (5), the history byte bound scales
+with it, and the validation harness runs as many generations as that budget allows.
+
+## Dettmore e2e-48: a private probe guest timed out, 2026-11-03
+
+e2e-48 (`e8043e75`) executed generation 0, then held at `probe_observation_incomplete`
+in generation 1's probe batch after 2 hours: `probe-node-toolchain: private probe
+guest unavailable: TimeoutError`. Each private probe boots its own emulated guest
+inside one 120 second window for boot and command; the batch's five probes took
+about 2.4 minutes each, and one boot ran out of time before observing anything.
+That machinery failure alone is now retried once in a fresh guest within the
+batch's own 30 minute allowance. A second timeout, or any other failure, still
+holds the attempt, and no observation is ever invented.
+
+## Dettmore e2e-49: the journal's generation bound, 2026-11-03
+
+e2e-49 (`dce0a988`) accepted and executed three generations; the third failed only
+on a gem native extension that could not find the OpenSSL headers (Ruby itself
+installed). Preparing the fourth generation then held with `environment repair
+journal is invalid`: the e8043e75 change raised the rejected-history bound to the
+repair budget but left the journal's `generation` field capped at 2. The field is
+now bounded by the execution repair limit, and a regression walks one journal
+through every generation of the full budget, across snapshot roundtrips.
+
+## Dettmore e2e-50: probe guests outran their window, 2026-11-03
+
+e2e-50 (`e15eace0`) executed two generations (remaining failures: no prebuilt
+Ruby 3.4.2 arm64 archive, and a missing activation path), then held in
+generation 2's probe batch: three private guests and their retries each ran out
+of the 120 second boot-and-command window at about 2.7 minutes. No probe guest
+or container from an earlier generation was left running; the host was loaded
+by unrelated work. Ruling (Jason, 2026-11-03): the window is widened to 300
+seconds. The batch's 30 minute allowance still bounds the whole batch.
+
+## Dettmore e2e-51: the attempt deadline, and reviewers asking for fixed commands, 2026-11-04
+
+e2e-51 (`a791b306`) is the furthest run so far: three generations reviewed,
+accepted and executed (generations 1 and 2 in about 15 minutes each), and no
+probe guest timed out. It held at `attempt_deadline` (6 hours) while reviewing
+generation 3, after 34 review calls. Generation 0 took about 2.5 hours, mostly
+the scope review every run repeats.
+
+Generation 3's review churned on a deadlock of the e2e-46 kind: the maxio mock's
+health failed in every execution because `svc-maxio-start` runs it without
+bundler, and since that start command ran, it is fixed. Reviewers, never told
+which commands are fixed, kept asking for that command to change; an activation
+repair (such as `RUBYOPT=-rbundler/setup`) was never proposed. Ruling (Jason,
+2026-11-04): reviewers now receive `fixed_ids` and are told a finding about a
+fixed command must ask for an installation, activation or other service or check
+change. Separately, ruby-build kept the real failure in its build log for two
+generations: a failed command whose output names a `/tmp/*.log` build log now
+gets that log's redacted tail, within the same output bound.
+
+## Dettmore e2e-52: decisions dropped between review corrections, 2026-11-04
+
+e2e-52 (`9c1482c9`) held in generation 0 at `attempt_schema_limit` (2.6 hours,
+148 calls) before any installation. Its reviewers' first replies kept omitting
+the status of some finding decisions; each correction restored the named ones and
+dropped others (1, 5, 1, 7, 1, 6 errors), 39 such corrections in one generation.
+The same pattern appeared in e2e-46; e2e-49 to e2e-51 got through by chance.
+Ruling (Jason, 2026-11-04): within one review conversation, a decision already
+given for a finding is kept; a later reply that drops it, or its status, gets it
+back, so a correction redoes only what it names. The validator still judges the
+merged reply.
+
+## Dettmore e2e-53: two groups wrote the same check, 2026-11-04
+
+e2e-53 (`452d65eb`) held in generation 0 at `executable_merge_invalid` after 68
+minutes: c00 and c01 each wrote `bundle exec rspec`, only c01's after
+`c01-db-seed-reference`. Promotion to a shared global check was refused (a global
+check may not depend on a group's check), neither group may name the other's,
+and all three merge rounds rejected the pair. Ruling (Jason, 2026-11-04): two
+different groups' identical checks whose prerequisites differ both stand, since
+they run against different prior state. Copies within one group, copies with
+equal prerequisites, and group copies of a global check are still one obligation.

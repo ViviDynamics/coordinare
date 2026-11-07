@@ -158,7 +158,7 @@ def fake_cache(tmp_path: Path) -> SimpleNamespace:
     """
     if not _DEB_TOOLS:
         pytest.skip("ar + tar required to build synthetic .deb")
-    slug = "website"
+    slug = "sampleweb"
     soname = "libfake.so.1"
     triplet = "aarch64-linux-gnu"
     devenv = tmp_path / "devenv"

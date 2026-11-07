@@ -24,13 +24,15 @@ def contract():
     )
 
 
-def history(manifest, *, preflight=False, install_started=False):
+def history(manifest, *, preflight=False, install_started=False, ran=("suite",)):
+    """suite fails; every other id in ran executes and passes; the rest stay not_run."""
     report = json.loads(verification_output(manifest.model_dump()))
     for result in report["results"]:
+        executed = not preflight and result["id"] in ran
         result.update(
-            status="fail" if result["id"] == "suite" else "not_run",
-            exit_code=None if preflight else (1 if result["id"] == "suite" else None),
-            duration_seconds=0 if preflight else (1 if result["id"] == "suite" else 0),
+            status="fail" if result["id"] == "suite" else ("pass" if executed else "not_run"),
+            exit_code=(1 if result["id"] == "suite" else 0) if executed else None,
+            duration_seconds=1 if executed else 0,
         )
     if install_started:
         report["results"].append(
@@ -78,25 +80,28 @@ def test_executed_required_definition_cannot_be_weakened(field, value):
     assert exc.value.code == "obligation_removed"
 
 
-def test_unrun_required_check_is_pinned_once_another_action_ran():
+def test_a_check_that_never_ran_stays_correctable_after_another_ran():
+    """Dettmore e2e-46: ruby failed to install, so every c01 check stayed not_run, yet each was pinned with the wrong
+    database port it exported; the reviewer named it in all 8 coverage revisions and no repair could change it. A
+    check without a result has nothing to preserve; the ledger keeps it and the independent review judges the change."""
     previous = contract()
     data = previous.model_dump()
-    data["checks"][1]["argv"] = ["true"]
+    data["checks"][1]["argv"] = ["artifact-check", "--port", "5439"]
+    preserve_execution_obligations(EnvironmentManifest.model_validate(data), history(previous))
     with pytest.raises(EnvironmentDiscoveryError):
-        preserve_execution_obligations(EnvironmentManifest.model_validate(data), history(previous))
+        preserve_execution_obligations(EnvironmentManifest.model_validate(data), history(previous, ran=("suite", "assets")))
 
 
-def test_installer_execution_pins_unrun_required_verification():
+def test_installer_execution_leaves_unrun_verification_correctable():
     data = contract().model_dump()
     data["install"] = [{"id": "install", "argv": ["provision-tools"]}]
     previous = EnvironmentManifest.model_validate(data)
     data = previous.model_dump()
-    data["checks"][0]["argv"] = ["true"]
-    with pytest.raises(EnvironmentDiscoveryError):
-        preserve_execution_obligations(
-            EnvironmentManifest.model_validate(data),
-            history(previous, preflight=True, install_started=True),
-        )
+    data["checks"][0]["argv"] = ["corrected-check"]
+    preserve_execution_obligations(
+        EnvironmentManifest.model_validate(data),
+        history(previous, preflight=True, install_started=True),
+    )
 
 
 def test_template_preflight_before_any_command_may_correct_definitions():
@@ -133,8 +138,11 @@ def test_required_service_lifecycle_definitions_are_pinned(phase):
     previous = EnvironmentManifest.model_validate(data)
     data = previous.model_dump()
     data["services"][0][phase]["argv"] = ["true"]
+    changed = EnvironmentManifest.model_validate(data)
+    # Once any of its commands ran, the whole lifecycle is fixed; a service that never started is not.
     with pytest.raises(EnvironmentDiscoveryError):
-        preserve_execution_obligations(EnvironmentManifest.model_validate(data), history(previous))
+        preserve_execution_obligations(changed, history(previous, ran=("suite", "backend-start")))
+    preserve_execution_obligations(changed, history(previous))
 
 
 def test_every_prior_execution_remains_binding():
@@ -284,3 +292,67 @@ async def test_discovery_rejects_waiver_before_fresh_review(tmp_path):
         )
     assert exc.value.code == "obligation_removed"
     assert len(replies.messages) == 1
+
+
+def test_every_changed_fixed_command_is_named_in_one_correction():
+    """Dettmore e2e-18: told of one changed command at a time, the author restored it and changed the next until the
+    schema corrections ran out."""
+    previous = contract()
+    changed = previous.model_copy(deep=True)
+    changed.checks[0] = changed.checks[0].model_copy(update={"argv": ["true"]})
+    changed.checks[1] = changed.checks[1].model_copy(update={"argv": ["true"]})
+    with pytest.raises(EnvironmentDiscoveryError) as exc:
+        preserve_execution_obligations(changed, history(previous, ran=("suite", "assets")))
+    assert exc.value.code == "obligation_removed"
+    assert str(exc.value).endswith(": suite, assets")
+    one = previous.model_copy(deep=True)
+    one.checks[0] = one.checks[0].model_copy(update={"argv": ["true"]})
+    with pytest.raises(EnvironmentDiscoveryError) as single:
+        preserve_execution_obligations(one, history(previous))
+    assert str(single.value) == "required executable command suite changed after project execution"
+
+
+def test_a_merged_candidate_gets_executed_commands_back():
+    """Dettmore e2e-25: a group added a dependency to an executed check and the global author rewrote the failed mock
+    service's start and health; every merge named them, the authors changed them again, and the rounds ran out."""
+    from coordinare.services.environment_obligations import (
+        preserve_execution_commands,
+        restore_execution_commands,
+    )
+
+    data = contract().model_dump()
+    data["services"] = [{"id": "mock", "required": True,
+                         **{p: {"id": "mock-" + p, "argv": ["mock-tool", p]} for p in ["start", "health", "stop"]}}]
+    previous = EnvironmentManifest.model_validate(data)
+    candidate = previous.model_dump(mode="json")
+    candidate["checks"][0]["depends_on"] = ["assets"]
+    candidate["checks"][1]["timeout_seconds"] = 900
+    candidate["services"][0]["health"]["argv"] = ["bash", "-c", "for i in 1 2 3; do mock-tool health && exit 0; done"]
+    candidate["services"][0]["start"]["timeout_seconds"] = 900
+    candidate["checks"].append({"id": "new-check", "argv": ["extra-check"]})
+    assert restore_execution_commands(candidate, [previous]) == ["mock-health", "suite"]
+    restored = EnvironmentManifest.model_validate(candidate)
+    preserve_execution_commands(restored, previous)
+    assert restored.checks[0].depends_on == [] and restored.checks[1].timeout_seconds == 900
+    assert restored.services[0].health == previous.services[0].health
+    assert restored.services[0].start.timeout_seconds == 900 and restored.checks[2].id == "new-check"
+    # A removed executed command is not put back here; admission and preservation still report it.
+    dropped = previous.model_dump(mode="json")
+    dropped["checks"] = dropped["checks"][1:]
+    assert restore_execution_commands(dropped, [previous]) == []
+    assert [check["id"] for check in dropped["checks"]] == ["assets"]
+
+
+def test_history_holds_every_execution_of_the_full_repair_budget():
+    """Dettmore e2e-47: the history bound (3) sat below the execution repair budget (4), so a run stopped with a
+    configured repair unused. The first execution and one per repair now fit; one more does not."""
+    from coordinare.services.environment_attempt import REPAIR_LIMITS
+    from coordinare.services.environment_obligations import MAX_REJECTED_EXECUTIONS
+    from coordinare.services.environment_repair import RepairJournal
+
+    assert REPAIR_LIMITS["execution"] + 1 == MAX_REJECTED_EXECUTIONS
+    assert RepairJournal.model_fields["rejected"].metadata[0].max_length == MAX_REJECTED_EXECUTIONS
+    previous = contract()
+    preserve_execution_obligations(previous, history(previous) * MAX_REJECTED_EXECUTIONS)
+    with pytest.raises(EnvironmentDiscoveryError):
+        preserve_execution_obligations(previous, history(previous) * (MAX_REJECTED_EXECUTIONS + 1))

@@ -36,7 +36,7 @@ class Fixture:
 
 
 _RAILS_FILES = {
-    "README.md": "# Website\nRails app.\n",
+    "README.md": "# SampleWeb\nRails app.\n",
     "Gemfile": "source 'https://rubygems.org'\ngem 'rails'\n",
     "app/models/time_entry.rb": "class TimeEntry < ApplicationRecord\n  belongs_to :project\nend\n",
     "app/views/contact/index.html.erb": "<h1>Contct us</h1>\n",

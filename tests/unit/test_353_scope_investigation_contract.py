@@ -123,7 +123,7 @@ async def test_admitted_request_is_bound_to_daemon_finding_and_review_atomically
     async def checkpoint():
         if budget.scope_findings and budget.scope_findings.reviews:
             assert budget.scope_findings.open_ids() == ['F0001']
-            assert budget.coverage_revisions == 1
+            assert budget.scope_revisions == 1
             assert len(budget.scope_investigations) == 1
             bound = budget.scope_investigations[0]
             assert bound.finding_id == 'F0001' and bound.review_sequence == 1
