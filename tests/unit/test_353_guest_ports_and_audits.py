@@ -60,3 +60,13 @@ def test_a_guest_shutdown_gets_three_minutes_on_a_loaded_host():
     from coordinare_service_inference.environment.runtime_supervisor import CLEANUP_SECONDS
 
     assert CLEANUP_SECONDS == 180
+
+
+def test_authors_and_reviewers_are_told_timeouts_are_per_command_ceilings():
+    from coordinare.services.environment_discovery_prompts import TIMEOUT_CEILINGS
+
+    # Dettmore e2e-66: reviewers summed every ceiling against the session budget for six coverage revisions.
+    for instructions in (_MANIFEST_INSTRUCTIONS, CHECK_AUTHOR_INSTRUCTIONS, EXECUTABLE_REVIEW_INSTRUCTIONS):
+        assert TIMEOUT_CEILINGS in instructions
+    assert 'may add up to more than the session_budget' in TIMEOUT_CEILINGS
+    assert 'Never shorten a ceiling below what its work needs' in TIMEOUT_CEILINGS

@@ -68,6 +68,14 @@ ADVISORY_AUDIT_CHECKS = (
     'documents for "advisories found" as well as success, and fail on any other status (for bundler-audit, 0 or 1 '
     'with its report printed). Never require that no advisories are found, and never ignore advisories to make one '
     'pass.')
+# Dettmore e2e-66: reviewers summed every command's timeout_seconds (13,800 s) against the 7,200 s session budget and
+# held findings open until the author cut the heavy builds' and suites' ceilings, spending six coverage revisions
+# before any execution. A ceiling is not a plan: the session deadline still ends the whole run.
+TIMEOUT_CEILINGS = (
+    'Each command\'s timeout_seconds is its own ceiling: set it to what that work needs on this carrier, with margin. '
+    'The ceilings of all commands may add up to more than the session_budget, because they are not run times and the '
+    'session deadline still ends the whole run. Never shorten a ceiling below what its work needs to make a total fit; '
+    'object to one only when that single command could not finish within the session_budget at all.')
 LOCAL_CREDENTIAL_REVIEW = (
     'Judge every local_credentials entry: it must belong to a service this manifest starts. A credential the source '
     'shows comes from outside the environment, such as a cloud key or registry token, is a blocking finding.')
@@ -104,6 +112,7 @@ _MANIFEST_INSTRUCTIONS = (
     'For shell-local variables assigned inside bash -c, use $name rather than ${name}. '
     f'{LOCAL_CREDENTIAL_AUTHORING} '
     f'{ADVISORY_AUDIT_CHECKS} '
+    f'{TIMEOUT_CEILINGS} '
     'Create every declared activation directory during installation; do not hide a missing path by removing useful activation. '
     'List tool directories in activation.path, which is prepended to the guest PATH; never set PATH in activation.env. '
     'The project environment scope is fixed by pinned development/test evidence, never by image convenience. '
