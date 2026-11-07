@@ -36,6 +36,8 @@ from coordinare.services.model_output_cap import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from coordinare.config import ProjectConfiguration
     from coordinare.services.claude import ClaudeService
     from coordinare.services.environment_attempt import DiscoveryChatReply
@@ -252,10 +254,33 @@ async def _streamed_completion(client: Any, url: str, payload: dict[str, Any],
         if resp.is_error:
             await resp.aread()
             return resp, None
-        return resp, await _collect_stream(resp)
+        # A shorter client allowance (the default 180 s read timeout) still ends a silent stream sooner.
+        return resp, await _collect_stream(resp, idle=STREAM_IDLE_SECONDS)
 
 
-async def _collect_stream(resp: Any) -> dict[str, Any] | None:
+async def _stream_lines(resp: Any, idle: float | None) -> AsyncIterator[str]:
+    """The reply's lines; once the first has arrived, a silence longer than ``idle`` is a dropped stream.
+
+    Until a reply starts, a request may wait its whole allowance in the provider's queue, sending nothing: Dettmore
+    e2e-63's queued requests were cut off after ten minutes and sent again, and each copy joined the same queue. Once
+    tokens flow they keep flowing (reasoning included), so only a started stream is judged by its silence (e2e-61 waited
+    the full 3,600 s twice for one that had stopped).
+    """
+    lines = resp.aiter_lines().__aiter__()
+    started = False
+    while True:
+        try:
+            line = await (asyncio.wait_for(anext(lines), idle) if started and idle is not None else anext(lines))
+        except StopAsyncIteration:
+            return
+        except TimeoutError:
+            message = f"stream sent nothing for {idle:g} s after it started"
+            raise httpx.ReadTimeout(message) from None
+        started = True
+        yield line
+
+
+async def _collect_stream(resp: Any, *, idle: float | None = None) -> dict[str, Any] | None:
     """Accumulate content and reasoning deltas; stop reading once either has degenerated into exact repetition.
 
     Closing the stream early ends generation on the provider, so a looping reply costs seconds, not the cap.
@@ -265,7 +290,7 @@ async def _collect_stream(resp: Any) -> dict[str, Any] | None:
     model: str | None = None
     usage: Any = None
     finish: str | None = None
-    async for line in resp.aiter_lines():
+    async for line in _stream_lines(resp, idle):
         if not line.startswith("data:"):
             continue
         body = line[5:].strip()
@@ -366,7 +391,7 @@ def _deterministic_rejection(body: str, *, schema: bool) -> bool:
     return any(marker in body.lower() for marker in CONTEXT_LIMIT_MARKERS) or (schema and _schema_limit_body(body))
 
 
-# The longest a streamed reply may go without a byte before it is treated as dropped (see _client_timeout).
+# The longest a started streamed reply may go without a line before it is treated as dropped (see _stream_lines).
 STREAM_IDLE_SECONDS = 600.0
 
 
@@ -505,22 +530,12 @@ class OpenAiApiBackend:
         except (ValueError, RecursionError):
             return resp, None, "invalid provider JSON"
 
-    def _client_timeout(self, mode: str) -> float | httpx.Timeout:
-        """A streamed reply keeps sending tokens (reasoning included), so a long silence means the stream was dropped.
-
-        httpx's read timeout is the longest wait for the next bytes. Dettmore e2e-61 waited the full 3,600 s twice for a
-        stream that had stopped; a streamed call now gives up after STREAM_IDLE_SECONDS without a byte and is retried.
-        """
-        if mode != "stream":
-            return self._TIMEOUT
-        return httpx.Timeout(self._TIMEOUT, read=min(self._TIMEOUT, STREAM_IDLE_SECONDS))
-
     async def _completion(self, url: str, payload: dict[str, Any], headers: dict[str, str], *,
                           mode: str, schema: bool) -> tuple[Any, Any, str | None]:
         """One request, sent once more after a 400 that resending may cure, when the call carries a provider outage
         window (environment discovery). Dettmore e2e-56 held on one such 400; sent again, the request was answered."""
         for resend in (True, False):
-            async with httpx.AsyncClient(timeout=self._client_timeout(mode)) as client:
+            async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
                 resp, parsed, parse_error = await self._request_completion(client, url, payload, headers, mode)
             if not (resend and resp.status_code == _BAD_REQUEST and provider_outage_seconds.get() > 0
                     and not _deterministic_rejection(_error_body(resp), schema=schema)):

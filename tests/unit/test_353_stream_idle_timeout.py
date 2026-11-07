@@ -1,27 +1,49 @@
-"""A streamed model reply that stops sending is retried after minutes, not after the whole request allowance.
+"""A started streamed reply that stops sending is retried after minutes; one still queued keeps its whole allowance.
 
-Dettmore e2e-61 waited the full 3,600 s read timeout twice for a stream the gateway had dropped. A live reply streams
-tokens (reasoning included), so only a dropped one goes STREAM_IDLE_SECONDS without a byte.
+Dettmore e2e-61 waited the full 3,600 s read timeout twice for a stream that had stopped. Dettmore e2e-63 showed the
+other side: a request queued behind a long provider queue sends nothing until it starts, so cutting it off at the idle
+limit only sent another copy into the same queue.
 """
 from __future__ import annotations
 
+import asyncio
+
 import httpx
+import pytest
 
-from coordinare.services.conducting import STREAM_IDLE_SECONDS, OpenAiApiBackend
-
-
-class LongRequestBackend(OpenAiApiBackend):
-    _TIMEOUT = 3600.0
+from coordinare.services.conducting import STREAM_IDLE_SECONDS, _collect_stream, _stream_lines
 
 
-def test_a_streamed_call_gives_up_after_the_idle_limit_but_keeps_its_other_limits():
-    timeout = LongRequestBackend('key')._client_timeout('stream')
-    assert isinstance(timeout, httpx.Timeout)
-    assert timeout.read == STREAM_IDLE_SECONDS == 600.0
-    assert timeout.connect == timeout.write == timeout.pool == 3600.0
+class FakeStream:
+    def __init__(self, *events: tuple[float, str]) -> None:
+        self.events = events
+
+    async def aiter_lines(self):
+        for delay, line in self.events:
+            await asyncio.sleep(delay)
+            yield line
 
 
-def test_an_unstreamed_call_and_a_short_allowance_are_unchanged():
-    assert LongRequestBackend('key')._client_timeout('strict') == 3600.0
-    # The default 180 s allowance is already shorter than the idle limit.
-    assert OpenAiApiBackend('key')._client_timeout('stream').read == 180.0
+CHUNK = 'data: {"choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}]}'
+
+
+@pytest.mark.asyncio
+async def test_a_slow_start_is_never_cut_off_by_the_idle_limit():
+    reply = await _collect_stream(FakeStream((0.2, CHUNK), (0.0, "data: [DONE]")), idle=0.05)
+    assert reply is not None and reply["choices"][0]["message"]["content"] == "hi"
+
+
+@pytest.mark.asyncio
+async def test_a_started_stream_that_goes_silent_is_a_read_timeout():
+    with pytest.raises(httpx.ReadTimeout, match="after it started"):
+        await _collect_stream(FakeStream((0.0, CHUNK), (0.2, "data: [DONE]")), idle=0.05)
+
+
+@pytest.mark.asyncio
+async def test_without_an_idle_limit_every_line_is_awaited():
+    lines = [line async for line in _stream_lines(FakeStream((0.0, "a"), (0.05, "b")), None)]
+    assert lines == ["a", "b"]
+
+
+def test_the_idle_limit_is_ten_minutes():
+    assert STREAM_IDLE_SECONDS == 600.0
