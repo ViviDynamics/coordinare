@@ -25,3 +25,12 @@ def test_a_repair_base_keeps_the_declared_forwards():
 
 def test_a_manifest_without_a_private_runtime_has_no_forwards():
     assert proposal_of(contract())['runtime_endpoints'] == []
+
+
+def test_the_attempt_summary_names_why_a_delta_repair_fell_back():
+    from coordinare.services.environment_attempt import AttemptBudget
+
+    budget = AttemptBudget()
+    assert budget.summary()['delta_fallback_code'] is None
+    budget.delta_fallback_code = 'repair_delta_rejected'
+    assert budget.summary()['delta_fallback_code'] == 'repair_delta_rejected'

@@ -132,3 +132,47 @@ async def test_a_guest_that_timed_out_before_observing_is_retried_once(tmp_path,
     assert len(report.results) == commands
     assert len(calls) == 2 * commands
     assert all(result.status == ('completed' if second == 'completed' else 'execution_error') for result in report.results)
+
+
+async def _owned(tmp_path, monkeypatch, *, read_seconds, run_seconds, batch_seconds):
+    """A probe whose input reads and run take the given times, under a batch allowance of ``batch_seconds``."""
+    import asyncio
+
+    from coordinare.services import environment_probe_service as service
+    from coordinare.services.environment_repair import begin_attempt, save_attempt
+
+    selected, bundle = bound_plan(tmp_path, False)
+    cache = cache_fixture(tmp_path)
+    limits = DiscoveryLimits(attempt_timeout_seconds=3600)
+    budget = begin_attempt(cache, limits, outer_seconds=3600)
+    budget.reserve_probe_batch()
+    async def checkpoint():
+        save_attempt(cache, budget)
+    budget.checkpoint = checkpoint
+    await budget.flush()
+    async def fetch(path):
+        await asyncio.sleep(read_seconds)
+        return SOURCE
+    async def execute(p, **kwargs):
+        await asyncio.sleep(run_seconds)
+        data = report_data(p)
+        data.update(image_ref=p.capabilities.image_ref, platform=p.capabilities.platform)
+        return ProbeReport.model_validate(data)
+    monkeypatch.setattr(service, 'execute_environment_probe', execute)
+    monkeypatch.setattr(service, 'probe_batch_timeout', lambda _plan: batch_seconds)
+    return await service.run_owned_probe(selected, context=service.ProbeServiceContext(cache, {}, fetch, budget, limits, bundle))
+
+
+@pytest.mark.asyncio
+async def test_verifying_the_inputs_never_spends_the_batch_allowance(tmp_path, monkeypatch):
+    # Dettmore e2e-65: re-verifying 595 inputs on a loaded host outlasted the 120 s batch before the probe ran.
+    assert isinstance(await _owned(tmp_path, monkeypatch, read_seconds=0.3, run_seconds=0.0, batch_seconds=0.2), ProbeReport)
+
+
+@pytest.mark.asyncio
+async def test_a_probe_that_outruns_its_batch_names_the_batch_not_the_phase(tmp_path, monkeypatch):
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+
+    with pytest.raises(EnvironmentDiscoveryError) as exc:
+        await _owned(tmp_path, monkeypatch, read_seconds=0.0, run_seconds=0.5, batch_seconds=0.1)
+    assert exc.value.code == 'probe_batch_deadline'

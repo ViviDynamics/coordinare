@@ -167,6 +167,8 @@ class AttemptBudget:
     # Whether this attempt authors a delta, and whether a delta already fell back to the full repair (persisted).
     repair_delta: bool = field(default=False, repr=False)
     delta_fallback: bool = False
+    # The trusted code of the failure that made a delta repair fall back to the full repair, for the attempt summary.
+    delta_fallback_code: str | None = None
     checkpoint: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -283,7 +285,8 @@ class AttemptBudget:
                 **{"scope_" + key: value for key, value in finding_summary(self.scope_findings).items()},
                 "scope_criterion_count": len(self.scope_definition.criteria) if self.scope_definition is not None else 0,
                 "scope_review_count": len(self.scope_findings.reviews) if self.scope_findings is not None else 0,
-                "scope_contract_digest": self.scope_contract.digest() if self.scope_contract is not None else None, "stage": self.stage, "outcome": self.outcome, "error_code": self.error_code, "error_detail": self.error_detail, "guest": self.guest,
+                "scope_contract_digest": self.scope_contract.digest() if self.scope_contract is not None else None, "stage": self.stage, "outcome": self.outcome, "error_code": self.error_code,
+                "delta_fallback_code": self.delta_fallback_code, "error_detail": self.error_detail, "guest": self.guest,
                 "elapsed_seconds": round(time.monotonic() - self.started, 3),
                 "probe_batches": self.probe_batches, "abandoned_probe_batches": len(self.probe_abandonments),
                 "max_probe_batches": MAX_PROBE_BATCHES, "calls": self.calls, "calls_completed": self.calls_completed, "reads": self.reads,

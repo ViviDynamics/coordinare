@@ -948,8 +948,10 @@ async def discover_and_review(
             except EnvironmentDiscoveryError as exc:
                 if not budget.repair_delta or exc.code not in DELTA_FALLBACK:
                     raise
-                # The delta could not be admitted or reviewed: the full repair is the backstop while budget remains.
-                budget.repair_delta, budget.delta_fallback, budget.error_code = False, True, None
+                # The delta could not be admitted or reviewed: the full repair is the backstop while budget remains. Its
+                # code is kept for the attempt summary (Dettmore e2e-62 and e2e-65 fell back with no trace of why).
+                budget.repair_delta, budget.delta_fallback, budget.error_code, budget.delta_fallback_code = (
+                    False, True, None, exc.code)
                 # The full repair must not inherit a cache-only reuse decided for the delta.
                 budget.probe_reports = select_current_probe_reports(history + budget.probe_reports[selected:], commit,
                     capabilities, allow_cache_relocation=_execution_repair(configured), reuse_unreferenced=install_only)
