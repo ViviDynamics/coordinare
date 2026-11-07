@@ -45,8 +45,16 @@ _PROPOSAL_FIELDS = ("runtime_endpoints", "criterion_checks", "requirements", "in
 
 
 def proposal_of(manifest: EnvironmentManifest) -> dict[str, Any]:
-    """The model-owned proposal fields of a manifest, as the authors and the admission rules see them."""
-    return dict(manifest.model_dump(mode="json", include=set(_PROPOSAL_FIELDS)))
+    """The model-owned proposal fields of a manifest, as the authors and the admission rules see them.
+
+    A manifest keeps its forwards under runtime.endpoints, where construction compiled the proposal's runtime_endpoints;
+    they are put back here. Dettmore e2e-65: a delta repair built from this base silently dropped the postgres forward,
+    and the next execution's carrier-side health probe found nothing listening.
+    """
+    data = manifest.model_dump(mode="json", include={*_PROPOSAL_FIELDS, "runtime"})
+    runtime = data.pop("runtime", None)
+    data["runtime_endpoints"] = list(runtime.get("endpoints") or []) if isinstance(runtime, dict) else []
+    return dict(data)
 
 
 def _record_dump(item: Any) -> dict[str, Any]:
