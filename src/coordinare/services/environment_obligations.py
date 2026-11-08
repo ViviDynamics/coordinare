@@ -16,6 +16,7 @@ from coordinare_service_inference.environment.models import (
     VerificationReport,
     content_key,
 )
+from coordinare_service_inference.environment.runner import stopped_at_limit
 from pydantic import ValidationError
 
 from coordinare.services.environment_attempt import REPAIR_LIMITS, EnvironmentDiscoveryError
@@ -56,7 +57,7 @@ def _executed_manifest(entry: Any, source_commit: str) -> EnvironmentManifest | 
             result.manifest_digest != digest or result.duration_seconds < 0
             for result in report.results
         )
-        or not any(result.required and result.status == "fail" for result in report.results)
+        or not any(result.required and (result.status == "fail" or stopped_at_limit(result)) for result in report.results)
     ):
         message = "execution history identity or results differ"
         raise ValueError(message)

@@ -24,6 +24,7 @@ from coordinare_service_inference.environment.models import (
     ExecutionCapabilities,
     VerificationReport,
 )
+from coordinare_service_inference.environment.runner import stopped_at_limit
 from coordinare_service_inference.environment.scope import (
     ScopeContract,
     ScopeDefinition,
@@ -803,10 +804,10 @@ def _activation_failure(result: CheckResult, manifest: EnvironmentManifest) -> b
 def _rejected_evidence(cache: EnvCacheState, data: dict[str, Any]) -> dict[str, Any]:
     # Checked before the allowlist below drops the marker: an incomplete run holds and is never repaired.
     if data.get('runtime_incomplete') or data.get('runtime_cleanup') is False:
-        _refuse('execution repair evidence is incomplete')
+        _refuse('execution repair evidence is incomplete', code='execution_evidence_incomplete')
     manifest = accepted_environment(cache)
     if manifest is None:
-        _refuse('execution repair requires independent acceptance')
+        _refuse('execution repair requires independent acceptance', code='execution_unaccepted')
     evidence_text = json.dumps({key: data[key] for key in ('platform', 'manifest_digest', 'execution_source_digest', 'scope', 'results',
                                                                     'runtime_digest', 'runtime_phase', 'runtime_artifacts', 'runtime_cleanup')
                                           if key in data})
@@ -814,21 +815,21 @@ def _rejected_evidence(cache: EnvCacheState, data: dict[str, Any]) -> dict[str, 
               else execution_report(evidence_text, cache, publish=False))
     target = ExecutionCapabilities.model_validate(cache.environment_capabilities)
     if report.platform != target.platform or (data.get('image_ref') is not None and data['image_ref'] != target.image_ref):
-        _refuse('execution repair evidence runtime identity differs')
-    if not any(result.required and result.status == 'fail' for result in report.results):
-        _refuse('execution repair requires an actual failed action')
+        _refuse('execution repair evidence runtime identity differs', code='execution_identity_differs')
+    if not any(result.required and (result.status == 'fail' or stopped_at_limit(result)) for result in report.results):
+        _refuse('execution repair requires an actual failed action', code='execution_no_failure')
     known = {command.id for command in [*manifest.install, *manifest.checks]}
     known.update(command.id for service in manifest.services
                  for command in (service.init, service.start, service.health, service.stop) if command is not None)
     if any((result.id not in known and not _activation_failure(result, manifest))
-           or result.status == 'indeterminate' for result in report.results):
-        _refuse('execution repair evidence is unknown or indeterminate')
+           or (result.status == 'indeterminate' and not stopped_at_limit(result)) for result in report.results):
+        _refuse('execution repair evidence is unknown or indeterminate', code='execution_evidence_indeterminate')
     original_digest = hashlib.sha256(report.model_dump_json().encode()).hexdigest()
     for result in report.results:
         result.output = redact_command_text(result.output)
     report = _bounded_report(report)
     if len(report.model_dump_json().encode()) > REPORT_MAX_BYTES:
-        _refuse('execution repair report exceeds its bound')
+        _refuse('execution repair report exceeds its bound', code='execution_report_too_large')
     return {'manifest_digest': manifest.digest(), 'manifest': manifest.model_dump(mode='json'),
             'assessment': cache.environment_assessment, 'report': report.model_dump(mode='json'),
             'original_report_digest': original_digest}
@@ -873,6 +874,7 @@ def record_execution_failure(cache: EnvCacheState, report: dict[str, Any], *, cl
         journal.status = 'held'
         journal.last_error = redact_state_value(
             exc.code if isinstance(exc, EnvironmentDiscoveryError) else 'invalid_execution_evidence')
+        journal.diagnostics = {**journal.diagnostics, 'hold_message': redact_state_value(str(exc)[:500])}
         _publish(cache, journal)
         return False
     else:

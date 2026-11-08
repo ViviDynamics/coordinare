@@ -397,6 +397,20 @@ async def _notify_service_stop(controls: tuple[int, int]) -> bool:
 # Commands stop before a private runtime's teardown allowance (see runtime_execution). Service stops still run after
 # that point, for residual-state cleanup, each within this window past the command deadline.
 SESSION_DEADLINE_NOT_RUN = 'session deadline reached before this command ran'
+# The runner's own last line on a command it stopped: at the command's timeout, or at the session deadline.
+COMMAND_TIMED_OUT = 'command timed out'
+COMMAND_CUT_SHORT = 'command cut short: session deadline reached'
+
+
+def stopped_at_limit(result: CheckResult) -> bool:
+    """A command this runner stopped at its timeout or at the session deadline.
+
+    Dettmore e2e-69: rspec-full timed out at 2,700 s and a mock was cut short by the session deadline, and the attempt
+    held without a repair. The author can lengthen, split or reorder such a command, so it is repair feedback. Any
+    other indeterminate result (unconfirmed cleanup, a pipe left open) is not.
+    """
+    return (result.status == 'indeterminate' and result.exit_code is None
+            and (result.output or '').rstrip().endswith((COMMAND_TIMED_OUT, COMMAND_CUT_SHORT)))
 TEARDOWN_STOP_SECONDS = 60.0
 
 
@@ -548,7 +562,7 @@ async def _execute(
             result.status = "pass" if process.returncode == 0 else "fail"
         except TimeoutError:
             result.status = "indeterminate"
-            tail.extend(b"\ncommand cut short: session deadline reached" if cut_short else b"\ncommand timed out")
+            tail.extend(("\n" + (COMMAND_CUT_SHORT if cut_short else COMMAND_TIMED_OUT)).encode())
     except (OSError, ValueError) as exc:
         result.status = "fail"
         tail.extend(str(exc).encode())
