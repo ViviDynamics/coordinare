@@ -613,7 +613,7 @@ nare now holds an answer that cites a file the run has not read, so a cited path
 
 The cost picture is unchanged in shape. The two GLM runs admitted cost 1.79 and 2.47 times the baseline authoring input, and 3.7 and 5.6 times the output. Authoring plus the first review cost 1.10 and 1.45 times the baseline input. Haiku (h1) was lower: 1.12 times for authoring and 0.87 with review, at 2.5 times the output. First review did not accept any manifest: revise, with 1, 1 and 10 findings. Reliability fell from 3 of 3 on main last round to 3 of 4 here. The failure was in repair, not in citations: c2 spent eight corrections removing or changing install and check obligations until its budget ran out.
 
-Not yet, because output is still 2.5 to 5.6 times baseline, eight corrections were not enough for one GLM run, and no first review accepted (baseline 0 of 33). The gateway spend this round, $4.39, is also far above nare's own cost estimate for the completed runs ($1.07), and that gap is not explained yet (see Spend).
+Not yet, because output is still 2.5 to 5.6 times baseline, eight corrections were not enough for one GLM run, and no first review accepted (baseline 0 of 33). Spend is the spike's own estimate, $1.07 for the completed runs (see Spend).
 
 ### Setup
 
@@ -683,11 +683,10 @@ Input per call was about 52,000 (c1c) and 65,000 (c3) tokens. The baseline's fir
 
 ### Cost note
 
-Output is still the larger gap. Most of it is whole-envelope rewriting on each correction, as in the earlier rounds. Spend this round is measured at the gateway, and the figures do not reconcile yet:
+Output is still the larger gap. Most of it is whole-envelope rewriting on each correction, as in the earlier rounds. The spike's spend figure is nare's own estimate. The gateway key was shared with concurrent benchmark runs, so its delta cannot be attributed to this spike:
 
-- **Gateway.** `x-litellm-key-spend` was $3.02 when the round started and $7.40 after the last run finished, a delta of $4.39. That includes the three partial runs and every review call.
-- **nare's estimate.** Summing `usage.cost` (nare's own, marked estimated) over the four completed records gives $1.07 (c1c $0.20, c2 $0.48, c3 $0.29, h1 $0.10). That leaves about $3.3 unexplained (the partial runs' estimates are not in that sum).
-- **Where the gap sits.** Between 00:38 and 01:08 the key total rose $2.31 while c1b was the only run going, and c1b's own estimates for that window are about $0.1. A one-token GLM call cost about $2.5e-6 at the gateway. So the extra spend is either other traffic on the same key or a lagging header. The key alone cannot settle which.
+- **Gateway key (not attributable).** `x-litellm-key-spend` was $3.02 when the round started and $7.40 after the last run finished, a delta of $4.39. The key was shared with the nare matrix and full-tier lane, which ran at the same time and reported $2.56 of spend, plus judge calls, so the delta includes other work.
+- **nare's estimate (the spike's figure).** Summing `usage.cost` (nare's own, marked estimated) over the four completed records gives $1.07 (c1c $0.20, c2 $0.48, c3 $0.29, h1 $0.10), plus reviews, which are included in those records. The partial runs' estimates are not in that sum.
 
 ### Quality
 
@@ -698,14 +697,13 @@ Output is still the larger gap. Most of it is whole-envelope rewriting on each c
 
 ### Recommendation
 
-**Not yet. The citation blocker is closed; the blockers are now repair reliability, output volume, and cost accounting.** Citation reads work as intended: nare holds each cited file until it is read, and no admitted manifest in this round cited an unread file. What stops adoption:
+**Not yet. The citation blocker is closed; the blockers are now repair reliability, output volume, and first review.** Citation reads work as intended: nare holds each cited file until it is read, and no admitted manifest in this round cited an unread file. What stops adoption:
 
 1. **Repair reliability.** One of four runs failed after eight corrections, and the GLM admitted run c3 needed eight. Haiku admitted in seven turns. Before adopting, either a higher correction budget is shown to converge, or repair moves to smaller patches than whole-envelope rewrites (caller-side work).
 2. **Output volume.** Authoring output is 2.5 to 5.6 times baseline, and most of it is re-emitted envelope.
 3. **First review.** None of three admitted manifests accepted outright, with 1, 1 and 10 findings.
-4. **Cost accounting.** Gateway spend ($4.39) is about four times nare's estimate ($1.07) and is not yet explained. No cost claim should be made until it is.
 
-What would change the answer: adding `GLOBAL_AUTHOR_INSTRUCTION` to the spike prompt, so the `scope_id_collision` corrections go; a repair path that does not re-emit the envelope; more admitted runs to show the spread; and a reconciled spend figure.
+What would change the answer: adding `GLOBAL_AUTHOR_INSTRUCTION` to the spike prompt, so the `scope_id_collision` corrections go; a repair path that does not re-emit the envelope; and more admitted runs to show the spread.
 
 ### New nare defects
 
