@@ -564,6 +564,11 @@ def validate_records(install: list[Command], checks: list[Command], services: li
 
 
 _TEMPLATE_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+# Variables bash itself sets and never exports: a ${NAME} for one is meant for the shell, but the runner expands it as a
+# template and refuses it (Dettmore e2e-70: nobody-${RANDOM}@example.invalid). HOSTNAME is left out: Docker exports it.
+SHELL_DEFINED = frozenset({"RANDOM", "SRANDOM", "SECONDS", "LINENO", "BASHPID", "PPID", "UID", "EUID", "GROUPS", "REPLY",
+                           "OPTARG", "OPTIND", "PIPESTATUS", "BASH_REMATCH", "BASH_SOURCE", "BASH_LINENO", "FUNCNAME",
+                           "EPOCHSECONDS", "EPOCHREALTIME", "HISTCMD", "BASH_COMMAND", "BASH_SUBSHELL"})
 _SHELL_ASSIGNMENT = re.compile(r"(?:(?<![A-Za-z0-9_$.{/-])([A-Za-z_][A-Za-z0-9_]*)=|\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b"
                                r"|\bread\s+(?:-[a-z]+\s+)*([A-Za-z_][A-Za-z0-9_]*))")
 
@@ -572,8 +577,8 @@ def validate_shell_locals(commands: Iterable[Command], declared: Iterable[str]) 
     """A ${NAME} for a variable the command itself assigns is a shell variable the runner would refuse as a template.
 
     The runner expands every ${NAME} from its environment before a command runs, and refuses names it lacks. Three
-    Regression runs lost an execution repair to ${HA} and ${GHV} assigned in the same command. Names a
-    command does not assign (such as runtime credentials) are never flagged here.
+    Regression runs lost an execution repair to ${HA} and ${GHV} assigned in the same command, and Dettmore e2e-70 one to
+    bash's own ${RANDOM}. Other names a command does not assign (such as runtime credentials) are never flagged here.
     """
     known = set(declared)
     for command in commands:
@@ -581,9 +586,14 @@ def validate_shell_locals(commands: Iterable[Command], declared: Iterable[str]) 
         # NAME=${NAME} passes a runtime value through to a child process; only other assignments make NAME local.
         assigned = {name for match in _SHELL_ASSIGNMENT.finditer(text) for name in match.groups()
                     if name and not text.startswith("${" + name + "}", match.end())}
-        if local := ({name for name in _TEMPLATE_REFERENCE.findall(text)} & assigned) - known - set(command.env):
+        references = set(_TEMPLATE_REFERENCE.findall(text)) - known - set(command.env)
+        if local := references & assigned:
             raise _graph_error('shell_local_template_reference',
                                'a variable the command assigns is referenced as a ${NAME} template', command.id, local)
+        if builtin := references & SHELL_DEFINED:
+            raise _graph_error('shell_local_template_reference',
+                               'a variable bash sets itself is referenced as a ${NAME} template, which the runner expands '
+                               'from its environment and refuses; write it as $NAME', command.id, builtin)
 
 
 def validate_execution_graph(install: list[Command], checks: list[Command], services: list[Service]) -> None:

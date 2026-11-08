@@ -40,3 +40,27 @@ def test_templates_the_runner_can_fill_are_never_flagged(script):
 
 def test_a_name_the_command_declares_in_its_own_env_is_never_flagged():
     validate_shell_locals([command('LEVEL=debug; run --level ${LEVEL}', LEVEL='info')], [])
+
+
+@pytest.mark.parametrize(('script', 'names'), [
+    # Dettmore e2e-70: the first execution refused the whole manifest over this one check.
+    ('bin/demo-magic-link nobody-${RANDOM}@example.invalid', ['RANDOM']),
+    ('echo took ${SECONDS}s; kill ${BASHPID}', ['BASHPID', 'SECONDS']),
+])
+def test_a_variable_bash_sets_itself_is_named_when_written_as_a_template(script, names):
+    with pytest.raises(PydanticCustomError) as caught:
+        validate_shell_locals([command(script)], [])
+    assert caught.value.type == 'shell_local_template_reference'
+    assert caught.value.context == {'command_id': 'install-gh', 'unavailable': names}
+
+
+@pytest.mark.parametrize('script', [
+    'bin/demo-magic-link nobody-$RANDOM@example.invalid',  # written without braces, so the shell expands it
+    'echo ${HOSTNAME}',  # Docker exports HOSTNAME, so the runner can fill it
+])
+def test_shell_variables_the_runner_leaves_alone_are_never_flagged(script):
+    validate_shell_locals([command(script)], [])
+
+
+def test_a_bash_variable_declared_by_activation_is_never_flagged():
+    validate_shell_locals([command('echo ${UID}')], ['UID'])
