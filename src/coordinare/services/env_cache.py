@@ -247,6 +247,14 @@ def sanitise_symphony_name(name: str) -> str:
     return f"{slug}-{suffix}"
 
 
+def _repair_pending(cache_state: EnvCacheState) -> bool:
+    """The attempt journal granted a repair for this commit: the failure continues the same attempt."""
+    if cache_state.environment_attempt is None:
+        return False
+    journal = journal_for(cache_state)
+    return journal.status == "repair_pending" and journal.source_commit == cache_state.bootstrap_commit_sha
+
+
 def bootstrap_hold_detail(cache_state: EnvCacheState) -> str:
     """088 (FR-010): human-readable reason a consumer dispatch is held.
 
@@ -3001,6 +3009,12 @@ class EnvCacheService:
         if not success and infra_failure:
             # 218 (review round 3): an infrastructure failure spends its own budget, not the verdict budget.
             self._record_infra_failure(symphony_name, cache_state, state, error)
+        elif not success and _repair_pending(cache_state):
+            # Dettmore e2e-70: each failed execution spent the breaker, so three tripped it while the attempt still
+            # had two repairs and two hours. A repair the journal granted continues one attempt, which the journal's
+            # repair count and deadline bound; the breaker is spent when the attempt ends held or out of repairs.
+            logger.info("env_cache.breaker_deferred_to_repair", symphony=symphony_name,
+                        execution_repairs=journal_for(cache_state).execution_repairs)
         elif not success:
             self._spend_breaker_attempt(symphony_name, cache_state, state)
 
