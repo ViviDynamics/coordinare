@@ -13,8 +13,12 @@ Dettmore e2e-57's authors were given the steps as a recipe and left out the reli
 3. A ``-dev`` package's ``lib<name>.so`` link that dangles because the runtime library was not fetched (the carrier
    already has it) is pointed at the carrier's own copy.
 4. Each unpacked pkg-config file's ``/usr`` paths are moved under ``--into``.
-5. ``--into``/system-packages.env sets the compiler, linker (with an rpath, never LD_LIBRARY_PATH) and pkg-config paths.
-   Source it in each command that builds against the packages.
+5. Each unpacked command-line program gets a launcher in ``--into``/bin that finds its unpacked libraries for that
+   process only (an unpacked executable has no rpath to them, and a relocated wrapper script such as Debian's
+   pg_wrapper cannot find its own modules, so the launcher runs the package's ELF binary of the same name).
+6. ``--into``/system-packages.env sets the compiler, linker (with an rpath, never LD_LIBRARY_PATH) and pkg-config paths,
+   and appends ``--into``/bin to PATH. Source it in each command that builds against the packages; put ``--into``/bin
+   on activation's PATH to use the programs.
 """
 from __future__ import annotations
 
@@ -118,6 +122,42 @@ def relocate_pkg_config(into: Path) -> list[str]:
     return changed
 
 
+def _is_elf(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def write_launchers(into: Path, library_dirs: Sequence[Path]) -> list[str]:
+    """A launcher in ``into``/bin for each unpacked ELF program, by name; the names written.
+
+    Dettmore e2e-68: postgresql-client's usr/bin/psql is pg_wrapper, a Perl script that cannot find its own module once
+    relocated, and the real usr/lib/postgresql/17/bin/psql could not load the unpacked libpq.so.5. A launcher sets
+    LD_LIBRARY_PATH for its own process only and runs the ELF program; nothing global ever sets it. A program in a
+    usr/bin or usr/sbin directory wins over one of the same name elsewhere.
+    """
+    found: dict[str, Path] = {}
+    for path in sorted(into.rglob("*"), key=lambda item: (item.parent.name not in {"bin", "sbin"},
+                                                          item.parent.parent.name != "usr", str(item))):
+        if (path.parent.name not in {"bin", "sbin"} or path.name in found or into / "bin" in path.parents
+                or not path.is_file() or not os.access(path, os.X_OK) or not _is_elf(path)):
+            continue
+        found[path.name] = path.resolve()
+    target = into / "bin"
+    target.mkdir(exist_ok=True)
+    libraries = ":".join(shlex.quote(str(directory)) for directory in library_dirs)
+    for name, program in sorted(found.items()):
+        launcher = target / name
+        launcher.write_text("#!/bin/sh\n# Written by coordinare_service_inference.environment.system_packages: runs the "
+                            "unpacked program with its unpacked libraries.\n"
+                            f'LD_LIBRARY_PATH="{libraries}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}" '
+                            f"exec {shlex.quote(str(program))} \"$@\"\n")
+        launcher.chmod(0o755)
+    return sorted(found)
+
+
 def environment_file(into: Path, triplet_name: str) -> str:
     """Shell exports pointing compilers, linkers and pkg-config at the unpacked packages, multiarch first."""
     usr = shlex.quote(str(into / "usr"))
@@ -132,8 +172,9 @@ def environment_file(into: Path, triplet_name: str) -> str:
         f'export LDFLAGS="-L{lib} -L{usr}/lib -Wl,-rpath,{lib} -Wl,-rpath,{usr}/lib${{LDFLAGS:+ $LDFLAGS}}"',
         f'export PKG_CONFIG_PATH="{lib}/pkgconfig:{usr}/lib/pkgconfig:{usr}/share/pkgconfig'
         '${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"',
-        # Last, so a tool the packages add (pg_config, for example) never shadows one the carrier has.
-        f'export PATH="$PATH:{usr}/bin"',
+        # Last, so a tool the packages add (pg_config, for example) never shadows one the carrier has; the launchers
+        # come before the raw unpacked programs, which may not run relocated.
+        f'export PATH="$PATH:{shlex.quote(str(into / "bin"))}:{usr}/bin"',
         "",
     ])
 
@@ -171,10 +212,11 @@ def fetch(packages: Sequence[str], into: Path, *, run: Callable[[Sequence[str]],
     library_dirs = [library_root / part for part in (f"usr/lib/{name}", f"lib/{name}", "usr/lib", "lib")]
     relinked, dangling = relink_dangling(into, library_dirs)
     relocated = relocate_pkg_config(into)
+    launchers = write_launchers(into, [into / part for part in (f"usr/lib/{name}", f"lib/{name}", "usr/lib", "lib")])
     env_path = into / ENV_FILE
     env_path.write_text(environment_file(into, name))
     return {"fetched": [deb.name for deb in debs], "relinked": relinked, "dangling": dangling,
-            "pkg_config_relocated": relocated, "environment_file": str(env_path)}
+            "pkg_config_relocated": relocated, "launchers": launchers, "environment_file": str(env_path)}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -194,6 +236,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     sys.stdout.write(f"unpacked {len(summary['fetched'])} packages into {args.into}\n")
     for item in summary["dangling"]:
         sys.stderr.write(f"warning: {item} points at a library neither fetched nor on the carrier\n")
+    if summary["launchers"]:
+        sys.stdout.write(f"programs ({', '.join(summary['launchers'][:20])}) run from {args.into / 'bin'}\n")
     sys.stdout.write(f"build with: . {shlex.quote(str(summary['environment_file']))}\n")
     return 0
 

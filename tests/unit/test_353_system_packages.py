@@ -134,3 +134,25 @@ def test_the_module_runs_as_a_command():
     shown = subprocess.run([sys.executable, '-m', 'coordinare_service_inference.environment.system_packages', '--help'],
                            capture_output=True, text=True, check=True).stdout
     assert '--into' in shown
+
+
+def test_each_unpacked_program_gets_a_launcher_that_finds_its_libraries_for_its_own_process(tmp_path):
+    # Dettmore e2e-68: usr/bin/psql was Debian's pg_wrapper (a Perl script that cannot run relocated) and the real
+    # usr/lib/postgresql/17/bin/psql could not load the unpacked libpq.so.5.
+    into = tmp_path / 'deps'
+    real = into / 'usr' / 'lib' / 'postgresql' / '17' / 'bin' / 'psql'
+    real.parent.mkdir(parents=True)
+    real.write_bytes(b'\x7fELF' + b'\0' * 60)
+    real.chmod(0o755)
+    wrapper = into / 'usr' / 'share' / 'postgresql-common' / 'pg_wrapper'
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text('#!/usr/bin/perl\n')
+    wrapper.chmod(0o755)
+    (into / 'usr' / 'bin').mkdir(parents=True)
+    (into / 'usr' / 'bin' / 'psql').symlink_to('../share/postgresql-common/pg_wrapper')
+    libraries = [into / 'usr' / 'lib' / TRIPLET]
+    assert packages.write_launchers(into, libraries) == ['psql']
+    launcher = (into / 'bin' / 'psql').read_text()
+    assert f'exec {real.resolve()} "$@"' in launcher and f'LD_LIBRARY_PATH="{libraries[0]}' in launcher
+    env = packages.environment_file(into, TRIPLET)
+    assert f':{into}/bin:{into}/usr/bin"' in env and 'LD_LIBRARY_PATH' not in env
