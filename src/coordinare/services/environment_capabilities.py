@@ -93,6 +93,20 @@ def platform_roles(capabilities: ExecutionCapabilities) -> dict[str, Any]:
             "emulated_platforms": list(foreign_platforms(daemon)) if runtime is not None else []}
 
 
+# Dettmore e2e-71: an init step used the database container before start created it, then a start of
+# `docker run -d` was reported passed once spawned while health's TCP probe answered before the container existed;
+# health's docker exec found no container, and teardown later found it. These are lifecycle facts, not recipes.
+SERVICE_START_GUIDANCE = (
+    "Each service's init runs before its start, so init cannot use anything the start creates. The start command "
+    "runs as a supervised background process and passes as soon as it is spawned; health runs immediately after. "
+    "So start should keep the service in the foreground for its whole life (for example docker run without -d, or "
+    "exec of the server binary), not a launcher that returns at once. Health must itself wait for readiness: poll, "
+    "within its own timeout, until the service answers through its own protocol (a client or readiness command "
+    "against it, or docker exec into its container once that container is running), never only until a TCP port "
+    "accepts, since a port can accept before the service exists or can serve. One-time setup that needs the running "
+    "service, such as creating databases or extensions, belongs in health after readiness is confirmed.")
+
+
 def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any] | None:
     """Describe the enforced private-runtime carrier boundary without inferring native transport policy."""
     if capabilities.runtime is None:
@@ -112,7 +126,7 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
                 "install passed: otherwise each service step is not_run, naming the failed installs. Startup readiness does not guarantee "
                 "continued daemon health; required checks and cleanup remain mandatory. Each service stop must remove every "
                 "Docker container, volume (including an image's anonymous volume: docker rm -f -v) and custom network "
-                "its service created; any left behind fails that stop. " + GUEST_PORT_GUIDANCE + " " + GUEST_IMAGE_GUIDANCE + " To stop a process, write its pid to a file under "
+                "its service created; any left behind fails that stop. " + SERVICE_START_GUIDANCE + " " + GUEST_PORT_GUIDANCE + " " + GUEST_IMAGE_GUIDANCE + " To stop a process, write its pid to a file under "
                 "{scratch} when it starts and kill that pid: pkill -f or pgrep -f inside a longer shell script "
                 "matches the script's own shell, whose command line contains the pattern. A ${NAME} reference "
                 "resolves only from activation variables, operator-supplied runtime variables, and local credentials "
