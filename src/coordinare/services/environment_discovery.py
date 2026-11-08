@@ -27,6 +27,7 @@ from coordinare_service_inference.environment.models import (
     ExecutionCapabilities,
     Requirement,
     ShardChecks,
+    validate_local_credentials,
     validate_records,
     validate_shell_locals,
 )
@@ -420,6 +421,28 @@ def _validate_phase_declaration(inspection: _Inspection, reply: dict[str, Any],
     validate(reply[final])
 
 
+def _settled_envelope(reply: dict[str, Any], envelope: str) -> dict[str, Any]:
+    """A complete declaration keeps no correction-tool residue, and its finding_responses sit beside it.
+
+    Dettmore e2e-71: after one correction round the repair author sent its complete manifest beside a leftover
+    "tool" key (null or "repair_proposal", never with changes) and with finding_responses nested inside the manifest.
+    The tool key routed the declaration into patch or navigation handling, and five corrections reported only
+    invalid_proposal_patch or unsupported_envelope until the schema budget held the attempt. Both placements are
+    unambiguous: a correction always carries changes, and a navigation tool never carries a declaration. When both
+    levels carry responses nothing moves and validation reports it as before (the scope revision envelope's rule).
+    Discovery declarations only: a review reply with a tool key stays invalid (test_353_required_preflight).
+    """
+    declaration = reply.get(envelope)
+    if not isinstance(declaration, dict):
+        return reply
+    if 'tool' in reply and 'changes' not in reply and reply['tool'] in (None, '', 'repair_proposal'):
+        reply = {key: value for key, value in reply.items() if key != 'tool'}
+    if 'finding_responses' in declaration and reply.get('finding_responses', []) == []:
+        declaration = dict(declaration)
+        reply = {**reply, 'finding_responses': declaration.pop('finding_responses'), envelope: declaration}
+    return reply
+
+
 def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
                  messages: list[dict[str, str]], *,
                  expected_envelope: str | None = None) -> dict[str, Any] | None:
@@ -428,6 +451,8 @@ def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
     reply = None
     try:
         reply = _normalize_review(_decode_reply(raw, inspection.name, inspection.limits), inspection.name)
+        if inspection.name == 'discovery':
+            reply = _settled_envelope(reply, envelope)
         if reply.get('tool') == 'repair_proposal':
             reply = apply_patch(base, reply, max_bytes=inspection.limits.max_output_bytes)
         if base is not None and 'probe' in base and set(reply) == {'probe'}:
@@ -1523,6 +1548,10 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
                             _unfolded(global_data, [part for _group, part in parts.values()], folded, copies))
             if plan is not None:
                 # A delta is not corrected across parts: the full repair re-derives the manifest from its failed base.
+                # Its codes are recorded first: Dettmore e2e-71 fell back on a credential rule nothing in the summary named.
+                budget.validation_codes.extend(
+                    str(error.get('code')) for error in (_validation_feedback(exc) if isinstance(exc, ValidationError)
+                                                         else [{'code': exc.code}]))
                 message = "delta repair could not be merged into a complete manifest"
                 raise EnvironmentDiscoveryError(message, code="repair_delta_rejected") from exc
             if (isinstance(exc, EnvironmentDiscoveryError) and not isinstance(exc, FindingValidationError)
@@ -1732,9 +1761,14 @@ def _global_rules(merge: Callable[[dict[str, Any]], Any] | None) -> Callable[[di
                              proposal.activation.env, runtime=merge.construction.capabilities.runtime is not None)
             validate_static_rules(proposal.install, proposal.activation, merge.construction.capabilities.platform,
                                   **_carrier_rules(proposal, merge.construction.capabilities, merge.budget))
-            validate_shell_locals([*proposal.install, *proposal.checks, *(command for service in proposal.services
-                                   for command in (service.init, service.start, service.health, service.stop) if command)],
+            service_commands = [command for service in proposal.services
+                                for command in (service.init, service.start, service.health, service.stop) if command]
+            validate_shell_locals([*proposal.install, *proposal.checks, *service_commands],
                                   [*proposal.activation.env, *(c.name for c in proposal.local_credentials)])
+            # Dettmore e2e-71: a delta's global author used a generated credential beside {cache}; the rule ran only
+            # at the merge, which discards a delta outright, so it is corrected here while the author can fix it.
+            validate_local_credentials(proposal.local_credentials, proposal.services, proposal.install,
+                                       proposal.activation, [*proposal.checks, *service_commands], complete=False)
         except PydanticCustomError as exc:
             raise ValidationError.from_exception_data('EnvironmentManifestProposal',
                                                       [{'type': exc, 'loc': (), 'input': None}]) from exc

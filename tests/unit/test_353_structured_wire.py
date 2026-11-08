@@ -130,7 +130,11 @@ def test_revision_rejects_full_scope_function_and_redacts_unknown_fields():
     from coordinare_service_inference.environment.scope_revision import ScopeRevisionEnvelope
     from pydantic import ValidationError
 
-    from coordinare.services.environment_admission import UNKNOWN_KEY_GUIDANCE, _validation_feedback
+    from coordinare.services.environment_admission import (
+        ALLOWED_KEYS_GUIDANCE,
+        UNKNOWN_KEY_GUIDANCE,
+        _validation_feedback,
+    )
     from coordinare.services.environment_discovery_prompts import correction_instruction
     from coordinare.services.environment_function_wire import decode_function
 
@@ -142,7 +146,9 @@ def test_revision_rejects_full_scope_function_and_redacts_unknown_fields():
         ScopeRevisionEnvelope.model_validate({'scope_revision': {'base_digest': 'a'*64, 'add': [],
             'reassess': [], 'private-value': 'private-source'}, 'finding_responses': []})
     errors = _validation_feedback(failure.value)
-    assert errors == [{'location': ['scope_revision', '*'], 'code': 'extra_forbidden', 'guidance': UNKNOWN_KEY_GUIDANCE}]
+    assert errors == [{'location': ['scope_revision', '*'], 'code': 'extra_forbidden',
+                       'guidance': UNKNOWN_KEY_GUIDANCE + ALLOWED_KEYS_GUIDANCE,
+                       'allowed_keys': ['add', 'base_digest', 'reassess']}]
     assert 'private' not in json.dumps(errors)
     instruction = correction_instruction('scope_revision')
     assert 'base_digest' in instruction and 'scope_revision' in instruction

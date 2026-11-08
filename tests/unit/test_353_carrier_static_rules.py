@@ -386,7 +386,8 @@ def test_an_unknown_key_gets_removal_guidance_without_being_named():
             'decisions_review_note': 'private note'}})
     feedback = [item for item in _validation_feedback(caught.value) if item['code'] == 'extra_forbidden']
     assert feedback and feedback[0]['location'][-1] == '*'
-    assert feedback[0]['guidance'] == UNKNOWN_KEY_GUIDANCE
+    assert feedback[0]['guidance'].startswith(UNKNOWN_KEY_GUIDANCE)
+    assert 'decisions' in feedback[0]['allowed_keys']  # the schema's own keys, never the reply's
     assert 'decisions_review_note' not in str(feedback) and 'private note' not in str(feedback)
 
 

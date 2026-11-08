@@ -40,7 +40,7 @@ from .runtime import (
 from .scope import ScopeContract, validate_scope_mapping
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
 EXECUTION_PATH_PATTERN = r"^(?:/|\{(?:cache|repo|scratch)\}|\$\{[A-Za-z_][A-Za-z0-9_]*\})(?:[^\x00-\x1f\x7f\\]*)$"
@@ -334,38 +334,8 @@ class EnvironmentManifest(StrictModel):
         return self
 
     def _validate_local_credentials(self, commands: list[Command]) -> None:
-        names = [credential.name for credential in self.local_credentials]
-        service_ids = {service.id for service in self.services}
-        # Each rule names the credentials and the command it rejects (v34's author, told neither, repeated both).
-        invalid = {name for name, count in Counter(names).items() if count > 1}
-        invalid |= {c.name for c in self.local_credentials if c.service not in service_ids}
-        if invalid:
-            raise _graph_error("local_credential_invalid",
-                               "local credentials need unique names and a service this manifest starts", "", invalid)
-        if not names:
-            return
-        # Activation also applies to install commands, so it cannot carry generated credentials either.
-        for command in self.install:
-            if leaked := set(names) & _references(command):
-                raise _graph_error("local_credential_in_install",
-                                   "install commands and activation cannot use generated credentials", command.id, leaked)
-        if leaked := set(names) & {name for text in self.activation.env.values() for name in _CREDENTIAL_REFERENCE.findall(text)}:
-            raise _graph_error("local_credential_in_install",
-                               "install commands and activation cannot use generated credentials", "activation", leaked)
-        consumers = commands[len(self.install):]
-        used = {name for command in consumers for name in _references(command)}
-        # Data that stores a per-run value lives in {scratch}; {cache} reaches tools only through activation PATH.
-        # A lexical guard: it also follows activation variables that point into {cache}, but not scripts' own writes.
-        cached = [key for key, value in self.activation.env.items() if key != "PATH" and "{cache}" in value]
-        for command in consumers:
-            texts = [*command.argv, command.cwd, *(value for key, value in command.env.items() if key != "PATH")]
-            via_activation = any(re.search(r"\$(?:\{" + re.escape(key) + r"\}|" + re.escape(key) + r"(?![A-Za-z0-9_]))", text)
-                                 for key in cached for text in texts)
-            if (referenced := set(names) & _references(command)) and (via_activation or any("{cache}" in text for text in texts)):
-                raise _graph_error("local_credential_cache_data",
-                                   "commands using generated credentials cannot reference {cache}", command.id, referenced)
-        if unused := set(names) - used:
-            raise _graph_error("local_credential_unused", "every local credential must be referenced as ${NAME}", "", unused)
+        validate_local_credentials(self.local_credentials, self.services, self.install, self.activation,
+                                   commands[len(self.install):])
 
     def digest(self) -> str:
         return hashlib.sha256(self.canonical_json().encode()).hexdigest()
@@ -462,6 +432,49 @@ class VerificationReport(StrictModel):
 
 GRAPH_IDS = 8
 MAX_COMMANDS = 4096
+
+
+def validate_local_credentials(local_credentials: Sequence[LocalCredential], services: Sequence[Service],
+                               install: Sequence[Command], activation: Activation, consumers: Sequence[Command], *,
+                               complete: bool = True) -> None:
+    """Generated credentials: unique, owned by a started service, kept out of install, activation and {cache} data.
+
+    Dettmore e2e-71: a repair's global author wrote a postgres health command that used DB_PASSWORD beside a
+    {cache} path. Only the complete manifest applied these rules, so the author was never corrected in its own phase
+    and the delta was discarded at the merge. A part (complete=False) applies every rule its own records can break;
+    whether each credential is used somewhere is judged on the complete manifest, where the checks are present.
+    """
+    names = [credential.name for credential in local_credentials]
+    service_ids = {service.id for service in services}
+    # Each rule names the credentials and the command it rejects (v34's author, told neither, repeated both).
+    invalid = {name for name, count in Counter(names).items() if count > 1}
+    invalid |= {c.name for c in local_credentials if c.service not in service_ids}
+    if invalid:
+        raise _graph_error("local_credential_invalid",
+                           "local credentials need unique names and a service this manifest starts", "", invalid)
+    if not names:
+        return
+    # Activation also applies to install commands, so it cannot carry generated credentials either.
+    for command in install:
+        if leaked := set(names) & _references(command):
+            raise _graph_error("local_credential_in_install",
+                               "install commands and activation cannot use generated credentials", command.id, leaked)
+    if leaked := set(names) & {name for text in activation.env.values() for name in _CREDENTIAL_REFERENCE.findall(text)}:
+        raise _graph_error("local_credential_in_install",
+                           "install commands and activation cannot use generated credentials", "activation", leaked)
+    used = {name for command in consumers for name in _references(command)}
+    # Data that stores a per-run value lives in {scratch}; {cache} reaches tools only through activation PATH.
+    # A lexical guard: it also follows activation variables that point into {cache}, but not scripts' own writes.
+    cached = [key for key, value in activation.env.items() if key != "PATH" and "{cache}" in value]
+    for command in consumers:
+        texts = [*command.argv, command.cwd, *(value for key, value in command.env.items() if key != "PATH")]
+        via_activation = any(re.search(r"\$(?:\{" + re.escape(key) + r"\}|" + re.escape(key) + r"(?![A-Za-z0-9_]))", text)
+                             for key in cached for text in texts)
+        if (referenced := set(names) & _references(command)) and (via_activation or any("{cache}" in text for text in texts)):
+            raise _graph_error("local_credential_cache_data",
+                               "commands using generated credentials cannot reference {cache}", command.id, referenced)
+    if complete and (unused := set(names) - used):
+        raise _graph_error("local_credential_unused", "every local credential must be referenced as ${NAME}", "", unused)
 
 
 def _graph_error(code: str, message: str, command_id: str, unavailable: set[str]) -> PydanticCustomError:

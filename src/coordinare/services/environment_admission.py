@@ -4,10 +4,11 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_args
 
 from coordinare_service_inference.environment.models import MAX_DUPLICATE_PAIRS
 from coordinare_service_inference.environment.scope_revision import MAX_SCOPE_REVISION_CHANGES
+from pydantic import BaseModel
 
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 from coordinare.services.environment_discovery_prompts import correction_instruction
@@ -74,6 +75,13 @@ UNKNOWN_KEY_GUIDANCE = (
     'The key shown as * at this location is not defined by the response schema. Remove it rather than renaming it: '
     'send only the keys the schema defines, with no notes, counts, placeholders or extra copies of a section beside '
     'them. Put any explanation in the rationale field, and send each section once under its schema key.')
+# Dettmore e2e-71: told only "*", the author guessed services_note, set it to null with a correction record (a null
+# value is still the key), then rewrote the whole envelope and lost it. The schema's own keys at that location are
+# daemon text, so they are listed; a correction record replaces values and cannot delete a key.
+ALLOWED_KEYS_GUIDANCE = (
+    ' allowed_keys lists every key the schema defines at this location; any other key there is the one to remove. '
+    'A correction record cannot delete a key (a null value still sends it): return the complete declaration in the '
+    'expected envelope without the extra key.')
 SOURCE_DISPOSITION_GUIDANCE = (
     'Each source review decision needs exactly one disposition: covered, source_correction, source_gap or duplicate, '
     'with that disposition\'s required fields. Do not supply a status field; the daemon derives it. '
@@ -282,6 +290,46 @@ def _id_pairs(error: Mapping[str, Any]) -> list[list[str]]:
             and all(isinstance(value, str) and GRAPH_ID.fullmatch(value) for value in pair)][:MAX_DUPLICATE_PAIRS]
 
 
+def _model_named(title: str) -> type[BaseModel] | None:
+    """The one loaded model class with this name; an ambiguous or unknown name resolves to none."""
+    found: list[type[BaseModel]] = []
+    pending: list[type[BaseModel]] = [BaseModel]
+    seen: set[type[BaseModel]] = set()
+    while pending:
+        for child in pending.pop().__subclasses__():
+            if child not in seen:
+                seen.add(child)
+                pending.append(child)
+                if child.__name__ == title:
+                    found.append(child)
+    return found[0] if len(found) == 1 else None
+
+
+def _single_model(annotation: Any) -> type[BaseModel] | None:
+    """The one model class an annotation holds through Optional, list, dict or Annotated; unions of models give none."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    models = {model for argument in get_args(annotation) if (model := _single_model(argument)) is not None}
+    return models.pop() if len(models) == 1 else None
+
+
+def _allowed_keys(title: str, loc: tuple[Any, ...]) -> list[str]:
+    """The schema's keys at the object an extra key was found in, read from the daemon's own models, never the reply."""
+    model = _model_named(title)
+    for part in loc:
+        if model is None:
+            return []
+        if type(part) is int:
+            continue
+        field = next((info for name, info in model.model_fields.items() if part in {name, info.alias}), None)
+        if field is None:
+            return []
+        model = _single_model(field.annotation)
+    if model is None:
+        return []
+    return sorted(info.alias or name for name, info in model.model_fields.items())
+
+
 def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
     """Do not expose arbitrary keys, candidate values, validator context or prose."""
     allowed_fields = {"requirements", "checks", "install", "services", "activation", "id", "source", "description",
@@ -331,6 +379,8 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
         unknown_key = code == "extra_forbidden" and location[-1:] == ["*"] and "guidance" not in detail
         if code == "global_part_invalid" or unknown_key:
             detail["guidance"] = GLOBAL_PART_GUIDANCE if code == "global_part_invalid" else UNKNOWN_KEY_GUIDANCE
+        if unknown_key and (allowed := _allowed_keys(exc.title, error["loc"][:-1])):
+            detail.update(allowed_keys=allowed, guidance=UNKNOWN_KEY_GUIDANCE + ALLOWED_KEYS_GUIDANCE)
         if code == "scope_id_collision":
             detail.update(_graph_ids(error), guidance=SCOPE_ID_COLLISION_GUIDANCE)
         detail.update(_schema_bounds(code, error, guided="guidance" in detail))
