@@ -3,6 +3,12 @@
 A new attempt (after an operator restart) may start from the scope contract an earlier attempt had accepted,
 instead of authoring it again. The reused definition is never accepted as it stands: the new attempt begins
 at a fresh independent review of it (throughput amendment, section 5).
+
+That review re-reads only what changed. Dettmore e2e-71 reused e2e-39's contract on the same commit, inventory and
+shard plan, with all 594 reviewer input digests identical, and still ran 41 shard reviews and 25 merge reviews
+(3 h 17 min) because reuse dropped the earlier reviewer's reads. The earlier reads now travel with the seed, so a
+shard is reviewed again only when its criteria or one of its inputs changed, exactly as within one attempt. The
+merge review still runs on every reuse, so each attempt keeps one fresh independent acceptance.
 """
 from __future__ import annotations
 
@@ -20,8 +26,8 @@ if TYPE_CHECKING:
 
 SCOPE_AUTHOR_PROTOCOL = 4
 SCOPE_POLICY_VERSION = '353-scope-v1'
-# Shard progress that belongs to authoring; review progress is dropped so the review is fresh.
-REVIEW_PROGRESS = frozenset({'reviewed_criteria'})
+# The earlier acceptance's reader digests, kept with the shard progress; each stands only for the digest it read.
+REUSED_REVIEWER_INPUTS = 'reused_reviewer_inputs'
 
 
 def inventory_digest(paths: Sequence[str]) -> str:
@@ -45,7 +51,7 @@ def reusable_scope(archive: Sequence[Any], commit: str) -> dict[str, Any] | None
         if (record is None or record.assessment.verdict != 'accept' or record.scope_digest != contract.definition.digest()
                 or contract.definition.source_commit != commit):
             continue
-        shards = {key: value for key, value in (data.get('scope_shards') or {}).items() if key not in REVIEW_PROGRESS}
+        shards = {**(data.get('scope_shards') or {}), REUSED_REVIEWER_INPUTS: dict(record.reviewer_inputs)}
         inputs = data.get('scope_inputs')
         return {'definition': contract.definition.model_dump(mode='json'),
                 'inputs': dict(inputs) if isinstance(inputs, dict) else {},

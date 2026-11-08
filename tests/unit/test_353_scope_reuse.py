@@ -27,13 +27,15 @@ async def accepted_journal() -> dict:
 async def test_a_reused_scope_skips_authoring_but_is_reviewed_afresh():
     journal = await accepted_journal()
     seed = reusable_scope([journal], COMMIT)
-    assert seed is not None and 'reviewed_criteria' not in (seed['shards'] or {})
+    accepted = journal['scope_contract']['source_assessment']['reviewer_inputs']
+    assert seed is not None and seed['shards']['reused_reviewer_inputs'] == accepted
     router, budget = Router(), fresh_budget()
     budget.scope_reuse = seed
     contract = await run(router, budget=budget)
-    roles = {role for role, _messages in router.conversations}
+    roles = [role for role, _messages in router.conversations]
     assert 'author' not in roles and 'triage' not in roles
-    assert router.reviews >= 1
+    # Dettmore e2e-71: identical inputs carry their earlier reads; only the merge review runs afresh.
+    assert roles.count('merge') == 1 and 'review' not in roles
     assert contract.definition.model_dump(mode='json') == seed['definition']
     assert budget.scope_reused_from == seed['from'] and budget.summary()['scope_reused_from'] == seed['from']
     assert budget.scope_reuse is None
@@ -105,3 +107,17 @@ async def test_a_scope_written_under_another_policy_is_not_offered():
     journal = await accepted_journal()
     assert reusable_scope([{**journal, 'scope_policy_version': '353-scope-v0'}], COMMIT) is None
     assert reusable_scope([{**journal, 'scope_policy_version': '353-scope-v1'}], COMMIT) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_reused_scope_rereads_only_the_shard_whose_input_changed():
+    seed = reusable_scope([await accepted_journal()], COMMIT)
+    reads = seed['shards']['reused_reviewer_inputs']
+    changed = next(path for path in sorted(reads) if '/' in path)  # owned by a shard, not the spine
+    seed['shards']['reused_reviewer_inputs'] = {**reads, changed: '0' * 64}
+    router, budget = Router(), fresh_budget()
+    budget.scope_reuse = seed
+    await run(router, budget=budget)
+    reviewed = [json.loads(messages[1]['content']) for role, messages in router.conversations if role == 'review']
+    assert len(reviewed) == 1
+    assert changed in json.dumps(reviewed[0])

@@ -96,7 +96,7 @@ from coordinare.services.environment_scope_reopening import (
     current_source_conflicts,
     source_conflict_reopenings,
 )
-from coordinare.services.environment_scope_reuse import adopt_reused_scope
+from coordinare.services.environment_scope_reuse import REUSED_REVIEWER_INPUTS, adopt_reused_scope
 from coordinare.services.environment_shard_triage import (
     LISTING_OVERHEAD,
     TRIAGE_INSTRUCTIONS,
@@ -939,8 +939,11 @@ class ShardedScope:
             _fail('scope_source_identity')
         await self.load_spine()
         owned = self._owned(definition, ledger)
-        # Earlier independent reads stand for unchanged shards: the pinned bytes are identical.
-        previous = budget.scope_assessment.reviewer_inputs if budget.scope_assessment is not None else {}
+        # Earlier independent reads stand for unchanged shards: the pinned bytes are identical. A reused contract
+        # brings its accepting reviewer's reads (environment_scope_reuse); a read stands only for the digest it saw,
+        # and shard ids carry a hash of their paths, so progress from another shard plan matches no shard here.
+        previous = (budget.scope_assessment.reviewer_inputs if budget.scope_assessment is not None
+                    else dict((budget.scope_shards or {}).get(REUSED_REVIEWER_INPUTS) or {}))
         targets = self._review_targets(definition, owned, previous)
         # Inputs no authored shard owns (files read through references) get their own reviewers, never one merge reviewer.
         inputs = {**definition.inputs, **budget.scope_inputs}

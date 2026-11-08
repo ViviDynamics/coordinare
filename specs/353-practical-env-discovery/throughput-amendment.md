@@ -92,6 +92,14 @@ Output tokens dominate the cost, then uncached prefill, then corrections and rew
 before construction starts. That review costs about 1 to 10 calls, against about 80 to rebuild the scope, and it
 keeps an independent acceptance inside every attempt.
 
+**Sharded follow-up (Dettmore e2e-71, 2026-11-08):** with sharded review the "fresh review" became 41 shard reviews
+and 25 merge reviews (3 h 17 min) on the same commit, inventory and shard plan, with all 594 reviewer input digests
+identical, because reuse dropped the earlier reviewer's reads. A reused contract now carries its accepting
+reviewer's input digests and per-shard review progress, used only under the same shard plan. A shard is reviewed
+again when its criteria or any of its inputs changed, exactly as inside one attempt; the merge review still runs
+on every reuse, so each attempt keeps one fresh independent acceptance. This narrows the ruling above for
+unchanged shards and is pending maintainer confirmation.
+
 ## Order of delivery
 
 1, then 2 and 4, then 3, then 5. Each step ships with tests and gets one independent review, then preflight and
