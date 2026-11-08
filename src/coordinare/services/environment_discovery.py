@@ -421,7 +421,7 @@ def _validate_phase_declaration(inspection: _Inspection, reply: dict[str, Any],
     validate(reply[final])
 
 
-def _settled_envelope(reply: dict[str, Any], envelope: str) -> dict[str, Any]:
+def _settled_envelope(reply: dict[str, Any], envelope: str, *, discovery: bool) -> dict[str, Any]:
     """A complete declaration keeps no correction-tool residue, and its finding_responses sit beside it.
 
     Dettmore e2e-71: after one correction round the repair author sent its complete manifest beside a leftover
@@ -433,7 +433,7 @@ def _settled_envelope(reply: dict[str, Any], envelope: str) -> dict[str, Any]:
     Discovery declarations only: a review reply with a tool key stays invalid (test_353_required_preflight).
     """
     declaration = reply.get(envelope)
-    if not isinstance(declaration, dict):
+    if not discovery or not isinstance(declaration, dict):
         return reply
     if 'tool' in reply and 'changes' not in reply and reply['tool'] in (None, '', 'repair_proposal'):
         reply = {key: value for key, value in reply.items() if key != 'tool'}
@@ -451,8 +451,7 @@ def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
     reply = None
     try:
         reply = _normalize_review(_decode_reply(raw, inspection.name, inspection.limits), inspection.name)
-        if inspection.name == 'discovery':
-            reply = _settled_envelope(reply, envelope)
+        reply = _settled_envelope(reply, envelope, discovery=inspection.name == 'discovery')
         if reply.get('tool') == 'repair_proposal':
             reply = apply_patch(base, reply, max_bytes=inspection.limits.max_output_bytes)
         if base is not None and 'probe' in base and set(reply) == {'probe'}:
@@ -1321,6 +1320,16 @@ def _delta_plan(discovery: _Inspection, budget: AttemptBudget, prior_manifests: 
     return delta
 
 
+def _delta_merge_rejected(budget: AttemptBudget, exc: Exception) -> EnvironmentDiscoveryError:
+    """The delta's merge failure, with its codes recorded first: Dettmore e2e-71 fell back on a credential rule
+    nothing in the attempt summary named."""
+    errors = (_validation_feedback(exc) if isinstance(exc, ValidationError)
+              else [{'code': getattr(exc, 'code', type(exc).__name__)}])
+    budget.validation_codes.extend(str(error.get('code')) for error in errors)
+    message = "delta repair could not be merged into a complete manifest"
+    return EnvironmentDiscoveryError(message, code="repair_delta_rejected")
+
+
 async def _author_candidate(attempt: _Attempt, divided_build: DividedConstruction | None,
                             validate: Callable[[dict[str, Any]], Any]) -> dict[str, Any]:
     if divided_build is None and attempt.delta is None:
@@ -1548,12 +1557,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
                             _unfolded(global_data, [part for _group, part in parts.values()], folded, copies))
             if plan is not None:
                 # A delta is not corrected across parts: the full repair re-derives the manifest from its failed base.
-                # Its codes are recorded first: Dettmore e2e-71 fell back on a credential rule nothing in the summary named.
-                budget.validation_codes.extend(
-                    str(error.get('code')) for error in (_validation_feedback(exc) if isinstance(exc, ValidationError)
-                                                         else [{'code': exc.code}]))
-                message = "delta repair could not be merged into a complete manifest"
-                raise EnvironmentDiscoveryError(message, code="repair_delta_rejected") from exc
+                raise _delta_merge_rejected(budget, exc) from exc
             if (isinstance(exc, EnvironmentDiscoveryError) and not isinstance(exc, FindingValidationError)
                     and exc.code not in MERGE_CORRECTABLE):
                 raise

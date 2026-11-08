@@ -53,20 +53,22 @@ def test_an_unknown_nested_key_lists_that_records_keys():
 @pytest.mark.parametrize('tool', [None, '', 'repair_proposal'])
 def test_a_complete_declaration_drops_a_leftover_tool_key_and_hoists_responses(tool):
     reply = {'manifest': {'install': [], 'finding_responses': [{'finding_id': 'F1'}]}, 'tool': tool}
-    settled = _settled_envelope(reply, 'manifest')
+    settled = _settled_envelope(reply, 'manifest', discovery=True)
     assert settled == {'manifest': {'install': []}, 'finding_responses': [{'finding_id': 'F1'}]}
     assert reply['manifest']['finding_responses'] == [{'finding_id': 'F1'}]  # the reply itself is not mutated
 
 
 def test_a_real_correction_or_navigation_is_left_alone():
     patch = {'tool': 'repair_proposal', 'changes': [{'path': ['manifest'], 'value_json': '{}'}]}
-    assert _settled_envelope(patch, 'manifest') == patch
+    assert _settled_envelope(patch, 'manifest', discovery=True) == patch
     read = {'tool': 'read_file', 'path': 'README.md'}
-    assert _settled_envelope(read, 'manifest') == read
+    assert _settled_envelope(read, 'manifest', discovery=True) == read
     named = {'manifest': {}, 'tool': 'read_file'}
-    assert _settled_envelope(named, 'manifest') == named
+    assert _settled_envelope(named, 'manifest', discovery=True) == named
     both = {'manifest': {'finding_responses': [1]}, 'finding_responses': [2]}
-    assert _settled_envelope(both, 'manifest') == both
+    assert _settled_envelope(both, 'manifest', discovery=True) == both
+    review = {'assessment': {}, 'tool': None}
+    assert _settled_envelope(review, 'assessment', discovery=False) == review
 
 
 def test_a_part_is_held_to_the_credential_rules_its_records_can_break():

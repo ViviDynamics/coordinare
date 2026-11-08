@@ -208,6 +208,7 @@ GRAPH_GUIDANCE = {
                                   'created or populated by any install command. Have an install command create that '
                                   'path or a directory it lives in, or remove the entry.'),
 }
+GLOBAL_PART_GUIDANCE_DETAIL = {'guidance': GLOBAL_PART_GUIDANCE}
 
 
 def nested_responses_guidance(key: str | None) -> str:
@@ -330,6 +331,13 @@ def _allowed_keys(title: str, loc: tuple[Any, ...]) -> list[str]:
     return sorted(info.alias or name for name, info in model.model_fields.items())
 
 
+def _unknown_key_detail(title: str, parent: tuple[Any, ...]) -> dict[str, Any]:
+    """Removal guidance for an unknown key, with the schema's own keys at its location when they are known."""
+    if allowed := _allowed_keys(title, parent):
+        return {'allowed_keys': allowed, 'guidance': UNKNOWN_KEY_GUIDANCE + ALLOWED_KEYS_GUIDANCE}
+    return {'guidance': UNKNOWN_KEY_GUIDANCE}
+
+
 def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
     """Do not expose arbitrary keys, candidate values, validator context or prose."""
     allowed_fields = {"requirements", "checks", "install", "services", "activation", "id", "source", "description",
@@ -378,9 +386,8 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             detail["guidance"] = SOURCE_DISPOSITION_GUIDANCE
         unknown_key = code == "extra_forbidden" and location[-1:] == ["*"] and "guidance" not in detail
         if code == "global_part_invalid" or unknown_key:
-            detail["guidance"] = GLOBAL_PART_GUIDANCE if code == "global_part_invalid" else UNKNOWN_KEY_GUIDANCE
-        if unknown_key and (allowed := _allowed_keys(exc.title, error["loc"][:-1])):
-            detail.update(allowed_keys=allowed, guidance=UNKNOWN_KEY_GUIDANCE + ALLOWED_KEYS_GUIDANCE)
+            detail.update(GLOBAL_PART_GUIDANCE_DETAIL if code == "global_part_invalid"
+                          else _unknown_key_detail(exc.title, error["loc"][:-1]))
         if code == "scope_id_collision":
             detail.update(_graph_ids(error), guidance=SCOPE_ID_COLLISION_GUIDANCE)
         detail.update(_schema_bounds(code, error, guided="guidance" in detail))
