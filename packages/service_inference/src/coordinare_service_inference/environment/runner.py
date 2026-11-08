@@ -737,7 +737,10 @@ async def _commands(
         ]
         if not ready:
             raise ValueError("unresolvable command ordering")
-        for command in ready:
+        # One at a time, the first in list order whose prerequisites are done: the author's list order is the order.
+        # Dettmore e2e-70: install-npm, listed after install-gems with no depends_on, ran in a first wave of commands
+        # without prerequisites, before Ruby existed, and its asset build failed with "bundle: not found".
+        for command in ready[:1]:
             if scope and command.scope and scope not in command.scope:
                 results[command.id] = CheckResult(
                     id=command.id,
