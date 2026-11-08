@@ -26,7 +26,8 @@ checkout of that commit (see specs/376-nare-discovery-spike/research.md).
 Two authoring modes. ``run`` drives the nare CLI and sends each correction back by ``--resume``
 (the 0501d80 runs in research.md). ``inloop`` (nare 2026.11.26 and later) uses nare's Python API with
 coordinare's validator as its ``check``, so corrections stay in one nare session, with
-``--max-corrections`` and ``--require-reads``. Both modes judge the admitted manifest the same way.
+``--max-corrections``, ``--require-reads`` and nare's ``require_cited_reads`` (the path citations
+in ``CITED_READ_POINTERS``, nare 2026.11.64 and later). Both modes judge the admitted manifest the same way.
 
 Keys are read from the environment only (``OPENAI_API_KEY``) and never logged.
 """
@@ -191,6 +192,13 @@ def cross_check(nare_reads: dict[str, dict[str, Any]], coordinare_digests: dict[
                                 if not nare_reads[p]["whole_file"]),
         "complete": not mismatched and not unreadable and cited <= set(matched),
     }
+
+
+# JSON pointers (nare's --require-cited-reads) into coordinare's manifest envelope, one per path-citation
+# field: the file each requirement cites, and the files each finding response cites. These are the fields
+# cited_paths() reads. Command.cwd and Activation.path name directories and PATH entries, not files the
+# answer cites for reading, so they are not held.
+CITED_READ_POINTERS = ("/manifest/requirements/*/source", "/finding_responses/*/sources/*")
 
 
 def cited_paths(envelope: dict[str, Any]) -> set[str]:
@@ -704,10 +712,12 @@ async def inloop(args: argparse.Namespace) -> dict[str, Any]:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             pool.submit(lambda: asyncio.run(fetch_all())).result()
 
-    def check(answer: Any) -> list[dict[str, Any]]:
+    def check(answer: Any, reads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # nare passes the run's read records as a second positional parameter (nare 2026.11.64+), so
+        # the check needs no look at the session's evidence.
         envelope = answer if isinstance(answer, dict) else {}
         try:
-            ingest(sorted(read_records(session.evidence)))
+            ingest(sorted(r["path"] for r in reads))
             discovery.finding_responses = [FindingResponse.model_validate(r)
                                            for r in envelope.get("finding_responses", [])]
             manifest = validator(envelope["manifest"])
@@ -718,8 +728,7 @@ async def inloop(args: argparse.Namespace) -> dict[str, Any]:
                        "guidance": instruction}]
         else:
             admitted.update(envelope=envelope, manifest=manifest, input=session.usage.input,
-                            output=session.usage.output, turns=session.turns,
-                            reads=len(read_records(session.evidence)))
+                            output=session.usage.output, turns=session.turns, reads=len(reads))
             attempts.append({"check": len(attempts) + 1, "admitted": True, "codes": [],
                              "input": session.usage.input, "output": session.usage.output, "turns": session.turns})
             return []
@@ -748,7 +757,8 @@ async def inloop(args: argparse.Namespace) -> dict[str, Any]:
                     context_window=args.context_window,
                     retry=RetryPolicy(retries=retries, seconds=retry_seconds),
                     max_corrections=args.max_corrections, max_cutoffs=max_cutoffs,
-                    require_reads=args.require_reads, check=check):
+                    require_reads=args.require_reads, require_cited_reads=list(CITED_READ_POINTERS),
+                    check=check):
                 events_file.write(json.dumps(event.wire(), ensure_ascii=False) + "\n")
     except Exception as exc:  # recorded: a run that dies in nare is a result, not a crash of the spike
         error = f"{type(exc).__name__}: {exc}"
@@ -759,22 +769,30 @@ async def inloop(args: argparse.Namespace) -> dict[str, Any]:
     seconds = round(time.monotonic() - started, 1)
     reads = read_records(session.evidence)
     digests = dict(discovery.inputs)
+    # The check admits every answer that passes it, and a read hold can follow an admitted answer. The
+    # manifest judged is the one nare finished with, so only a run that ended `done` counts as admitted.
+    admitted_final = bool(admitted) and session.status == "done"
     record: dict[str, Any] = {
         "mode": "inloop", "nare_module": str(nare_package.__file__), "nare_sha": nare_sha,
         "cli_defaults": cli, "max_cutoffs_used": max_cutoffs, "request_retries_used": retries,
         "nare_version": nare_package.__version__, "schema_loosened": loosened,
-        "max_corrections": args.max_corrections, "require_reads": args.require_reads, "stream": args.stream,
+        "max_corrections": args.max_corrections, "require_reads": args.require_reads,
+        "require_cited_reads": list(CITED_READ_POINTERS), "stream": args.stream,
         "request_retries": args.request_retries, "seconds": seconds, "error": error,
         "status": session.status, "stop_reason": session.stop_reason, "nare_error": session.error,
         "turns": session.turns, "usage": session.usage.wire(), "retries": session.retries,
         "cutoffs": session.cutoffs, "corrections": session.schema_correction_log,
-        "checks": attempts, "admitted_usage": {k: admitted.get(k) for k in ("input", "output", "turns", "reads")}
+        "cited_holds": sum(1 for c in session.schema_correction_log if c.get("kind") == "reads"
+                           and any("which the answer cites" in code or "outside the root" in code
+                                   for code in c.get("codes", []))),
+        "checks": attempts, "admitted_final": admitted_final,
+        "admitted_usage": {k: admitted.get(k) for k in ("input", "output", "turns", "reads")}
         if admitted else None,
         "files_read": len(reads),
         "reads_whole_file": sum(1 for r in reads.values() if r["whole_file"]),
     }
     judgements = []
-    if admitted:
+    if admitted_final:
         envelope = admitted["envelope"]
         try:
             judgement = await judge(args, out, envelope, reads, context)

@@ -602,3 +602,118 @@ None found in these runs. The behaviours I checked are the cut-off correction, t
 - **Reads threshold fixed before the runs.** 20 files, as in a1 to a3.
 - **Gateway.** No 502s and no non-200 responses appear in the stderr of b1, b2 or h1, and each record shows 0 provider retries.
 - **Spend this round.** Input 3,332,447 and output 372,291 (nare plus review), about 3.70 million tokens. Cumulative across the spike's in-loop runs, including the earlier round: about 7.47 million tokens.
+
+## Re-run on nare 5a68886 with cited-read holds (2026-11-07 and 2026-11-08)
+
+**Status: four runs completed. Three were admitted and reviewed (c1c, c3, h1). One failed after eight corrections without admission (c2). Three partial runs (c1, c1r, c1b) died before finishing and are kept under their labels with no record, and are not results. The citation blocker is closed for admitted runs: in all three, every cited path had been read before the answer was admitted. The recommendation holds (not yet), for a different reason.**
+
+### Short answer
+
+nare now holds an answer that cites a file the run has not read, so a cited path is no longer taken on trust. In the three admitted runs, 0 of 76 cited paths were unread (earlier rounds: 13, 19, 13, 0, 3 and 1 unread). In two of them the model had already read every cited file, so the hold never fired. In h1 it fired once, with the 20-file count, and the reads cleared it.
+
+The cost picture is unchanged in shape. The two GLM runs admitted cost 1.79 and 2.47 times the baseline authoring input, and 3.7 and 5.6 times the output. Authoring plus the first review cost 1.10 and 1.45 times the baseline input. Haiku (h1) was lower: 1.12 times for authoring and 0.87 with review, at 2.5 times the output. First review did not accept any manifest: revise, with 1, 1 and 10 findings. Reliability fell from 3 of 3 on main last round to 3 of 4 here. The failure was in repair, not in citations: c2 spent eight corrections removing or changing install and check obligations until its budget ran out.
+
+Not yet, because output is still 2.5 to 5.6 times baseline, eight corrections were not enough for one GLM run, and no first review accepted (baseline 0 of 33). The gateway spend this round, $4.39, is also far above nare's own cost estimate for the completed runs ($1.07), and that gap is not explained yet (see Spend).
+
+### Setup
+
+- **nare.** `origin/main` at `5a68886` (release 2026.11.64), detached worktree `nare-spike-4` (kept for re-runs), editable in the spike venv. The SHA is in every record as `nare_sha`. Changes since `91e75a8` that matter here: cited reads (#217 and #219: `require_cited_reads` and the two-argument `check`), and library runs with no explicit policy get read-only tools (#220 and #233). The spike passes an explicit Policy, so the read-only default does not apply to it. Others since the pin (fork, bash rules, MCP OAuth) are not used.
+- **Pinned baseline and model.** Unchanged: `dettmore-platform` at `bf498e8`, the e2e-50 reference scope, chat-043 execution rules, `spark/glm-5.3-flash` for the GLM runs and `claude-haiku-5-5` for h1, through the same gateway. Effort low, 32,768 max output, 262,144 context, 4,000,000 token budget, 80 turns, streaming on.
+- **Flags.** `--max-corrections 8`, `--require-reads 20`, `cli_defaults()` for cut-offs and retries (2, 3, 60 s). The envelope schema is coordinare's, unmodified.
+- **New: the cited-read pointers.** `CITED_READ_POINTERS = ("/manifest/requirements/*/source", "/finding_responses/*/sources/*")`. These are the two path-citation fields of `_MANIFEST_ENVELOPE`, the same fields `cited_paths()` reads. `Command.cwd` and `Activation.path` name execution directories and PATH entries, not files cited for reading, so they are not held.
+- **Check callable.** nare passes the run's read records as a second positional argument, so the check ingests those paths and no longer reads the session's evidence. The session is still used for usage. Each record now has `require_cited_reads`, `cited_holds` (correction count), and `admitted_final`. A run counts as admitted only if nare ended `done`, so an admission followed by a failed hold cannot be judged.
+- **Offline smoke** (`SPIKE_OFFLINE=1`, replay `smoke4-cited`). A three-reply replay: the answer citing 34 unread files, reads of those 34, the same answer. The first answer was held once, with a single correction covering the 20-file count and the 34 cited paths, then admitted with `cited_unread` 0.
+- **Gateway spend.** The key cannot call `/key/info`. Spend was read from the `x-litellm-key-spend` header of a one-token call before and after each run. Runs overlapped (c1c with c2, then c3 with c2 and h1), so per-run spend cannot be separated. Only the round total is reported.
+- **Partial runs (not results).** c1 died when the session restarted, after two completions and with no record. c1r was stopped at 30 minutes by the background command limit (660 KB of events). c1b was stopped at 2 hours by the same limit (2.7 MB). Runs after c1b were started detached in their own session, so the limit could not stop them. Each partial directory is kept unchanged under its label. An earlier launch of c1 failed at once on an empty-array expansion under macOS bash 3.2 (fixed in the launcher) and produced no output.
+- **Private state.** The launcher stays under the gitignored `.agents/state/376-nare-spike/`, as in earlier rounds, and is not committed. It reads the key from the scratchpad file inside the command.
+
+### Runs
+
+| Run | Model | Outcome | nare turns | Input to end | Output to end | Corrections (charged: schema, read holds) | Files read | Cited (unread, partial) | First review | Wall (s) |
+|---|---|---|---:|---:|---:|---|---:|---|---|---:|
+| c1c | GLM | admitted, reviewed | 19 | 990,856 | 112,208 | 4 schema, 0 | 54 | 32 (0, 7) | revise, 1 finding (`execution_definition`) | 4,825 |
+| c2 | GLM | failed: `schema_violation` after 8 charged corrections, 1 cut-off | 39 | 2,522,357 | 198,596 | 8 schema, 0 | 66 | not admitted | not run | 8,504 |
+| c3 | GLM | admitted, reviewed | 21 | 1,366,898 | 169,854 | 8 schema, 0 | 45 | 29 (0, 5) | revise, 1 finding (`capability`) | 5,847 |
+| h1 | Haiku | admitted, reviewed | 7 | 618,184 | 75,616 | 3 schema, 1 read hold (count at 12 of 20, and 4 cited paths) | 29 | 15 (0, 1) | revise, 10 findings (coverage 3, capability 5, execution_definition 2) | 266 |
+
+Review input and output, per admitted run: c1c 225,135 and 8,463; c3 242,937 and 7,187; h1 347,226 and 11,946. Cache reads were 0 on every turn of every run. No provider retries and no provider failures were recorded (retries 0 in every record).
+
+The corrections, in order:
+- **c1c.** An answer with no JSON document, then `scope_id_collision`, `required obligation removed`, and `scope_required_check_mapping`.
+- **c2.** `scope_id_collision`, then seven `obligation_removed` refusals, then a second `scope_id_collision`. The eighth correction was spent and the ninth answer was refused, so the run ended `schema_violation`.
+- **c3.** `scope_id_collision`, `required installation obligation removed`, a removed-obligation repair of 22 checks, four coverage changes, and `clean_dependency_install_only`.
+- **h1.** Two `scope_id_collision`, one `scope_required_check_mapping`, then one read hold. The hold named the count gap (12 of 20 files) and four cited paths (`Gemfile.lock`, `bin/demo-magic-link`, `.rubycritic.yml`, `chart/Chart.yaml`), and was charged once.
+
+The `scope_id_collision` refusals come from the spike's prompt, which still omits `GLOBAL_AUTHOR_INSTRUCTION` (see Caveats). They cost one or two corrections in every run.
+
+### Comparison
+
+Baseline medians as before: first authoring round 553,579 input and 30,264 output; with first review 1,106,948 input and 45,133 output.
+
+| Metric | Baseline (median) | c1c | c2 | c3 | h1 (Haiku) | Previous GLM admitted (a1, a2, a3, b1, b2) |
+|---|---:|---:|---:|---:|---:|---:|
+| Admitted | 44 of 47 held | yes | no | yes | yes | 5 of 5 |
+| Input to admission | 553,579 | 990,856 | not admitted | 1,366,898 | 618,184 | 0.89 to 1.94 times |
+| Output to admission | 30,264 | 112,208 | not admitted | 169,854 | 75,616 | 2.23 to 4.12 times |
+| Input, authoring plus review | 1,106,948 | 1,215,991 | n/a | 1,609,835 | 965,410 | 0.67 to 1.16 times |
+| Output, authoring plus review | 45,133 | 120,671 | n/a | 177,041 | 87,562 | 1.90 to 3.07 times |
+| Ratio, authoring input | 1.00 | 1.79 | n/a | 2.47 | 1.12 | as shown |
+| Ratio, authoring output | 1.00 | 3.71 | n/a | 5.61 | 2.50 | as shown |
+| Ratio, authoring plus review input | 1.00 | 1.10 | n/a | 1.45 | 0.87 | as shown |
+| Ratio, authoring plus review output | 1.00 | 2.67 | n/a | 3.92 | 1.94 | as shown |
+| First review | 0 of 33 accept | revise, 1 finding | not run | revise, 1 finding | revise, 10 findings | 2 of 5 accept |
+| Cited paths never read | n/a | 0 of 32 | n/a | 0 of 29 | 0 of 15 | 13, 19, 13, 0, 3 |
+| Cache-read tokens | 0 | 0 | 0 | 0 | 0 | 0 |
+
+Input per call was about 52,000 (c1c) and 65,000 (c3) tokens. The baseline's first round includes a probe preflight that the nare runs omit, so the input comparison still favours nare slightly.
+
+### Gap status
+
+| Gap | Status on 5a68886 | Evidence |
+|---|---|---|
+| Citations of files never read (earlier: manifests cited 13 to 19 unread files) | Closed for admitted runs | 0 unread of 32, 29 and 15 cited paths. The cited hold fired once (h1) and cleared on four reads. |
+| Count gate (`--require-reads 20`) | Working | Held h1 once at 12 files. Other runs passed it on their own reads. |
+| Map-valued schemas (#131) | Closed | The unmodified envelope schema is used. |
+| Transient provider failures (#134) | Not exercised | 0 provider failures and 0 retries in every run. c2 had one cut-off. |
+| System prompt not kept on resume (#132) | Not used | The in-loop path does not resume. |
+| Redaction of credential-named keys (#68) | No failure seen | No failure of that kind in these four runs. c2 failed on obligation repair, not on a redacted answer. The credential-key case was not checked separately. |
+| Repair loops that remove or change obligations | Open, the main blocker now | c2 used eight corrections, seven of them about obligations (removal, scope or coverage change). c3 needed six such corrections of its eight. This is coordinare's validator refusing the repair, not a nare defect. |
+| Prose around a JSON answer (#133) | Not seen this round | c1c's one non-JSON reply was not analysed further. |
+| Caching (`--cache-breakpoints`) | Still open | `cache_read` was 0 on every turn. |
+
+### Cost note
+
+Output is still the larger gap. Most of it is whole-envelope rewriting on each correction, as in the earlier rounds. Spend this round is measured at the gateway, and the figures do not reconcile yet:
+
+- **Gateway.** `x-litellm-key-spend` was $3.02 when the round started and $7.40 after the last run finished, a delta of $4.39. That includes the three partial runs and every review call.
+- **nare's estimate.** Summing `usage.cost` (nare's own, marked estimated) over the four completed records gives $1.07 (c1c $0.20, c2 $0.48, c3 $0.29, h1 $0.10). That leaves about $3.3 unexplained (the partial runs' estimates are not in that sum).
+- **Where the gap sits.** Between 00:38 and 01:08 the key total rose $2.31 while c1b was the only run going, and c1b's own estimates for that window are about $0.1. A one-token GLM call cost about $2.5e-6 at the gateway. So the extra spend is either other traffic on the same key or a lagging header. The key alone cannot settle which.
+
+### Quality
+
+- Evidence provenance held. Every read digest matched coordinare's re-derivation from the pinned Git objects: 54 of 54 (c1c), 45 of 45 (c3), 29 of 29 (h1), and 66 of 66 for c2 (not admitted).
+- Admission held the citation rule in all three admitted runs. No admitted manifest cited an unread file.
+- First review: c1c and c3 drew one finding each, and h1 drew ten. None accepted outright. The baseline never accepted on first review either (0 of 33), so this is not a regression, but it is not evidence of quality either.
+- c2 is the only failure. It is the same class of refusal that the spike prompt invites (obligations removed during repair), and the eight-correction budget is the limit it ran into.
+
+### Recommendation
+
+**Not yet. The citation blocker is closed; the blockers are now repair reliability, output volume, and cost accounting.** Citation reads work as intended: nare holds each cited file until it is read, and no admitted manifest in this round cited an unread file. What stops adoption:
+
+1. **Repair reliability.** One of four runs failed after eight corrections, and the GLM admitted run c3 needed eight. Haiku admitted in seven turns. Before adopting, either a higher correction budget is shown to converge, or repair moves to smaller patches than whole-envelope rewrites (caller-side work).
+2. **Output volume.** Authoring output is 2.5 to 5.6 times baseline, and most of it is re-emitted envelope.
+3. **First review.** None of three admitted manifests accepted outright, with 1, 1 and 10 findings.
+4. **Cost accounting.** Gateway spend ($4.39) is about four times nare's estimate ($1.07) and is not yet explained. No cost claim should be made until it is.
+
+What would change the answer: adding `GLOBAL_AUTHOR_INSTRUCTION` to the spike prompt, so the `scope_id_collision` corrections go; a repair path that does not re-emit the envelope; more admitted runs to show the spread; and a reconciled spend figure.
+
+### New nare defects
+
+None filed. The behaviours checked were the cited hold (held once, correct wording, one charge for count and cited gaps together), the two-argument check (receives the read records), and the read-only default (not in effect with an explicit Policy).
+
+### Caveats
+
+- **n = 3 admitted, 4 completed.** Three partials are excluded.
+- **Prompt gap kept on purpose.** The spike prompt omits `GLOBAL_AUTHOR_INSTRUCTION`, so every run is refused at least once for reusing criterion ids. That is the spike's prompt, not nare.
+- **Overlapping runs.** c1c with c2, and c3 with h1, ran at the same time. Wall times and per-run spend reflect that.
+- **Fixed scope, no probes, no installer, no execution.** As in every run in this spike.
