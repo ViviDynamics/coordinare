@@ -125,3 +125,61 @@ def test_tests_e2e_holds_only_browser_tests() -> None:
         cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
     )
     assert result.returncode == pytest.ExitCode.NO_TESTS_COLLECTED, result.stdout + result.stderr
+
+
+def test_duration_refresh_uses_medians_across_runs(tmp_path: Path) -> None:
+    """Repeated runs are observations, while multiple reports within one run add."""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    classname = "tests.unit.test_289_ci_shards"
+    def report(path: Path, seconds: float) -> None:
+        path.write_text(f'<testsuite><testcase classname="{classname}" time="{seconds}"/></testsuite>')
+    report(first / "chromium.xml", 2)
+    report(first / "firefox.xml", 4)
+    report(second / "tests.xml", 10)
+    result = subprocess.run(
+        [sys.executable, str(PROJECT_ROOT / "scripts/ci_durations.py"), "--median", str(first), str(second)],
+        cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"tests/unit/test_289_ci_shards.py": 8.0}
+
+
+def test_duration_refresh_does_not_treat_missing_observations_as_zero(tmp_path: Path) -> None:
+    first = tmp_path / "first.xml"
+    second = tmp_path / "second.xml"
+    first.write_text('<testsuite><testcase classname="tests.unit.test_289_ci_shards" time="5"/></testsuite>')
+    second.write_text('<testsuite><testcase classname="tests.unit.test_333_release_pr_ci" time="3"/></testsuite>')
+    result = subprocess.run(
+        [sys.executable, str(PROJECT_ROOT / "scripts/ci_durations.py"), "--median", str(first), str(second)],
+        cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "tests/unit/test_289_ci_shards.py": 5.0,
+        "tests/unit/test_333_release_pr_ci.py": 3.0,
+    }
+
+
+def test_duration_refresh_rejects_a_missing_run(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, str(PROJECT_ROOT / "scripts/ci_durations.py"), "--median", str(tmp_path / "missing")],
+        cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 2
+    assert not result.stdout
+    assert "JUnit" in result.stderr
+
+
+def test_default_duration_refresh_still_sums_and_deduplicates_reports(tmp_path: Path) -> None:
+    first = tmp_path / "first.xml"
+    second = tmp_path / "second.xml"
+    for path, seconds in ((first, 2), (second, 4)):
+        path.write_text(f'<testsuite><testcase classname="tests.unit.test_289_ci_shards" time="{seconds}"/></testsuite>')
+    result = subprocess.run(
+        [sys.executable, str(PROJECT_ROOT / "scripts/ci_durations.py"), str(tmp_path), str(first)],
+        cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+    )
+    assert json.loads(result.stdout) == {"tests/unit/test_289_ci_shards.py": 6.0}

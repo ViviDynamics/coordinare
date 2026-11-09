@@ -12,9 +12,11 @@ question and the probe asks about the direction actually relied on.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -46,6 +48,27 @@ def _policy(**kwargs):
     kwargs.setdefault("name", "perf-egress")
     kwargs.setdefault("namespace", "coordinare")
     return build_performer_network_policy(**kwargs)
+
+
+def _run_probe(coroutine):
+    """Exercise polling deadlines on fake Pods without real two-second sleeps."""
+    async def run():
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        real_sleep = asyncio.sleep
+        elapsed = 0.0
+
+        async def advance_poll(seconds):
+            nonlocal elapsed
+            assert seconds > 0
+            elapsed += seconds
+            # Preserve a scheduling turn for the probe's executor-backed fake API.
+            await real_sleep(0)
+
+        with patch.object(loop, "time", lambda: real_time() + elapsed), patch.object(asyncio, "sleep", advance_poll):
+            return await coroutine
+
+    return asyncio.run(run())
 
 
 class TestThePolicyAppliesToPerformersOnly:
@@ -218,7 +241,6 @@ class TestTheProbeCannotReportEnforcementItDidNotObserve:
 
     @staticmethod
     def _run(denied_phase: str, denied_logs: str = ""):
-        import asyncio
         from types import SimpleNamespace
 
         from coordinare.services.kubernetes_egress import probe_network_policy_enforcement
@@ -251,7 +273,7 @@ class TestTheProbeCannotReportEnforcementItDidNotObserve:
             def delete_namespaced_network_policy(self, **kwargs):
                 return None
 
-        return asyncio.run(
+        return _run_probe(
             probe_network_policy_enforcement(
                 core_v1=FakeCore(),
                 networking_v1=FakeNet(),
@@ -314,7 +336,6 @@ class TestCleanupIsExhaustiveAndLoud:
     """
 
     def test_a_failure_deleting_one_resource_does_not_abandon_the_rest(self) -> None:
-        import asyncio
         from types import SimpleNamespace
 
         from coordinare.services.kubernetes_egress import probe_network_policy_enforcement
@@ -349,7 +370,7 @@ class TestCleanupIsExhaustiveAndLoud:
             def delete_namespaced_network_policy(self, *, name, namespace):
                 deleted.append(name)
 
-        asyncio.run(
+        _run_probe(
             probe_network_policy_enforcement(
                 core_v1=FakeCore(),
                 networking_v1=FakeNet(),
@@ -388,7 +409,6 @@ class TestTheProbeDoesNotConcludeFromASingleReach:
         probe measured more times than the test expected, which is itself a failure —
         an unbounded retry would turn "does not enforce" into a timeout.
         """
-        import asyncio
         from types import SimpleNamespace
 
         from coordinare.services.kubernetes_egress import probe_network_policy_enforcement
@@ -440,7 +460,7 @@ class TestTheProbeDoesNotConcludeFromASingleReach:
             def delete_namespaced_network_policy(self, **kwargs):
                 return None
 
-        verdict = asyncio.run(
+        verdict = _run_probe(
             probe_network_policy_enforcement(
                 core_v1=FakeCore(),
                 networking_v1=FakeNet(),
