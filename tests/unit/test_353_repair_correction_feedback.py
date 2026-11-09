@@ -94,3 +94,25 @@ def test_service_lifecycle_guidance_states_start_and_health_semantics():
     assert 'init runs before its start' in SERVICE_START_GUIDANCE
     assert 'passes as soon as it is spawned' in SERVICE_START_GUIDANCE
     assert 'never only until a TCP port' in SERVICE_START_GUIDANCE
+
+
+def test_a_changed_executed_command_is_corrected_with_retirement_guidance_and_falls_back():
+    from types import SimpleNamespace
+
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+    from coordinare.services.environment_delta import DELTA_FALLBACK
+    from coordinare.services.environment_discovery import _declaration_feedback
+    from coordinare.services.environment_obligations import (
+        EXECUTION_COMMAND_CHANGED,
+        REPAIR_CORRECTABLE,
+        RETIRE_FAILED_CHECK,
+    )
+
+    # Dettmore e2e-73: a delta author rewrote three failed checks in place and the attempt held with no correction.
+    assert EXECUTION_COMMAND_CHANGED in REPAIR_CORRECTABLE and EXECUTION_COMMAND_CHANGED in DELTA_FALLBACK
+    error = EnvironmentDiscoveryError('required executable command c-lint changed after project execution',
+                                      code=EXECUTION_COMMAND_CHANGED)
+    [feedback] = _declaration_feedback(error, SimpleNamespace(), SimpleNamespace(retirable_checks={'c-lint'}))
+    assert feedback['code'] == EXECUTION_COMMAND_CHANGED and feedback['guidance'].endswith(RETIRE_FAILED_CHECK)
+    [plain] = _declaration_feedback(error, SimpleNamespace(), SimpleNamespace(retirable_checks=set()))
+    assert RETIRE_FAILED_CHECK not in plain['guidance']

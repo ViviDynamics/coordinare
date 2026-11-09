@@ -102,7 +102,7 @@ def test_a_check_that_passed_cannot_be_retired():
     data['criterion_checks'][CRITERION].append('suite')
     with pytest.raises(EnvironmentDiscoveryError) as exc:
         preserve_execution_obligations(EnvironmentManifest.model_validate(data), history(previous, ran=('suite', 'assets')))
-    assert exc.value.code == 'obligation_removed'
+    assert exc.value.code == 'execution_command_changed'  # refused, as a correction
 
 
 def test_a_merge_restores_a_retired_checks_content_but_keeps_it_retired():

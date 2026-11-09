@@ -36,7 +36,8 @@ if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import EnvironmentManifest
 
 # Failures a delta repair does not correct in place: the full repair runs instead while budget remains.
-DELTA_FALLBACK = frozenset({"attempt_schema_limit", "repair_delta_rejected", "executable_merge_invalid", "repair_triage_stale"})
+DELTA_FALLBACK = frozenset({"attempt_schema_limit", "repair_delta_rejected", "executable_merge_invalid", "repair_triage_stale",
+                            "execution_command_changed"})
 # Proposal fields a manifest's standing review depends on; provenance and cache-only facts never change a judgment.
 STANDING_EXCLUDED = frozenset({"manifest_digest", "probe_evidence", "untrusted_execution_history", "fixed_ids",
                                "execution_capabilities", "capabilities_digest"})

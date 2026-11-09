@@ -322,11 +322,11 @@ def preserve_execution_commands(
                or new.timeout_seconds < old.timeout_seconds]
     if len(changed) == 1:
         message = f"required executable command {_id(changed[0])} changed after project execution"
-        raise EnvironmentDiscoveryError(message, code="obligation_removed")
+        raise EnvironmentDiscoveryError(message, code=EXECUTION_COMMAND_CHANGED)
     if changed:
         message = (f"required executable commands changed after project execution; keep each as it was: "
                    f"{', '.join(_id(identifier) for identifier in changed[:16])}")
-        raise EnvironmentDiscoveryError(message, code="obligation_removed")
+        raise EnvironmentDiscoveryError(message, code=EXECUTION_COMMAND_CHANGED)
 
 
 def preserve_execution_obligations(manifest: EnvironmentManifest, history: object) -> None:
@@ -446,8 +446,12 @@ def preserve_obligations(manifest: EnvironmentManifest, previous: EnvironmentMan
 
 
 REPAIR_OUTSIDE_CLOSURE = "repair_outside_closure"
+EXECUTION_COMMAND_CHANGED = "execution_command_changed"
 REPAIR_TRIAGE_STALE = "repair_triage_stale"
-REPAIR_CORRECTABLE = frozenset({REPAIR_OUTSIDE_CLOSURE})
+# Dettmore e2e-73: a delta author rewrote three failed checks in place, which execution preservation refuses (a check
+# that ran is fixed; a failed one is retired and replaced). The refusal was fatal, with no correction and no fallback,
+# and held the attempt after two calls. The author can act on the named ids, so it is a correction.
+REPAIR_CORRECTABLE = frozenset({REPAIR_OUTSIDE_CLOSURE, EXECUTION_COMMAND_CHANGED})
 _PHASES = ("init", "start", "health", "stop")
 
 

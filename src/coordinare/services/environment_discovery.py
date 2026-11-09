@@ -89,6 +89,7 @@ from coordinare.services.environment_findings import (
 )
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_obligations import (
+    EXECUTION_COMMAND_CHANGED,
     REPAIR_CORRECTABLE,
     RETIRE_FAILED_CHECK,
     RETIREMENT_REVIEW,
@@ -503,7 +504,8 @@ def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
 
 def _declaration_feedback(exc: EnvironmentDiscoveryError, inspection: _Inspection, budget: AttemptBudget) -> list[dict[str, Any]]:
     if exc.code in REPAIR_CORRECTABLE:
-        return [{"location": [], "code": exc.code, "guidance": str(exc)}]
+        retire = f' {RETIRE_FAILED_CHECK}' if exc.code == EXECUTION_COMMAND_CHANGED and budget.retirable_checks else ''
+        return [{"location": [], "code": exc.code, "guidance": str(exc) + retire}]
     if exc.code not in {"review_citations_invalid", "review_findings_invalid", "finding_response_ids_invalid"}:
         raise exc
     if exc.code == 'finding_response_ids_invalid':
@@ -1067,10 +1069,14 @@ async def _bind_delta(messages: list[dict[str, str]], options: _DiscoveryOptions
     async with asyncio.timeout(min(discovery.limits.phase_timeout_seconds, max(0, budget.deadline - time.monotonic()))):
         evidence = await discovery.bind_verified({path: digest for path, digest in previous.inputs.items() if path in cited},
                                                  phase="repair", cited_by=scope_citations(budget.scope_contract))
+    # Dettmore e2e-73: the delta author was told its failed checks were fixed but never that one can be retired,
+    # so it rewrote them in place. Failed closure checks are offered for retirement as the full repair offers them.
+    retirable = sorted(plan.closure & set(budget.retirable_checks))
     messages[1]["content"] = _json({**json.loads(messages[1]["content"]), "repair_delta": plan.brief(divided=False),
         "mandatory_evidence": evidence, "untrusted_execution_feedback": options.execution_feedback,
-        **_attempt_history(budget),
-        "probe_evidence": budget.probe_reports, "repair_instruction": DELTA_REPAIR_INSTRUCTION})
+        **_attempt_history(budget), **({"retirable_check_ids": retirable} if retirable else {}),
+        "probe_evidence": budget.probe_reports,
+        "repair_instruction": DELTA_REPAIR_INSTRUCTION + (" " + RETIRE_FAILED_CHECK if retirable else "")})
     messages[1]["content"] = _json(_dedupe_evidence(json.loads(messages[1]["content"])))
 
 

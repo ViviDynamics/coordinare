@@ -77,7 +77,8 @@ def test_executed_required_definition_cannot_be_weakened(field, value):
     changed.checks[0] = changed.checks[0].model_copy(update={field: value})
     with pytest.raises(EnvironmentDiscoveryError) as exc:
         preserve_execution_obligations(changed, history(previous))
-    assert exc.value.code == "obligation_removed"
+    # Demotion is the retirement rule's; every other change is a correctable executed-command change.
+    assert exc.value.code == ("obligation_removed" if field == "required" else "execution_command_changed")
 
 
 def test_a_check_that_never_ran_stays_correctable_after_another_ran():
@@ -209,7 +210,7 @@ def test_restarted_checkpoint_retains_executed_command_pins(tmp_path):
     budget.coverage_manifest = EnvironmentManifest.model_validate(data)
     with pytest.raises(EnvironmentDiscoveryError) as exc:
         save_attempt(restored, budget)
-    assert exc.value.code == "obligation_removed"
+    assert exc.value.code == "execution_command_changed"
     assert restored.environment_attempt["execution_repairs"] == 1
 
 
@@ -290,8 +291,11 @@ async def test_discovery_rejects_waiver_before_fresh_review(tmp_path):
             previous_manifest=previous,
             capabilities=ExecutionCapabilities.model_validate(cache.environment_capabilities),
         )
-    assert exc.value.code == "obligation_removed"
-    assert len(replies.messages) == 1
+    # The changed executed check is refused before any review, as a correction the author can act on (Dettmore
+    # e2e-73 held when this refusal was fatal); this fixture has no second reply.
+    assert exc.value.code == "request_failed"
+    assert len(replies.messages) == 2
+    assert "execution_command_changed" in replies.messages[1][-1]["content"]
 
 
 def test_every_changed_fixed_command_is_named_in_one_correction():
@@ -303,7 +307,7 @@ def test_every_changed_fixed_command_is_named_in_one_correction():
     changed.checks[1] = changed.checks[1].model_copy(update={"argv": ["true"]})
     with pytest.raises(EnvironmentDiscoveryError) as exc:
         preserve_execution_obligations(changed, history(previous, ran=("suite", "assets")))
-    assert exc.value.code == "obligation_removed"
+    assert exc.value.code == "execution_command_changed"
     assert str(exc.value).endswith(": suite, assets")
     one = previous.model_copy(deep=True)
     one.checks[0] = one.checks[0].model_copy(update={"argv": ["true"]})
