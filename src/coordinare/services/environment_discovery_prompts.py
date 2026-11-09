@@ -62,12 +62,26 @@ LOCAL_CREDENTIAL_AUTHORING = (
 # pinned commit. No environment change could pass it, and checks that ran are fixed, so the attempt spent its
 # remaining coverage revisions on a failure only the project could fix.
 ADVISORY_AUDIT_CHECKS = (
-    'An advisory audit (bundler-audit, npm audit, pip-audit, cargo audit and the like) reports advisories published '
+    'An advisory audit (a dependency vulnerability scanner) reports advisories published '
     'after the pinned commit, so its findings are the project\'s state, not the environment\'s. Its required check '
     'proves the tool runs against the locked dependency set and completes its report: accept the exit status the tool '
-    'documents for "advisories found" as well as success, and fail on any other status (for bundler-audit, 0 or 1 '
-    'with its report printed). Never require that no advisories are found, and never ignore advisories to make one '
+    'documents for "advisories found" as well as success, with its report printed, and fail on any other status. '
+    'Never require that no advisories are found, and never ignore advisories to make one '
     'pass.')
+# Maintainer decision 2026-11-09 (Dettmore e2e-72): a required check ran the whole RSpec suite, timed out at the
+# hour limit, and other checks failed on the project's own assertions. A check proves configuration with one small
+# sample; the rule names no technology.
+SAMPLE_TEST_CHECKS = (
+    "A check for a test or build obligation proves the environment is configured, not that the project is correct. "
+    "Run one small sample, never a whole suite, every shard of one or a full build, which can take hours on a large "
+    "project: choose an existing integration test from the repository, one that loads the project and uses its "
+    "installed dependencies and the services this manifest starts, and run only that test through the project's own "
+    "runner. Prefer one that passes at the pinned commit. The check must fail when the environment is not configured: "
+    "the runner or a dependency is missing, the project or the test fails to load, compile or import, or a service, "
+    "setting or variable it needs is unreachable or absent. It must not fail only because a test that actually ran "
+    "reported a failed assertion: decide from the runner's own result (the exit statuses it documents, or its summary "
+    "showing the sample executed with no error outside assertions), never by discarding the status. Running a sample "
+    "is required here, not a selective omission.")
 # Dettmore e2e-66: reviewers summed every command's timeout_seconds (13,800 s) against the 7,200 s session budget and
 # held findings open until the author cut the heavy builds' and suites' ceilings, spending six coverage revisions
 # before any execution. A ceiling is not a plan: the session deadline still ends the whole run.
@@ -115,6 +129,7 @@ _MANIFEST_INSTRUCTIONS = (
     'For shell-local variables assigned inside bash -c, use $name rather than ${name}. '
     f'{LOCAL_CREDENTIAL_AUTHORING} '
     f'{ADVISORY_AUDIT_CHECKS} '
+    f'{SAMPLE_TEST_CHECKS} '
     f'{TIMEOUT_CEILINGS} '
     'Create every declared activation directory during installation; do not hide a missing path by removing useful activation. '
     'List tool directories in activation.path, which is prepended to the guest PATH; never set PATH in activation.env. '

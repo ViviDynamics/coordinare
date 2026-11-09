@@ -79,7 +79,11 @@ from coordinare.services.environment_repair_triage import (
 from coordinare.services.environment_scope import preserve_scope, released_criteria
 from coordinare.services.environment_scope_investigation import validate_investigation_history
 from coordinare.services.environment_scope_reopening import source_conflict_reopenings
-from coordinare.services.environment_scope_reuse import SCOPE_POLICY_VERSION, reusable_scope
+from coordinare.services.environment_scope_reuse import (
+    SCOPE_POLICY_VERSION,
+    SCOPE_RULES,
+    reusable_scope,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
@@ -166,6 +170,8 @@ class RepairJournal(BaseModel):
     scope_reuse: dict[str, Any] | None = None
     scope_reused_from: dict[str, Any] | None = None
     scope_policy_version: str = SCOPE_POLICY_VERSION
+    # Journals written before rules 2 load as 1; a new journal records the rules its scope is authored under.
+    scope_rules: int = 1
     finding_ledger: FindingLedger | None = None
     coverage_manifest: EnvironmentManifest | None = None
     source_owner: str | None = None
@@ -590,7 +596,7 @@ def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_second
     if not isinstance(cache.bootstrap_commit_sha, str):
         _refuse("environment repair requires an immutable source commit")
     if previous is None or previous.source_commit != cache.bootstrap_commit_sha or previous.status == 'ready':
-        journal = RepairJournal(source_commit=cache.bootstrap_commit_sha, scope_author_protocol=4,
+        journal = RepairJournal(source_commit=cache.bootstrap_commit_sha, scope_author_protocol=4, scope_rules=SCOPE_RULES,
             base_slug=cache.sanitised_name, base_cache_dir=str(cache.cache_dir),
             origin_slug=previous.origin_slug if previous else cache.sanitised_name,
             started_at=now, expires_at=now+seconds, max_calls=limits.max_model_calls,

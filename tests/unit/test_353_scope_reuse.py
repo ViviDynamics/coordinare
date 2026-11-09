@@ -18,7 +18,7 @@ def fresh_budget() -> AttemptBudget:
 async def accepted_journal() -> dict:
     budget = fresh_budget()
     contract = await run(Router(), budget=budget)
-    return {'source_commit': COMMIT, 'scope_author_protocol': 4, 'started_at': 1.0,
+    return {'source_commit': COMMIT, 'scope_author_protocol': 4, 'scope_rules': 2, 'started_at': 1.0,
             'scope_contract': json.loads(contract.model_dump_json()), 'scope_inputs': dict(budget.scope_inputs),
             'scope_shards': json.loads(json.dumps(budget.scope_shards))}
 
@@ -121,3 +121,11 @@ async def test_a_reused_scope_rereads_only_the_shard_whose_input_changed():
     reviewed = [json.loads(messages[1]['content']) for role, messages in router.conversations if role == 'review']
     assert len(reviewed) == 1
     assert changed in json.dumps(reviewed[0])
+
+
+@pytest.mark.asyncio
+async def test_a_scope_accepted_under_earlier_scope_rules_is_not_offered():
+    journal = await accepted_journal()
+    # Rules 2 (2026-11-09) sample test operations; a scope that required whole suites is authored again.
+    assert reusable_scope([{**journal, 'scope_rules': 1}], COMMIT) is None
+    assert reusable_scope([{key: value for key, value in journal.items() if key != 'scope_rules'}], COMMIT) is None

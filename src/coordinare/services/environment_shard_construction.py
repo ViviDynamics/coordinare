@@ -38,6 +38,7 @@ from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_delta_schema import apply_group_delta
 from coordinare.services.environment_discovery_prompts import (
     ADVISORY_AUDIT_CHECKS,
+    SAMPLE_TEST_CHECKS,
     SOURCE_NAVIGATION,
     TIMEOUT_CEILINGS,
 )
@@ -131,7 +132,7 @@ CHECK_AUTHOR_INSTRUCTIONS = (
     'depends_on may name your checks, global checks, or service init, start '
     'and health ids. You cannot declare installation, services or activation. bound_inputs indexes verified repository '
     'files with the criteria citing each; read the files you need with read_files. Never write literal credentials. '
-    + INSTALL_ARTIFACT_RULE + ADVISORY_AUDIT_CHECKS + ' ' + TIMEOUT_CEILINGS + ' ' +
+    + INSTALL_ARTIFACT_RULE + ADVISORY_AUDIT_CHECKS + ' ' + SAMPLE_TEST_CHECKS + ' ' + TIMEOUT_CEILINGS + ' ' +
     'Return {"shard_checks":{"checks":[...],"criterion_checks":{...}}}. '
 )
 DELTA_CHECK_INSTRUCTION = (

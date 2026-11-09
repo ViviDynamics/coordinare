@@ -347,6 +347,21 @@ DEPLOYMENT_IMAGE_RULE = (
     "third-party service images that development and tests use (a database, a mail catcher): those, the container "
     "tools, and everything the application needs to run its own tests stay required. "
 )
+# Maintainer decision 2026-11-09: Dettmore e2e-72's scope required every RSpec group, the full Cucumber suite, the
+# seed specs and the repository's own skill scripts to run and pass, so the bootstrap ran a test suite for an hour
+# and failed on the project's own assertions. Bootstrap proves the environment is configured, never that the project
+# is correct, and the rule names no technology: it holds for any language, framework or runner.
+TEST_OPERATION_RULE = (
+    "A documented test, build or other project operation is an environment obligation only in what it needs from "
+    "the environment: its runner or command-line tool starts here, loads the project with every dependency "
+    "resolved, and reaches every service, setting and variable it uses. Whether the project's own tests pass, its "
+    "builds succeed or its scripts behave as documented is the project's state, not the environment's, and is never "
+    "an obligation. Never require a whole suite, every shard, group, directory or CI job of one, or a full build: on "
+    "a large project they take hours. Write one criterion per distinct runner or tool (one per test framework, not "
+    "one per suite, shard or job), stating that it can run a representative sample of the project's own tests that "
+    "exercises the installed dependencies and the services the environment provides, and fold every other criterion "
+    "about that runner into it. "
+)
 REVIEW_INSTRUCTIONS = (
     'Independently review source-defined scope, not an executable candidate. You have no author conversation. '
     'Follow development/test entry points and nested references; independently check omissions and conflicts. '
@@ -390,7 +405,7 @@ REVIEW_INSTRUCTIONS = (
     'with category runtime_network and gap_kind runtime_network naming those criteria. '
     'Likewise, a required criterion to build or run the repository\'s own deployment images or stacks is a finding '
     'with category deployment_image and gap_kind deployment_image naming those criteria. '
-    + REMOTE_STATE_RULE + RUNTIME_NETWORK_RULE + DEPLOYMENT_IMAGE_RULE +
+    + REMOTE_STATE_RULE + RUNTIME_NETWORK_RULE + DEPLOYMENT_IMAGE_RULE + TEST_OPERATION_RULE +
     'release_requests lists required criteria that an executable review could not verify offline. Judge each one by the '
     'rules above: raise a runtime_network, remote_state or deployment_image finding naming it only when its own '
     'documented procedure genuinely fetches from the network or needs external state every time it runs, or builds or '
@@ -400,10 +415,11 @@ REVIEW_INSTRUCTIONS = (
 )
 GRANULARITY_GUIDANCE = (
     'A criterion is an environment obligation: a tool or service the environment must provide, a dependency set that '
-    'must install, or a documented development or test operation that must succeed, with its observable result. '
+    'must install, or a documented development or test operation whose tools must run in this environment, with its '
+    'observable result. '
     'The internal behaviour of a script is evidence for an obligation, not an obligation itself; related steps of one '
     'documented operation form one criterion, at the level a person bootstrapping the repository would check. '
-    + REMOTE_STATE_RULE + RUNTIME_NETWORK_RULE + DEPLOYMENT_IMAGE_RULE
+    + REMOTE_STATE_RULE + RUNTIME_NETWORK_RULE + DEPLOYMENT_IMAGE_RULE + TEST_OPERATION_RULE
 )
 AUTHOR_INSTRUCTIONS = (
     'Author source-defined obligations for the whole documented development/test environment. '

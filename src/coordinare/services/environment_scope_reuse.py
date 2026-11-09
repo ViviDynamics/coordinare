@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 
 SCOPE_AUTHOR_PROTOCOL = 4
 SCOPE_POLICY_VERSION = '353-scope-v1'
+# The scope rules a journal's scope was authored and accepted under. Rules 2 (2026-11-09) limit test and build
+# operations to sampled configuration proof, so a scope accepted under rules 1 is not offered for reuse.
+SCOPE_RULES = 2
 # The earlier acceptance's reader digests, kept with the shard progress; each stands only for the digest it read.
 REUSED_REVIEWER_INPUTS = 'reused_reviewer_inputs'
 
@@ -41,7 +44,8 @@ def reusable_scope(archive: Sequence[Any], commit: str) -> dict[str, Any] | None
         # Protocol 4 journals that predate the recorded policy version were all written under 353-scope-v1.
         if (not isinstance(data, dict) or data.get('source_commit') != commit
                 or data.get('scope_author_protocol') != SCOPE_AUTHOR_PROTOCOL
-                or data.get('scope_policy_version', SCOPE_POLICY_VERSION) != SCOPE_POLICY_VERSION):
+                or data.get('scope_policy_version', SCOPE_POLICY_VERSION) != SCOPE_POLICY_VERSION
+                or data.get('scope_rules', 1) != SCOPE_RULES):
             continue
         try:
             contract = ScopeContract.model_validate(data.get('scope_contract'))
