@@ -157,3 +157,27 @@ def test_port_guidance_reserves_forwards_for_guest_containers():
 
     assert 'only for a port a guest container publishes' in GUEST_PORT_GUIDANCE
     assert 'runs directly on the carrier needs no forward' in GUEST_PORT_GUIDANCE
+
+
+def test_a_review_field_beside_its_assessment_moves_inside_it():
+    """Dettmore e2e-78: an accepting reviewer wrote verdict beside its assessment, three times over."""
+    from coordinare.services.environment_discovery import _normalize_review
+
+    body = {'decisions': [], 'findings': [], 'rationale': 'r', 'sources': ['a'], 'capability_unavailable': False}
+    assert _normalize_review({'assessment': body, 'verdict': 'accept'}, 'review') == {
+        'assessment': {**body, 'verdict': 'accept'}}
+    # Ambiguous or foreign placements stay as they are, for validation to refuse.
+    both = {'assessment': {**body, 'verdict': 'revise'}, 'verdict': 'accept'}
+    assert _normalize_review(both, 'review') == both
+    foreign = {'assessment': body, 'note': 'x'}
+    assert _normalize_review(foreign, 'review') == foreign
+    assert _normalize_review({'assessment': body, 'verdict': 'accept'}, 'discovery') == {
+        'assessment': body, 'verdict': 'accept'}
+
+
+def test_an_unsupported_envelope_names_known_keys_only():
+    from coordinare.services.environment_discovery import _envelope_error
+
+    error = _envelope_error('unsupported_envelope', {'assessment': {}, 'verdict': 'x', 'secret-key': 1}, 'assessment')
+    assert error['top_level_keys'] == ['*', 'assessment', 'verdict']
+    assert 'only top-level key is assessment' in error['guidance']

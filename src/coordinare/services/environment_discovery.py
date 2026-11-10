@@ -364,15 +364,36 @@ async def _probe_reply(data: dict[str, Any], raw: str, messages: list[dict[str, 
     return True
 
 
+REVIEW_FIELDS = frozenset({"verdict", "rationale", "sources", "findings", "decisions", "capability_unavailable",
+                           "criterion_rulings"})
+
+
 def _normalize_review(reply: dict[str, Any], name: str) -> dict[str, Any]:
-    if name == "review" and set(reply) <= {"verdict", "rationale", "sources", "findings", "decisions", "capability_unavailable",
-                                          "criterion_rulings"} and {"verdict", "rationale", "sources"} <= set(reply):
+    if name == "review" and set(reply) <= REVIEW_FIELDS and {"verdict", "rationale", "sources"} <= set(reply):
         try:
             _CoverageProposal.model_validate(reply)
         except ValidationError:
             return reply
         return {"assessment": reply}
+    # Dettmore e2e-78: an accepting reviewer closed its assessment one field early and wrote "verdict" beside it;
+    # the bare unsupported_envelope that followed cost the attempt its last three corrections. A field the
+    # assessment lacks and nothing else could mean has one place to go; validation still judges the whole.
+    assessment = reply.get("assessment")
+    if name == "review" and isinstance(assessment, dict) and (stray := set(reply) - {"assessment"}) and (
+            stray <= REVIEW_FIELDS and not stray & set(assessment)):
+        return {"assessment": {**assessment, **{key: reply[key] for key in stray}}}
     return reply
+
+
+def _envelope_error(code: str, reply: dict[str, Any], envelope: str | None) -> dict[str, Any]:
+    """An unusable reply's correction names its own top-level keys, never their values (Dettmore e2e-78)."""
+    error: dict[str, Any] = {"location": [], "code": code}
+    if code == "unsupported_envelope" and envelope is not None:
+        error["guidance"] = (f"Every field of the reply belongs inside {envelope}: return exactly one object whose only "
+                             f"top-level key is {envelope} (plus finding_responses where the envelope takes them).")
+        known = REVIEW_FIELDS | {envelope, "finding_responses", "tool", "changes"}
+        error["top_level_keys"] = sorted({key if key in known else "*" for key in reply})[:16]
+    return error
 
 
 def _preflight_pending(inspection: _Inspection, budget: AttemptBudget, messages: list[dict[str, str]], raw: str) -> bool:
@@ -623,7 +644,7 @@ async def _phase(
                 except EnvironmentDiscoveryError as exc:
                     if exc.code not in {"unsupported_envelope", "invalid_tool_arguments"}:
                         raise
-                    _repair(messages, raw, [{"location": [], "code": exc.code}], budget,
+                    _repair(messages, raw, [_envelope_error(exc.code, reply, expected_envelope)], budget,
                             context=CorrectionContext(expected_envelope, finish_reason=finish_reason))
                     continue
                 messages.append({"role": "assistant", "content": raw})
