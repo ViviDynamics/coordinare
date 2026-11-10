@@ -61,6 +61,10 @@ def test_any_other_indeterminate_result_holds_with_its_own_code(tmp_path):
     ('fail', 1, COMMAND_TIMED_OUT, False),  # the command printed the words and exited
     ('indeterminate', None, f'{COMMAND_TIMED_OUT}\nthen more', False),
     ('indeterminate', None, 'background service completion requires Linux supervision', False),
+    # Dettmore e2e-79: a timed-out service health step carries its service's logs after the runner's line.
+    ('indeterminate', None, f'\n{COMMAND_TIMED_OUT}\n[docker logs --tail 40 db]\nready to accept connections', True),
+    ('indeterminate', None, f'{COMMAND_TIMED_OUT}\n[tail of /scratch/db.log]\nlog line', True),
+    ('indeterminate', None, f'pipe open\n[docker logs --tail 40 db]\n{COMMAND_TIMED_OUT}', False),
 ])
 def test_only_the_runners_own_stop_counts(status, exit_code, output, expected):
     result = CheckResult(id='suite', status=status, required=True, exit_code=exit_code, output=output)

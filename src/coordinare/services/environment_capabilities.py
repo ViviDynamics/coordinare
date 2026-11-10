@@ -109,7 +109,11 @@ SERVICE_START_GUIDANCE = (
     "within its own timeout, until the service answers through its own protocol (a client or readiness command "
     "against it, or docker exec into its container once that container is running), never only until a TCP port "
     "accepts, since a port can accept before the service exists or can serve. One-time setup that needs the running "
-    "service, such as creating databases or extensions, belongs in health after readiness is confirmed.")
+    "service, such as creating databases or extensions, belongs in health after readiness is confirmed. "
+    # Dettmore e2e-79: a health loop sent every probe's errors to /dev/null and failed with only "not ready", so its
+    # repair could not tell a missing client from an unreachable forward.
+    "Keep each probe's error output: a wait loop that discards stderr fails with no cause. Let the last attempt's "
+    "error reach the output before failing (for example run the probe once more without redirection).")
 
 
 def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any] | None:

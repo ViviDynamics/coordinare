@@ -94,6 +94,7 @@ def test_service_lifecycle_guidance_states_start_and_health_semantics():
     assert 'init runs before its start' in SERVICE_START_GUIDANCE
     assert 'passes as soon as it is spawned' in SERVICE_START_GUIDANCE
     assert 'never only until a TCP port' in SERVICE_START_GUIDANCE
+    assert "Keep each probe's error output" in SERVICE_START_GUIDANCE
 
 
 def test_a_changed_executed_command_is_corrected_with_retirement_guidance_and_falls_back():

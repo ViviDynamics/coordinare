@@ -414,8 +414,13 @@ def stopped_at_limit(result: CheckResult) -> bool:
     held without a repair. The author can lengthen, split or reorder such a command, so it is repair feedback. Any
     other indeterminate result (unconfirmed cleanup, a pipe left open) is not.
     """
+    # Dettmore e2e-79: a timed-out service step carries its service's logs after the runner's own line, so the
+    # line is judged before them; the logs are appended only after the marker.
+    output = result.output or ''
+    if (logs := _SERVICE_LOG_MARKER.search(output)) is not None:
+        output = output[:logs.start()]
     return (result.status == 'indeterminate' and result.exit_code is None
-            and (result.output or '').rstrip().endswith((COMMAND_TIMED_OUT, COMMAND_CUT_SHORT)))
+            and output.rstrip().endswith((COMMAND_TIMED_OUT, COMMAND_CUT_SHORT)))
 TEARDOWN_STOP_SECONDS = 60.0
 
 
