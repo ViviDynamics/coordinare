@@ -317,6 +317,8 @@ class _Inspection(SourceInspection):
         self.observe_sources: Callable[[dict[str, str]], Awaitable[None]] | None = None
         self.preflight_reminded = False
         self.probe_repair: dict[str, Any] | None = None
+        # The complete declaration a coverage revision revises: its author may correct it instead of restating it.
+        self.revision_base: dict[str, Any] | None = None
         self.finding_responses: list[FindingResponse] = []
         self.probe: Callable[[dict[str, Any]], Awaitable[ProbeReport]] | None = None
         # A delta repair's global author returns a manifest_delta envelope, not a whole manifest.
@@ -481,25 +483,38 @@ def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
                                   'the expected envelope instead of another correction.')
             can_patch = False
         if exc.code == 'invalid_proposal_patch':
-            # The failing record and the daemon's own reason, when one record is at fault.
-            if (found := re.fullmatch(r'proposal correction record (\d+) is invalid: (.+)', str(exc))) is not None:
-                error.update(record=int(found[1]), reason=found[2])
-            error.update(max_changes=MAX_CHANGES, max_path_depth=MAX_PATH_DEPTH,
-                guidance=(f'Use 1 to {MAX_CHANGES} correction records, existing parent paths of depth at most {MAX_PATH_DEPTH}, '
-                    'and unique valid JSON replacement values. A complete base declaration is required. '
-                    'For more affected fields, replace their common existing array or object once with its complete corrected value, '
-                    'preserving every unrelated record and required obligation. For large nested replacements, return the complete corrected '
-                    'declaration in the expected envelope instead of encoding it inside value_json. '
-                    'Do not split an invalid declaration across partial batches. Each correction is fully validated atomically.'))
-            if reply is not None and isinstance(reply.get('changes'), list) and len(reply['changes']) > MAX_CHANGES:
-                error['location'] = ['changes']
-                error['guidance'] = ('Too many correction records. Return the complete corrected declaration in the expected envelope, '
-                    'not another patch or a partial batch. Preserve every unrelated record and required obligation.')
-                can_patch = False
+            can_patch = _patch_error(error, exc, reply, has_base=base is not None) and can_patch
         _repair(messages, raw, [error], budget, context=CorrectionContext(envelope, can_patch, budget.last_finish_reason))
         return None
     else:
         return reply
+
+
+def _patch_error(error: dict[str, Any], exc: EnvironmentDiscoveryError, reply: dict[str, Any] | None, *,
+                 has_base: bool) -> bool:
+    """Fill a refused correction's feedback; False when the author must restate the declaration instead."""
+    if not has_base:
+        # Dettmore e2e-76: told only that "a complete base declaration is required", the author restated its
+        # manifest with 30 required records missing and the attempt held at obligation_removed.
+        error.update(guidance=('This phase holds no complete declaration to correct, so no correction can apply. Return '
+            'the complete declaration in the expected envelope, keeping every required id and record.'))
+        return False
+    # The failing record and the daemon's own reason, when one record is at fault.
+    if (found := re.fullmatch(r'proposal correction record (\d+) is invalid: (.+)', str(exc))) is not None:
+        error.update(record=int(found[1]), reason=found[2])
+    error.update(max_changes=MAX_CHANGES, max_path_depth=MAX_PATH_DEPTH,
+        guidance=(f'Use 1 to {MAX_CHANGES} correction records, existing parent paths of depth at most {MAX_PATH_DEPTH}, '
+            'and unique valid JSON replacement values. A complete base declaration is required. '
+            'For more affected fields, replace their common existing array or object once with its complete corrected value, '
+            'preserving every unrelated record and required obligation. For large nested replacements, return the complete corrected '
+            'declaration in the expected envelope instead of encoding it inside value_json. '
+            'Do not split an invalid declaration across partial batches. Each correction is fully validated atomically.'))
+    if reply is not None and isinstance(reply.get('changes'), list) and len(reply['changes']) > MAX_CHANGES:
+        error['location'] = ['changes']
+        error['guidance'] = ('Too many correction records. Return the complete corrected declaration in the expected envelope, '
+            'not another patch or a partial batch. Preserve every unrelated record and required obligation.')
+        return False
+    return True
 
 
 def _declaration_feedback(exc: EnvironmentDiscoveryError, inspection: _Inspection, budget: AttemptBudget) -> list[dict[str, Any]]:
@@ -572,7 +587,8 @@ async def _phase(
     budget: AttemptBudget, validate: Callable[[dict[str, Any]], Any],
 ) -> tuple[dict[str, Any], dict[str, str]]:
     budget.stage = inspection.name
-    repair_base: dict[str, Any] | None = inspection.probe_repair
+    repair_base: dict[str, Any] | None = inspection.probe_repair or inspection.revision_base
+    inspection.revision_base = None
     try:
         async with asyncio.timeout(min(inspection.limits.phase_timeout_seconds, max(0, budget.deadline - time.monotonic()))):
             for _ in range(inspection.limits.max_model_calls):
@@ -761,7 +777,7 @@ class _ObligationLedger:
         installation = self._commands(data.get("install"))
         for key, previous in self.install.items():
             if key not in installation:
-                message = "required installation obligation removed"
+                message = f"required installation obligation removed: {_safe_id(key)}"
                 raise EnvironmentDiscoveryError(message, code="obligation_removed")
             self._check(previous, installation.get(key))
         self.install.update({key: item for key, item in installation.items() if item.required})
@@ -792,7 +808,7 @@ class _ObligationLedger:
             for phase, previous in self.lifecycle.get(service_id, {}).items():
                 self._check(previous, current.get(phase))
                 if phase not in current and service.get(phase) is None:
-                    message = "required lifecycle obligation removed during schema correction"
+                    message = f"required lifecycle obligation removed during schema correction: {_safe_id(service_id)} {phase}"
                     raise EnvironmentDiscoveryError(message, code="obligation_removed")
             if service.get("required", True) is True:
                 self.lifecycle.setdefault(service_id, {}).update(current)
@@ -1396,6 +1412,7 @@ async def _revise(attempt: _Attempt, build: DividedConstruction | None, candidat
         _divided_revision(attempt, build, assessment, attempt.required_ids, attempt.obligation_ledger)
     else:
         _append_coverage_revision(attempt.messages, candidate, assessment, attempt.required_ids, attempt.obligation_ledger)
+        attempt.discovery.revision_base = {'manifest': copy.deepcopy(candidate), 'finding_responses': []}
     if released := release_requests(attempt.budget.finding_ledger, attempt.prior_manifests[-1], attempt.construction.require_scope()):
         await _reopen_for_release(attempt, released)
 

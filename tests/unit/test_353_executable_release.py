@@ -115,7 +115,7 @@ async def test_a_revision_that_releases_a_criterion_routes_the_author_and_reopen
     budget = AttemptBudget()
     budget.finding_ledger = SimpleNamespace(records=[record('runtime_network', 'check-a')], open_ids=lambda: ['F0001'])
     budget.scope_contract = SimpleNamespace(definition=scope(('S1', 'required')).definition)
-    attempt = SimpleNamespace(budget=budget, messages=[], required_ids={}, obligation_ledger=None,
+    attempt = SimpleNamespace(budget=budget, messages=[], required_ids={}, obligation_ledger=None, discovery=SimpleNamespace(),
                               prior_manifests=[manifest({'S1': ['check-a']})],
                               construction=SimpleNamespace(require_scope=lambda: budget.scope_contract))
     routed, reopened = [], []

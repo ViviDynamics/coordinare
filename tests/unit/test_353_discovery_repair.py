@@ -441,3 +441,35 @@ async def test_repeated_navigation_errors_still_exhaust_aggregate_calls():
         await run(replies, budget=budget)
     assert budget.schema_repairs == 0
     assert len(replies.messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_coverage_revision_may_correct_the_manifest_it_revises():
+    """Dettmore e2e-76: the revision author's one-record correction was refused for want of a base, and its restated
+    manifest then dropped thirty required records and held the attempt."""
+    original = candidate()
+    replies = Replies([{"tool": "read_file", "path": PATH}, {"manifest": original},
+        {"tool": "read_file", "path": PATH}, assessment(original, "revise"),
+        {"tool": "repair_proposal", "changes": [
+            {"path": ["manifest", "checks", 0, "argv"], "value": [*original["checks"][0]["argv"], "--strict"]},
+            {"path": ["finding_responses"], "value": finding_responses()}]},
+        {"tool": "read_file", "path": PATH}, {"assessment": {**assessment(original, retained=True)["assessment"]}}])
+    manifest, review = await run(replies)
+    assert manifest.digest() == review.manifest_digest
+    assert manifest.checks[0].argv[-1] == "--strict"
+
+
+def test_a_correction_with_no_base_is_told_to_restate_the_whole_declaration():
+    from types import SimpleNamespace
+
+    from coordinare.services.environment_discovery import _phase_reply
+
+    budget = AttemptBudget()
+    inspection = SimpleNamespace(name="discovery", budget=budget, delta=False,
+        limits=SimpleNamespace(max_output_bytes=1 << 20))
+    messages = [{"role": "system", "content": "{}"}, {"role": "user", "content": "{}"}]
+    raw = json.dumps({"tool": "repair_proposal", "changes": [{"path": ["manifest", "checks"], "value": []}]})
+    assert _phase_reply(raw, inspection, None, messages, expected_envelope="manifest") is None
+    error = json.loads(messages[-1]["content"])["validation_errors"][0]
+    assert error["code"] == "invalid_proposal_patch"
+    assert "holds no complete declaration" in error["guidance"]
