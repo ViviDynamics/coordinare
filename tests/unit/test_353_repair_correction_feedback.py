@@ -116,3 +116,37 @@ def test_a_changed_executed_command_is_corrected_with_retirement_guidance_and_fa
     assert feedback['code'] == EXECUTION_COMMAND_CHANGED and feedback['guidance'].endswith(RETIRE_FAILED_CHECK)
     [plain] = _declaration_feedback(error, SimpleNamespace(), SimpleNamespace(retirable_checks=set()))
     assert RETIRE_FAILED_CHECK not in plain['guidance']
+
+
+def test_a_command_failing_in_two_executions_must_change_method():
+    """Dettmore e2e-75: install-ruby failed five times, each repair a variant of copying ruby out of an image."""
+    from types import SimpleNamespace
+
+    from coordinare.services.environment_discovery import (
+        CHANGE_METHOD_INSTRUCTION,
+        _attempt_history,
+    )
+
+    once = SimpleNamespace(execution_attempt_history=[{'attempt': 1, 'failed_ids': ['install-ruby']}])
+    assert 'persistent_failure_ids' not in _attempt_history(once)
+    twice = SimpleNamespace(execution_attempt_history=[
+        {'attempt': 1, 'failed_ids': ['install-ruby', 'c-node']},
+        {'attempt': 2, 'failed_ids': ['install-ruby']}])
+    context = _attempt_history(twice)
+    assert context['persistent_failure_ids'] == ['install-ruby']
+    assert context['change_method'] == CHANGE_METHOD_INSTRUCTION
+    assert 'not a change of method' in CHANGE_METHOD_INSTRUCTION
+
+
+def test_runtime_guidance_forbids_copying_tools_out_of_images_and_names_no_stack():
+    import re
+
+    from coordinare.services import environment_capabilities
+
+    source = open(environment_capabilities.__file__).read()  # noqa: SIM115
+    start = source.index('"Never copy a runtime')
+    rule = ''.join(re.findall(r'"([^"]*)"', source[start:source.index('"An install', start)]))
+    assert 'Never copy a runtime, compiler or other tool out of a container image' in rule
+    assert "language's own installer or version manager" in rule
+    for stack in ('ruby', 'rbenv', 'rails', 'python', 'pyenv', 'node', 'nvm'):
+        assert stack not in rule.lower()

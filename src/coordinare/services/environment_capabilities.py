@@ -163,6 +163,13 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
                 "CPU, so container image builds are slow. Prefer an official prebuilt release archive or an extracted "
                 "distribution package over compiling a language runtime, database or other large tool from source; "
                 "compile only what has no pinned prebuilt. "
+                # Dettmore e2e-75: five installs copied a language runtime out of its official container image; each
+                # failed differently (a newer C library, a missing interpreter, a broken move) and no repair left it.
+                "Never copy a runtime, compiler or other tool out of a container image (docker cp, docker create "
+                "and export, or a mounted image filesystem) into {cache}: its binaries load that image's own system "
+                "libraries and expect its own paths, which the carrier lacks. A prebuilt archive must be built for "
+                "the carrier's platform and release; otherwise install the version the repository pins with the "
+                "language's own installer or version manager, or build that pinned source release, into {cache}. "
                 # Dettmore e2e-49: install-ruby "passed" on ruby --version while openssl, psych and zlib were never
                 # built; e2e-54: unpacked -dev packages left libssl.so pointing at a runtime library never unpacked.
                 "An install's verification must load what it installs: a version flag proves only that a binary starts. "

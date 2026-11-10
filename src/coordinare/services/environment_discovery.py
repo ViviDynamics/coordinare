@@ -1046,7 +1046,31 @@ def _attempt_history(budget: AttemptBudget) -> dict[str, Any]:
     """Every earlier execution for a repair's authors, as reviewers already get it (Dettmore e2e-54)."""
     if not budget.execution_attempt_history:
         return {}
-    return {"untrusted_attempt_history": budget.execution_attempt_history, "attempt_history_note": ATTEMPT_HISTORY_NOTE}
+    persistent = persistent_failures(budget.execution_attempt_history)
+    return {"untrusted_attempt_history": budget.execution_attempt_history, "attempt_history_note": ATTEMPT_HISTORY_NOTE,
+            **({"persistent_failure_ids": persistent, "change_method": CHANGE_METHOD_INSTRUCTION} if persistent else {})}
+
+
+def persistent_failures(history: list[dict[str, Any]]) -> list[str]:
+    """Commands that failed in at least two executions of this attempt, one repair or more apart.
+
+    Dettmore e2e-75: install-ruby failed in all five executions, each repair adjusting the same method (copying the
+    runtime out of a container image); "do not repeat a change that already failed" let each variant through.
+    """
+    counts: dict[str, int] = {}
+    for item in history:
+        for identifier in set(item.get("failed_ids") or []):
+            counts[identifier] = counts.get(identifier, 0) + 1
+    return sorted(identifier for identifier, count in counts.items() if count >= PERSISTENT_FAILURE_COUNT)
+
+
+PERSISTENT_FAILURE_COUNT = 2
+CHANGE_METHOD_INSTRUCTION = (
+    "Each command in persistent_failure_ids has failed in two or more executions despite repairs, so its method has "
+    "failed, not only its details. Read every earlier attempt of it in untrusted_attempt_history, name the method "
+    "they share, and replace it with a different method (another source, installer or way of building or starting "
+    "it) that the source evidence supports. Adjusting paths, flags, versions or steps within the same method is not "
+    "a change of method.")
 
 
 ATTEMPT_HISTORY_NOTE = (
