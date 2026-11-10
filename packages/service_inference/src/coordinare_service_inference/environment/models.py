@@ -431,6 +431,7 @@ class VerificationReport(StrictModel):
 
 
 GRAPH_IDS = 8
+GRAPH_COMMAND_IDS = 32
 MAX_COMMANDS = 4096
 
 
@@ -477,9 +478,13 @@ def validate_local_credentials(local_credentials: Sequence[LocalCredential], ser
         raise _graph_error("local_credential_unused", "every local credential must be referenced as ${NAME}", "", unused)
 
 
-def _graph_error(code: str, message: str, command_id: str, unavailable: set[str]) -> PydanticCustomError:
+def _graph_error(code: str, message: str, command_id: str, unavailable: set[str],
+                 command_ids: Sequence[str] = ()) -> PydanticCustomError:
     """Names only schema-validated command ids, so a correction can say which edge to remove."""
-    return PydanticCustomError(code, message, {'command_id': command_id, 'unavailable': sorted(unavailable)[:GRAPH_IDS]})
+    context: dict[str, Any] = {'command_id': command_id, 'unavailable': sorted(unavailable)[:GRAPH_IDS]}
+    if len(command_ids) > 1:
+        context['command_ids'] = list(command_ids)[:GRAPH_COMMAND_IDS]
+    return PydanticCustomError(code, message, context)
 
 
 def _repeated(identifiers: Iterable[str]) -> set[str]:
@@ -619,10 +624,13 @@ def validate_execution_graph(install: list[Command], checks: list[Command], serv
     check_ids = {command.id for command in checks}
     clean = [*checks, *(command for service in services
                         for command in [service.start, service.health, service.stop, service.init] if command)]
-    for command in clean:
-        if install_ids.intersection(command.depends_on):
-            raise _graph_error('clean_dependency_install_only', 'clean execution cannot depend on install-only evidence',
-                               command.id, install_ids.intersection(command.depends_on))
+    # Every offender at once: Dettmore e2e-80's author was shown one check per correction and spent the attempt's
+    # whole schema budget clearing the same edge from eight checks one at a time.
+    if offenders := [command for command in clean if install_ids.intersection(command.depends_on)]:
+        raise _graph_error('clean_dependency_install_only', 'clean execution cannot depend on install-only evidence',
+                           offenders[0].id, {dependency for command in offenders
+                                             for dependency in install_ids.intersection(command.depends_on)},
+                           [command.id for command in offenders])
     graph = {command.id: list(command.depends_on) for command in [*install, *clean]}
     for own in lifecycle:
         for previous, current in pairwise(own):

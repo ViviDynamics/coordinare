@@ -182,3 +182,20 @@ def test_an_unsupported_envelope_names_known_keys_only():
     error = _envelope_error('unsupported_envelope', {'assessment': {}, 'verdict': 'x', 'secret-key': 1}, 'assessment')
     assert error['top_level_keys'] == ['*', 'assessment', 'verdict']
     assert 'only top-level key is assessment' in error['guidance']
+
+
+def test_every_check_depending_on_an_install_is_named_in_one_correction():
+    """Dettmore e2e-80: eight checks shared the same install edge and each took its own correction."""
+    from coordinare_service_inference.environment.models import Command, validate_execution_graph
+
+    install = [Command.model_validate(_command('install-tool', 'true'))]
+    checks = [Command.model_validate({**_command(f'c-{index}', 'true'), 'depends_on': ['install-tool']})
+              for index in range(10)]
+    with pytest.raises(PydanticCustomError) as caught:
+        validate_execution_graph(install, checks, [])
+    wrapped = ValidationError.from_exception_data('EnvironmentManifestProposal',
+                                                  [{'type': caught.value, 'loc': (), 'input': None}])
+    error = next(error for error in _validation_feedback(wrapped) if error['code'] == 'clean_dependency_install_only')
+    assert error['command_ids'] == [f'c-{index}' for index in range(10)]
+    assert error['unavailable'] == ['install-tool']
+    assert 'correct every one of them in this reply' in error['guidance']

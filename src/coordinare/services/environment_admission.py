@@ -141,7 +141,8 @@ LOCAL_CREDENTIAL_GUIDANCE = {
 # Phase rules a dependency edge broke; each names the command and the ids it may not depend on.
 GRAPH_GUIDANCE = {
     'clean_dependency_install_only': ('Checks and service commands run in a clean consumer without install steps; remove '
-                                      'the install ids from depends_on and rely on activation instead.'),
+                                      'the install ids from depends_on and rely on activation instead. When command_ids '
+                                      'lists several commands, correct every one of them in this reply.'),
     'missing_prerequisite': 'Every depends_on id must be the id of a command declared in this manifest.',
     'cyclic_prerequisites': 'depends_on edges must not form a cycle; remove one edge between the named commands.',
     'install_dependency_phase': 'Install commands may depend only on other install commands.',
@@ -278,6 +279,8 @@ def _graph_ids(error: Mapping[str, Any]) -> dict[str, Any]:
     unavailable = [value for value in context.get("unavailable") or [] if isinstance(value, str) and GRAPH_ID.fullmatch(value)]
     if unavailable:
         found["unavailable"] = unavailable[:8]
+    if command_ids := [value for value in context.get("command_ids") or [] if isinstance(value, str) and GRAPH_ID.fullmatch(value)]:
+        found["command_ids"] = command_ids[:32]
     return found
 
 
