@@ -479,12 +479,12 @@ async def test_linux_supervisor_preserves_daemonized_service_until_teardown(tmp_
 
 @pytest.mark.skipif(sys.platform != 'linux', reason='Linux command-local subreaper adapter')
 @pytest.mark.asyncio
-@pytest.mark.parametrize('exit_code', [None, 0, 7, 143, 'stop'])
+@pytest.mark.parametrize('exit_code', [None, 0, 7, 143, 'stop', 'kill', 'client'])
 async def test_linux_service_start_records_supervised_completion(tmp_path, exit_code):
     service_code = (
         'import os,pathlib,time;pathlib.Path("service_pid").write_text(str(os.getpid()));'
         'exec("while not pathlib.Path(\\\"finish\\\").exists(): time.sleep(0.01)");'
-        f'raise SystemExit({exit_code if isinstance(exit_code, int) else 7})'
+        f'raise SystemExit({exit_code if isinstance(exit_code, int) else 137 if exit_code == "client" else 7})'
     )
     check = 'pass'
     if isinstance(exit_code, int):
@@ -498,9 +498,13 @@ async def test_linux_service_start_records_supervised_completion(tmp_path, exit_
             '    time.sleep(0.01)\n'
         )
     stop = ['true']
-    if exit_code == 'stop':
-        stop = [sys.executable, '-c',
-                'import os,pathlib,signal;os.kill(int(pathlib.Path("service_pid").read_text()),signal.SIGTERM)']
+    if exit_code in ('stop', 'kill'):
+        # Dettmore e2e-77: a stop that kills the service (docker rm -f) ends a clean run, as SIGTERM does.
+        stop = [sys.executable, '-c', 'import os,pathlib,signal;os.kill(int(pathlib.Path("service_pid").read_text()),'
+                f'signal.{"SIGTERM" if exit_code == "stop" else "SIGKILL"})']
+    if exit_code == 'client':
+        # A client in the foreground (docker run) reports its server's kill as exit 137 once the stop removes it.
+        stop = [sys.executable, '-c', 'import pathlib;pathlib.Path("finish").touch()']
     manifest = contract([{'id': 'baseline', 'argv': [sys.executable, '-c', check]}], services=[{
         'id': 'foreground', 'start': {'id': 'start', 'argv': [sys.executable, '-c', service_code]},
         'health': {'id': 'health', 'argv': [sys.executable, '-c',

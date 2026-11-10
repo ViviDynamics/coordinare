@@ -77,6 +77,8 @@ control_fd = int(sys.argv[4])
 if control_fd >= 0:
     os.set_blocking(control_fd, False)
 stop_requested = False
+STOPPED_EXITS = {-signal.SIGTERM, -signal.SIGKILL, -signal.SIGINT,
+                 128 + signal.SIGTERM, 128 + signal.SIGKILL, 128 + signal.SIGINT}
 def poll_control():
     global stop_requested, status
     if control_fd < 0 or stop_requested:
@@ -123,7 +125,10 @@ if status is None:
 exit_code = os.waitstatus_to_exitcode(status) if status is not None else (
     0 if service and stopping and stop_requested else 143
 )
-if service and stop_requested and exit_code == -signal.SIGTERM:
+# Once teardown authorized the stop, the service ending the way its stop command ends it is a clean stop: by
+# signal, or as a client reporting its server's signal (Dettmore e2e-77: a foreground docker run exits 137 when
+# its stop removes the container). A failure before the request was captured first and is kept.
+if service and stop_requested and exit_code in STOPPED_EXITS:
     exit_code = 0
 if exit_code < 0:
     exit_code = 128 - exit_code

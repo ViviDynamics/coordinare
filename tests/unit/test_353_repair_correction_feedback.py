@@ -150,3 +150,10 @@ def test_runtime_guidance_forbids_copying_tools_out_of_images_and_names_no_stack
     assert "language's own installer or version manager" in rule
     for stack in ('ruby', 'rbenv', 'rails', 'python', 'pyenv', 'node', 'nvm'):
         assert stack not in rule.lower()
+
+
+def test_port_guidance_reserves_forwards_for_guest_containers():
+    from coordinare.services.environment_capabilities import GUEST_PORT_GUIDANCE
+
+    assert 'only for a port a guest container publishes' in GUEST_PORT_GUIDANCE
+    assert 'runs directly on the carrier needs no forward' in GUEST_PORT_GUIDANCE

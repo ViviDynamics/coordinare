@@ -37,7 +37,12 @@ GUEST_PORT_GUIDANCE = (
     "declare {\"id\": \"postgres\", \"bind_address\": \"127.0.0.1\", \"guest_port\": 5432, \"outer_port\": 5432} in "
     "runtime_endpoints, and connect carrier clients to 127.0.0.1 at outer_port. docker exec runs inside the container, "
     "so a docker exec health check does not prove carrier clients can connect: check readiness from the carrier "
-    "through the forwarded port as well."
+    "through the forwarded port as well. "
+    # Dettmore e2e-77: a forward declared for a server the carrier runs itself held its port, and the server's own
+    # bind failed with address already in use in every execution.
+    "Declare a runtime_endpoints forward only for a port a guest container publishes: the forward itself listens on "
+    "outer_port on the carrier, so a service that runs directly on the carrier needs no forward and must not share "
+    "an outer_port with one."
 )
 # Dettmore e2e-61: no install step pulled pgvector/pgvector:pg17, so the service start had to pull it and its health
 # check ran out first; clean verification has no network, so it could never pull it there.
