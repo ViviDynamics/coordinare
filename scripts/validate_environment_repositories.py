@@ -499,22 +499,10 @@ class KeptGeneration:
 
 
 def trial_manifest(base: EnvironmentManifest, request: TrialRequest) -> EnvironmentManifest:
-    """The failed generation's manifest with the author's services replaced by id and only its checks.
+    """The trial manifest exactly as the trial entrypoint composes it from the request."""
+    from coordinare_service_inference.environment.runtime_execution import trial_manifest as compose
 
-    Installs, activation and runtime stay the base's, so the trial disk still matches them; a check's prerequisites
-    outside the trial are dropped, since only the trial's own commands run.
-    """
-    services = {service.id: service for service in base.services}
-    services.update({service.id: service for service in request.services})
-    credentials = {credential.name: credential for credential in base.local_credentials}
-    credentials.update({credential.name: credential for credential in request.local_credentials})
-    present = {command.id for service in services.values()
-               for command in (service.init, service.start, service.health, service.stop) if command is not None}
-    present.update(check.id for check in request.checks)
-    checks = [check.model_copy(update={'depends_on': [item for item in check.depends_on if item in present]})
-              for check in request.checks]
-    return base.model_copy(update={'services': list(services.values()), 'checks': checks,
-                                   'local_credentials': list(credentials.values())})
+    return compose(base, request.services, request.checks, request.local_credentials)
 
 
 async def run_repair_trial(snapshot: Snapshot, kept: KeptGeneration, image: str, cache: EnvCacheState,
@@ -535,7 +523,6 @@ async def run_repair_trial(snapshot: Snapshot, kept: KeptGeneration, image: str,
             raise TimeoutError("repair trial deadline exhausted")
         return left
 
-    manifest = trial_manifest(kept.manifest, request)
     name = "coordinare-env-trial-" + uuid.uuid4().hex[:12]
     process = None
     started = time.monotonic()
@@ -552,7 +539,7 @@ async def run_repair_trial(snapshot: Snapshot, kept: KeptGeneration, image: str,
             "--cache", kept.mount, "--repo", "/repo", "--scratch", "/tmp",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         )
-        payload = {"base": kept.manifest.model_dump(mode="json"), "manifest": manifest.model_dump(mode="json"),
+        payload = {"base": kept.manifest.model_dump(mode="json"), "request": request.model_dump(mode="json"),
                    "execution_source": kept.execution_source, "trial": kept.receipt.model_dump(mode="json")}
         output, _ = await asyncio.wait_for(process.communicate(json.dumps(payload).encode()), time_left())
     finally:

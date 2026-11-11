@@ -17,7 +17,7 @@ from .runtime_supervisor import CLEANUP_SECONDS, RuntimeScanStoppedError, open_r
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
-    from .models import CheckResult, EnvironmentManifest, VerificationReport
+    from .models import CheckResult, Command, EnvironmentManifest, LocalCredential, Service, VerificationReport
     from .runtime import RuntimeArtifactReceipt, TrialReceipt
     from .runtime_supervisor import RuntimeLease
 
@@ -491,6 +491,27 @@ async def execute_with_runtime(
         report.trial_artifacts = trial
         report.runtime_cleanup = True
         return report
+
+
+def trial_manifest(base: EnvironmentManifest, services: Sequence[Service], checks: Sequence[Command],
+                   local_credentials: Sequence[LocalCredential] = ()) -> EnvironmentManifest:
+    """The failed generation's manifest with replacement services by id and only the trial's checks.
+
+    Installs, activation and runtime stay the base's, so the trial disk still matches them. Built without
+    revalidation: a trial runs a few commands, never the scope's whole check mapping, and is never evidence. A check's
+    prerequisites outside the trial are dropped, since only the trial's own commands run.
+    """
+    by_id = {service.id: service for service in base.services}
+    by_id.update({service.id: service for service in services})
+    credentials = {credential.name: credential for credential in base.local_credentials}
+    credentials.update({credential.name: credential for credential in local_credentials})
+    present = {command.id for service in by_id.values()
+               for command in (service.init, service.start, service.health, service.stop) if command is not None}
+    present.update(check.id for check in checks)
+    kept = [check.model_copy(update={'depends_on': [item for item in check.depends_on if item in present]})
+            for check in checks]
+    return base.model_copy(update={'services': list(by_id.values()), 'checks': kept,
+                                   'local_credentials': list(credentials.values())})
 
 
 def installs_passed(manifest: EnvironmentManifest, report: VerificationReport) -> bool:

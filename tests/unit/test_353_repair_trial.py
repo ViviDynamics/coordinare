@@ -241,3 +241,18 @@ def test_the_harness_trial_manifest_replaces_services_and_runs_only_named_checks
     assert manifest.checks[0].depends_on == []
     assert manifest.install == base.install and manifest.activation == base.activation
     assert manifest.runtime == base.runtime
+
+
+def test_a_trial_on_a_scoped_manifest_is_composed_without_its_whole_check_mapping():
+    """Dettmore e2e-83: the first live trial ran three diagnostic checks; revalidating the composed manifest refused it
+    because the scope's required criteria map to checks the trial does not run, and the trial was unavailable."""
+    from coordinare_service_inference.environment.runtime_execution import trial_manifest
+
+    from tests.unit.env_manifest_fixture import reviewed_metadata
+
+    scoped = EnvironmentManifest.model_validate(reviewed_metadata()['environment_manifest'])
+    assert scoped.criterion_checks, 'the fixture maps scope criteria to checks'
+    composed = trial_manifest(scoped, [], [Command.model_validate(command('probe:gems-layout'))])
+    assert [check.id for check in composed.checks] == ['probe:gems-layout']
+    with pytest.raises(ValidationError, match='scope'):
+        EnvironmentManifest.model_validate(composed.model_dump(mode='json'))

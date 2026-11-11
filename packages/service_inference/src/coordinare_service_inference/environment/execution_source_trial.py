@@ -14,13 +14,16 @@ from pathlib import Path
 from coordinare_service_inference.environment.execution_source import ExecutionSourceIdentity
 from coordinare_service_inference.environment.execution_source_checkout import checkout_identity
 from coordinare_service_inference.environment.execution_source_install import MAX_CONTRACT_BYTES
-from coordinare_service_inference.environment.models import EnvironmentManifest
+from coordinare_service_inference.environment.models import Command, EnvironmentManifest, LocalCredential, Service
 from coordinare_service_inference.environment.runner import run_trial
 from coordinare_service_inference.environment.runtime import TrialReceipt
 from coordinare_service_inference.environment.runtime_cli import run_cli
+from coordinare_service_inference.environment.runtime_execution import trial_manifest
 from coordinare_service_inference.environment.runtime_transport import consume_runtime_controls
 
-TRIAL_KEYS = frozenset({"base", "manifest", "execution_source", "trial"})
+TRIAL_KEYS = frozenset({"base", "request", "execution_source", "trial"})
+MAX_TRIAL_SERVICES = 8
+MAX_TRIAL_CHECKS = 16
 
 
 def main() -> None:
@@ -36,7 +39,14 @@ def main() -> None:
     if not isinstance(data, dict) or set(data) != TRIAL_KEYS:
         raise ValueError("trial contract invalid")
     base = EnvironmentManifest.model_validate(data["base"])
-    manifest = EnvironmentManifest.model_validate(data["manifest"])
+    request = data["request"]
+    if (not isinstance(request, dict) or set(request) - {"services", "checks", "local_credentials"}
+            or len(request.get("services") or []) > MAX_TRIAL_SERVICES or len(request.get("checks") or []) > MAX_TRIAL_CHECKS):
+        raise ValueError("trial request invalid")
+    # Each record is validated; the composed manifest is not, since a trial never carries the scope's whole mapping.
+    manifest = trial_manifest(base, [Service.model_validate(item) for item in request.get("services") or []],
+                              [Command.model_validate(item) for item in request.get("checks") or []],
+                              [LocalCredential.model_validate(item) for item in request.get("local_credentials") or []])
     expected = ExecutionSourceIdentity.model_validate(data["execution_source"])
     trial = TrialReceipt.model_validate(data["trial"])
     runtime_deadline, _ = consume_runtime_controls(required=True, install=False, trial=True)
