@@ -546,10 +546,18 @@ def _patch_error(error: dict[str, Any], exc: EnvironmentDiscoveryError, reply: d
     return True
 
 
+OBLIGATION_RESTORE = (' Restore each named record, check or mapping exactly as it was, and change only what the '
+                      'feedback asks for; every required obligation of the earlier manifest stays.')
+
+
 def _declaration_feedback(exc: EnvironmentDiscoveryError, inspection: _Inspection, budget: AttemptBudget) -> list[dict[str, Any]]:
     if exc.code in REPAIR_CORRECTABLE:
         retire = f' {RETIRE_FAILED_CHECK}' if exc.code == EXECUTION_COMMAND_CHANGED and budget.retirable_checks else ''
         return [{"location": [], "code": exc.code, "guidance": str(exc) + retire}]
+    if exc.code == "obligation_removed" and budget.execution_repairs:
+        # Dettmore e2e-84: a repair author's correction dropped an obligation, and this refusal held the attempt with
+        # three repairs unused. Its message names exactly what to restore; merges already treat it as correctable.
+        return [{"location": [], "code": exc.code, "guidance": str(exc) + OBLIGATION_RESTORE}]
     if exc.code not in {"review_citations_invalid", "review_findings_invalid", "finding_response_ids_invalid"}:
         raise exc
     if exc.code == 'finding_response_ids_invalid':
@@ -1049,7 +1057,8 @@ async def discover_and_review(
         raise EnvironmentDiscoveryError(message, code="attempt_deadline") from None
     except EnvironmentDiscoveryError as exc:
         budget.error_code = exc.code
-        budget.error_detail = exc.detail or budget.error_detail
+        # An obligation message is daemon-composed and names only id-shaped values, so the hold can say what was lost.
+        budget.error_detail = exc.detail or (str(exc)[:500] if exc.code == "obligation_removed" else None) or budget.error_detail
         raise
     except (ValueError, TypeError) as exc:
         budget.error_code, budget.error_detail = "invalid_contract", failure_detail(exc)
