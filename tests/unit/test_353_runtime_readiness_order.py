@@ -128,6 +128,10 @@ async def exercise(tmp_path, monkeypatch, *, install, health_fails, never_ready=
         event('seal-boundary')
         return receipt
     monkeypatch.setattr(runtime_execution, 'seal_runtime', seal)
+    async def trial(lease, **kwargs):
+        # A failed run whose installs passed may keep a trial disk; it never changes the run's order or verdict.
+        assert lease.installs_passed and not lease.installation_passed
+    monkeypatch.setattr(runtime_execution, 'seal_trial', trial)
     kwargs = {'cache':cache,'repo':repo,'scratch':scratch,'install':install,
         'execution_source_digest':'2'*64,'runtime_artifacts':None if install else receipt,
         # Commands stop CLEANUP_SECONDS before the deadline, so the 15 s of work needs that reserve on top.

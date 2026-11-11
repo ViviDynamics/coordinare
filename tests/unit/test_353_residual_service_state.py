@@ -80,6 +80,11 @@ async def _run(tmp_path, monkeypatch, *, report, manifest, listing=LISTING, clea
     monkeypatch.setattr(runtime_execution, 'run_guarded', passthrough)
     monkeypatch.setattr(runtime_execution, '_scan_bounds', no_scan)
     monkeypatch.setattr(runtime_execution, 'seal_runtime', seal)
+
+    async def no_trial(_lease, **_kwargs):
+        return None  # a trial disk is optional; these runs judge residual state only
+
+    monkeypatch.setattr(runtime_execution, 'seal_trial', no_trial)
     result = await execute_with_runtime(manifest, cache=tmp_path, repo=tmp_path, scratch=tmp_path, install=True,
         scope='', secret_names=secret_names, execution_source_digest='c' * 64, runtime_artifacts=None,
         runtime_deadline=None, runtime_lease=None, commands=finished, redact_values=redact_values)
