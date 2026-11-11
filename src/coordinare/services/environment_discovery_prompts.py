@@ -125,6 +125,8 @@ _MANIFEST_INSTRUCTIONS = (
     'source must be one exact path that has been read, never comma-joined paths. '
     'Activation must make installed tools usable by ordinary downstream project commands, not only absolute-path version checks. '
     'Execution roots use {cache}, {repo}, {scratch}, never ${cache}, ${repo}, ${scratch}. '
+    '{repo} is a git checkout of the pinned tree with a detached HEAD, no remote and no earlier history: git status, '
+    'diff, ls-files and worktrees work there; fetching or comparing against another branch does not. '
     'The runner expands ${NAME} before starting the command: use it only for runtime environment variables. '
     'For shell-local variables assigned inside bash -c, use $name rather than ${name}. '
     f'{LOCAL_CREDENTIAL_AUTHORING} '

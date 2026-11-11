@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import subprocess
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
@@ -69,6 +71,66 @@ def restore_execution_bundle(
         validate_execution_bundle(path, expected=expected, review_inputs=review_inputs)
     finally:
         os.close(root_fd)
+    initialize_source_repository(destination, _bundle_entries(path), expected.source_commit)
+
+
+# The restored tree as git records it: path to (mode, object id).
+def _bundle_entries(path: Path) -> dict[str, tuple[str, str]]:
+    for archive, member in bundle_members(path):
+        if member.name == "metadata.json":
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise ValueError("execution source metadata missing")
+            data = json.loads(stream.read())
+            return {entry["path"]: (entry["mode"], entry["object_id"]) for entry in data["entries"]}
+    raise ValueError("execution source metadata missing")
+
+
+SOURCE_BRANCH = "coordinare-source"
+GIT_SECONDS = 300
+
+
+def initialize_source_repository(destination: Path, entries: Mapping[str, tuple[str, str]], commit: str) -> bool:
+    """Make the restored tree a git checkout: one commit holding exactly the pinned tree, detached, no remote.
+
+    Dettmore e2e-83: the installer ran on a git clone, but the clean consumer got this plain tree, so every check that
+    reads git state failed with "not a git repository". Implementer jobs run in git checkouts, so such checks are
+    legitimate. The commit's id differs from the pinned commit (its history and metadata are not in the bundle), but
+    its tree is the pinned tree: every staged entry is compared with the bundle's verified git object ids and modes.
+    Returns False, leaving the plain tree, only where the image has no git.
+    """
+    git = shutil.which("git")
+    if git is None:
+        return False
+    # No inherited GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE may point these commands elsewhere.
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_AUTHOR_NAME="coordinare",
+                       GIT_AUTHOR_EMAIL="coordinare@localhost", GIT_COMMITTER_NAME="coordinare",
+                       GIT_COMMITTER_EMAIL="coordinare@localhost", GIT_AUTHOR_DATE="2000-01-01T00:00:00Z",
+                       GIT_COMMITTER_DATE="2000-01-01T00:00:00Z")
+
+    def run(*arguments: str) -> bytes:
+        return subprocess.run(
+            [git, "-c", "core.hooksPath=" + os.devnull, "-c", "commit.gpgSign=false",
+             "-c", "init.defaultBranch=" + SOURCE_BRANCH, "-C", str(destination), *arguments],
+            env=environment, check=True, capture_output=True, timeout=GIT_SECONDS,
+        ).stdout
+
+    sha256 = any(len(object_id) == 64 for _, object_id in entries.values())
+    run("init", "--quiet", *(["--object-format=sha256"] if sha256 else []))
+    run("add", "--all", "--force")
+    staged: dict[str, tuple[str, str]] = {}
+    for record in run("ls-files", "--stage", "-z").split(b"\0"):
+        if record:
+            fields, name = record.decode().split("\t", 1)
+            mode, object_id, _ = fields.split(" ")
+            staged[name] = (mode, object_id)
+    if staged != dict(entries):
+        raise ValueError("execution source repository differs from the pinned tree")
+    run("commit", "--quiet", "--no-verify", "--allow-empty", "-m", f"coordinare execution source {commit}")
+    run("checkout", "--quiet", "--detach")
+    run("branch", "--quiet", "-D", SOURCE_BRANCH)
+    return True
 
 
 def restore_projected_source(payload_directory: Path, destination: Path) -> None:
