@@ -156,7 +156,7 @@ def test_discovery_judges_every_lifecycle_and_check_command_and_the_private_carr
 
     service = SimpleNamespace(init=None, start=_cmd('db-start', 'true'), health=_cmd('db-health', 'true'),
                               stop=_cmd('db-stop', 'true'))
-    manifest = SimpleNamespace(checks=[_cmd('check-a', 'true')], services=[service])
+    manifest = SimpleNamespace(checks=[_cmd('check-a', 'true')], services=[service], local_credentials=[])
     fresh = SimpleNamespace(executed_manifests=[])
     private = _carrier_rules(manifest, SimpleNamespace(runtime=object()), fresh)
     assert [command.id for command in private['others']] == ['check-a', 'db-start', 'db-health', 'db-stop']
@@ -446,7 +446,7 @@ def test_an_executed_check_is_never_refused_for_a_masked_status():
 
     masked = _cmd('c00-masked', 'bash', '-c', 'bundle exec rspec || true')
     fresh = _cmd('c00-fresh', 'bash', '-c', 'npm test || :')
-    manifest = SimpleNamespace(checks=[masked, fresh], services=[])
+    manifest = SimpleNamespace(checks=[masked, fresh], services=[], local_credentials=[])
     capabilities = SimpleNamespace(runtime=object())
     executed = SimpleNamespace(executed_manifests=[SimpleNamespace(checks=[masked])])
     rules = _carrier_rules(manifest, capabilities, executed)

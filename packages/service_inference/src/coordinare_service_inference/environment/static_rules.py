@@ -15,7 +15,7 @@ from .system_packages import COMMAND as SYSTEM_PACKAGES_COMMAND
 from .system_packages import ENV_FILE as SYSTEM_PACKAGES_ENV_FILE
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Collection, Iterable, Sequence
 
     from .models import Activation, Command
 
@@ -460,9 +460,47 @@ def masked_check_status(command: Command) -> bool:
     return False
 
 
+_CONTAINER_CLIENTS = frozenset({"docker", "podman"})
+_SECRET_NAME = re.compile(r"token|secret|password|passwd|credential|api.?key", re.IGNORECASE)
+_VARIABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def forwarded_unset_secrets(command: Command, defined: Collection[str]) -> set[str]:
+    """Secret-like names a container run forwards by name alone (-e NAME, --env NAME) that nothing defines.
+
+    Dettmore e2e-81: a repair started postgres with --env POSTGRES_PASSWORD while the command defined only PG_PASSWORD;
+    docker forwarded nothing, and the server refused to start. Only names that look like secrets are judged: any
+    variable the command may receive must be declared (a secret as NAME: ${NAME} in its env), so a correction is always
+    satisfiable, and an ordinary inherited variable (HOME, TERM) is never refused.
+    """
+    segments = _segments(command)
+    known = set(defined) | set(command.env)
+    for words in segments:
+        for index, word in enumerate(words):
+            if _ASSIGNMENT.match(word):
+                known.add(word.split("=", 1)[0])
+            elif word in {"export", "declare", "readonly", "local"}:
+                known.update(name.split("=", 1)[0] for name in words[index + 1:] if _VARIABLE.match(name))
+    found: set[str] = set()
+    for words in segments:
+        program = _program(words)
+        if len(program) < 2 or program[0].rsplit("/", 1)[-1] not in _CONTAINER_CLIENTS or program[1] not in {"run", "create"}:
+            continue
+        for index, word in enumerate(program[2:], 2):
+            if word in {"-e", "--env"} and index + 1 < len(program):
+                name = program[index + 1]
+            elif word.startswith("--env="):
+                name = word.removeprefix("--env=")
+            else:
+                continue
+            if _VARIABLE.fullmatch(name) and _SECRET_NAME.search(name) and name not in known:
+                found.add(name)
+    return found
+
+
 def validate_static_rules(install: Sequence[Command], activation: Activation, platform: str | None = None, *,
                           others: Sequence[Command] = (), system_packages: bool = True,
-                          checks: Sequence[Command] = ()) -> None:
+                          checks: Sequence[Command] = (), credentials: Collection[str] = ()) -> None:
     """Raises the first correctable static error; each names its record ids (activation entries by position).
 
     ``others`` are the check and service lifecycle commands; ``system_packages`` is False for a carrier that cannot
@@ -482,6 +520,12 @@ def validate_static_rules(install: Sequence[Command], activation: Activation, pl
                                    "this carrier's own release packages, unpacks and relinks them: " + SYSTEM_PACKAGES_COMMAND
                                    + "; then source {cache}/deps/" + SYSTEM_PACKAGES_ENV_FILE + " in each command that "
                                    "builds against them", command.id, set())
+    for command in others:
+        if unset := forwarded_unset_secrets(command, {*activation.env, *credentials}):
+            raise _graph_error("forwarded_secret_unset", "a container run forwards a secret variable by name that this "
+                               "command never defines, so the container receives nothing; pass the value the command "
+                               "has (-e NAME=\"$DEFINED\") or declare the variable in the command's env as NAME: "
+                               "${NAME}", command.id, unset)
     for command in [*install, *others]:
         if self_matching_process_pattern(command):
             raise _graph_error("self_matching_process_pattern", "a full-command-line pkill or pgrep inside a longer shell "

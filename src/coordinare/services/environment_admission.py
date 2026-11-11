@@ -192,6 +192,9 @@ GRAPH_GUIDANCE = {
                                '{cache}/deps <packages>) and source {cache}/deps/system-packages.env in each command '
                                'that builds against them; or download a prebuilt release archive for '
                                'execution_capabilities.platform.'),
+    'forwarded_secret_unset': ('The named command forwards the listed variables to a container by name alone (-e NAME), but '
+                               'this command never defines them, so the container receives nothing. Pass the value the '
+                               'command does have (-e NAME="$OTHER") or declare NAME in the command env as NAME: ${NAME}.'),
     'self_matching_process_pattern': ('The named command runs pkill -f or pgrep -f inside a shell script that does more than '
                                       'that, so the pattern matches the script\'s own shell and kills or finds it. Write the '
                                       'process id to a file under {scratch} when it starts, and stop it by killing that '

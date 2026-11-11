@@ -199,3 +199,31 @@ def test_every_check_depending_on_an_install_is_named_in_one_correction():
     assert error['command_ids'] == [f'c-{index}' for index in range(10)]
     assert error['unavailable'] == ['install-tool']
     assert 'correct every one of them in this reply' in error['guidance']
+
+
+@pytest.mark.parametrize(('script', 'env', 'expected'), [
+    # Dettmore e2e-81: only PG_PASSWORD was defined; docker forwarded an unset POSTGRES_PASSWORD.
+    ('docker run --rm --env POSTGRES_PASSWORD -p 5432:5432 db:1', {'PG_PASSWORD': '${PG_PASSWORD}'}, {'POSTGRES_PASSWORD'}),
+    ('docker run -e POSTGRES_PASSWORD db:1', {}, {'POSTGRES_PASSWORD'}),
+    ('docker run --env=API_TOKEN db:1', {}, {'API_TOKEN'}),
+    ('docker run -e POSTGRES_PASSWORD="$PG_PASSWORD" db:1', {'PG_PASSWORD': '${PG_PASSWORD}'}, set()),
+    ('docker run -e PG_PASSWORD db:1', {'PG_PASSWORD': '${PG_PASSWORD}'}, set()),
+    ('export POSTGRES_PASSWORD="$PG_PASSWORD"; docker run -e POSTGRES_PASSWORD db:1', {'PG_PASSWORD': '${PG_PASSWORD}'}, set()),
+    ('POSTGRES_PASSWORD=x docker run -e POSTGRES_PASSWORD db:1', {}, set()),
+    ('docker run -e TERM -e HOME db:1', {}, set()),  # not secret-like: never judged
+    ('docker exec -e POSTGRES_PASSWORD db psql', {}, set()),  # only run and create start a container
+])
+def test_a_container_run_forwarding_an_undefined_secret_is_refused(script, env, expected):
+    from coordinare_service_inference.environment.models import Command
+    from coordinare_service_inference.environment.static_rules import forwarded_unset_secrets
+
+    command = Command.model_validate({**_command('db-start', script), 'env': env})
+    assert forwarded_unset_secrets(command, set()) == expected
+
+
+def test_a_local_credential_counts_as_defined():
+    from coordinare_service_inference.environment.models import Command
+    from coordinare_service_inference.environment.static_rules import forwarded_unset_secrets
+
+    command = Command.model_validate(_command('db-start', 'docker run -e DB_PASSWORD db:1'))
+    assert forwarded_unset_secrets(command, {'DB_PASSWORD'}) == set()
