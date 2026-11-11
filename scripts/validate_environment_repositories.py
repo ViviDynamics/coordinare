@@ -1038,8 +1038,9 @@ async def validate_repository(
             # All executor cleanup was confirmed before admitting the rejected report. Remove private source/cache
             # contents before preparing another generation, except a cache kept for the repair's trials.
             kept = _keep_for_trials(snapshot, service, cache, attempt_target, image, result)
-            if not await _cleanup_roots([*([] if kept is not None else [cache.cache_dir]),
-                                         attempt_target / "installer-source", attempt_target / "runtime-scratch"], image):
+            cleaned = (await _cleanup_case(attempt_target, cache, image) if kept is None else await _cleanup_roots(
+                [attempt_target / "installer-source", attempt_target / "runtime-scratch"], image))
+            if not cleaned:
                 result.update(status="held", reason_code="cleanup_unconfirmed")
                 break
     except EnvironmentDiscoveryError as exc:
