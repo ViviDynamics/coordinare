@@ -156,7 +156,7 @@ def test_trial_runtime_controls_carry_only_the_deadline(monkeypatch):
     assert deadline is not None and receipt is None
     monkeypatch.setenv('COORDINARE_ENV_RUNTIME_EXPIRES_AT', str(time.time() + 60))
     monkeypatch.setenv('COORDINARE_ENV_RUNTIME_ARTIFACTS', '{}')
-    with pytest.raises(ValueError, match='trial cannot use a consumer receipt|receipt invalid'):
+    with pytest.raises(ValueError, match=r'trial cannot use a consumer receipt|receipt invalid'):
         consume_runtime_controls(required=True, install=False, trial=True)
 
 
