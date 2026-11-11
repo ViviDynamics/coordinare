@@ -26,7 +26,7 @@ from .runtime_cli import run_cli
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
 
-    from .runtime import RuntimeArtifactReceipt
+    from .runtime import RuntimeArtifactReceipt, TrialReceipt
     from .runtime_supervisor import RuntimeLease
 
 OUTPUT_LIMIT = 4096
@@ -1133,6 +1133,21 @@ async def run_manifest(
         raise ValueError("native manifest cannot use private runtime evidence")
     return await commands(manifest, cache=cache, repo=repo, scratch=scratch,
         install=install, scope=scope, secret_names=secret_names, execution_source_digest=execution_source_digest)
+
+
+async def run_trial(
+    base: EnvironmentManifest, manifest: EnvironmentManifest, *, trial: TrialReceipt, cache: str | Path,
+    repo: str | Path, scratch: str | Path, execution_source_digest: str, runtime_deadline: float,
+    secret_names: Sequence[str] = (),
+) -> VerificationReport:
+    """A repair's diagnostic run on its failed generation's trial disk, with fresh local credentials."""
+    from .runtime_execution import execute_trial
+
+    credentials = local_credential_values(manifest, supplied=secret_names)
+    commands = functools.partial(_run_manifest_commands, credentials=credentials)
+    return await execute_trial(base, manifest, trial=trial, cache=cache, repo=repo, scratch=scratch,
+        secret_names=secret_names, execution_source_digest=execution_source_digest,
+        runtime_deadline=runtime_deadline, commands=commands)
 
 
 def local_credential_values(manifest: EnvironmentManifest, *, supplied: Collection[str]) -> dict[str, str]:

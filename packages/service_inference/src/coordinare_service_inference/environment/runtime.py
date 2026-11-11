@@ -143,5 +143,33 @@ class RuntimeArtifactReceipt(RuntimeContract):
             raise ValueError('runtime artifact identity differs from accepted contract')
 
 
+TRIAL_DISK = 'trial.qcow2'
+
+
+class TrialReceipt(RuntimeContract):
+    """A failed installer's guest disk, sealed for repair trials only (repair-trial-amendment.md).
+
+    Its own type, so it can never be read as a consumer's RuntimeArtifactReceipt: a failed generation stays
+    unpublishable, and a trial on it is never evidence.
+    """
+
+    schema_version: Literal[1]
+    trial: Literal[True]
+    manifest_digest: str = Field(pattern=SHA256)
+    source_digest: str = Field(pattern=SHA256)
+    runtime_digest: str = Field(pattern=SHA256)
+    artifact: RuntimeArtifact
+
+    @model_validator(mode='after')
+    def trial_disk(self) -> Self:
+        if self.artifact.path != TRIAL_DISK:
+            raise ValueError('trial receipt names another artifact')
+        return self
+
+    def require_binding(self, *, manifest_digest: str, source_digest: str, runtime_digest: str) -> None:
+        if (self.manifest_digest, self.source_digest, self.runtime_digest) != (manifest_digest, source_digest, runtime_digest):
+            raise ValueError('trial disk identity differs from its failed generation')
+
+
 RUNTIME_OWNED_ENV = frozenset({'DOCKER_HOST', 'DOCKER_CONFIG', 'DOCKER_CONTEXT',
                                'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'SSH_AUTH_SOCK'})

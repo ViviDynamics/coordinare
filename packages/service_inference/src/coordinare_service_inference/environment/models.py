@@ -36,6 +36,7 @@ from .runtime import (
     RuntimeEndpoint,
     RuntimePolicy,
     RuntimeSpec,
+    TrialReceipt,
 )
 from .scope import ScopeContract, validate_scope_mapping
 
@@ -399,9 +400,11 @@ IncompleteCondition = Literal["deadline_exhausted", "runtime_failed", "seal_fail
 
 class VerificationReport(StrictModel):
     runtime_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    runtime_phase: Literal["installer", "consumer", "live_consumer"] | None = None
+    runtime_phase: Literal["installer", "consumer", "live_consumer", "trial"] | None = None
     runtime_artifacts: RuntimeArtifactReceipt | None = None
     runtime_cleanup: bool | None = None
+    # A failed installer whose installs all passed seals its disk for repair trials only (repair-trial-amendment.md).
+    trial_artifacts: TrialReceipt | None = None
     # Only on a run that cannot be accepted (deadline, seal or teardown), so it still says why while it holds.
     runtime_incomplete: list[IncompleteCondition] | None = None
     runtime_incomplete_detail: str | None = Field(default=None, max_length=16000)
@@ -412,7 +415,7 @@ class VerificationReport(StrictModel):
         if self.runtime_digest is None:
             for key in ("runtime_digest", "runtime_phase", "runtime_artifacts", "runtime_cleanup"):
                 data.pop(key, None)
-        for key in ("runtime_incomplete", "runtime_incomplete_detail"):
+        for key in ("runtime_incomplete", "runtime_incomplete_detail", "trial_artifacts"):
             if getattr(self, key) is None:
                 data.pop(key, None)
         return data

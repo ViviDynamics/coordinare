@@ -104,6 +104,8 @@ class AttemptBudget:
     # independent per role but is not charged to it (Dettmore e2e-22: 8,100 of 8,188 reads were verification).
     verification_reads: int = 0
     probe_batches: int = 0
+    # Repair trials run on a failed generation's trial disk (repair-trial-amendment.md).
+    trial_runs: int = 0
     probe_reports: list[dict[str, Any]] = field(default_factory=list, repr=False)
     probe_abandonments: list[dict[str, Any]] = field(default_factory=list, repr=False)
     schema_repairs: int = 0

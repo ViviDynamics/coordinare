@@ -125,7 +125,7 @@ from coordinare.services.test_env_loader import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Coroutine, Mapping, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
     from typing import Protocol
 
     from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
@@ -1178,6 +1178,9 @@ class EnvCacheService:
         # verify.sh) instead of blindly trusted — trusting the snapshot alone
         # would re-open the phantom-success hole 23dd839 closed.
         self._restart_verified: set[str] = set()
+        # Repair trials per symphony (repair-trial-amendment.md): registered only by an executor owner that keeps the
+        # failed generation's trial disk, today the validation harness. Production registers none.
+        self.repair_trials: dict[str, Callable[..., Awaitable[Any]]] = {}
         # 234 review 3: no manifest is held. The stat digest per symphony (manifest digest, stat digest) is small.
         self._stat: dict[str, tuple[str, str]] = {}
         # 234: monotonic time of the last full re-hash per symphony. Absent after a restart, so the first
@@ -2616,7 +2619,8 @@ class EnvCacheService:
                 manifest, assessment = await discover_and_review(
                     symphony_name=symphony_name, commit=commit, paths=paths,
                     fetch=fetch, chat=llm_chat, capabilities=capabilities, declared_services=declared_services,
-                    limits=limits, budget=budget, previous_manifest=previous, execution_feedback=feedback, probe_executor=probe_executor, require_preflight=True,
+                    limits=limits, budget=budget, previous_manifest=previous, execution_feedback=feedback, probe_executor=probe_executor,
+                    trial_executor=self.repair_trials.get(symphony_name) if previous is not None else None, require_preflight=True,
                     execution_source_digest=source_bundle.identity.digest(), entries=entries,
                     url_checker=missing_install_urls,
                 )

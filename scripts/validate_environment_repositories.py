@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import functools
 import inspect
 import json
 import os
@@ -57,10 +58,18 @@ from coordinare.services.environment_runtime import (
 from coordinare.services.environment_runtime_evidence import require_runtime_target
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
+    from coordinare_service_inference.environment.models import (
+        EnvironmentManifest,
+        VerificationReport,
+    )
+    from coordinare_service_inference.environment.runtime import TrialReceipt
 
     from coordinare.services.environment_discovery import ChatJson
     from coordinare.services.environment_probes import ProbePlan
+    from coordinare.services.environment_repair_trial import TrialRequest
 
 
 @dataclass(frozen=True)
@@ -345,35 +354,8 @@ def _time_left(cache: EnvCacheState) -> bool:
 MAX_PROVIDER_RESUMES = 2
 
 
-async def _install(
-    snapshot: Snapshot, cache: EnvCacheState, image: str, target: Path, timeout: float,
-) -> tuple[int, bytes]:
-    """A private local clone carries no host credential configuration into the image."""
-    manifest = accepted_environment(cache)
-    if manifest is None:
-        raise ValueError("accepted environment disappeared before installation")
-    if immutable_verifier_image(image) != (cache.environment_capabilities or {}).get('image_ref'):
-        raise ValueError('installer image differs from accepted capabilities')
-    expires_at = time.time()+timeout
-    if cache.environment_attempt is not None:
-        expires_at = min(expires_at, time.time()+remaining_seconds(cache))
-    options = ['--cpus', '2', '--memory', '4g', '--pids-limit', '512']
-    if manifest.runtime is not None:
-        require_runtime_target(manifest, cache)
-        if cache.environment_attempt is None or journal_for(cache).status != 'executing':
-            raise ValueError('private runtime installer requires an executing original attempt')
-        expires_at = min(expires_at, time.time()+manifest.runtime.policy.resources.max_seconds)
-        options = runtime_verifier_options(manifest, target)
-        options.extend(['-e', 'COORDINARE_ENV_RUNTIME_EXPIRES_AT='+str(guest_expiry(expires_at, time.time()))])
-    phase_deadline = time.monotonic()+timeout
-
-    def time_left() -> float:
-        left = min(expires_at-time.time(), phase_deadline-time.monotonic())
-        if left <= 0:
-            raise TimeoutError('installer original deadline exhausted')
-        return left
-
-    workspace = target / "installer-source"
+async def _clone_pinned(snapshot: Snapshot, workspace: Path, time_left: Callable[[], float]) -> None:
+    """A private local clone of the pinned commit; it carries no host credential configuration into the image."""
     git_environment = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
                            GIT_NO_REPLACE_OBJECTS="1")
     clone_timeout = min(60, time_left())
@@ -410,6 +392,38 @@ async def _install(
     )
     if await _bounded_wait(checkout, checkout_timeout):
         raise RuntimeError("private installer snapshot checkout failed")
+
+
+async def _install(
+    snapshot: Snapshot, cache: EnvCacheState, image: str, target: Path, timeout: float,
+) -> tuple[int, bytes]:
+    """A private local clone carries no host credential configuration into the image."""
+    manifest = accepted_environment(cache)
+    if manifest is None:
+        raise ValueError("accepted environment disappeared before installation")
+    if immutable_verifier_image(image) != (cache.environment_capabilities or {}).get('image_ref'):
+        raise ValueError('installer image differs from accepted capabilities')
+    expires_at = time.time()+timeout
+    if cache.environment_attempt is not None:
+        expires_at = min(expires_at, time.time()+remaining_seconds(cache))
+    options = ['--cpus', '2', '--memory', '4g', '--pids-limit', '512']
+    if manifest.runtime is not None:
+        require_runtime_target(manifest, cache)
+        if cache.environment_attempt is None or journal_for(cache).status != 'executing':
+            raise ValueError('private runtime installer requires an executing original attempt')
+        expires_at = min(expires_at, time.time()+manifest.runtime.policy.resources.max_seconds)
+        options = runtime_verifier_options(manifest, target)
+        options.extend(['-e', 'COORDINARE_ENV_RUNTIME_EXPIRES_AT='+str(guest_expiry(expires_at, time.time()))])
+    phase_deadline = time.monotonic()+timeout
+
+    def time_left() -> float:
+        left = min(expires_at-time.time(), phase_deadline-time.monotonic())
+        if left <= 0:
+            raise TimeoutError('installer original deadline exhausted')
+        return left
+
+    workspace = target / "installer-source"
+    await _clone_pinned(snapshot, workspace, time_left)
     name = "coordinare-env-validation-" + uuid.uuid4().hex[:12]
     remaining = time_left()
     process = await asyncio.create_subprocess_exec(
@@ -465,6 +479,127 @@ async def _install(
                 await process.wait()
         if not removed:
             raise RuntimeError("installer cleanup could not be confirmed")
+
+
+# A trial is a diagnostic run of a few services and checks; it gets far less than an execution.
+TRIAL_SECONDS = 900.0
+
+
+@dataclass
+class KeptGeneration:
+    """A failed generation kept for repair trials until the repaired generation executes (repair-trial-amendment.md)."""
+
+    cache_dir: Path
+    target: Path
+    mount: str
+    manifest: EnvironmentManifest
+    execution_source: dict[str, Any]
+    receipt: TrialReceipt
+    trials: int = 0
+
+
+def trial_manifest(base: EnvironmentManifest, request: TrialRequest) -> EnvironmentManifest:
+    """The failed generation's manifest with the author's services replaced by id and only its checks.
+
+    Installs, activation and runtime stay the base's, so the trial disk still matches them; a check's prerequisites
+    outside the trial are dropped, since only the trial's own commands run.
+    """
+    services = {service.id: service for service in base.services}
+    services.update({service.id: service for service in request.services})
+    credentials = {credential.name: credential for credential in base.local_credentials}
+    credentials.update({credential.name: credential for credential in request.local_credentials})
+    present = {command.id for service in services.values()
+               for command in (service.init, service.start, service.health, service.stop) if command is not None}
+    present.update(check.id for check in request.checks)
+    checks = [check.model_copy(update={'depends_on': [item for item in check.depends_on if item in present]})
+              for check in request.checks]
+    return base.model_copy(update={'services': list(services.values()), 'checks': checks,
+                                   'local_credentials': list(credentials.values())})
+
+
+async def run_repair_trial(snapshot: Snapshot, kept: KeptGeneration, image: str, cache: EnvCacheState,
+                           request: TrialRequest) -> VerificationReport:
+    """One trial on the kept generation's trial disk: pinned source, cache read-only, no outer network."""
+    from coordinare_service_inference.environment.models import VerificationReport
+
+    kept.trials += 1
+    root = kept.target / f"trial-{kept.trials:02}"
+    root.mkdir()
+    expires_at = time.time() + min(TRIAL_SECONDS, remaining_seconds(cache),
+                                   kept.manifest.runtime.policy.resources.max_seconds if kept.manifest.runtime else 0)
+    phase_deadline = time.monotonic() + TRIAL_SECONDS
+
+    def time_left() -> float:
+        left = min(expires_at - time.time(), phase_deadline - time.monotonic())
+        if left <= 0:
+            raise TimeoutError("repair trial deadline exhausted")
+        return left
+
+    manifest = trial_manifest(kept.manifest, request)
+    name = "coordinare-env-trial-" + uuid.uuid4().hex[:12]
+    process = None
+    started = time.monotonic()
+    try:
+        await _clone_pinned(snapshot, root / "source", time_left)
+        options = [*runtime_verifier_options(kept.manifest, root), "--network", "none",
+                   "-e", "COORDINARE_ENV_RUNTIME_EXPIRES_AT=" + str(guest_expiry(expires_at, time.time()))]
+        process = await asyncio.create_subprocess_exec(
+            "docker", "run", "--rm", "-i", "--name", name, *options,
+            "-e", "BASH_ENV=", "-e", "ENV=", "-e", "_DEVENV_SOURCED=1", "-e", "_DEVENV_SKIP_SERVICES=1",
+            "-v", f"{kept.cache_dir}:{kept.mount}:ro", "-v", f"{root / 'source'}:/repo",
+            "--entrypoint", "/usr/local/bin/python", image, "-I", "-m",
+            "coordinare_service_inference.environment.execution_source_trial",
+            "--cache", kept.mount, "--repo", "/repo", "--scratch", "/tmp",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        payload = {"base": kept.manifest.model_dump(mode="json"), "manifest": manifest.model_dump(mode="json"),
+                   "execution_source": kept.execution_source, "trial": kept.receipt.model_dump(mode="json")}
+        output, _ = await asyncio.wait_for(process.communicate(json.dumps(payload).encode()), time_left())
+    finally:
+        removed = await _remove_container(name)
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
+        cleaned = await _cleanup_roots([root / "source", root / "runtime-scratch"], image)
+        if not (removed and cleaned):
+            raise RuntimeError("repair trial cleanup could not be confirmed")
+    (root / "trial-output.json").write_bytes(_redact_report_detail(output))
+    _event(repository=snapshot.name, stage="repair_trial", trial=kept.trials,
+           seconds=round(time.monotonic() - started, 1))
+    lines = [line for line in output.decode(errors="replace").splitlines() if line.strip()]
+    try:
+        data = json.loads(lines[-1])
+        data.pop("passed", None)  # recomputed, never trusted
+        return VerificationReport.model_validate(data)
+    except (IndexError, ValueError, TypeError, AttributeError):
+        message = "repair trial produced no report"
+        raise RuntimeError(message) from None
+
+
+def _keep_for_trials(snapshot: Snapshot, service: EnvCacheService, cache: EnvCacheState, target: Path, image: str,
+                     result: dict[str, Any]) -> KeptGeneration | None:
+    """Keep a failed generation that sealed a trial disk, and offer its trials to the next repair."""
+    from coordinare_service_inference.environment.runtime import TrialReceipt
+
+    manifest = accepted_environment(cache)
+    if not result.get("trial_receipt") or manifest is None or manifest.runtime is None:
+        return None
+    kept = KeptGeneration(cache_dir=cache.cache_dir, target=target, mount="/devenv/" + cache.sanitised_name,
+                          manifest=manifest, execution_source=dict(cache.environment_execution_source or {}),
+                          receipt=TrialReceipt.model_validate(result["trial_receipt"]))
+    service.repair_trials[snapshot.name] = functools.partial(run_repair_trial, snapshot, kept, image, cache)
+    return kept
+
+
+async def _release_kept(service: EnvCacheService, name: str, kept: KeptGeneration | None, image: str,
+                        result: dict[str, Any]) -> None:
+    """End a kept generation's trials and remove its cache; an unconfirmed removal holds the run."""
+    service.repair_trials.pop(name, None)
+    if kept is not None and not await _cleanup_roots([kept.cache_dir], image):
+        result.update(status="held", reason_code="cleanup_unconfirmed")
+        message = "kept repair-trial generation cleanup could not be confirmed"
+        raise RuntimeError(message)
+    return
 
 
 def _redact_report_detail(output: bytes) -> bytes:
@@ -595,6 +730,8 @@ async def execute_accepted(
         and report.platform == cache.environment_capabilities["platform"]
     )
     evidence = {**report.model_dump(mode='json'), 'image_ref':image}
+    # A failed run whose installs all passed sealed a trial disk for the next repair (repair-trial-amendment.md).
+    result['trial_receipt'] = raw.get('trial_artifacts') if not result["installer_passed"] else None
     result['installer_evidence'] = _redacted_evidence(evidence)
     result['installer_command_seconds'] = command_timing("installer", snapshot.name, evidence)
     result['execution_source'] = cache.environment_execution_source
@@ -643,7 +780,10 @@ async def execute_accepted(
 
 async def _cleanup_case(target: Path, cache: EnvCacheState, image: str) -> bool:
     """Remove only private case contents, including files created with container ownership."""
-    roots = [cache.cache_dir, target / "installer-source", target / 'runtime-scratch']
+    return await _cleanup_roots([cache.cache_dir, target / "installer-source", target / 'runtime-scratch'], image)
+
+
+async def _cleanup_roots(roots: list[Path], image: str) -> bool:
     existing = [root for root in roots if root.is_dir() and not root.is_symlink()]
     if not existing:
         return True
@@ -841,6 +981,7 @@ async def validate_repository(
     attempts = []
     provider_resumes: list[dict[str, Any]] = []
     attempt_target = output
+    kept: KeptGeneration | None = None
     try:
         await snapshot.verify()
         # One generation per execution repair the daemon's budget allows, plus the first; the journal's status ends it.
@@ -869,6 +1010,9 @@ async def validate_repository(
                     result["provider_resumes"] = provider_resumes
                     _event(repository=snapshot.name, stage=result["stage"], status="resuming",
                            generation=generation, reason_code=exc.code)
+            # The repaired generation is accepted: its trials are over, and the kept one is removed before it runs.
+            await _release_kept(service, snapshot.name, kept, image, result)
+            kept = None
             for name, data in (("accepted-manifest.json", cache.environment_manifest),
                                ("accepted-assessment.json", cache.environment_assessment),
                                ("execution-capabilities.json", cache.environment_capabilities),
@@ -891,9 +1035,11 @@ async def validate_repository(
             await persist_attempt()
             if journal_for(cache).status != "repair_pending":
                 break
-            # All executor cleanup was confirmed before admitting the rejected report.
-            # Remove private source/cache contents before preparing another generation.
-            if not await _cleanup_case(attempt_target, cache, image):
+            # All executor cleanup was confirmed before admitting the rejected report. Remove private source/cache
+            # contents before preparing another generation, except a cache kept for the repair's trials.
+            kept = _keep_for_trials(snapshot, service, cache, attempt_target, image, result)
+            if not await _cleanup_roots([*([] if kept is not None else [cache.cache_dir]),
+                                         attempt_target / "installer-source", attempt_target / "runtime-scratch"], image):
                 result.update(status="held", reason_code="cleanup_unconfirmed")
                 break
     except EnvironmentDiscoveryError as exc:
@@ -903,6 +1049,8 @@ async def validate_repository(
             status="held", reason_code="validation_stage_failed", error_type=type(exc).__name__,
         )
     finally:
+        with contextlib.suppress(RuntimeError):  # an unconfirmed removal already holds the result
+            await _release_kept(service, snapshot.name, kept, image, result)
         if isinstance(cache.environment_attempt, dict):
             diagnostics = cache.environment_attempt.get("diagnostics", {})
             result["diagnostics"] = diagnostics

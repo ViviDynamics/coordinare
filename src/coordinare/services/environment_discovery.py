@@ -125,6 +125,13 @@ from coordinare.services.environment_repair_triage import (
     install_only_failure,
     part_of,
 )
+from coordinare.services.environment_repair_trial import (
+    TRIAL_INSTRUCTION,
+    TrialExecutor,
+    trial_handler,
+    trials_left,
+    with_trial_tool,
+)
 from coordinare.services.environment_response_schema import (
     ProbeRepairSchema,
     invoke_recorded,
@@ -321,6 +328,7 @@ class _Inspection(SourceInspection):
         self.revision_base: dict[str, Any] | None = None
         self.finding_responses: list[FindingResponse] = []
         self.probe: Callable[[dict[str, Any]], Awaitable[ProbeReport]] | None = None
+        self.trial: Callable[[Any], Awaitable[dict[str, Any]]] | None = None
         # A delta repair's global author returns a manifest_delta envelope, not a whole manifest.
         self.delta = False
 
@@ -581,10 +589,11 @@ def _phase_schema(inspection: _Inspection, repair_base: dict[str, Any] | None) -
         repair = ProbeRepairSchema([command.id for command in ProbeRequest.model_validate(repair_base['probe']).commands],
             sorted(inspection.inputs))
     # A delta declaration has no complete base to patch; a probe correction within a delta repair does.
-    return response_schema(budget.expected_envelope, allow_patch=repair_base is not None and not (
+    schema = response_schema(budget.expected_envelope, allow_patch=repair_base is not None and not (
         getattr(inspection, 'delta', False) and 'probe' not in repair_base),
         scope_contract=budget.scope_contract, probe_repair=repair,
         review_decision_ids=[record.id for record in budget.finding_ledger.records] if budget.finding_ledger is not None else [])
+    return with_trial_tool(schema) if getattr(inspection, 'trial', None) is not None else schema
 
 
 async def _admit_probe_reply(reply: dict[str, Any], raw: str, messages: list[dict[str, str]], inspection: _Inspection,
@@ -627,6 +636,10 @@ async def _phase(
                     continue
                 if set(reply) == {"probe"} and inspection.name == "discovery":
                     repair_base = await _admit_probe_reply(reply, raw, messages, inspection, repair_base)
+                    continue
+                if set(reply) == {"trial"} and inspection.trial is not None:
+                    messages.extend([{"role": "assistant", "content": raw},
+                                     {"role": "user", "content": _json({"trial_result": await inspection.trial(reply["trial"])})}])
                     continue
                 final = _declared_key(inspection)
                 final_keys = ({final}, {final, "finding_responses"}) if inspection.name == 'discovery' else ({final},)
@@ -702,6 +715,7 @@ class _DiscoveryOptionKeywords(TypedDict):
     previous_manifest: NotRequired[EnvironmentManifest | None]
     execution_feedback: NotRequired[dict[str, Any] | None]
     probe_executor: NotRequired[ProbeExecutor | None]
+    trial_executor: NotRequired[TrialExecutor | None]
     require_preflight: NotRequired[bool]
     execution_source_digest: NotRequired[str | None]
     entries: NotRequired[Mapping[str, InventoryEntry] | None]
@@ -722,6 +736,8 @@ class _DiscoveryOptions:
     previous_manifest: EnvironmentManifest | None = None
     execution_feedback: dict[str, Any] | None = None
     probe_executor: ProbeExecutor | None = None
+    # Repair trials on the failed generation's trial disk; only an executor owner that keeps one supplies this.
+    trial_executor: TrialExecutor | None = None
     require_preflight: bool = False
     execution_source_digest: str | None = None
     entries: Mapping[str, InventoryEntry] | None = None
@@ -1142,6 +1158,19 @@ async def _bind_delta(messages: list[dict[str, str]], options: _DiscoveryOptions
     messages[1]["content"] = _json(_dedupe_evidence(json.loads(messages[1]["content"])))
 
 
+def _attach_tools(discovery: _Inspection, options: _DiscoveryOptions, commit: str,
+                  messages: list[dict[str, str]], *, repair: bool) -> None:
+    """Probes always; an execution repair whose failed generation kept a trial disk may also try services and checks
+    on it first (repair-trial-amendment.md)."""
+    discovery.probe = _probe_handler(discovery, options, commit)
+    if options.trial_executor is None or not repair:
+        return
+    budget = cast("AttemptBudget", discovery.budget)
+    discovery.trial = trial_handler(options.trial_executor, budget)
+    messages[1]["content"] = _json({**json.loads(messages[1]["content"]), "repair_trial": TRIAL_INSTRUCTION,
+                                    "trials_left": trials_left(budget)})
+
+
 def _probe_handler(discovery: _Inspection, options: _DiscoveryOptions, commit: str) -> Callable[[dict[str, Any]], Awaitable[ProbeReport]]:
     budget = cast("AttemptBudget", discovery.budget)
     discovery.require_preflight = options.require_preflight
@@ -1317,7 +1346,7 @@ async def _discover_attempt(
     obligation_ledger = _ObligationLedger()
     await _prepare_finding_context(discovery, budget, commit, messages)
 
-    discovery.probe = _probe_handler(discovery, options, commit)
+    _attach_tools(discovery, options, commit, messages, repair=bool(prior_manifests))
     delta = _delta_plan(discovery, budget, prior_manifests)
 
     validate_candidate = _CandidateValidator(discovery, construction, required_ids, prior_manifests, obligation_ledger, budget)

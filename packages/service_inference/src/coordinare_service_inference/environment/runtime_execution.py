@@ -12,13 +12,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from .runtime_io import settle as _settle
-from .runtime_supervisor import CLEANUP_SECONDS, RuntimeScanStoppedError, open_runtime, seal_runtime
+from .runtime_supervisor import CLEANUP_SECONDS, RuntimeScanStoppedError, open_runtime, seal_runtime, seal_trial
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
     from .models import CheckResult, EnvironmentManifest, VerificationReport
-    from .runtime import RuntimeArtifactReceipt
+    from .runtime import RuntimeArtifactReceipt, TrialReceipt
     from .runtime_supervisor import RuntimeLease
 
 
@@ -415,6 +415,7 @@ async def execute_with_runtime(
             manifest_digest=manifest.digest(), source_digest=execution_source_digest)
         report = None
         receipt = runtime_artifacts
+        trial: TrialReceipt | None = None
         incomplete: list[str] = []
         cause: BaseException | None = None
         progress: dict[str, CheckResult] = {}
@@ -457,6 +458,8 @@ async def execute_with_runtime(
                         lease.installation_passed = False
                         incomplete.append('seal_failed')
                         cause = exc
+                elif install and installs_passed(manifest, report):
+                    trial = await _seal_trial(lease, manifest, execution_source_digest, deadline)
         finally:
             try:
                 cleanup = await lease.close(deadline=deadline)
@@ -485,5 +488,82 @@ async def execute_with_runtime(
         report.runtime_digest = spec.digest()
         report.runtime_phase = 'installer' if install else 'consumer'
         report.runtime_artifacts = receipt
+        report.trial_artifacts = trial
         report.runtime_cleanup = True
         return report
+
+
+def installs_passed(manifest: EnvironmentManifest, report: VerificationReport) -> bool:
+    """Every install command and the activation check passed; services or checks may have failed."""
+    results = {result.id: result for result in report.results}
+    return bool(manifest.install) and all(
+        results.get(command.id) is not None and results[command.id].status == 'pass' for command in manifest.install
+    ) and getattr(results.get('activation'), 'status', 'pass') == 'pass'
+
+
+async def _seal_trial(lease: RuntimeLease, manifest: EnvironmentManifest, source_digest: str,
+                      deadline: float) -> TrialReceipt | None:
+    """A trial disk is a convenience for the next repair: failing to seal one never holds the run."""
+    lease.installs_passed = True
+    try:
+        return await seal_trial(lease, manifest_digest=manifest.digest(), source_digest=source_digest, deadline=deadline)
+    except (RuntimeError, ValueError, OSError, TimeoutError) as exc:
+        if _cancelling():
+            raise asyncio.CancelledError from exc
+        return None
+
+
+async def execute_trial(
+    base: EnvironmentManifest, manifest: EnvironmentManifest, *, trial: TrialReceipt, cache: str | Path,
+    repo: str | Path, scratch: str | Path, secret_names: Sequence[str], execution_source_digest: str,
+    runtime_deadline: float, commands: Callable[..., Awaitable[VerificationReport]],
+) -> VerificationReport:
+    """Run a repair's trial manifest on its failed generation's trial disk (repair-trial-amendment.md).
+
+    The disk boots through a discarded overlay, the cache is read-only and the guest isolated, as for a consumer.
+    The base manifest fixes the runtime, installs and activation the disk was built with; the result is a diagnostic
+    observation, never evidence, so an incomplete run is reported rather than raised.
+    """
+    spec = base.runtime
+    if (spec is None or manifest.runtime != spec or manifest.install != base.install
+            or manifest.activation != base.activation):
+        raise ValueError('a trial may change only services and checks')
+    deadline = min(runtime_deadline, time.monotonic()+spec.policy.resources.max_seconds)
+    scratch_base = Path(scratch)
+    parent = scratch_base if scratch_base.is_dir() else scratch_base.parent
+    with tempfile.TemporaryDirectory(prefix='coordinare-trial-', dir=parent) as owned_scratch:
+        lease = await open_runtime(spec, artifacts=None, repo=Path(repo), cache=Path(cache), scratch=Path(owned_scratch),
+            install=False, deadline=deadline, manifest_digest=base.digest(), source_digest=execution_source_digest,
+            purpose='trial', trial=trial)
+        progress: dict[str, CheckResult] = {}
+        report: VerificationReport | None = None
+        incomplete: list[str] = []
+        try:
+            try:
+                report = await run_guarded(lease, commands(manifest, cache=str(cache), repo=str(repo),
+                    scratch=owned_scratch, install=False, scope='', secret_names=secret_names,
+                    execution_source_digest=execution_source_digest, progress=progress,
+                    runtime_env=lease.activation_env, command_deadline=lease.deadline-CLEANUP_SECONDS))
+            except TimeoutError as exc:
+                if _cancelling():
+                    raise asyncio.CancelledError from exc
+                incomplete.append('deadline_exhausted')
+            except (RuntimeError, OSError, ValueError, RuntimeScanStoppedError) as exc:
+                if _cancelling():
+                    raise asyncio.CancelledError from exc
+                incomplete.append('runtime_failed')
+        finally:
+            try:
+                cleanup = await lease.close(deadline=deadline)
+            except (TimeoutError, RuntimeError, OSError) as exc:
+                if _cancelling():
+                    raise asyncio.CancelledError from exc
+                cleanup = None
+    if report is None:
+        report = _partial_report(manifest, progress, install=False, scope='', execution_source_digest=execution_source_digest)
+    report.runtime_digest = spec.digest()
+    report.runtime_phase = 'trial'
+    report.runtime_cleanup = cleanup is not None and cleanup.confirmed
+    if incomplete:
+        report.runtime_incomplete = incomplete
+    return report

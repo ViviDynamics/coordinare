@@ -18,9 +18,9 @@ import uuid
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from .runtime import RuntimeArtifactReceipt, RuntimeIdentity, RuntimeSpec
+from .runtime import TRIAL_DISK, RuntimeArtifact, RuntimeArtifactReceipt, RuntimeIdentity, RuntimeSpec, TrialReceipt
 from .runtime_bundle import RuntimeBundleInputs, bundle_path, inspect_bundle, read_bundle
 from .runtime_cleanup import remove_control_material, remove_owned_tree
 from .runtime_guest import cloud_configuration, host_kvm_usable, qemu_arguments
@@ -30,7 +30,7 @@ from .runtime_io import run_io, settle
 from .runtime_network import require_isolated_outer_network
 from .runtime_resources import require_runtime_resources
 
-RuntimePurpose = Literal['installer', 'consumer', 'live_consumer', 'preflight']
+RuntimePurpose = Literal['installer', 'consumer', 'live_consumer', 'preflight', 'trial']
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -158,6 +158,8 @@ class RuntimeLease:
     process: asyncio.subprocess.Process | None = None
     initial_artifacts: dict[Path, str] = field(default_factory=dict)
     installation_passed: bool = False
+    # Every install command passed, whatever the services and checks did: the trial disk's precondition.
+    installs_passed: bool = False
     clean_shutdown: bool = False
     cleanup: RuntimeCleanupReport | None = None
     close_task: asyncio.Task[RuntimeCleanupReport] | None = None
@@ -288,6 +290,14 @@ def _verify_receipt(spec: RuntimeSpec, receipt: RuntimeArtifactReceipt | None,
     return receipt
 
 
+def _verify_trial(spec: RuntimeSpec, trial: TrialReceipt, manifest_digest: str | None,
+                  source_digest: str | None) -> RuntimeArtifact:
+    if manifest_digest is None or source_digest is None:
+        raise ValueError('private runtime trial requires its failed generation identity')
+    trial.require_binding(manifest_digest=manifest_digest, source_digest=source_digest, runtime_digest=spec.digest())
+    return trial.artifact
+
+
 def _admit(spec: RuntimeSpec, *, repo: Path, cache: Path, scratch: Path, readonly: bool,
            deadline: float, stop: Event | None = None, isolated: bool = True) -> RuntimeBundleInputs:
     actual = platform.system().lower() + '/' + platform.machine().lower()
@@ -351,23 +361,29 @@ async def _prepare_control(lease: RuntimeLease, *, repo: Path) -> list[str]:
 async def open_runtime(spec: RuntimeSpec, *, artifacts: RuntimeArtifactReceipt | None,
                        repo: Path, cache: Path, scratch: Path, install: bool, deadline: float,
                        manifest_digest: str | None = None, source_digest: str | None = None,
-                       purpose: RuntimePurpose | None = None) -> RuntimeLease:
-    """Create only an owned guest after all source-independent admission checks."""
+                       purpose: RuntimePurpose | None = None, trial: TrialReceipt | None = None) -> RuntimeLease:
+    """Create only an owned guest after all source-independent admission checks.
+
+    A trial boots a failed generation's trial disk read-only and isolated, for a repair's diagnostic run only.
+    """
     deadline = min(deadline, time.monotonic()+spec.policy.resources.max_seconds)
     _remaining(deadline)
     purpose = purpose or ('installer' if install else 'consumer')
-    if (purpose not in {'installer', 'consumer', 'live_consumer', 'preflight'}
-            or (purpose == 'installer') != install or (purpose == 'preflight' and artifacts is not None)):
+    if (purpose not in {'installer', 'consumer', 'live_consumer', 'preflight', 'trial'}
+            or (purpose == 'installer') != install or (purpose == 'preflight' and artifacts is not None)
+            or (purpose == 'trial') != (trial is not None) or (purpose == 'trial' and artifacts is not None)):
         raise ValueError('private runtime purpose differs from artifact policy')
     receipt = _verify_receipt(spec, artifacts, manifest_digest, source_digest) if purpose in {'consumer', 'live_consumer'} else None
+    disk = _verify_trial(spec, trial, manifest_digest, source_digest) if trial is not None else None
     bundle = await run_io(partial(_admit, spec, repo=repo, cache=cache, scratch=scratch, readonly=not install,
                                   isolated=purpose != 'live_consumer'),
                           deadline=deadline)
     initial = {Path(bundle.guest_image): spec.policy.identity.guest_base_sha256,
                Path(bundle.emulator).resolve(): spec.policy.identity.emulator_sha256,
                Path(bundle.firmware).resolve(): spec.policy.identity.firmware_sha256}
-    if receipt is not None:
-        artifact = receipt.artifacts[0]
+    booted = receipt.artifacts[0] if receipt is not None else disk
+    if booted is not None:
+        artifact = booted
         path = cache/artifact.path
         if (path.is_symlink() or not path.is_file() or path.stat().st_size != artifact.bytes
                 or await run_io(partial(_digest, path), deadline=deadline) != artifact.sha256):
@@ -384,7 +400,7 @@ async def open_runtime(spec: RuntimeSpec, *, artifacts: RuntimeArtifactReceipt |
                             'PATH': str(work/'bin') + os.pathsep + os.environ.get('PATH', '')}
     try:
         await run_io(lease.check_bounds, deadline=lease.deadline)
-        base = cache/'installed.qcow2' if receipt is not None else Path(bundle.guest_image)
+        base = cache/booted.path if booted is not None else Path(bundle.guest_image)
         _, raw_info = await _command(['/usr/bin/qemu-img', 'info', '--output=json', str(base)], deadline=lease.deadline)
         info = json.loads(raw_info)
         if (info.get('format') != 'qcow2' or info.get('backing-filename')
@@ -417,12 +433,30 @@ async def seal_runtime(lease: RuntimeLease, *, manifest_digest: str, source_dige
     """Publish closed project runtime state, never credentials or live service state."""
     if not lease.install or not lease.installation_passed or (manifest_digest, source_digest) != (lease.manifest_digest, lease.source_digest):
         raise ValueError('private runtime installer identity differs')
+    artifact = await _seal_disk(lease, 'installed.qcow2', deadline=deadline)
+    return RuntimeArtifactReceipt.model_validate({
+        'schema_version': 1, 'manifest_digest': manifest_digest, 'source_digest': source_digest,
+        'runtime_digest': lease.spec.digest(), 'sealed': True, 'artifacts': [artifact]})
+
+
+async def seal_trial(lease: RuntimeLease, *, manifest_digest: str, source_digest: str, deadline: float) -> TrialReceipt:
+    """Keep a failed installer's disk for repair trials: every install passed and teardown was confirmed clean, but
+    a service or check failed. Never a consumer receipt (repair-trial-amendment.md)."""
+    if not lease.install or lease.installation_passed or not lease.installs_passed or (
+            manifest_digest, source_digest) != (lease.manifest_digest, lease.source_digest):
+        raise ValueError('private runtime trial identity differs')
+    artifact = await _seal_disk(lease, TRIAL_DISK, deadline=deadline)
+    return TrialReceipt.model_validate({'schema_version': 1, 'trial': True, 'manifest_digest': manifest_digest,
+        'source_digest': source_digest, 'runtime_digest': lease.spec.digest(), 'artifact': artifact})
+
+
+async def _seal_disk(lease: RuntimeLease, name: str, *, deadline: float) -> dict[str, Any]:
     deadline = min(deadline, lease.deadline)
     await run_io(lease.check_bounds, deadline=deadline)
     await lease.stop_guest(deadline=deadline)
     if not await run_io(lease._artifacts_unchanged, deadline=deadline):
         raise ValueError('private runtime platform artifacts changed during installation')
-    target = lease.cache/'installed.qcow2'
+    target = lease.cache/name
     if target.exists() or target.is_symlink():
         raise ValueError('private runtime artifact publication is not fresh')
     try:
@@ -431,11 +465,7 @@ async def seal_runtime(lease: RuntimeLease, *, manifest_digest: str, source_dige
         await run_io(lease.check_bounds, deadline=deadline)
         digest = await run_io(partial(_digest, target), deadline=deadline)
         _remaining(min(deadline, lease.deadline))
-        return RuntimeArtifactReceipt.model_validate({
-            'schema_version': 1, 'manifest_digest': manifest_digest, 'source_digest': source_digest,
-            'runtime_digest': lease.spec.digest(), 'sealed': True,
-            'artifacts': [{'path': target.name, 'sha256': digest, 'bytes': target.stat().st_size}],
-        })
+        return {'path': target.name, 'sha256': digest, 'bytes': target.stat().st_size}
     except BaseException:
         target.unlink(missing_ok=True)
         raise
