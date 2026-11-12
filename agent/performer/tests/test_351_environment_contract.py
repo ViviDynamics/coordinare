@@ -39,8 +39,8 @@ def contract_score(tmp_path, *, failed=False):
         "inventory_digest": "d" * 64, "capabilities_digest": "c" * 64,
         "schema_version": 1, "symphony_name": "example", "source_commit": "a" * 40,
         "inputs": {"tools.plan": "a" * 64}, "requirements": [],
-        "install": [{"id": "install", "argv": ["python3", "-c", "from pathlib import Path; Path('installed').touch(); Path('alien/bin').mkdir(parents=True, exist_ok=True)"]}],
-        "checks": [{"id": "check", "argv": ["python3", "-c", "raise SystemExit(1)" if failed else "from pathlib import Path; assert Path('installed').exists()"]}],
+        "install": [{"id": "install", "argv": ["python3", "-c", "import sys; from pathlib import Path; Path(sys.argv[1]).touch(); Path('alien/bin').mkdir(parents=True, exist_ok=True)", "{cache}/installed"]}],
+        "checks": [{"id": "check", "argv": ["python3", "-c", "raise SystemExit(1)" if failed else "import sys; from pathlib import Path; assert Path(sys.argv[1]).exists()", "{cache}/installed"]}],
         "activation": {"path": ["{cache}/alien/bin"], "env": {"ALIEN_HOME": "{cache}/alien"}},
         "services": [], "empty_reason": "Baseline image suffices", "policy_version": "351-v1",
     })
