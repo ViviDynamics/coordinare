@@ -10,6 +10,7 @@ from coordinare_service_inference.environment.models import EnvironmentManifest
 
 from coordinare.services.environment_attempt import AttemptBudget, DiscoveryChatReply
 from coordinare.services.environment_discovery import EnvironmentDiscoveryError
+from tests.unit.obligation_feedback import told_to_restore
 from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
 from tests.unit.test_351_environment_discovery import (
     CAPABILITIES,
@@ -230,8 +231,9 @@ async def test_review_cannot_remove_obligation_without_evidence():
     omitted["requirements"] = []
     omitted["empty_reason"] = "Discard the requirement to pass validation"
     replies = Replies([{"tool": "read_file", "path": PATH}, {"manifest": invalid}, {"manifest": omitted}])
-    with pytest.raises(EnvironmentDiscoveryError, match="obligation"):
+    with pytest.raises(EnvironmentDiscoveryError):
         await run(replies)
+    assert told_to_restore(replies.messages)
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ import json
 import pytest
 
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
+from tests.unit.obligation_feedback import told_to_restore
 from tests.unit.test_353_discovery_repair import Replies, assessment, candidate, run
 
 
@@ -61,7 +62,8 @@ async def test_patch_cannot_remove_required_obligations():
     )
     with pytest.raises(EnvironmentDiscoveryError) as caught:
         await run(replies)
-    assert caught.value.code == "obligation_removed"
+    assert caught.value.code != "obligation_removed"
+    assert told_to_restore(replies.messages)
 
 
 @pytest.mark.asyncio

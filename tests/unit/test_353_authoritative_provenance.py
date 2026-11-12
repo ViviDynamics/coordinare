@@ -9,6 +9,7 @@ import pytest
 from coordinare_service_inference.environment.models import EnvironmentManifest
 
 from coordinare.services.environment_discovery import EnvironmentDiscoveryError
+from tests.unit.obligation_feedback import told_to_restore
 from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
 from tests.unit.test_351_environment_discovery import (
     CAPABILITIES,
@@ -94,9 +95,10 @@ async def test_prior_required_scope_cannot_be_narrowed_for_executable_repair():
     agent = Agent()
     previous = candidate()
     previous['checks'][0]['scope'] = ['implementer']
-    with pytest.raises(EnvironmentDiscoveryError, match='obligation'):
+    with pytest.raises(EnvironmentDiscoveryError):
         await discover(agent, previous_manifest=EnvironmentManifest.model_validate(previous),
             execution_feedback={'results': [{'id': 'version', 'status': 'fail', 'exit_code': 2}]})
+    assert told_to_restore(agent.messages)
 
 
 @pytest.mark.parametrize('change', ['start_id', 'scope', 'init_removed', 'start_optional'])

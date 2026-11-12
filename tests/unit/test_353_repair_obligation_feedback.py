@@ -1,4 +1,4 @@
-"""A repair author's correction that drops an obligation is told what to restore, not held.
+"""A correction that drops an obligation is told what to restore, not held (in repairs and first discovery alike).
 
 Dettmore e2e-84: the trial passed every service command, then the repair author's fourth reply dropped a required
 obligation. During a repair obligation_removed was fatal, so the attempt held with three repairs unused, and its
@@ -27,8 +27,3 @@ def test_an_uncorrectable_refusal_still_raises():
                               SimpleNamespace(), SimpleNamespace(retirable_checks=frozenset()))
 
 
-
-def test_outside_an_execution_repair_a_removed_obligation_still_holds():
-    with pytest.raises(EnvironmentDiscoveryError):
-        _declaration_feedback(EnvironmentDiscoveryError("x", code="obligation_removed"),
-                              SimpleNamespace(), SimpleNamespace(retirable_checks=frozenset(), execution_repairs=0))

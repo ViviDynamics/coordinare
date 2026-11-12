@@ -12,6 +12,7 @@ from coordinare.services.env_bootstrap_control import reset_env_bootstrap_breake
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_discovery import DiscoveryLimits
 from coordinare.services.environment_repair import begin_attempt, dispatch_refusal, save_attempt
+from tests.unit.obligation_feedback import told_to_restore
 from tests.unit.test_353_discovery_repair import PATH, Replies, assessment, candidate, run
 from tests.unit.test_353_execution_repair import cache_fixture
 
@@ -60,8 +61,9 @@ async def test_invalid_activation_correction_cannot_weaken_valid_obligations(cha
     else:
         revised['services'][0]['start']['scope'] = []
     replies = Replies([{'tool':'read_file','path':PATH},{'manifest':malformed},{'manifest':revised},assessment(revised)])
-    with pytest.raises(EnvironmentDiscoveryError, match='obligation'):
+    with pytest.raises(EnvironmentDiscoveryError):
         await run(replies)
+    assert told_to_restore(replies.messages)
 
 
 @pytest.mark.parametrize('legacy', [False, True])

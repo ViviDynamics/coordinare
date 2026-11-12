@@ -554,9 +554,9 @@ def _declaration_feedback(exc: EnvironmentDiscoveryError, inspection: _Inspectio
     if exc.code in REPAIR_CORRECTABLE:
         retire = f' {RETIRE_FAILED_CHECK}' if exc.code == EXECUTION_COMMAND_CHANGED and budget.retirable_checks else ''
         return [{"location": [], "code": exc.code, "guidance": str(exc) + retire}]
-    if exc.code == "obligation_removed" and budget.execution_repairs:
-        # Dettmore e2e-84: a repair author's correction dropped an obligation, and this refusal held the attempt with
-        # three repairs unused. Its message names exactly what to restore; merges already treat it as correctable.
+    if exc.code == "obligation_removed":
+        # Dettmore e2e-84 (a repair) and e2e-89 (first discovery): a correction dropped an obligation, and this refusal
+        # held the attempt. Its message names exactly what to restore; the candidate is never accepted without it.
         return [{"location": [], "code": exc.code, "guidance": str(exc) + OBLIGATION_RESTORE}]
     if exc.code not in {"review_citations_invalid", "review_findings_invalid", "finding_response_ids_invalid"}:
         raise exc
