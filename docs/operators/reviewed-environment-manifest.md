@@ -335,9 +335,10 @@ token capacity; the byte cap does not guarantee provider context capacity. Provi
 request failures hold and do not consume schema corrections. Output limits remain set
 on the model backend.
 
-Scope revisions default to eight. Schema corrections, executable revisions and executable repairs default to two each
-(sharded discovery defaults to eight executable revisions). Their independent configurable ranges
-are zero to eight, zero to eight, zero to eight and zero to two respectively (`manifest_max_schema_repairs`,
+Scope revisions default to eight. Schema corrections and executable revisions default to two each (sharded discovery
+defaults to eight executable revisions), and execution repairs default to eight: the attempt deadline and the repair
+time gate refuse any repair that cannot finish, so time is their real bound. Their independent configurable ranges
+are zero to eight each (`manifest_max_schema_repairs`,
 `manifest_max_scope_revisions`, `manifest_max_coverage_revisions`, `manifest_max_execution_repairs`).
 `manifest_max_coverage_revisions` counts executable review revisions. A scope revision that is refused holds with
 `attempt_scope_revision_limit`; an executable revision that is refused holds with `attempt_coverage_limit`. An execution repair defaults to a delta: only the records the failed
