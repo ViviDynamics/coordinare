@@ -477,6 +477,18 @@ def _settled_envelope(reply: dict[str, Any], envelope: str, *, discovery: bool) 
     return reply
 
 
+def _without_empty_responses(reply: dict[str, Any], budget: AttemptBudget) -> dict[str, Any]:
+    """Drop an empty finding_responses while there are no findings to answer: it carries nothing.
+
+    Dettmore e2e-90: the first declaration's schema has no finding_responses until review records a finding, and the
+    author sent "finding_responses": [] beside its manifest 13 times; each refusal spent a correction until the
+    schema budget held the attempt. A non-empty list, or any list once findings exist, is still validated as sent.
+    """
+    if reply.get('finding_responses') != [] or (budget.finding_ledger is not None and budget.finding_ledger.records):
+        return reply
+    return {key: value for key, value in reply.items() if key != 'finding_responses'}
+
+
 def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
                  messages: list[dict[str, str]], *,
                  expected_envelope: str | None = None) -> dict[str, Any] | None:
@@ -486,6 +498,7 @@ def _phase_reply(raw: str, inspection: _Inspection, base: dict[str, Any] | None,
     try:
         reply = _normalize_review(_decode_reply(raw, inspection.name, inspection.limits), inspection.name)
         reply = _settled_envelope(reply, envelope, discovery=inspection.name == 'discovery')
+        reply = _without_empty_responses(reply, budget)
         if reply.get('tool') == 'repair_proposal':
             reply = apply_patch(base, reply, max_bytes=inspection.limits.max_output_bytes)
         if base is not None and 'probe' in base and set(reply) == {'probe'}:
