@@ -15,6 +15,7 @@ import secrets
 import shutil
 import signal
 import sys
+import tempfile
 import time
 from graphlib import TopologicalSorter
 from pathlib import Path
@@ -52,6 +53,7 @@ import ctypes
 import json
 import os
 import signal
+import tempfile
 import sys
 import time
 
@@ -1018,11 +1020,49 @@ async def _run_manifest_commands(
     env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env, credentials=credentials)
     results: dict[str, CheckResult] = progress if progress is not None else {}
     digest = manifest.digest()
+    consumer_repo = None
     if install:
+        # Dettmore e2e-83 and e2e-86: npm ci wrote node_modules into {repo}, every installer check passed, and the
+        # clean consumer, which gets a fresh {repo} and keeps only {cache}, failed with "tailwindcss: not found".
+        # Services and checks run in a copy of {repo} taken before any install, as the clean consumer sees it, so a
+        # {repo}-only install fails here, where a repair can still correct it.
+        consumer_repo = Path(tempfile.mkdtemp(prefix="coordinare-consumer-repo-")).resolve() / "repo"
+        shutil.copytree(repo, consumer_repo, symlinks=True)
         await _commands(
             manifest.install, roots=roots, env=env, digest=digest, scope=scope, results=results, redactions=redactions,
             health=True, budget=command_deadline,
         )
+        roots = {**roots, "repo": str(consumer_repo)}
+        env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env,
+                                   credentials=credentials)
+    try:
+        return await _run_consumer_phase(
+            manifest, roots=roots, env=env, digest=digest, results=results, redactions=redactions, install=install,
+            scope=scope, secret_names=secret_names, runtime_env=runtime_env, credentials=credentials,
+            command_deadline=command_deadline, execution_source_digest=execution_source_digest,
+        )
+    finally:
+        if consumer_repo is not None:
+            shutil.rmtree(consumer_repo.parent, ignore_errors=True)
+
+
+async def _run_consumer_phase(
+    manifest: EnvironmentManifest,
+    *,
+    roots: dict[str, str],
+    env: dict[str, str],
+    digest: str,
+    results: dict[str, CheckResult],
+    redactions: frozenset[str],
+    install: bool,
+    scope: str,
+    secret_names: Sequence[str],
+    runtime_env: Mapping[str, str] | None,
+    credentials: Mapping[str, str] | None,
+    command_deadline: float | None,
+    execution_source_digest: str | None,
+) -> VerificationReport:
+    """Activation, services and checks, in the source copy a clean consumer would see."""
     # Activation paths are execution prerequisites, even when a command uses absolute argv.
     missing = [
         path for path in manifest.activation.path if not Path(_expand(path, roots, env)).is_dir()

@@ -26,12 +26,16 @@ from coordinare_service_inference.environment.runtime_guest import cloud_configu
 from tests.unit.env_manifest_fixture import reviewed_metadata
 from tests.unit.test_353_runtime_supervisor import runtime_spec
 
+# Outside {repo}: services and checks run in a copy of it taken before any install.
+EVENTS = "events"
+
 
 def command(identifier, phase, *, failure=False):
     body = (
+        f'EVENTS={EVENTS!r};'
         'import os,sys;from pathlib import Path;'
         'assert os.environ["DOCKER_HOST"].startswith("ssh://root@127.0.0.1:");'
-        'p=Path("{repo}/events");assert "guest-ready" in p.read_text().splitlines();'
+        'p=Path(EVENTS);assert "guest-ready" in p.read_text().splitlines();'
         f'p.open("a").write("{phase}\\n");'
         f'sys.exit({7 if failure else 0})'
     )
@@ -55,7 +59,8 @@ async def exercise(tmp_path, monkeypatch, *, install, health_fails, never_ready=
     cache, repo, scratch = (tmp_path / name for name in ('cache', 'repo', 'scratch'))
     for path in (cache, repo, scratch):
         path.mkdir()
-    events = repo / 'events'
+    events = tmp_path / 'events'
+    monkeypatch.setattr(sys.modules[__name__], 'EVENTS', str(events))
     events.write_text('')
     def event(text):
         with events.open('a') as stream:
