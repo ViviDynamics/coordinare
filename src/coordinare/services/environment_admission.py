@@ -273,6 +273,26 @@ def _schema_bounds(code: str, error: Mapping[str, Any], *, guided: bool) -> dict
 GRAPH_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 
 
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+
+
+def _credential_detail(error: Mapping[str, Any], location: Sequence[Any]) -> dict[str, Any]:
+    """Name the credential variable and the one value it accepts, before the general rule.
+
+    Dettmore e2e-91: told only the general rule, the author wrote DATABASE_PASSWORD: ${PG_PASSWORD} in activation and
+    then in four checks, 13 times, until the schema budget held the attempt. The variable name is schema-checked.
+    """
+    variable = (error.get("ctx") or {}).get("variable")
+    if not isinstance(variable, str) or not ENV_NAME.fullmatch(variable):
+        return {"guidance": CREDENTIAL_GUIDANCE}
+    named = (f"{variable} must be exactly ${{{variable}}}, never another variable's reference: name the credential "
+             f"itself {variable} (in local_credentials for a service this manifest starts). ")
+    if "activation" in location:
+        named += (f"Activation cannot carry a credential: remove {variable} from activation.env and set "
+                  f"{variable}: ${{{variable}}} in the env of each command that needs it. ")
+    return {"variable": variable, "guidance": named + CREDENTIAL_GUIDANCE}
+
+
 def _graph_ids(error: Mapping[str, Any]) -> dict[str, Any]:
     """Command ids already passed the schema's id pattern; anything else is dropped, never echoed."""
     context = error.get("ctx") or {}
@@ -398,7 +418,7 @@ def _validation_feedback(exc: ValidationError) -> list[dict[str, Any]]:
             detail.update(_graph_ids(error), guidance=SCOPE_ID_COLLISION_GUIDANCE)
         detail.update(_schema_bounds(code, error, guided="guidance" in detail))
         if code == "runtime_credential_reference":
-            detail["guidance"] = CREDENTIAL_GUIDANCE
+            detail.update(_credential_detail(error, location))
         if code in LOCAL_CREDENTIAL_GUIDANCE:
             detail.update(_graph_ids(error), guidance=LOCAL_CREDENTIAL_GUIDANCE[code])
         if code in GRAPH_GUIDANCE:

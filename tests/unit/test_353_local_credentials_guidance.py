@@ -29,7 +29,8 @@ def feedback(data):
 def test_literal_database_password_guidance_points_to_local_credentials():
     check = {**CHECK, 'env': {'PGPASSWORD': 'postgres'}}
     [error] = feedback(manifest(checks=[check]))
-    assert error['code'] == 'runtime_credential_reference' and error['guidance'] == CREDENTIAL_GUIDANCE
+    assert error['code'] == 'runtime_credential_reference' and error['guidance'].endswith(CREDENTIAL_GUIDANCE)
+    assert error['guidance'].startswith('PGPASSWORD must be exactly ${PGPASSWORD}')
     assert 'local_credentials' in CREDENTIAL_GUIDANCE and 'scope text' in CREDENTIAL_GUIDANCE
 
 
@@ -186,3 +187,20 @@ def test_local_credential_errors_name_the_credentials_and_command_they_reject():
     [error] = feedback(manifest(install=[install]))
     assert (error['code'], error['command_id'], error['unavailable']) == (
         'local_credential_in_install', 'seed-db', ['PGPASSWORD'])
+
+
+def test_an_aliased_credential_is_named_with_the_one_value_it_accepts():
+    # Dettmore e2e-91: DATABASE_PASSWORD: ${PG_PASSWORD}, 13 times, against the general rule alone.
+    check = {**CHECK, 'env': {'DATABASE_PASSWORD': '${PG_PASSWORD}'}}
+    [error] = feedback(manifest(checks=[check]))
+    assert error['variable'] == 'DATABASE_PASSWORD'
+    assert error['guidance'].startswith('DATABASE_PASSWORD must be exactly ${DATABASE_PASSWORD}')
+    assert 'Activation cannot carry' not in error['guidance']
+
+
+def test_a_credential_in_activation_is_told_to_move_to_command_env():
+    data = manifest()
+    data['activation'] = {**data.get('activation', {'path': []}), 'env': {'DATABASE_PASSWORD': '${PG_PASSWORD}'}}
+    errors = feedback(data)
+    error = next(item for item in errors if item['code'] == 'runtime_credential_reference')
+    assert 'Activation cannot carry a credential: remove DATABASE_PASSWORD from activation.env' in error['guidance']
