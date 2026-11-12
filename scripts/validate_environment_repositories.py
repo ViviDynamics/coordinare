@@ -770,6 +770,10 @@ async def _cleanup_case(target: Path, cache: EnvCacheState, image: str) -> bool:
     return await _cleanup_roots([cache.cache_dir, target / "installer-source", target / 'runtime-scratch'], image)
 
 
+# Cache roots hold multi-gigabyte installs and guest disks, removed through Docker Desktop's file sharing.
+CLEANUP_SECONDS = 600
+
+
 async def _cleanup_roots(roots: list[Path], image: str) -> bool:
     existing = [root for root in roots if root.is_dir() and not root.is_symlink()]
     if not existing:
@@ -796,8 +800,12 @@ async def _cleanup_roots(roots: list[Path], image: str) -> bool:
             stderr=asyncio.subprocess.DEVNULL,
         )
         try:
-            if await _bounded_wait(proc, 60):
+            if await _bounded_wait(proc, CLEANUP_SECONDS):
                 return False
+        except TimeoutError:
+            # Dettmore e2e-88: removing a kept 1.2 GB trial generation outlasted a 60 s bound, and the raised
+            # TimeoutError aborted the run as validation_stage_failed. An unfinished removal is unconfirmed cleanup.
+            return False
         finally:
             removed = await _remove_container(name)
         if not removed:
