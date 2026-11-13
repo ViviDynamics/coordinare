@@ -26,9 +26,10 @@ from coordinare_service_inference.environment.static_rules import connectivity_p
 from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from coordinare_service_inference.environment.models import (
+        CheckResult,
         Command,
         EnvironmentManifest,
         VerificationReport,
@@ -134,21 +135,26 @@ def depends_on_closure(manifest: EnvironmentManifest, identifiers: Iterable[str]
     return {identifier: records[identifier][0].model_dump(mode="json") for identifier in sorted(reached)}
 
 
+def _result_root(result: CheckResult, manifest: EnvironmentManifest, records: Mapping[str, Any]) -> RootClass | None:
+    """A failed result's root class; None for a result no record or daemon step owns."""
+    if result.id == ACTIVATION and manifest.activation.path:
+        return "activation_path"
+    if result.id == PROVENANCE:
+        return "provenance"
+    if result.id in records:
+        command, service, kind = records[result.id]
+        return _root_class(command, kind, service, result.output, result.exit_code)
+    return None
+
+
 def triage_failure(manifest: EnvironmentManifest, report: VerificationReport) -> RepairTriage:
     """Triage one failed execution. Raises ValueError when the report has no failed or indeterminate result."""
     records = _records(manifest)
     results = {result.id: result for result in report.results}
     roots: dict[str, RootClass] = {}
     for result in report.results:
-        if result.status not in {"fail", "indeterminate"}:
-            continue
-        if result.id == ACTIVATION and manifest.activation.path:
-            roots[result.id] = "activation_path"
-        elif result.id == PROVENANCE:
-            roots[result.id] = "provenance"
-        elif result.id in records:
-            command, service, kind = records[result.id]
-            roots[result.id] = _root_class(command, kind, service, result.output, result.exit_code)
+        if result.status in {"fail", "indeterminate"} and (root := _result_root(result, manifest, records)) is not None:
+            roots[result.id] = root
     if not roots:
         message = "execution failure has no failed result to triage"
         raise ValueError(message)

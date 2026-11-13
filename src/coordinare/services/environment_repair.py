@@ -809,6 +809,7 @@ def _activation_failure(result: CheckResult, manifest: EnvironmentManifest) -> b
 
 
 PROVENANCE_REFUSED = "env-cache provenance refused"
+REFUSAL_OUTPUT_CHARS = 4000
 
 
 def _provenance_failure(result: CheckResult, manifest: EnvironmentManifest) -> bool:
@@ -828,7 +829,8 @@ def provenance_refusal_evidence(cache: EnvCacheState, reason: str) -> dict[str, 
         return None
     digest = evidence.get("manifest_digest")
     result = {"id": PROVENANCE, "status": "fail", "required": True, "exit_code": None, "duration_seconds": 0.0,
-              "output": reason[:4000], "output_truncated": len(reason) > 4000, "manifest_digest": digest,
+              "output": reason[:REFUSAL_OUTPUT_CHARS], "output_truncated": len(reason) > REFUSAL_OUTPUT_CHARS,
+              "manifest_digest": digest,
               "context": evidence.get("scope", "")}
     data = {key: value for key, value in evidence.items() if key != "passed"}
     data["results"] = [*(item for item in evidence.get("results", []) if item.get("id") != PROVENANCE), result]
