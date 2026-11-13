@@ -49,7 +49,12 @@ from coordinare.services.environment_attempt import (
     DiscoveryChatReply,
     EnvironmentDiscoveryError,
 )
-from coordinare.services.environment_repair import journal_for, remaining_seconds, resumable_attempt
+from coordinare.services.environment_repair import (
+    journal_for,
+    provenance_refusal_evidence,
+    remaining_seconds,
+    resumable_attempt,
+)
 from coordinare.services.environment_runtime import (
     admit_installer_runtime,
     guest_expiry,
@@ -754,6 +759,9 @@ async def execute_accepted(
         return
     frozen, reason = await service.freeze_provenance(snapshot.name, state)
     result.update(provenance_frozen=frozen, provenance_detail=reason)
+    if not frozen and reason and (evidence := provenance_refusal_evidence(cache, reason)) is not None:
+        # The clean execution passed and its runtime was confirmed removed; a refusal is a repairable failure.
+        service.record_bootstrap_execution(snapshot.name, state, evidence, cleanup_confirmed=True)
     service.on_bootstrap_complete(
         snapshot.name,
         final_readiness(

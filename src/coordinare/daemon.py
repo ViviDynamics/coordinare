@@ -98,6 +98,7 @@ from coordinare.services.env_cache import (
 from coordinare.services.env_provenance import DEFAULT_LIMITS, ProvenanceTransientError
 from coordinare.services.environment_repair import (
     hold_uncertain_execution,
+    provenance_refusal_evidence,
     release_execution_source,
     remaining_seconds,
     reserve_execution_source,
@@ -4762,11 +4763,15 @@ class CoordinareDaemon:
             )
         # 234: freeze what was just verified. Consumers run only this frozen copy, and any later change to the
         # cache is refused at dispatch. A refusal (a bound, a link out of the cache) fails the bootstrap.
+        refused_evidence = None
         if ok:
             ok, _boot_err = await env_cache_svc.freeze_provenance(symphony_name, self._state)
+            if not ok and isinstance(cache, EnvCacheState) and _boot_err:
+                # Dettmore e2e-92: a refusal after a passed clean execution is a repairable failure, not lost cleanup.
+                refused_evidence = provenance_refusal_evidence(cache, _boot_err)
         recorder = getattr(env_cache_svc, "record_bootstrap_execution", None)
         if reviewed_attempt and not ok and callable(recorder):
-            recorder(symphony_name, self._state, _bootstrap_execution_evidence(cache, status_result),
+            recorder(symphony_name, self._state, refused_evidence or _bootstrap_execution_evidence(cache, status_result),
                 cleanup_confirmed=stopped and not infra)
         if infra:
             env_cache_svc.on_bootstrap_complete(

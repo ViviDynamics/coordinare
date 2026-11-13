@@ -71,6 +71,7 @@ from coordinare.services.environment_probes import (
     bind_probe_report,
 )
 from coordinare.services.environment_repair_triage import (
+    PROVENANCE,
     RepairTriage,
     install_only_failure,
     part_of,
@@ -807,6 +808,35 @@ def _activation_failure(result: CheckResult, manifest: EnvironmentManifest) -> b
         and result.manifest_digest == manifest.digest() and result.context == "")
 
 
+PROVENANCE_REFUSED = "env-cache provenance refused"
+
+
+def _provenance_failure(result: CheckResult, manifest: EnvironmentManifest) -> bool:
+    """Recognize only the daemon's own provenance refusal result (provenance_refusal_evidence), never success."""
+    return (result.id == PROVENANCE and result.required and result.status == "fail" and result.exit_code is None
+            and result.manifest_digest == manifest.digest() and (result.output or "").startswith(PROVENANCE_REFUSED))
+
+
+def provenance_refusal_evidence(cache: EnvCacheState, reason: str) -> dict[str, Any] | None:
+    """The passed clean execution plus one failed provenance result naming the refusal, so it can be repaired.
+
+    Dettmore e2e-92 passed the installer and every clean check, then the provenance freeze refused a link out of the
+    cache; with no failed result to admit, the attempt held as cleanup_unconfirmed although cleanup was confirmed.
+    """
+    evidence = cache.environment_verification
+    if not isinstance(evidence, dict) or not reason.startswith(PROVENANCE_REFUSED):
+        return None
+    digest = evidence.get("manifest_digest")
+    result = {"id": PROVENANCE, "status": "fail", "required": True, "exit_code": None, "duration_seconds": 0.0,
+              "output": reason[:4000], "output_truncated": len(reason) > 4000, "manifest_digest": digest,
+              "context": evidence.get("scope", "")}
+    data = {key: value for key, value in evidence.items() if key != "passed"}
+    data["results"] = [*(item for item in evidence.get("results", []) if item.get("id") != PROVENANCE), result]
+    if "image_ref" not in data and cache.environment_capabilities:
+        data["image_ref"] = cache.environment_capabilities.get("image_ref")
+    return data
+
+
 def _rejected_evidence(cache: EnvCacheState, data: dict[str, Any]) -> dict[str, Any]:
     # Checked before the allowlist below drops the marker: an incomplete run holds and is never repaired.
     if data.get('runtime_incomplete') or data.get('runtime_cleanup') is False:
@@ -827,7 +857,8 @@ def _rejected_evidence(cache: EnvCacheState, data: dict[str, Any]) -> dict[str, 
     known = {command.id for command in [*manifest.install, *manifest.checks]}
     known.update(command.id for service in manifest.services
                  for command in (service.init, service.start, service.health, service.stop) if command is not None)
-    if any((result.id not in known and not _activation_failure(result, manifest))
+    if any((result.id not in known and not _activation_failure(result, manifest)
+            and not _provenance_failure(result, manifest))
            or (result.status == 'indeterminate' and not stopped_at_limit(result)) for result in report.results):
         _refuse('execution repair evidence is unknown or indeterminate', code='execution_evidence_indeterminate')
     original_digest = hashlib.sha256(report.model_dump_json().encode()).hexdigest()

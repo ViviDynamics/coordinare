@@ -34,11 +34,13 @@ if TYPE_CHECKING:
         VerificationReport,
     )
 
-RootClass = Literal["command", "activation_path", "service", "capability", "network_gate"]
+RootClass = Literal["command", "activation_path", "service", "capability", "network_gate", "provenance"]
 GLOBAL = "global"
 ACTIVATION = "activation"
+# The daemon's provenance freeze refused the passed cache (Dettmore e2e-92): its installs wrote what it refused.
+PROVENANCE = "provenance"
 LIFECYCLE = ("init", "start", "health", "stop")
-WIDENING = frozenset({"capability", "service", "activation_path"})
+WIDENING = frozenset({"capability", "service", "activation_path", "provenance"})
 _CHECK_GROUP = re.compile(r"^(c[0-9]{2,3})[a-z]*-")
 COMMAND_NOT_FOUND = 127  # the shell's exit status for a command it could not find
 _MISSING_EXECUTABLE = re.compile(r"not found|No such file or directory", re.IGNORECASE)
@@ -142,6 +144,8 @@ def triage_failure(manifest: EnvironmentManifest, report: VerificationReport) ->
             continue
         if result.id == ACTIVATION and manifest.activation.path:
             roots[result.id] = "activation_path"
+        elif result.id == PROVENANCE:
+            roots[result.id] = "provenance"
         elif result.id in records:
             command, service, kind = records[result.id]
             roots[result.id] = _root_class(command, kind, service, result.output, result.exit_code)
