@@ -803,7 +803,7 @@ def _safe_id(identifier: str) -> str:
 
 @dataclass
 class _ObligationLedger:
-    """Retain valid obligations even when an unrelated proposal field is invalid."""
+    """Retain the obligations of admitted candidates; a refused reply adds none (Dettmore e2e-94)."""
 
     checks: dict[str, Command] = field(default_factory=dict)
     install: dict[str, Command] = field(default_factory=dict)
@@ -948,6 +948,23 @@ class _CandidateValidator:
             previous.update(current)
 
     def __call__(self, data: dict[str, Any]) -> EnvironmentManifest:
+        # Dettmore e2e-94: a refused correction added a pgvector-postgres service, the lock then required it in every
+        # later reply, and 16 refusals ran out the correction budget. A candidate's obligations are kept only once it
+        # is admitted: a refused reply leaves the ledger as it was, and accepted obligations still cannot be dropped.
+        before = copy.deepcopy((self.required_ids, self.obligation_ledger.checks, self.obligation_ledger.install,
+                                self.obligation_ledger.lifecycle, self.obligation_ledger.coverage))
+        try:
+            return self._admit(data)
+        except Exception:
+            required, checks, install, lifecycle, coverage = before
+            for group, ids in self.required_ids.items():
+                ids.clear()
+                ids.update(required.get(group, set()))
+            self.obligation_ledger.checks, self.obligation_ledger.install = checks, install
+            self.obligation_ledger.lifecycle, self.obligation_ledger.coverage = lifecycle, coverage
+            raise
+
+    def _admit(self, data: dict[str, Any]) -> EnvironmentManifest:
         self.lock(data)
         manifest = self.construction.admit(data, self.discovery.inputs)
         try:

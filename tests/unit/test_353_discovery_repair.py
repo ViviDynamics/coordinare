@@ -233,7 +233,8 @@ async def test_review_cannot_remove_obligation_without_evidence():
     replies = Replies([{"tool": "read_file", "path": PATH}, {"manifest": invalid}, {"manifest": omitted}])
     with pytest.raises(EnvironmentDiscoveryError):
         await run(replies)
-    assert told_to_restore(replies.messages)
+    # Dettmore e2e-94: the refused reply's obligations were never admitted, so none is locked or demanded back.
+    assert not told_to_restore(replies.messages)
 
 
 @pytest.mark.asyncio

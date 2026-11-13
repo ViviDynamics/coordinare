@@ -642,7 +642,8 @@ def test_an_id_that_reuses_a_criterion_id_is_never_locked_and_can_be_renamed():
         validator({'requirements': [{'id': criterion.id, 'required': True}, {'id': 'req-node', 'required': True}]})
     with pytest.raises(RejectedError):  # renaming the colliding id is not "removing a required obligation"
         validator({'requirements': [{'id': 'req-ruby', 'required': True}, {'id': 'req-node', 'required': True}]})
-    with pytest.raises(EnvironmentDiscoveryError, match='req-node'):  # an ordinary id stays retained
+    # Dettmore e2e-94: a refused reply's ids are never retained, so dropping req-node is not an obligation refusal.
+    with pytest.raises(RejectedError):
         validator({'requirements': [{'id': 'req-ruby', 'required': True}]})
 
 

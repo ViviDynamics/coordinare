@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 from types import SimpleNamespace
 
@@ -61,9 +62,10 @@ async def test_invalid_activation_correction_cannot_weaken_valid_obligations(cha
     else:
         revised['services'][0]['start']['scope'] = []
     replies = Replies([{'tool':'read_file','path':PATH},{'manifest':malformed},{'manifest':revised},assessment(revised)])
-    with pytest.raises(EnvironmentDiscoveryError):
+    with contextlib.suppress(EnvironmentDiscoveryError):
         await run(replies)
-    assert told_to_restore(replies.messages)
+    # Dettmore e2e-94: the refused reply's obligations were never admitted, so none is locked or demanded back.
+    assert not told_to_restore(replies.messages)
 
 
 @pytest.mark.parametrize('legacy', [False, True])

@@ -63,7 +63,8 @@ async def test_patch_cannot_remove_required_obligations():
     with pytest.raises(EnvironmentDiscoveryError) as caught:
         await run(replies)
     assert caught.value.code != "obligation_removed"
-    assert told_to_restore(replies.messages)
+    # Dettmore e2e-94: the refused reply's obligations were never admitted, so none is locked or demanded back.
+    assert not told_to_restore(replies.messages)
 
 
 @pytest.mark.asyncio
