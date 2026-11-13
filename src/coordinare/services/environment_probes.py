@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal, Self
@@ -33,7 +34,8 @@ class ProbeBase(BaseModel):
 
 
 class ProbeRequest(ProbeBase):
-    schema_version: Literal[1]
+    # A fixed constant: an omitted one is not worth a correction (v27 spent a schema repair on it).
+    schema_version: Literal[1] = 1
     execution_context: Literal['outer', 'private_service'] = Field(default='outer',
         description='Use outer tools by default; private_service explicitly requests the configured platform-only runtime, never an installed project cache.')
     commands: list[ProbeCommand] = Field(min_length=1, max_length=16)
@@ -90,6 +92,24 @@ class ProbePlan(ProbeBase):
         return hashlib.sha256(json.dumps(self.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+class ProbeAbandonment(ProbeBase):
+    """A consumed reservation with no reusable observation, retained for audit."""
+
+    plan: ProbePlan
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason: Literal["authorization_interrupted", "cleanup_reconciled"]
+    error_code: str | None = Field(default=None, max_length=128)
+    recorded_at: float = Field(ge=0)
+    cleanup_confirmed: bool
+
+    @model_validator(mode="after")
+    def exact_plan(self) -> Self:
+        if self.cleanup_confirmed is not True or self.plan_digest != self.plan.digest():
+            message = "abandoned probe requires exact identity and confirmed cleanup"
+            raise ValueError(message)
+        return self
+
+
 def probe_batch_timeout(plan: ProbePlan) -> int:
     """Fresh private guests share one batch allowance, bounded by the caller's attempt."""
     return 30 * 60 if plan.request.execution_context == 'private_service' else 120
@@ -144,14 +164,24 @@ def validate_saved_probe_reports(reports: list[dict[str, Any]], source_commit: s
             raise EnvironmentDiscoveryError(message, code="probe_report_invalid")
     if any(report.source_commit != source_commit or report.image_ref != capabilities.image_ref
            or report.platform != capabilities.platform or not report.cleanup_confirmed
-           or any(item.status != "completed" or item.truncated for item in report.results) for report in parsed):
+           or any(item.status == "execution_error" for item in report.results) for report in parsed):
         message = "saved capability preflight is incomplete or differs from the current target"
         raise EnvironmentDiscoveryError(message, code="probe_report_invalid")
 
 
+def _names_cache(plan: ProbePlan, cache_path: str) -> bool:
+    """A probe command that reads the cache, by its template or its mount path, sees a relocation."""
+    text = json.dumps(plan.request.model_dump(mode="json")["commands"], sort_keys=True)
+    return "{cache}" in text or (bool(cache_path) and cache_path in text)
+
+
 def select_current_probe_reports(reports: list[dict[str, Any]], source_commit: str,
-                                 capabilities: ExecutionCapabilities, *, allow_cache_relocation: bool = False) -> list[dict[str, Any]]:
-    """Retain history externally, but never deliver old-cache observations as current."""
+                                 capabilities: ExecutionCapabilities, *, allow_cache_relocation: bool = False,
+                                 reuse_unreferenced: bool = False) -> list[dict[str, Any]]:
+    """Retain history externally, but never deliver old-cache observations as current.
+
+    A cache-only relocation keeps an observation when ``reuse_unreferenced`` is set and no probe command names the cache.
+    """
     selected = []
     for data in reports:
         try:
@@ -170,6 +200,8 @@ def select_current_probe_reports(reports: list[dict[str, Any]], source_commit: s
                 != capabilities.model_dump(exclude={'cache_mount_path'})):
             message = 'saved probe runtime differs from current capabilities'
             raise EnvironmentDiscoveryError(message, code='probe_report_invalid')
+        elif reuse_unreferenced and not _names_cache(report.plan, observed.cache_mount_path):
+            selected.append(data)
     return selected
 
 
@@ -181,9 +213,27 @@ def validate_probe_report(plan: ProbePlan, report: ProbeReport) -> None:
             or not report.cleanup_confirmed):
         message = "probe evidence identity, completeness or cleanup is invalid"
         raise EnvironmentDiscoveryError(message, code="probe_report_invalid")
-    if any(result.status != "completed" or result.truncated for result in report.results):
-        message = "probe execution is incomplete or output was truncated"
-        raise EnvironmentDiscoveryError(message, code="probe_observation_incomplete")
+    # A probe that timed out or whose output was truncated is still an observation, carried to the author with its
+    # status: Dettmore e2e-15 held a whole attempt, after 58 minutes, on one probe in a batch of seven. Only a failure
+    # of the probe machinery itself leaves the batch unobserved.
+    if failed := [result for result in report.results if result.status == "execution_error"]:
+        # Named, since e2e-15's hold recorded nothing that said which probe it was. Probe ids are schema-validated.
+        message = f"probe execution failed: {', '.join(result.id for result in failed[:16])}"
+        # Dettmore e2e-27 held here with neither the probe nor the cause on record. An execution_error's output is
+        # one of the observer's own fixed reasons (a guest exception class name, or the batch deadline); anything
+        # else is withheld.
+        detail = '; '.join(f"{result.id}: {_machinery_reason(result.output)}" for result in failed[:16])
+        raise EnvironmentDiscoveryError(message, code="probe_observation_incomplete", detail=detail)
+
+
+_MACHINERY_REASON = re.compile(r"(private probe guest unavailable: [A-Za-z]{1,64}"
+                               r"|probe batch time ran out (?:while this probe ran|before this probe started)"
+                               r"|probe process or environment could not be resolved)")
+
+
+def _machinery_reason(output: str) -> str:
+    return output if _MACHINERY_REASON.fullmatch(output) else "execution_error"
+
 
 
 def bind_probe_report(plan: ProbePlan, report: ProbeReport) -> ProbeReport:

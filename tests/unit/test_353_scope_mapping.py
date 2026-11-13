@@ -51,7 +51,7 @@ async def test_incomplete_or_forged_mapping_never_validates(mutation):
     if mutation == 'missing':
         data['criterion_checks'] = {}
     elif mutation == 'optional':
-        # The same defect as Elm's required criterion -> optional runtime check.
+        # The same defect as SampleDatabase's required criterion -> optional runtime check.
         data['requirements'] = []
         data['empty_reason'] = 'candidate disclaimer cannot waive source obligation'
         data['checks'][0]['required'] = False
@@ -124,7 +124,7 @@ async def test_mapping_cannot_use_a_role_only_check_for_whole_environment():
 
 
 @pytest.mark.asyncio
-async def test_exact_elm_optional_runtime_link_shape_remains_rejected():
+async def test_exact_sampledb_optional_runtime_link_shape_remains_rejected():
     data, identifier = await mapped_manifest()
     data['requirements'] = [{'id': 'backend-admin-rails', 'source': 'guide',
         'description': 'Source-backed operational obligation', 'checks': ['rails-container-runtime-check'], 'required': True}]

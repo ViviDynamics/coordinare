@@ -10,6 +10,7 @@ from coordinare_service_inference.environment.models import EnvironmentManifest
 
 from coordinare.services.environment_attempt import AttemptBudget, DiscoveryChatReply
 from coordinare.services.environment_discovery import EnvironmentDiscoveryError
+from tests.unit.obligation_feedback import told_to_restore
 from tests.unit.scope_chat_fixture import discover_with_fixture_scope as discover_and_review
 from tests.unit.test_351_environment_discovery import (
     CAPABILITIES,
@@ -230,8 +231,10 @@ async def test_review_cannot_remove_obligation_without_evidence():
     omitted["requirements"] = []
     omitted["empty_reason"] = "Discard the requirement to pass validation"
     replies = Replies([{"tool": "read_file", "path": PATH}, {"manifest": invalid}, {"manifest": omitted}])
-    with pytest.raises(EnvironmentDiscoveryError, match="obligation"):
+    with pytest.raises(EnvironmentDiscoveryError):
         await run(replies)
+    # Dettmore e2e-94: the refused reply's obligations were never admitted, so none is locked or demanded back.
+    assert not told_to_restore(replies.messages)
 
 
 @pytest.mark.asyncio
@@ -260,7 +263,7 @@ async def test_backend_metadata_remains_request_local(monkeypatch):
     assert isinstance(await backend.chat_json([{"role": "user", "content": "first"}]), str)
 
 
-@pytest.mark.parametrize("changes", [{"max_schema_repairs": 9}, {"max_schema_repairs": -1}, {"timeout_seconds": 3601}, {"max_calls": 0}])
+@pytest.mark.parametrize("changes", [{"max_schema_repairs": 9}, {"max_schema_repairs": -1}, {"timeout_seconds": 6 * 3600 + 1}, {"max_calls": 0}])
 def test_invalid_attempt_bounds_cannot_extend_policy(changes):
     with pytest.raises(ValueError):
         AttemptBudget(**changes)
@@ -296,7 +299,7 @@ async def test_invalid_navigation_does_not_spend_schema_repairs(tool):
     assert manifest.inputs == full_candidate()["inputs"]
     assert review.verdict == "accept"
     assert events[-1]["repairs"] == 0
-    assert events[-1]["reads"] == 6
+    assert events[-1]["reads"] == 3 and events[-1]["verification_reads"] == 3
     feedback = json.loads(replies.messages[1][-1]["content"])
     assert feedback["tool_result"]["errors"]
 
@@ -441,3 +444,35 @@ async def test_repeated_navigation_errors_still_exhaust_aggregate_calls():
         await run(replies, budget=budget)
     assert budget.schema_repairs == 0
     assert len(replies.messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_coverage_revision_may_correct_the_manifest_it_revises():
+    """Dettmore e2e-76: the revision author's one-record correction was refused for want of a base, and its restated
+    manifest then dropped thirty required records and held the attempt."""
+    original = candidate()
+    replies = Replies([{"tool": "read_file", "path": PATH}, {"manifest": original},
+        {"tool": "read_file", "path": PATH}, assessment(original, "revise"),
+        {"tool": "repair_proposal", "changes": [
+            {"path": ["manifest", "checks", 0, "argv"], "value": [*original["checks"][0]["argv"], "--strict"]},
+            {"path": ["finding_responses"], "value": finding_responses()}]},
+        {"tool": "read_file", "path": PATH}, {"assessment": {**assessment(original, retained=True)["assessment"]}}])
+    manifest, review = await run(replies)
+    assert manifest.digest() == review.manifest_digest
+    assert manifest.checks[0].argv[-1] == "--strict"
+
+
+def test_a_correction_with_no_base_is_told_to_restate_the_whole_declaration():
+    from types import SimpleNamespace
+
+    from coordinare.services.environment_discovery import _phase_reply
+
+    budget = AttemptBudget()
+    inspection = SimpleNamespace(name="discovery", budget=budget, delta=False,
+        limits=SimpleNamespace(max_output_bytes=1 << 20))
+    messages = [{"role": "system", "content": "{}"}, {"role": "user", "content": "{}"}]
+    raw = json.dumps({"tool": "repair_proposal", "changes": [{"path": ["manifest", "checks"], "value": []}]})
+    assert _phase_reply(raw, inspection, None, messages, expected_envelope="manifest") is None
+    error = json.loads(messages[-1]["content"])["validation_errors"][0]
+    assert error["code"] == "invalid_proposal_patch"
+    assert "holds no complete declaration" in error["guidance"]

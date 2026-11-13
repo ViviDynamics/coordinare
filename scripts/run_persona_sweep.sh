@@ -7,7 +7,7 @@ set -u
 cd "$(dirname "$0")/.."
 set -a; source .env 2>/dev/null; set +a
 LIST="${1:?usage: run_persona_sweep.sh <models.list>}"
-REPO="https://github.com/ViviDynamics/conductor-bench.git"
+REPO="${BENCH_REPO:?Set BENCH_REPO to your synthetic benchmark repository URL}"
 JUDGE="local/gpt-oss:120b"
 while IFS= read -r line; do
   [ -z "$line" ] && continue; case "$line" in \#*) continue;; esac

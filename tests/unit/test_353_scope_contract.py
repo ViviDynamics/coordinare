@@ -97,7 +97,7 @@ async def test_scope_is_reviewed_fresh_before_any_executable_candidate():
     content = json.loads(reviewer[1]['content'])
     assert 'manifest' not in content and 'execution_capabilities' not in content
     assert content['scope_definition']['criteria'][0]['id'] == scope.definition.criteria[0].id
-    assert budget.calls == 4 and budget.reads == 3
+    assert budget.calls == 4 and budget.reads == 2 and budget.verification_reads == 1
     assert budget.scope_contract.digest() == scope.digest()
 
 
@@ -118,16 +118,24 @@ async def test_nested_operational_obligation_survives_candidate_convenience():
     assert scope.finding_ledger.open_ids() == []
     assert len(scope.finding_ledger.reviews) == 2
     assert scope.finding_ledger.records[0].id == 'F0001'
-    assert budget.coverage_revisions == 1
+    assert budget.scope_revisions == 1
     assert scope.definition.criteria[0].id == json.loads(replies.messages[2][1]['content'])['scope_definition']['criteria'][0]['id']
 
 
 @pytest.mark.asyncio
 async def test_unknown_applicability_cannot_be_accepted():
-    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion(applicability='unknown')), review()])
+    replies = Replies([{'tool': 'read_file', 'path': 'guide'}, proposal(criterion(applicability='unknown')),
+        review(), review('indeterminate')])
+    budget = AttemptBudget()
     with pytest.raises(EnvironmentDiscoveryError) as failure:
-        await run(replies)
-    assert failure.value.code == 'scope_applicability_unknown'
+        await run(replies, budget=budget)
+    errors = json.loads(replies.messages[-1][-1]['content'])['validation_errors']
+    assert errors[0]['code'] == 'scope_applicability_unknown'
+    assert failure.value.code == 'scope_review_indeterminate'
+    assert budget.scope_contract is None
+    assert budget.scope_definition.criteria[0].applicability == 'unknown'
+    assert len(budget.scope_findings.reviews) == 1
+    assert budget.scope_assessment.assessment.verdict == 'indeterminate'
 
 
 @pytest.mark.asyncio
@@ -206,7 +214,7 @@ async def test_rejecting_scope_and_its_revision_charge_are_one_durable_checkpoin
     budget = AttemptBudget()
     async def checkpoint():
         if budget.scope_findings and budget.scope_findings.reviews:
-            assert budget.coverage_revisions == 1
+            assert budget.scope_revisions == 1
             raise Crash
     budget.checkpoint = checkpoint
     with pytest.raises(Crash):
@@ -312,7 +320,9 @@ def test_scope_rationale_feedback_reports_length_constraint_without_echoing_text
     with pytest.raises(ValidationError) as failure:
         ScopeAssessmentEnvelope.model_validate(value)
     errors = _validation_feedback(failure.value)
-    assert errors == [{'location': ['scope_assessment', 'rationale'], 'code': 'string_too_long'}]
+    assert [{key: error[key] for key in ('location', 'code', 'max_length')} for error in errors] == [
+        {'location': ['scope_assessment', 'rationale'], 'code': 'string_too_long', 'max_length': 2048}]
+    assert 'at most max_length' in errors[0]['guidance']
     assert 'private-evidence' not in json.dumps(errors)
 
 
@@ -344,7 +354,7 @@ async def test_empty_revision_defense_requires_fresh_whole_review():
     budget = AttemptBudget()
     scope = await run(replies, budget=budget)
     assert len(scope.definition.criteria) == 1 and scope.finding_ledger.open_ids() == []
-    assert len(scope.finding_ledger.reviews) == 2 and budget.coverage_revisions == 1
+    assert len(scope.finding_ledger.reviews) == 2 and budget.scope_revisions == 1
     context = json.loads(replies.messages[-1][1]['content'])
     assert context['finding_ledger']['records'][0]['id'] == 'F0001'
     assert context['scope_definition'] == scope.definition.model_dump(mode='json')
@@ -403,7 +413,7 @@ async def test_invalid_revision_cannot_publish_partial_definition_or_responses(c
     assert budget.scope_definition.criteria[0].id == identifier
     assert len(budget.scope_definition.criteria) == 1 and budget.scope_responses == []
     assert budget.scope_findings.open_ids() == ['F0001']
-    assert budget.calls == 4 and budget.coverage_revisions == 1
+    assert budget.calls == 4 and budget.scope_revisions == 1
     expected = {'stale_base': 'scope_revision_base', 'late_invalid': 'scope_revision_target',
                 'citation': 'scope_citations_invalid', 'full': 'missing'}.get(case, 'scope_response_ids_invalid')
     assert expected in budget.validation_codes
@@ -432,11 +442,11 @@ async def test_fresh_review_can_find_omission_beyond_revision():
         revision(criterion(usability='Added operation')), review('revise', findings=[{'category': 'coverage',
         'issue': 'Another omitted operation', 'sources': ['guide'], 'affected_ids': []}],
         decisions=[{'finding_id': 'F0001', 'status': 'resolved', 'rationale': 'First addressed', 'sources': ['guide'], 'duplicate_of': None}])])
-    budget = AttemptBudget(max_coverage_revisions=1)
+    budget = AttemptBudget(max_scope_revisions=1)
     with pytest.raises(EnvironmentDiscoveryError) as failure:
         await run(replies, budget=budget)
-    assert failure.value.code == 'attempt_coverage_limit'
-    assert budget.scope_findings.open_ids() == ['F0002'] and budget.coverage_revisions == 1
+    assert failure.value.code == 'attempt_scope_revision_limit'
+    assert budget.scope_findings.open_ids() == ['F0002'] and budget.scope_revisions == 1
     assert len(budget.scope_definition.criteria) == 2
 
 
@@ -548,7 +558,7 @@ async def test_scope_review_readjudicates_resolved_findings_after_another_revisi
         jsonschema.validate(review(decisions=[{**resolved, 'finding_id': 'F0002'}]), replies.schemas[-1])
     assert scope.finding_ledger.open_ids() == []
     assert len(scope.finding_ledger.reviews) == 3
-    assert budget.coverage_revisions == 2 and budget.schema_repairs == int(omit_resolved)
+    assert budget.scope_revisions == 2 and budget.schema_repairs == int(omit_resolved)
     if omit_resolved:
         feedback = json.loads(replies.messages[-1][-1]['content'])['validation_errors'][0]
         assert feedback['required_decision_ids'] == ['F0001', 'F0002']

@@ -393,7 +393,10 @@ class TestEnvBootstrapVerifyGate:
         assert "reviewed" in resp.reason
 
     async def test_readiness_runs_before_verify(self, tmp_path, reviewed_environment_metadata):
-        marker = tmp_path / "ready"
+        # Outside the cache: installer services and checks see {cache} read-only, as the clean consumer does.
+        markers = tmp_path.parent / (tmp_path.name + "-markers")
+        markers.mkdir()
+        marker = markers / "ready"
         metadata = _bind_bootstrap_contract(reviewed_environment_metadata, services=[{
             "id": "custom", "start": {"id": "start", "argv": ["true"]},
             "health": {"id": "health", "argv": ["touch", str(marker)]},
@@ -2529,7 +2532,7 @@ class TestQAPerformer:
 
     def test_qa_natural_environmental_phrasings_classified_as_environmental(self) -> None:
         """077 regression: the verbatim 'couldn't check' phrasings real models emit
-        (captured from PR ViviDynamics/website#159) MUST classify as environmental so
+        (captured from PR ExampleOrg/sampleweb#159) MUST classify as environmental so
         they stay advisory instead of blocking the card. A FAILED verdict must mean
         'checked and broken', not 'couldn't check'."""
         from performer.qa_postprocess import _qa_failure_is_environmental
@@ -2862,7 +2865,7 @@ class TestQAPerformer:
 class TestQAVerdictIntegrity088:
     """A QA pass must always rest on evidence; env-limited zero-evidence pass
     claims become the terminal status ``qa_env_blocked`` (never an unflagged
-    clean PASS — the website PR #159 false-pass)."""
+    clean PASS - the sampleweb PR #159 false-pass)."""
 
     def _make_perf(self) -> Performance:
         stand = Stand(path=Path("/tmp/fake"), branch="feat/test")

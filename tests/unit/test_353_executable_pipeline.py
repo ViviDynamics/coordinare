@@ -82,7 +82,9 @@ async def test_failed_clean_execution_gets_new_installation_and_fresh_independen
     assert agent.review_history[0] == []
     historical = agent.review_history[1][0]
     assert historical['manifest_digest'] == original.digest()
-    assert historical['manifest'] == original.model_dump(mode='json')
+    # Records and results to compare, never the nested scope contract or input digests (e2e-08's 638 KB prompt).
+    full = original.model_dump(mode='json')
+    assert historical['manifest'] == {key: value for key, value in full.items() if key not in {'scope_contract', 'inputs'}}
     assert historical['results'][0]['status'] == 'fail'
     assert 'output' not in historical['results'][0]
     assert cache.environment_attempt['execution_repairs'] == 1
@@ -133,7 +135,7 @@ async def test_reservations_are_durable_before_model_and_source_requests(tmp_pat
     await publish(service, cache, state, capability, model)
     assert saves[-1]['status'] == 'executing'
     assert saves[-1]['calls'] == 8
-    assert saves[-1]['reads'] == 7
+    assert saves[-1]['reads'] == 3 and saves[-1]['verification_reads'] == 4
     assert len(saves[-1]['probe_reports']) == 1
 
 

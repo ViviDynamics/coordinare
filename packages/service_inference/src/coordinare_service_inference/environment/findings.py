@@ -17,8 +17,16 @@ Digest = Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]
 Commit = Annotated[str, Field(pattern=r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$')]
 FindingId = Annotated[str, Field(pattern=r'^F[0-9]{4}$')]
 MAX_LEDGER_FINDINGS = 128
-LEDGER_MAX_BYTES = 512*1024
-Category = Literal['coverage', 'capability', 'activation', 'service_lifecycle', 'execution_definition']
+# Maintainer ruling 2026-10-31: 4 MiB. Each review keeps the map of every input its reviewer read (Dettmore: ~570 files,
+# ~55 KB), so e2e-35 filled 512 KiB with seven reviews in its first execution repair. Models receive a compact ledger.
+LEDGER_MAX_BYTES = 4*1024*1024
+# remote_state: an obligation only an external service's state can satisfy, outside the environment's scope.
+# runtime_network: an obligation whose own documented procedure fetches from the network every time it runs,
+# which an offline clean verification cannot exercise.
+# deployment_image: an obligation to build or run the repository's own application images or deployment stacks,
+# a deployment concern outside the development and test environment an agent needs.
+Category = Literal['coverage', 'capability', 'activation', 'service_lifecycle', 'execution_definition', 'remote_state',
+                   'runtime_network', 'deployment_image']
 
 
 class FindingEvidence(BaseModel):

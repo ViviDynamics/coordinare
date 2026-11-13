@@ -1,7 +1,7 @@
 """379: the TDD inner loop runs the milestone's own tests, not the whole suite.
 
 The red and green checks ask a question about one milestone's tests. Running the
-whole suite to answer it cost ~20 of 120 minutes on the website card measured in
+whole suite to answer it cost ~20 of 120 minutes on the sampleweb card measured in
 the issue, against scoped runs of 0.3s and 1.29s in the same session.
 
 Scoping is runner-specific (``pytest path``, ``rspec path``, ``go test ./pkg``),
@@ -381,7 +381,7 @@ async def test_baseline_log_distinguishes_no_tests_from_no_names(tmp_path, monke
 
 def test_test_timeout_is_configurable():
     """379, found live: `bundle exec rspec timed out after 600s and was killed
-    (exit code -1); no test results were produced.` -- the website card, blocked
+    (exit code -1); no test results were produced.` -- the sampleweb card, blocked
     2026-09-12 04:35 UTC.
 
     test_timeout_s was a hardcoded dataclass default that nothing ever set, so

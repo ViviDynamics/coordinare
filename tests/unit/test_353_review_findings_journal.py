@@ -14,6 +14,7 @@ from coordinare.services.environment_repair import (
     restart_environment_attempt,
     save_attempt,
 )
+from tests.unit.obligation_feedback import told_to_restore
 from tests.unit.test_353_execution_repair import cache_fixture
 from tests.unit.test_353_review_findings_contract import ledger_data
 
@@ -63,10 +64,10 @@ async def test_resumed_review_cannot_weaken_established_required_checks(tmp_path
         changed['checks'][0]['scope'] = ['qa']
     else:
         changed['checks'][0]['required'] = False
-    with pytest.raises(EnvironmentDiscoveryError) as exc:
-        await run(Replies([{'manifest': changed, 'finding_responses': [response()]},
-                          review(decisions=[decision()])]), budget=resumed)
-    assert exc.value.code == 'obligation_removed'
+    replies = Replies([{'manifest': changed, 'finding_responses': [response()]}, review(decisions=[decision()])])
+    with pytest.raises(EnvironmentDiscoveryError):
+        await run(replies, budget=resumed)
+    assert told_to_restore(replies.messages)
 
 
 @pytest.mark.asyncio
@@ -99,9 +100,10 @@ async def test_resumed_review_preserves_required_service_lifecycle(tmp_path, mut
     else:
         for phase in ('start', 'health', 'stop'):
             changed['services'][0][phase]['scope'] = ['qa']
-    with pytest.raises(EnvironmentDiscoveryError) as exc:
-        await run(Replies([{'manifest': changed, 'finding_responses': [response()]}]), budget=resumed)
-    assert exc.value.code == 'obligation_removed'
+    replies = Replies([{'manifest': changed, 'finding_responses': [response()]}])
+    with pytest.raises(EnvironmentDiscoveryError):
+        await run(replies, budget=resumed)
+    assert told_to_restore(replies.messages)
 
 
 def test_restart_preserves_findings_expiry_and_consumed_budgets(tmp_path):

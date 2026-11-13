@@ -127,7 +127,7 @@ async def test_large_inventory_is_not_repeated_in_model_prompt():
 
 
 @pytest.mark.asyncio
-async def test_exact_elm_navigation_trace_preserves_valid_batch_evidence():
+async def test_exact_sampledb_navigation_trace_preserves_valid_batch_evidence():
     paths = ['Makefile', 'control-plane/go.mod', 'console/package.json',
              'scripts/ci/validate_foundation_scaffold.sh', 'sdks/python/pyproject.toml',
              'integration-tests/go.mod']

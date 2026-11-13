@@ -175,7 +175,8 @@ Next: **[07: Roadmap](07-roadmap.md)**.
 
 Reviewed environment discovery delivers every manifest input to a fresh independent
 reviewer before requesting coverage judgment. Schema corrections, coverage revisions
-and executable repairs each have separate durable limits (default two), under one
+and executable repairs each have separate durable limits (default two; sharded discovery eight
+for scope and executable revisions), under one
 unchanged aggregate deadline. Missing or oversized evidence holds; successful clean
 execution of every required check remains mandatory. See the
 [operator guide](../operators/reviewed-environment-manifest.md#complete-reviewer-evidence-and-correction-limits)

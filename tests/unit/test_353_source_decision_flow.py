@@ -74,10 +74,10 @@ async def test_unread_source_gap_holds_with_requests():
         assess('revise', findings=[gap_finding(inspection_requests=[request])]),
         revision(sources=['odd/nest']),
         assess('revise', decisions=[gap(inspection_requests=[request], sources=['guide'])])])
-    budget = AttemptBudget(max_coverage_revisions=1)
+    budget = AttemptBudget(max_scope_revisions=1)
     with pytest.raises(EnvironmentDiscoveryError) as failure:
         await run(replies, budget=budget)
-    assert failure.value.code == 'attempt_coverage_limit'
+    assert failure.value.code == 'attempt_scope_revision_limit'
     assert budget.scope_findings.open_ids() == ['F0001'] and budget.scope_contract is None
     assert [binding.finding_id for binding in budget.scope_investigations] == ['F0001', 'F0001']
     assert budget.scope_assessment.assessment.decisions[0].gap_kind == 'unread_source'
@@ -91,10 +91,10 @@ async def test_mixed_gap_stays_open_and_runtime_obligation_remains_required():
         revision(criterion('odd/nest', usability='Service accepts a request and persists a value'), sources=['odd/nest']),
         lambda messages: assess('revise', decisions=[gap(kind='incomplete_success_condition', affected_ids=ids(messages)[:1])],
                                 sources=list(SOURCES))])
-    budget = AttemptBudget(max_coverage_revisions=1)
+    budget = AttemptBudget(max_scope_revisions=1)
     with pytest.raises(EnvironmentDiscoveryError) as failure:
         await run(replies, budget=budget)
-    assert failure.value.code == 'attempt_coverage_limit'
+    assert failure.value.code == 'attempt_scope_revision_limit'
     assert budget.scope_findings.open_ids() == ['F0001']
     assert [c.applicability for c in budget.scope_definition.criteria] == ['required', 'required']
 
@@ -150,10 +150,10 @@ async def test_resolved_finding_reopened_as_gap_blocks_acceptance():
         return assess('revise', decisions=[gap('F0001', kind='source_conflict'), covered('F0002', ids(messages))])
     response = [{'finding_id': 'F0002', 'rationale': 'Source evidence retained', 'sources': ['guide'], 'affected_ids': []}]
     replies = Replies([READ_GUIDE, proposal(criterion()), objection(), revision(), second, revision(responses=response), reopened])
-    budget = AttemptBudget(max_coverage_revisions=2)
+    budget = AttemptBudget(max_scope_revisions=2)
     with pytest.raises(EnvironmentDiscoveryError) as failure:
         await run(replies, budget=budget)
-    assert failure.value.code == 'attempt_coverage_limit'
+    assert failure.value.code == 'attempt_scope_revision_limit'
     assert budget.scope_findings.open_ids() == ['F0001'] and budget.scope_contract is None
 
 
@@ -237,7 +237,8 @@ def test_scope_schema_flat_decision_wire():
     assert properties['sources']['minItems'] == 1
     kinds = next(branch['enum'] for branch in properties['gap_kind']['anyOf'] if branch.get('type') == 'string')
     assert sorted(kinds) == sorted(['missing_obligation', 'unread_source', 'source_conflict', 'unknown_applicability',
-                                    'incomplete_runtime_needs', 'incomplete_success_condition'])
+                                    'incomplete_runtime_needs', 'incomplete_success_condition', 'remote_state',
+                                    'runtime_network', 'deployment_image'])
     executable = response_schema('assessment', review_decision_ids=['F0001'])
     assert 'disposition' not in json.dumps(executable)
     statuses = {branch['properties']['status']['const'] for branch in executable['$defs']['FindingDecisionProposal']['anyOf']}

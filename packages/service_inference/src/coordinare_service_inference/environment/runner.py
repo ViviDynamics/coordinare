@@ -12,23 +12,33 @@ import json
 import os
 import re
 import secrets
+import shutil
 import signal
+import stat
 import sys
+import tempfile
 import time
 from graphlib import TopologicalSorter
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .models import CheckResult, Command, EnvironmentManifest, VerificationReport, environment_order
 from .runtime_cli import run_cli
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Collection, Mapping, Sequence
+    from collections.abc import AsyncIterator, Callable, Collection, Iterator, Mapping, Sequence
 
-    from .runtime import RuntimeArtifactReceipt
+    from .runtime import RuntimeArtifactReceipt, TrialReceipt
     from .runtime_supervisor import RuntimeLease
 
 OUTPUT_LIMIT = 4096
+# Error lines earlier than the kept tail (Dettmore e2e-45: "OpenSSL is not available" scrolled out behind a long
+# rubygems backtrace, so the repair saw only stack frames). A bounded excerpt keeps them in the reported output.
+ERROR_EXCERPT_LINES = 8
+ERROR_EXCERPT_LINE_BYTES = 240
+ERROR_EXCERPT_LIMIT = 1024
+_ERROR_LINE = re.compile(rb"(?i)\b(error|fatal|failed|failure|exception|not available|not found|cannot|could not|denied)\b")
+_STACK_FRAME = re.compile(rb"^\s*(from\s+)?\S+:\d+:in\b|^\s+at\s")
 ATTEMPT_OUTPUT_LIMIT = 256 * 1024
 GENERATED_NAMES_ENV = "COORDINARE_ENV_GENERATED_NAMES"
 _VALUE_REFERENCE = re.compile(r"\$\{(?P<environment>[A-Za-z_][A-Za-z0-9_]*)\}|\{(?P<root>cache|repo|scratch)\}")
@@ -44,6 +54,7 @@ import ctypes
 import json
 import os
 import signal
+import tempfile
 import sys
 import time
 
@@ -69,6 +80,8 @@ control_fd = int(sys.argv[4])
 if control_fd >= 0:
     os.set_blocking(control_fd, False)
 stop_requested = False
+STOPPED_EXITS = {-signal.SIGTERM, -signal.SIGKILL, -signal.SIGINT,
+                 128 + signal.SIGTERM, 128 + signal.SIGKILL, 128 + signal.SIGINT}
 def poll_control():
     global stop_requested, status
     if control_fd < 0 or stop_requested:
@@ -115,7 +128,10 @@ if status is None:
 exit_code = os.waitstatus_to_exitcode(status) if status is not None else (
     0 if service and stopping and stop_requested else 143
 )
-if service and stop_requested and exit_code == -signal.SIGTERM:
+# Once teardown authorized the stop, the service ending the way its stop command ends it is a clean stop: by
+# signal, or as a client reporting its server's signal (Dettmore e2e-77: a foreground docker run exits 137 when
+# its stop removes the container). A failure before the request was captured first and is kept.
+if service and stop_requested and exit_code in STOPPED_EXITS:
     exit_code = 0
 if exit_code < 0:
     exit_code = 128 - exit_code
@@ -156,6 +172,20 @@ os._exit(exit_code)
 """
 
 
+# Where a secret a test needs comes from when no operator supplies it (Dettmore e2e-05 to e2e-09 referenced an
+# undeclared ${SECRET_KEY_BASE} and lost an install, then a repair, each time).
+SECRET_GUIDANCE = ("A secret that no started service owns (for example a framework secret key) is generated inside the "
+                   "command that needs it, for example NAME=$(openssl rand -hex 64) before the test command; declare "
+                   "local_credentials only for services this manifest starts.")
+_UNRESOLVED = re.compile(r"unresolved environment reference: ([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _unresolved_name(exc: ValueError) -> str:
+    """The unresolved variable's name, never a value: only _expand's own message is read."""
+    match = _UNRESOLVED.fullmatch(str(exc))
+    return f" ${{{match[1]}}}" if match else ""
+
+
 def _expand(value: str, roots: dict[str, str], env: dict[str, str]) -> str:
     def reference(match: re.Match[str]) -> str:
         name = match.group("environment")
@@ -185,6 +215,38 @@ def _bound_outputs(results: dict[str, CheckResult]) -> None:
         budget -= len(result.output.encode())
 
 
+class _ErrorLines:
+    """Streaming record of the latest error lines, each with the line after it (the message often follows)."""
+
+    def __init__(self) -> None:
+        self.lines: list[tuple[int, bytes]] = []
+        self._partial = bytearray()
+        self._offset = 0
+        self._follow = False
+
+    def feed(self, chunk: bytes) -> None:
+        self._partial.extend(chunk)
+        *complete, rest = bytes(self._partial).split(b"\n")
+        kept = rest[-ERROR_EXCERPT_LINE_BYTES * 4:]
+        self._partial = bytearray(kept)
+        for line in complete:
+            end = self._offset + len(line) + 1
+            if self._follow and line.strip() and not _STACK_FRAME.search(line):
+                self.lines.append((end, line[:ERROR_EXCERPT_LINE_BYTES]))
+            self._follow = False
+            if _ERROR_LINE.search(line) and not _STACK_FRAME.search(line):
+                self.lines.append((end, line[:ERROR_EXCERPT_LINE_BYTES]))
+                self._follow = True
+            self._offset = end
+            del self.lines[:-ERROR_EXCERPT_LINES]
+        # A runaway partial line is trimmed; its dropped bytes still count toward later offsets.
+        self._offset += len(rest) - len(kept)
+
+    def before(self, offset: int) -> bytes:
+        """Recorded lines that ended before the kept tail began."""
+        return b"\n".join(line for end, line in self.lines if end <= offset)[-ERROR_EXCERPT_LIMIT:]
+
+
 def _template_preflight(manifest: EnvironmentManifest, roots: dict[str, str], *, install: bool,
                         scope: str, secret_names: Sequence[str], runtime_env: Mapping[str, str] | None = None,
                         credentials: Mapping[str, str] | None = None) -> VerificationReport | None:
@@ -203,24 +265,26 @@ def _template_preflight(manifest: EnvironmentManifest, roots: dict[str, str], *,
         for command in commands if not scope or not command.scope or scope in command.scope}
     try:
         env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env, credentials=credentials)
-    except ValueError:
-        # Avoid including environment values in diagnostics from failed activation.
+    except ValueError as exc:
+        # Avoid including environment values in diagnostics from failed activation; only a variable name is named.
         results["activation"] = CheckResult(id="activation", required=True, status="fail",
-            output="activation template expansion failed; use {cache}, {repo}, {scratch} for roots and provide every ${NAME} runtime environment reference",
-            manifest_digest=digest, context=scope)
+            output="activation template expansion failed" + _unresolved_name(exc) + "; use {cache}, {repo}, {scratch} for "
+                   "roots. Activation may reference only operator-supplied runtime variables, never a generated "
+                   "credential. " + SECRET_GUIDANCE, manifest_digest=digest, context=scope)
     else:
         for command in commands:
             if command.id not in results:
                 continue
             try:
                 _command_values(command, roots, env)
-            except ValueError:
+            except ValueError as exc:
                 if not results[command.id].required:
                     continue
                 results[command.id].status = "fail"
                 results[command.id].output = (
-                    "unresolved environment reference in command template; use {cache}, {repo}, {scratch} for execution roots. "
-                    "${NAME} requires a runtime environment variable; use $name for shell-local variables assigned inside the command."
+                    "unresolved environment reference" + _unresolved_name(exc) + " in command template; use {cache}, "
+                    "{repo}, {scratch} for execution roots. ${NAME} requires a runtime environment variable; use $name for "
+                    "shell-local variables assigned inside the command. " + SECRET_GUIDANCE
                 )
     if any(result.required and result.status == "fail" for result in results.values()):
         _bound_outputs(results)
@@ -338,6 +402,31 @@ async def _notify_service_stop(controls: tuple[int, int]) -> bool:
         return False
 
 
+# Commands stop before a private runtime's teardown allowance (see runtime_execution). Service stops still run after
+# that point, for residual-state cleanup, each within this window past the command deadline.
+SESSION_DEADLINE_NOT_RUN = 'session deadline reached before this command ran'
+# The runner's own last line on a command it stopped: at the command's timeout, or at the session deadline.
+COMMAND_TIMED_OUT = 'command timed out'
+COMMAND_CUT_SHORT = 'command cut short: session deadline reached'
+
+
+def stopped_at_limit(result: CheckResult) -> bool:
+    """A command this runner stopped at its timeout or at the session deadline.
+
+    Dettmore e2e-69: rspec-full timed out at 2,700 s and a mock was cut short by the session deadline, and the attempt
+    held without a repair. The author can lengthen, split or reorder such a command, so it is repair feedback. Any
+    other indeterminate result (unconfirmed cleanup, a pipe left open) is not.
+    """
+    # Dettmore e2e-79: a timed-out service step carries its service's logs after the runner's own line, so the
+    # line is judged before them; the logs are appended only after the marker.
+    output = result.output or ''
+    if (logs := _SERVICE_LOG_MARKER.search(output)) is not None:
+        output = output[:logs.start()]
+    return (result.status == 'indeterminate' and result.exit_code is None
+            and output.rstrip().endswith((COMMAND_TIMED_OUT, COMMAND_CUT_SHORT)))
+TEARDOWN_STOP_SECONDS = 60.0
+
+
 async def _execute(
     command: Command,
     *,
@@ -352,7 +441,12 @@ async def _execute(
     service_controls: dict[int, tuple[int, int]] | None = None,
     ignore_dependencies: bool = False,
     redactions: frozenset[str] = frozenset(),
+    finalizers: dict[int, Callable[[], str]] | None = None,
+    budget: float | None = None,
+    teardown: bool = False,
 ) -> CheckResult:
+    """``budget`` is a monotonic deadline for the command: once it has passed a non-teardown command does not run, and a
+    command still running at it is cut short. A teardown command runs regardless, with at least a second."""
     result = CheckResult(
         id=command.id,
         status="not_run",
@@ -360,11 +454,19 @@ async def _execute(
         manifest_digest=digest,
         context=scope,
     )
+    if budget is not None and not teardown and time.monotonic() >= budget:
+        result.output = SESSION_DEADLINE_NOT_RUN
+        return result
     if not ignore_dependencies and any(
         key not in results or results[key].status != "pass" for key in command.depends_on
     ):
         result.output = "prerequisite did not pass"
         return result
+    timeout, cut_short = command.timeout_seconds, False
+    if budget is not None:
+        left = budget - time.monotonic()
+        timeout = min(timeout, max(left, 1.0) if teardown else left)
+        cut_short = timeout < command.timeout_seconds
     started = time.monotonic()
     process = None
     ack_read = ack_write = None
@@ -372,6 +474,7 @@ async def _execute(
     drain = None
     tail = bytearray()
     total = 0
+    errors = _ErrorLines()
     child_env = dict(env)
     known_secrets = frozenset(_secret_values(env)) | redactions
     retained_limit = OUTPUT_LIMIT * 2 + max((len(value.encode()) for value in known_secrets), default=0)
@@ -434,6 +537,7 @@ async def _execute(
             while chunk := await process.stdout.read(8192):
                 total += len(chunk)
                 tail.extend(chunk)
+                errors.feed(chunk)
                 if len(tail) > retained_limit:
                     del tail[:-retained_limit]
 
@@ -450,6 +554,13 @@ async def _execute(
                     service_controls[process.pid] = (control_write, ack_read)
                     ack_read = None
                     control_write = None
+                if finalizers is not None:
+                    # Dettmore e2e-54: start-maxio exited 1 after this first moment, and its result kept only the
+                    # output of the first 0.1 s (none). The drain keeps reading; teardown takes its final output.
+                    def final_output() -> str:
+                        cleaned = _redact(tail.decode(errors="replace"), child_env, extra_values=known_secrets)
+                        return cleaned.encode()[-OUTPUT_LIMIT:].decode(errors="ignore")
+                    finalizers[process.pid] = final_output
                 if sys.platform == 'linux':
                     result.status = "pass"
                 else:
@@ -459,12 +570,12 @@ async def _execute(
                     tail.extend(b"\nbackground service completion requires Linux supervision")
                 return result
         try:
-            await asyncio.wait_for(process.wait(), command.timeout_seconds)
+            await asyncio.wait_for(process.wait(), timeout)
             result.exit_code = process.returncode
             result.status = "pass" if process.returncode == 0 else "fail"
         except TimeoutError:
             result.status = "indeterminate"
-            tail.extend(b"\ncommand timed out")
+            tail.extend(("\n" + (COMMAND_CUT_SHORT if cut_short else COMMAND_TIMED_OUT)).encode())
     except (OSError, ValueError) as exc:
         result.status = "fail"
         tail.extend(str(exc).encode())
@@ -497,8 +608,125 @@ async def _execute(
         result.duration_seconds = time.monotonic() - started
         cleaned = _redact(tail.decode(errors="replace"), child_env, extra_values=known_secrets).encode()
         result.output_truncated = total > OUTPUT_LIMIT or len(cleaned) > OUTPUT_LIMIT
-        result.output = cleaned[-OUTPUT_LIMIT:].decode(errors="ignore")
+        output = cleaned[-OUTPUT_LIMIT:]
+        earlier = errors.before(total - len(output)) if result.output_truncated else b""
+        if earlier:
+            excerpt = _redact(earlier.decode(errors="replace"), child_env, extra_values=known_secrets).encode()
+            excerpt = b"[error lines from earlier output]\n" + excerpt[-ERROR_EXCERPT_LIMIT:] + b"\n[... output tail]\n"
+            output = excerpt + output[-(OUTPUT_LIMIT - len(excerpt)):]
+        if result.status == "fail" and (logs := _referenced_logs(output.decode(errors="ignore"), roots)) is not None:
+            excerpt = _redact(logs.decode(errors="replace"), child_env, extra_values=known_secrets).encode()
+            output = (excerpt + b"\n[... output]\n")[:FAILED_OUTPUT_LIMIT - len(output)] + output
+        result.output = output.decode(errors="ignore")
     return result
+
+
+# Dettmore e2e-45..51: ruby-build prints only "BUILD FAILED ... See the full build log at /tmp/ruby-build.N.log"; the
+# cause stayed in that file, and two repair generations were spent without it. Dettmore e2e-54: that log in turn named
+# ext/openssl/mkmf.log and three more, absolute or relative to the source tree, which hold why each extension was not
+# configured. A failed command's output gets the error lines of every log it (or the first log) names under /tmp or
+# the cache or scratch roots, then the raw tail of the first, redacted, before its own bounded output.
+REFERENCED_LOG_LIMIT = 2048
+REFERENCED_ERROR_LIMIT = 1536
+REFERENCED_LOG_READ = 64 * 1024
+MAX_REFERENCED_LOGS = 8
+REFERENCED_ERROR_LINES = 6
+FAILED_OUTPUT_LIMIT = OUTPUT_LIMIT * 2
+_REFERENCED_LOG = re.compile(r"build log (?:at|in) (/[A-Za-z0-9._/+-]{1,240}\.log)\b")
+_ABSOLUTE_LOG = re.compile(r"(?<![A-Za-z0-9._/+-])(/[A-Za-z0-9._/+-]{1,240}\.log)\b")
+_RELATIVE_LOG = re.compile(r"(?<![A-Za-z0-9._/+-])((?:[A-Za-z0-9._+-]+/){1,6}[A-Za-z0-9._+-]+\.log)\b")
+_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9._/+-])(/[A-Za-z0-9._/+-]{1,240})")
+_LOG_ERROR_LINE = re.compile(rb"(?i)could not be found|not found|no such file|loaderror|cannot (?:find|load|open)|"
+                             rb"undefined reference|not available|could not|\berror\b|\bfatal\b|\bmissing\b")
+
+
+def _allowed_log(path: str, roots: Mapping[str, str]) -> Path | None:
+    if ".." in path.split("/"):
+        return None
+    bases = ["/tmp", *(roots[key] for key in ("cache", "scratch") if roots.get(key))]
+    if not any(path == base or path.startswith(base.rstrip("/") + "/") for base in bases):
+        return None
+    candidate = Path(path)
+    try:
+        # Resolved, so a symlinked parent (ln -s / /tmp/r) cannot reach outside the allowed roots.
+        resolved = candidate.resolve(strict=True)
+        if candidate.is_symlink() or not resolved.is_file() or not any(
+                resolved.is_relative_to(Path(base).resolve()) for base in bases):
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return resolved
+
+
+def _named_logs(text: str, roots: Mapping[str, str]) -> list[Path]:
+    """Logs a text names: absolute paths, then relative ones resolved under a directory another path there names."""
+    found: list[Path] = []
+    for match in [*_REFERENCED_LOG.finditer(text), *_ABSOLUTE_LOG.finditer(text)]:
+        if (path := _allowed_log(match.group(1), roots)) is not None and path not in found:
+            found.append(path)
+    bases = list(dict.fromkeys(str(parent) for match in _ABSOLUTE_PATH.finditer(text)
+                               for parent in list(Path(match.group(1)).parents)[:6] if str(parent) != "/"))[:64]
+    for match in _RELATIVE_LOG.finditer(text):
+        relative = match.group(1)
+        for base in bases:
+            if (path := _allowed_log(f"{base}/{relative}", roots)) is not None:
+                if path not in found:
+                    found.append(path)
+                break
+    return found
+
+
+def _read_tail(path: Path, limit: int) -> bytes:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(max(0, handle.seek(0, os.SEEK_END) - limit))
+            return handle.read()
+    except OSError:
+        return b""
+
+
+def _referenced_logs(output: str, roots: Mapping[str, str]) -> bytes | None:
+    logs = _named_logs(output, roots)
+    if not logs:
+        return None
+    first = _read_tail(logs[0], REFERENCED_LOG_READ)
+    for path in _named_logs(first.decode(errors="ignore"), roots):
+        if path not in logs:
+            logs.append(path)
+    errors: list[bytes] = []
+    for path in logs[:MAX_REFERENCED_LOGS]:
+        content = first if path == logs[0] else _read_tail(path, REFERENCED_LOG_READ)
+        lines = [line.strip()[:ERROR_EXCERPT_LINE_BYTES] for line in content.split(b"\n")
+                 if _LOG_ERROR_LINE.search(line) and not _STACK_FRAME.search(line)]
+        lines = list(dict.fromkeys(lines))[-REFERENCED_ERROR_LINES:]
+        if lines:
+            errors.append(f"{path}:".encode() + b"".join(b"\n  " + line for line in lines))
+    excerpt = b""
+    if errors:
+        excerpt = (b"[error lines from the logs this output names]\n"
+                   + b"\n".join(errors)[:REFERENCED_ERROR_LIMIT] + b"\n")
+    return excerpt + b"[tail of the build log this output names]\n" + first[-REFERENCED_LOG_LIMIT:]
+
+
+# A trivial command run with the activated environment after each install step. Maintainer ruling 2026-10-31: one
+# general health check, not a rule per setting. Dettmore e2e-39: an install step copied an old libc into a directory
+# activation put on LD_LIBRARY_PATH, and every later command, the shell included, failed; nothing named the step.
+# sh, not bash: every image has a POSIX shell, and anything that breaks it (a replaced libc or PATH) breaks bash too.
+ENVIRONMENT_HEALTH = Command(id="environment-health", argv=["sh", "-c", "true"], cwd="{repo}", timeout_seconds=30)
+UNHEALTHY = ("environment health check failed after this step: a trivial command (sh -c true) could not run with "
+             "the activated environment, so later commands will fail too. Keep this step from breaking the shell "
+             "(for example a library or PATH entry that replaces a system one): ")
+
+
+async def _environment_health(*, roots: dict[str, str], env: dict[str, str], digest: str, scope: str,
+                              redactions: frozenset[str]) -> str | None:
+    """None when a trivial command still runs with the activated environment; otherwise its first output line."""
+    probe = await _execute(ENVIRONMENT_HEALTH, roots=roots, env=env, digest=digest, scope=scope, results={},
+                           ignore_dependencies=True, redactions=redactions)
+    if probe.status == "pass":
+        return None
+    first = next((line.strip() for line in probe.output.splitlines() if line.strip()), "")
+    return (first or f"exit {probe.exit_code}")[:400]
 
 
 async def _commands(
@@ -510,6 +738,8 @@ async def _commands(
     scope: str,
     results: dict[str, CheckResult],
     redactions: frozenset[str] = frozenset(),
+    health: bool = False,
+    budget: float | None = None,
 ) -> None:
     pending = {command.id: command for command in commands}
     while pending:
@@ -520,7 +750,10 @@ async def _commands(
         ]
         if not ready:
             raise ValueError("unresolvable command ordering")
-        for command in ready:
+        # One at a time, the first in list order whose prerequisites are done: the author's list order is the order.
+        # Dettmore e2e-70: install-npm, listed after install-gems with no depends_on, ran in a first wave of commands
+        # without prerequisites, before Ruby existed, and its asset build failed with "bundle: not found".
+        for command in ready[:1]:
             if scope and command.scope and scope not in command.scope:
                 results[command.id] = CheckResult(
                     id=command.id,
@@ -539,7 +772,13 @@ async def _commands(
                     scope=scope,
                     results=results,
                     redactions=redactions,
+                    budget=budget,
                 )
+                if health and results[command.id].status in {"pass", "fail"} and (broken := await _environment_health(
+                        roots=roots, env=env, digest=digest, scope=scope, redactions=redactions)) is not None:
+                    result = results[command.id]
+                    result.status = "fail"
+                    result.output = UNHEALTHY + broken + ("\n" + result.output if result.output else "")
             del pending[command.id]
 
 
@@ -555,8 +794,13 @@ async def manifest_services(
     secret_names: Sequence[str] = (),
     runtime_env: Mapping[str, str] | None = None,
     credentials: Mapping[str, str] | None = None,
+    command_deadline: float | None = None,
 ) -> AsyncIterator[list[CheckResult]]:
-    """Hold explicitly declared services until exit; expose lifecycle failures to callers."""
+    """Hold explicitly declared services until exit; expose lifecycle failures to callers.
+
+    ``command_deadline`` bounds init, start and health like the checks; stops run after it, within TEARDOWN_STOP_SECONDS.
+    """
+    stop_budget = None if command_deadline is None else command_deadline + TEARDOWN_STOP_SECONDS
     roots = {"cache": str(cache), "repo": str(repo), "scratch": str(scratch)}
     redactions = _runtime_secret_values(secret_names) | frozenset((credentials or {}).values())
     env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env, credentials=credentials)
@@ -567,6 +811,7 @@ async def manifest_services(
     drains: list[asyncio.Task[None]] = []
     supervisors: dict[int, str] = {}
     service_controls: dict[int, tuple[int, int]] = {}
+    finalizers: dict[int, Callable[[], str]] = {}
     try:
         command_service = {command.id: service.id for service in manifest.services
                            for command in [service.init, service.start, service.health] if command}
@@ -599,6 +844,8 @@ async def manifest_services(
                         drains=drains,
                         service_controls=service_controls,
                         redactions=redactions,
+                        finalizers=finalizers,
+                        budget=command_deadline,
                     )
                 else:
                     result = CheckResult(
@@ -614,6 +861,9 @@ async def manifest_services(
                 result.required = service.required
                 results[result.id] = result
                 lifecycle.append(result)
+                if healthy and result.status in {"fail", "indeterminate"} and (
+                        logs := await _service_logs(service, roots=roots, env=env, redactions=redactions)):
+                    result.output = result.output + ("\n" if result.output and not result.output.endswith("\n") else "") + logs
                 healthy = healthy and result.status == "pass"
         yield lifecycle
     finally:
@@ -645,6 +895,8 @@ async def manifest_services(
                         results=results,
                         ignore_dependencies=True,
                         redactions=redactions,
+                        budget=stop_budget,
+                        teardown=True,
                     )
                     result.required = service.required
                     results[result.id] = result
@@ -688,6 +940,58 @@ async def manifest_services(
                     )
                     results[result.id] = result
                     lifecycle.append(result)
+            for pid, final_output in finalizers.items():
+                start_result = results.get(supervisors.get(pid, ""))
+                if start_result is not None and start_result.status != "pass" and (late := final_output()):
+                    # The late output replaces the early capture it extends; service logs appended after it stay.
+                    marker = _SERVICE_LOG_MARKER.search(start_result.output)
+                    start_result.output = late + (start_result.output[marker.start():] if marker else "")
+
+
+# Dettmore e2e-54: a service step failed with "maxio-mock not ready" or nothing at all, while the reason was in the
+# service's own log: a container's (docker logs) or a file its start command writes. Both reach the failed step.
+SERVICE_LOG_LINES = 40
+_SERVICE_LOG_MARKER = re.compile(r"\n\[(?:docker logs --tail \d+ |tail of /)")
+SERVICE_LOG_LIMIT = 2048
+MAX_SERVICE_LOGS = 3
+
+
+async def _service_logs(service: Any, *, roots: dict[str, str], env: dict[str, str], redactions: frozenset[str]) -> str:
+    from .runtime_execution import docker_created
+
+    parts: list[str] = []
+    commands = [command for command in (service.init, service.start) if command is not None]
+    expanded: list[list[str]] = []
+    for command in commands:
+        try:
+            child_env, argv, _ = _command_values(command, roots, dict(env))
+        except ValueError:
+            continue
+        expanded.append(argv)
+        # Secret values expanded into a service command's own env are redacted too.
+        redactions = redactions | frozenset(_secret_values(child_env))
+    names = sorted({name for command in commands for name in docker_created(command.argv)["containers"]})
+    docker = shutil.which("docker", path=env.get("PATH")) if names else None
+    for name in names[:MAX_SERVICE_LOGS] if docker else ():
+        try:
+            process = await asyncio.create_subprocess_exec(
+                docker, "logs", "--tail", str(SERVICE_LOG_LINES), name, env=env, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+        except OSError:
+            continue
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(), 10)
+        except TimeoutError:
+            await _terminate(process)
+            continue
+        if process.returncode == 0 and output.strip():
+            parts.append(f"[docker logs --tail {SERVICE_LOG_LINES} {name}]\n"
+                         + output.decode(errors="replace")[-SERVICE_LOG_LIMIT:])
+    for argv in expanded:
+        for path in _named_logs(" ".join(argv), roots)[:MAX_SERVICE_LOGS]:
+            if tail := _read_tail(path, SERVICE_LOG_LIMIT).decode(errors="replace"):
+                parts.append(f"[tail of {path}]\n{tail}")
+    return _redact("\n".join(parts[:MAX_SERVICE_LOGS * 2]), env, extra_values=redactions)
 
 
 async def _run_manifest_commands(
@@ -702,7 +1006,11 @@ async def _run_manifest_commands(
     execution_source_digest: str | None = None,
     runtime_env: Mapping[str, str] | None = None,
     credentials: Mapping[str, str] | None = None,
+    progress: dict[str, CheckResult] | None = None,
+    command_deadline: float | None = None,
 ) -> VerificationReport:
+    """``progress``, when given, receives each result as it lands, so an owner keeps finished results if cancelled.
+    ``command_deadline`` (monotonic) bounds the install, lifecycle and check commands; see ``_execute``."""
     roots = {"cache": str(cache), "repo": str(repo), "scratch": str(scratch)}
     redactions = _runtime_secret_values(secret_names) | frozenset((credentials or {}).values())
     preflight = _template_preflight(manifest, roots, install=install, scope=scope, secret_names=secret_names,
@@ -711,12 +1019,77 @@ async def _run_manifest_commands(
         preflight.execution_source_digest = execution_source_digest
         return preflight
     env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env, credentials=credentials)
-    results: dict[str, CheckResult] = {}
+    results: dict[str, CheckResult] = progress if progress is not None else {}
     digest = manifest.digest()
+    consumer_repo = None
     if install:
+        # Dettmore e2e-83 and e2e-86: npm ci wrote node_modules into {repo}, every installer check passed, and the
+        # clean consumer, which gets a fresh {repo} and keeps only {cache}, failed with "tailwindcss: not found".
+        # Services and checks run in a copy of {repo} taken before any install, as the clean consumer sees it, so a
+        # {repo}-only install fails here, where a repair can still correct it.
+        consumer_repo = Path(tempfile.mkdtemp(prefix="coordinare-consumer-repo-")).resolve() / "repo"
+        shutil.copytree(repo, consumer_repo, symlinks=True)
         await _commands(
             manifest.install, roots=roots, env=env, digest=digest, scope=scope, results=results, redactions=redactions,
+            health=True, budget=command_deadline,
         )
+        roots = {**roots, "repo": str(consumer_repo)}
+        env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env,
+                                   credentials=credentials)
+    # Dettmore e2e-83, e2e-92 and e2e-94: bundler wrote Gemfile.lock into {cache}, which the clean consumer mounts
+    # read-only, after every installer check had passed. Services and checks see {cache} read-only here too.
+    read_only = _read_only_tree(Path(cache)) if install and Path(cache).is_dir() else contextlib.nullcontext()
+    try:
+        with read_only:
+            return await _run_consumer_phase(
+                manifest, roots=roots, env=env, digest=digest, results=results, redactions=redactions,
+                install=install, scope=scope, secret_names=secret_names, runtime_env=runtime_env,
+                credentials=credentials, command_deadline=command_deadline,
+                execution_source_digest=execution_source_digest,
+            )
+    finally:
+        if consumer_repo is not None:
+            shutil.rmtree(consumer_repo.parent, ignore_errors=True)
+
+
+_WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+
+
+@contextlib.contextmanager
+def _read_only_tree(root: Path) -> Iterator[None]:
+    """Remove every write bit under ``root`` for the block, then restore each original mode.
+
+    The carrier runs without Linux capabilities, so even its root user is held to these bits. Links are left alone.
+    """
+    modes = {path: stat.S_IMODE(path.lstat().st_mode) for path in (root, *root.rglob("*")) if not path.is_symlink()}
+    try:
+        for path, mode in modes.items():
+            with contextlib.suppress(OSError):
+                path.chmod(mode & ~_WRITE_BITS)
+        yield
+    finally:
+        for path, mode in modes.items():
+            with contextlib.suppress(OSError):
+                path.chmod(mode)
+
+
+async def _run_consumer_phase(
+    manifest: EnvironmentManifest,
+    *,
+    roots: dict[str, str],
+    env: dict[str, str],
+    digest: str,
+    results: dict[str, CheckResult],
+    redactions: frozenset[str],
+    install: bool,
+    scope: str,
+    secret_names: Sequence[str],
+    runtime_env: Mapping[str, str] | None,
+    credentials: Mapping[str, str] | None,
+    command_deadline: float | None,
+    execution_source_digest: str | None,
+) -> VerificationReport:
+    """Activation, services and checks, in the source copy a clean consumer would see."""
     # Activation paths are execution prerequisites, even when a command uses absolute argv.
     missing = [
         path for path in manifest.activation.path if not Path(_expand(path, roots, env)).is_dir()
@@ -730,24 +1103,50 @@ async def _run_manifest_commands(
             manifest_digest=digest,
             context=scope,
         )
-    async with manifest_services(manifest, **roots, _results=results, scope=scope, secret_names=secret_names,
-                                 runtime_env=runtime_env, credentials=credentials) as services:
-        if missing or any(
-            r.required and r.status != "pass" for r in [*results.values(), *services]
-        ):
-            for check in manifest.checks:
-                results[check.id] = CheckResult(
-                    id=check.id,
-                    status="not_run",
-                    required=check.required,
-                    output="environment prerequisite failed",
-                    manifest_digest=digest,
-                    context=scope,
+    # Dettmore e2e-54: with install-ruby failed, every generation still started the services, whose ruby-based mock
+    # failed with "env: 'ruby': No such file or directory" and read as a fault of its own. A service starts only when
+    # every required install passed; otherwise its steps are not_run and name the installs.
+    def in_scope(command: Command) -> bool:
+        return not (scope and command.scope and scope not in command.scope)
+
+    blocked = [command.id for command in manifest.install
+               if install and command.required and in_scope(command)
+               and (command.id not in results or results[command.id].status != "pass")]
+    if blocked:
+        note = "required install did not pass: " + ", ".join(blocked[:8])
+        for service in manifest.services:
+            if scope and service.start.scope and scope not in service.start.scope:
+                continue
+            for command in (service.init, service.start, service.health, service.stop):
+                if command is not None:
+                    results[command.id] = CheckResult(id=command.id, status="not_run", required=service.required,
+                                                      output=note, manifest_digest=digest, context=scope)
+        for check in manifest.checks:
+            results[check.id] = CheckResult(
+                id=check.id, status="not_run", required=check.required and in_scope(check),
+                output="environment prerequisite failed" if in_scope(check) else "outside requested scope",
+                manifest_digest=digest, context=scope)
+    else:
+        async with manifest_services(manifest, **roots, _results=results, scope=scope, secret_names=secret_names,
+                                     runtime_env=runtime_env, credentials=credentials,
+                                     command_deadline=command_deadline) as services:
+            if missing or any(
+                r.required and r.status != "pass" for r in [*results.values(), *services]
+            ):
+                for check in manifest.checks:
+                    results[check.id] = CheckResult(
+                        id=check.id,
+                        status="not_run",
+                        required=check.required,
+                        output="environment prerequisite failed",
+                        manifest_digest=digest,
+                        context=scope,
+                    )
+            else:
+                await _commands(
+                    manifest.checks, roots=roots, env=env, digest=digest, scope=scope, results=results,
+                    redactions=redactions, budget=command_deadline,
                 )
-        else:
-            await _commands(
-                manifest.checks, roots=roots, env=env, digest=digest, scope=scope, results=results, redactions=redactions,
-            )
     if not any(
         check.required and (not scope or not check.scope or scope in check.scope) for check in manifest.checks
     ):
@@ -796,11 +1195,26 @@ async def run_manifest(
         return await execute_with_runtime(manifest, cache=cache, repo=repo, scratch=scratch,
             install=install, scope=scope, secret_names=secret_names, execution_source_digest=execution_source_digest,
             runtime_artifacts=runtime_artifacts, runtime_deadline=runtime_deadline, runtime_lease=runtime_lease,
-            commands=commands)
+            commands=commands, redact_values=frozenset(credentials.values()))
     if runtime_lease is not None or runtime_artifacts is not None:
         raise ValueError("native manifest cannot use private runtime evidence")
     return await commands(manifest, cache=cache, repo=repo, scratch=scratch,
         install=install, scope=scope, secret_names=secret_names, execution_source_digest=execution_source_digest)
+
+
+async def run_trial(
+    base: EnvironmentManifest, manifest: EnvironmentManifest, *, trial: TrialReceipt, cache: str | Path,
+    repo: str | Path, scratch: str | Path, execution_source_digest: str, runtime_deadline: float,
+    secret_names: Sequence[str] = (),
+) -> VerificationReport:
+    """A repair's diagnostic run on its failed generation's trial disk, with fresh local credentials."""
+    from .runtime_execution import execute_trial
+
+    credentials = local_credential_values(manifest, supplied=secret_names)
+    commands = functools.partial(_run_manifest_commands, credentials=credentials)
+    return await execute_trial(base, manifest, trial=trial, cache=cache, repo=repo, scratch=scratch,
+        secret_names=secret_names, execution_source_digest=execution_source_digest,
+        runtime_deadline=runtime_deadline, commands=commands)
 
 
 def local_credential_values(manifest: EnvironmentManifest, *, supplied: Collection[str]) -> dict[str, str]:
@@ -875,20 +1289,28 @@ def main() -> None:
     from .runtime_transport import consume_runtime_controls
 
     runtime_deadline, runtime_artifacts = consume_runtime_controls(required=manifest.runtime is not None, install=args.install)
-    report = run_cli(
-        run_manifest(
-            manifest,
-            cache=args.cache,
-            repo=args.repo,
-            scratch=args.scratch,
-            scope=args.scope, execution_source_digest=execution_source_digest,
-            install=args.install,
-            secret_names=secret_names,
-            runtime_deadline=runtime_deadline, runtime_artifacts=runtime_artifacts,
-        ),
-    )
+    from .runtime_execution import PrivateRuntimeIncompleteError
+
+    try:
+        report = run_cli(
+            run_manifest(
+                manifest,
+                cache=args.cache,
+                repo=args.repo,
+                scratch=args.scratch,
+                scope=args.scope, execution_source_digest=execution_source_digest,
+                install=args.install,
+                secret_names=secret_names,
+                runtime_deadline=runtime_deadline, runtime_artifacts=runtime_artifacts,
+            ),
+        )
+    except PrivateRuntimeIncompleteError as exc:
+        # The run holds either way; emit the evidence instead of only a traceback.
+        if exc.report is None:
+            raise
+        report = exc.report
     sys.stdout.write(report.model_dump_json() + "\n")
-    raise SystemExit(0 if report.passed else 1)
+    raise SystemExit(0 if report.passed and not report.runtime_incomplete else 1)
 
 
 if __name__ == "__main__":

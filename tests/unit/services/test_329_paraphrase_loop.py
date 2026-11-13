@@ -1,7 +1,7 @@
 """329: the watchdog must also catch a loop that PARAPHRASES itself.
 
 #328 made the fingerprint rotation-stable for an exactly periodic cycle. A
-second live loop on website #160 evaded it: the model varied a word or two per
+second live loop on sampleweb #160 evaded it: the model varied a word or two per
 repetition ("present the final answer" / "include the complete solution"), so
 there was no exact repeating unit, the period test found nothing, and the raw
 tail kept rotating. Measured against the running performer, the shipped
@@ -22,7 +22,7 @@ from coordinare.services.progress_fingerprint import (
     progress_fingerprint,
 )
 
-FIXTURE = Path(__file__).parent / "fixtures" / "website_160_paraphrase_loop.json"
+FIXTURE = Path(__file__).parent / "fixtures" / "sampleweb_paraphrase_loop.json"
 
 
 def _polls() -> dict[str, list[dict]]:

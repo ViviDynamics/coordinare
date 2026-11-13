@@ -1,3 +1,5 @@
+> Maintainer-approved source conflict correction: [source-conflict-amendment.md](source-conflict-amendment.md). Inline TDD plan: [source-conflict-plan.md](source-conflict-plan.md).
+
 # Tasks: Practical reviewed environment discovery
 
 Source: approved [plan.md](plan.md); all tasks run sequentially in the current isolated worktree.
@@ -194,4 +196,75 @@ execution with independent review. Motivated by the GLM Elm attempt
 - [x] T094 `local_credentials` model and validation codes (task1).
 - [x] T095 Per-run generation, injection and redaction in the runner and performer (task2).
 - [x] T096 Author, reviewer and envelope repair guidance (task3).
-- [ ] T097 Independent review, preflight, push, CI and a fresh GLM Elm attempt.
+- [x] T097 Independent review, preflight, push and CI (6ea65858). The fresh GLM Elm attempt `...-creds-v3` held at
+  `scope_revision_context_limit` before reaching the manifest, so the credential change awaits a live run.
+
+## Approved sharded source discovery
+
+Spec: `sharded-discovery-amendment.md`; plan: `sharded-discovery-plan.md` (both approved 2026-10-21, with
+maintainer rulings recorded in the plan). Native execution with independent review.
+
+- [x] T098 Inventory metadata, unreadable-by-policy evidence and enlarged bounds (Phase 1).
+- [x] T099 Shard planner and bounded agent pool (Phase 2, Tasks 3-4).
+- [x] T100 Sharded authoring, independent shard review into one ledger, and sharded revision (Phases 2-3, Tasks 5-6).
+- [x] T101 Persisted shard progress and recovery (Phase 4, Task 7).
+- [ ] T102 Harness flags, independent review, preflight, push, CI and pinned Elm then Dettmore runs (Phase 5, Task 8).
+
+## Approved guided sharding
+
+Spec: `guided-sharding-amendment.md`; plan: `guided-sharding-plan.md` (approved 2026-10-21). Motivated by the
+sharded Elm attempt `...-sharded-v1`: 276 size-based shards, held at `attempt_schema_limit` after 1,957 s and
+125 calls with 3 shards authored.
+
+- [x] T103 Read tolerance for a stray cursor; triage and exclusion models; `listing_triage` envelope.
+- [x] T104 Two independent listing-only triages; authoring of non-excluded areas; exclusions in the reviewed definition.
+- [ ] T105 Independent review, preflight, push, CI and pinned Elm then Dettmore on GLM.
+
+## Approved file-level triage
+
+Spec: `file-level-triage-amendment.md` (approved 2026-10-21). Guided-v5 kept 172 shards from directory-level
+environment verdicts and was stopped before authoring.
+
+- [x] T106 Environment verdicts name files; authoring and review shard only the named files plus the spine; unsure
+  areas recorded as `unread_unsure` and shown to the merge reviewer; inputs no authored shard owns are reviewed by
+  the merge reviewer; an unusable triage names every listed file.
+- [ ] T107 Independent review, preflight, push, CI and pinned Elm then Dettmore on GLM.
+
+## Approved scope consolidation and focused review navigation
+
+Spec: `scope-consolidation-amendment.md` (approved 2026-10-21). Dettmore reached source review cleanly with 190
+over-fine criteria before the operator tool's two-hour limit stopped it.
+
+- [x] T108 Granularity guidance for every author; consolidation of scopes over 40 criteria with citation and
+  applicability guarantees and a reviewable record; reviewers given cited-file lists and told to navigate only
+  for unlisted references. Builder's call: consolidation runs per chunk in one level.
+- [ ] T109 Independent review, preflight, push, CI and a detached Dettmore rerun, then Elm.
+
+## Approved sharded executable construction and review
+
+Spec: `sharded-executable-amendment.md` (approved 2026-10-22), plan `sharded-executable-plan.md`. Dettmore v3
+accepted 129 criteria, then held at `discovery_context_limit` because construction preloaded every scope input.
+
+- [x] T110 Evidence on demand: executable authors and reviewers get a digest-verified index, not file contents
+  (Phase A); consolidation chunks bounded at 25 criteria (Phase E).
+- [x] T111 Global author plus prefixed check authors per group of at most 25 required criteria, deterministic merge
+  through the unchanged admission, merge errors routed to the group they name (Phase B).
+- [x] T112 Divided review: one fresh reviewer per group and one for the global part, combined into one assessment;
+  coverage findings routed to their group (Phase C).
+- [x] T113 Persisted global and group parts, reused after a restart only for an identical author brief, inputs
+  verified again by digest, budget never renewed (Phase D).
+- [ ] T114 Independent review, preflight, push, CI and a detached Dettmore rerun, then Elm.
+
+## Approved throughput and reliability amendment
+
+Spec: `throughput-amendment.md` (approved 2026-10-22, with one fresh review for a reused scope).
+
+- [x] T115 Per-phase call telemetry: calls, seconds, input/output/cached tokens, length stops.
+- [x] T116 Output caps where valid replies are far below the maximum (triage); cut-off replies corrected with
+  length guidance.
+- [x] T117 Small directories judged environment are expanded to their files; larger ones are corrected with their
+  file listing.
+- [x] T118 One system message per agent conversation; shared context nested first for cross-agent prefix caching.
+- [x] T119 An accepted scope offered to a later attempt on the same commit and inventory, always through a fresh
+  independent review; harness `--reuse-scope-from`.
+- [ ] T120 Independent review, preflight, merge into #355, CI, then measure on the next Dettmore run.

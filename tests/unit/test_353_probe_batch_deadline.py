@@ -105,3 +105,74 @@ async def test_eleven_private_observations_share_one_thirty_minute_deadline(tmp_
     assert len(set(deadlines)) == 1 and deadlines[0] <= budget.deadline
     assert len(set(scratch_paths)) == 11 and all(not path.exists() for path in scratch_paths)
     assert all(c.timeout_seconds == 30 for c in selected.request.commands)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('second', ['completed', 'timeout'])
+async def test_a_guest_that_timed_out_before_observing_is_retried_once(tmp_path, monkeypatch, second):
+    """Dettmore e2e-48: one emulated guest boot ran out of time under load and the 2-hour run held on it. That one
+    machinery failure is retried once in a fresh guest; a second one is still the report's result."""
+    from coordinare.services import environment_probe_executor as executor
+
+    selected, bundle = bound_plan(tmp_path, True)
+    monkeypatch.setattr(executor, '_docker_identity', AsyncMock(return_value=(selected.capabilities.image_ref, selected.capabilities.platform)))
+    calls: list[str] = []
+    timed_out = {'status': 'execution_error', 'exit_code': None, 'output': executor.GUEST_TIMEOUT_OUTPUT, 'truncated': False}
+
+    async def command(p, roots, command, deadline, *, scratch):
+        calls.append(command['id'])
+        if len(calls) == 1 or second == 'timeout':
+            return ProbeCommandResult(id=command['id'], **timed_out)
+        return ProbeCommandResult(id=command['id'], status='completed', exit_code=0, output='available', truncated=False)
+
+    monkeypatch.setattr(executor, '_command_container', command)
+    report = await executor.execute_environment_probe(selected, state={'probe_backend': 'docker'}, source_bundle=bundle,
+                                                      budget=AttemptBudget(timeout_seconds=3600))
+    commands = len(selected.request.commands)
+    assert len(report.results) == commands
+    assert len(calls) == 2 * commands
+    assert all(result.status == ('completed' if second == 'completed' else 'execution_error') for result in report.results)
+
+
+async def _owned(tmp_path, monkeypatch, *, read_seconds, run_seconds, batch_seconds):
+    """A probe whose input reads and run take the given times, under a batch allowance of ``batch_seconds``."""
+    import asyncio
+
+    from coordinare.services import environment_probe_service as service
+    from coordinare.services.environment_repair import begin_attempt, save_attempt
+
+    selected, bundle = bound_plan(tmp_path, False)
+    cache = cache_fixture(tmp_path)
+    limits = DiscoveryLimits(attempt_timeout_seconds=3600)
+    budget = begin_attempt(cache, limits, outer_seconds=3600)
+    budget.reserve_probe_batch()
+    async def checkpoint():
+        save_attempt(cache, budget)
+    budget.checkpoint = checkpoint
+    await budget.flush()
+    async def fetch(path):
+        await asyncio.sleep(read_seconds)
+        return SOURCE
+    async def execute(p, **kwargs):
+        await asyncio.sleep(run_seconds)
+        data = report_data(p)
+        data.update(image_ref=p.capabilities.image_ref, platform=p.capabilities.platform)
+        return ProbeReport.model_validate(data)
+    monkeypatch.setattr(service, 'execute_environment_probe', execute)
+    monkeypatch.setattr(service, 'probe_batch_timeout', lambda _plan: batch_seconds)
+    return await service.run_owned_probe(selected, context=service.ProbeServiceContext(cache, {}, fetch, budget, limits, bundle))
+
+
+@pytest.mark.asyncio
+async def test_verifying_the_inputs_never_spends_the_batch_allowance(tmp_path, monkeypatch):
+    # Dettmore e2e-65: re-verifying 595 inputs on a loaded host outlasted the 120 s batch before the probe ran.
+    assert isinstance(await _owned(tmp_path, monkeypatch, read_seconds=0.3, run_seconds=0.0, batch_seconds=0.2), ProbeReport)
+
+
+@pytest.mark.asyncio
+async def test_a_probe_that_outruns_its_batch_names_the_batch_not_the_phase(tmp_path, monkeypatch):
+    from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+
+    with pytest.raises(EnvironmentDiscoveryError) as exc:
+        await _owned(tmp_path, monkeypatch, read_seconds=0.0, run_seconds=0.5, batch_seconds=0.1)
+    assert exc.value.code == 'probe_batch_deadline'

@@ -5,9 +5,11 @@ import asyncio
 import contextlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+import httpx
 import structlog
 
 from coordinare.services.conductor_calls import (
@@ -24,8 +26,18 @@ from coordinare.services.environment_function_wire import (
     functions,
     load_unique,
 )
+from coordinare.services.environment_proposal_patch import text_schema
+from coordinare.services.model_output_cap import (
+    REPETITION_FINISH,
+    capped,
+    degenerate,
+    provider_outage_seconds,
+    repetition_guard,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from coordinare.config import ProjectConfiguration
     from coordinare.services.claude import ClaudeService
     from coordinare.services.environment_attempt import DiscoveryChatReply
@@ -224,10 +236,92 @@ def _openai_usage(data: Any) -> dict[str, int] | None:
     completion_tokens = usage.get("completion_tokens")
     details = usage.get("prompt_tokens_details")
     cached = details.get("cached_tokens") if isinstance(details, dict) else None
+    cached = usage.get("cache_read_input_tokens") if cached is None else cached
     prompt = prompt_tokens if isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool) else 0
     output = completion_tokens if isinstance(completion_tokens, int) and not isinstance(completion_tokens, bool) else 0
     read = cached if isinstance(cached, int) and not isinstance(cached, bool) else 0
     return {"input_tokens": max(prompt - read, 0), "output_tokens": output, "cache_read": read, "cache_write": 0}
+
+
+# A degenerate reply is checked again only after this many new characters.
+REPETITION_CHECK_CHARS = 256
+
+
+async def _streamed_completion(client: Any, url: str, payload: dict[str, Any],
+                               headers: dict[str, str]) -> tuple[Any, dict[str, Any] | None]:
+    """One streamed chat completion, reassembled as the non-streamed shape; None when the stream is malformed."""
+    async with client.stream("POST", url, json=payload, headers=headers) as resp:
+        if resp.is_error:
+            await resp.aread()
+            return resp, None
+        # A shorter client allowance (the default 180 s read timeout) still ends a silent stream sooner.
+        return resp, await _collect_stream(resp, idle=STREAM_IDLE_SECONDS)
+
+
+async def _stream_lines(resp: Any, idle: float | None) -> AsyncIterator[str]:
+    """The reply's lines; once the first has arrived, a silence longer than ``idle`` is a dropped stream.
+
+    Until a reply starts, a request may wait its whole allowance in the provider's queue, sending nothing: Dettmore
+    e2e-63's queued requests were cut off after ten minutes and sent again, and each copy joined the same queue. Once
+    tokens flow they keep flowing (reasoning included), so only a started stream is judged by its silence (e2e-61 waited
+    the full 3,600 s twice for one that had stopped).
+    """
+    lines = resp.aiter_lines().__aiter__()
+    started = False
+    while True:
+        try:
+            line = await (asyncio.wait_for(anext(lines), idle) if started and idle is not None else anext(lines))
+        except StopAsyncIteration:
+            return
+        except TimeoutError:
+            message = f"stream sent nothing for {idle:g} s after it started"
+            raise httpx.ReadTimeout(message) from None
+        started = True
+        yield line
+
+
+async def _collect_stream(resp: Any, *, idle: float | None = None) -> dict[str, Any] | None:
+    """Accumulate content and reasoning deltas; stop reading once either has degenerated into exact repetition.
+
+    Closing the stream early ends generation on the provider, so a looping reply costs seconds, not the cap.
+    """
+    text = thought = ""
+    checked = 0
+    model: str | None = None
+    usage: Any = None
+    finish: str | None = None
+    async for line in _stream_lines(resp, idle):
+        if not line.startswith("data:"):
+            continue
+        body = line[5:].strip()
+        if body == "[DONE]":
+            break
+        try:
+            chunk = json.loads(body)
+        except ValueError:
+            return None
+        if not isinstance(chunk, dict):
+            return None
+        model = chunk.get("model") if isinstance(chunk.get("model"), str) else model
+        usage = chunk.get("usage") if isinstance(chunk.get("usage"), dict) else usage
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") if isinstance(choice, dict) else None
+            if isinstance(delta, dict):
+                text += delta["content"] if isinstance(delta.get("content"), str) else ""
+                reasoning = delta.get("reasoning_content", delta.get("reasoning"))
+                thought += reasoning if isinstance(reasoning, str) else ""
+            if isinstance(choice, dict) and isinstance(choice.get("finish_reason"), str):
+                finish = choice["finish_reason"]
+        if len(text) + len(thought) - checked >= REPETITION_CHECK_CHARS:
+            checked = len(text) + len(thought)
+            if degenerate(text) or degenerate(thought):
+                finish = REPETITION_FINISH
+                break
+    # A provider may close a looping stream itself, without a finish reason, before the next check (v33: a reply of
+    # blank lines); the final text is checked once more so that stop is still recognised as repetition.
+    if finish is None and (degenerate(text) or degenerate(thought)):
+        finish = REPETITION_FINISH
+    return {"model": model, "usage": usage, "choices": [{"message": {"content": text}, "finish_reason": finish}]}
 
 
 @runtime_checkable
@@ -264,12 +358,41 @@ SCHEMA_LIMIT_MARKERS = ("grammar is too large", "schema is too complex")
 
 
 _BAD_REQUEST = 400
+# Dettmore e2e-56 held after five hours on one HTTP 400 whose body was never kept; the same request, sent again, was
+# answered. In a call that carries a provider outage window (environment discovery), a 400 that is not a schema-limit
+# rejection is retried once after this wait; other callers never retry a 4xx. Every 4xx body is logged.
+BAD_REQUEST_RETRY_SECONDS = 30.0
+PROVIDER_ERROR_BODY_CHARS = 2048
+# A request too long for the model is rejected the same way every time it is sent.
+CONTEXT_LIMIT_MARKERS = ("context_length_exceeded", "maximum context length", "context window", "prompt is too long",
+                         "too many tokens")
+
+
+def _error_body(response: Any) -> str:
+    """The start of a provider's error body, for the log; never part of a prompt or the journal."""
+    try:
+        return str(getattr(response, "text", ""))[:PROVIDER_ERROR_BODY_CHARS]
+    except Exception:  # an unread streamed body raises httpx.ResponseNotRead; the status still explains the failure
+        return ""
 
 
 def _schema_limit_rejection(exc: Exception) -> bool:
     response = getattr(exc, "response", None)
-    return (getattr(response, "status_code", None) == _BAD_REQUEST
-            and any(marker in str(getattr(response, "text", "")).lower() for marker in SCHEMA_LIMIT_MARKERS))
+    return getattr(response, "status_code", None) == _BAD_REQUEST and _schema_limit_body(str(getattr(response, "text", "")))
+
+
+def _schema_limit_body(body: str) -> bool:
+    return any(marker in body.lower() for marker in SCHEMA_LIMIT_MARKERS)
+
+
+def _deterministic_rejection(body: str, *, schema: bool) -> bool:
+    """A 400 that resending unchanged cannot cure: a request too long for the model, or a schema the provider cannot
+    compile (which has its own fallback)."""
+    return any(marker in body.lower() for marker in CONTEXT_LIMIT_MARKERS) or (schema and _schema_limit_body(body))
+
+
+# The longest a started streamed reply may go without a line before it is treated as dropped (see _stream_lines).
+STREAM_IDLE_SECONDS = 600.0
 
 
 class OpenAiApiBackend:
@@ -316,6 +439,30 @@ class OpenAiApiBackend:
     # without compounding latency on a hard outage.
     _MAX_ATTEMPTS: int = 3
     _RETRY_DELAYS_S: tuple[float, ...] = (0.5, 1.5)
+    # A caller that sets provider_outage_seconds keeps retrying past those, with growing waits up to this one.
+    _OUTAGE_DELAYS_S: tuple[float, ...] = (15.0, 30.0, 60.0, 120.0)
+
+    def _retry_delay(self, attempt: int, first_failure: float) -> float | None:
+        """The wait before retrying a transient failure, or None when the call should give up.
+
+        Dettmore e2e-26 and e2e-28 to e2e-31 each held within seconds of a provider outage (dropped connections,
+        then HTTP 500s for over an hour) on the three quick attempts below; a caller's outage window rides it out.
+        """
+        if attempt < len(self._RETRY_DELAYS_S):
+            return self._RETRY_DELAYS_S[attempt]
+        remaining = provider_outage_seconds.get() - (time.monotonic() - first_failure)
+        if remaining <= 0:
+            return None
+        step = min(attempt - len(self._RETRY_DELAYS_S), len(self._OUTAGE_DELAYS_S) - 1)
+        return min(self._OUTAGE_DELAYS_S[step], remaining)
+
+    async def _waited_to_retry(self, attempt: int, first_failure: float, **failure: Any) -> bool:
+        """Logs and waits before another attempt; False when the call should give up instead."""
+        if (delay := self._retry_delay(attempt, first_failure)) is None:
+            return False
+        log.warning("openai_api_retry", attempt=attempt + 1, **failure)
+        await asyncio.sleep(delay)
+        return True
 
     async def _chat(self, messages: list[dict[str, str]], json_mode: bool) -> str:
         return (await self._chat_reply(messages, json_mode)).text
@@ -359,10 +506,47 @@ class OpenAiApiBackend:
                 "name": "coordinare_environment_response", "strict": True, "schema": schema}}}
         return {"response_format": {"type": "json_object"}} if json_mode else {}
 
+    def _streams(self, payload: dict[str, Any], response_schema: dict[str, Any] | None, transport: str | None) -> bool:
+        """Streamed only so a degenerate reply can be stopped early; native tool calls stay whole."""
+        stream = repetition_guard.get() and not (response_schema is not None
+                                                 and (transport or self._structured_transport) == "tool_call")
+        if stream:
+            payload.update(stream=True, stream_options={"include_usage": True})
+        return stream
+
+    @staticmethod
+    async def _request_completion(client: Any, url: str, payload: dict[str, Any], headers: dict[str, str],
+                                  mode: str) -> tuple[Any, Any, str | None]:
+        """One request: the response, its parsed completion, and why the completion could not be parsed.
+
+        ``mode`` is ``stream``, ``strict`` (duplicate keys rejected) or ``plain``.
+        """
+        if mode == "stream":
+            resp, streamed = await _streamed_completion(client, url, payload, headers)
+            return resp, streamed, None if streamed is not None else "invalid provider JSON"
+        resp = await client.post(url, json=payload, headers=headers)
+        try:
+            return resp, load_unique(resp.text) if mode == "strict" else resp.json(), None
+        except (ValueError, RecursionError):
+            return resp, None, "invalid provider JSON"
+
+    async def _completion(self, url: str, payload: dict[str, Any], headers: dict[str, str], *,
+                          mode: str, schema: bool) -> tuple[Any, Any, str | None]:
+        """One request, sent once more after a 400 that resending may cure, when the call carries a provider outage
+        window (environment discovery). Dettmore e2e-56 held on one such 400; sent again, the request was answered."""
+        for resend in (True, False):
+            async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
+                resp, parsed, parse_error = await self._request_completion(client, url, payload, headers, mode)
+            if not (resend and resp.status_code == _BAD_REQUEST and provider_outage_seconds.get() > 0
+                    and not _deterministic_rejection(_error_body(resp), schema=schema)):
+                break
+            log.warning("openai_api_bad_request_retry", body=_error_body(resp))
+            await asyncio.sleep(BAD_REQUEST_RETRY_SECONDS)
+        return resp, parsed, parse_error
+
     async def _post_chat(self, messages: list[dict[str, str]], json_mode: bool, *, response_schema: dict[str, Any] | None = None,
                          transport: str | None = None) -> ModelReply:
         """The HTTP send with its retries. Failures come back as ``error``, never raised."""
-        import httpx
         if not self._api_key:
             log.error("openai_api_missing_key")
             return ModelReply(error="missing api key")
@@ -374,10 +558,10 @@ class OpenAiApiBackend:
         # and require `max_completion_tokens`. Use the presence of `effort` as the
         # signal: the config layer ties `effort` to reasoning-capable models.
         if self._effort is not None:
-            payload["max_completion_tokens"] = self._max_tokens
+            payload["max_completion_tokens"] = capped(self._max_tokens)
             payload["reasoning_effort"] = self._effort
         else:
-            payload["max_tokens"] = self._max_tokens
+            payload["max_tokens"] = capped(self._max_tokens)
             if self._temperature is not None:
                 payload["temperature"] = self._temperature
         payload.update(self._response_parameters(response_schema, json_mode, transport))
@@ -386,46 +570,39 @@ class OpenAiApiBackend:
             "Content-Type": "application/json",
         }
 
+        stream = self._streams(payload, response_schema, transport)
         data: Any = None
         last_error: str | None = None
-        for attempt in range(self._MAX_ATTEMPTS):
+        first_failure: float | None = None
+        attempt = -1
+        while True:
+            attempt += 1
             try:
-                async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
-                    resp = await client.post(
-                        f"{self._base_url}/chat/completions", json=payload, headers=headers,
-                    )
+                resp, parsed, parse_error = await self._completion(
+                    f"{self._base_url}/chat/completions", payload, headers,
+                    mode="stream" if stream else "strict" if response_schema is not None else "plain",
+                    schema=response_schema is not None)
                 # Retry only transient server-side conditions; 4xx auth/bad-
                 # request errors won't recover and burning the budget on them
                 # just delays the eventual empty-string return.
                 if resp.status_code >= 500 or resp.status_code == 429:
                     last_error = f"http_{resp.status_code}"
-                    if attempt < len(self._RETRY_DELAYS_S):
-                        log.warning(
-                            "openai_api_retry",
-                            attempt=attempt + 1,
-                            status=resp.status_code,
-                        )
-                        await asyncio.sleep(self._RETRY_DELAYS_S[attempt])
+                    first_failure = time.monotonic() if first_failure is None else first_failure
+                    if await self._waited_to_retry(attempt, first_failure, status=resp.status_code):
                         continue
                 resp.raise_for_status()
-                try:
-                    data = load_unique(resp.text) if response_schema is not None else resp.json()
-                except (ValueError, RecursionError):
-                    last_error = "invalid provider JSON"
+                data, last_error = parsed, parse_error or last_error
                 break
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = type(exc).__name__
-                if attempt < len(self._RETRY_DELAYS_S):
-                    log.warning(
-                        "openai_api_retry", attempt=attempt + 1, error=last_error,
-                    )
-                    await asyncio.sleep(self._RETRY_DELAYS_S[attempt])
+                first_failure = time.monotonic() if first_failure is None else first_failure
+                if await self._waited_to_retry(attempt, first_failure, error=last_error):
                     continue
                 log.error("openai_api_http_error", error=str(exc))
                 return ModelReply(error=last_error, timed_out=isinstance(exc, httpx.TimeoutException))
             except httpx.HTTPError as exc:
                 # Non-retryable (e.g. 4xx after raise_for_status).
-                log.error("openai_api_http_error", error=str(exc))
+                log.error("openai_api_http_error", error=str(exc), body=_error_body(getattr(exc, "response", None)))
                 limited = response_schema is not None and _schema_limit_rejection(exc)
                 return ModelReply(error=SCHEMA_LIMIT_ERROR if limited else type(exc).__name__)
 
@@ -486,7 +663,7 @@ class OpenAiApiBackend:
         response_schema = canonical_schema
         if canonical_schema is not None:
             if text_mode:
-                instruction += "\n\nAuthoritative logical response schema for this request:\n" + json.dumps(canonical_schema)
+                instruction += "\n\nAuthoritative logical response schema for this request:\n" + json.dumps(text_schema(canonical_schema))
             messages = [dict(message) for message in messages]
             if messages and messages[0]["role"] == "system":
                 messages[0]["content"] += "\n\n" + instruction

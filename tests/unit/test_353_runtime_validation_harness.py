@@ -106,7 +106,9 @@ async def test_installer_uses_original_deadline_policy_limits_and_private_host_s
         return
     await harness._install(snapshot, cache, cache.environment_capabilities['image_ref'], target, 900)
     command = seen['command']
-    assert 'COORDINARE_ENV_RUNTIME_EXPIRES_AT=1120.0' in command
+    # The guest stops a grace before the parent's own deadline (1120.0), so its partial report can still arrive.
+    assert 'COORDINARE_ENV_RUNTIME_EXPIRES_AT=1060.5' in command
+    assert max(waits) <= 1120.0 - 1001.0
     assert command[command.index('--cap-drop')+1] == 'ALL'
     assert command[command.index('--security-opt')+1] == 'no-new-privileges'
     assert command[command.index('--memory')+1] == '4096m'
@@ -190,3 +192,100 @@ async def test_field_validation_records_failed_installer_before_success_receipt_
     assert cache.environment_attempt['expires_at'] == expires
     assert cache.environment_attempt['rejected'][0]['report']['runtime_artifacts'] is None
     assert not cache.cache_dir_ready
+
+
+@pytest.mark.asyncio
+async def test_an_installer_that_crashes_before_reporting_is_held_with_a_redacted_tail(tmp_path, monkeypatch):
+    """v30: the private runtime guest exited, the installer printed a traceback, and the stage failed with nothing kept."""
+    cache = runtime_cache(tmp_path)
+    manifest = accepted_environment(cache)
+    snapshot = SimpleNamespace(name='sym', commit=manifest.source_commit, verify=AsyncMock())
+    image = cache.environment_capabilities['image_ref']
+    (tmp_path/'execution-approved.json').write_text(json.dumps({'scope': 'environment_validation',
+        'approved': True, 'manifest_digest': manifest.digest(), 'source_commit': snapshot.commit, 'image_ref': image}))
+    crash = (b'Traceback (most recent call last):\n  ...\nRuntimeError: private runtime guest exited unexpectedly '
+             b'(exit 137); console tail: Out of memory: Killed process 4242 | token=ghp_' + b'a' * 36 + b'\n')
+    monkeypatch.setattr(harness, '_install', AsyncMock(return_value=(1, crash)))
+    verifier = AsyncMock()
+    monkeypatch.setattr(harness, 'verify_env_cache_clean', verifier)
+    service = Mock()
+    result = {}
+    await harness.execute_accepted(snapshot, service, {'env_cache': {'sym': cache}}, image=image,
+        target=tmp_path, profile=harness.Profile(model='fixture', base_url='http://localhost:1'), result=result)
+    assert (result['status'], result['reason_code']) == ('held', 'installer_crashed')
+    assert 'Out of memory' in result['installer_output_tail']
+    assert 'ghp_' + 'a' * 36 not in result['installer_output_tail']
+    assert 'ghp_' + 'a' * 36 not in (tmp_path/'installer-output.json').read_text()
+    verifier.assert_not_awaited()
+    service.on_bootstrap_complete.assert_called_once_with('sym', False, {'env_cache': {'sym': cache}})
+
+
+def test_the_guest_console_tail_is_bounded_and_printable(tmp_path):
+    from coordinare_service_inference.environment.runtime_supervisor import (
+        CONSOLE_TAIL_BYTES,
+        console_tail,
+    )
+
+    console = tmp_path/'serial.log'
+    console.write_bytes(b'boot\n' * 400 + b'\x1b[0m[  812.1] Out of memory: Killed process 4242 (ruby)\r\n\x00')
+    tail = console_tail(console)
+    assert tail.endswith('Out of memory: Killed process 4242 (ruby)')
+    assert '\x1b' not in tail and '\x00' not in tail
+    assert len(tail) <= CONSOLE_TAIL_BYTES
+    assert console_tail(tmp_path/'absent.log') == ''
+
+
+@pytest.mark.asyncio
+async def test_an_installer_that_outlives_its_deadline_is_held_as_a_timeout(tmp_path, monkeypatch):
+    """v39: the install outlived the guest's 30-minute lifetime and the stage failed with nothing recorded."""
+    cache = runtime_cache(tmp_path)
+    manifest = accepted_environment(cache)
+    snapshot = SimpleNamespace(name='sym', commit=manifest.source_commit, verify=AsyncMock())
+    image = cache.environment_capabilities['image_ref']
+    (tmp_path/'execution-approved.json').write_text(json.dumps({'scope': 'environment_validation',
+        'approved': True, 'manifest_digest': manifest.digest(), 'source_commit': snapshot.commit, 'image_ref': image}))
+    monkeypatch.setattr(harness, '_install', AsyncMock(side_effect=TimeoutError('installer original deadline exhausted')))
+    service = Mock()
+    result = {}
+    await harness.execute_accepted(snapshot, service, {'env_cache': {'sym': cache}}, image=image,
+        target=tmp_path, profile=harness.Profile(model='fixture', base_url='http://localhost:1'), result=result)
+    assert (result['status'], result['reason_code']) == ('held', 'installer_timeout')
+    assert result['installer_seconds'] >= 0
+    service.on_bootstrap_complete.assert_called_once_with('sym', False, {'env_cache': {'sym': cache}})
+
+
+@pytest.mark.asyncio
+async def test_an_unconfirmed_teardown_holds_and_keeps_its_command_evidence(tmp_path, monkeypatch):
+    """d2: every command ran, then teardown was not clean; the run must hold, never repair, and keep the evidence."""
+    cache = runtime_cache(tmp_path)
+    manifest = accepted_environment(cache)
+    snapshot = SimpleNamespace(name='sym', commit=manifest.source_commit, verify=AsyncMock())
+    image = cache.environment_capabilities['image_ref']
+    (tmp_path/'execution-approved.json').write_text(json.dumps({'scope': 'environment_validation',
+        'approved': True, 'manifest_digest': manifest.digest(), 'source_commit': snapshot.commit, 'image_ref': image}))
+    report = {'manifest_digest': manifest.digest(), 'platform': 'linux/aarch64', 'scope': '',
+              'runtime_digest': manifest.runtime.digest(), 'runtime_phase': 'installer', 'runtime_cleanup': False,
+              'runtime_incomplete': ['clean_shutdown'],
+              'runtime_incomplete_detail': 'RuntimeError: guest console token=ghp_' + 'a' * 36 + '',
+              'results': [{'id': 'install-one', 'status': 'pass', 'required': True, 'duration_seconds': 12.5,
+                           'output': 'generated token=ghp_' + 'b' * 36},
+                          {'id': 'check-one', 'status': 'fail', 'required': True, 'duration_seconds': 3.0}]}
+    monkeypatch.setattr(harness, '_install', AsyncMock(return_value=(1, json.dumps(report).encode())))
+    verifier = AsyncMock()
+    monkeypatch.setattr(harness, 'verify_env_cache_clean', verifier)
+    service = Mock()
+    result = {}
+    await harness.execute_accepted(snapshot, service, {'env_cache': {'sym': cache}}, image=image,
+        target=tmp_path, profile=harness.Profile(model='fixture', base_url='http://localhost:1'), result=result)
+    assert (result['status'], result['reason_code']) == ('held', 'runtime_incomplete')
+    assert result['runtime_incomplete'] == ['clean_shutdown']
+    assert result['runtime_incomplete_detail'].startswith('RuntimeError: guest console')
+    assert 'ghp_' + 'a' * 36 not in result['runtime_incomplete_detail']
+    assert 'ghp_' + 'a' * 36 not in (tmp_path/'installer-output.json').read_text()
+    assert 'ghp_' + 'b' * 36 not in (tmp_path/'installer-output.json').read_text()
+    assert result['installer_result_counts'] == {'pass': 1, 'fail': 1}
+    assert result['installer_failed_ids'] == ['check-one']
+    assert json.loads((tmp_path/'installer-output.json').read_text())['runtime_cleanup'] is False
+    verifier.assert_not_awaited()
+    service.record_bootstrap_execution.assert_not_called()
+    service.on_bootstrap_complete.assert_called_once_with('sym', False, {'env_cache': {'sym': cache}})

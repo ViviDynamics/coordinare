@@ -75,7 +75,7 @@ async def test_all_stale_response_locations_are_reported_without_committing_revi
     assert [c.usability for c in scope.definition.criteria] == [c['usability'] for c in updated]
     assert all(c.applicability == 'required' for c in scope.definition.criteria)
     assert scope.finding_ledger.open_ids() == []
-    assert budget.schema_repairs == 1 and budget.coverage_revisions == 1
+    assert budget.schema_repairs == 1 and budget.scope_revisions == 1
 
 
 @pytest.mark.asyncio
@@ -103,7 +103,7 @@ async def test_reviewer_can_investigate_then_request_source_revision():
     scope = await run(replies, budget=budget)
     assert len(scope.definition.criteria) == 2
     assert scope.finding_ledger.open_ids() == []
-    assert budget.coverage_revisions == 1 and budget.schema_repairs == 0
+    assert budget.scope_revisions == 1 and budget.schema_repairs == 0
 
 
 @pytest.mark.asyncio

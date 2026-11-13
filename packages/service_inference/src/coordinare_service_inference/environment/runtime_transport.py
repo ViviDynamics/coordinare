@@ -8,7 +8,8 @@ import time
 from .runtime import RuntimeArtifactReceipt
 
 
-def consume_runtime_controls(*, required: bool, install: bool) -> tuple[float | None, RuntimeArtifactReceipt | None]:
+def consume_runtime_controls(*, required: bool, install: bool,
+                             trial: bool = False) -> tuple[float | None, RuntimeArtifactReceipt | None]:
     expiry = os.environ.pop('COORDINARE_ENV_RUNTIME_EXPIRES_AT', None)
     encoded = os.environ.pop('COORDINARE_ENV_RUNTIME_ARTIFACTS', None)
     if not required:
@@ -34,8 +35,11 @@ def consume_runtime_controls(*, required: bool, install: bool) -> tuple[float | 
             receipt = RuntimeArtifactReceipt.model_validate_json(encoded)
         except ValueError:
             raise ValueError('private runtime receipt invalid') from None
-    if install and receipt is not None:
-        raise ValueError('private runtime installer cannot reuse a consumer receipt')
+    if (install or trial) and receipt is not None:
+        raise ValueError('private runtime installer or trial cannot use a consumer receipt')
+    if trial:
+        # A trial's receipt is a TrialReceipt in its trusted payload, never this consumer channel.
+        return time.monotonic()+remaining, None
     if not install and receipt is None:
         raise ValueError('private runtime consumer requires sealed receipt')
     return time.monotonic()+remaining, receipt

@@ -187,10 +187,14 @@ async def test_live_runtime_environment_reaches_real_checks_without_global_mutat
                    'import os;from pathlib import Path; assert os.environ["DOCKER_HOST"] == "ssh://private-fixture";Path("{scratch}/marker").touch()']}],
     })
     monkeypatch.setenv('DOCKER_HOST', 'caller-original')
+
+    async def clean_guest(_script, **_kwargs):
+        return 0, b'containers=\nvolumes=\nnetworks=\n'
+
     lease = SimpleNamespace(spec=runtime_spec(), manifest_digest=manifest.digest(), source_digest='2'*64,
                             deadline=time.monotonic()+5, install=False, scratch=leased_scratch,
                             activation_env={'DOCKER_HOST': 'ssh://private-fixture', 'PATH': os.environ['PATH']},
-                            check_bounds=lambda: None)
+                            check_bounds=lambda: None, ssh=clean_guest)
     result = await run_manifest(manifest, cache=tmp_path, repo=tmp_path, scratch=requested_scratch,
                                 execution_source_digest='2'*64, runtime_lease=lease)
     assert result.passed

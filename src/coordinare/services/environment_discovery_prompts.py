@@ -11,6 +11,7 @@ from coordinare_service_inference.environment.models import (
 )
 from pydantic import ConfigDict, create_model
 
+from coordinare.services.environment_delta_schema import MANIFEST_DELTA_ENVELOPE
 from coordinare.services.environment_probes import ProbeEnvelope, ProbeRequest
 from coordinare.services.environment_proposal_patch import PATCH_INSTRUCTION, PATCH_SCHEMA
 
@@ -57,6 +58,38 @@ LOCAL_CREDENTIAL_AUTHORING = (
     'starts goes in local_credentials as {name, service, purpose} and is referenced as ${NAME}; the runner generates '
     'a fresh value every run, so data that stores it lives under {scratch}, and neither install commands nor activation can use it. '
     'For a credential environment variable named K the value is exactly ${K}.')
+# Dettmore e2e-58: bin/bundler-audit failed on ransack, sanitize, rack and nokogiri advisories published after the
+# pinned commit. No environment change could pass it, and checks that ran are fixed, so the attempt spent its
+# remaining coverage revisions on a failure only the project could fix.
+ADVISORY_AUDIT_CHECKS = (
+    'An advisory audit (a dependency vulnerability scanner) reports advisories published '
+    'after the pinned commit, so its findings are the project\'s state, not the environment\'s. Its required check '
+    'proves the tool runs against the locked dependency set and completes its report: accept the exit status the tool '
+    'documents for "advisories found" as well as success, with its report printed, and fail on any other status. '
+    'Never require that no advisories are found, and never ignore advisories to make one '
+    'pass.')
+# Maintainer decision 2026-11-09 (Dettmore e2e-72): a required check ran the whole RSpec suite, timed out at the
+# hour limit, and other checks failed on the project's own assertions. A check proves configuration with one small
+# sample; the rule names no technology.
+SAMPLE_TEST_CHECKS = (
+    "A check for a test or build obligation proves the environment is configured, not that the project is correct. "
+    "Run one small sample, never a whole suite, every shard of one or a full build, which can take hours on a large "
+    "project: choose an existing integration test from the repository, one that loads the project and uses its "
+    "installed dependencies and the services this manifest starts, and run only that test through the project's own "
+    "runner. Prefer one that passes at the pinned commit. The check must fail when the environment is not configured: "
+    "the runner or a dependency is missing, the project or the test fails to load, compile or import, or a service, "
+    "setting or variable it needs is unreachable or absent. It must not fail only because a test that actually ran "
+    "reported a failed assertion: decide from the runner's own result (the exit statuses it documents, or its summary "
+    "showing the sample executed with no error outside assertions), never by discarding the status. Running a sample "
+    "is required here, not a selective omission.")
+# Dettmore e2e-66: reviewers summed every command's timeout_seconds (13,800 s) against the 7,200 s session budget and
+# held findings open until the author cut the heavy builds' and suites' ceilings, spending six coverage revisions
+# before any execution. A ceiling is not a plan: the session deadline still ends the whole run.
+TIMEOUT_CEILINGS = (
+    'Each command\'s timeout_seconds is its own ceiling: set it to what that work needs on this carrier, with margin. '
+    'The ceilings of all commands may add up to more than the session_budget, because they are not run times and the '
+    'session deadline still ends the whole run. Never shorten a ceiling below what its work needs to make a total fit; '
+    'object to one only when that single command could not finish within the session_budget at all.')
 LOCAL_CREDENTIAL_REVIEW = (
     'Judge every local_credentials entry: it must belong to a service this manifest starts. A credential the source '
     'shows comes from outside the environment, such as a cloud key or registry token, is a blocking finding.')
@@ -65,6 +98,9 @@ _MANIFEST_INSTRUCTIONS = (
     'Use the fixed scope_contract supplied by the daemon: criterion_checks maps every required criterion ID '
     'to required unscoped consumer checks. Never return scope_contract, scope_contract_digest or change source obligations. '
     'runtime_endpoints declares bounded loopback forwards only when an explicit private platform policy is configured. '
+    'Architecture: installs and checks run natively on platform_roles.install_and_check_platform, so download release '
+    'artifacts for that platform. A container image for another platform runs only through emulated_platforms, which is '
+    'slower; request one only when the repository explicitly requires it. '
 
     'Discover the project environment from arbitrary repository evidence, including '
     'documentation, build/test entry points, automation and nested subprojects. '
@@ -72,6 +108,9 @@ _MANIFEST_INSTRUCTIONS = (
     'Use generic probes to establish uncertain base-image prerequisites before final declarations. '
     'Declare required executable installation assertions after artifact producers and before '
     'consumers using depends_on; verify persisted outputs and portability. '
+    'Commands run in list order where depends_on allows; still declare depends_on on every install a command needs, '
+    'including another toolchain one of its steps calls (an asset build whose plugin runs the language package '
+    'manager depends on the install that provides that manager). '
     'Probe observations never replace required clean usability checks. '
     'Map every required dependency, version, usability and service constraint to '
     'required executable checks that exercise that constraint. Checks and service lifecycle '
@@ -86,10 +125,16 @@ _MANIFEST_INSTRUCTIONS = (
     'source must be one exact path that has been read, never comma-joined paths. '
     'Activation must make installed tools usable by ordinary downstream project commands, not only absolute-path version checks. '
     'Execution roots use {cache}, {repo}, {scratch}, never ${cache}, ${repo}, ${scratch}. '
+    '{repo} is a git checkout of the pinned tree with a detached HEAD, no remote and no earlier history: git status, '
+    'diff, ls-files and worktrees work there; fetching or comparing against another branch does not. '
     'The runner expands ${NAME} before starting the command: use it only for runtime environment variables. '
     'For shell-local variables assigned inside bash -c, use $name rather than ${name}. '
     f'{LOCAL_CREDENTIAL_AUTHORING} '
+    f'{ADVISORY_AUDIT_CHECKS} '
+    f'{SAMPLE_TEST_CHECKS} '
+    f'{TIMEOUT_CEILINGS} '
     'Create every declared activation directory during installation; do not hide a missing path by removing useful activation. '
+    'List tool directories in activation.path, which is prepended to the guest PATH; never set PATH in activation.env. '
     'The project environment scope is fixed by pinned development/test evidence, never by image convenience. '
     'Include finding_responses for every open finding ID: rationale, sources and affected_ids. '
     'Resolve missing capabilities or provide source-backed explanations; no new privileges or verification networking. '
@@ -116,7 +161,8 @@ def assessment_envelope_schema() -> dict[str, object]:
 class DiscoveryPrompts:
     """Keep source tools available while advertising only the current declaration."""
 
-    def update(self, messages: list[dict[str, str]], budget: AttemptBudget, inputs: Mapping[str, str], *, repairing: bool = False) -> None:
+    def update(self, messages: list[dict[str, str]], budget: AttemptBudget, inputs: Mapping[str, str], *, repairing: bool = False,
+               delta: bool = False) -> None:
         if not inputs:
             budget.expected_envelope = "source_tool"
             guidance = ('Current phase: source_inspection. Inspect repository evidence using the source tools. '
@@ -140,14 +186,23 @@ class DiscoveryPrompts:
                 'Do not submit a manifest before actual probe results. Return exactly the complete envelope '
                 'matching this schema: ' + json.dumps(ProbeEnvelope.model_json_schema()))
         else:
-            budget.expected_envelope = "manifest"
+            # A delta repair keeps its delta envelope; correction patches need a complete declaration it never has.
+            budget.expected_envelope = "manifest_delta" if delta else "manifest"
             ledger = budget.finding_ledger
             known_ids = [record.id for record in ledger.records] if ledger else []
             finding_rule = ('Only respond to these daemon-assigned coverage finding IDs: ' + json.dumps(known_ids) +
                 '. Probe observations are not coverage findings. ' + ('finding_responses MUST be [] because no finding IDs exist. ' if not known_ids else ''))
-            guidance = ('Current phase: manifest_construction. ' + finding_rule + _MANIFEST_INSTRUCTIONS +
-                (PATCH_INSTRUCTION + json.dumps(PATCH_SCHEMA) if repairing else
-                 'Return exactly the complete envelope matching this schema: ' + json.dumps(_MANIFEST_ENVELOPE.model_json_schema())))
+            # The per-round finding list comes last so the instructions before it stay a cacheable prefix across rounds.
+            if delta:
+                guidance = ('Current phase: manifest_delta_construction. ' + _MANIFEST_INSTRUCTIONS +
+                    'This is a repair: return exactly {"manifest_delta":{...},"finding_responses":[...]} with only the '
+                    'records you change or add, matching this schema: ' +
+                    json.dumps(MANIFEST_DELTA_ENVELOPE.model_json_schema()) + ' ' + finding_rule.rstrip())
+            else:
+                guidance = ('Current phase: manifest_construction. ' + _MANIFEST_INSTRUCTIONS +
+                    (PATCH_INSTRUCTION + json.dumps(PATCH_SCHEMA) if repairing else
+                     'Return exactly the complete envelope matching this schema: ' + json.dumps(_MANIFEST_ENVELOPE.model_json_schema())) +
+                    ' ' + finding_rule.rstrip())
         messages[0] = {"role": "system", "content": SOURCE_TOOLS + guidance}
 
 
@@ -160,9 +215,18 @@ def correction_instruction(envelope: str) -> str:
             'Citations and questions must each contain exactly the unique command IDs; citations must be nonempty '
             'and questions nonblank, at most 512 characters. Do not add root schema_version or return a list or manifest. ',
         "manifest": 'Return exactly {"manifest":{...},"finding_responses":[...]} matching the manifest envelope, never a bare proposal. ',
+        "manifest_delta": 'Return exactly {"manifest_delta":{...},"finding_responses":[...]} with only the changed and added records, never the unchanged ones. ',
         "scope": 'Return exactly {"scope":{"criteria":[...]},"finding_responses":[...]} with complete source obligations, never executable commands. ',
         "scope_revision": 'Return exactly {"scope_revision":{"base_digest":"retained definition digest","add":[],"reassess":[]},"finding_responses":[...]} with at most 16 combined additions/reassessments. Never return a complete scope or commands. Preserve the attempted scope_revision operations while correcting finding responses; do not abandon additions/reassessments merely to repair stale affected_ids. Nothing from the rejected proposal has been committed. Use [] for affected_ids of new/reassessed criteria, not their replaced IDs. ' ,
         "scope_assessment": 'Return exactly {"scope_assessment":{...}} with verdict, sources, rationale, findings and decisions. ',
+        "shard_checks": 'Return exactly {"shard_checks":{"checks":[...],"criterion_checks":{...}}} with every check id '
+            'starting with your assigned prefix and every assigned criterion mapped. ',
+        "scope_consolidation": 'Return exactly {"scope_consolidation":{"groups":[{"member_ids":[...],"criterion":{...}}]}} '
+            'with at least two member ids per group; criterion sources are exactly the union of the members\' sources. ',
+        "listing_triage": 'Return exactly {"listing_triage":{"verdicts":[{"path":...,"verdict":...,"rationale":...}]}} '
+            'covering every listed file with a directory or file verdict. ',
+        "shard_summary": 'Return exactly {"shard_summary":{"criteria":[...],"cross_references":[...],"questions":[...]}} '
+            'with source obligations evidenced by your shard, never executable commands. ',
         "assessment": 'Return exactly {"assessment":{...}} matching the review envelope. ',
     }[envelope]
 

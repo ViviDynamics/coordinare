@@ -98,6 +98,7 @@ from coordinare.services.env_cache import (
 from coordinare.services.env_provenance import DEFAULT_LIMITS, ProvenanceTransientError
 from coordinare.services.environment_repair import (
     hold_uncertain_execution,
+    provenance_refusal_evidence,
     release_execution_source,
     remaining_seconds,
     reserve_execution_source,
@@ -748,6 +749,7 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             environment_attempt=get("environment_attempt"),
             environment_attempt_archive=get("environment_attempt_archive") or [],
             environment_capabilities=get("environment_capabilities"),
+            environment_guest=get("environment_guest"),
             environment_runtime_artifacts=get("environment_runtime_artifacts"),
             environment_source_owner=get("environment_source_owner"),
             environment_execution_source=get("environment_execution_source"),
@@ -1046,6 +1048,14 @@ def _synthesize_v1_session(
     }
 
 
+def _failed_bootstrap_evidence(cache: EnvCacheState | None, status: dict[str, Any],
+                               refusal: str | None) -> dict[str, Any] | None:
+    """A provenance refusal after a passed clean execution is repairable evidence of its own (Dettmore e2e-92)."""
+    if refusal and isinstance(cache, EnvCacheState) and (evidence := provenance_refusal_evidence(cache, refusal)):
+        return evidence
+    return _bootstrap_execution_evidence(cache, status)
+
+
 def _bootstrap_execution_evidence(cache: EnvCacheState | None, status: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(cache, EnvCacheState) or cache.environment_attempt is None:
         return None
@@ -1083,6 +1093,7 @@ def _rehydrate_reviewed_environment(live: EnvCacheState, persisted: EnvCacheStat
     live.environment_source_owner = persisted.environment_source_owner
     live.environment_execution_source = persisted.environment_execution_source
     live.environment_capabilities = persisted.environment_capabilities
+    live.environment_guest = persisted.environment_guest
     live.environment_runtime_artifacts = persisted.environment_runtime_artifacts
     live.environment_manifest = persisted.environment_manifest
     live.environment_assessment = persisted.environment_assessment
@@ -4760,11 +4771,12 @@ class CoordinareDaemon:
             )
         # 234: freeze what was just verified. Consumers run only this frozen copy, and any later change to the
         # cache is refused at dispatch. A refusal (a bound, a link out of the cache) fails the bootstrap.
+        froze = ok
         if ok:
             ok, _boot_err = await env_cache_svc.freeze_provenance(symphony_name, self._state)
         recorder = getattr(env_cache_svc, "record_bootstrap_execution", None)
         if reviewed_attempt and not ok and callable(recorder):
-            recorder(symphony_name, self._state, _bootstrap_execution_evidence(cache, status_result),
+            recorder(symphony_name, self._state, _failed_bootstrap_evidence(cache, status_result, _boot_err if froze else None),
                 cleanup_confirmed=stopped and not infra)
         if infra:
             env_cache_svc.on_bootstrap_complete(

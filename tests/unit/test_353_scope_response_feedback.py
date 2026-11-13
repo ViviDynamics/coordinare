@@ -74,7 +74,7 @@ async def test_missing_investigation_citations_are_reported_together_before_retr
     ], sources, budget=budget)
     assert scope.finding_ledger.open_ids() == []
     assert budget.schema_repairs == 1
-    assert budget.coverage_revisions == 1
+    assert budget.scope_revisions == 1
     citations = [e for e in observed if e['code'] == 'scope_investigation_response_invalid']
     assert {e['required_source'] for e in citations} == {'odd/one', 'odd/two'}
     assert {e['finding_id'] for e in citations} == {'F0001'}

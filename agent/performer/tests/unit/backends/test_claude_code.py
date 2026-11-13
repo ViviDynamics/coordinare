@@ -337,7 +337,7 @@ class TestClaudeCodeBackendStart:
         """
         proc = _fake_proc()
         adapter = ClaudeCodeBackend()
-        score = _score(env_cache_path="/devenv/website-3ab3e0")
+        score = _score(env_cache_path="/devenv/sampleweb-3ab3e0")
 
         with patch(
             "performer.backends.claude_code.asyncio.create_subprocess_exec",
@@ -348,7 +348,7 @@ class TestClaudeCodeBackendStart:
         args = list(mock_exec.call_args[0])
         # Pairs of --add-dir <path> — expect both the target and its parent.
         add_dir_targets = [args[i + 1] for i, a in enumerate(args) if a == "--add-dir"]
-        assert "/devenv/website-3ab3e0" in add_dir_targets
+        assert "/devenv/sampleweb-3ab3e0" in add_dir_targets
         assert "/devenv" in add_dir_targets
 
     async def test_add_dir_omitted_when_env_cache_path_blank(self, tmp_path: Path) -> None:

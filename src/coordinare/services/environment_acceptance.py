@@ -12,6 +12,7 @@ from coordinare_service_inference.environment.models import (
     VerificationReport,
     validate_current_coverage,
 )
+from coordinare_service_inference.environment.runner import stopped_at_limit
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_obligations import preserve_execution_obligations
@@ -180,7 +181,7 @@ def _bound_execution_report(text: str, cache: EnvCacheState, *, publish: bool,
     _validate_execution_results(report, manifest, installer=runtime_phase == 'installer')
 
     if failed_installer:
-        if not any(result.required and result.status == 'fail' for result in report.results):
+        if not any(result.required and (result.status == 'fail' or stopped_at_limit(result)) for result in report.results):
             raise ValueError('failed installer evidence requires an actual required failure')
         validate_failed_installer_runtime(report, manifest, cache)
     else:

@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import structlog
 from coordinare_service_inference.environment.execution_source import (
     source_refusal,
     validate_execution_bundle,
@@ -16,6 +17,7 @@ from coordinare_service_inference.environment.execution_source_restore import (
     restore_execution_bundle,
 )
 
+from coordinare.lib.redaction import redact_command_text
 from coordinare.services import environment_probe_runtime
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 from coordinare.services.environment_capabilities import _docker_identity
@@ -32,7 +34,9 @@ if TYPE_CHECKING:
     from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
 
 
+log = structlog.get_logger(__name__)
 MAX_WIRE_REPORT_BYTES = 300000
+STDERR_TAIL_BYTES = 400
 _ACTIVE_PROBES: set[str] = set()
 RUNTIME_SOURCE = Path(str(environment_probe_runtime.__file__)).read_text()
 
@@ -57,7 +61,7 @@ def probe_container_argv(plan: ProbePlan, source: Path, cache: Path, *, scratch:
         "--mount", f"type=bind,source={source},target=/repo,readonly",
         "--mount", f"type=bind,source={cache},target=/cache,readonly",
         "--entrypoint", "/usr/local/bin/python", plan.capabilities.image_ref,
-        "-I", "-c", "import time;time.sleep(180)"]
+        "-I", "-c", "import time;time.sleep(600)"]  # outlives a guest's boot, command and teardown
 
 
 async def _collect(process: asyncio.subprocess.Process, stdin: bytes | None) -> bytes:
@@ -76,9 +80,10 @@ async def _collect(process: asyncio.subprocess.Process, stdin: bytes | None) -> 
     return bytes(output)
 
 
-async def _docker(args: list[str], *, stdin: bytes | None = None, deadline_seconds: float = 15) -> tuple[int, bytes]:
+async def _docker(args: list[str], *, stdin: bytes | None = None, deadline_seconds: float = 15,
+                  stderr: Any = asyncio.subprocess.DEVNULL) -> tuple[int, bytes]:
     process = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.PIPE if stdin else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        stdout=asyncio.subprocess.PIPE, stderr=stderr)
     try:
         stdout = await asyncio.wait_for(_collect(process, stdin), deadline_seconds)
         return process.returncode or 0, stdout
@@ -127,6 +132,26 @@ async def confirm_probe_cleanup(plan: ProbePlan) -> bool:
     return False if name in _ACTIVE_PROBES else await _bounded_remove(name)
 
 
+def _executor_failed(step: str, code: int, command: Mapping[str, Any], *, output_bytes: int | None = None,
+                     stderr_tail: str | None = None) -> None:
+    """Which step failed and how. Only the in-container runtime's own error tail is kept, bounded and redacted;
+    Docker's host-side messages can carry host paths and are not."""
+    log.warning("environment_probe.executor_failed", step=step, exit_code=code, command_id=command.get("id"),
+                output_bytes=output_bytes,
+                runtime_error=redact_command_text(stderr_tail)[-STDERR_TAIL_BYTES:] if stderr_tail else None)
+
+
+# Dettmore e2e-48: each private probe boots its own emulated guest within one short window; under load one boot ran
+# out of time before observing anything, and the 2-hour run held on it. Only that machinery failure (nothing observed)
+# is retried, once, within the batch's own allowance; a second one still holds the attempt.
+PRIVATE_GUEST_ATTEMPTS = 2
+GUEST_TIMEOUT_OUTPUT = 'private probe guest unavailable: TimeoutError'
+
+
+def _guest_timed_out(result: ProbeCommandResult) -> bool:
+    return result.status == 'execution_error' and result.output == GUEST_TIMEOUT_OUTPUT
+
+
 async def _command_container(plan: ProbePlan, roots: tuple[Path, Path], command: dict[str, Any], deadline: float,
                              *, scratch: Path | None = None) -> ProbeCommandResult:
     name = "coordinare-probe-" + plan.digest()[:24]
@@ -134,10 +159,12 @@ async def _command_container(plan: ProbePlan, roots: tuple[Path, Path], command:
     try:
         code, _ = await asyncio.shield(create)
         if code:
+            _executor_failed("create", code, command)
             message = "probe container could not be created"
             raise EnvironmentDiscoveryError(message, code="probe_executor_failed")
         code, _ = await _docker(["docker", "start", name], deadline_seconds=max(0.01, deadline-time.monotonic()))
         if code:
+            _executor_failed("start", code, command)
             message = "probe container could not start"
             raise EnvironmentDiscoveryError(message, code="probe_executor_failed")
         seconds = max(0, deadline-time.monotonic())
@@ -150,9 +177,13 @@ async def _command_container(plan: ProbePlan, roots: tuple[Path, Path], command:
                         execution_source_digest=plan.execution_source_digest,
                         expires_at=time.time()+max(0, deadline-time.monotonic()))
         payload = json.dumps(data).encode()
-        code, output = await _docker(["docker", "exec", "-i", name, "/usr/local/bin/python", "-I", "-c", RUNTIME_SOURCE],
-            stdin=payload, deadline_seconds=seconds+1)
+        with tempfile.TemporaryFile() as errors:
+            code, output = await _docker(["docker", "exec", "-i", name, "/usr/local/bin/python", "-I", "-c", RUNTIME_SOURCE],
+                stdin=payload, deadline_seconds=seconds+1, stderr=errors)
+            errors.seek(max(0, errors.seek(0, 2) - STDERR_TAIL_BYTES))
+            tail = errors.read().decode(errors='ignore')
         if code or len(output) > MAX_WIRE_REPORT_BYTES:
+            _executor_failed("runtime", code, command, output_bytes=len(output), stderr_tail=tail)
             message = "probe runtime did not return bounded evidence"
             raise EnvironmentDiscoveryError(message, code="probe_executor_failed")
         return ProbeCommandResult.model_validate(json.loads(output)[0])
@@ -208,9 +239,15 @@ async def execute_environment_probe(
                 results = []
                 for command in plan.request.commands:
                     if plan.request.execution_context == 'private_service':
-                        with tempfile.TemporaryDirectory(prefix='runtime-scratch-', dir=root) as scratch:
-                            results.append(await _command_container(plan, (root/'repo', root/'cache'),
-                                command.model_dump(mode='json'), deadline, scratch=Path(scratch)))
+                        for attempt in range(PRIVATE_GUEST_ATTEMPTS):
+                            with tempfile.TemporaryDirectory(prefix='runtime-scratch-', dir=root) as scratch:
+                                result = await _command_container(plan, (root/'repo', root/'cache'),
+                                    command.model_dump(mode='json'), deadline, scratch=Path(scratch))
+                            if not _guest_timed_out(result) or attempt + 1 == PRIVATE_GUEST_ATTEMPTS \
+                                    or deadline - time.monotonic() <= 0:
+                                break
+                            log.info("env_cache.probe_guest_retry", command=command.id)
+                        results.append(result)
                     else:
                         results.append(await _command_container(plan, (root/'repo', root/'cache'),
                             command.model_dump(mode='json'), deadline))

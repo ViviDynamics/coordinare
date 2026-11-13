@@ -11,7 +11,8 @@ from coordinare_service_inference.environment.models import (
 from coordinare_service_inference.environment.runtime import RuntimeSpec
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
-from coordinare.services.environment_scope import discover_scope
+from coordinare.services.environment_scope_reuse import SCOPE_POLICY_VERSION
+from coordinare.services.environment_shard_scope import discover_source_scope
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -51,7 +52,7 @@ class ReviewedConstruction:
     async def prepare(self, inputs: dict[str, str] | None = None) -> ScopeContract:
         if inputs is not None:
             self.retain_inputs(inputs)
-        return await discover_scope(paths=self.paths, fetch=self.fetch, chat=self.chat, commit=self.source_identity[1],
+        return await discover_source_scope(paths=self.paths, fetch=self.fetch, chat=self.chat, commit=self.source_identity[1],
             limits=self.limits, budget=self.budget, entries=self.entries)
 
     def require_scope(self) -> ScopeContract:
@@ -104,7 +105,7 @@ class ReviewedConstruction:
             message = 'private runtime endpoints require a configured platform policy'
             raise EnvironmentDiscoveryError(message, code='required_capability_unavailable')
         return EnvironmentManifest.model_validate({**proposal.model_dump(exclude={'runtime_endpoints'}),
-            'schema_version': 3, 'policy_version': '353-scope-v1',
+            'schema_version': 3, 'policy_version': SCOPE_POLICY_VERSION,
             'scope_contract': scope.model_dump(mode='json'), 'scope_contract_digest': scope.digest(),
             'symphony_name': self.source_identity[0], 'source_commit': self.source_identity[1],
             'inventory_digest': scope.definition.inventory_digest, 'inputs': dict(inspected),

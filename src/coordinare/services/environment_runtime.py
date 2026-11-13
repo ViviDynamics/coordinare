@@ -89,6 +89,15 @@ def launch_runtime_policy(metadata: dict[str, Any]) -> RuntimePolicy | None:
     return manifest.runtime.policy
 
 
+RUNTIME_REPORT_GRACE_SECONDS = 180.0
+
+
+def guest_expiry(expires_at: float, now: float) -> float:
+    """The guest stops a grace before its owner's deadline, so an exhausted run can still unwind, tear down and
+    print its partial report before the owner removes the container; both stay inside the original deadline."""
+    return expires_at - min(RUNTIME_REPORT_GRACE_SECONDS, max(0.0, expires_at-now)/2)
+
+
 def runtime_verifier_options(manifest: EnvironmentManifest, source_root: Path) -> list[str]:
     runtime = manifest.runtime
     if runtime is None:
@@ -138,7 +147,7 @@ def runtime_verifier_context(cache: EnvCacheState, *, now: float | None = None) 
             _refuse('private runtime artifact receipt exceeds transfer bound')
     except (ValueError, EnvironmentDiscoveryError):
         _refuse('private runtime verifier context is missing, expired or differs')
-    return RuntimeVerifierContext({'COORDINARE_ENV_RUNTIME_EXPIRES_AT': str(expires_at),
+    return RuntimeVerifierContext({'COORDINARE_ENV_RUNTIME_EXPIRES_AT': str(guest_expiry(expires_at, now)),
                                    'COORDINARE_ENV_RUNTIME_ARTIFACTS': encoded}, expires_at)
 
 

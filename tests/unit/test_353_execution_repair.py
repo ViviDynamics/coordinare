@@ -70,12 +70,12 @@ def test_failed_execution_uses_same_budget_and_new_empty_cache_generation(tmp_pa
     assert cache.environment_attempt['expires_at'] == 700
 
 
-def test_third_repair_holds_without_renewing_counters(tmp_path):
+def test_a_repair_beyond_the_limit_holds_without_renewing_counters(tmp_path):
     cache = cache_fixture(tmp_path)
-    started(cache, repairs=2)
+    started(cache, repairs=8)
     assert not record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=101)
     assert len(cache.environment_attempt['rejected']) == 1
-    assert cache.environment_attempt['execution_repairs'] == 2
+    assert cache.environment_attempt['execution_repairs'] == 8
     with pytest.raises(EnvironmentDiscoveryError, match=r'held|exhausted'):
         begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=102)
 
@@ -310,7 +310,7 @@ def test_durable_diagnostics_keep_actual_stage_and_category_counts(tmp_path):
     assert summary['stage'] == 'review'
     assert summary['schema_repairs'] == 1
     assert summary['mandatory_inputs_required'] == summary['mandatory_inputs_delivered'] == 8
-    assert summary['max_execution_repairs'] == 2
+    assert summary['max_execution_repairs'] == 8
 
 
 def activation_failure_case(tmp_path):
@@ -375,6 +375,109 @@ def test_bounded_repair_excerpt_retains_terminal_error_after_verbose_progress(tm
     assert record_execution_failure(cache,report,cleanup_confirmed=True,now=101)
     result=cache.environment_attempt['rejected'][0]['report']['results'][0]
     assert result['output'].endswith('terminal action failure\n')
-    assert len(result['output'])<=512 and result['output_truncated']
+    assert result['output'].startswith('progress: dependency download\n')  # within the bound, kept whole
+    assert not result['output_truncated']  # nothing was cut, so the record no longer claims it was
     assert 'private-secret-value' not in result['output']
     assert result['status']=='fail' and not cache.cache_dir_ready
+
+
+def test_the_runner_excerpt_at_the_start_of_an_output_survives_the_record_bound(tmp_path):
+    """Dettmore e2e-54: the record kept the last 512 characters, cutting the build-log excerpt the runner puts first,
+    so no repair author saw "OpenSSL library directory could not be found"."""
+    from coordinare.services.environment_repair import OUTPUT_MAX_CHARS
+
+    cache=cache_fixture(tmp_path)
+    started(cache)
+    report=failed_report(cache)
+    report['results'][0]['output']=('[tail of the build log this output names]\nopenssl: library directory could not be found\n'
+                                     '[... output]\n'+'compiling\n'*2000+'BUILD FAILED\n')
+    report['results'][0]['output_truncated']=True
+    assert record_execution_failure(cache,report,cleanup_confirmed=True,now=101)
+    result=cache.environment_attempt['rejected'][0]['report']['results'][0]
+    assert 'library directory could not be found' in result['output'] and result['output'].endswith('BUILD FAILED\n')
+    assert 'characters omitted' in result['output'] and len(result['output'])<=OUTPUT_MAX_CHARS
+    assert result['output_truncated']
+
+
+def test_every_generation_of_the_full_repair_budget_is_a_valid_journal(tmp_path):
+    """Dettmore e2e-49: the history bound was raised to the repair budget, but generation stayed capped at 2, so
+    preparing the fourth generation made the journal invalid and the run held. Walk the whole budget through
+    snapshot roundtrips: every generation it allows must be preparable, and the one after the last must hold."""
+    from coordinare.services.environment_attempt import REPAIR_LIMITS
+    from coordinare.services.environment_repair import journal_for
+
+    cache = cache_fixture(tmp_path)
+    budget = started(cache)
+    now = 101
+    for generation in range(1, REPAIR_LIMITS['execution'] + 1):
+        report = failed_report(cache)
+        report['results'][0]['duration_seconds'] = generation  # a distinct execution each time
+        assert record_execution_failure(cache, report, cleanup_confirmed=True, now=now)
+        prepare_repair(cache)
+        snapshots = _persist_env_cache({'suite': cache})
+        restored = cache_fixture(tmp_path)
+        _rehydrate_env_cache({'env_cache': {'suite': restored}}, SimpleNamespace(env_cache=snapshots))
+        assert journal_for(restored).generation == generation
+        budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=now + 1)
+        reviewed_cache(cache)
+        save_attempt(cache, budget, executing=True)
+        now += 2
+    report = failed_report(cache)
+    report['results'][0]['duration_seconds'] = 99
+    assert not record_execution_failure(cache, report, cleanup_confirmed=True, now=now)
+    assert len(cache.environment_attempt['rejected']) == REPAIR_LIMITS['execution'] + 1
+
+
+def _measured_failure(tmp_path, *, executing_at=150, failed_at=400):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    cache.environment_attempt['executing_started_at'] = executing_at
+    assert record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=failed_at)
+    return cache
+
+
+def test_a_failed_generation_records_how_long_discovery_and_execution_took(tmp_path):
+    cache = _measured_failure(tmp_path)
+    assert cache.environment_attempt['rejected'][0]['timing'] == {
+        'generation': 0, 'install_only': False, 'discovery_seconds': 50.0, 'execution_seconds': 250.0}
+
+
+def test_a_repair_the_time_left_cannot_carry_holds_early_with_its_measurements(tmp_path):
+    """Maintainer ruling 2026-11-04 (Dettmore e2e-54's fifth generation ran 58 minutes and never installed)."""
+    from coordinare.services.environment_repair import REPAIR_TIME_MARGIN_SECONDS
+
+    cache = _measured_failure(tmp_path)
+    expires, began = cache.environment_attempt['expires_at'], cache.environment_attempt['started_at']
+    needed = 50 + 250 + min(REPAIR_TIME_MARGIN_SECONDS, 0.1 * (expires - began))
+    with pytest.raises(EnvironmentDiscoveryError) as raised:
+        prepare_repair(cache, now=expires - needed + 1)
+    assert raised.value.code == 'attempt_time_insufficient' and 'stopped early' in str(raised.value)
+    journal = cache.environment_attempt
+    assert journal['status'] == 'held' and journal['last_error'] == 'attempt_time_insufficient'
+    assert journal['diagnostics']['time_gate']['total_seconds'] == needed
+
+
+def test_a_repair_that_fits_the_time_left_proceeds(tmp_path):
+    from coordinare.services.environment_repair import REPAIR_TIME_MARGIN_SECONDS
+
+    cache = _measured_failure(tmp_path)
+    expires, began = cache.environment_attempt['expires_at'], cache.environment_attempt['started_at']
+    at = expires - (50 + 250 + min(REPAIR_TIME_MARGIN_SECONDS, 0.1 * (expires - began)))
+    prepare_repair(cache, now=at)
+    assert cache.environment_attempt['status'] == 'discovering'
+    assert cache.environment_attempt['generation_started_at'] == at
+
+
+def test_an_install_only_repair_is_estimated_from_earlier_install_only_repairs():
+    from coordinare.services.environment_repair import (
+        FIRST_REPAIR_DISCOVERY_SECONDS,
+        repair_time_estimate,
+    )
+
+    rejected = [{'timing': {'generation': 0, 'install_only': False, 'discovery_seconds': 9000, 'execution_seconds': 600}},
+                {'timing': {'generation': 1, 'install_only': False, 'discovery_seconds': 2400, 'execution_seconds': 500}},
+                {'timing': {'generation': 2, 'install_only': True, 'discovery_seconds': 700, 'execution_seconds': 450}}]
+    assert repair_time_estimate(rejected, install_only=True)['discovery_seconds'] == 700
+    assert repair_time_estimate(rejected, install_only=False)['discovery_seconds'] == 2400
+    assert repair_time_estimate(rejected[:1], install_only=True)['discovery_seconds'] == FIRST_REPAIR_DISCOVERY_SECONDS
+    assert repair_time_estimate([{'report': {}}], install_only=False) is None

@@ -63,5 +63,7 @@ async def test_runtime_clean_command_carries_sealed_receipt_limits_and_original_
     assert command[command.index('--memory-swap')+1] == '4096m'
     assert any(item.endswith(':/tmp') and str(source_root) in item for item in command)
     assert b'COORDINARE_ENV_RUNTIME_ARTIFACTS=' in seen['input']
-    assert str(context.expires_at).encode() in seen['input']
+    # The guest receives the earlier expiry (a reporting grace before the owner's deadline).
+    assert context.environment['COORDINARE_ENV_RUNTIME_EXPIRES_AT'].encode() in seen['input']
+    assert float(context.environment['COORDINARE_ENV_RUNTIME_EXPIRES_AT']) < context.expires_at
     assert cache.environment_verification['runtime_phase'] == 'consumer'

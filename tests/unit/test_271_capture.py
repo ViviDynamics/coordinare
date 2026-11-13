@@ -34,7 +34,7 @@ from tests.unit.dashboard_js_slices import shipped_function, time_helpers_js
 def capture_store(tmp_path: Path) -> Any:
     install_event_store(None)
     store = EventStore(tmp_path / "events.db")
-    install_event_store(store, lambda _card: "garden")
+    install_event_store(store, lambda _card: "samplehost")
     yield store
     install_event_store(None)
 
@@ -47,14 +47,14 @@ async def test_activity_operator_and_log_funnels(capture_store: EventStore) -> N
     log.record_many([{"activity_type": "operator_action", "card_id": "card", "text": "cancel"}])
     configure_logging()
     logger = structlog.get_logger("test")
-    logger.info("bootstrap.ready", symphony="garden", detail="verified")
+    logger.info("bootstrap.ready", symphony="samplehost", detail="verified")
     assert event_store_processor(None, "debug", {"event": "invisible"}) == {"event": "invisible"}
     event_store_processor(None, "info", {"event": "event_store.failure"})
     await capture_store.close()
     rows = (await capture_store.query_events())["events"]
     assert {row["kind"] for row in rows} == {"progress", "operator_action", "bootstrap.ready"}
     assert {row["source"] for row in rows} == {"daemon", "operator", "bootstrap"}
-    assert all(row["symphony"] == "garden" for row in rows)
+    assert all(row["symphony"] == "samplehost" for row in rows)
 
 
 @pytest.mark.parametrize("structured", [False, True])
@@ -96,7 +96,7 @@ async def test_performer_intake_without_feed_keeps_full_payload(capture_store: E
     await capture_store.start()
     state: Any = {
         "event_store": capture_store,
-        "current_symphony": "garden",
+        "current_symphony": "samplehost",
         "agent_dispatch": {"session_id": "run"},
     }
     events = [
@@ -211,9 +211,9 @@ def test_health_line_uses_shipped_javascript_and_escapes_values() -> None:
 def test_symphony_resolution_uses_the_cards_owner() -> None:
     state = {
         "current_symphony": "different",
-        "active_sessions": {"card": {"current_symphony": "garden"}},
+        "active_sessions": {"card": {"current_symphony": "samplehost"}},
     }
-    assert symphony_for_card(state, "card") == "garden"
+    assert symphony_for_card(state, "card") == "samplehost"
 
 
 @pytest.mark.asyncio

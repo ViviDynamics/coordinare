@@ -27,6 +27,8 @@ class EnvCacheState(BaseModel):
     environment_attempt: dict[str, Any] | None = None
     environment_attempt_archive: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
     environment_capabilities: dict[str, Any] | None = None
+    # The guest chosen from the pinned source before discovery: {guest_platform, required, triggers, unsupported}.
+    environment_guest: dict[str, Any] | None = None
     environment_runtime_artifacts: dict[str, Any] | None = None
     environment_source_owner: str | None = None
     environment_execution_source: dict[str, Any] | None = None
