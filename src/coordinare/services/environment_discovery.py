@@ -1348,6 +1348,8 @@ async def _discover_attempt(
                 "Even in the installer execution, services and checks run in a copy of {repo} taken before any install: "
                 "a package install into {repo} (such as node_modules or vendor) is invisible to them, so install into "
                 "{cache} and point the tool there (PATH, NODE_PATH, a config path) or link it into {repo} in the check. "
+                "They also see {cache} read-only, as the clean consumer does: a lockfile, tool cache or HOME a service "
+                "or check writes goes under {scratch}, never {cache}. "
                 "Required installed artifacts must persist there and work in a fresh image with the cache read-only. "
                 "Use {repo}/{cache}/{scratch} roots literally; ${NAME} references runtime env, not roots. "
                 "The lowercase shell variables ${repo}, ${cache} and ${scratch} are not automatically defined. "

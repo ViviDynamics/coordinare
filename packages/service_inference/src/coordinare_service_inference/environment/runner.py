@@ -14,6 +14,7 @@ import re
 import secrets
 import shutil
 import signal
+import stat
 import sys
 import tempfile
 import time
@@ -25,7 +26,7 @@ from .models import CheckResult, Command, EnvironmentManifest, VerificationRepor
 from .runtime_cli import run_cli
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
+    from collections.abc import AsyncIterator, Callable, Collection, Iterator, Mapping, Sequence
 
     from .runtime import RuntimeArtifactReceipt, TrialReceipt
     from .runtime_supervisor import RuntimeLease
@@ -1035,15 +1036,41 @@ async def _run_manifest_commands(
         roots = {**roots, "repo": str(consumer_repo)}
         env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env,
                                    credentials=credentials)
+    # Dettmore e2e-83, e2e-92 and e2e-94: bundler wrote Gemfile.lock into {cache}, which the clean consumer mounts
+    # read-only, after every installer check had passed. Services and checks see {cache} read-only here too.
+    read_only = _read_only_tree(Path(cache)) if install and Path(cache).is_dir() else contextlib.nullcontext()
     try:
-        return await _run_consumer_phase(
-            manifest, roots=roots, env=env, digest=digest, results=results, redactions=redactions, install=install,
-            scope=scope, secret_names=secret_names, runtime_env=runtime_env, credentials=credentials,
-            command_deadline=command_deadline, execution_source_digest=execution_source_digest,
-        )
+        with read_only:
+            return await _run_consumer_phase(
+                manifest, roots=roots, env=env, digest=digest, results=results, redactions=redactions,
+                install=install, scope=scope, secret_names=secret_names, runtime_env=runtime_env,
+                credentials=credentials, command_deadline=command_deadline,
+                execution_source_digest=execution_source_digest,
+            )
     finally:
         if consumer_repo is not None:
             shutil.rmtree(consumer_repo.parent, ignore_errors=True)
+
+
+_WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+
+
+@contextlib.contextmanager
+def _read_only_tree(root: Path) -> Iterator[None]:
+    """Remove every write bit under ``root`` for the block, then restore each original mode.
+
+    The carrier runs without Linux capabilities, so even its root user is held to these bits. Links are left alone.
+    """
+    modes = {path: stat.S_IMODE(path.lstat().st_mode) for path in (root, *root.rglob("*")) if not path.is_symlink()}
+    try:
+        for path, mode in modes.items():
+            with contextlib.suppress(OSError):
+                path.chmod(mode & ~_WRITE_BITS)
+        yield
+    finally:
+        for path, mode in modes.items():
+            with contextlib.suppress(OSError):
+                path.chmod(mode)
 
 
 async def _run_consumer_phase(

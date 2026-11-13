@@ -41,3 +41,17 @@ async def test_an_install_into_cache_is_what_installer_checks_use(tmp_path):
                         install=[{"id": "install-deps", "argv": ["touch", "{cache}/tool"]}])
     report = await run_manifest(manifest, **roots, install=True)
     assert report.passed
+
+
+@pytest.mark.asyncio
+async def test_installer_checks_see_cache_read_only_and_its_modes_come_back(tmp_path):
+    # Dettmore e2e-83, e2e-92 and e2e-94: bundler wrote Gemfile.lock into the clean consumer's read-only {cache}.
+    roots = _dirs(tmp_path)
+    manifest = contract([{"id": "baseline", "argv": ["bash", "-c", "test -f {cache}/tool && ! touch {cache}/lock"]}],
+                        install=[{"id": "install-deps", "argv": ["touch", "{cache}/tool"]}])
+    before = (roots["cache"].stat().st_mode & 0o777)
+    report = await run_manifest(manifest, **roots, install=True)
+    assert report.passed
+    assert not (roots["cache"] / "lock").exists()
+    assert roots["cache"].stat().st_mode & 0o777 == before
+    assert (roots["cache"] / "tool").stat().st_mode & 0o200
