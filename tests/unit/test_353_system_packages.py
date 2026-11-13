@@ -5,6 +5,7 @@ libcrypto.a and failed on ZSTD and zlib symbols; the repair then chased those sy
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -60,8 +61,12 @@ def test_one_command_fetches_unpacks_relinks_and_writes_the_build_environment(tm
     assert [argv[:2] for argv in commands[2:]] == [['dpkg-deb', '-x']] * 2
     assert 'APT::Sandbox::User=root' in options and f'Dir::Cache={into}/.apt/cache' in options
     lib = into / 'usr' / 'lib' / TRIPLET
-    # The -dev link to a runtime library the carrier already has now points at the carrier's copy.
-    assert (lib / 'libssl.so').resolve() == (carrier / 'usr' / 'lib' / TRIPLET / 'libssl.so.3').resolve()
+    # The -dev link to a runtime library the carrier already has gets a copy of it beside it, never a link out of the
+    # cache (Dettmore e2e-92's provenance freeze refused libcrypto.so -> /usr/lib/.../libcrypto.so.3).
+    assert os.readlink(lib / 'libssl.so') == 'libssl.so.3'
+    assert (lib / 'libssl.so').resolve() == (lib / 'libssl.so.3').resolve()
+    assert (lib / 'libssl.so.3').read_bytes() == (carrier / 'usr' / 'lib' / TRIPLET / 'libssl.so.3').read_bytes()
+    assert not (lib / 'libssl.so.3').is_symlink()
     assert (lib / 'libyaml.so').resolve() == (lib / 'libyaml-0.so.2.0.9').resolve()
     assert summary['relinked'] == [f'usr/lib/{TRIPLET}/libssl.so'] and summary['dangling'] == []
     assert f'prefix={into}/usr\n' in (lib / 'pkgconfig' / 'openssl.pc').read_text()

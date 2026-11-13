@@ -11,7 +11,8 @@ Dettmore e2e-57's authors were given the steps as a recipe and left out the reli
    against the carrier's installed packages, so only what the carrier lacks is fetched, at its own release.
 2. ``dpkg-deb -x`` of each fetched package into ``--into``.
 3. A ``-dev`` package's ``lib<name>.so`` link that dangles because the runtime library was not fetched (the carrier
-   already has it) is pointed at the carrier's own copy.
+   already has it) gets a copy of the carrier's own library beside it, linked relatively, so the cache stays
+   self-contained (Dettmore e2e-92: a link to the carrier's /usr/lib copy was refused at the provenance freeze).
 4. Each unpacked pkg-config file's ``/usr`` paths are moved under ``--into``.
 5. Each unpacked command-line program gets a launcher in ``--into``/bin that finds its unpacked libraries for that
    process only (an unpacked executable has no rpath to them, and a relocated wrapper script such as Debian's
@@ -86,8 +87,11 @@ def triplet() -> str:
 
 
 def relink_dangling(into: Path, library_dirs: Sequence[Path]) -> tuple[list[str], list[str]]:
-    """Point each dangling link under ``into`` at the carrier's library of the same name; the relinked and the
-    still-dangling shared-library links, relative to ``into``."""
+    """Give each dangling link under ``into`` a copy of the carrier's library of the same name beside it, linked
+    relatively; the relinked and the still-dangling shared-library links, relative to ``into``.
+
+    Never a link out of ``into``: the cache's provenance freeze refuses any link that leaves the cache.
+    """
     relinked: list[str] = []
     dangling: list[str] = []
     for path in sorted(into.rglob("*")):
@@ -99,8 +103,11 @@ def relink_dangling(into: Path, library_dirs: Sequence[Path]) -> tuple[list[str]
             if ".so" in path.name:
                 dangling.append(str(path.relative_to(into)))
             continue
+        local = path.parent / name
+        if not local.exists():
+            shutil.copy2(target.resolve(), local)  # the real file, following the carrier's own link chain
         path.unlink()
-        path.symlink_to(target)
+        path.symlink_to(name)
         relinked.append(str(path.relative_to(into)))
     return relinked, dangling
 
