@@ -115,7 +115,8 @@ async def test_missing_promised_verifier_fails_before_install(setup):
 async def test_readiness_precedes_verification_and_respects_mode(setup, monkeypatch, managed):
     stand, score, cache, inference = setup
     score.coordinare_manages_services = managed
-    order = cache / "order"
+    # Outside the cache: installer services and checks see {cache} read-only, as the clean consumer does.
+    order = cache.parent / (cache.name + "-order")
     metadata = bind_checkout_contract(reviewed_metadata(
         services=[{"id": "custom", "start": {"id": "start", "argv": ["true"]},
                    "health": {"id": "health", "argv": ["bash", "-c", f"echo readiness >> '{order}'"]},
@@ -414,7 +415,10 @@ async def test_verifier_cannot_rewrite_activation_and_report_success(setup):
     harness = Harness(cache, "install")
     result = await EnvBootstrapWorkflow().run(stand, score, toolkit(stand, score, harness))
     assert result.report["env_bootstrap_run"]["status"] == "error"
-    assert "artifact changed" in result.report["env_bootstrap_run"]["reason"]
+    # The read-only cache now refuses the write itself; the artifact check still catches any that got through.
+    reason = result.report["env_bootstrap_run"]["reason"]
+    assert "artifact changed" in reason or "mutating: fail" in reason
+    assert (cache / "activate.sh").read_text() != "changed\n"
     assert len(harness.personas) == 0
 
 

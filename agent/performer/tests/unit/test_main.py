@@ -393,7 +393,10 @@ class TestEnvBootstrapVerifyGate:
         assert "reviewed" in resp.reason
 
     async def test_readiness_runs_before_verify(self, tmp_path, reviewed_environment_metadata):
-        marker = tmp_path / "ready"
+        # Outside the cache: installer services and checks see {cache} read-only, as the clean consumer does.
+        markers = tmp_path.parent / (tmp_path.name + "-markers")
+        markers.mkdir()
+        marker = markers / "ready"
         metadata = _bind_bootstrap_contract(reviewed_environment_metadata, services=[{
             "id": "custom", "start": {"id": "start", "argv": ["true"]},
             "health": {"id": "health", "argv": ["touch", str(marker)]},
