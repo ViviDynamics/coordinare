@@ -30,7 +30,7 @@ def _qa_state(response: dict) -> dict:
     state["lifecycle_sequence"] = ["implementing", "qa", "closing_review"]
     state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
     state["agent_dispatch"] = {"session_id": "s1"}
-    state["current_symphony"] = "website"
+    state["current_symphony"] = "sampleweb"
     return state
 
 

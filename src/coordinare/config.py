@@ -8,11 +8,14 @@ from collections import Counter
 from datetime import date
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, Literal, get_args
+from typing import Any, ClassVar, Literal, Self, get_args
 from urllib.parse import urlparse
 
 import structlog
 import yaml
+from coordinare_service_inference.environment.runtime import (
+    RuntimePolicy,  # noqa: TC002 - pydantic resolves this field at runtime
+)
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -30,6 +33,7 @@ from coordinare.models.performer_endpoint import (
     detect_duplicate_endpoints,
 )
 from coordinare.presets import PRESET_NAMES, expand_preset
+from coordinare.services.environment_attempt import REPAIR_LIMITS
 from coordinare.services.event_store_settings import EventStoreConfig
 from coordinare.services.observer import OBSERVER_TRIGGERS
 from coordinare.services.otlp_settings import ObservabilityConfig
@@ -444,6 +448,8 @@ class ConductingConfig(BaseModel):
     # OPENAI_API_KEY; set to e.g. "LITELLM_MASTER_KEY" when pointing base_url at
     # a proxy that uses a different env var.
     api_key_env: str | None = None
+    # Explicit provider capability; local environment validation is unchanged.
+    structured_transport: Literal["json_schema", "tool_call", "json_object"] = "json_schema"
 
     @field_validator("temperature")
     @classmethod
@@ -1080,6 +1086,13 @@ class ServiceInferenceConfig(BaseModel):
     web_search_enabled: bool = False
 
 
+ONE_HOUR_SECONDS = 3600
+# Maintainer ruling for sharded source discovery (issue 353): calls, reads and the attempt deadline.
+SHARDED_BUDGET_DEFAULTS = {"manifest_max_model_calls": 1024, "manifest_max_total_reads": 8192,
+                           "manifest_attempt_timeout_seconds": 6 * 3600.0,
+                           "manifest_max_coverage_revisions": 8, "manifest_max_scope_revisions": 8}
+
+
 class EnvCacheConfig(BaseModel):
     """Env-cache bootstrap configuration (spec 063+).
 
@@ -1091,6 +1104,7 @@ class EnvCacheConfig(BaseModel):
     """
 
     inference: ServiceInferenceConfig = Field(default_factory=ServiceInferenceConfig)
+    private_service_runtime: RuntimePolicy | None = None
 
     # 116: master switch for the coordinare-managed stateful-service subsystem
     # (091→115: deb-fetch persona, rendered services-{start,health,stop}.sh, the
@@ -1106,7 +1120,55 @@ class EnvCacheConfig(BaseModel):
     manifest_max_file_bytes: int = Field(default=256 * 1024, ge=1, le=4 * 1024 * 1024)
     manifest_max_source_bytes: int = Field(default=4 * 1024 * 1024, ge=1, le=16 * 1024 * 1024)
     manifest_max_inventory_entries: int = Field(default=100_000, ge=1, le=1_000_000)
-    manifest_phase_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
+    # Over one hour only for sharded discovery; one phase may take up to four hours of an attempt's six.
+    manifest_phase_timeout_seconds: float = Field(default=120.0, gt=0, le=4 * 3600)
+    # Up to one hour; sharded discovery (manifest_shard_context_tokens set) may run up to six.
+    manifest_attempt_timeout_seconds: float = Field(default=600.0, gt=0, le=6 * 3600)
+    manifest_max_model_calls: int = Field(default=128, ge=1, le=4096)
+    manifest_max_total_reads: int = Field(default=512, ge=1, le=8192)
+    manifest_max_review_context_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)
+    # Sharded source discovery: the model context size that sets each agent's share (unset keeps one conversation).
+    manifest_shard_context_tokens: int | None = Field(default=None, ge=8192, le=4_000_000)
+    manifest_agent_concurrency: int = Field(default=12, ge=1, le=16)
+    manifest_max_repairs: int | None = Field(default=None, ge=0, le=2, exclude=True)
+    manifest_max_schema_repairs: int = Field(default=2, ge=0, le=REPAIR_LIMITS["schema"])
+    # Executable review revisions (the name predates the scope budget) and scope review revisions, counted separately.
+    manifest_max_coverage_revisions: int = Field(default=2, ge=0, le=REPAIR_LIMITS["coverage"])
+    manifest_max_scope_revisions: int = Field(default=8, ge=0, le=REPAIR_LIMITS["scope"])
+    manifest_max_execution_repairs: int = Field(default=REPAIR_LIMITS["execution"], ge=0, le=REPAIR_LIMITS["execution"])
+    # An execution repair re-authors only its failure closure (changed and added records). False restores the full repair.
+    manifest_delta_repair: bool = True
+
+    @model_validator(mode="after")
+    def _attempt_ceiling(self) -> Self:
+        if self.manifest_shard_context_tokens is None and self.manifest_attempt_timeout_seconds > ONE_HOUR_SECONDS:
+            message = "attempts over one hour require sharded discovery (manifest_shard_context_tokens)"
+            raise ValueError(message)
+        if self.manifest_shard_context_tokens is None and self.manifest_phase_timeout_seconds > ONE_HOUR_SECONDS:
+            message = "phases over one hour require sharded discovery (manifest_shard_context_tokens)"
+            raise ValueError(message)
+        return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sharded_budget_defaults(cls, data: Any) -> Any:
+        """Sharded discovery gets the maintainer's larger shared budget unless a value is set explicitly."""
+        if not isinstance(data, dict) or data.get("manifest_shard_context_tokens") is None:
+            return data
+        return {**SHARDED_BUDGET_DEFAULTS, **data}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_repair_limit(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or data.get("manifest_max_repairs") is None:
+            return data
+        fields = ("manifest_max_schema_repairs", "manifest_max_coverage_revisions", "manifest_max_scope_revisions",
+                  "manifest_max_execution_repairs")
+        if any(name in data for name in fields):
+            message = "cannot combine legacy and category manifest repair limits"
+            raise ValueError(message)
+        return {**data, **dict.fromkeys(fields, data["manifest_max_repairs"])}
+
 
 
     # 234: the bounds on one frozen env cache. A cache over either is refused at freeze (or at a later check),
@@ -1393,6 +1455,7 @@ class ProjectConfiguration(BaseSettings):
     kubernetes_cache_claim: str | None = None
     kubernetes_image_pull_secrets: list[str] = Field(default_factory=list)
     # 265: daemon-owned verifier image. Reviewed cache consumers must use this image too.
+    kubernetes_verifier_platform: str | None = Field(default=None, pattern=r"^linux/(x86_64|aarch64)$")
     kubernetes_verifier_image: str | None = Field(
         default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$",
     )

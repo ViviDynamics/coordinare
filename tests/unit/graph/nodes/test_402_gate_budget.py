@@ -26,7 +26,7 @@ def _state_for(response: dict) -> tuple[dict, MagicMock]:
     state = _make_state(service=svc, stage="implementing", sequence=["implementing", "qa"])
     env_svc = MagicMock()
     state["env_cache_service"] = env_svc
-    state["current_symphony"] = "website"
+    state["current_symphony"] = "sampleweb"
     slot_mgr = MagicMock()
     slot_mgr.acquire.return_value = svc
     state["slot_manager"] = slot_mgr

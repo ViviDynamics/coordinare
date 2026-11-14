@@ -1,6 +1,6 @@
 """380: judge a performer from what it produced, not from the wall clock.
 
-Two runs one card apart on the website symphony, measured 2026-09-12:
+Two runs one card apart on the sampleweb symphony, measured 2026-09-12:
 
   the stuck turn      events arriving continuously (164 progress deltas),
                       zero tool_use, files_changed=0, ~2M tokens, 45 min

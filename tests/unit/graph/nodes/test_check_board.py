@@ -27,7 +27,7 @@ _LIFECYCLE = [
 def _fake_github(present_files: set[str]) -> object:
     """Fake GitHubService whose get_file_blob_sha returns a sha only for paths
     whose basename is in *present_files*."""
-    gh = SimpleNamespace(_org="ViviDynamics", _project_name="website")
+    gh = SimpleNamespace(_org="ExampleOrg", _project_name="sampleweb")
 
     async def _blob_sha(owner, repo, path, ref="HEAD"):
         return "deadbeef" if path.rsplit("/", 1)[-1] in present_files else None
@@ -119,8 +119,8 @@ class TestDeriveResumeStage:
             "item_labels": {},
             "item_field_values": {},
         }
-        github._org = "ViviDynamics"
-        github._project_name = "website"
+        github._org = "ExampleOrg"
+        github._project_name = "sampleweb"
 
         async def _blob(owner, repo, path, ref="HEAD"):
             return "sha" if path.endswith("assessment.md") else None
@@ -772,7 +772,7 @@ async def test_check_board_in_review_with_stale_blocked_phase_still_picks_up_tod
     IN_REVIEW card is present, the IN_REVIEW early-return must NOT short-circuit
     TODO pickup while concurrency slots are free.
 
-    Observed in production: symphony "website" sat at ``phase=blocked`` with 0
+    Observed in production: symphony "sampleweb" sat at ``phase=blocked`` with 0
     sessions and 3 free slots forever; TODO cards #124/#125 were never
     dispatched because the IN_REVIEW branch returned early (it was not
     slot-aware, unlike the IN_PROGRESS branch).

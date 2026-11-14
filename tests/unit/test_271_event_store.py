@@ -188,7 +188,7 @@ async def test_queries_all_filters_and_cursor_ties(tmp_path: Path, fts: bool) ->
     store = EventStore(tmp_path / "events.db", enable_fts=fts)
     stamp = "2026-10-15T12:00:00+00:00"
     fields = {
-        "symphony": "garden",
+        "symphony": "samplehost",
         "card_id": "card",
         "run_id": "run",
         "stage": "implementer",

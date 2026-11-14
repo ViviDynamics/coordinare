@@ -25,7 +25,7 @@ async def test_typical_event_write_throughput_and_loop_overhead(tmp_path: Path) 
     store = EventStore(tmp_path / "events.db")
     await store.start()
     payload = {
-        "symphony": "garden",
+        "symphony": "samplehost",
         "card_id": "271",
         "run_id": "benchmark",
         "stage": "implementer",

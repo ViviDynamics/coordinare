@@ -22,8 +22,8 @@ from coordinare.state_store import EnvCacheStateSnapshot, WorkflowSnapshot
 
 def _live_state(cache_dir: Path, **overrides) -> EnvCacheState:
     fields = {
-        "symphony_name": "website",
-        "sanitised_name": "website-a1b2c3",
+        "symphony_name": "sampleweb",
+        "sanitised_name": "sampleweb-a1b2c3",
         "cache_dir": cache_dir,
     }
     fields.update(overrides)
@@ -33,16 +33,16 @@ def _live_state(cache_dir: Path, **overrides) -> EnvCacheState:
 def test_discovered_test_env_source_persists_into_snapshot(tmp_path: Path) -> None:
     # The live state carries the agent-discovered path; persisting it must copy
     # the PATH onto the durable snapshot so a restart can reload the same file.
-    live = {"website": _live_state(tmp_path / "website", test_env_source=".coordinare/test.env")}
+    live = {"sampleweb": _live_state(tmp_path / "sampleweb", test_env_source=".coordinare/test.env")}
     snapshots = _persist_env_cache(live)
-    assert snapshots["website"].test_env_source == ".coordinare/test.env"
+    assert snapshots["sampleweb"].test_env_source == ".coordinare/test.env"
 
 
 def test_no_discovered_source_persists_as_none(tmp_path: Path) -> None:
     # No discovered path → the snapshot field is None (nothing to reload from).
-    live = {"website": _live_state(tmp_path / "website")}
+    live = {"sampleweb": _live_state(tmp_path / "sampleweb")}
     snapshots = _persist_env_cache(live)
-    assert snapshots["website"].test_env_source is None
+    assert snapshots["sampleweb"].test_env_source is None
 
 
 def test_test_env_source_round_trips_through_workflow_snapshot(tmp_path: Path) -> None:
@@ -52,25 +52,25 @@ def test_test_env_source_round_trips_through_workflow_snapshot(tmp_path: Path) -
         snapshot_at=__import__("datetime").datetime(2026, 6, 16, tzinfo=None),
         phase="idle",
         env_cache={
-            "website": EnvCacheStateSnapshot(
-                symphony_name="website",
-                sanitised_name="website-a1b2c3",
-                cache_dir=str(tmp_path / "website"),
+            "sampleweb": EnvCacheStateSnapshot(
+                symphony_name="sampleweb",
+                sanitised_name="sampleweb-a1b2c3",
+                cache_dir=str(tmp_path / "sampleweb"),
                 test_env_source=".coordinare/test.env",
             ),
         },
     )
     restored = WorkflowSnapshot.model_validate_json(snap.model_dump_json())
-    assert restored.env_cache["website"].test_env_source == ".coordinare/test.env"
+    assert restored.env_cache["sampleweb"].test_env_source == ".coordinare/test.env"
 
 
 def test_old_snapshot_without_field_loads_with_none() -> None:
     # Pre-092 snapshots have no ``test_env_source`` key. They must load (no
     # migration) with the field defaulting to None.
     snap = EnvCacheStateSnapshot(
-        symphony_name="website",
-        sanitised_name="website-a1b2c3",
-        cache_dir="/devenv/website",
+        symphony_name="sampleweb",
+        sanitised_name="sampleweb-a1b2c3",
+        cache_dir="/devenv/sampleweb",
     )
     assert snap.test_env_source is None
 
@@ -79,9 +79,9 @@ def test_persisted_state_carries_only_path_never_values(tmp_path: Path) -> None:
     # FR-017: even though the live runtime loads literal KEY=VALUE test-env vars,
     # the DURABLE snapshot must carry only the path. Assert the serialised
     # snapshot exposes the path field and no field holding loaded values.
-    live = {"website": _live_state(tmp_path / "website", test_env_source=".coordinare/test.env")}
+    live = {"sampleweb": _live_state(tmp_path / "sampleweb", test_env_source=".coordinare/test.env")}
     snapshots = _persist_env_cache(live)
-    dumped = snapshots["website"].model_dump()
+    dumped = snapshots["sampleweb"].model_dump()
     assert dumped["test_env_source"] == ".coordinare/test.env"
     # No snapshot field should hold a dict of loaded variables (those are
     # secret-like and must never be persisted).

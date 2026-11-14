@@ -26,7 +26,7 @@ PROXY_VARIABLES = (
     "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
 )
 BASE_CONFIG = {
-    "github_org": "garden", "github_token": "ghp_fixturetoken", "human_reviewers": ["operator"],
+    "github_org": "samplehost", "github_token": "ghp_fixturetoken", "human_reviewers": ["operator"],
 }
 
 

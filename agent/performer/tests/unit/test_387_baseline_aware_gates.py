@@ -1,7 +1,7 @@
 """387: the baseline knows what was already failing; tell the gates.
 
 Measured 2026-09-12: the performer's Selenium driver was broken (#385), so
-sixteen website feature specs failed for environmental reasons. judge_red was
+sixteen sampleweb feature specs failed for environmental reasons. judge_red was
 shown those sixteen failures and no way to know every one of them predated the
 card, so it correctly refused the red -- and four cards blocked on a condition
 they did not create.

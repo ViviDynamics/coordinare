@@ -76,7 +76,7 @@ class ReviewRequirement:
         """True when a PR needs something its own author cannot give.
 
         An approving review, a code owner's review, or an approval of the last push each needs
-        an approval from someone else. Elm's ruleset sets only the last one (count 0), and GitHub
+        an approval from someone else. A ruleset can set only the last one (count 0), and GitHub
         still blocks the author's PR on it.
         """
         return (

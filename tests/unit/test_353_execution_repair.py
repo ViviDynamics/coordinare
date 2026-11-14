@@ -1,0 +1,483 @@
+"""Executable repair retains rejected evidence, finite budgets and clean generations."""
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from coordinare.daemon import _persist_env_cache, _rehydrate_env_cache
+from coordinare.models.env_cache import EnvCacheState
+from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.environment_discovery import DiscoveryLimits
+from coordinare.services.environment_repair import (
+    begin_attempt,
+    mark_attempt_ready,
+    prepare_repair,
+    record_execution_failure,
+    restore_attempt_generation,
+    save_attempt,
+)
+from tests.unit.env_manifest_fixture import reviewed_cache, verification_output
+
+
+def cache_fixture(tmp_path):
+    return reviewed_cache(EnvCacheState(symphony_name='suite', sanitised_name='suite-abc', cache_dir=tmp_path/'suite-abc'))
+
+
+def failed_report(cache, **change):
+    data = json.loads(verification_output(cache.environment_manifest))
+    data['results'][0].update(status='fail', exit_code=2, output='API_KEY=private-secret-value\nmissing installed artifact')
+    data.update(change)
+    return data
+
+
+def started(cache, *, now=100, repairs=0):
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=now)
+    budget.calls = 4
+    budget.reads = 2
+    budget.execution_repairs = repairs
+    save_attempt(cache, budget, executing=True)
+    return budget
+
+
+@pytest.mark.parametrize('confirmed', [False, None])
+def test_unconfirmed_cleanup_never_requests_a_repair(tmp_path, confirmed):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    assert not record_execution_failure(cache, failed_report(cache), cleanup_confirmed=confirmed, now=101)
+    assert cache.environment_attempt['execution_repairs'] == 0
+    assert cache.environment_attempt['status'] == 'held'
+
+
+def test_failed_execution_uses_same_budget_and_new_empty_cache_generation(tmp_path):
+    cache = cache_fixture(tmp_path)
+    started(cache, repairs=1)
+    old_path = cache.cache_dir
+    old_path.mkdir()
+    (old_path/'installer-only').write_text('must not be reused')
+    assert record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=101)
+    assert cache.environment_attempt['execution_repairs'] == 2
+    previous, feedback = prepare_repair(cache)
+    assert previous.digest() == cache.environment_attempt['rejected'][0]['manifest_digest']
+    assert cache.cache_dir != old_path
+    assert not cache.cache_dir.exists()
+    assert cache.environment_verification is None
+    assert 'private-secret-value' not in json.dumps(feedback)
+    assert feedback['results'][0]['status'] == 'fail'
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=120)
+    assert (budget.calls, budget.reads, budget.repairs) == (4, 2, 2)
+    assert cache.environment_attempt['expires_at'] == 700
+
+
+def test_a_repair_beyond_the_limit_holds_without_renewing_counters(tmp_path):
+    cache = cache_fixture(tmp_path)
+    started(cache, repairs=8)
+    assert not record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=101)
+    assert len(cache.environment_attempt['rejected']) == 1
+    assert cache.environment_attempt['execution_repairs'] == 8
+    with pytest.raises(EnvironmentDiscoveryError, match=r'held|exhausted'):
+        begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=102)
+
+
+@pytest.mark.parametrize('change', [
+    {'manifest_digest': 'b'*64}, {'scope': 'qa'}, {'platform': 'linux/aarch64'}, {'results': []},
+])
+def test_wrong_or_incomplete_execution_cannot_authorize_repair(tmp_path, change):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    assert not record_execution_failure(cache, failed_report(cache, **change), cleanup_confirmed=True, now=101)
+    assert not cache.cache_dir_ready
+
+
+def test_wholly_unrun_report_does_not_request_repair(tmp_path):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    report = failed_report(cache)
+    report['results'][0].update(status='not_run', exit_code=None)
+    assert not record_execution_failure(cache, report, cleanup_confirmed=True, now=101)
+
+
+def test_wall_clock_expiry_or_backwards_clock_never_renews_attempt(tmp_path):
+    cache = cache_fixture(tmp_path)
+    begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
+    for now in (99, 701):
+        with pytest.raises(EnvironmentDiscoveryError, match=r'deadline|clock'):
+            begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=now)
+    assert cache.environment_attempt['expires_at'] == 700
+
+
+def test_repair_journal_and_generation_survive_real_snapshot_roundtrip(tmp_path):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    assert record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=101)
+    prepare_repair(cache)
+    snapshots = _persist_env_cache({'suite': cache})
+    restored = cache_fixture(tmp_path)
+    _rehydrate_env_cache({'env_cache': {'suite': restored}}, SimpleNamespace(env_cache=snapshots))
+    assert restored.environment_attempt == cache.environment_attempt
+    assert restored.sanitised_name == cache.sanitised_name
+    assert restored.cache_dir == cache.cache_dir
+    assert begin_attempt(restored, DiscoveryLimits(), outer_seconds=3600, now=120).repairs == 1
+
+
+def test_generation_cannot_restore_outside_configured_cache_parent(tmp_path):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    cache.environment_attempt['base_cache_dir'] = '/outside/other'
+    with pytest.raises(EnvironmentDiscoveryError, match='generation'):
+        restore_attempt_generation(cache)
+
+
+def test_ready_journal_does_not_clear_rejected_history(tmp_path):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    assert record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=101)
+    prepare_repair(cache)
+    reviewed_cache(cache)
+    cache.cache_dir_ready = True
+    cache.provenance_digest = "f"*64
+    mark_attempt_ready(cache, now=102)
+    assert len(cache.environment_attempt['rejected']) == 1
+    assert cache.environment_attempt['status'] == 'ready'
+
+
+def test_duplicate_failure_cannot_consume_a_second_repair_for_the_same_execution(tmp_path):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    report = failed_report(cache)
+    assert record_execution_failure(cache, report, cleanup_confirmed=True, now=101)
+    assert not record_execution_failure(cache, report, cleanup_confirmed=True, now=102)
+    assert len(cache.environment_attempt['rejected']) == 1
+    assert cache.environment_attempt['execution_repairs'] == 1
+
+
+def test_saving_stale_counters_cannot_renew_the_budget(tmp_path):
+    from coordinare.services.environment_attempt import AttemptBudget
+    cache = cache_fixture(tmp_path)
+    started(cache, repairs=1)
+    save_attempt(cache, AttemptBudget())
+    assert cache.environment_attempt['calls'] == 4
+    assert cache.environment_attempt['reads'] == 2
+    assert cache.environment_attempt['execution_repairs'] == 1
+
+
+def test_ready_marker_cannot_waive_missing_execution_or_freeze(tmp_path):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    cache.environment_verification = None
+    with pytest.raises(EnvironmentDiscoveryError, match='readiness'):
+        mark_attempt_ready(cache)
+
+
+def test_repair_cannot_rebind_failed_report_to_a_changed_target_image(tmp_path):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    cache.environment_capabilities['image_ref'] = 'trusted/changed@sha256:'+'b'*64
+    assert not record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=101)
+
+
+def test_expired_attempt_cannot_be_marked_ready(tmp_path):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    cache.cache_dir_ready = True
+    cache.provenance_digest = 'f'*64
+    with pytest.raises(EnvironmentDiscoveryError, match='deadline'):
+        mark_attempt_ready(cache, now=701)
+
+
+def test_restart_during_execution_holds_until_cleanup_is_confirmed(tmp_path):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    snapshots = _persist_env_cache({'suite': cache})
+    restored = cache_fixture(tmp_path)
+    _rehydrate_env_cache({'env_cache': {'suite': restored}}, SimpleNamespace(env_cache=snapshots))
+    assert restored.environment_attempt['status'] == 'held'
+    assert not restored.cache_dir_ready
+    restored.bootstrap_commit_sha = 'b'*40
+    with pytest.raises(EnvironmentDiscoveryError, match='cleanup'):
+        begin_attempt(restored, DiscoveryLimits(), outer_seconds=3600, now=120)
+
+
+def test_a_later_attempt_still_uses_a_never_reused_cache_generation(tmp_path):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    assert record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=101)
+    prepare_repair(cache)
+    first = cache.cache_dir
+    reviewed_cache(cache)
+    cache.cache_dir_ready = True
+    cache.provenance_digest = 'f'*64
+    mark_attempt_ready(cache, now=102)
+    started(cache, now=200)
+    assert record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=201)
+    prepare_repair(cache)
+    assert cache.cache_dir != first
+    snapshots = _persist_env_cache({'suite': cache})
+    restored = cache_fixture(tmp_path)
+    _rehydrate_env_cache({'env_cache': {'suite': restored}}, SimpleNamespace(env_cache=snapshots))
+    assert restored.cache_dir == cache.cache_dir
+
+
+def test_a_successful_later_attempt_restores_the_actual_generation(tmp_path):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    assert record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=101)
+    prepare_repair(cache)
+    reviewed_cache(cache)
+    cache.cache_dir_ready = True
+    cache.provenance_digest = 'f'*64
+    mark_attempt_ready(cache, now=102)
+    started(cache, now=200)
+    mark_attempt_ready(cache, now=201)
+    restored = cache_fixture(tmp_path)
+    _rehydrate_env_cache({'env_cache': {'suite': restored}},
+        SimpleNamespace(env_cache=_persist_env_cache({'suite': cache})))
+    assert restored.cache_dir == cache.cache_dir
+    assert restored.sanitised_name == cache.sanitised_name
+
+
+def test_category_counters_survive_restart(tmp_path):
+    cache = cache_fixture(tmp_path)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
+    budget.reserve_repair('schema')
+    budget.reserve_repair('coverage')
+    budget.reserve_repair('coverage')
+    save_attempt(cache, budget)
+    resumed = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=120)
+    assert (resumed.schema_repairs, resumed.coverage_revisions, resumed.execution_repairs) == (1, 2, 0)
+    assert cache.environment_attempt['version'] == 9
+    assert cache.environment_attempt['expires_at'] == 700
+
+
+def test_lowered_limit_does_not_replenish_consumption(tmp_path):
+    cache = cache_fixture(tmp_path)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
+    budget.reserve_repair('coverage')
+    save_attempt(cache, budget)
+    with pytest.raises(EnvironmentDiscoveryError, match='coverage'):
+        begin_attempt(cache, DiscoveryLimits(max_coverage_revisions=0), outer_seconds=3600, now=120)
+    assert cache.environment_attempt['coverage_revisions'] == 1
+
+
+@pytest.mark.parametrize('status', ['discovering', 'held', 'executing', 'repair_pending'])
+def test_legacy_pending_requires_explicit_restart(tmp_path, status):
+    cache = cache_fixture(tmp_path)
+    begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
+    current = cache.environment_attempt
+    legacy = {k:v for k,v in current.items() if k not in {
+        'schema_repairs', 'coverage_revisions', 'execution_repairs',
+        'max_schema_repairs', 'max_coverage_revisions', 'max_execution_repairs'}}
+    legacy.update(version=1, repairs=1, max_repairs=2, status=status)
+    cache.environment_attempt = legacy
+    with pytest.raises(EnvironmentDiscoveryError) as exc:
+        begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=120)
+    assert exc.value.code == 'legacy_attempt_requires_restart'
+    assert cache.environment_attempt == legacy
+
+
+def test_legacy_ready_generation_requires_findings_policy_refresh(tmp_path):
+    cache = cache_fixture(tmp_path)
+    begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
+    legacy = {k:v for k,v in cache.environment_attempt.items() if k not in {
+        'schema_repairs', 'coverage_revisions', 'execution_repairs',
+        'max_schema_repairs', 'max_coverage_revisions', 'max_execution_repairs'}}
+    legacy.update(version=1, repairs=1, max_repairs=2, status='ready')
+    cache.environment_attempt = legacy
+    with pytest.raises(EnvironmentDiscoveryError, match='legacy'):
+        restore_attempt_generation(cache, interrupted=True)
+    assert cache.environment_attempt == legacy
+
+
+@pytest.mark.parametrize('version', [10, '2', None])
+def test_unknown_journal_version_holds(tmp_path, version):
+    cache = cache_fixture(tmp_path)
+    begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
+    cache.environment_attempt['version'] = version
+    with pytest.raises(EnvironmentDiscoveryError):
+        begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=120)
+
+
+def test_durable_diagnostics_keep_actual_stage_and_category_counts(tmp_path):
+    cache = cache_fixture(tmp_path)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=100)
+    budget.stage = 'review'
+    budget.reserve_repair('schema')
+    budget.mandatory_inputs_required = 8
+    budget.mandatory_inputs_delivered = 8
+    save_attempt(cache, budget)
+    summary = cache.environment_attempt['diagnostics']
+    assert summary['stage'] == 'review'
+    assert summary['schema_repairs'] == 1
+    assert summary['mandatory_inputs_required'] == summary['mandatory_inputs_delivered'] == 8
+    assert summary['max_execution_repairs'] == 8
+
+
+def activation_failure_case(tmp_path):
+    from coordinare_service_inference.environment.models import ExecutionCapabilities
+
+    from tests.unit.env_manifest_fixture import reviewed_metadata
+    cache = cache_fixture(tmp_path)
+    metadata = reviewed_metadata(capabilities=ExecutionCapabilities.model_validate(cache.environment_capabilities),
+        symphony_name=cache.symphony_name, activation={'path':['{cache}/missing-bin']})
+    cache.environment_manifest = metadata['environment_manifest']
+    cache.environment_assessment = metadata['environment_assessment']
+    started(cache)
+    report = failed_report(cache)
+    report['results'][0].update(status='not_run', exit_code=None)
+    activation = {'id':'activation','status':'fail','required':True,'exit_code':None,
+        'manifest_digest':report['manifest_digest'],'context':'','output':'declared activation path missing'}
+    report['results'].append(activation)
+    return cache, report
+
+
+def test_known_activation_failure_admits_repair_without_waiving_unrun_checks(tmp_path):
+    cache, report = activation_failure_case(tmp_path)
+    assert record_execution_failure(cache, report, cleanup_confirmed=True, now=101)
+    assert cache.environment_attempt['status'] == 'repair_pending'
+    assert cache.environment_attempt['execution_repairs'] == 1
+    assert cache.environment_attempt['expires_at'] == 700
+    rejected = cache.environment_attempt['rejected'][0]['report']
+    assert not rejected['passed']
+    assert rejected['results'][0]['status'] == 'not_run'
+    assert rejected['results'][1]['status'] == 'fail'
+    assert not cache.cache_dir_ready
+
+
+@pytest.mark.parametrize('mutation',['unknown','optional','pass','indeterminate','exit','digest','scope','no_activation'])
+def test_malformed_or_unknown_activation_evidence_still_holds(tmp_path, mutation):
+    cache, report = activation_failure_case(tmp_path)
+    report['results'][0].update(status='fail',exit_code=2)
+    activation=report['results'][1]
+    if mutation == 'no_activation':
+        from coordinare_service_inference.environment.models import EnvironmentManifest
+        cache.environment_manifest['activation']={'path':[],'env':{}}
+        digest=EnvironmentManifest.model_validate(cache.environment_manifest).digest()
+        cache.environment_assessment['manifest_digest']=digest
+        report['manifest_digest']=digest
+        for result in report['results']:
+            result['manifest_digest']=digest
+    else:
+        key,value={'unknown':('id','unrecognized'), 'optional':('required',False), 'pass':('status','pass'),
+            'indeterminate':('status','indeterminate'),'exit':('exit_code',2),'digest':('manifest_digest','f'*64),
+            'scope':('context','qa')}[mutation]
+        activation[key]=value
+    assert not record_execution_failure(cache,report,cleanup_confirmed=True,now=101)
+    assert cache.environment_attempt['status']=='held'
+    assert cache.environment_attempt['execution_repairs']==0
+
+
+def test_bounded_repair_excerpt_retains_terminal_error_after_verbose_progress(tmp_path):
+    cache=cache_fixture(tmp_path)
+    started(cache)
+    report=failed_report(cache)
+    report['results'][0]['output']='progress: dependency download\n'*100+'API_KEY=private-secret-value\nterminal action failure\n'
+    assert record_execution_failure(cache,report,cleanup_confirmed=True,now=101)
+    result=cache.environment_attempt['rejected'][0]['report']['results'][0]
+    assert result['output'].endswith('terminal action failure\n')
+    assert result['output'].startswith('progress: dependency download\n')  # within the bound, kept whole
+    assert not result['output_truncated']  # nothing was cut, so the record no longer claims it was
+    assert 'private-secret-value' not in result['output']
+    assert result['status']=='fail' and not cache.cache_dir_ready
+
+
+def test_the_runner_excerpt_at_the_start_of_an_output_survives_the_record_bound(tmp_path):
+    """Dettmore e2e-54: the record kept the last 512 characters, cutting the build-log excerpt the runner puts first,
+    so no repair author saw "OpenSSL library directory could not be found"."""
+    from coordinare.services.environment_repair import OUTPUT_MAX_CHARS
+
+    cache=cache_fixture(tmp_path)
+    started(cache)
+    report=failed_report(cache)
+    report['results'][0]['output']=('[tail of the build log this output names]\nopenssl: library directory could not be found\n'
+                                     '[... output]\n'+'compiling\n'*2000+'BUILD FAILED\n')
+    report['results'][0]['output_truncated']=True
+    assert record_execution_failure(cache,report,cleanup_confirmed=True,now=101)
+    result=cache.environment_attempt['rejected'][0]['report']['results'][0]
+    assert 'library directory could not be found' in result['output'] and result['output'].endswith('BUILD FAILED\n')
+    assert 'characters omitted' in result['output'] and len(result['output'])<=OUTPUT_MAX_CHARS
+    assert result['output_truncated']
+
+
+def test_every_generation_of_the_full_repair_budget_is_a_valid_journal(tmp_path):
+    """Dettmore e2e-49: the history bound was raised to the repair budget, but generation stayed capped at 2, so
+    preparing the fourth generation made the journal invalid and the run held. Walk the whole budget through
+    snapshot roundtrips: every generation it allows must be preparable, and the one after the last must hold."""
+    from coordinare.services.environment_attempt import REPAIR_LIMITS
+    from coordinare.services.environment_repair import journal_for
+
+    cache = cache_fixture(tmp_path)
+    budget = started(cache)
+    now = 101
+    for generation in range(1, REPAIR_LIMITS['execution'] + 1):
+        report = failed_report(cache)
+        report['results'][0]['duration_seconds'] = generation  # a distinct execution each time
+        assert record_execution_failure(cache, report, cleanup_confirmed=True, now=now)
+        prepare_repair(cache)
+        snapshots = _persist_env_cache({'suite': cache})
+        restored = cache_fixture(tmp_path)
+        _rehydrate_env_cache({'env_cache': {'suite': restored}}, SimpleNamespace(env_cache=snapshots))
+        assert journal_for(restored).generation == generation
+        budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=3600, now=now + 1)
+        reviewed_cache(cache)
+        save_attempt(cache, budget, executing=True)
+        now += 2
+    report = failed_report(cache)
+    report['results'][0]['duration_seconds'] = 99
+    assert not record_execution_failure(cache, report, cleanup_confirmed=True, now=now)
+    assert len(cache.environment_attempt['rejected']) == REPAIR_LIMITS['execution'] + 1
+
+
+def _measured_failure(tmp_path, *, executing_at=150, failed_at=400):
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    cache.environment_attempt['executing_started_at'] = executing_at
+    assert record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=failed_at)
+    return cache
+
+
+def test_a_failed_generation_records_how_long_discovery_and_execution_took(tmp_path):
+    cache = _measured_failure(tmp_path)
+    assert cache.environment_attempt['rejected'][0]['timing'] == {
+        'generation': 0, 'install_only': False, 'discovery_seconds': 50.0, 'execution_seconds': 250.0}
+
+
+def test_a_repair_the_time_left_cannot_carry_holds_early_with_its_measurements(tmp_path):
+    """Maintainer ruling 2026-11-04 (Dettmore e2e-54's fifth generation ran 58 minutes and never installed)."""
+    from coordinare.services.environment_repair import REPAIR_TIME_MARGIN_SECONDS
+
+    cache = _measured_failure(tmp_path)
+    expires, began = cache.environment_attempt['expires_at'], cache.environment_attempt['started_at']
+    needed = 50 + 250 + min(REPAIR_TIME_MARGIN_SECONDS, 0.1 * (expires - began))
+    with pytest.raises(EnvironmentDiscoveryError) as raised:
+        prepare_repair(cache, now=expires - needed + 1)
+    assert raised.value.code == 'attempt_time_insufficient' and 'stopped early' in str(raised.value)
+    journal = cache.environment_attempt
+    assert journal['status'] == 'held' and journal['last_error'] == 'attempt_time_insufficient'
+    assert journal['diagnostics']['time_gate']['total_seconds'] == needed
+
+
+def test_a_repair_that_fits_the_time_left_proceeds(tmp_path):
+    from coordinare.services.environment_repair import REPAIR_TIME_MARGIN_SECONDS
+
+    cache = _measured_failure(tmp_path)
+    expires, began = cache.environment_attempt['expires_at'], cache.environment_attempt['started_at']
+    at = expires - (50 + 250 + min(REPAIR_TIME_MARGIN_SECONDS, 0.1 * (expires - began)))
+    prepare_repair(cache, now=at)
+    assert cache.environment_attempt['status'] == 'discovering'
+    assert cache.environment_attempt['generation_started_at'] == at
+
+
+def test_an_install_only_repair_is_estimated_from_earlier_install_only_repairs():
+    from coordinare.services.environment_repair import (
+        FIRST_REPAIR_DISCOVERY_SECONDS,
+        repair_time_estimate,
+    )
+
+    rejected = [{'timing': {'generation': 0, 'install_only': False, 'discovery_seconds': 9000, 'execution_seconds': 600}},
+                {'timing': {'generation': 1, 'install_only': False, 'discovery_seconds': 2400, 'execution_seconds': 500}},
+                {'timing': {'generation': 2, 'install_only': True, 'discovery_seconds': 700, 'execution_seconds': 450}}]
+    assert repair_time_estimate(rejected, install_only=True)['discovery_seconds'] == 700
+    assert repair_time_estimate(rejected, install_only=False)['discovery_seconds'] == 2400
+    assert repair_time_estimate(rejected[:1], install_only=True)['discovery_seconds'] == FIRST_REPAIR_DISCOVERY_SECONDS
+    assert repair_time_estimate([{'report': {}}], install_only=False) is None

@@ -53,7 +53,7 @@ def _parked(cid: str) -> dict:
 @pytest.mark.asyncio
 async def test_a_queued_session_card_reaches_the_snapshot_in_symphony_mode(monkeypatch) -> None:
     daemon = CoordinareDaemon(AsyncMock())
-    sym_state = SymphonyRuntimeState(name="website")
+    sym_state = SymphonyRuntimeState(name="sampleweb")
     sym_state.active_sessions = {
         "run": _running("run"),
         "queued": {
@@ -62,8 +62,8 @@ async def test_a_queued_session_card_reaches_the_snapshot_in_symphony_mode(monke
             "performer_stage": "assessing",
         },
     }
-    daemon._state["symphony_states"] = {"website": sym_state}
-    daemon._state["symphony_configs"] = {"website": SimpleNamespace(github_project_number=None,
+    daemon._state["symphony_states"] = {"sampleweb": sym_state}
+    daemon._state["symphony_configs"] = {"sampleweb": SimpleNamespace(github_project_number=None,
                                                                     env_bootstrap_performer_id=None)}
     daemon._state["config"] = SimpleNamespace(
         max_concurrent_cards=1, max_cards_in_review=None, github_org="o",
@@ -75,7 +75,7 @@ async def test_a_queued_session_card_reaches_the_snapshot_in_symphony_mode(monke
         _compute_session_eligibilities(daemon._state, daemon._state["active_sessions"], 1)
 
     monkeypatch.setattr(daemon, "_invoke_multi_session", real_gate)
-    await daemon._conduct_single_symphony("website", SimpleNamespace())
+    await daemon._conduct_single_symphony("sampleweb", SimpleNamespace())
 
     snapshot = DashboardStore().build_snapshot(daemon, _make_mock_metrics(), _make_mock_health())
     (entry,) = snapshot["symphonies"]
@@ -88,9 +88,9 @@ async def test_the_cycles_to_do_waits_reach_the_snapshot_in_symphony_mode(monkey
     """Second review: the cycle restored the shared keys and then mirrored the
     restored values, so a symphony never kept what its own cycle recorded."""
     daemon = CoordinareDaemon(AsyncMock())
-    sym_state = SymphonyRuntimeState(name="website")
-    daemon._state["symphony_states"] = {"website": sym_state}
-    daemon._state["symphony_configs"] = {"website": SimpleNamespace(github_project_number=None,
+    sym_state = SymphonyRuntimeState(name="sampleweb")
+    daemon._state["symphony_states"] = {"sampleweb": sym_state}
+    daemon._state["symphony_configs"] = {"sampleweb": SimpleNamespace(github_project_number=None,
                                                                     env_bootstrap_performer_id=None)}
     recorded = {"WEB": {"reason": "queued", "blockers": [], "detail": None}}
     capacity = {"in_use": 1, "limit": 1, "hold": "queued"}
@@ -100,7 +100,7 @@ async def test_the_cycles_to_do_waits_reach_the_snapshot_in_symphony_mode(monkey
         daemon._state["todo_capacity"] = dict(capacity)
 
     monkeypatch.setattr(daemon, "_invoke_multi_session", cycle_records_waits)
-    await daemon._conduct_single_symphony("website", SimpleNamespace())
+    await daemon._conduct_single_symphony("sampleweb", SimpleNamespace())
 
     assert sym_state.todo_waits == recorded
     assert sym_state.todo_capacity == capacity

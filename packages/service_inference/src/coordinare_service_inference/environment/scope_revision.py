@@ -1,0 +1,86 @@
+"""Strict bounded source-scope revisions; canonical contracts remain complete."""
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, NoReturn, Self
+
+from pydantic import Field, model_validator
+from pydantic_core import PydanticCustomError
+
+from .findings import MAX_LEDGER_FINDINGS, Digest, FindingEvidence, FindingResponse
+from .scope import ScopeCriterion, ScopeCriterionProposal, ScopeDefinition, criterion_id
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
+
+MAX_SCOPE_REVISION_CHANGES = 16
+
+
+class ScopeReassessment(FindingEvidence):
+    criterion_id: str = Field(pattern=r'^S[0-9a-f]{16}$')
+    criterion: ScopeCriterionProposal
+
+
+class ScopeRevision(FindingEvidence):
+    base_digest: Digest
+    add: list[ScopeCriterionProposal] = Field(max_length=MAX_SCOPE_REVISION_CHANGES)
+    reassess: list[ScopeReassessment] = Field(max_length=MAX_SCOPE_REVISION_CHANGES)
+
+    @model_validator(mode='after')
+    def combined_bound(self) -> Self:
+        if len(self.add) + len(self.reassess) > MAX_SCOPE_REVISION_CHANGES:
+            raise PydanticCustomError('scope_revision_limit', 'scope revision exceeds {limit} changes',
+                                      {'limit': MAX_SCOPE_REVISION_CHANGES, 'submitted': len(self.add) + len(self.reassess)})
+        return self
+
+
+class ScopeRevisionEnvelope(FindingEvidence):
+    scope_revision: ScopeRevision
+    finding_responses: list[FindingResponse] = Field(max_length=MAX_LEDGER_FINDINGS)
+
+    @model_validator(mode='before')
+    @classmethod
+    def hoist_nested_finding_responses(cls, data: object) -> object:
+        """finding_responses nested inside scope_revision, and absent beside it, is moved to where it belongs.
+
+        Dettmore e2e-17: the scope revision author kept the same responses one level too deep through every
+        correction and both restarts, and the attempt held on the schema limit. The placement is unambiguous; when
+        both levels carry responses nothing moves and validation reports it as before. An empty list beside it says
+        nothing (Dettmore e2e-24 sent [] beside the nested responses), so it does not block the move.
+        """
+        if not isinstance(data, dict) or data.get('finding_responses', []) != []:
+            return data
+        revision = data.get('scope_revision')
+        if not isinstance(revision, dict) or 'finding_responses' not in revision:
+            return data
+        revision = dict(revision)
+        return {**data, 'finding_responses': revision.pop('finding_responses'), 'scope_revision': revision}
+
+
+def _invalid(code: str) -> NoReturn:
+    raise PydanticCustomError(code, 'source scope revision is invalid')
+
+
+def apply_scope_revision(base: ScopeDefinition, revision: ScopeRevision, *,
+                         inspected_inputs: dict[str, str], releasable: Collection[str] = (),
+                         reassessable: Collection[str] = ()) -> ScopeDefinition:
+    """Build an independent complete definition, publishing nothing on failure."""
+    if revision.base_digest != base.digest():
+        _invalid('scope_revision_base')
+    if any(inspected_inputs.get(path) != digest for path, digest in base.inputs.items()):
+        _invalid('scope_source_identity')
+    previous = {criterion.id: criterion for criterion in base.criteria}
+    replacements: dict[str, ScopeCriterion] = {}
+    for change in revision.reassess:
+        retained = previous.get(change.criterion_id)
+        # Source conflicts can correct the named requirement. Existing network/state releases
+        # still permit only leaving the required set. Every other requirement stays frozen.
+        released = change.criterion_id in releasable and change.criterion.applicability != 'required'
+        correction = change.criterion_id in reassessable and change.criterion.applicability in {'required', 'not_applicable'}
+        if (retained is None or (retained.applicability == 'required' and not released
+                                and not correction)
+                or change.criterion_id in replacements):
+            _invalid('scope_revision_target')
+        replacements[change.criterion_id] = ScopeCriterion(**change.criterion.model_dump(), id=criterion_id(change.criterion))
+    criteria = [replacements.get(c.id, c).model_dump() for c in base.criteria]
+    criteria.extend(ScopeCriterion(**c.model_dump(), id=criterion_id(c)).model_dump() for c in revision.add)
+    return ScopeDefinition.model_validate({**base.model_dump(), 'inputs': dict(inspected_inputs), 'criteria': criteria})

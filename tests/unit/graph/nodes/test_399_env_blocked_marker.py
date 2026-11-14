@@ -9,7 +9,7 @@ the CI-infrastructure branch did. Per recovery's own contract, "a block for an
 undetected reason never auto-recovers" -- safe, and terminal.
 
 The second defect, visible on the same cards: recovery resumes to IN_PROGRESS
-with whatever ``performer_stage`` the session had. For website#160 that was
+with whatever ``performer_stage`` the session had. For sampleweb#160 that was
 ``implementing``, while its PR was already open and green. Re-running the
 implementer on finished work is what recovery would have done had it fired.
 
@@ -47,7 +47,7 @@ from tests.unit.graph.nodes.test_check_board_recovery import (
 from tests.unit.graph.nodes.test_monitor_performer import _make_state, _Performer
 
 _REASON = (
-    "env-cache services-start failed: /devenv/website-3ab3e0/services/services-start.sh "
+    "env-cache services-start failed: /devenv/sampleweb-3ab3e0/services/services-start.sh "
     "(returncode=75): ERROR: env: postgres did not become ready within 180s"
 )
 
@@ -58,7 +58,7 @@ async def _block_via_local_test_gate() -> dict:
     svc = _Performer(response={"status": "env_blocked", "reason": _REASON})
     state = _make_state(service=svc, stage="implementing", sequence=["implementing", "qa"])
     state["env_cache_service"] = MagicMock()
-    state["current_symphony"] = "website"
+    state["current_symphony"] = "sampleweb"
     slot_mgr = MagicMock()
     slot_mgr.acquire.return_value = svc
     state["slot_manager"] = slot_mgr
@@ -67,8 +67,8 @@ async def _block_via_local_test_gate() -> dict:
 
 def _blocked_session_state(marker, *, cache, notify=None, stage="implementing", sequence=None):
     st = _state(notify or _Notify())
-    st["current_symphony"] = "website"
-    st["env_cache"] = {"website": cache}
+    st["current_symphony"] = "sampleweb"
+    st["env_cache"] = {"sampleweb": cache}
     st["active_sessions"] = {
         "CARD_1": {
             "env_blocked": marker,
@@ -160,13 +160,13 @@ def _pr_state(marker, *, notify=None):
     return _blocked_session_state(marker, cache=_env_cache(), notify=notify)
 
 
-_PR = {"pr_node_id": "PR1", "pr_url": "https://github.com/ViviDynamics/website/pull/193"}
+_PR = {"pr_node_id": "PR1", "pr_url": "https://github.com/ExampleOrg/sampleweb/pull/193"}
 _BOARD_WITH_ISSUE = {"content_node_ids": {"CARD_1": "ISSUE_1"}}
 
 
 @pytest.mark.asyncio
 async def test_recovery_with_a_green_pr_advances_past_implementing(monkeypatch) -> None:
-    """M4: website#160 sat in BLOCKED at performer_stage=implementing with an
+    """M4: sampleweb#160 sat in BLOCKED at performer_stage=implementing with an
     open, fully green PR. Recovery resumed to IN_PROGRESS as-is, which would
     have re-run the implementer on finished work. A PR whose required checks
     all pass means implementing is done: advance to the next stage in the
@@ -190,7 +190,7 @@ async def test_recovery_with_a_green_pr_advances_past_implementing(monkeypatch) 
 
     sess = st["active_sessions"]["CARD_1"]
     assert ("CARD_1", "IN_PROGRESS") in gh.moved, "every performer stage runs from IN_PROGRESS"
-    assert asked == [("ViviDynamics", "website", 193)], asked
+    assert asked == [("ExampleOrg", "sampleweb", 193)], asked
     assert sess["performer_stage"] == "qa", sess.get("performer_stage")
     # Review: the first draft checked three fields and a mutation that set them
     # by hand, bypassing _advance_stage, passed. Pin the whole contract: every
@@ -287,6 +287,6 @@ async def test_fetch_pr_rollup_uses_the_real_checks_service_contract(monkeypatch
             return _rollup("success")
 
     monkeypatch.setattr(pcs, "PrChecksService", _Recording)
-    rollup = await cb._fetch_pr_rollup("GH", "ViviDynamics", "website", 193)
-    assert built == [("GH", "ViviDynamics", "website"), ("rollup", 193)]
+    rollup = await cb._fetch_pr_rollup("GH", "ExampleOrg", "sampleweb", 193)
+    assert built == [("GH", "ExampleOrg", "sampleweb"), ("rollup", 193)]
     assert rollup.pr_number == 193

@@ -28,7 +28,7 @@ ENDPOINT = "https://collector.example/v1/logs"
 def row(**fields: Any) -> dict[str, Any]:
     return {
         "ts": "2026-10-15T12:00:00+00:00",
-        "symphony": "garden",
+        "symphony": "samplehost",
         "card_id": "271",
         "run_id": "run",
         "stage": "implementing",
@@ -70,7 +70,7 @@ def test_environment_precedence_and_headers() -> None:
         {
             "OTEL_EXPORTER_OTLP_ENDPOINT": "https://env/base/",
             "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": ENDPOINT,
-            "OTEL_EXPORTER_OTLP_HEADERS": "Authorization=Bearer%20secret,x-tenant=garden",
+            "OTEL_EXPORTER_OTLP_HEADERS": "Authorization=Bearer%20secret,x-tenant=samplehost",
             "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
             "OTEL_SERVICE_NAME": "daemon",
         },
@@ -332,11 +332,11 @@ async def test_replayed_performer_rows_are_not_exported_twice(tmp_path: Path) ->
 
 
 def test_resource_version_and_deployment_are_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("POD_NAMESPACE", "garden")
+    monkeypatch.setenv("POD_NAMESPACE", "samplehost")
     exporter = OtlpExporter(OtlpConfig(logs_endpoint=ENDPOINT))
     assert exporter._resource["service.name"] == "coordinare"
     assert exporter._resource["service.version"]
-    assert exporter._resource["k8s.namespace.name"] == "garden"
+    assert exporter._resource["k8s.namespace.name"] == "samplehost"
 
 
 @pytest.mark.asyncio

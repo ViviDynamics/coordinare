@@ -1,0 +1,1231 @@
+"""Opt-in private field validation; run with python -m scripts.validate_environment_repositories.
+
+Inputs are existing pinned snapshots, not a deployment configuration. Accepted
+proposals wait for a local operator scope marker before project commands run.
+No live daemon or outer automatic retry loop is implied by these direct calls.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import contextlib
+import functools
+import inspect
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
+
+from coordinare_service_inference.environment.execution_source import read_source_reference
+from coordinare_service_inference.environment.runtime import RuntimePolicy
+from scripts import environment_validation_cleanup
+from scripts.environment_validation_image import candidate_image, verify_image_code
+
+from coordinare.config import EnvCacheConfig
+from coordinare.models.env_cache import EnvCacheState
+from coordinare.services.conducting import OpenAiApiBackend
+from coordinare.services.env_cache import (
+    EnvCacheService,
+    sanitise_symphony_name,
+    verify_env_cache_clean,
+)
+from coordinare.services.environment_acceptance import (
+    accepted_environment,
+    execution_report,
+    immutable_verifier_image,
+    saved_execution_accepted,
+)
+from coordinare.services.environment_attempt import (
+    REPAIR_LIMITS,
+    DiscoveryChatReply,
+    EnvironmentDiscoveryError,
+)
+from coordinare.services.environment_repair import (
+    journal_for,
+    provenance_refusal_evidence,
+    remaining_seconds,
+    resumable_attempt,
+)
+from coordinare.services.environment_runtime import (
+    admit_installer_runtime,
+    guest_expiry,
+    runtime_verifier_options,
+)
+from coordinare.services.environment_runtime_evidence import require_runtime_target
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
+    from coordinare_service_inference.environment.models import (
+        EnvironmentManifest,
+        VerificationReport,
+    )
+    from coordinare_service_inference.environment.runtime import TrialReceipt
+
+    from coordinare.services.environment_discovery import ChatJson
+    from coordinare.services.environment_probes import ProbePlan
+    from coordinare.services.environment_repair_trial import TrialRequest
+
+
+@dataclass(frozen=True)
+class Profile:
+    model: str
+    base_url: str
+    api_key_env: str = "OPENAI_API_KEY"
+    structured_transport: str = "json_schema"
+    max_tokens: int = 32768
+    effort: str | None = None
+    phase_timeout: float = 120
+    attempt_timeout: float | None = None
+    execute: bool = False
+    # Unattended runs take the daemon's path: no operator gate on probes or execution (Jason, 2026-11-01).
+    unattended: bool = False
+    approval_timeout: float = 600
+    installer_timeout: float = 900
+    save_transcripts: bool = False
+    keep_caches: bool = False
+    max_schema_repairs: int = 2
+    max_coverage_revisions: int = 2
+    max_scope_revisions: int = 8
+    max_execution_repairs: int = REPAIR_LIMITS["execution"]
+    max_review_context_bytes: int = 1024 * 1024
+    max_total_reads: int | None = None
+    max_model_calls: int | None = None
+    context_tokens: int | None = None
+    agent_concurrency: int = 12
+    private_service_runtime: dict[str, Any] | None = None
+    # An earlier run's output directory: its accepted scope is offered to a fresh independent review.
+    reuse_scope_from: Path | None = None
+
+
+def _profile_record(profile: Profile) -> dict[str, Any]:
+    """The profile as JSON: paths are recorded as strings."""
+    return {key: str(value) if isinstance(value, Path) else value for key, value in asdict(profile).items()}
+
+
+def load_runtime_policy(path: Path) -> dict[str, Any]:
+    """Load an explicit platform policy; capability discovery still measures the image."""
+    with path.open('rb') as stream:
+        raw = stream.read(16385)
+    if len(raw) > 16384:
+        raise ValueError('private runtime policy exceeds byte bound')
+    return RuntimePolicy.model_validate_json(raw).model_dump(mode='json')
+
+
+@dataclass
+class Snapshot:
+    source: Path
+    commit: str
+    org: str
+    name: str
+    modes: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+
+    async def git(self, *arguments: str, max_bytes: int = 4 * 1024 * 1024) -> bytes:
+        """Bound output and reap cancelled reads without touching the snapshot index."""
+        env = dict(
+            os.environ,
+            GIT_OPTIONAL_LOCKS="0",
+            GIT_NO_REPLACE_OBJECTS="1",
+            GIT_CONFIG_NOSYSTEM="1",
+            GIT_CONFIG_GLOBAL=os.devnull,
+        )
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "-C",
+            str(self.source),
+            "-c",
+            "core.fsmonitor=false",
+            "--no-pager",
+            *arguments,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=env,
+        )
+        output = bytearray()
+        try:
+            async with asyncio.timeout(30):
+                if proc.stdout is None:
+                    raise ValueError("snapshot Git output unavailable")
+                while True:
+                    chunk = await proc.stdout.read(min(65536, max_bytes + 1 - len(output)))
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                    if len(output) > max_bytes:
+                        raise EnvironmentDiscoveryError(
+                            "snapshot source byte limit exceeded", code="snapshot_byte_limit",
+                        )
+                await proc.wait()
+            if proc.returncode:
+                raise EnvironmentDiscoveryError(
+                    "pinned snapshot object is unavailable", code="snapshot_unavailable",
+                )
+            return bytes(output)
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+
+    async def verify(self) -> None:
+        if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", self.commit):
+            raise ValueError("snapshot requires an immutable commit")
+        if (await self.git("rev-parse", "HEAD")).decode().strip() != self.commit:
+            raise ValueError("snapshot checkout differs from selected commit")
+        if await self.git("status", "--porcelain=v1", "--untracked-files=all"):
+            raise ValueError("snapshot contains local modifications")
+
+    async def prepare_execution_source(
+        self, owner: str, repo: str, *, commit: str, destination: Path, deadline: float,
+    ) -> ExecutionSourceBundle:
+        from scripts.environment_validation_source import prepare_snapshot_source
+
+        if owner != self.org or repo != self.name:
+            raise ValueError('snapshot repository identity differs')
+        return await prepare_snapshot_source(self, commit=commit, destination=destination, deadline=deadline)
+
+    async def get_branch_head_sha(self, branch_name: str = 'main') -> str:
+        return self.commit
+
+    async def get_file_blob_sha(self, org: str, repo: str, path: str, *, ref: str | None = None) -> str | None:
+        from coordinare_service_inference.environment.models import source_path
+
+        source_path(path)
+        if org != self.org or repo != self.name or (ref is not None and ref != self.commit):
+            raise ValueError('snapshot object identity differs')
+        raw = await self.git('--literal-pathspecs', 'ls-tree', '-z', self.commit, '--', path)
+        records = [record for record in raw.split(b'\0') if record]
+        if len(records) != 1:
+            return None
+        metadata, name = records[0].split(b'\t', 1)
+        _mode, kind, oid = metadata.decode('ascii').split()
+        return oid if name.decode() == path and kind == 'blob' else None
+
+    async def get_repository_paths(
+        self, owner: str, repo: str, *, ref: str, max_entries: int = 100_000,
+    ) -> list[str]:
+        if ref != self.commit:
+            raise ValueError("snapshot identity differs")
+        entries = (await self.git("ls-tree", "-rz", "--full-tree", ref)).split(b"\0")
+        self.modes = {}
+        for entry in entries:
+            if not entry:
+                continue
+            metadata, path = entry.split(b"\t", 1)
+            mode, kind, _digest = metadata.decode("ascii").split()
+            if kind == "blob":
+                self.modes[path.decode("utf-8")] = mode
+        if len(self.modes) > max_entries:
+            raise EnvironmentDiscoveryError("snapshot inventory entry limit exceeded")
+        return sorted(self.modes)
+
+    async def get_file_content(self, org: str, repo: str, path: str, *, ref: str = "HEAD") -> str | None:
+        from coordinare_service_inference.environment.models import source_path
+
+        if ref == 'HEAD':
+            ref = self.commit
+        if ref != self.commit:
+            raise ValueError("snapshot identity differs")
+        source_path(path)
+
+        async def fetch(current: str) -> str | None:
+            if current not in self.modes:
+                return None
+            raw = await self.git("show", ref + ":" + current, max_bytes=256 * 1024)
+            try:
+                return raw.decode("utf-8")
+            except UnicodeError:
+                return None
+
+        return cast("str | None", await read_source_reference(
+            path, {name for name, mode in self.modes.items() if mode == "120000"}, fetch,
+        ))
+
+
+def new_profile_directory(path: Path) -> None:
+    """Never overwrite baseline evidence or chmod an unrelated existing directory."""
+    path.mkdir(mode=0o700, parents=True, exist_ok=False)
+
+
+def execution_authorized(
+    path: Path, *, manifest_digest: str, source_commit: str, image: str,
+) -> bool:
+    try:
+        if path.is_symlink() or path.stat().st_size > 4096:
+            return False
+        approval = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(approval, dict)
+        and approval.get("approved") is True
+        and approval.get("scope") == "environment_validation"
+        and approval.get("manifest_digest") == manifest_digest
+        and approval.get("source_commit") == source_commit
+        and approval.get("image_ref") == image
+    )
+
+
+def probe_authorized(path: Path, plan: ProbePlan) -> bool:
+    try:
+        if path.is_symlink() or path.stat().st_size > 4096:
+            return False
+        approval = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    return (isinstance(approval, dict) and approval.get("approved") is True
+        and approval.get("scope") == "environment_probe" and approval.get("plan_digest") == plan.digest()
+        and approval.get("source_commit") == plan.source_commit and approval.get("image_ref") == plan.capabilities.image_ref
+        and approval.get("platform") == plan.capabilities.platform)
+
+
+async def await_probe_approval(target: Path, plan: ProbePlan, *, seconds: float) -> None:
+    _write(target / "probe-proposal.json", plan.model_dump(mode="json"))
+    async with asyncio.timeout(seconds):
+        while not probe_authorized(target / "probe-approved.json", plan):
+            await asyncio.sleep(0.25)
+
+
+def final_readiness(*, installer_passed: bool, clean_passed: bool | None, frozen: bool) -> bool:
+    return installer_passed is True and clean_passed is True and frozen is True
+
+
+def _write(path: Path, value: Any) -> None:
+    path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
+
+
+def _event(**fields: Any) -> None:
+    sys.stdout.write(json.dumps(fields) + "\n")
+    sys.stdout.flush()
+
+
+def command_timing(phase: str, repository: str, evidence: Any) -> float:
+    """Emit each executed command's guest wall clock as an event; returns the phase total in seconds."""
+    total = 0.0
+    for item in evidence.get("results", []) if isinstance(evidence, dict) else []:
+        if item.get("status") == "not_run":
+            continue
+        seconds = float(item.get("duration_seconds") or 0)
+        total += seconds
+        _event(repository=repository, stage=f"{phase}_command", command=item.get("id"),
+               status=item.get("status"), seconds=round(seconds, 3))
+    return round(total, 3)
+
+
+async def _bounded_wait(process: asyncio.subprocess.Process, timeout: float) -> int:
+    try:
+        return await asyncio.wait_for(process.wait(), timeout)
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+
+
+async def _remove_container(name: str) -> bool:
+    proc = await asyncio.create_subprocess_exec(
+        "docker", "rm", "-f", name,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, error = await asyncio.wait_for(proc.communicate(), 30)
+        return proc.returncode == 0 or b"No such container" in error
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+
+INSTALLER_TAIL_BYTES = 2000
+
+
+def _time_left(cache: EnvCacheState) -> bool:
+    try:
+        return remaining_seconds(cache) > 0
+    except (ValueError, RuntimeError):
+        return False
+
+
+# Each discovery call already rides out a thirty-minute provider outage; a longer one resumes the same attempt from
+# its journal this many times, within its original deadline, as the daemon's next bootstrap cycle would.
+MAX_PROVIDER_RESUMES = 2
+
+
+async def _clone_pinned(snapshot: Snapshot, workspace: Path, time_left: Callable[[], float]) -> None:
+    """A private local clone of the pinned commit; it carries no host credential configuration into the image."""
+    git_environment = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                           GIT_NO_REPLACE_OBJECTS="1")
+    clone_timeout = min(60, time_left())
+    cloned = await asyncio.create_subprocess_exec(
+        "git",
+        "-c",
+        "core.hooksPath=" + os.devnull,
+        "clone",
+        "--quiet",
+        "--no-hardlinks",
+        "--no-checkout",
+        str(snapshot.source),
+        str(workspace),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        env=git_environment,
+    )
+    if await _bounded_wait(cloned, clone_timeout):
+        raise RuntimeError("private installer snapshot clone failed")
+    checkout_timeout = min(60, time_left())
+    checkout = await asyncio.create_subprocess_exec(
+        "git",
+        "-C",
+        str(workspace),
+        "-c",
+        "core.hooksPath=" + os.devnull,
+        "checkout",
+        "--quiet",
+        "--detach",
+        snapshot.commit,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        env=git_environment,
+    )
+    if await _bounded_wait(checkout, checkout_timeout):
+        raise RuntimeError("private installer snapshot checkout failed")
+
+
+async def _install(
+    snapshot: Snapshot, cache: EnvCacheState, image: str, target: Path, timeout: float,
+) -> tuple[int, bytes]:
+    """A private local clone carries no host credential configuration into the image."""
+    manifest = accepted_environment(cache)
+    if manifest is None:
+        raise ValueError("accepted environment disappeared before installation")
+    if immutable_verifier_image(image) != (cache.environment_capabilities or {}).get('image_ref'):
+        raise ValueError('installer image differs from accepted capabilities')
+    expires_at = time.time()+timeout
+    if cache.environment_attempt is not None:
+        expires_at = min(expires_at, time.time()+remaining_seconds(cache))
+    options = ['--cpus', '2', '--memory', '4g', '--pids-limit', '512']
+    if manifest.runtime is not None:
+        require_runtime_target(manifest, cache)
+        if cache.environment_attempt is None or journal_for(cache).status != 'executing':
+            raise ValueError('private runtime installer requires an executing original attempt')
+        expires_at = min(expires_at, time.time()+manifest.runtime.policy.resources.max_seconds)
+        options = runtime_verifier_options(manifest, target)
+        options.extend(['-e', 'COORDINARE_ENV_RUNTIME_EXPIRES_AT='+str(guest_expiry(expires_at, time.time()))])
+    phase_deadline = time.monotonic()+timeout
+
+    def time_left() -> float:
+        left = min(expires_at-time.time(), phase_deadline-time.monotonic())
+        if left <= 0:
+            raise TimeoutError('installer original deadline exhausted')
+        return left
+
+    workspace = target / "installer-source"
+    await _clone_pinned(snapshot, workspace, time_left)
+    name = "coordinare-env-validation-" + uuid.uuid4().hex[:12]
+    remaining = time_left()
+    process = await asyncio.create_subprocess_exec(
+        "docker",
+        "run",
+        "--rm",
+        "-i",
+        "--name",
+        name,
+        *options,
+        "-e",
+        "BASH_ENV=",
+        "-e",
+        "ENV=",
+        "-e",
+        "_DEVENV_SOURCED=1",
+        "-e",
+        "_DEVENV_SKIP_SERVICES=1",
+        "-v",
+        str(cache.cache_dir) + ":/devenv/" + cache.sanitised_name,
+        "-v",
+        str(workspace) + ":/repo",
+        "--entrypoint",
+        "/usr/local/bin/python",
+        image,
+        "-I",
+        "-m",
+        "coordinare_service_inference.environment.execution_source_install",
+        "--cache",
+        "/devenv/" + cache.sanitised_name,
+        "--repo",
+        "/repo",
+        "--scratch",
+        "/tmp",
+        "--install",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        output, _ = await asyncio.wait_for(
+            process.communicate(json.dumps({"manifest":manifest.model_dump(mode="json"),
+                "execution_source":cache.environment_execution_source}, ensure_ascii=False).encode()), remaining,
+        )
+        assert process.returncode is not None
+        return process.returncode, output
+    finally:
+        try:
+            removed = await _remove_container(name)
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+        if not removed:
+            raise RuntimeError("installer cleanup could not be confirmed")
+
+
+# A trial is a diagnostic run of a few services and checks; it gets far less than an execution.
+TRIAL_SECONDS = 900.0
+
+
+@dataclass
+class KeptGeneration:
+    """A failed generation kept for repair trials until the repaired generation executes (repair-trial-amendment.md)."""
+
+    cache_dir: Path
+    target: Path
+    mount: str
+    manifest: EnvironmentManifest
+    execution_source: dict[str, Any]
+    receipt: TrialReceipt
+    trials: int = 0
+
+
+def trial_manifest(base: EnvironmentManifest, request: TrialRequest) -> EnvironmentManifest:
+    """The trial manifest exactly as the trial entrypoint composes it from the request."""
+    from coordinare_service_inference.environment.runtime_execution import trial_manifest as compose
+
+    return compose(base, request.services, request.checks, request.local_credentials)
+
+
+async def run_repair_trial(snapshot: Snapshot, kept: KeptGeneration, image: str, cache: EnvCacheState,
+                           request: TrialRequest) -> VerificationReport:
+    """One trial on the kept generation's trial disk: pinned source, cache read-only, no outer network."""
+    from coordinare_service_inference.environment.models import VerificationReport
+
+    kept.trials += 1
+    root = kept.target / f"trial-{kept.trials:02}"
+    root.mkdir()
+    expires_at = time.time() + min(TRIAL_SECONDS, remaining_seconds(cache),
+                                   kept.manifest.runtime.policy.resources.max_seconds if kept.manifest.runtime else 0)
+    phase_deadline = time.monotonic() + TRIAL_SECONDS
+
+    def time_left() -> float:
+        left = min(expires_at - time.time(), phase_deadline - time.monotonic())
+        if left <= 0:
+            raise TimeoutError("repair trial deadline exhausted")
+        return left
+
+    name = "coordinare-env-trial-" + uuid.uuid4().hex[:12]
+    process = None
+    started = time.monotonic()
+    try:
+        await _clone_pinned(snapshot, root / "source", time_left)
+        options = [*runtime_verifier_options(kept.manifest, root), "--network", "none",
+                   "-e", "COORDINARE_ENV_RUNTIME_EXPIRES_AT=" + str(guest_expiry(expires_at, time.time()))]
+        process = await asyncio.create_subprocess_exec(
+            "docker", "run", "--rm", "-i", "--name", name, *options,
+            "-e", "BASH_ENV=", "-e", "ENV=", "-e", "_DEVENV_SOURCED=1", "-e", "_DEVENV_SKIP_SERVICES=1",
+            "-v", f"{kept.cache_dir}:{kept.mount}:ro", "-v", f"{root / 'source'}:/repo",
+            "--entrypoint", "/usr/local/bin/python", image, "-I", "-m",
+            "coordinare_service_inference.environment.execution_source_trial",
+            "--cache", kept.mount, "--repo", "/repo", "--scratch", "/tmp",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        payload = {"base": kept.manifest.model_dump(mode="json"), "request": request.model_dump(mode="json"),
+                   "execution_source": kept.execution_source, "trial": kept.receipt.model_dump(mode="json")}
+        output, _ = await asyncio.wait_for(process.communicate(json.dumps(payload).encode()), time_left())
+    finally:
+        removed = await _remove_container(name)
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
+        cleaned = await _cleanup_roots([root / "source", root / "runtime-scratch"], image)
+        if not (removed and cleaned):
+            raise RuntimeError("repair trial cleanup could not be confirmed")
+    (root / "trial-output.json").write_bytes(_redact_report_detail(output))
+    _event(repository=snapshot.name, stage="repair_trial", trial=kept.trials,
+           seconds=round(time.monotonic() - started, 1))
+    lines = [line for line in output.decode(errors="replace").splitlines() if line.strip()]
+    try:
+        data = json.loads(lines[-1])
+        data.pop("passed", None)  # recomputed, never trusted
+        return VerificationReport.model_validate(data)
+    except (IndexError, ValueError, TypeError, AttributeError):
+        message = "repair trial produced no report"
+        raise RuntimeError(message) from None
+
+
+def _keep_for_trials(snapshot: Snapshot, service: EnvCacheService, cache: EnvCacheState, target: Path, image: str,
+                     result: dict[str, Any]) -> KeptGeneration | None:
+    """Keep a failed generation that sealed a trial disk, and offer its trials to the next repair."""
+    from coordinare_service_inference.environment.runtime import TrialReceipt
+
+    manifest = accepted_environment(cache)
+    if not result.get("trial_receipt") or manifest is None or manifest.runtime is None:
+        return None
+    kept = KeptGeneration(cache_dir=cache.cache_dir, target=target, mount="/devenv/" + cache.sanitised_name,
+                          manifest=manifest, execution_source=dict(cache.environment_execution_source or {}),
+                          receipt=TrialReceipt.model_validate(result["trial_receipt"]))
+    service.repair_trials[snapshot.name] = functools.partial(run_repair_trial, snapshot, kept, image, cache)
+    return kept
+
+
+async def _release_kept(service: EnvCacheService, name: str, kept: KeptGeneration | None, image: str,
+                        result: dict[str, Any]) -> None:
+    """End a kept generation's trials and remove its cache; an unconfirmed removal holds the run."""
+    service.repair_trials.pop(name, None)
+    if kept is not None and not await _cleanup_roots([kept.cache_dir], image):
+        result.update(status="held", reason_code="cleanup_unconfirmed")
+        message = "kept repair-trial generation cleanup could not be confirmed"
+        raise RuntimeError(message)
+    return
+
+
+def _redact_report_detail(output: bytes) -> bytes:
+    """Redact runtime text before installer output reaches disk: a report's failure detail and command outputs,
+    or all of a crash traceback (it can carry guest console text)."""
+    from coordinare.lib.redaction import redact_command_text
+
+    try:
+        raw = json.loads(output)
+    except ValueError:
+        return redact_command_text(output.decode(errors='replace')).encode()
+    if not isinstance(raw, dict):
+        return redact_command_text(output.decode(errors='replace')).encode()
+    if isinstance(raw.get('runtime_incomplete_detail'), str):
+        raw['runtime_incomplete_detail'] = _redacted_detail(raw['runtime_incomplete_detail'])
+    for item in raw.get('results', []) if isinstance(raw.get('results'), list) else []:
+        if isinstance(item, dict) and isinstance(item.get('output'), str):
+            # The runner removes known secret values; a value generated during the run needs pattern redaction.
+            item['output'] = redact_command_text(item['output'])
+    return json.dumps(raw).encode()
+
+
+def _redacted_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    """A copy for result.json whose command outputs are pattern-redacted; the original is left untouched."""
+    from coordinare.lib.redaction import redact_command_text
+
+    copy = json.loads(json.dumps(evidence))
+    for item in copy.get('results', []) if isinstance(copy.get('results'), list) else []:
+        if isinstance(item, dict) and isinstance(item.get('output'), str):
+            item['output'] = redact_command_text(item['output'])
+    return copy
+
+
+def _redacted_detail(value: object) -> str | None:
+    """A runtime failure message can carry guest console text; keep it bounded and redacted."""
+    if not isinstance(value, str):
+        return None
+    from coordinare.lib.redaction import redact_command_text
+
+    return redact_command_text(value)[:600]
+
+
+async def execute_accepted(
+    snapshot: Snapshot,
+    service: EnvCacheService,
+    state: dict[str, Any],
+    *,
+    image: str,
+    target: Path,
+    profile: Profile,
+    result: dict[str, Any],
+) -> None:
+    cache = state["env_cache"][snapshot.name]
+    manifest = accepted_environment(cache)
+    if manifest is None:
+        raise ValueError("independent acceptance is required before execution")
+    for key in ('installer_evidence', 'clean_evidence', 'clean_consumer_detail'):
+        result.pop(key, None)
+    result.update(stage='execution_scope', installer_ran=False, installer_passed=False,
+        clean_consumer_ran=False, clean_consumer_passed=None, ready_at_validation=False)
+    marker = target / "execution-approved.json"
+    remaining = remaining_seconds(cache) if cache.environment_attempt is not None else profile.approval_timeout
+    deadline = time.monotonic() + min(profile.approval_timeout, remaining)
+    result["execution_authorization"] = "unattended" if profile.unattended else "operator"
+    while not profile.unattended and not execution_authorized(
+        marker, manifest_digest=manifest.digest(), source_commit=snapshot.commit, image=image,
+    ):
+        if time.monotonic() >= deadline:
+            result.update(
+                status="held", stage="execution_scope", reason_code="execution_scope_not_approved",
+            )
+            return
+        await asyncio.sleep(1)
+    await snapshot.verify()
+    result.pop("installer_evidence", None)
+    result.pop("clean_evidence", None)
+    result.pop("clean_consumer_detail", None)
+    result.pop("clean_consumer_passed", None)
+    result.update(stage="installer", installer_ran=True, installer_passed=False, clean_consumer_ran=False)
+    started = time.monotonic()
+    try:
+        code, output = await _install(snapshot, cache, image, target, profile.installer_timeout)
+    except TimeoutError:
+        # v39's install outlived the private guest's lifetime; name it instead of an unexplained stage failure.
+        result.update(status="held", reason_code="installer_timeout",
+                      installer_seconds=round(time.monotonic() - started, 1))
+        service.on_bootstrap_complete(snapshot.name, False, state)
+        return
+    result["installer_seconds"] = round(time.monotonic() - started, 1)
+    _event(repository=snapshot.name, stage="installer", seconds=result["installer_seconds"])
+    (target / "installer-output.json").write_bytes(_redact_report_detail(output))
+    try:
+        raw = json.loads(output)
+    except ValueError:
+        # The installer crashed before it could report (v30: the private runtime guest exited). Keep a redacted tail
+        # as evidence and hold, instead of failing the whole stage with nothing recorded.
+        from coordinare.lib.redaction import redact_command_text
+
+        tail = redact_command_text(output.decode(errors="replace"))[-INSTALLER_TAIL_BYTES:]
+        result.update(status="held", reason_code="installer_crashed", installer_output_tail=tail)
+        service.on_bootstrap_complete(snapshot.name, False, state)
+        return
+    if isinstance(raw, dict) and (raw.get('runtime_incomplete') or raw.get('runtime_cleanup') is False):
+        # An incomplete run (deadline, seal or teardown) holds without repair; the report keeps what each command
+        # did and why the run could not be accepted.
+        results = [item for item in raw.get('results', []) if isinstance(item, dict)]
+        statuses = [str(item.get('status')) for item in results]
+        result.update(status="held", reason_code="runtime_incomplete",
+                      runtime_incomplete=raw.get('runtime_incomplete'),
+                      runtime_incomplete_detail=_redacted_detail(raw.get('runtime_incomplete_detail')),
+                      installer_result_counts={status: statuses.count(status) for status in dict.fromkeys(statuses)},
+                      installer_failed_ids=[str(item.get('id')) for item in results
+                                            if item.get('status') in ('fail', 'indeterminate')],
+                      installer_command_seconds=command_timing("installer", snapshot.name, raw))
+        service.on_bootstrap_complete(snapshot.name, False, state)
+        return
+    # Failed installer evidence cannot carry a sealed success receipt. Validate it
+    # for bounded repair before applying the successful installer admission gate.
+    if code != 0 or any(item.get('required') and item.get('status') == 'fail' for item in raw.get('results', [])):
+        from coordinare.services.environment_acceptance import failed_installer_report
+
+        report = failed_installer_report(output.decode(), cache)
+    else:
+        report = execution_report(output.decode(), cache, publish=False, runtime_phase='installer')
+    result["installer_passed"] = (
+        code == 0
+        and report.passed
+        and report.platform == cache.environment_capabilities["platform"]
+    )
+    evidence = {**report.model_dump(mode='json'), 'image_ref':image}
+    # A failed run whose installs all passed sealed a trial disk for the next repair (repair-trial-amendment.md).
+    result['trial_receipt'] = raw.get('trial_artifacts') if not result["installer_passed"] else None
+    result['installer_evidence'] = _redacted_evidence(evidence)
+    result['installer_command_seconds'] = command_timing("installer", snapshot.name, evidence)
+    result['execution_source'] = cache.environment_execution_source
+    if not result["installer_passed"]:
+        evidence = {**report.model_dump(mode="json"), "image_ref": image}
+        result.update(status="held", reason_code="installer_failed", installer_evidence=_redacted_evidence(evidence))
+        service.record_bootstrap_execution(snapshot.name, state, evidence, cleanup_confirmed=True)
+        service.on_bootstrap_complete(snapshot.name, False, state)
+        return
+    # _install returns only after the outer writer's removal is confirmed.
+    admit_installer_runtime(cache, report.model_dump(mode='json'), cleanup_confirmed=True)
+    result.update(stage="clean_consumer", clean_consumer_ran=True)
+    clean_started = time.monotonic()
+    passed, detail = await verify_env_cache_clean(
+        state,
+        snapshot.name,
+        SimpleNamespace(_config=SimpleNamespace(image=image)),
+        performer_mounts=(target,),
+    )
+    result["clean_consumer_seconds"] = round(time.monotonic() - clean_started, 1)
+    result["clean_consumer_command_seconds"] = command_timing("clean_consumer", snapshot.name, cache.environment_verification)
+    _event(repository=snapshot.name, stage="clean_consumer", seconds=result["clean_consumer_seconds"])
+    result.update(
+        clean_consumer_passed=passed,
+        clean_consumer_detail=detail,
+        clean_evidence=cache.environment_verification,
+    )
+    if passed is not True:
+        result.update(status="held", reason_code="clean_consumer_held")
+        service.record_bootstrap_execution(snapshot.name, state, cache.environment_verification,
+            cleanup_confirmed=passed is False)
+        service.on_bootstrap_complete(snapshot.name, False, state)
+        return
+    frozen, reason = await service.freeze_provenance(snapshot.name, state)
+    result.update(provenance_frozen=frozen, provenance_detail=reason)
+    if not frozen and reason and (evidence := provenance_refusal_evidence(cache, reason)) is not None:
+        # The clean execution passed and its runtime was confirmed removed; a refusal is a repairable failure.
+        service.record_bootstrap_execution(snapshot.name, state, evidence, cleanup_confirmed=True)
+    service.on_bootstrap_complete(
+        snapshot.name,
+        final_readiness(
+            installer_passed=result["installer_passed"], clean_passed=passed, frozen=frozen,
+        ),
+        state,
+    )
+    result["ready_at_validation"] = cache.cache_dir_ready and saved_execution_accepted(cache)
+    result.update(status="ready" if result["ready_at_validation"] else "held", stage="readiness")
+
+
+async def _cleanup_case(target: Path, cache: EnvCacheState, image: str) -> bool:
+    """Remove only private case contents, including files created with container ownership."""
+    return await _cleanup_roots([cache.cache_dir, target / "installer-source", target / 'runtime-scratch'], image)
+
+
+# Cache roots hold multi-gigabyte installs and guest disks, removed through Docker Desktop's file sharing.
+CLEANUP_SECONDS = 600
+
+
+async def _cleanup_roots(roots: list[Path], image: str) -> bool:
+    existing = [root for root in roots if root.is_dir() and not root.is_symlink()]
+    if not existing:
+        return True
+    program = inspect.getsource(environment_validation_cleanup) + "\nremove_contents(Path('/cleanup'))"
+    for root in existing:
+        name = "coordinare-env-validation-cleanup-" + uuid.uuid4().hex[:12]
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "run",
+            "--rm",
+            "--name", name,
+            "--network",
+            "none",
+            "-v",
+            str(root) + ":/cleanup",
+            "--entrypoint",
+            "/usr/local/bin/python",
+            image,
+            "-I",
+            "-c",
+            program,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            if await _bounded_wait(proc, CLEANUP_SECONDS):
+                return False
+        except TimeoutError:
+            # Dettmore e2e-88: removing a kept 1.2 GB trial generation outlasted a 60 s bound, and the raised
+            # TimeoutError aborted the run as validation_stage_failed. An unfinished removal is unconfirmed cleanup.
+            return False
+        finally:
+            removed = await _remove_container(name)
+        if not removed:
+            return False
+        root.rmdir()
+    return True
+
+
+async def validate_repository(
+    snapshot: Snapshot, *, image: str, output: Path, profile: Profile, chat: ChatJson | None = None,
+) -> dict[str, Any]:
+    new_profile_directory(output)
+    started = time.monotonic()
+    cache = EnvCacheState(
+        symphony_name=snapshot.name,
+        sanitised_name=sanitise_symphony_name(snapshot.name),
+        cache_dir=output / "cache",
+        bootstrap_commit_sha=snapshot.commit,
+        readme_sha=snapshot.commit,
+    )
+    if profile.reuse_scope_from is not None:
+        prior = profile.reuse_scope_from / snapshot.name / "environment-attempt.json"
+        if prior.is_file():
+            # As after an operator restart: the earlier attempt is archived, and begin_attempt offers its
+            # accepted scope for a fresh review when the commit and protocol match.
+            cache.environment_attempt_archive = [json.loads(prior.read_text())]
+    settings = EnvCacheConfig(
+        manifest_phase_timeout_seconds=profile.phase_timeout,
+        manifest_max_schema_repairs=profile.max_schema_repairs,
+        manifest_max_coverage_revisions=profile.max_coverage_revisions,
+        manifest_max_scope_revisions=profile.max_scope_revisions,
+        manifest_max_execution_repairs=profile.max_execution_repairs,
+        manifest_max_review_context_bytes=profile.max_review_context_bytes,
+        manifest_shard_context_tokens=profile.context_tokens,
+        manifest_agent_concurrency=profile.agent_concurrency,
+        private_service_runtime=profile.private_service_runtime,
+        # Unset budgets take product defaults: the sharded budget when sharding is enabled.
+        **{name: value for name, value in (("manifest_attempt_timeout_seconds", profile.attempt_timeout),
+            ("manifest_max_total_reads", profile.max_total_reads), ("manifest_max_model_calls", profile.max_model_calls))
+           if value is not None},
+    )
+    global_config = SimpleNamespace(
+        performer_image=image,
+        performer_endpoints=[],
+        performer_log_dir=None,
+        env_cache_root=output,
+        state_file_path=output.parent / "daemon-state" / (snapshot.name + ".json"),
+        env_cache=settings,
+        # The outer wall clock never undercuts a sharded attempt's longer ceiling.
+        bootstrap_max_seconds=int(max(3600, settings.manifest_attempt_timeout_seconds)),
+        github_org=snapshot.org,
+        project_name=snapshot.name,
+        env_bootstrap_max_attempts=3,
+    )
+    config = SimpleNamespace(
+        agent_transport="subprocess", global_config=global_config, symphonies=[],
+    )
+    service = EnvCacheService(config)
+    state = {
+        "coordinare_config": config,
+        "config": global_config,
+        "env_cache": {snapshot.name: cache},
+        "github_service": snapshot,
+        "env_cache_service": service,
+    }
+    calls = 0
+    review_starts = 0
+    source_review_starts = 0
+    result = {
+        "repository": snapshot.name,
+        "source_commit": snapshot.commit,
+        "image_ref": image,
+        "status": "held",
+        "stage": "discovery",
+        "independent_review_reached": False,
+        "installer_ran": False,
+        "clean_consumer_ran": False,
+        "ready_at_validation": False,
+        "live_daemon_exercised": False,
+        "outer_retry_loop_exercised": False,
+        "profile": _profile_record(profile),
+    }
+    if chat is None:
+        key = os.environ.get(profile.api_key_env)
+        if not key:
+            raise ValueError("configured model credential is unavailable")
+        backend = OpenAiApiBackend(
+            api_key=key,
+            model=profile.model,
+            base_url=profile.base_url,
+            max_tokens=profile.max_tokens,
+            effort=profile.effort,
+            structured_transport=profile.structured_transport,
+        )
+        chat = backend.chat_json_with_metadata
+
+    selected_chat = chat
+    async def recorded(messages: list[dict[str, str]], *, response_schema: dict[str, Any] | None = None,
+                       max_context_bytes: int | None = None, context_phase: str = "discovery") -> str | DiscoveryChatReply:
+        nonlocal calls, review_starts, source_review_starts
+        calls += 1
+        call_number = calls
+        reviewing = context_phase == 'review'
+        source_reviewing = context_phase in {'scope_review', 'scope_shard_review', 'scope_merge_review'}
+        source_review_starts += int(source_reviewing and len(messages) == 2)
+        review_starts += int(reviewing and len(messages) == 2)
+        if selected_chat is None:
+            raise ValueError("validation chat unavailable")
+        from coordinare.services.environment_response_schema import invoke_chat
+
+        started = time.monotonic()
+        response = await invoke_chat(selected_chat, messages, schema=response_schema or {},
+                                     max_context_bytes=max_context_bytes, context_phase=context_phase)
+        seconds = round(time.monotonic() - started, 3)
+        text = response.text if isinstance(response, DiscoveryChatReply) else response
+        if profile.save_transcripts:
+            _write(
+                output / f"chat-{call_number:03}.json",
+                {
+                    "call": call_number,
+                    "phase": context_phase,
+                    "messages": messages,
+                    "response_schema": response_schema,
+                    "wire_response": response.wire_text if isinstance(response, DiscoveryChatReply) else None,
+                    "response": text,
+                    "usage": dict(response.usage or {})
+                    if isinstance(response, DiscoveryChatReply)
+                    else None,
+                    "finish_reason": response.finish_reason
+                    if isinstance(response, DiscoveryChatReply)
+                    else None,
+                },
+            )
+        _event(
+            repository=snapshot.name,
+            stage="review" if reviewing else "discovery",
+            call=call_number,
+            phase=context_phase,
+            seconds=seconds,
+            response_bytes=len(text.encode()),
+            **({"usage": dict(response.usage or {}), "finish_reason": response.finish_reason}
+               if isinstance(response, DiscoveryChatReply) else {}),
+        )
+        return response
+
+    async def persist_attempt() -> None:
+        _write(output / "environment-attempt.json", cache.environment_attempt)
+        for index, report in enumerate((cache.environment_attempt or {}).get("probe_reports", [])):
+            _write(output / f"probe-{index:03}" / "probe-report.json", report)
+
+    async def approve_probe(plan: ProbePlan) -> None:
+        if not profile.execute:
+            raise EnvironmentDiscoveryError("probe execution is disabled for this profile", code="probe_execution_disabled")
+        index = (cache.environment_attempt or {}).get("probe_batches", 1) - 1
+        target = output / f"probe-{index:03}"
+        new_profile_directory(target)
+        _event(repository=snapshot.name, stage="probe_scope", plan_digest=plan.digest(),
+               authorization="unattended" if profile.unattended else "operator")
+        if profile.unattended:
+            # The plan is still recorded; independent review and the guest's isolation are the gates, as in the daemon.
+            _write(target / "probe-proposal.json", plan.model_dump(mode="json"))
+            return
+        await await_probe_approval(target, plan, seconds=min(profile.approval_timeout, remaining_seconds(cache)))
+
+    state["snapshot_save_fn"] = persist_attempt
+    state["environment_probe_authorize"] = approve_probe
+    service.bind_kubernetes_state(state)
+    attempts = []
+    provider_resumes: list[dict[str, Any]] = []
+    attempt_target = output
+    kept: KeptGeneration | None = None
+    try:
+        await snapshot.verify()
+        # One generation per execution repair the daemon's budget allows, plus the first; the journal's status ends it.
+        # Dettmore e2e-47 stopped after a fixed three with one configured repair unused.
+        for generation in range(1 + profile.max_execution_repairs):
+            service.prepare_bootstrap_generation(cache)
+            attempt_target = output / f"attempt-{generation:03}"
+            new_profile_directory(attempt_target)
+            result["stage"] = "repair_discovery" if generation else "discovery"
+            for resume in range(MAX_PROVIDER_RESUMES + 1):
+                try:
+                    await service._build_manifest_artifacts(
+                        performer_mounts=(output,), symphony_name=snapshot.name, repo=snapshot.name,
+                        github_org=snapshot.org, github_service=snapshot, readme_contents={},
+                        current_sha=snapshot.commit, cache_dir=cache.cache_dir,
+                        cache_mount_path="/devenv/" + cache.sanitised_name,
+                        llm_chat=recorded, cache_state=cache,
+                    )
+                    break
+                except EnvironmentDiscoveryError as exc:
+                    if resume == MAX_PROVIDER_RESUMES or not resumable_attempt(cache) or not _time_left(cache):
+                        raise
+                    await persist_attempt()
+                    result["outer_retry_loop_exercised"] = True
+                    provider_resumes.append({"generation": generation, "reason_code": exc.code, "at": time.time()})
+                    result["provider_resumes"] = provider_resumes
+                    _event(repository=snapshot.name, stage=result["stage"], status="resuming",
+                           generation=generation, reason_code=exc.code)
+            # The repaired generation is accepted: its trials are over, and the kept one is removed before it runs.
+            await _release_kept(service, snapshot.name, kept, image, result)
+            kept = None
+            for name, data in (("accepted-manifest.json", cache.environment_manifest),
+                               ("accepted-assessment.json", cache.environment_assessment),
+                               ("execution-capabilities.json", cache.environment_capabilities),
+                               ("execution-source.json", cache.environment_execution_source)):
+                _write(attempt_target / name, data)
+                _write(output / name, data)
+            result.update(status="accepted_not_executed", stage="coverage",
+                manifest_digest=(cache.environment_assessment or {})["manifest_digest"], generation=generation,
+                execution_source=cache.environment_execution_source)
+            _write(attempt_target / "discovery-result.json", result)
+            _write(output / "discovery-result.json", result)
+            _event(repository=snapshot.name, stage="coverage", status="accepted",
+                generation=generation, manifest_digest=result["manifest_digest"])
+            if profile.execute:
+                async with asyncio.timeout(remaining_seconds(cache)):
+                    await execute_accepted(snapshot, service, state, image=image,
+                        target=attempt_target, profile=profile, result=result)
+            attempts.append(dict(result))
+            _write(attempt_target / "result.json", result)
+            await persist_attempt()
+            if journal_for(cache).status != "repair_pending":
+                break
+            # All executor cleanup was confirmed before admitting the rejected report. Remove private source/cache
+            # contents before preparing another generation, except a cache kept for the repair's trials.
+            kept = _keep_for_trials(snapshot, service, cache, attempt_target, image, result)
+            cleaned = (await _cleanup_case(attempt_target, cache, image) if kept is None else await _cleanup_roots(
+                [attempt_target / "installer-source", attempt_target / "runtime-scratch"], image))
+            if not cleaned:
+                result.update(status="held", reason_code="cleanup_unconfirmed")
+                break
+    except EnvironmentDiscoveryError as exc:
+        result.update(status="held", reason_code=exc.code, reason=str(exc))
+    except Exception as exc:
+        result.update(
+            status="held", reason_code="validation_stage_failed", error_type=type(exc).__name__,
+        )
+    finally:
+        with contextlib.suppress(RuntimeError):  # an unconfirmed removal already holds the result
+            await _release_kept(service, snapshot.name, kept, image, result)
+        if isinstance(cache.environment_attempt, dict):
+            diagnostics = cache.environment_attempt.get("diagnostics", {})
+            result["diagnostics"] = diagnostics
+            if result["stage"] in {"discovery", "repair_discovery"} and diagnostics.get("stage"):
+                result["stage"] = diagnostics["stage"]
+        result.update(
+            seconds=round(time.monotonic() - started, 2),
+            model_calls=calls,
+            independent_source_review_reached=source_review_starts > 0,
+            independent_source_review_invocations=source_review_starts,
+            independent_executable_review_invocations=review_starts,
+            independent_review_reached=review_starts > 0,
+            independent_review_invocations=review_starts,
+            attempts=attempts,
+        )
+        if not profile.keep_caches and (result["installer_ran"] or result["clean_consumer_ran"]):
+            result["private_runtime_contents_removed"] = await _cleanup_case(attempt_target, cache, image)
+        try:
+            await snapshot.verify()
+            result["snapshot_unchanged"] = True
+        except Exception:
+            result.update(snapshot_unchanged=False, status="held", ready_at_validation=False,
+                          reason_code="snapshot_integrity_changed")
+        _write(output / "result.json", result)
+        _event(
+            repository=snapshot.name,
+            status=result["status"],
+            stage=result["stage"],
+            seconds=result["seconds"],
+        )
+    return result
+
+
+async def _batch(args: argparse.Namespace, image: str, profile: Profile) -> list[dict[str, Any]]:
+    results = []
+    if len(set(args.repositories)) != len(args.repositories):
+        raise ValueError("duplicate repository selections")
+    for name in args.repositories:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", name) or name in {".", ".."}:
+            raise ValueError("invalid repository name")
+        entry = args.snapshots / name
+        inventory = json.loads((entry / "inventory.json").read_text())
+        snapshot = Snapshot(entry / "source", inventory["commit"], args.org, name)
+        results.append(
+            await validate_repository(
+                snapshot, image=image, output=args.output / name, profile=profile,
+            ),
+        )
+        _write(args.output / "results.json", results)
+    return results
+
+
+def _aggregate_read_allowance(value: str) -> int:
+    """Use the existing product limits before profile/image/model side effects."""
+    try:
+        return EnvCacheConfig(manifest_max_total_reads=int(value)).manifest_max_total_reads
+    except ValueError:
+        message = 'aggregate read allowance must satisfy the configured finite product bounds'
+        raise argparse.ArgumentTypeError(message) from None
+
+
+def _config_value(field: str, value: str) -> Any:
+    try:
+        return getattr(EnvCacheConfig(**{field: int(value)}), field)
+    except ValueError:
+        message = f'{field} must satisfy the configured finite product bounds'
+        raise argparse.ArgumentTypeError(message) from None
+
+
+def _model_call_allowance(value: str) -> int:
+    return int(_config_value('manifest_max_model_calls', value))
+
+
+def _context_tokens(value: str) -> int:
+    return int(_config_value('manifest_shard_context_tokens', value))
+
+
+def _agent_concurrency(value: str) -> int:
+    return int(_config_value('manifest_agent_concurrency', value))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("repositories", nargs="+")
+    parser.add_argument("--snapshots", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--org", default="ViviDynamics")
+    images = parser.add_mutually_exclusive_group(required=True)
+    images.add_argument("--image")
+    images.add_argument("--base-image")
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--base-url", required=True)
+    parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
+    parser.add_argument("--max-tokens", type=int, default=32768)
+    parser.add_argument("--effort")
+    parser.add_argument("--structured-transport", choices=["json_schema", "tool_call", "json_object"], default="json_schema")
+    parser.add_argument("--phase-timeout", type=float, default=120)
+    parser.add_argument("--attempt-timeout", type=float, default=None)
+    parser.add_argument("--max-schema-repairs", type=int, choices=range(REPAIR_LIMITS["schema"] + 1), default=2)
+    parser.add_argument("--max-coverage-revisions", type=int, choices=range(REPAIR_LIMITS["coverage"] + 1), default=2,
+                        help="executable review revisions")
+    parser.add_argument("--max-scope-revisions", type=int, choices=range(REPAIR_LIMITS["scope"] + 1), default=8,
+                        help="source scope review revisions, counted separately from executable revisions")
+    parser.add_argument("--max-execution-repairs", type=int, choices=range(REPAIR_LIMITS["execution"] + 1), default=REPAIR_LIMITS["execution"])
+    parser.add_argument("--max-review-context-bytes", type=int, default=1024 * 1024)
+    parser.add_argument("--max-total-reads", type=_aggregate_read_allowance, default=None)
+    parser.add_argument("--max-model-calls", type=_model_call_allowance, default=None)
+    parser.add_argument("--context-tokens", type=_context_tokens, default=None,
+                        help="Model context size; enables sharded source discovery for repositories larger than one share")
+    parser.add_argument("--agent-concurrency", type=_agent_concurrency, default=12)
+    parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--approval-timeout", type=float, default=600)
+    parser.add_argument("--unattended", action="store_true",
+                        help="Run probes and execution without operator approval, as the daemon does; requires --execute")
+    parser.add_argument("--save-transcripts", action="store_true")
+    parser.add_argument("--keep-caches", action="store_true")
+    parser.add_argument("--reuse-scope-from", type=Path, default=None,
+                        help="Earlier run output whose accepted scope is reviewed afresh instead of authored again")
+    parser.add_argument('--runtime-policy', type=Path, help='Explicit private-service platform policy JSON; image contents are verified')
+    args = parser.parse_args()
+    if args.unattended and not args.execute:
+        parser.error("--unattended requires --execute")
+    new_profile_directory(args.output)
+    profile = Profile(
+        model=args.model,
+        base_url=args.base_url,
+        api_key_env=args.api_key_env,
+        max_tokens=args.max_tokens,
+        effort=args.effort,
+        structured_transport=args.structured_transport,
+        phase_timeout=args.phase_timeout,
+        attempt_timeout=args.attempt_timeout,
+        execute=args.execute,
+        unattended=args.unattended,
+        approval_timeout=args.approval_timeout,
+        save_transcripts=args.save_transcripts,
+        keep_caches=args.keep_caches,
+        max_schema_repairs=args.max_schema_repairs,
+        max_coverage_revisions=args.max_coverage_revisions,
+        max_scope_revisions=args.max_scope_revisions,
+        max_execution_repairs=args.max_execution_repairs,
+        max_review_context_bytes=args.max_review_context_bytes,
+        max_total_reads=args.max_total_reads,
+        max_model_calls=args.max_model_calls,
+        context_tokens=args.context_tokens,
+        agent_concurrency=args.agent_concurrency,
+        private_service_runtime=load_runtime_policy(args.runtime_policy) if args.runtime_policy else None,
+        reuse_scope_from=args.reuse_scope_from,
+    )
+    revision = subprocess.check_output([shutil.which("git") or "/usr/bin/git", "rev-parse", "HEAD"], text=True).strip()
+    _write(
+        args.output / "profile.json",
+        {
+            "coordinare_commit": revision,
+            "profile": _profile_record(profile),
+            "snapshots": str(args.snapshots),
+            "repositories": args.repositories,
+            "org": args.org,
+        },
+    )
+    _event(stage="image_preparation", status="started")
+    context = (
+        candidate_image(args.base_image, args.output / "image")
+        if args.base_image
+        else contextlib.nullcontext(args.image)
+    )
+    with context as image:
+        _write(args.output / "image-identity.json", verify_image_code(image))
+        results = asyncio.run(_batch(args, image, profile))
+    return 0 if results and all(result["ready_at_validation"] for result in results) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

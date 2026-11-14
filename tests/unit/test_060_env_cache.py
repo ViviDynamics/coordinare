@@ -25,7 +25,11 @@ from coordinare.services.env_cache import (
     sanitise_symphony_name,
     write_service_scripts,
 )
-from tests.unit.env_manifest_fixture import reviewed_metadata, verification_output
+from tests.unit.env_manifest_fixture import (
+    record_verified_cache_fixture,
+    reviewed_metadata,
+    verification_output,
+)
 
 
 class _BootstrapClock:
@@ -46,7 +50,7 @@ def _head(label: str) -> str:
 def _source_fingerprint(per_file: dict[str, str]) -> str:
     """Known source/policy identity used to set up cache lifecycle transitions."""
     head = _head(next(iter(per_file.values())))
-    policy = {"schema": "351-v1", "head": head, "image": None,
+    policy = {"schema": "351-v1", "head": head, "image": "trusted/global@sha256:" + "a" * 64,
               "consumer_images": [], "conducting": "None",
               "verifier_image": None, "limits": EnvCacheConfig().model_dump()}
     digest = hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()[:12]
@@ -54,12 +58,14 @@ def _source_fingerprint(per_file: dict[str, str]) -> str:
 
 
 def _configured(coordinare_config):
-    coordinare_config.performer_image = None
-    coordinare_config.global_config.performer_image = None
+    coordinare_config.agent_transport = "docker"
+    coordinare_config.performer_image = "trusted/global@sha256:" + "a" * 64
+    coordinare_config.global_config.performer_image = "trusted/global@sha256:" + "a" * 64
     coordinare_config.global_config.performer_endpoints = []
     coordinare_config.global_config.conducting = None
     coordinare_config.global_config.kubernetes_verifier_image = None
     coordinare_config.global_config.env_cache = EnvCacheConfig()
+    coordinare_config.global_config.bootstrap_max_seconds = 3600
     return coordinare_config
 
 
@@ -68,6 +74,7 @@ def _accept(cache_state: EnvCacheState, *, nonempty: bool = False) -> EnvCacheSt
 
     cache_state.bootstrap_commit_sha = cache_state.bootstrap_commit_sha or _head("same_sha")
     metadata = reviewed_metadata(source_commit=cache_state.bootstrap_commit_sha)
+    cache_state.environment_capabilities = metadata["environment_capabilities"]
     data = metadata["environment_manifest"]
     data["symphony_name"] = cache_state.symphony_name
     if nonempty:
@@ -75,8 +82,11 @@ def _accept(cache_state: EnvCacheState, *, nonempty: bool = False) -> EnvCacheSt
                                  "source": "tools.plan", "checks": ["baseline"], "required": True}]
         data["empty_reason"] = None
     manifest = EnvironmentManifest.model_validate(data)
+    cache_state.environment_execution_source = metadata["environment_execution_source"]
     cache_state.environment_manifest = manifest.model_dump()
-    cache_state.environment_assessment = {**metadata["environment_assessment"], "manifest_digest": manifest.digest()}
+    from agent.performer.tests.source_contract_fixture import current_review_fixture
+    cache_state.environment_assessment = current_review_fixture(manifest,
+        {**metadata["environment_assessment"], "manifest_digest": manifest.digest()})
     cache_state.environment_verification = json.loads(verification_output(cache_state.environment_manifest))
     cache_state.environment_verification["image_ref"] = "trusted/global@sha256:" + "a" * 64
     return cache_state
@@ -97,15 +107,49 @@ def _accepted_discovery(monkeypatch):
     )
 
     async def discover(**kwargs):
-        metadata = reviewed_metadata(source_commit=kwargs["commit"])
+        metadata = reviewed_metadata(source_commit=kwargs["commit"], capabilities=kwargs["capabilities"])
         metadata["environment_manifest"]["symphony_name"] = kwargs["symphony_name"]
         manifest = EnvironmentManifest.model_validate(metadata["environment_manifest"])
-        assessment = CoverageAssessment.model_validate({**metadata["environment_assessment"],
-            "manifest_digest": manifest.digest()})
+        from agent.performer.tests.source_contract_fixture import current_review_fixture
+        assessment = CoverageAssessment.model_validate(current_review_fixture(manifest,
+            {**metadata["environment_assessment"], "manifest_digest": manifest.digest()}))
         return manifest, assessment
 
-    from coordinare.services.environment_discovery import discover_and_review as real_discovery
+    from unittest.mock import Mock
 
+    from coordinare_service_inference.environment.execution_source import (
+        ExecutionSourceBundle,
+        ExecutionSourceIdentity,
+    )
+
+    from coordinare.services.env_cache import EnvCacheService
+    from coordinare.services.environment_discovery import discover_and_review as real_discovery
+    from tests.unit.test_353_execution_source import bundle_file
+
+    original_build = EnvCacheService._build_manifest_artifacts
+    async def build_with_source(self, **kwargs):
+        github = kwargs['github_service']
+        provider = getattr(github, 'prepare_execution_source', None)
+        if provider is None or isinstance(provider, Mock):
+            async def source(owner, repo, *, commit, destination, deadline):
+                destination.mkdir(parents=True)
+                # The pinned bundle must list exactly the paths the provider reports.
+                provider = getattr(github, 'get_repository_paths', None)
+                listed = getattr(provider, 'return_value', None)
+                paths = listed if isinstance(listed, list) and listed else ['tools.plan']
+                if isinstance(provider, Mock) and listed is not paths:
+                    provider.return_value = paths
+                payload, identity = bundle_file(destination, dict.fromkeys(paths, (b'baseline', '100644')), commit=commit)
+                return ExecutionSourceBundle(ExecutionSourceIdentity.model_validate(identity), payload,
+                    hashlib.sha256(payload.read_bytes()).hexdigest(), payload.stat().st_size)
+            github.prepare_execution_source = source
+        return await original_build(self, **kwargs)
+    monkeypatch.setattr(EnvCacheService, '_build_manifest_artifacts', build_with_source)
+
+    async def inspect_image(image):
+        return image, "linux/x86_64"
+
+    monkeypatch.setattr("coordinare.services.environment_capabilities._docker_identity", inspect_image)
     monkeypatch.setattr("coordinare.services.environment_discovery.discover_and_review", discover)
     return real_discovery
 
@@ -816,6 +860,7 @@ class TestOnBootstrapComplete:
         )
         _seed_toolchain(tmp_path)
         state = {"env_cache": {"sym": cache_state}}
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.bootstrap_in_flight is False
         assert cache_state.last_bootstrap_succeeded is True
@@ -837,6 +882,7 @@ class TestOnBootstrapComplete:
         assert cache_state.last_bootstrap_error == "verify failed: chromium missing"
         # A later success clears the error.
         _seed_toolchain(tmp_path)
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.last_bootstrap_succeeded is True
         assert cache_state.last_bootstrap_error is None
@@ -852,6 +898,7 @@ class TestOnBootstrapComplete:
             pending_sha="sha2",
         )
         state = {"env_cache": {"sym": cache_state}}
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.readme_sha is None
         assert cache_state.pending_sha is None
@@ -867,6 +914,7 @@ class TestOnBootstrapComplete:
             pending_sha="sha1",
         )
         state = {"env_cache": {"sym": cache_state}}
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
         # Same SHA — no forced recheck needed
         assert cache_state.readme_sha == "sha1"
@@ -904,11 +952,12 @@ class TestOnBootstrapComplete:
         )
         _seed_toolchain(tmp_path)
         state = {"env_cache": {"sym": cache_state}}
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.last_bootstrap_succeeded is True
         assert cache_state.readme_sha == "sha1"
 
-    def test_empty_mount_downgrades_reported_success(self, tmp_path: Path) -> None:
+    def test_seed_only_mount_without_clean_execution_downgrades_reported_success(self, tmp_path: Path) -> None:
         """092: a bootstrap that reports success but leaves the mount holding
         only the coordinare-seeded files (or nothing) installed the toolchain in
         the wrong location. The success is downgraded to failure LOUDLY so the
@@ -929,12 +978,13 @@ class TestOnBootstrapComplete:
         )
         state = {"env_cache": {"sym": cache_state}}
         _accept(cache_state, nonempty=True)
+        cache_state.environment_verification = None
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.last_bootstrap_succeeded is False
         assert cache_state.cache_dir_ready is False
         assert cache_state.bootstrap_attempts == 1
         assert cache_state.last_bootstrap_error is not None
-        assert "wrong location" in cache_state.last_bootstrap_error
+        assert "required clean consumer execution" in cache_state.last_bootstrap_error
 
     def test_marks_cache_ready_only_on_success(self, tmp_path: Path) -> None:
         """061: cache_dir_ready must flip True only after a successful bootstrap.
@@ -952,6 +1002,7 @@ class TestOnBootstrapComplete:
         )
         _seed_toolchain(tmp_path)
         state = {"env_cache": {"sym": cache_state}}
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.cache_dir_ready is True
 
@@ -2056,7 +2107,7 @@ def test_env_bootstrap_persona_preserves_declared_install_contract() -> None:
     persona = payload.persona.lower()
     assert "declared install actions" in persona
     assert "install in place" in persona
-    assert "/devenv/website" in persona
+    assert "/devenv/sampleweb" in persona
     assert "do not infer a different toolchain" in persona
     assert "required failure or unrun check cannot be waived" in persona
     assert "read-only at the same absolute path" in persona
@@ -2078,9 +2129,9 @@ def test_env_bootstrap_persona_defers_activation_when_coordinare_owns_it() -> No
 
 def _bootstrap_card_context(**extra) -> dict:
     ctx = {
-        "symphony_org": "ViviDynamics",
-        "symphony_repo": "website",
-        "cache_mount_path": "/devenv/website",
+        "symphony_org": "ExampleOrg",
+        "symphony_repo": "sampleweb",
+        "cache_mount_path": "/devenv/sampleweb",
         "env_spec_files": ["README.md"],
         "env_spec_contents": {"README.md": "Install Ruby 3.4.2 and Chrome."},
         "backend": "opencode",
@@ -2101,7 +2152,7 @@ class TestManifestArtifacts:
 
         svc = EnvCacheService(_configured(MagicMock()))
         cache_dir = tmp_path / "cache"
-        cache_state = EnvCacheState(symphony_name="sym", sanitised_name="sym-abc",
+        cache_state = EnvCacheState(symphony_name="sym", sanitised_name="sym",
             cache_dir=cache_dir, bootstrap_commit_sha=_head("same_sha"))
         metadata = reviewed_metadata(source_commit=cache_state.bootstrap_commit_sha,
             checks=[{"id": "baseline", "argv": ["zog", "--check", "7"]}],
@@ -2139,7 +2190,7 @@ class TestManifestArtifacts:
 
         svc = EnvCacheService(_configured(MagicMock()))
         cache_dir = tmp_path / "cache"
-        cache_state = EnvCacheState(symphony_name="sym", sanitised_name="sym-abc",
+        cache_state = EnvCacheState(symphony_name="sym", sanitised_name="sym",
             cache_dir=cache_dir, bootstrap_commit_sha=_head("same_sha"))
         monkeypatch.setattr("coordinare.services.environment_discovery.discover_and_review",
             _accepted_discovery)
@@ -2259,6 +2310,7 @@ class TestBootstrapCircuitBreaker:
         )
         _seed_toolchain(tmp_path)
         state = {"env_cache": {"sym": cache_state}}
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.bootstrap_attempts == 0
         assert cache_state.bootstrap_exhausted is False
@@ -2561,6 +2613,7 @@ class TestRestartHonorPath:
         svc = self._make_service()
         cache_state = self._make_cache_state(tmp_path, last_bootstrap_succeeded=None)
         state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        record_verified_cache_fixture(state["env_cache"]["sym"])
         svc.on_bootstrap_complete("sym", True, state)
 
         dispatch_fn = AsyncMock()
@@ -2607,7 +2660,7 @@ class TestWriteServiceScripts:
         pg = ServiceEntry(
             name="postgres", binary="postgres", version=None, data_dir="/tmp/pg",
             port=45432, why_needed="db", sources=["config/database.yml"], kind="postgres",
-            init=ServiceInit(superuser="systemuser", databases=["website_test"],
+            init=ServiceInit(superuser="systemuser", databases=["sampleweb_test"],
                              password_env_var="POSTGRESQL_PASSWORD"),
         )
         redis = ServiceEntry(
@@ -2618,7 +2671,7 @@ class TestWriteServiceScripts:
         return [pg, redis]
 
     def test_writes_start_stop_health_scripts(self, tmp_path: Path) -> None:
-        ok = write_service_scripts(tmp_path, self._pg_redis_models(), symphony="website", performer_mounts=())
+        ok = write_service_scripts(tmp_path, self._pg_redis_models(), symphony="sampleweb", performer_mounts=())
         assert ok is True
         svc = tmp_path / "services"
         for name in ("services-start.sh", "services-stop.sh", "services-health.sh"):
@@ -2636,7 +2689,7 @@ class TestWriteServiceScripts:
         # suffix via load_prior_manifest). A second coordinare writer with a different
         # agent_version/cache_inputs made the suffix oscillate → the dispatch gate
         # held every card forever (readme_sha != last_seen_spec_sha).
-        write_service_scripts(tmp_path, self._pg_redis_models(), symphony="website", performer_mounts=())
+        write_service_scripts(tmp_path, self._pg_redis_models(), symphony="sampleweb", performer_mounts=())
         assert not (tmp_path / "services" / "services.json").exists()
         assert (tmp_path / "services" / "services-start.sh").is_file()
 

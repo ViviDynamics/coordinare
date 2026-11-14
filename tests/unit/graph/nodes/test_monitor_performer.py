@@ -938,7 +938,7 @@ async def test_workflow_permission_push_error_obeys_feedback_cycle_limit() -> No
             "status": "IN_PROGRESS",
             "title": "Copy code button",
             "issue_number": 89,
-            "pr_url": "https://github.com/ViviDynamics/website/pull/98",
+            "pr_url": "https://github.com/ExampleOrg/sampleweb/pull/98",
         },
     )
     state["config"] = SimpleNamespace(max_feedback_cycles=1)
@@ -3204,7 +3204,7 @@ async def test_stall_watchdog_trips_on_repeated_identical_output() -> None:
 
 @pytest.mark.asyncio
 async def test_stall_watchdog_trips_on_rotating_delta_cycle() -> None:
-    """327 regression (website #160): the model looped on a short cycle
+    """327 regression (sampleweb #160): the model looped on a short cycle
     delivered as token deltas. Every poll saw a different ROTATION of the same
     repeating text, so the old last-3-events fingerprint changed and reset the
     timer -- measured live, on 3 of 5 consecutive polls. ~50 minutes burned in
@@ -3781,7 +3781,7 @@ async def test_multi_concern_stays_implementing_when_no_assessing_stage() -> Non
 
 @pytest.mark.asyncio
 async def test_a_performer_that_keeps_working_is_not_killed_by_the_dispatch_clock() -> None:
-    """Measured 2026-09-12: a healthy website run went 14 minutes without a
+    """Measured 2026-09-12: a healthy sampleweb run went 14 minutes without a
     single event (a whole-suite run plus two model calls, CPU 0.67%) and had
     produced 49 tool_use in its window. Anchored on dispatch, the ceiling ends
     that run regardless of the work landing minutes earlier."""

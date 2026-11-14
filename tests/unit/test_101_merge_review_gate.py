@@ -30,11 +30,11 @@ _NOT_FOUND = 404
 _FORBIDDEN = 403
 _CLASSIC = "classic"
 _RULES = "rules"
-_ELM_RULESET = "14616733"
+_SAMPLEDB_RULESET = "14616733"
 
-# Elm's main ruleset, as GitHub returned it (read-only GET, 2026-10-15). A solo author can never
+# SampleDatabase's main ruleset, as GitHub returned it (read-only GET, 2026-10-15). A solo author can never
 # satisfy it: no approving review is required, but the last push must be approved.
-_ELM_RULES: list[dict[str, Any]] = [
+_SAMPLEDB_RULES: list[dict[str, Any]] = [
     {"type": "deletion", "ruleset_id": 14616733},
     {"type": "non_fast_forward", "ruleset_id": 14616733},
     {"type": "pull_request", "parameters": {
@@ -52,7 +52,7 @@ _ELM_RULES: list[dict[str, Any]] = [
     {"type": "update", "ruleset_id": 14616733},
     {"type": "creation", "ruleset_id": 14616733},
 ]
-_ELM_DETAIL: dict[str, Any] = {
+_SAMPLEDB_DETAIL: dict[str, Any] = {
     "id": 14616733,
     "enforcement": "active",
     "bypass_actors": [
@@ -112,7 +112,7 @@ def test_classic_code_owner_review_requires_a_review() -> None:
 
 
 def test_last_push_approval_alone_requires_a_review() -> None:
-    """Elm's ruleset: count 0, and the last push must be approved. That still needs an outside approver."""
+    """SampleDatabase's ruleset: count 0, and the last push must be approved. That still needs an outside approver."""
     requirement = gate.parse_classic_protection(_classic(0, last_push=True)[1])
     assert requirement.last_push_approval and requirement.approving_reviews == 0
     assert requirement.requires_review
@@ -135,7 +135,7 @@ def test_ruleset_without_a_pull_request_rule_requires_nothing() -> None:
 
 
 def test_ruleset_ids_are_the_distinct_ids_of_the_pull_request_rules() -> None:
-    assert gate.ruleset_ids(_ELM_RULES) == [_ELM_RULESET]
+    assert gate.ruleset_ids(_SAMPLEDB_RULES) == [_SAMPLEDB_RULESET]
     assert gate.ruleset_ids({"message": "not a list"}) == []
 
 
@@ -144,15 +144,15 @@ def test_ruleset_payload_that_is_not_a_list_is_rejected() -> None:
         gate.scope_rules({"message": "unexpected"}, {}, _APP_ID)
 
 
-# --- elm: the exact payload that motivated the gate ----------------------------- #
+# --- sampledb: the exact payload that motivated the gate ----------------------------- #
 
 
-def test_elm_main_ruleset_requires_a_review_from_someone_else() -> None:
-    """Elm's live ruleset, with its detail read: the daemon cannot satisfy it, so the trap is external."""
+def test_sampledb_main_ruleset_requires_a_review_from_someone_else() -> None:
+    """SampleDatabase's live ruleset, with its detail read: the daemon cannot satisfy it, so the trap is external."""
     sources = {
         _CLASSIC: (_NOT_FOUND, None),
-        _RULES: (_OK, _ELM_RULES),
-        gate.ruleset_source_key(_ELM_RULESET): (_OK, _ELM_DETAIL),
+        _RULES: (_OK, _SAMPLEDB_RULES),
+        gate.ruleset_source_key(_SAMPLEDB_RULESET): (_OK, _SAMPLEDB_DETAIL),
     }
     reading = gate.read_protection(sources, _APP_ID)
     assert reading.requirement.last_push_approval and reading.requirement.requires_review
@@ -162,15 +162,15 @@ def test_elm_main_ruleset_requires_a_review_from_someone_else() -> None:
     assert message.startswith("Merges need an approving review from someone other than vivi-coordinare.")
 
 
-def test_elm_main_ruleset_with_its_detail_unreadable_is_still_external_and_noted() -> None:
+def test_sampledb_main_ruleset_with_its_detail_unreadable_is_still_external_and_noted() -> None:
     sources = {
         _CLASSIC: (_NOT_FOUND, None),
-        _RULES: (_OK, _ELM_RULES),
-        gate.ruleset_source_key(_ELM_RULESET): (_FORBIDDEN, None),
+        _RULES: (_OK, _SAMPLEDB_RULES),
+        gate.ruleset_source_key(_SAMPLEDB_RULESET): (_FORBIDDEN, None),
     }
     reading = gate.read_protection(sources, _APP_ID)
     assert gate.judge(reading, _APP, "main")[0] == gate.GATE_EXTERNAL
-    assert reading.unverified == (_ELM_RULESET,)
+    assert reading.unverified == (_SAMPLEDB_RULESET,)
 
 
 # --- enforcement and bypass ----------------------------------------------------- #
@@ -251,14 +251,14 @@ def test_classic_app_bypass_without_a_known_app_id_is_not_matched() -> None:
 
 @pytest.mark.asyncio
 async def test_an_unverified_ruleset_is_named_in_the_activity_entry() -> None:
-    sym = SymphonyRuntimeState(name="garden")
-    github = _Github((_NOT_FOUND, None), (_OK, _ELM_RULES))
-    github.sources[gate.ruleset_source_key(_ELM_RULESET)] = (_FORBIDDEN, None)
+    sym = SymphonyRuntimeState(name="samplehost")
+    github = _Github((_NOT_FOUND, None), (_OK, _SAMPLEDB_RULES))
+    github.sources[gate.ruleset_source_key(_SAMPLEDB_RULESET)] = (_FORBIDDEN, None)
     log = ActivityLog()
-    probe = gate.ReviewProbe(symphony="garden", branch="main", github=github, notification_service=None, activity=log)
+    probe = gate.ReviewProbe(symphony="samplehost", branch="main", github=github, notification_service=None, activity=log)
     await gate.refresh_merge_review(sym, probe, now=1000.0)
     (entry,) = log.snapshot()
-    assert entry["text"].endswith(f"Rulesets kept without being verified: {_ELM_RULESET}.")
+    assert entry["text"].endswith(f"Rulesets kept without being verified: {_SAMPLEDB_RULESET}.")
 
 
 def test_another_app_as_a_bypass_actor_does_not_clear_the_condition() -> None:
@@ -403,7 +403,7 @@ def _facts(decision: str = "", merge_state: str = "BLOCKED", author: str = "vivi
         (_facts("REVIEW_REQUIRED", merge_state="CLEAN"), None, False),
         (_facts("APPROVED"), None, False),
         (_facts("REVIEW_REQUIRED", author=""), None, False),
-        # Elm: an empty reviewDecision on a BLOCKED daemon PR, tagged by the symphony condition.
+        # SampleDatabase: an empty reviewDecision on a BLOCKED daemon PR, tagged by the symphony condition.
         (_facts(""), gate.GATE_EXTERNAL, True),
         (_facts("", checks=""), gate.GATE_EXTERNAL, True),
         (_facts("", author="jason"), gate.GATE_EXTERNAL, False),
@@ -479,30 +479,30 @@ class _BrokenGithub:
 
 async def _refresh(sym: SymphonyRuntimeState, github: Any, notifier: _Notifier, log: ActivityLog, now: float) -> None:
     probe = gate.ReviewProbe(
-        symphony="garden", branch="main", github=github, notification_service=notifier, activity=log,
+        symphony="samplehost", branch="main", github=github, notification_service=notifier, activity=log,
     )
     await gate.refresh_merge_review(sym, probe, now=now)
 
 
 @pytest.mark.asyncio
 async def test_startup_surfaces_the_trap_once_with_a_warning_and_an_activity_entry() -> None:
-    sym = SymphonyRuntimeState(name="garden")
+    sym = SymphonyRuntimeState(name="samplehost")
     github, notifier, log = _Github(_classic(1), (_OK, [])), _Notifier(), ActivityLog()
     await _refresh(sym, github, notifier, log, now=1000.0)
     assert sym.merge_review is not None and sym.merge_review["state"] == gate.GATE_EXTERNAL
     (event,) = notifier.events
     assert event.event_type.value == "merge_review_required"
     assert event.severity.value == "warning"
-    assert event.dedup_key == "merge_review_required:garden"
-    assert event.payload["symphony"] == "garden" and event.payload["branch"] == "main"
+    assert event.dedup_key == "merge_review_required:samplehost"
+    assert event.payload["symphony"] == "samplehost" and event.payload["branch"] == "main"
     assert [entry["text"] for entry in log.snapshot()] == [sym.merge_review["message"]]
 
 
 @pytest.mark.asyncio
-async def test_elm_shaped_repository_surfaces_the_trap_at_startup() -> None:
-    sym = SymphonyRuntimeState(name="elm")
-    github = _Github((_NOT_FOUND, None), (_OK, _ELM_RULES))
-    github.sources[gate.ruleset_source_key(_ELM_RULESET)] = (_OK, _ELM_DETAIL)
+async def test_sampledb_shaped_repository_surfaces_the_trap_at_startup() -> None:
+    sym = SymphonyRuntimeState(name="sampledb")
+    github = _Github((_NOT_FOUND, None), (_OK, _SAMPLEDB_RULES))
+    github.sources[gate.ruleset_source_key(_SAMPLEDB_RULESET)] = (_OK, _SAMPLEDB_DETAIL)
     notifier, log = _Notifier(), ActivityLog()
     await _refresh(sym, github, notifier, log, now=1000.0)
     assert sym.merge_review is not None and sym.merge_review["state"] == gate.GATE_EXTERNAL
@@ -511,7 +511,7 @@ async def test_elm_shaped_repository_surfaces_the_trap_at_startup() -> None:
 
 @pytest.mark.asyncio
 async def test_reads_are_not_repeated_within_the_recheck_window() -> None:
-    sym = SymphonyRuntimeState(name="garden")
+    sym = SymphonyRuntimeState(name="samplehost")
     github, notifier, log = _Github(_classic(1), (_OK, [])), _Notifier(), ActivityLog()
     await _refresh(sym, github, notifier, log, now=1000.0)
     await _refresh(sym, github, notifier, log, now=1000.0 + gate.RECHECK_SECONDS - 1)
@@ -520,7 +520,7 @@ async def test_reads_are_not_repeated_within_the_recheck_window() -> None:
 
 @pytest.mark.asyncio
 async def test_an_unchanged_condition_is_not_reported_again_after_the_window() -> None:
-    sym = SymphonyRuntimeState(name="garden")
+    sym = SymphonyRuntimeState(name="samplehost")
     github, notifier, log = _Github(_classic(1), (_OK, [])), _Notifier(), ActivityLog()
     await _refresh(sym, github, notifier, log, now=1000.0)
     await _refresh(sym, github, notifier, log, now=1000.0 + gate.RECHECK_SECONDS)
@@ -531,7 +531,7 @@ async def test_an_unchanged_condition_is_not_reported_again_after_the_window() -
 
 @pytest.mark.asyncio
 async def test_clearing_the_condition_is_logged_but_not_paged() -> None:
-    sym = SymphonyRuntimeState(name="garden")
+    sym = SymphonyRuntimeState(name="samplehost")
     github, notifier, log = _Github(_classic(1), (_OK, [])), _Notifier(), ActivityLog()
     await _refresh(sym, github, notifier, log, now=1000.0)
     github.sources = _sources((_NOT_FOUND, None), (_OK, []))
@@ -543,9 +543,9 @@ async def test_clearing_the_condition_is_logged_but_not_paged() -> None:
 
 @pytest.mark.asyncio
 async def test_a_bypassed_trap_is_noted_once_and_never_paged() -> None:
-    sym = SymphonyRuntimeState(name="garden")
-    github = _Github((_NOT_FOUND, None), (_OK, _ELM_RULES))
-    github.sources[gate.ruleset_source_key(_ELM_RULESET)] = (
+    sym = SymphonyRuntimeState(name="samplehost")
+    github = _Github((_NOT_FOUND, None), (_OK, _SAMPLEDB_RULES))
+    github.sources[gate.ruleset_source_key(_SAMPLEDB_RULESET)] = (
         _OK, {"enforcement": "active", "bypass_actors": [_integration(_APP_ID)]},
     )
     notifier, log = _Notifier(), ActivityLog()
@@ -557,7 +557,7 @@ async def test_a_bypassed_trap_is_noted_once_and_never_paged() -> None:
 
 @pytest.mark.asyncio
 async def test_a_clear_repository_is_silent() -> None:
-    sym = SymphonyRuntimeState(name="garden")
+    sym = SymphonyRuntimeState(name="samplehost")
     github, notifier, log = _Github((_NOT_FOUND, None), (_OK, [])), _Notifier(), ActivityLog()
     await _refresh(sym, github, notifier, log, now=1000.0)
     assert notifier.events == [] and log.snapshot() == []
@@ -565,7 +565,7 @@ async def test_a_clear_repository_is_silent() -> None:
 
 @pytest.mark.asyncio
 async def test_a_failed_read_degrades_to_unreadable_and_never_raises() -> None:
-    sym = SymphonyRuntimeState(name="garden")
+    sym = SymphonyRuntimeState(name="samplehost")
     notifier, log = _Notifier(), ActivityLog()
     await _refresh(sym, _BrokenGithub(), notifier, log, now=1000.0)
     assert sym.merge_review is not None and sym.merge_review["state"] == gate.GATE_UNREADABLE
@@ -580,9 +580,9 @@ async def test_a_notifier_that_raises_does_not_break_the_condition() -> None:
             msg = "smtp down"
             raise RuntimeError(msg)
 
-    sym = SymphonyRuntimeState(name="garden")
+    sym = SymphonyRuntimeState(name="samplehost")
     probe = gate.ReviewProbe(
-        symphony="garden", branch="main", github=_Github(_classic(1), (_OK, [])),
+        symphony="samplehost", branch="main", github=_Github(_classic(1), (_OK, [])),
         notification_service=_Broken(), activity=ActivityLog(),
     )
     await gate.refresh_merge_review(sym, probe, now=1000.0)
@@ -591,9 +591,9 @@ async def test_a_notifier_that_raises_does_not_break_the_condition() -> None:
 
 @pytest.mark.asyncio
 async def test_missing_notifier_and_activity_log_still_record_the_condition() -> None:
-    sym = SymphonyRuntimeState(name="garden")
+    sym = SymphonyRuntimeState(name="samplehost")
     probe = gate.ReviewProbe(
-        symphony="garden", branch="main", github=_Github(_classic(1), (_OK, [])),
+        symphony="samplehost", branch="main", github=_Github(_classic(1), (_OK, [])),
         notification_service=None, activity=None,
     )
     await gate.refresh_merge_review(sym, probe, now=1000.0)
@@ -604,7 +604,7 @@ async def test_missing_notifier_and_activity_log_still_record_the_condition() ->
 
 
 def _service(**kwargs: Any) -> GitHubService:
-    return GitHubService(org="ViviDynamics", project_number=1, token="t", retry_kwargs={"attempts": 1}, **kwargs)
+    return GitHubService(org="ExampleOrg", project_number=1, token="t", retry_kwargs={"attempts": 1}, **kwargs)
 
 
 def _mock_http(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
@@ -624,19 +624,19 @@ async def test_rest_read_asks_for_both_sources_and_each_named_ruleset(monkeypatc
         if request.url.path.endswith("/protection"):
             return httpx.Response(_NOT_FOUND, json={"message": "Branch not protected"})
         if request.url.path.endswith("/rulesets/14616733"):
-            return httpx.Response(_OK, json=_ELM_DETAIL)
-        return httpx.Response(_OK, json=_ELM_RULES)
+            return httpx.Response(_OK, json=_SAMPLEDB_DETAIL)
+        return httpx.Response(_OK, json=_SAMPLEDB_RULES)
 
     _mock_http(monkeypatch, handler)
     service = _service()
-    service._project_name = "elm"
+    service._project_name = "sampledb"
     sources = await service.get_branch_protection_sources("main")
     assert sources[_CLASSIC][0] == _NOT_FOUND and sources[_RULES][0] == _OK
-    assert sources[gate.ruleset_source_key(_ELM_RULESET)] == (_OK, _ELM_DETAIL)
+    assert sources[gate.ruleset_source_key(_SAMPLEDB_RULESET)] == (_OK, _SAMPLEDB_DETAIL)
     assert seen == [
-        "/repos/ViviDynamics/elm/rules/branches/main",
-        "/repos/ViviDynamics/elm/branches/main/protection",
-        "/repos/ViviDynamics/elm/rulesets/14616733",
+        "/repos/ExampleOrg/sampledb/rules/branches/main",
+        "/repos/ExampleOrg/sampledb/branches/main/protection",
+        "/repos/ExampleOrg/sampledb/rulesets/14616733",
     ]
     assert gate.read_protection(sources, _APP_ID).requirement.requires_review
 
@@ -648,7 +648,7 @@ async def test_rest_read_reports_a_forbidden_source_without_raising(monkeypatch:
 
     _mock_http(monkeypatch, handler)
     service = _service()
-    service._project_name = "garden"
+    service._project_name = "samplehost"
     sources = await service.get_branch_protection_sources("main")
     assert sources[_CLASSIC][0] == _FORBIDDEN and sources[_RULES][0] == _FORBIDDEN
     assert gate.read_protection(sources, _APP_ID).unreadable == (_CLASSIC, _RULES)
@@ -667,7 +667,7 @@ async def test_rest_read_of_a_server_error_gives_up_as_unreadable(monkeypatch: p
 
     _mock_http(monkeypatch, handler)
     service = _service()
-    service._project_name = "garden"
+    service._project_name = "samplehost"
     sources = await service.get_branch_protection_sources("main")
     assert sources == {_CLASSIC: (0, None), _RULES: (0, None)}
 
@@ -725,7 +725,7 @@ async def test_daemon_authored_blocked_pr_is_waiting_on_external_review() -> Non
 
 
 @pytest.mark.asyncio
-async def test_elm_shaped_blocked_pr_with_an_empty_review_decision_is_tagged_by_the_condition() -> None:
+async def test_sampledb_shaped_blocked_pr_with_an_empty_review_decision_is_tagged_by_the_condition() -> None:
     state = _pr_state(
         _PrGithub(decision="", merge_state="BLOCKED", author="vivi-coordinare"),
         condition=gate.GATE_EXTERNAL,
@@ -768,12 +768,12 @@ async def test_a_daemon_pr_that_is_clean_is_not_called_external() -> None:
 @pytest.mark.asyncio
 async def test_a_disabled_symphony_is_not_checked() -> None:
     github = _Github(_classic(1), (_OK, []))
-    sym = SymphonyRuntimeState(name="garden")
+    sym = SymphonyRuntimeState(name="samplehost")
     fake_daemon = SimpleNamespace(_state={"github_service": github, "notification_service": None,
                                           "activity_log": None})
-    await Daemon._refresh_merge_review(fake_daemon, "garden", sym, SimpleNamespace(enabled=False))
+    await Daemon._refresh_merge_review(fake_daemon, "samplehost", sym, SimpleNamespace(enabled=False))
     assert github.reads == 0 and sym.merge_review is None
-    await Daemon._refresh_merge_review(fake_daemon, "garden", sym, SimpleNamespace(enabled=True))
+    await Daemon._refresh_merge_review(fake_daemon, "samplehost", sym, SimpleNamespace(enabled=True))
     assert github.reads == 1 and sym.merge_review is not None
 
 
@@ -804,13 +804,13 @@ def test_099_reader_preserves_dismissal_and_extra_approval_rules(parser: Any, pa
 
 @pytest.mark.asyncio
 async def test_099_refresh_mirrors_cached_rules_without_another_read() -> None:
-    sym = SymphonyRuntimeState(name="garden")
+    sym = SymphonyRuntimeState(name="samplehost")
     github = _Github((_OK, {"required_pull_request_reviews": {"dismiss_stale_reviews": True}}), (_OK, []))
     state = initial_state()
     state["github_service"] = github
     daemon = SimpleNamespace(_state=state)
-    await Daemon._refresh_merge_review(daemon, "garden", sym, SimpleNamespace(enabled=True))
-    await Daemon._refresh_merge_review(daemon, "garden", sym, SimpleNamespace(enabled=True))
+    await Daemon._refresh_merge_review(daemon, "samplehost", sym, SimpleNamespace(enabled=True))
+    await Daemon._refresh_merge_review(daemon, "samplehost", sym, SimpleNamespace(enabled=True))
     assert github.reads == 1
     assert state["merge_review_rules"]["dismiss_stale_reviews_on_push"]
 
@@ -818,13 +818,13 @@ async def test_099_refresh_mirrors_cached_rules_without_another_read() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("classic", [True, False])
 async def test_099_merge_allowance_does_not_hide_review_dismissal_on_push(classic: bool) -> None:
-    sym = SymphonyRuntimeState(name="garden")
+    sym = SymphonyRuntimeState(name="samplehost")
     if classic:
         protection = _classic_with_app_bypass()
         protection[1]["required_pull_request_reviews"]["dismiss_stale_reviews"] = True
         github = _Github(protection, (_OK, []))
     else:
-        github = _Github((_NOT_FOUND, None), (_OK, _ELM_RULES))
-        github.sources[gate.ruleset_source_key(_ELM_RULESET)] = _detail("active", [_integration(_APP_ID)])
+        github = _Github((_NOT_FOUND, None), (_OK, _SAMPLEDB_RULES))
+        github.sources[gate.ruleset_source_key(_SAMPLEDB_RULESET)] = _detail("active", [_integration(_APP_ID)])
     await _refresh(sym, github, _Notifier(), ActivityLog(), now=1000.0)
     assert sym.merge_review_rules["dismiss_stale_reviews_on_push"]

@@ -32,6 +32,7 @@ from coordinare.services.kubernetes_verifier import (
     VERIFIER_SCRIPT,
     VerifierSpec,
     build_verifier_pod_manifest,
+    build_verifier_source_secrets,
     check_project_files,
     verifier_pod_name,
 )
@@ -39,7 +40,7 @@ from tests.unit.env_manifest_fixture import reviewed_metadata, verification_outp
 
 CLAIM = "coordinare-devenv-cache"
 NAMESPACE = "coordinare-performers"
-MOUNT = "/devenv/dettmore-platform-615891"
+MOUNT = "/devenv/sampleapp-platform-615891"
 PROJECT = {"Gemfile": "source 'https://rubygems.org'\n", ".ruby-version": "3.4.2\n"}
 
 
@@ -47,12 +48,13 @@ def _manifest(**overrides: Any) -> dict[str, Any]:
     fields: dict[str, Any] = {
         "image": "coordinare-performer:full",
         "cache_claim": CLAIM,
-        "cache_subpath": "dettmore-platform-615891",
+        "cache_subpath": "sampleapp-platform-615891",
         "mount_path": MOUNT,
         "verify_text": "exit 0\n",
         "project_files": PROJECT,
     }
     fields.update(overrides)
+    fields["source_inputs"] = {path: hashlib.sha256(text.encode()).hexdigest() for path, text in fields["project_files"].items()}
     return build_verifier_pod_manifest(
         VerifierSpec(**fields), name="coordinare-verify-x-abc12345", namespace=NAMESPACE,
     )
@@ -67,7 +69,7 @@ def test_the_claim_is_mounted_read_only_at_the_consumer_path_from_the_symphony_s
     manifest = _manifest()
     mount = _container(manifest)["volumeMounts"][0]
     assert mount == {
-        "name": "devenv-cache", "mountPath": MOUNT, "subPath": "dettmore-platform-615891", "readOnly": True,
+        "name": "devenv-cache", "mountPath": MOUNT, "subPath": "sampleapp-platform-615891", "readOnly": True,
     }
     claim = manifest["spec"]["volumes"][0]["persistentVolumeClaim"]
     assert claim == {"claimName": CLAIM, "readOnly": True}
@@ -76,12 +78,13 @@ def test_the_claim_is_mounted_read_only_at_the_consumer_path_from_the_symphony_s
 def test_the_pod_has_no_checkout_no_credentials_and_no_stdin() -> None:
     manifest = _manifest()
     spec = manifest["spec"]
-    assert len(spec["volumes"]) == 2, "read-only claim and scratch only"
+    assert len(spec["volumes"]) == 3, "read-only claim, scratch, and init-only source projection"
+    assert all(mount["name"] != "source-payload" for mount in _container(manifest)["volumeMounts"])
     assert spec["automountServiceAccountToken"] is False
     assert _container(manifest)["stdin"] is False
     env_names = {e["name"] for e in _container(manifest)["env"]}
     assert env_names == {
-        "DEVENV", "HOME", "VERIFY_B64", "PROJECT_FILES_B64", "SETUP_PY", "WALK_SETUP_PY", "PROVENANCE_CONFIG", "WALK_ONLY",
+        "DEVENV", "HOME", "VERIFY_B64", "SOURCE_REPO", "BASH_ENV", "ENV", "_DEVENV_SOURCED", "_DEVENV_SKIP_SERVICES", "SETUP_PY", "WALK_SETUP_PY", "PROVENANCE_CONFIG", "WALK_ONLY",
         "WALK_DIAGNOSTICS_PY", "WALK_DIAGNOSTIC_PREFIX", "WALK_DIAGNOSTIC_MAX_BYTES",
     }
     assert "GITHUB_TOKEN" not in env_names
@@ -100,7 +103,7 @@ def test_the_verify_runs_with_stdin_closed_from_a_file() -> None:
 
 
 def test_the_pod_name_is_a_bounded_dns_label() -> None:
-    name = verifier_pod_name("Dettmore_Platform " * 20)
+    name = verifier_pod_name("SampleApp_Platform " * 20)
     assert len(name) <= 63
     assert name == name.lower()
     assert name.startswith("coordinare-verify-")
@@ -121,8 +124,8 @@ def test_project_files_are_bounded_in_bytes() -> None:
 
 # --- the in-pod setup, run for real ----------------------------------------------------------------------------------
 def _layout(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """Garden's layout: a vendored Gemfile at the cache root, a relative BUNDLE_PATH, and a checkout elsewhere."""
-    cache = tmp_path / "devenv" / "dettmore-platform-615891"
+    """SampleHost's layout: a vendored Gemfile at the cache root, a relative BUNDLE_PATH, and a checkout elsewhere."""
+    cache = tmp_path / "devenv" / "sampleapp-platform-615891"
     (cache / "project" / "bundle").mkdir(parents=True)
     (cache / ".bundle").mkdir(parents=True)
     (cache / ".bundle" / "config").write_text('BUNDLE_PATH: "project/bundle"\n')
@@ -139,6 +142,23 @@ def _run_in_pod(manifest: dict[str, Any], cwd: Path, extra_env: dict[str, str] |
     env = {"PATH": os.environ["PATH"], "HOME": str(cwd)}
     env.update({e["name"]: e["value"] for e in _container(manifest)["env"]})
     env.update(extra_env or {})
+    if manifest["spec"].get("initContainers"):
+        payload_dir = cwd / "source-payload"
+        payload_dir.mkdir()
+        inputs = {path: hashlib.sha256(text.encode()).hexdigest() for path, text in PROJECT.items()}
+        source_spec = VerifierSpec(image="trusted", cache_claim=CLAIM, cache_subpath="sym", mount_path=MOUNT,
+            verify_text="", project_files=PROJECT, source_inputs=inputs)
+        for secret in build_verifier_source_secrets(source_spec, name="test", namespace="ns", owner="owner", pod_uid="uid"):
+            for name, encoded in secret["data"].items():
+                (payload_dir / name).write_bytes(base64.b64decode(encoded))
+        import sys
+
+        repo = cwd / "repo"
+        initialized = subprocess.run([sys.executable, "-I", "-m", "coordinare_service_inference.environment.source_payload",
+            str(payload_dir), str(repo)], env=env, cwd=cwd, capture_output=True, text=True, check=False, timeout=10)
+        if initialized.returncode:
+            return initialized
+        env["SOURCE_REPO"] = str(repo)
     return subprocess.run(
         ["bash", "-c", _container(manifest)["command"][2]],
         env=env, cwd=cwd, capture_output=True, text=True, check=False, timeout=60,
@@ -183,15 +203,15 @@ def test_a_child_reading_stdin_cannot_swallow_the_verify(tmp_path: Path) -> None
     assert result.returncode == 1, result.stdout + result.stderr
 
 
-def test_a_refused_project_path_stops_the_setup_before_the_verify(tmp_path: Path) -> None:
+def test_legacy_source_environment_cannot_override_verified_payload(tmp_path: Path) -> None:
     cache, _checkout, other = _layout(tmp_path)
     bad = _manifest(mount_path=str(cache), verify_text="exit 0\n", project_files={"Gemfile": "x"})
-    # Replace the project value the setup reads with a traversal, and check the setup refuses it.
+    # Legacy environment data is ignored; only the independently bound mounted source is used.
     hostile = base64.b64encode(json.dumps({"../escape": "x"}).encode()).decode()
     result = _run_in_pod(bad, other, extra_env={"PROJECT_FILES_B64": hostile})
 
-    assert result.returncode != 0
-    assert "refused project path" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert not (other.parent / "escape").exists()
 
 
 # --- the runner -------------------------------------------------------------------------------------------------------
@@ -202,11 +222,25 @@ class _FakeCoreV1:
         self.deleted: list[str] = []
         self.fail_create = fail_create
         self.fail_read = fail_read
+        self.source_secrets: dict[str, Any] = {}
 
-    def create_namespaced_pod(self, namespace: str, body: dict[str, Any]) -> None:
+    def create_namespaced_pod(self, namespace: str, body: dict[str, Any]) -> Any:
         if self.fail_create:
             raise RuntimeError("api down")
         self.created.append({"namespace": namespace, "body": body})
+        return SimpleNamespace(metadata=SimpleNamespace(uid="pod-uid"))
+
+    def create_namespaced_secret(self, *, namespace: str, body: dict[str, Any]) -> Any:
+        self.source_secrets[body["metadata"]["name"]] = body
+        return SimpleNamespace(metadata=SimpleNamespace(uid="secret-uid"))
+
+    def delete_namespaced_secret(self, *, namespace: str, name: str) -> None:
+        self.source_secrets.pop(name, None)
+
+    def read_namespaced_secret(self, *, namespace: str, name: str) -> Any:
+        if name not in self.source_secrets:
+            raise ApiException(status=404)
+        return self.source_secrets[name]
 
     def read_namespaced_pod(self, name: str, namespace: str) -> Any:
         if name in self.deleted:
@@ -230,10 +264,11 @@ def _runtime(core: _FakeCoreV1, *, claim: str | None = CLAIM) -> KubernetesRunti
 
 async def _run(runtime: KubernetesRuntime) -> tuple[bool | None, str]:
     spec = VerifierSpec(
-        image="coordinare-performer:full", cache_claim="", cache_subpath="dettmore-platform-615891",
+        image="coordinare-performer:full", cache_claim="", cache_subpath="sampleapp-platform-615891",
         mount_path=MOUNT, verify_text="exit 0\n", project_files=PROJECT,
+        source_inputs={path: hashlib.sha256(text.encode()).hexdigest() for path, text in PROJECT.items()},
     )
-    return await runtime.run_verifier(slug="dettmore-platform-615891", spec=spec, poll_interval_s=0)
+    return await runtime.run_verifier(slug="sampleapp-platform-615891", spec=spec, poll_interval_s=0)
 
 
 @pytest.mark.asyncio
@@ -312,9 +347,9 @@ def _persona(runtime: object, *, verify_provided: bool = True) -> str:
     svc = HTTPPerformerService(config, runtime=runtime)
     ctx: dict[str, Any] = {
         "job_type": "env_bootstrap",
-        "symphony_name": "dettmore",
-        "symphony_org": "ViviDynamics",
-        "symphony_repo": "dettmore-platform",
+        "symphony_name": "sampleapp",
+        "symphony_org": "ExampleOrg",
+        "symphony_repo": "sampleapp-platform",
         "env_spec_files": ["README.md"],
         "env_spec_contents": {"README.md": "## Environment\n\nVerification runs in CLEANROOM_MARKER.\n"},
         "cache_mount_path": MOUNT,
@@ -347,13 +382,13 @@ def test_on_docker_the_persona_requires_the_same_reviewed_contract() -> None:
 
 
 
-# --- garden's layout: the rendered verify passes in the pod against the existing cache, without reinstalling -----------
+# --- samplehost's layout: the rendered verify passes in the pod against the existing cache, without reinstalling -----------
 def _fake(path: Path, body: str) -> None:
     path.write_text("#!/bin/sh\n" + body)
     path.chmod(0o755)
 
 
-def test_the_rendered_verify_passes_on_garden_s_cache_in_the_pod(tmp_path: Path) -> None:
+def test_the_rendered_verify_passes_on_samplehost_s_cache_in_the_pod(tmp_path: Path) -> None:
     cache, _checkout, other = _layout(tmp_path)
     ruby_bin = cache / ".rbenv" / "versions" / "3.4.2" / "bin"
     ruby_bin.mkdir(parents=True)

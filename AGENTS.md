@@ -59,6 +59,8 @@ without the env. (`make run` / `make start` do this for you.)
 
 ## Testing
 
+- Test scenarios and fixtures must use fictional repository, organization, client and deployment identities. Anonymize captured regressions without changing the failure or dependency relationships. Keep private repository names out of test names, comments, data and fixture filenames. Actual public product interfaces and artifact identifiers may remain when they are the contract under test.
+
 - Unit tests in `tests/unit/test_<NNN>_<feature>.py`.
 - Async tests use `@pytest.mark.asyncio`.
 - Tests that call config discovery must mock `Path.cwd()` — a real `config.yaml` exists in the project root and will be picked up otherwise.

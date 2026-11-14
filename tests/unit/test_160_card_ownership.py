@@ -439,7 +439,7 @@ async def test_board_where_nobody_is_assigned_is_named_not_silent() -> None:
 
 @pytest.mark.asyncio
 async def test_the_real_board_shape_is_reported() -> None:
-    """The measured website board in miniature: most cards unassigned, a few
+    """The measured sampleweb board in miniature: most cards unassigned, a few
     assigned to other people, none to coordinare. The narrower condition ("no card
     carries an assignee") is false here, so it would have stayed silent."""
     board = _Board(
@@ -501,7 +501,7 @@ async def test_no_warning_while_the_filter_is_finding_work() -> None:
 @pytest.mark.asyncio
 async def test_warning_when_someone_else_owns_the_whole_board() -> None:
     """Assignees are present and none are coordinare's -- the case an operator
-    actually hits. Measured on the real website board: 73 cards, 8 with any
+    actually hits. Measured on the real sampleweb board: 73 cards, 8 with any
     assignee, so a warning keyed on "nobody is assigned anywhere" stays silent
     while coordinare drops from 73 workable cards to zero.
 

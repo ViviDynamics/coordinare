@@ -24,8 +24,7 @@ the judge (an LLM over the LiteLLM proxy) rules on behavioural correctness using
 a per-role rubric and the known ground truth. A cell is PASS only when both
 agree.
 
-Fixtures live in the ``conductor-bench`` repo (see that repo's BENCH.md). The
-clone URL and per-role PR URLs come from ``--repo`` and ``--prs <json>`` (the
+Fixtures live in an operator-selected synthetic repository. The clone URL and per-role PR URLs come from ``--repo`` and ``--prs <json>`` (the
 JSON is produced by ``scripts/bench_setup.sh``).
 
 Usage:

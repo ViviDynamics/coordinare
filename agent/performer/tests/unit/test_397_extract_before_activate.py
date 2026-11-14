@@ -103,7 +103,7 @@ class TestExtractionRunsFirst:
             patch("performer.workspace._activate_env_cache", new=await _rec("activate")),
             patch("performer.workspace._start_env_cache_services", new=await _rec("services")),
         ):
-            await ws.clone_repository(_score(env_cache_path="/devenv/website-x"))
+            await ws.clone_repository(_score(env_cache_path="/devenv/sampleweb-x"))
 
         assert order == ["extract", "activate", "services"], order
         del ext
@@ -159,7 +159,7 @@ class TestExtractionIsItsOwnStep:
         kill.assert_awaited_once_with(proc)
 
     def test_extraction_budget_covers_the_measured_extraction(self) -> None:
-        """Measured on the website cache (729 debs, 1.1 GB): 36s uncontended,
+        """Measured on the sampleweb cache (729 debs, 1.1 GB): 36s uncontended,
         52s with one neighbour, 110s with two shells contending. The budget
         must clear the contended figure with room for a loaded host."""
         import performer.workspace as ws

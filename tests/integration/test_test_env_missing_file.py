@@ -23,7 +23,7 @@ from coordinare.services.env_cache import resolve_test_env_vars
 from coordinare.services.test_env_loader import TestEnvFileError, load_test_env
 
 ORG = "vivi-org"
-REPO = "website"
+REPO = "sampleweb"
 
 
 class _FakeGitHub:
@@ -72,7 +72,7 @@ class TestConfiguredMissingFileErrors:
 
         with pytest.raises(TestEnvFileError) as excinfo:
             await resolve_test_env_vars(
-                symphony_name="website",
+                symphony_name="sampleweb",
                 test_env=TestEnvConfig(repo_path="config/.env.test"),
                 github_org=ORG,
                 repo=REPO,

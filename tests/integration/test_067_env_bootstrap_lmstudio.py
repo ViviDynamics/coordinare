@@ -39,7 +39,7 @@ def lmstudio_reachable() -> bool:
 
 
 def test_env_bootstrap_reaches_in_review(lmstudio_reachable: bool):
-    """End-to-end smoke: dispatch a website card, expect IN_REVIEW.
+    """End-to-end smoke: dispatch a sampleweb card, expect IN_REVIEW.
 
     This test currently asserts the harness scaffolding only; the full
     end-to-end run is operator-driven via ``specs/067-compatibility-first-

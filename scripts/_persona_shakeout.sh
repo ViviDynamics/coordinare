@@ -6,6 +6,7 @@
 set -u
 cd "$(dirname "$0")/.."
 set -a; source .env 2>/dev/null; set +a
+REPO="${BENCH_REPO:?Set BENCH_REPO to your synthetic benchmark repository URL}"
 echo "waiting for image rebuild..."
 for i in $(seq 1 60); do
   grep -q "IMAGE REBUILD DONE" /tmp/rebuild.log 2>/dev/null && break
@@ -16,7 +17,7 @@ echo "rebuild done; generating fair config for gpt-oss:120b"
 .venv/bin/python scripts/gen_fair_config.py --model gpt-oss:120b --out config.fair_persona120b.yaml | tail -1
 echo "=== persona shakeout START $(date '+%H:%M:%S') ==="
 .venv/bin/python scripts/persona_bench.py \
-  --repo https://github.com/ViviDynamics/conductor-bench.git \
+  --repo "$REPO" \
   --prs tmp/bench_prs.json \
   --config config.fair_persona120b.yaml \
   --backends opencode-ephemeral,codex-ephemeral \

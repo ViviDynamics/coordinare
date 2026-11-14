@@ -1727,12 +1727,12 @@ def test_build_env_bootstrap_payload_synthesizes_workspace(monkeypatch) -> None:
     )
     card_context = {
         "job_type": "env_bootstrap",
-        "symphony_name": "website",
-        "symphony_org": "VividyNamics",
-        "symphony_repo": "vivi-website",
+        "symphony_name": "sampleweb",
+        "symphony_org": "ExampleOrg",
+        "symphony_repo": "sampleweb-repo",
         "env_spec_files": ["README.md"],
         "env_spec_contents": {"README.md": "## Setup\nrun `npm install`"},
-        "cache_mount_path": "/devenv/website-abc123",
+        "cache_mount_path": "/devenv/sampleweb-abc123",
     }
 
     accepted = _accepted_bootstrap_context(install=[{"id": "dependencies", "argv": ["npm", "install"]}])
@@ -1740,10 +1740,10 @@ def test_build_env_bootstrap_payload_synthesizes_workspace(monkeypatch) -> None:
     payload = svc._build_job_payload(card_context, None)
 
     assert payload.role == "env_bootstrap"
-    assert str(payload.repo_url).startswith("https://github.com/VividyNamics/vivi-website")
+    assert str(payload.repo_url).startswith("https://github.com/ExampleOrg/sampleweb-repo")
     assert payload.branch.startswith("env-bootstrap-")
     assert payload.backend == "claude_code"
-    assert "/devenv/website-abc123" in payload.persona
+    assert "/devenv/sampleweb-abc123" in payload.persona
     assert payload.metadata["environment_manifest"]["install"][0]["argv"] == ["npm", "install"]
     assert payload.metadata["env_spec_contents"] == card_context["env_spec_contents"]
     assert "activate.sh" in payload.persona  # 060/Option B: persona must mandate activation script
@@ -1779,22 +1779,22 @@ def test_build_env_bootstrap_payload_front_loads_accepted_execution_authority(mo
 def _bootstrap_card_context(declared_services=None) -> dict[str, object]:
     ctx: dict[str, object] = {
         "job_type": "env_bootstrap",
-        "symphony_name": "website",
-        "symphony_org": "VividyNamics",
-        "symphony_repo": "vivi-website",
+        "symphony_name": "sampleweb",
+        "symphony_org": "ExampleOrg",
+        "symphony_repo": "sampleweb-repo",
         "env_spec_files": ["README.md"],
         "env_spec_contents": {"README.md": "## Setup"},
-        "cache_mount_path": "/devenv/website-abc123",
+        "cache_mount_path": "/devenv/sampleweb-abc123",
     }
     if declared_services is not None:
         ctx["declared_services"] = declared_services
-    ctx.update(reviewed_metadata(symphony_name="website", source_commit="a" * 40))
+    ctx.update(reviewed_metadata(symphony_name="sampleweb", source_commit="a" * 40))
     return ctx
 
 
 def _accepted_bootstrap_context(*, install=None, services=None, activation=None):
     ctx = _bootstrap_card_context()
-    metadata = reviewed_metadata(symphony_name="website", source_commit="a" * 40,
+    metadata = reviewed_metadata(symphony_name="sampleweb", source_commit="a" * 40,
         install=install, services=services, activation=activation)
     ctx.update(metadata)
     ctx["dependency_checklist"] = "ACCEPTED ENVIRONMENT CONTRACT\n" + json.dumps(metadata["environment_manifest"])
@@ -1923,7 +1923,7 @@ def test_build_job_payload_forwards_env_cache_path(monkeypatch) -> None:
         "role": "implementing",
         "backend": "claude_code",
         "persona_instructions": "do the thing",
-        "env_cache_path": "/devenv/website-abc123",
+        "env_cache_path": "/devenv/sampleweb-abc123",
     }
     workspace_info = WorkspaceInfo(
         path=None,
@@ -1932,7 +1932,7 @@ def test_build_job_payload_forwards_env_cache_path(monkeypatch) -> None:
         github_token="ghs_test",
     )
     payload = svc._build_job_payload(card_context, workspace_info)
-    assert payload.env_cache_path == "/devenv/website-abc123"
+    assert payload.env_cache_path == "/devenv/sampleweb-abc123"
 
 
 def test_build_job_payload_omits_empty_env_cache_path(monkeypatch) -> None:

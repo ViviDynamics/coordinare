@@ -23,7 +23,7 @@ def _state(response: dict) -> dict:
     state["lifecycle_sequence"] = ["assessing", "architecting"]
     state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
     state["agent_dispatch"] = {"session_id": "s1"}
-    state["current_symphony"] = "website"
+    state["current_symphony"] = "sampleweb"
     return state
 
 

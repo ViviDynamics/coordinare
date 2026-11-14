@@ -18,15 +18,15 @@ from tests.unit.test_147_helm_deployment import _one, _render
 from tests.unit.test_221_symphony_editor import _client
 from tests.unit.test_284_persistent_config import SEED, _dashboard, _paths
 
-GARDEN = Path(__file__).resolve().parents[1] / "fixtures/284/garden-config.yaml"
+SAMPLE_CONFIG = Path(__file__).resolve().parents[1] / "fixtures/284/sample-config.yaml"
 OLD_PORT = 8090
 NEW_PORT = 8098
 USER_INTERVAL = 77
 
 
-def test_exact_rendered_garden_seed(tmp_path: Path) -> None:
+def test_exact_rendered_sample_seed(tmp_path: Path) -> None:
     seed, live = _paths(tmp_path)
-    seed.write_bytes(GARDEN.read_bytes())
+    seed.write_bytes(SAMPLE_CONFIG.read_bytes())
     config_seed.seed_config(seed, live)
     assert yaml.safe_load(live.read_text()) == yaml.safe_load(seed.read_text())
 
@@ -385,9 +385,9 @@ def test_adoption_refuses_a_changed_seed_and_invalid_candidate(
     assert live.read_bytes() == before
 
 
-def test_garden_endpoint_image_pins_follow_chart_by_id(tmp_path: Path) -> None:
+def test_samplehost_endpoint_image_pins_follow_chart_by_id(tmp_path: Path) -> None:
     seed, live = _paths(tmp_path)
-    original = yaml.safe_load(GARDEN.read_text())
+    original = yaml.safe_load(SAMPLE_CONFIG.read_text())
     seed.write_text(yaml.safe_dump(original))
     config_seed.seed_config(seed, live)
     edited = yaml.safe_load(live.read_text())

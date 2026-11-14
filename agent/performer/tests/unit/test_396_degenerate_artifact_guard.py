@@ -46,7 +46,7 @@ def _git_stdout(args: list[str], cwd: Path) -> str:
 
 
 def _incident_content() -> str:
-    """The documented shape of website#193's plan.md (534 KB, 115,038 lines)."""
+    """The documented shape of sampleweb#193's plan.md (534 KB, 115,038 lines)."""
     parts = [
         "No.\n" * 37738,
         "Go.\n" * 37738,

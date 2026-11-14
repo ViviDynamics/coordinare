@@ -1,10 +1,10 @@
 """#402: a suite that outlives its budget is not a service that never came up.
 
-Card website#107 was held ENV_BLOCKED with "the test command did not finish
+Card sampleweb#107 was held ENV_BLOCKED with "the test command did not finish
 within 600s ... usually waiting on a service that never came up". Its own
 container log had, fourteen minutes earlier, ``started postgres (pid 6557)``
 and ``services-health: all ok``. Nothing hung. ``bundle exec rspec`` is the
-whole unsharded website suite; CI shards it at ~17.8 minutes serial. Killed at
+whole unsharded sampleweb suite; CI shards it at ~17.8 minutes serial. Killed at
 600s, still running. The timeout branch's prior ("a hang is usually a service")
 is right when nothing is known, and wrong every time here, and the outcome was
 an ENV_BLOCKED hold plus a forced env-cache regen (two bootstraps) for an

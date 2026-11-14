@@ -4,7 +4,7 @@ Performer side: coordinare PATCHes a refreshed github_token mid-job. The
 runner must store it where the running _perform_job loop can pick it up
 before the next status tick (so push_branch sees the fresh token).
 
-Regression for website #70.
+Regression for sampleweb #70.
 """
 
 from __future__ import annotations
