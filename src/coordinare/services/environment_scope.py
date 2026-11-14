@@ -43,7 +43,10 @@ from coordinare.services.environment_attempt import (
     AttemptBudget,
     EnvironmentDiscoveryError,
 )
-from coordinare.services.environment_discovery_prompts import SOURCE_NAVIGATION
+from coordinare.services.environment_discovery_prompts import (
+    NATIVE_SOURCE_INSTRUCTIONS,
+    SOURCE_NAVIGATION,
+)
 from coordinare.services.environment_evidence import (
     AuthorEvidenceCache,
     check_evidence_context,
@@ -57,6 +60,7 @@ from coordinare.services.environment_findings import (
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_response_schema import (
     constrain_source_criteria,
+    final_response_schema,
     invoke_recorded,
     response_schema,
 )
@@ -177,6 +181,19 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
     if budget is None:
         _fail('attempt_budget_identity')
     budget.stage = inspection.name
+    if budget.agent_context is not None:
+        from coordinare.services.environment_agent import run_source_phase
+
+        ledger = budget.scope_findings
+        if ledger is None:
+            _fail('scope_source_identity')
+        schema = final_response_schema(envelope, review_decision_ids=[record.id for record in ledger.records])
+        if envelope == 'scope_assessment' and budget.scope_definition is not None:
+            constrain_source_criteria(schema, [c.id for c in budget.scope_definition.criteria])
+        return await run_source_phase(inspection, messages, envelope=envelope, schema=schema,
+            source_commit=ledger.source_commit, validate=validate,
+            role='reviewer' if envelope == 'scope_assessment' else 'author',
+            rejection_errors=partial(_scope_rejection_errors, envelope=envelope))
     base_system = messages[0]['content']
     try:
         async with asyncio.timeout_at(min(budget.deadline, time.monotonic()+inspection.limits.phase_timeout_seconds)):
@@ -225,6 +242,27 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
     except TimeoutError:
         budget.check()
         _fail('scope_phase_deadline')
+
+
+def _scope_rejection_errors(exc: Exception, *, envelope: str) -> list[dict[str, Any]]:
+    """The same source-domain refusals apply independent of conversation transport."""
+    if isinstance(exc, ValidationError):
+        return _validation_feedback(exc)
+    if isinstance(exc, PydanticCustomError):
+        return [{'location': [envelope], 'code': exc.type}]
+    if isinstance(exc, (_ResponseReferenceError, ScopeInvestigationResponseError)):
+        return list(exc.errors)
+    if isinstance(exc, FindingValidationError):
+        error: dict[str, Any] = {'location': list(exc.location), 'code': exc.code}
+        if exc.code in {'scope_response_ids_invalid', 'scope_citations_invalid'} or exc.location[:1] in {('decisions',), ('findings',)}:
+            error['guidance'] = str(exc)
+        return [error]
+    if isinstance(exc, EnvironmentDiscoveryError) and exc.code in {
+        'invalid_json_envelope', 'duplicate_json_key', 'unsupported_envelope', 'invalid_tool_arguments',
+        'scope_citations_invalid', 'scope_obligation_removed', 'scope_response_ids_invalid', 'scope_investigation_response_invalid',
+    }:
+        return [{'location': [], 'code': exc.code}]
+    raise exc
 
 
 def _decision_reference_errors(assessment: ScopeAssessmentProposal, *, definition: ScopeDefinition) -> list[dict[str, Any]]:
@@ -484,7 +522,8 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
     instructions = REVIEW_INSTRUCTIONS if review else AUTHOR_INSTRUCTIONS
     if not review and definition is not None:
         instructions = REVISION_INSTRUCTIONS
-    return [{'role': 'system', 'content': SOURCE_NAVIGATION+instructions+
+    navigation = NATIVE_SOURCE_INSTRUCTIONS if inspection.budget and inspection.budget.agent_context else SOURCE_NAVIGATION
+    return [{'role': 'system', 'content': navigation+instructions+
              PHASE_CONTRACT},
             {'role': 'user', 'content': canonical({'requested_scope': 'whole_documented_development_test_environment',
                 'phase_contract': {'subject': 'source_obligations',

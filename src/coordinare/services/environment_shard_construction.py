@@ -39,8 +39,8 @@ from coordinare.services.environment_delta_schema import apply_group_delta
 from coordinare.services.environment_discovery_prompts import (
     ADVISORY_AUDIT_CHECKS,
     SAMPLE_TEST_CHECKS,
-    SOURCE_NAVIGATION,
     TIMEOUT_CEILINGS,
+    source_navigation,
 )
 from coordinare.services.environment_findings import BARE_INDETERMINATE, MAX_FINDINGS
 from coordinare.services.environment_inspection import SourceInspection
@@ -750,7 +750,7 @@ class DividedConstruction:
             reused = validate(saved['data'])
             self.group_inputs.update(inspection.inputs)
             return reused
-        messages = [{'role': 'system', 'content': SOURCE_NAVIGATION + CHECK_AUTHOR_INSTRUCTIONS},
+        messages = [{'role': 'system', 'content': source_navigation(self.context.budget) + CHECK_AUTHOR_INSTRUCTIONS},
                     {'role': 'user', 'content': brief}]
         part: ShardChecks = await run_agent(self.context, inspection, messages, AgentTask('shard_checks', validate))
         self.group_inputs.update(inspection.inputs)
@@ -792,7 +792,7 @@ class DividedConstruction:
             reused = validate(saved['data'])
             self.group_inputs.update(inspection.inputs)
             return reused
-        messages = [{'role': 'system', 'content': SOURCE_NAVIGATION + CHECK_AUTHOR_INSTRUCTIONS},
+        messages = [{'role': 'system', 'content': source_navigation(self.context.budget) + CHECK_AUTHOR_INSTRUCTIONS},
                     {'role': 'user', 'content': brief}]
         part: ShardChecks = await run_agent(self.context, inspection, messages, AgentTask('shard_checks', validate))
         self.group_inputs.update(inspection.inputs)

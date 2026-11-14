@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from nare import Tool
 
     from coordinare.services.agent_runtime.checkpoint import CheckpointStore
+    from coordinare.services.agent_runtime.effects import EffectJournal
     from coordinare.services.agent_runtime.evidence import EvidenceStore
     from coordinare.services.environment_attempt import AttemptBudget
 
@@ -25,6 +26,11 @@ class AdmissionIssue:
 
 
 type AgentCheck = Callable[[JsonObject], Awaitable[list[AdmissionIssue]]]
+
+
+class AgentToolState(Protocol):
+    def snapshot(self) -> JsonObject: ...
+    async def restore(self, saved: JsonObject) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -55,6 +61,12 @@ class AgentRequest:
     event_sink: Callable[[JsonObject], Awaitable[None]] | None = None
     phase_deadline: float | None = None
     phase_max_calls: int | None = None
+    max_output_bytes: int | None = None
+    max_context_bytes: int | None = None
+    shard_corrections: int | None = None
+    effects: EffectJournal | None = None
+    tool_state: AgentToolState | None = None
+    prerequisites: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

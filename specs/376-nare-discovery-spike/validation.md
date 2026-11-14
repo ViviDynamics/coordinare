@@ -106,3 +106,26 @@ five-minute continuation under the same total8-million token cap awaits explicit
 authorization; final production acceptance remains required on the final code.
 The existing SQLite throughput benchmark still
 hits its90-second limit locally and remains a final verification gate.
+
+## Native scope, authoring and repair (Task6)
+
+All source scope roles, divided global/group construction, scoped review and
+delta-to-full repair now have native phase adapters. Scripted transports exercise
+real nare and unchanged domain validators. Native probes/trials reserve durable
+effect receipts before execution; uncertain effects cannot replay. Complete
+source/observation pages and their delivery coverage survive checkpoints, and
+trial/sharded-correction spending survives the domain journal. Preflight retains
+one free reminder, without renewing it on resume. Terminal scope reopening
+propagates to the domain scheduler.
+
+Validation: 2,464 affected bootstrap/native tests passed with 18 existing warnings;
+the subsequent journal counter fix passed 84 journal/trial/checkpoint regressions.
+Targeted ruff and strict mypy (368 modules) passed. These provider-scripted tests
+prove adapter/domain behavior, not real installation or environment readiness.
+Daemon lifecycle and final live installer/consumer acceptance remain outstanding.
+
+The old partial-JSON/decision-carry correction heuristic is not reimplemented:
+nare owns correction conversation, final schemas still require every decision,
+and existing domain ledgers/frozen commands remain authoritative. Recovery cost
+and quality must be assessed in final live acceptance. Legacy runtime deletion
+is deferred until that acceptance passes.

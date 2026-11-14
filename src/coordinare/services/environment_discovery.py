@@ -76,6 +76,7 @@ from coordinare.services.environment_discovery_prompts import (
     DiscoveryPrompts,
     assessment_envelope_schema,
     legacy_discovery_system,
+    native_discovery_system,
 )
 from coordinare.services.environment_evidence import (
     check_evidence_context,
@@ -126,6 +127,7 @@ from coordinare.services.environment_repair_triage import (
     part_of,
 )
 from coordinare.services.environment_repair_trial import (
+    NATIVE_TRIAL_INSTRUCTION,
     TRIAL_INSTRUCTION,
     TrialExecutor,
     trial_handler,
@@ -186,6 +188,8 @@ __all__ = ["DiscoveryLimits", "EnvironmentDiscoveryError", "discover_and_review"
 if TYPE_CHECKING:
     from coordinare_service_inference.environment.inventory import InventoryEntry
     from coordinare_service_inference.environment.scope import ScopeContract
+
+    from coordinare.services.agent_runtime.effects import EffectJournal
 
 
 @dataclass(frozen=True)
@@ -343,6 +347,9 @@ class _Inspection(SourceInspection):
         self.trial: Callable[[Any], Awaitable[dict[str, Any]]] | None = None
         # A delta repair's global author returns a manifest_delta envelope, not a whole manifest.
         self.delta = False
+        self.native_effects: EffectJournal | None = None
+        self.probe_enabled = False
+        self.global_part = False
 
 
 
@@ -650,6 +657,8 @@ async def _phase(
     budget: AttemptBudget, validate: Callable[[dict[str, Any]], Any],
 ) -> tuple[dict[str, Any], dict[str, str]]:
     budget.stage = inspection.name
+    if budget.agent_context is not None:
+        return await _native_author_phase(inspection, messages, budget, validate)
     repair_base: dict[str, Any] | None = inspection.probe_repair or inspection.revision_base
     inspection.revision_base = None
     try:
@@ -701,6 +710,87 @@ async def _phase(
         raise EnvironmentDiscoveryError(message, code="phase_deadline") from None
     message = f"{inspection.name} model call limit exceeded"
     raise EnvironmentDiscoveryError(message, code="phase_call_limit")
+
+
+async def _native_author_phase(inspection: _Inspection, messages: list[dict[str, str]], budget: AttemptBudget,
+                               validate: Callable[[dict[str, Any]], Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    from nare import Tool
+
+    from coordinare.services.agent_runtime.effects import EffectJournal
+    from coordinare.services.agent_runtime.evidence import EvidenceSource
+    from coordinare.services.agent_runtime.schema import native_tool_schema
+    from coordinare.services.environment_agent import (
+        EnvironmentPhaseRequest,
+        ObservationTools,
+        PinnedSourceTools,
+        run_environment_phase,
+    )
+
+    native = budget.agent_context
+    assert native is not None
+    final = _declared_key(inspection)
+    ledger = budget.finding_ledger
+    if ledger is None:
+        raise EnvironmentDiscoveryError('Author source identity is unavailable.', code='source_identity')
+    effects = inspection.native_effects = EffectJournal()
+    observations = ObservationTools()
+    tools = []
+
+    async def probe(arguments: dict[str, Any]) -> str:
+        assert inspection.probe is not None
+        report = await inspection.probe(arguments)
+        return await observations.add({'probe_result': report.model_dump(mode='json'),
+                                       'authority': 'untrusted observation, never readiness'})
+
+    async def trial(arguments: dict[str, Any]) -> str:
+        assert inspection.trial is not None
+        return await observations.add({'trial_result': await inspection.trial(arguments),
+                                       'authority': 'untrusted observation, never readiness'})
+
+    if inspection.probe_enabled:
+        tools.append(Tool(name='probe', description='Execute a bounded, source-cited capability probe under domain policy.',
+                          input_schema=native_tool_schema(ProbeRequest.model_json_schema()), call=probe))
+    if inspection.trial is not None:
+        from coordinare.services.environment_repair_trial import TrialRequest
+
+        tools.append(Tool(name='trial', description='Try allowed replacement services/checks on the sealed failed-generation disk.',
+                          input_schema=native_tool_schema(TrialRequest.model_json_schema()), call=trial))
+
+    def admit(envelope: dict[str, Any]) -> None:
+        if inspection.require_preflight and not budget.probe_reports:
+            raise EnvironmentDiscoveryError('Required capability preflight has not executed.', code='preflight_required')
+        _validate_phase_declaration(inspection, envelope, validate)
+
+    def rejection_errors(exc: Exception) -> list[dict[str, Any]]:
+        if isinstance(exc, ValidationError):
+            return _validation_feedback(exc)
+        if isinstance(exc, EnvironmentDiscoveryError):
+            if exc.code == 'preflight_required':
+                return [{'code': exc.code, 'guidance': 'Use the native probe tool before declaring the manifest. '
+                         'Observe source-cited base-image prerequisites without installing anything. '
+                         'Read every observation page, then return the complete manifest.'}]
+            return _declaration_feedback(exc, inspection, budget)
+        raise exc
+
+    result = await run_environment_phase(EnvironmentPhaseRequest(
+        attempt_id=native.attempt_id, phase=inspection.name, role='author', source_commit=ledger.source_commit,
+        domain_digests=(('inventory', inspection.inventory_digest), ('ledger', ledger.digest())),
+        model_config_digest=native.model_config_digest,
+        instructions=native_discovery_system(delta=inspection.delta, preflight=inspection.require_preflight,
+                                             trial=inspection.trial is not None, global_part=inspection.global_part)
+            + (GLOBAL_AUTHOR_INSTRUCTION if inspection.global_part else ''),
+        packet={'context': messages[1:]}, sources=tuple(EvidenceSource(path, text, inspection.inputs[path])
+            for path, text in sorted(inspection.source_files.items())), required=frozenset(inspection.source_files),
+        envelope=final, schema=final_response_schema(final,
+            scope_contract=None if inspection.global_part else budget.scope_contract),
+        validate=admit, validate_envelope=True, require_source=True, rejection_errors=rejection_errors,
+        prerequisites=frozenset({'preflight_required'}) if inspection.require_preflight else frozenset(),
+        runtime=native.runtime, budget=budget,
+        phase_timeout_seconds=inspection.limits.phase_timeout_seconds, max_model_calls=inspection.limits.max_model_calls,
+        max_output_bytes=inspection.limits.max_output_bytes, max_context_bytes=inspection.limits.max_review_context_bytes,
+        checkpoint_store=native.checkpoint_store, event_sink=native.event_sink, tools=tuple(tools), effects=effects,
+        observations=observations, source_tools=PinnedSourceTools(inspection, observe_sources=inspection.observe_sources)))
+    return result.data, dict(inspection.inputs)
 
 
 async def _prepare_review_evidence(reviewer: _Inspection, manifest: EnvironmentManifest) -> list[dict[str, str]]:
@@ -1215,11 +1305,13 @@ def _attach_tools(discovery: _Inspection, options: _DiscoveryOptions, commit: st
     """Probes always; an execution repair whose failed generation kept a trial disk may also try services and checks
     on it first (repair-trial-amendment.md)."""
     discovery.probe = _probe_handler(discovery, options, commit)
+    discovery.probe_enabled = options.probe_executor is not None
     if options.trial_executor is None or not repair:
         return
     budget = cast("AttemptBudget", discovery.budget)
-    discovery.trial = trial_handler(options.trial_executor, budget)
-    messages[1]["content"] = _json({**json.loads(messages[1]["content"]), "repair_trial": TRIAL_INSTRUCTION,
+    discovery.trial = trial_handler(options.trial_executor, budget, effect_journal=lambda: discovery.native_effects)
+    messages[1]["content"] = _json({**json.loads(messages[1]["content"]),
+                                    "repair_trial": NATIVE_TRIAL_INSTRUCTION if budget.agent_context else TRIAL_INSTRUCTION,
                                     "trials_left": trials_left(budget)})
 
 
@@ -1234,12 +1326,22 @@ def _probe_handler(discovery: _Inspection, options: _DiscoveryOptions, commit: s
         plan = ProbePlan(request=request, source_commit=commit, inventory_digest=discovery.inventory_digest,
             execution_source_digest=options.execution_source_digest,
             inputs=dict(discovery.inputs), capabilities=cast("ExecutionCapabilities", options.capabilities))
-        budget.reserve_probe_batch()
-        await budget.flush()
-        budget.stage = "probe_execution"
-        report = await options.probe_executor(plan)
-        report = bind_probe_report(plan, report)
-        budget.probe_reports.append(report.model_dump(mode="json"))
+        async def execute() -> dict[str, Any]:
+            budget.reserve_probe_batch()
+            await budget.flush()
+            budget.stage = "probe_execution"
+            assert options.probe_executor is not None
+            report = bind_probe_report(plan, await options.probe_executor(plan))
+            return report.model_dump(mode='json')
+
+        if discovery.native_effects is not None:
+            binding = hashlib.sha256(_json(plan.model_dump(mode='json', exclude={'execution_id'})).encode()).hexdigest()
+            data = await discovery.native_effects.run('probe', binding, execute)
+        else:
+            data = await execute()
+        report = ProbeReport.model_validate(data)
+        if data not in budget.probe_reports:
+            budget.probe_reports.append(data)
         budget.stage = "discovery"
         return report
 
@@ -1592,7 +1694,8 @@ async def _review(attempt: _Attempt, build: DividedConstruction | None,
             runtime=native.runtime, budget=budget, phase_timeout_seconds=attempt.bounds.phase_timeout_seconds,
             checkpoint_store=native.checkpoint_store, event_sink=native.event_sink,
             source_tools=PinnedSourceTools(reviewer, observe_sources=reviewer.observe_sources),
-            max_model_calls=attempt.bounds.max_model_calls))
+            max_model_calls=attempt.bounds.max_model_calls, max_output_bytes=attempt.bounds.max_output_bytes,
+            max_context_bytes=attempt.bounds.max_review_context_bytes))
         return result.data, dict(reviewer.inputs)
     data, reads = await _phase(inspection=reviewer, chat=attempt.chat, budget=budget, validate=validate, messages=messages)
     return data, reads
@@ -1647,6 +1750,7 @@ def _divided_construction(scope: ScopeContract, attempt: _Attempt) -> DividedCon
     if attempt.budget.scope_shards is None or not divided(scope):
         return None
     groups = check_groups(scope)
+    attempt.discovery.global_part = True
     options, prior = attempt.options, attempt.prior_manifests
     build = DividedConstruction(AgentContext(attempt.budget, attempt.bounds, attempt.chat), options.entries or attempt.inventory,
                                 attempt.fetch, scope, attempt.bounds.agent_concurrency,
@@ -2101,7 +2205,8 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
         index = await inspection.bind_verified({path: digest for path, digest in manifest.inputs.items() if path in cited},
                                                phase='review', cited_by=scope_citations(build.scope))
         mine = [record.model_dump(mode='json') for record in ledger.records if record.id in owned.get(owner, [])]
-        system = SOURCE_TOOLS + REVIEW_PART_PREAMBLE + EXECUTABLE_REVIEW_INSTRUCTIONS
+        system = (native_review_instructions() + REVIEW_PART_PREAMBLE if budget.agent_context is not None
+                  else SOURCE_TOOLS + REVIEW_PART_PREAMBLE + EXECUTABLE_REVIEW_INSTRUCTIONS)
         shared = {**base, 'manifest_digest': manifest.digest(), 'global_part': summary, 'probe_evidence': budget.probe_reports,
                   'untrusted_execution_history': budget.execution_review_evidence,
                   'fixed_ids': sorted(fixed_command_ids(budget.executed_manifests)),

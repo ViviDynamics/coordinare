@@ -50,7 +50,7 @@ from coordinare.services.environment_admission import (
 )
 from coordinare.services.environment_agent_pool import ShardOverflowError, run_pool
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
-from coordinare.services.environment_discovery_prompts import SOURCE_NAVIGATION
+from coordinare.services.environment_discovery_prompts import source_navigation
 from coordinare.services.environment_evidence import (
     check_evidence_context,
     prepare_mandatory_evidence,
@@ -60,6 +60,7 @@ from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_obligations import REPAIR_CORRECTABLE
 from coordinare.services.environment_response_schema import (
     constrain_source_criteria,
+    final_response_schema,
     invoke_recorded,
     response_schema,
 )
@@ -346,6 +347,7 @@ class AgentTask:
     decision_ids: Sequence[str] | None = None
     criterion_ids: Sequence[str] | None = None
     listing_only: bool = False  # Triage judges a listing; it never reads source.
+    instance_id: str = ''
 
     def schema(self, *, final: bool) -> dict[str, Any]:
         """Source tools only until the agent holds evidence, as in the single-conversation path."""
@@ -390,6 +392,25 @@ async def run_agent(context: AgentContext, inspection: SourceInspection, message
     """One bounded agent conversation; its own correction allowance, the shared call and read budget."""
     budget, limits = context.budget, context.limits
     budget.shard_agents += 1
+    if budget.agent_context is not None:
+        from coordinare.services.environment_agent import run_source_phase
+
+        ledger = budget.scope_findings or budget.finding_ledger
+        if ledger is None:
+            _fail('scope_source_identity')
+        schema = final_response_schema(task.envelope, review_decision_ids=task.decision_ids)
+        if task.envelope == 'scope_assessment' and task.criterion_ids is not None:
+            constrain_source_criteria(schema, list(task.criterion_ids))
+        try:
+            return await run_source_phase(inspection, messages, envelope=task.envelope, schema=schema,
+                source_commit=ledger.source_commit, validate=task.validate,
+                role='reviewer' if task.envelope in {'assessment', 'scope_assessment', 'listing_triage'} else 'author',
+                listing_only=task.listing_only, shard_corrections=SHARD_SCHEMA_REPAIRS * (AGENT_RESTARTS + 1),
+                instance_id=task.instance_id, rejection_errors=lambda exc: _rejection_errors(exc, task.envelope))
+        except EnvironmentDiscoveryError as exc:
+            if exc.code.endswith('_context_limit'):
+                raise ShardOverflowError(None) from None
+            raise
     # One system message for the whole conversation, so a server that caches prompt prefixes keeps reusing it.
     # The final schema already offers the source tools; answering before holding evidence is corrected instead.
     schema = task.schema(final=True)
@@ -651,7 +672,8 @@ class ShardedScope:
                     {'role': 'user', 'content': canonical(listing_payload(shard, self.entries)).decode()}]
         try:
             verdicts: dict[str, TriageVerdict] = await self.agent_phase(inspection, messages, AgentTask(
-                'listing_triage', partial(validate_triage, shard=shard, entries=self.entries), listing_only=True))
+                'listing_triage', partial(validate_triage, shard=shard, entries=self.entries), listing_only=True,
+                instance_id=f'{side}:{shard.id}'))
         except EnvironmentDiscoveryError as exc:
             if exc.code != 'attempt_schema_limit':
                 raise
@@ -720,7 +742,7 @@ class ShardedScope:
         for offset in range(0, len(unread), 8):
             batch = await inspection.read_files(unread[offset:offset + 8], navigation=True, verification=True)
             evidence.extend(item for item in batch['files'] if 'error' not in item)
-        messages = [{'role': 'system', 'content': SOURCE_NAVIGATION + SHARD_AUTHOR_INSTRUCTIONS + PHASE_CONTRACT
+        messages = [{'role': 'system', 'content': source_navigation(inspection.budget) + SHARD_AUTHOR_INSTRUCTIONS + PHASE_CONTRACT
                      + SHARED_CONTEXT_NOTE},
                     {'role': 'user', 'content': agent_context(
                         {'requested_scope': 'whole_documented_development_test_environment',
@@ -821,7 +843,7 @@ class ShardedScope:
         cited = sorted({path for c in criteria for path in c.sources}
                        | {path for record in records for path in record['proposal']['sources']})
         resolved = resolved_elsewhere(ledger, owned, {*cited, *material.paths})
-        return [{'role': 'system', 'content': SOURCE_NAVIGATION + preamble + REVIEW_INSTRUCTIONS + PHASE_CONTRACT
+        return [{'role': 'system', 'content': source_navigation(inspection.budget) + preamble + REVIEW_INSTRUCTIONS + PHASE_CONTRACT
                  + SHARED_CONTEXT_NOTE + (RESOLVED_ELSEWHERE if resolved else '')},
                 {'role': 'user', 'content': agent_context(
                     {'requested_scope': 'whole_documented_development_test_environment',
@@ -1024,7 +1046,7 @@ class ShardedScope:
         expected = {path: budget.scope_inputs[path] for path in sorted(needed)
                     if path in budget.scope_inputs and path not in inspection.inputs}
         evidence = await prepare_mandatory_evidence(inspection, expected, phase='scope_revision')
-        messages = [{'role': 'system', 'content': SOURCE_NAVIGATION + SHARD_REVISION_PREAMBLE + REVISION_INSTRUCTIONS
+        messages = [{'role': 'system', 'content': source_navigation(inspection.budget) + SHARD_REVISION_PREAMBLE + REVISION_INSTRUCTIONS
                      + PHASE_CONTRACT + SHARED_CONTEXT_NOTE},
                     {'role': 'user', 'content': agent_context(
                         {'requested_scope': 'whole_documented_development_test_environment',

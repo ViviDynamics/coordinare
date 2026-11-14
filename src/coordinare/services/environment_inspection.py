@@ -162,7 +162,9 @@ class SourceInspection:
         The daemon reads through a separately bounded verifier (charged to the attempt). The conversation receives
         an index; the agent reads content on demand, and any later read must match the bound digest.
         """
-        missing = {path: digest for path, digest in expected.items() if self.inputs.get(path) != digest}
+        retain_content = retain_content or bool(self.budget and self.budget.agent_context)
+        missing = {path: digest for path, digest in expected.items() if self.inputs.get(path) != digest
+                   or (retain_content and path not in self.source_files)}
         if missing:
             limits = replace(self.limits, max_reads=max(self.limits.max_reads, len(missing)),
                              max_source_bytes=max(self.limits.max_source_bytes, BIND_SOURCE_BYTES))

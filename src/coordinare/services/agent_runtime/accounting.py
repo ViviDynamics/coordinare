@@ -102,7 +102,9 @@ class BudgetTransport:
 
     def __init__(self, inner: Transport, bridge: BudgetBridge, *, session_id: str,
                  before_send: Callable[[], Awaitable[None]], calls: ConductorCallLog | None = None,
-                 config: AgentModelConfig | None = None, instructions: str = '') -> None:
+                 config: AgentModelConfig | None = None, instructions: str = '',
+                 max_output_bytes: int | None = None, max_context_bytes: int | None = None,
+                 answer_schema: dict[str, Any] | None = None) -> None:
         self.inner = inner
         self.bridge = bridge
         self.session_id = session_id
@@ -110,6 +112,9 @@ class BudgetTransport:
         self.calls = calls or NULL_CALL_LOG
         self.config = config
         self.instructions = instructions
+        self.max_output_bytes = max_output_bytes
+        self.max_context_bytes = max_context_bytes
+        self.answer_schema = answer_schema
         self.streaming = bool(getattr(inner, 'streaming', False))
         self.supports_structured_output = bool(getattr(inner, 'supports_structured_output', False))
 
@@ -122,7 +127,14 @@ class BudgetTransport:
         return hook() if callable(hook) else None
 
     @asynccontextmanager
-    async def _record(self, messages: list[Message]) -> AsyncIterator[tuple[str, CallRecord]]:
+    async def _record(self, messages: list[Message], tools: list[dict[str, Any]]) -> AsyncIterator[tuple[str, CallRecord]]:
+        size = len(json.dumps({'system': self.instructions, 'messages': [
+            {'role': message.role, 'content': message.content} for message in messages],
+            'tools': tools, 'schema': self.answer_schema}, ensure_ascii=False, separators=(',', ':')).encode())
+        if self.max_context_bytes is not None and size > self.max_context_bytes:
+            self.bridge.failure_code = self.bridge.phase + '_context_limit'
+            raise EnvironmentDiscoveryError('Complete native context exceeds its bound.', code=self.bridge.failure_code)
+        self.bridge.budget.context_bytes += size
         receipt = self.session_id + ':' + await self.bridge.reserve()
         await self.before_send()
         self.bridge.budget.check()
@@ -161,11 +173,16 @@ class BudgetTransport:
             tool_calls=tuple(ToolCall(name=call.name, call_id=call.id, input=call.args) for call in reply.tool_calls))
         record.decide('model reply received; domain admission is separate')
         await self.bridge.record_reply(receipt, reply)
+        size = len(record.reply.text.encode()) + sum(len(json.dumps(call.args, ensure_ascii=False).encode())
+                                                    for call in reply.tool_calls)
+        if self.max_output_bytes is not None and size > self.max_output_bytes:
+            self.bridge.failure_code = 'phase_output_limit'
+            raise EnvironmentDiscoveryError('Native output exceeds its bound.', code='phase_output_limit')
 
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]], *,
                    response_schema: dict[str, Any] | None = None, tool_choice: str | None = None) -> Reply:
         kwargs = self._parameters(self.inner.turn, response_schema, tool_choice)
-        async with self._record(messages) as (receipt, record):
+        async with self._record(messages, tools) as (receipt, record):
             reply = await cast('ExtendedTransport', self.inner).turn(messages, tools, **kwargs)
             await self._reply(receipt, record, reply)
             return reply
@@ -175,7 +192,7 @@ class BudgetTransport:
                           tool_choice: str | None = None) -> AsyncIterator[Delta | Reply]:
         inner = cast('ExtendedTransport', self.inner)
         kwargs = self._parameters(inner.stream_turn, response_schema, tool_choice)
-        async with (self._record(messages) as (receipt, record),
+        async with (self._record(messages, tools) as (receipt, record),
                     aclosing(inner.stream_turn(messages, tools, **kwargs)) as stream):
             async for item in stream:
                 if isinstance(item, Reply):

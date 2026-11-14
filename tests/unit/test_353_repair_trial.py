@@ -161,6 +161,8 @@ def test_trial_runtime_controls_carry_only_the_deadline(monkeypatch):
 
 
 class Budget(SimpleNamespace):
+    agent_context = None
+
     async def flush(self):
         return None
 

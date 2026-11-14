@@ -144,6 +144,52 @@ async def test_phase_deadline_preserves_outer_budget(tmp_path: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_terminal_domain_refusal_is_not_a_schema_correction(tmp_path: Any) -> None:
+    from coordinare.services.environment_agent import run_environment_phase
+    from coordinare.services.environment_construction import ScopeReopenedError
+
+    refusal = ScopeReopenedError()
+    def validate(answer: Any) -> None:
+        raise refusal
+    transport = ReviewerTransport(review(), early=False)
+    request = replace(phase(tmp_path, transport), validate=validate)
+    with pytest.raises(ScopeReopenedError) as caught:
+        await run_environment_phase(request)
+    assert caught.value is refusal
+    assert request.budget.schema_repairs == 0
+    assert transport.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_source_observer_reopening_survives_native_tool_error(tmp_path: Any) -> None:
+    from coordinare.services.environment_agent import PinnedSourceTools, run_environment_phase
+    from coordinare.services.environment_construction import ScopeReopenedError
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_inspection import SourceInspection
+
+    refusal = ScopeReopenedError()
+    async def fetch(path: str) -> str:
+        return 'New source changes the fixed scope.'
+    async def observe(inputs: Any) -> None:
+        raise refusal
+    navigation = PinnedSourceTools(SourceInspection(['new'], fetch, DiscoveryLimits()), observe_sources=observe)
+    class Navigating(ReviewerTransport):
+        async def turn(self, messages: Any, tools: Any) -> Reply:
+            self.calls += 1
+            if self.calls == 1:
+                call = ToolCall('source', 'read_source', {'path': 'new'})
+                return Reply([{'type': 'tool_use', 'id': call.id, 'name': call.name, 'input': call.args}],
+                             [call], Usage(input=100, output=20), 'tool_use')
+            return Reply([{'type': 'text', 'text': json.dumps(self.answer)}], [], Usage(input=100, output=20), 'end_turn')
+    transport = Navigating(review(), early=False)
+    request = replace(phase(tmp_path, transport), source_tools=navigation)
+    with pytest.raises(ScopeReopenedError) as caught:
+        await run_environment_phase(request)
+    assert caught.value is refusal
+    assert request.budget.schema_repairs == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('retained_finding', [False, True])
 async def test_production_review_uses_native_runtime_and_independent_fetch(tmp_path: Any, retained_finding: bool) -> None:
     from types import SimpleNamespace

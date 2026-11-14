@@ -149,6 +149,8 @@ class RepairJournal(BaseModel):
     agent_usage_unknown: int = Field(default=0, ge=0)
     agent_compactions: int = Field(default=0, ge=0)
     agent_retries: int = Field(default=0, ge=0)
+    trial_runs: int = Field(default=0, ge=0)
+    shard_schema_repairs: int = Field(default=0, ge=0)
     usage: dict[str, int] = Field(default_factory=dict)
     calls_completed: int = Field(default=0, ge=0)
     call_stats: dict[str, dict[str, float]] = Field(default_factory=dict)
@@ -160,7 +162,8 @@ class RepairJournal(BaseModel):
     def preserve_prior_accounting(cls, data: Any) -> Any:
         if isinstance(data, dict) and isinstance(data.get('diagnostics'), dict):
             data = dict(data)
-            for name in ('usage', 'calls_completed', 'call_stats', 'finish_reasons', 'metadata_available'):
+            for name in ('usage', 'calls_completed', 'call_stats', 'finish_reasons', 'metadata_available',
+                         'trial_runs', 'shard_schema_repairs'):
                 if name not in data and name in data['diagnostics']:
                     data[name] = data['diagnostics'][name]
         return data
@@ -578,6 +581,8 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.agent_usage_unknown = journal.agent_usage_unknown
     budget.agent_compactions = journal.agent_compactions
     budget.agent_retries = journal.agent_retries
+    budget.trial_runs = journal.trial_runs
+    budget.shard_schema_repairs = journal.shard_schema_repairs
     budget.agent_checkpoints = {key: value.model_copy(deep=True) for key, value in journal.agent_checkpoints.items()}
     budget.scope_investigations = [item.model_copy(deep=True) for item in journal.scope_investigations]
     budget.scope_investigation_results = [item.model_copy(deep=True) for item in journal.scope_investigation_results]
@@ -691,6 +696,8 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
     journal.agent_usage_unknown = budget.agent_usage_unknown
     journal.agent_compactions = budget.agent_compactions
     journal.agent_retries = budget.agent_retries
+    journal.trial_runs = max(journal.trial_runs, budget.trial_runs)
+    journal.shard_schema_repairs = max(journal.shard_schema_repairs, budget.shard_schema_repairs)
     journal.agent_checkpoints = {key: value.model_copy(deep=True) for key, value in budget.agent_checkpoints.items()}
     _save_scope_checkpoint(journal, budget)
     previous, current = journal.finding_ledger, budget.finding_ledger

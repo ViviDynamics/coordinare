@@ -38,8 +38,8 @@ refuse stale/tampered receipts; no replay of uncertain external effects.
 Independent test: scope/author/reviewer/repair produce the same domain decisions
 under scripted proposals; real acceptance includes installer and clean consumer.
 
-- [ ] T012 [US2] Write phase/repair/probe/trial parity red tests in tests/unit/test_376_bootstrap_phases.py (FR01/FR02/FR05/FR08).
-- [ ] T013 [US2] Migrate phase bodies in environment_scope.py, environment_shard_scope.py, environment_discovery.py and environment_repair.py to environment_agent.py; preserve domain scheduling and full repair; run affected353 suites and commit (plan Task6).
+- [x] T012 [US2] Write phase/repair/probe/trial parity red tests in tests/unit/test_376_bootstrap_phases.py (FR01/FR02/FR05/FR08).
+- [x] T013 [US2] Migrate phase bodies in environment_scope.py, environment_shard_scope.py, environment_discovery.py and environment_repair.py to environment_agent.py; preserve domain scheduling and full repair; run affected353 suites and commit (plan Task6).
 
 ## US3 completion: Daemon lifecycle
 

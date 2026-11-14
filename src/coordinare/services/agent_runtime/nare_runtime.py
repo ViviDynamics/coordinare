@@ -7,11 +7,13 @@ import inspect
 import json
 import time
 from contextlib import aclosing
+from copy import deepcopy
 from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Literal
 
 from nare import Policy, dumps, loads, new_session, run
 from nare.loop import RetryPolicy
+from nare.schema import UnsupportedSchema, check_supported
 
 from coordinare.services.agent_runtime.accounting import BudgetBridge, BudgetTransport
 from coordinare.services.agent_runtime.checkpoint import (
@@ -48,25 +50,40 @@ class NareRuntime:
         transport = self._transport
         try:
             request.budget.check()
+            schema = _native_schema(request.answer_schema)
             await execution.restore()
-            if transport is None:
-                assert self._config is not None
-                transport = self._config.transport(request.instructions)
-            wrapped = BudgetTransport(transport, execution.bridge, session_id=execution.session.id,
-                before_send=execution.save, calls=self._calls, config=self._config, instructions=request.instructions)
-            names = frozenset(tool.name for tool in request.allowed_tools)
-            deadline = min(request.budget.deadline, request.phase_deadline or request.budget.deadline)
-            async with asyncio.timeout_at(deadline):
-                events = run(execution.session, transport=wrapped,
-                    policy=Policy(tools=names, pending=names), tools=request.allowed_tools,
-                    schema=request.answer_schema, check=execution.check,
-                    max_turns=max(1, request.budget.max_calls - request.budget.calls),
-                    max_corrections=max(1, execution.session.schema_corrections
-                        + request.budget.max_schema_repairs - request.budget.schema_repairs),
-                    retry=self._retry, compaction='elide', compaction_trigger=0.6, compaction_target=0.4)
-                async with aclosing(events):
-                    async for event in events:
-                        await execution.event(event)
+            if execution.session.status == 'done':
+                from nare.schema import validate
+
+                if not isinstance(execution.session.output, dict) or validate(execution.session.output, schema):
+                    raise EnvironmentDiscoveryError('Saved answer no longer satisfies the declared schema.',
+                                                    code='agent_checkpoint_answer')
+                await execution.check(deepcopy(execution.session.output))
+            else:
+                if request.effects is not None and request.checkpoint_store is not None:
+                    request.effects.persist = execution.save
+                if transport is None:
+                    assert self._config is not None
+                    transport = self._config.transport(request.instructions)
+                wrapped = BudgetTransport(transport, execution.bridge, session_id=execution.session.id,
+                    before_send=execution.save, calls=self._calls, config=self._config, instructions=request.instructions,
+                    max_output_bytes=request.max_output_bytes, max_context_bytes=request.max_context_bytes,
+                    answer_schema=schema)
+                names = frozenset(tool.name for tool in request.allowed_tools)
+                deadline = min(request.budget.deadline, request.phase_deadline or request.budget.deadline)
+                async with asyncio.timeout_at(deadline):
+                    events = run(execution.session, transport=wrapped,
+                        policy=Policy(tools=names, pending=names), tools=request.allowed_tools,
+                        schema=schema, check=execution.check,
+                        max_turns=max(1, request.budget.max_calls - request.budget.calls),
+                        max_corrections=request.shard_corrections if request.shard_corrections is not None else
+                            max(1, execution.session.schema_corrections
+                                + request.budget.max_schema_repairs - request.budget.schema_repairs
+                                + len(request.prerequisites - execution.prerequisite_reminders)),
+                        retry=self._retry, compaction='elide', compaction_trigger=0.6, compaction_target=0.4)
+                    async with aclosing(events):
+                        async for event in events:
+                            await execution.event(event)
             execution.classify()
         except TimeoutError:
             execution.hold_code = 'attempt_deadline' if time.monotonic() >= request.budget.deadline else 'phase_deadline'
@@ -85,6 +102,36 @@ class NareRuntime:
             if self._config is not None and transport is not None:
                 await _close_owned_transport(transport)
         return execution.result()
+
+
+def _native_schema(schema: JsonObject) -> JsonObject:
+    """Drop Pydantic's routing annotation, retaining every validation branch."""
+    result = deepcopy(schema)
+
+    def visit(node: JsonObject) -> None:
+        if 'discriminator' in node and isinstance(node.get('oneOf'), list):
+            del node['discriminator']  # Annotation only; oneOf and each tag const remain.
+        for keyword in ('properties', '$defs', 'definitions'):
+            if isinstance(mapping := node.get(keyword), dict):
+                for child in mapping.values():
+                    if isinstance(child, dict):
+                        visit(child)
+        for keyword in ('oneOf', 'anyOf', 'allOf'):
+            if isinstance(branches := node.get(keyword), list):
+                for child in branches:
+                    if isinstance(child, dict):
+                        visit(child)
+        for keyword in ('items', 'additionalProperties'):
+            if isinstance(child := node.get(keyword), dict):
+                visit(child)
+
+    visit(result)
+    try:
+        check_supported(result)
+    except UnsupportedSchema:
+        raise EnvironmentDiscoveryError('Phase schema is not supported by the native validator.',
+                                        code='agent_schema_unsupported') from None
+    return result
 
 
 async def _close_owned_transport(transport: Transport) -> None:
@@ -112,6 +159,8 @@ class _Execution:
         self.verified = False
         self.key = request.checkpoint_key
         self.events_seen: set[str] = set()
+        self.prerequisite_reminders: set[str] = set()
+        self.free_reminder = False
 
     async def restore(self) -> None:
         req = self.request
@@ -119,10 +168,21 @@ class _Execution:
             if req.checkpoint_store is None:
                 raise EnvironmentDiscoveryError('Checkpoint storage is unavailable.', code='agent_checkpoint_unavailable')
             saved = await req.checkpoint_store.load_verified(self.key, req.identity)
+            if not saved.prerequisite_reminders <= req.prerequisites:
+                raise EnvironmentDiscoveryError('Saved prerequisite policy differs.', code='agent_checkpoint_identity')
+            self.prerequisite_reminders = set(saved.prerequisite_reminders)
             if any(value > getattr(req.budget, name) for name, value in saved.counters.items()):
                 raise EnvironmentDiscoveryError('Domain accounting is behind the checkpoint.', code='agent_checkpoint_accounting')
             if saved.phase_calls > req.budget.agent_phase_calls.get(self.slot, 0):
                 raise EnvironmentDiscoveryError('Phase accounting is behind the checkpoint.', code='agent_checkpoint_accounting')
+            if req.effects is not None:
+                req.effects.restore(saved.effects)
+            elif saved.effects:
+                raise EnvironmentDiscoveryError('Resumed action journal is missing.', code='agent_effect_unavailable')
+            if req.tool_state is not None:
+                await req.tool_state.restore(saved.tool_state)
+            elif saved.tool_state:
+                raise EnvironmentDiscoveryError('Resumed tool state is missing.', code='agent_tool_state_unavailable')
             if req.evidence_catalog is not None:
                 req.evidence_catalog.restore_receipt(saved.evidence)
             elif saved.evidence.delivered:
@@ -139,7 +199,10 @@ class _Execution:
         saved = AgentCheckpoint(identity=req.identity,
             session_text=dumps(replace(self.session, error='agent_phase_held' if self.session.error else None)),
             evidence=evidence, counters={name: getattr(req.budget, name) for name in COUNTERS},
-            phase_calls=req.budget.agent_phase_calls.get(self.slot, 0))
+            phase_calls=req.budget.agent_phase_calls.get(self.slot, 0),
+            tool_state=req.tool_state.snapshot() if req.tool_state is not None else {},
+            prerequisite_reminders=frozenset(self.prerequisite_reminders),
+            effects=req.effects.receipts() if req.effects is not None else ())
         try:
             self.key = await req.checkpoint_store.save(saved)
             req.budget.agent_checkpoints[self.slot] = CheckpointReference(key=self.key, identity=req.identity)
@@ -150,6 +213,8 @@ class _Execution:
 
     async def check(self, answer: JsonObject) -> list[JsonObject]:
         try:
+            if self.request.effects is not None:
+                await self.request.effects.ensure_settled()
             issues = await self.request.check(answer)
         except EnvironmentDiscoveryError as exc:
             self.hold_code = exc.code
@@ -159,14 +224,32 @@ class _Execution:
             raise
         self.admitted = answer if not issues else None
         self.hold_code = issues[0].code if issues else None
-        if issues and self.request.budget.schema_repairs >= self.request.budget.max_schema_repairs:
+        self.free_reminder = bool(issues and len(issues) == 1 and issues[0].code in self.request.prerequisites)
+        if self.free_reminder:
+            if issues[0].code in self.prerequisite_reminders:
+                raise EnvironmentDiscoveryError('Required prerequisite remains unexecuted.', code=issues[0].code)
+            self.prerequisite_reminders.add(issues[0].code)
+        if (issues and self.request.shard_corrections is None
+                and not self.free_reminder
+                and self.request.budget.schema_repairs >= self.request.budget.max_schema_repairs):
             raise EnvironmentDiscoveryError('Domain correction allowance exhausted.', code=issues[0].code)
         return [asdict(issue) for issue in issues]
 
     async def event(self, event: Event) -> None:
         kind = 'progress'
         if 'schema_correction' in event.detail:
-            await self.bridge.correction()
+            if self.free_reminder:
+                self.free_reminder = False
+                await self.bridge.persist()
+            elif self.request.shard_corrections is None:
+                await self.bridge.correction()
+            else:
+                self.request.budget.check()
+                if event.detail['schema_correction']['charged']:
+                    self.request.budget.shard_schema_repairs += 1
+                else:
+                    self.request.budget.validation_codes.append('correction_progress')
+                await self.bridge.persist()
             kind = 'correction'
         elif 'compaction' in event.detail:
             self.request.budget.agent_compactions += 1

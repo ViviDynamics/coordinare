@@ -66,8 +66,12 @@ NATIVE_SOURCE_INSTRUCTIONS = (
     'review_evidence returns complete pages; it may return fewer pages than requested. '
     'Continue from next_unread until unread_count is zero before answering. '
     'Reread pages when compaction removes needed detail. '
-    'Return only the final JSON envelope matching the supplied assessment schema. '
+    'Return only the final JSON envelope matching the supplied phase schema. '
 ) + SOURCE_CRITERIA + CAPABILITY_CRITERIA
+
+
+def source_navigation(budget: AttemptBudget | None) -> str:
+    return NATIVE_SOURCE_INSTRUCTIONS if budget is not None and budget.agent_context is not None else SOURCE_NAVIGATION
 
 LOCAL_CREDENTIAL_AUTHORING = (
     'Never write a literal credential, even a throwaway test password. A credential for a service this manifest '
@@ -110,9 +114,11 @@ LOCAL_CREDENTIAL_REVIEW = (
     'Judge every local_credentials entry: it must belong to a service this manifest starts. A credential the source '
     'shows comes from outside the environment, such as a cloud key or registry token, is a blocking finding.')
 
-_MANIFEST_INSTRUCTIONS = (
+_WHOLE_MANIFEST_MAPPING = (
     'Use the fixed scope_contract supplied by the daemon: criterion_checks maps every required criterion ID '
-    'to required unscoped consumer checks. Never return scope_contract, scope_contract_digest or change source obligations. '
+    'to required unscoped consumer checks. ')
+_MANIFEST_RULES = (
+    'Never return scope_contract, scope_contract_digest or change source obligations. '
     'runtime_endpoints declares bounded loopback forwards only when an explicit private platform policy is configured. '
     'Architecture: installs and checks run natively on platform_roles.install_and_check_platform, so download release '
     'artifacts for that platform. A container image for another platform runs only through emulated_platforms, which is '
@@ -157,6 +163,8 @@ _MANIFEST_INSTRUCTIONS = (
     'Preserve every existing required requirement-to-check link; revise the linked commands instead of removing links. '
 
 )
+
+_MANIFEST_INSTRUCTIONS = _WHOLE_MANIFEST_MAPPING + _MANIFEST_RULES
 
 _MANIFEST_ENVELOPE = create_model(
     "ManifestEnvelope", manifest=(EnvironmentManifestProposal, ...), finding_responses=(list[FindingResponse], ...),
@@ -252,3 +260,20 @@ def legacy_discovery_system() -> str:
     return (SOURCE_TOOLS + 'You may return {"probe":...} matching ' +
         json.dumps(ProbeRequest.model_json_schema()) + _MANIFEST_INSTRUCTIONS +
         'Return {"manifest":...,"finding_responses":[]} matching this schema: ' + json.dumps(_MANIFEST_ENVELOPE.model_json_schema()))
+
+
+def native_discovery_system(*, delta: bool, preflight: bool, trial: bool, global_part: bool = False) -> str:
+    envelope = 'manifest_delta' if delta else 'manifest'
+    return (NATIVE_SOURCE_INSTRUCTIONS + ('' if global_part else _WHOLE_MANIFEST_MAPPING) + _MANIFEST_RULES +
+        f'Return the complete {envelope} envelope and finding_responses. ' +
+        ('For this repair, declare only records changed or added, preserving every frozen obligation. ' if delta else '') +
+        ('Before a final declaration, use the native probe tool to observe uncertain base-image prerequisites. '
+         'Probe commands have no network, secrets or installed cache, and source is read-only. Do not install anything. '
+         'Inspect sources through read_source, never probe commands. Missing tools are valid observations, not readiness. '
+         'Discover command names available through PATH as well as testing uncertain operational capabilities. '
+         'The private_service execution context requires an explicit runtime policy; each command receives a fresh '
+         'platform-only guest, and startup and teardown share the probe deadline. '
+         'Read all observation pages before declaring a manifest. ' if preflight else '') +
+        ('Use the native trial tool only for allowed replacement services and checks. Read-only failed-generation '
+         'cache, unchanged activation, no network and fresh local credentials apply. Trials never install artifacts '
+         'or replace independent review, fresh execution and clean consumer verification. ' if trial else ''))

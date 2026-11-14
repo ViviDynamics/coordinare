@@ -8,7 +8,7 @@ import re
 import stat
 import tempfile
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -21,7 +21,7 @@ Digest = Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]
 MAX_CHECKPOINT_BYTES = 32 * 1024 * 1024
 KEY = re.compile(r'v1-[0-9a-f]{64}\.json\Z')
 COUNTERS = frozenset({'calls', 'reads', 'verification_reads', 'schema_repairs', 'scope_revisions',
-                      'coverage_revisions', 'execution_repairs', 'probe_batches', 'trial_runs'})
+                      'coverage_revisions', 'execution_repairs', 'probe_batches', 'trial_runs', 'shard_schema_repairs'})
 
 
 class CheckpointReference(BaseModel):
@@ -55,12 +55,15 @@ class EffectReceipt(BaseModel):
     binding_digest: Digest
     status: Literal['pending', 'completed']
     result_digest: Digest | None = None
+    result_json: str | None = Field(default=None, repr=False)
 
     @model_validator(mode='after')
     def completion_has_receipt(self) -> EffectReceipt:
         if (self.status == 'completed') != (self.result_digest is not None):
             message = 'Completed effects require an execution receipt.'
             raise ValueError(message)
+        if self.result_json is not None and hashlib.sha256(self.result_json.encode()).hexdigest() != self.result_digest:
+            raise ValueError('Effect result differs from its receipt.')
         return self
 
 
@@ -74,6 +77,8 @@ class AgentCheckpoint(BaseModel):
     counters: dict[str, Annotated[int, Field(strict=True, ge=0)]]
     phase_calls: int = Field(default=0, ge=0, strict=True)
     effects: tuple[EffectReceipt, ...] = ()
+    tool_state: dict[str, Any] = Field(default_factory=dict, repr=False)
+    prerequisite_reminders: frozenset[str] = frozenset()
 
     @model_validator(mode='after')
     def bounded_authority(self) -> AgentCheckpoint:
