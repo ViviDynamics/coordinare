@@ -165,3 +165,83 @@ def test_restart_restores_trial_and_sharded_correction_spend(tmp_path: Any) -> N
     save_attempt(cache, restarted)
     again = begin_attempt(cache, bounds, outer_seconds=600)
     assert again.trial_runs == 2 and again.shard_schema_repairs == 7
+
+
+@pytest.mark.asyncio
+async def test_phase_deadline_is_not_renewed_by_checkpoint_resume(tmp_path: Any, monkeypatch: Any) -> None:
+    import time
+
+    req = replace(request(admit), checkpoint_store=CheckpointStore(tmp_path), phase_deadline=time.monotonic() + 60)
+    runtime = NareRuntime(transport=ScriptedTransport('{"accepted":true}'))
+    first = await runtime.run(req)
+    assert first.status == 'accepted'
+    later = time.time() + 61
+    monkeypatch.setattr(time, 'time', lambda: later)
+    resumed = await runtime.run(replace(req, checkpoint_key=first.checkpoint_key, phase_deadline=time.monotonic() + 60))
+    assert resumed.status == 'held' and resumed.hold_code == 'phase_deadline'
+    assert req.budget.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_phase_automatically_reuses_only_its_verified_journal_reference(tmp_path: Any) -> None:
+    from coordinare.services.environment_agent import run_environment_phase
+    from tests.unit.test_353_review_findings_flow import review
+    from tests.unit.test_376_environment_review import ReviewerTransport, phase
+
+    transport = ReviewerTransport(review(), early=False)
+    req = phase(tmp_path, transport)
+    first = await run_environment_phase(req)
+    calls = transport.calls
+    second = await run_environment_phase(req)
+    assert second.data == first.data
+    assert transport.calls == calls
+    assert second.evidence.receipt() == first.evidence.receipt()
+
+
+@pytest.mark.asyncio
+async def test_verified_provider_failure_checkpoint_resumes_without_resetting_accounting(tmp_path: Any) -> None:
+    class Unavailable(ScriptedTransport):
+        async def turn(self, messages: Any, tools: Any) -> Any:
+            raise RuntimeError('Synthetic provider unavailable')
+    req = replace(request(admit), checkpoint_store=CheckpointStore(tmp_path))
+    failed = await NareRuntime(transport=Unavailable('')).run(req)
+    assert failed.hold_code == 'provider_request_failed'
+    assert req.budget.calls == req.budget.agent_usage_unknown == 1
+    resumed = await NareRuntime(transport=ScriptedTransport('{"accepted":true}')).run(
+        replace(req, checkpoint_key=failed.checkpoint_key))
+    assert resumed.status == 'accepted'
+    assert req.budget.calls == 2 and req.budget.agent_usage_unknown == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('mode', 'size', 'code'), [('120000', 4, 'link'), ('100644', 999999999, 'too_large')])
+async def test_native_navigation_respects_source_inventory_policy(mode: str, size: int, code: str) -> None:
+    from unittest.mock import AsyncMock
+
+    from coordinare.services.environment_inspection import InventoryEntry
+
+    fetch = AsyncMock(return_value='must not be fetched')
+    inspection = SourceInspection({'guide': InventoryEntry(path='guide', mode=mode, size=size)},
+                                  fetch, DiscoveryLimits())
+    sources = PinnedSourceTools(inspection)
+    result = json.loads(await sources.read({'path': 'guide'}))
+    assert result['error'] == code
+    assert not sources.catalogs and not inspection.inputs
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_restored_source_observer_preserves_domain_exception() -> None:
+    from coordinare.services.environment_agent import PhaseToolState
+    from coordinare.services.environment_construction import ScopeReopenedError
+
+    original = navigation('new obligation')
+    await original.read({'path': 'guide'})
+    restored = navigation('new obligation')
+    failure = ScopeReopenedError()
+    async def observe(inputs: Any) -> None:
+        raise failure
+    restored.observe_sources = observe
+    with pytest.raises(ScopeReopenedError):
+        await PhaseToolState(restored, None).restore(PhaseToolState(original, None).snapshot())
+    assert restored.failure is failure

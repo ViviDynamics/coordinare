@@ -129,3 +129,22 @@ nare owns correction conversation, final schemas still require every decision,
 and existing domain ledgers/frozen commands remain authoritative. Recovery cost
 and quality must be assessed in final live acceptance. Legacy runtime deletion
 is deferred until that acceptance passes.
+
+## Daemon lifecycle (Task7)
+
+The normal daemon route selects its configured conducting model and starts native
+scope/author/reviewer sessions. One preparation owner per symphony prevents a
+second cycle from clearing live source ownership. Cancellation reaches the caller,
+cleans owned source state and produces a visible terminal hold. Private checkpoints
+refuse all overlap with performer mounts. Verified provider-error sessions resume
+through a real daemon snapshot round-trip without renewing attempt or phase limits.
+An older verified cache retains its clean-consumer evidence and provenance on restart;
+incomplete legacy conversations create no native delivery receipts. Unknown past
+trial spending is reserved conservatively instead of renewed.
+
+Validation: 2,589 affected bootstrap/native/lifecycle tests passed (21 warnings).
+Final focused native/status/control checks passed 209 tests (one warning); targeted
+ruff and strict mypy (369 modules) passed. The final checks include serialized status
+inputs, client cleanup failure, source navigation policy and exact delivery receipts.
+These are deterministic provider tests and local fixture execution. Live production
+installation/repair and final runtime retirement remain Task8 gates.

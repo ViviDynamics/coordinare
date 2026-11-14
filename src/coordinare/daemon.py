@@ -4143,6 +4143,19 @@ class CoordinareDaemon:
         self._manifest_llm_chat = chat
         return chat
 
+    def _get_manifest_agent_model(self) -> Any:
+        """Resolve the same conductor selection when the bootstrap phase starts."""
+        import os
+
+        from coordinare.services.agent_runtime.configuration import resolve_conducting
+        from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+
+        config = self._state.get('config')
+        conducting = getattr(config, 'conducting', None)
+        if conducting is None:
+            raise EnvironmentDiscoveryError('Bootstrap conducting configuration is unavailable.', code='agent_configuration_missing')
+        return resolve_conducting(conducting, environ=os.environ)
+
     async def _verify_env_cache_clean(
         self, symphony_name: str, svc: Any,
     ) -> tuple[bool | None, str]:
@@ -5886,7 +5899,7 @@ class CoordinareDaemon:
                     state=self._state,
                     dispatch_fn=_bootstrap_dispatch_fn,
                     container_devenv_root=_bootstrap_devenv_root,
-                    llm_chat=self._get_manifest_llm_chat(),
+                    agent_model=self._get_manifest_agent_model,
                     clean_verify_fn=_clean_verify_fn,
                 )
 

@@ -132,6 +132,7 @@ if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import ExecutionCapabilities
     from coordinare_service_inference.schema import ServicesManifest
 
+    from coordinare.services.agent_runtime.configuration import AgentModelConfig
     from coordinare.services.environment_discovery import ChatJson
     from coordinare.services.environment_probes import ProbePlan, ProbeReport
     from coordinare.services.environment_runtime import RuntimeVerifierContext
@@ -1171,6 +1172,7 @@ class EnvCacheService:
         self._coordinare_config = coordinare_config
         # 088: strong refs to in-flight exhaustion-notification tasks (prevents GC).
         self._notify_tasks: set[asyncio.Task[Any]] = set()
+        self._bootstrap_preparing: set[str] = set()
         # 088 (US5): symphonies whose cache has been verified (or freshly
         # bootstrapped) IN THIS PROCESS.  Per-process by design: an empty set
         # means a fresh coordinare boot, which is exactly when a persisted
@@ -1338,6 +1340,9 @@ class EnvCacheService:
         )
         return str(key)[:12]
 
+    def is_preparing(self, symphony_name: str) -> bool:
+        return symphony_name in self._bootstrap_preparing
+
     async def check_and_trigger(
         self,
         symphony_name: str,
@@ -1349,14 +1354,15 @@ class EnvCacheService:
         llm_chat: ChatJson | None = None,
         clean_verify_fn: Callable[[str], Coroutine[Any, Any, tuple[bool | None, str]]]
         | None = None,
+        agent_model: Callable[[], AgentModelConfig] | None = None,
     ) -> None:
-        """Check for README SHA changes and dispatch bootstrap if needed.
+        """Check pinned environment inputs and dispatch reviewed bootstrap if needed.
 
         FR-008: returns immediately if symphony has no env_bootstrap configured.
 
-        ``llm_chat`` (optional) is wired by the daemon to the coordinare's LLM and
-        used for the best-effort README pass that augments the deterministic
-        manifest with system packages described only in prose.
+        ``agent_model`` binds the daemon's configured conducting route to native
+        scope, author and independent reviewer sessions. ``llm_chat`` remains
+        only for callers of the old loops pending their acceptance-gated removal.
 
         ``clean_verify_fn`` (optional, 088 US5) runs the cache's verify.sh in a
         clean consumer-context container and returns ``(passed, detail)`` —
@@ -1366,6 +1372,8 @@ class EnvCacheService:
         <2 min) or blindly trusted.
         """
         if symphony_config.env_bootstrap_performer_id is None:
+            return
+        if symphony_name in self._bootstrap_preparing:
             return
 
         env_cache: dict[str, Any] = state.get("env_cache") or {}
@@ -1433,6 +1441,7 @@ class EnvCacheService:
                     dispatch_fn=dispatch_fn,
                     container_devenv_root=container_devenv_root,
                     llm_chat=llm_chat,
+                    agent_model=agent_model,
                 )
             finally:
                 # _do_dispatch returns without dispatching when a spec file
@@ -1645,6 +1654,7 @@ class EnvCacheService:
             dispatch_fn=dispatch_fn,
             container_devenv_root=container_devenv_root,
             llm_chat=llm_chat,
+            agent_model=agent_model,
         )
 
     async def _do_dispatch(
@@ -1659,6 +1669,31 @@ class EnvCacheService:
         dispatch_fn: Callable[[str, BootstrapJobPayload], Coroutine[Any, Any, None]],
         container_devenv_root: str = DEFAULT_DEVENV_ROOT,
         llm_chat: ChatJson | None = None,
+        agent_model: Callable[[], AgentModelConfig] | None = None,
+    ) -> None:
+        if symphony_name in self._bootstrap_preparing:
+            return
+        self._bootstrap_preparing.add(symphony_name)
+        try:
+            await self._prepare_and_dispatch(symphony_name=symphony_name, symphony_config=symphony_config,
+                github_service=github_service, eff_config=eff_config, current_sha=current_sha, cache_state=cache_state,
+                dispatch_fn=dispatch_fn, container_devenv_root=container_devenv_root, llm_chat=llm_chat, agent_model=agent_model)
+        finally:
+            self._bootstrap_preparing.discard(symphony_name)
+
+    async def _prepare_and_dispatch(
+        self,
+        *,
+        symphony_name: str,
+        symphony_config: Any,
+        github_service: _GitHubService,
+        eff_config: Any,
+        current_sha: str,
+        cache_state: EnvCacheState,
+        dispatch_fn: Callable[[str, BootstrapJobPayload], Coroutine[Any, Any, None]],
+        container_devenv_root: str = DEFAULT_DEVENV_ROOT,
+        llm_chat: ChatJson | None = None,
+        agent_model: Callable[[], AgentModelConfig] | None = None,
     ) -> None:
         repo = eff_config.project_name or symphony_name
         if not await _resolve_bootstrap_commit(github_service, eff_config, cache_state):
@@ -1716,6 +1751,7 @@ class EnvCacheService:
                 cache_dir=cache_state.cache_dir,
                 cache_mount_path=cache_mount_path,
                 llm_chat=llm_chat,
+                agent_model=agent_model,
                 declared_services=declared_services,
                 cache_state=cache_state,
             )
@@ -2500,6 +2536,7 @@ class EnvCacheService:
         declared_services: list[dict[str, Any]] | None = None,
         cache_state: EnvCacheState | None = None,
         capabilities: Any = None,
+        agent_model: Callable[[], AgentModelConfig] | None = None,
     ) -> tuple[str | None, bool, bool]:
         """Derive the manifest, write an authoritative verify.sh AND activate.sh
         into the cache, and return ``(dependency_checklist, verify_provided,
@@ -2570,6 +2607,14 @@ class EnvCacheService:
         attempt_timer = asyncio.timeout_at(budget.deadline)
         try:
             async with attempt_timer:
+                if agent_model is not None:
+                    from coordinare.services.environment_agent_lifecycle import (
+                        bootstrap_agent_context,
+                    )
+
+                    budget.agent_context = bootstrap_agent_context(model=agent_model(), cache=cache_state,
+                        state=self._kubernetes_state, config=self._coordinare_config.global_config,
+                        performer_mounts=self._performer_mounts())
                 budget.stage = 'execution_source'
                 await budget.flush()
                 prepare_source = getattr(github_service, 'prepare_execution_source', None)

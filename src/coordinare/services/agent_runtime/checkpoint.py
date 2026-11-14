@@ -79,6 +79,9 @@ class AgentCheckpoint(BaseModel):
     effects: tuple[EffectReceipt, ...] = ()
     tool_state: dict[str, Any] = Field(default_factory=dict, repr=False)
     prerequisite_reminders: frozenset[str] = frozenset()
+    phase_expires_at: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    terminal_status: Literal['accepted', 'held', 'cancelled', 'error'] | None = None
+    hold_code: str | None = None
 
     @model_validator(mode='after')
     def bounded_authority(self) -> AgentCheckpoint:

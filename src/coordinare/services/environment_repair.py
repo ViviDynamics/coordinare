@@ -150,6 +150,8 @@ class RepairJournal(BaseModel):
     agent_compactions: int = Field(default=0, ge=0)
     agent_retries: int = Field(default=0, ge=0)
     trial_runs: int = Field(default=0, ge=0)
+    trial_usage_unknown: bool = False
+    agent_runtime: Literal['legacy', 'nare'] = 'legacy'
     shard_schema_repairs: int = Field(default=0, ge=0)
     usage: dict[str, int] = Field(default_factory=dict)
     calls_completed: int = Field(default=0, ge=0)
@@ -166,6 +168,13 @@ class RepairJournal(BaseModel):
                          'trial_runs', 'shard_schema_repairs'):
                 if name not in data and name in data['diagnostics']:
                     data[name] = data['diagnostics'][name]
+        if (isinstance(data, dict) and data.get('version') and 'trial_runs' not in data
+                and isinstance(data.get('execution_repairs'), int) and data['execution_repairs'] > 0):
+            from coordinare.services.environment_repair_trial import MAX_TRIALS_PER_REPAIR
+
+            # Old journals did not persist trial spending. Reserve all unprovable
+            # past allowance; a later execution repair still earns its own trials.
+            data = {**data, 'trial_runs': MAX_TRIALS_PER_REPAIR * data['execution_repairs'], 'trial_usage_unknown': True}
         return data
 
 
@@ -557,6 +566,15 @@ def _publish(cache: EnvCacheState, journal: RepairJournal) -> None:
     if len(json.dumps(data).encode()) > JOURNAL_MAX_BYTES:
         _refuse('environment repair journal exceeds its bound')
     cache.environment_attempt = data
+
+
+def mark_native_attempt(cache: EnvCacheState) -> bool:
+    """Tag future native references; never reinterpret an older conversation."""
+    journal = journal_for(cache)
+    migrated = journal.agent_runtime == 'legacy' and journal.calls > 0
+    journal.agent_runtime = 'nare'
+    _publish(cache, journal)
+    return migrated
 
 
 def _budget(journal: RepairJournal, now: float) -> AttemptBudget:

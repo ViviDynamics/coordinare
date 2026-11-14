@@ -43,8 +43,8 @@ under scripted proposals; real acceptance includes installer and clean consumer.
 
 ## US3 completion: Daemon lifecycle
 
-- [ ] T014 [US3] Write old-state/restart/cancel/one-active-bootstrap red tests in tests/integration/test_376_bootstrap_lifecycle.py (FR04/FR07/FR09).
-- [ ] T015 [US3] Wire env_cache.py and state_store.py migration policy to runtime and checkpoint references; verify no domain budget reset and commit (plan Task7).
+- [x] T014 [US3] Write old-state/restart/cancel/one-active-bootstrap red tests in tests/integration/test_376_bootstrap_lifecycle.py (FR04/FR07/FR09).
+- [x] T015 [US3] Wire env_cache.py and state_store.py migration policy to runtime and checkpoint references; verify no domain budget reset and commit (plan Task7).
 
 ## US4: Acceptance and retirement (P2)
 

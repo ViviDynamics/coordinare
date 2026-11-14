@@ -1138,9 +1138,14 @@ async def discover_and_review(
     No partial result escapes: malformed/unsupported output, missing configuration,
     incomplete evidence, or any nonaccept verdict raises ``EnvironmentDiscoveryError``.
     """
-    if chat is None or not callable(chat):
+    native_budget = options.get('budget')
+    if (chat is None or not callable(chat)) and (native_budget is None or native_budget.agent_context is None):
         message = "environment discovery/review model configuration is required"
         raise EnvironmentDiscoveryError(message)
+    if chat is None:
+        from coordinare.services.environment_agent import unavailable_legacy_chat
+
+        chat = unavailable_legacy_chat
     if not symphony_name or not commit:
         message = "environment discovery requires source identity"
         raise EnvironmentDiscoveryError(message)

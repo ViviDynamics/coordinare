@@ -129,3 +129,34 @@ async def test_configured_request_reaches_native_transport_unchanged(monkeypatch
     assert sent[0]['temperature'] == 0.2
     assert sent[0]['reasoning_effort'] == 'high'
     assert sent[0]['messages'][0] == {'role': 'system', 'content': 'Judge the evidence using the supplied rules.'}
+
+
+@pytest.mark.asyncio
+async def test_owned_transport_cleanup_failure_is_terminal_and_does_not_escape(monkeypatch: Any, tmp_path: Any) -> None:
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from coordinare.services.agent_runtime.checkpoint import CheckpointStore
+    from coordinare.services.agent_runtime.configuration import AgentModelConfig, resolve_conducting
+    from coordinare.services.agent_runtime.nare_runtime import NareRuntime
+
+    async def close() -> None:
+        raise RuntimeError('private cleanup error')
+    async def admit(answer: Any) -> list[Any]:
+        return []
+    events = []
+    async def event(value: Any) -> None:
+        events.append(value)
+    transport = ScriptedTransport('{"accepted":true}')
+    transport._client = SimpleNamespace(aclose=close)
+    monkeypatch.setattr(AgentModelConfig, 'transport', lambda *args: transport)
+    from coordinare.config import ConductingConfig
+    model = resolve_conducting(ConductingConfig(backend='openai_api'), environ={'OPENAI_API_KEY': 'fixture'})
+    req = replace(request(admit), checkpoint_store=CheckpointStore(tmp_path), event_sink=event)
+    result = await NareRuntime(config=model).run(req)
+    assert result.status == 'held' and result.hold_code == 'agent_transport_cleanup'
+    assert result.answer is None
+    saved = await req.checkpoint_store.load_verified(result.checkpoint_key, req.identity)
+    assert saved.hold_code == 'agent_transport_cleanup'
+    assert events[-1]['kind'] == 'terminal' and events[-1]['hold_code'] == 'agent_transport_cleanup'
+    assert 'private cleanup error' not in repr(result) + repr(events)

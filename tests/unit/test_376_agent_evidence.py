@@ -172,3 +172,21 @@ async def test_default_read_uses_response_capacity_without_splitting_pages() -> 
     assert len(batch.pages) > 4
     assert len(batch.serialized) <= MAX_TOOL_OUTPUT
     assert all(len(page.content) == 4096 for page in batch.pages)
+
+
+@pytest.mark.asyncio
+async def test_phase_result_receipt_binds_only_actually_delivered_pages() -> None:
+    from dataclasses import replace
+
+    from coordinare.services.agent_runtime.evidence import EvidenceRead, EvidenceStore
+    from coordinare.services.agent_runtime.nare_runtime import NareRuntime
+    from tests.unit.test_376_agent_accounting import admit
+    from tests.unit.test_376_agent_runtime import ScriptedTransport, request
+
+    store = EvidenceStore((source('x' * 40000),), required=frozenset({'nested/custom.input'}), output_cap=6000)
+    await store.read(EvidenceRead(pages=tuple(range(store.page_count))))
+    result = await NareRuntime(transport=ScriptedTransport('{"accepted":true}')).run(
+        replace(request(admit), evidence_catalog=store))
+    receipt = store.receipt()
+    assert result.evidence_receipt == tuple(f'{receipt.catalog_digest}:{page}' for page in receipt.delivered)
+    assert len(result.evidence_receipt) < store.page_count

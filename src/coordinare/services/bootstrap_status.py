@@ -325,6 +325,7 @@ def symphony_view(
         cache, configured=configured, running=running,
         max_attempts=max_attempts_of(state), now=now,
     )
+    _preparation_status(view, state, symphony, _as_state(cache), configured=configured)
     recent = history.recent(symphony, RECENT_LIMIT) if history is not None else []
     if view["state"] in (STATE_WAITING, STATE_FAILED) and recent and recent[0].outcome == OUTCOME_CANCELLED:
         record = recent[0]
@@ -336,6 +337,25 @@ def symphony_view(
         )
     view["history"] = [attempt_view(record, now) for record in recent]
     return view
+
+
+def _preparation_status(view: dict[str, Any], state: Mapping[str, Any], symphony: str,
+                        cache: EnvCacheState | None, *, configured: bool) -> None:
+    if not configured or cache is None or cache.bootstrap_in_flight:
+        return
+    preparing = getattr(state.get('env_cache_service'), 'is_preparing', None)
+    journal = cache.environment_attempt or {}
+    if callable(preparing) and preparing(symphony) is True:
+        phase = str(journal.get('diagnostics', {}).get('stage', ''))
+        label = ('Reviewing source requirements' if phase.startswith('scope_') else
+                 'Reviewing installation plan' if phase == 'review' else
+                 'Checking base environment' if phase == 'probe_execution' else 'Preparing environment')
+        view.update(state=STATE_BOOTSTRAPPING, label=label, attempt=int(cache.bootstrap_attempts or 0) + 1)
+    elif journal.get('status') == 'held' and view['state'] == STATE_NOT_STARTED:
+        cancelled = journal.get('last_error') == 'attempt_cancelled'
+        view.update(state=STATE_CANCELLED if cancelled else STATE_FAILED,
+                    label='Cancelled' if cancelled else 'Environment preparation held')
+        _reason_fields(view, journal.get('last_error'))
 
 
 _HOLD_WORDS = {

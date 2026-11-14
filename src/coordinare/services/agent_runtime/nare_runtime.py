@@ -70,7 +70,7 @@ class NareRuntime:
                     max_output_bytes=request.max_output_bytes, max_context_bytes=request.max_context_bytes,
                     answer_schema=schema)
                 names = frozenset(tool.name for tool in request.allowed_tools)
-                deadline = min(request.budget.deadline, request.phase_deadline or request.budget.deadline)
+                deadline = min(request.budget.deadline, time.monotonic() + execution.phase_expires_at - time.time())
                 async with asyncio.timeout_at(deadline):
                     events = run(execution.session, transport=wrapped,
                         policy=Policy(tools=names, pending=names), tools=request.allowed_tools,
@@ -94,13 +94,19 @@ class NareRuntime:
         except Exception:
             execution.status, execution.hold_code = 'error', 'agent_runtime_failed'
         finally:
+            execution.terminal = True
+            if self._config is not None and transport is not None:
+                try:
+                    await _close_owned_transport(transport)
+                except asyncio.CancelledError:
+                    execution.status, execution.hold_code = 'cancelled', 'agent_cancelled'
+                except Exception:
+                    execution.status, execution.hold_code = 'held', 'agent_transport_cleanup'
             try:
                 await execution.save()
                 await execution.emit('terminal')
             except Exception:
                 execution.status, execution.hold_code = 'held', 'agent_checkpoint_persistence'
-            if self._config is not None and transport is not None:
-                await _close_owned_transport(transport)
         return execution.result()
 
 
@@ -159,8 +165,11 @@ class _Execution:
         self.verified = False
         self.key = request.checkpoint_key
         self.events_seen: set[str] = set()
+        self.terminal = False
         self.prerequisite_reminders: set[str] = set()
         self.free_reminder = False
+        self.phase_expires_at = time.time() + max(0, min(request.budget.deadline,
+            request.phase_deadline or request.budget.deadline) - time.monotonic())
 
     async def restore(self) -> None:
         req = self.request
@@ -168,6 +177,12 @@ class _Execution:
             if req.checkpoint_store is None:
                 raise EnvironmentDiscoveryError('Checkpoint storage is unavailable.', code='agent_checkpoint_unavailable')
             saved = await req.checkpoint_store.load_verified(self.key, req.identity)
+            if saved.phase_expires_at is not None:
+                self.phase_expires_at = min(self.phase_expires_at, saved.phase_expires_at)
+            elif req.phase_deadline is not None:
+                raise EnvironmentDiscoveryError('Saved phase deadline is unavailable.', code='agent_checkpoint_deadline')
+            if time.time() >= self.phase_expires_at:
+                raise EnvironmentDiscoveryError('The original phase deadline expired.', code='phase_deadline')
             if not saved.prerequisite_reminders <= req.prerequisites:
                 raise EnvironmentDiscoveryError('Saved prerequisite policy differs.', code='agent_checkpoint_identity')
             self.prerequisite_reminders = set(saved.prerequisite_reminders)
@@ -188,6 +203,14 @@ class _Execution:
             elif saved.evidence.delivered:
                 raise EnvironmentDiscoveryError('Resumed evidence catalog is missing.', code='agent_evidence_changed')
             self.session = loads(saved.session_text)
+            if self.session.status in {'error', 'blocked'}:
+                if saved.terminal_status == 'held' and saved.hold_code == 'provider_request_failed':
+                    # Only the domain's resumable provider failure reopens the
+                    # conversation; usage, messages and correction state stay.
+                    self.session.status, self.session.error, self.session.stop_reason = 'working', None, None
+                else:
+                    raise EnvironmentDiscoveryError('Saved phase has a terminal refusal.',
+                        code=saved.hold_code or 'agent_checkpoint_terminal')
         self.verified = True
 
     async def save(self) -> None:
@@ -202,6 +225,9 @@ class _Execution:
             phase_calls=req.budget.agent_phase_calls.get(self.slot, 0),
             tool_state=req.tool_state.snapshot() if req.tool_state is not None else {},
             prerequisite_reminders=frozenset(self.prerequisite_reminders),
+            phase_expires_at=self.phase_expires_at,
+            terminal_status=self.status if self.terminal else None,
+            hold_code=self.hold_code if self.terminal else None,
             effects=req.effects.receipts() if req.effects is not None else ())
         try:
             self.key = await req.checkpoint_store.save(saved)
@@ -285,7 +311,9 @@ class _Execution:
             self.hold_code = 'attempt_schema_limit' if self.session.stop_reason == 'schema_violation' else 'agent_incomplete'
 
     def result(self) -> AgentResult:
+        receipt = self.request.evidence_catalog.receipt() if self.request.evidence_catalog is not None else None
         return AgentResult(status=self.status, answer=self.admitted if self.status == 'accepted' else None,
             hold_code=self.hold_code, checkpoint_key=self.key,
+            evidence_receipt=tuple(f'{receipt.catalog_digest}:{page}' for page in receipt.delivered) if receipt else (),
             usage={'input_tokens': self.session.usage.input, 'output_tokens': self.session.usage.output,
                    'cached_tokens': self.session.usage.cache_read, 'cache_write_tokens': self.session.usage.cache_write})

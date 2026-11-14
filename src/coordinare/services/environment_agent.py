@@ -1,6 +1,7 @@
 """Adapt independent bootstrap phases to native agents without moving admission."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -38,6 +39,11 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(_json(value).encode()).hexdigest()
 
 
+async def unavailable_legacy_chat(messages: list[dict[str, str]]) -> str:
+    """Refuse an accidental old-loop call while those loops await acceptance/deletion."""
+    raise EnvironmentDiscoveryError('Native bootstrap cannot invoke the old chat transport.', code='agent_legacy_transport_refused')
+
+
 @dataclass(frozen=True)
 class EnvironmentAgentContext:
     runtime: AgentRuntime
@@ -67,6 +73,9 @@ class PinnedSourceTools:
     async def read(self, arguments: JsonObject) -> str:
         path = arguments['path']
         if path not in self.catalogs:
+            policy = self.inspection.policy_status(path)
+            if policy != 'readable':
+                return _json({'path': path, 'error': policy})
             try:
                 item = await self.inspection.read(path)
                 if self.observe_sources is not None:
@@ -205,7 +214,11 @@ class PhaseToolState:
                 inspection.reads = max(inspection.reads, state.reads)
                 inspection.total_bytes = max(inspection.total_bytes, state.source_bytes)
                 if self.sources.observe_sources is not None:
-                    await self.sources.observe_sources(inspection.inputs)
+                    try:
+                        await self.sources.observe_sources(inspection.inputs)
+                    except EnvironmentDiscoveryError as exc:
+                        self.sources.failure = exc
+                        raise
             if self.observations is not None:
                 for key, item in state.observations.items():
                     if key != item.sha256 or hashlib.sha256(item.content.encode()).hexdigest() != key:
@@ -320,17 +333,24 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
         admitted = candidate
         return []
 
+    checkpoint_key = request.checkpoint_key
+    if checkpoint_key is None:
+        checkpoint_key = next((reference.key for reference in request.budget.agent_checkpoints.values()
+                               if reference.identity == identity), None)
     result = await request.runtime.run(AgentRequest(identity=identity,
         instructions=request.instructions, task=f'Read the immutable phase packet and required sources using review_evidence. '
             f'There are {evidence.page_count} pages in this catalog. Then return the {request.envelope} envelope.',
         answer_schema=request.schema, check=check, budget=request.budget, allowed_tools=tools,
-        checkpoint_key=request.checkpoint_key, checkpoint_store=request.checkpoint_store,
+        checkpoint_key=checkpoint_key, checkpoint_store=request.checkpoint_store,
         evidence_catalog=evidence, event_sink=request.event_sink,
         phase_deadline=time.monotonic() + request.phase_timeout_seconds, phase_max_calls=request.max_model_calls,
         max_output_bytes=request.max_output_bytes, max_context_bytes=request.max_context_bytes,
         shard_corrections=request.shard_corrections, effects=request.effects,
         tool_state=PhaseToolState(request.source_tools, request.observations, request.effects),
         prerequisites=request.prerequisites))
+    if result.status == 'cancelled':
+        request.budget.error_code = result.hold_code or 'agent_cancelled'
+        raise asyncio.CancelledError
     if terminal_error is not None:
         raise terminal_error
     if request.source_tools is not None and request.source_tools.failure is not None:
