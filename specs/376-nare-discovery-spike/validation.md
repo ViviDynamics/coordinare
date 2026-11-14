@@ -68,3 +68,20 @@ and real nare continuation after interrupted inference. Continuation retains
 usage, turns and corrections and does not replay the completed evidence tool.
 The affected checkpoint/evidence/runtime and existing journal suites total
 96 passing tests. Phase wiring and external-effect reconciliation remain later gates.
+
+## Accounting foundation
+
+The native runtime reserves and durably records each request before inference,
+including nare retries. Completed usage has persistent receipt deduplication;
+missing provider usage remains unknown. Schema corrections preserve separate
+scope, executable and execution repair allowances. Cancellation closes the stream,
+and terminal timeout reports cannot inherit a working session's status.
+Existing journals retain prior usage when loaded without the new native fields.
+The focused runtime, accounting, transcript and repair-journal checks pass
+(150 tests); strict typechecking passes across 365 modules. Actual daemon activity
+wiring remains Task7. Nare's Anthropic SDK has its internal retries disabled.
+
+The initial full repository run finished with 19,430 passed, 97 skipped,
+589 deselected and nine failures. Dependency audit additions, existing test timing
+and dated fixtures, untracked-file discovery, and mixed-version module collection
+are being investigated; the full suite is not claimed green.

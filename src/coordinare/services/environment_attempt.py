@@ -174,6 +174,10 @@ class AttemptBudget:
     delta_fallback: bool = False
     # The trusted code of the failure that made a delta repair fall back to the full repair, for the attempt summary.
     delta_fallback_code: str | None = None
+    agent_usage_receipts: set[str] = field(default_factory=set, repr=False)
+    agent_usage_unknown: int = 0
+    agent_compactions: int = 0
+    agent_retries: int = 0
     agent_checkpoints: dict[str, CheckpointReference] = field(default_factory=dict, repr=False)
     checkpoint: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
@@ -305,6 +309,8 @@ class AttemptBudget:
                 "remaining_seconds": round(max(0, self.deadline - time.monotonic()), 3), "usage": dict(self.usage),
                 "finish_reasons": dict(self.finish_reasons), "metadata_available": self.metadata_available,
                 "transport_fallbacks": self.transport_fallbacks,
+                "agent_usage_unknown": self.agent_usage_unknown, "agent_compactions": self.agent_compactions,
+                "agent_retries": self.agent_retries,
                 "shard_agents": self.shard_agents, "shard_schema_repairs": self.shard_schema_repairs,
                 "validation_codes": list(self.validation_codes),
                 "call_stats": {phase: dict(stats) for phase, stats in self.call_stats.items()},

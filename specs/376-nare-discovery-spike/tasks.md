@@ -25,8 +25,8 @@ refuse stale/tampered receipts; no replay of uncertain external effects.
 
 - [x] T006 [US3] Write checkpoint integrity/resume/effect receipt red tests in tests/unit/test_376_agent_checkpoint.py (FR04/FR08).
 - [x] T007 [US3] Implement checkpoint.py plus versioned references in environment_repair.py and state_store.py; test atomic interruption and real nare save/load, commit (plan Task3).
-- [ ] T008 [US3] Write accounting/cancellation/stream-retry/dedup red tests in tests/unit/test_376_agent_accounting.py (FR05/FR07).
-- [ ] T009 [US3] Implement accounting.py and bridge environment_attempt.py, conductor_calls.py and bootstrap_status.py; verify exact budget ownership and terminal mapping, commit (plan Task4).
+- [x] T008 [US3] Write accounting/cancellation/stream-retry/dedup red tests in tests/unit/test_376_agent_accounting.py (FR05/FR07).
+- [x] T009 [US3] Implement accounting.py and bridge environment_attempt.py, conductor_calls.py and bootstrap_status.py; verify exact budget ownership and terminal mapping, commit (plan Task4).
 
 ## US1 completion: Production reviewer
 

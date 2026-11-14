@@ -144,6 +144,26 @@ class RepairJournal(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     version: Literal[9] = 9
     agent_checkpoints: dict[str, CheckpointReference] = Field(default_factory=dict)
+    agent_usage_receipts: set[str] = Field(default_factory=set)
+    agent_usage_unknown: int = Field(default=0, ge=0)
+    agent_compactions: int = Field(default=0, ge=0)
+    agent_retries: int = Field(default=0, ge=0)
+    usage: dict[str, int] = Field(default_factory=dict)
+    calls_completed: int = Field(default=0, ge=0)
+    call_stats: dict[str, dict[str, float]] = Field(default_factory=dict)
+    finish_reasons: dict[str, int] = Field(default_factory=dict)
+    metadata_available: bool = False
+
+    @model_validator(mode='before')
+    @classmethod
+    def preserve_prior_accounting(cls, data: Any) -> Any:
+        if isinstance(data, dict) and isinstance(data.get('diagnostics'), dict):
+            data = dict(data)
+            for name in ('usage', 'calls_completed', 'call_stats', 'finish_reasons', 'metadata_available'):
+                if name not in data and name in data['diagnostics']:
+                    data[name] = data['diagnostics'][name]
+        return data
+
 
     @model_validator(mode='before')
     @classmethod
@@ -547,6 +567,15 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
         max_reads=journal.max_reads, max_schema_repairs=journal.max_schema_repairs,
         max_coverage_revisions=journal.max_coverage_revisions, max_scope_revisions=journal.max_scope_revisions,
         max_execution_repairs=journal.max_execution_repairs)
+    budget.usage = dict(journal.usage)
+    budget.calls_completed = journal.calls_completed
+    budget.call_stats = {phase: dict(values) for phase, values in journal.call_stats.items()}
+    budget.finish_reasons = dict(journal.finish_reasons)
+    budget.metadata_available = journal.metadata_available
+    budget.agent_usage_receipts = set(journal.agent_usage_receipts)
+    budget.agent_usage_unknown = journal.agent_usage_unknown
+    budget.agent_compactions = journal.agent_compactions
+    budget.agent_retries = journal.agent_retries
     budget.agent_checkpoints = {key: value.model_copy(deep=True) for key, value in journal.agent_checkpoints.items()}
     budget.scope_investigations = [item.model_copy(deep=True) for item in journal.scope_investigations]
     budget.scope_investigation_results = [item.model_copy(deep=True) for item in journal.scope_investigation_results]
@@ -650,6 +679,15 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
     journal = journal_for(cache)
     if budget.probe_abandonments != [item.model_dump(mode='json') for item in journal.probe_abandonments]:
         _refuse('abandoned probe history cannot be replaced', code='probe_reservation_invalid')
+    journal.usage = dict(budget.usage)
+    journal.calls_completed = budget.calls_completed
+    journal.call_stats = {phase: dict(values) for phase, values in budget.call_stats.items()}
+    journal.finish_reasons = dict(budget.finish_reasons)
+    journal.metadata_available = budget.metadata_available
+    journal.agent_usage_receipts = set(budget.agent_usage_receipts)
+    journal.agent_usage_unknown = budget.agent_usage_unknown
+    journal.agent_compactions = budget.agent_compactions
+    journal.agent_retries = budget.agent_retries
     journal.agent_checkpoints = {key: value.model_copy(deep=True) for key, value in budget.agent_checkpoints.items()}
     _save_scope_checkpoint(journal, budget)
     previous, current = journal.finding_ledger, budget.finding_ledger

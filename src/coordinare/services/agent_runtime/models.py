@@ -9,6 +9,8 @@ if TYPE_CHECKING:
 
     from nare import Tool
 
+    from coordinare.services.agent_runtime.checkpoint import CheckpointStore
+    from coordinare.services.agent_runtime.evidence import EvidenceStore
     from coordinare.services.environment_attempt import AttemptBudget
 
 JsonObject = dict[str, Any]
@@ -48,6 +50,9 @@ class AgentRequest:
     budget: AttemptBudget
     allowed_tools: tuple[Tool, ...] = ()
     checkpoint_key: str | None = None
+    checkpoint_store: CheckpointStore | None = None
+    evidence_catalog: EvidenceStore | None = None
+    event_sink: Callable[[JsonObject], Awaitable[None]] | None = None
 
 
 @dataclass(frozen=True)
