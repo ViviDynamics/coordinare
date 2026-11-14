@@ -148,3 +148,33 @@ ruff and strict mypy (369 modules) passed. The final checks include serialized s
 inputs, client cleanup failure, source navigation policy and exact delivery receipts.
 These are deterministic provider tests and local fixture execution. Live production
 installation/repair and final runtime retirement remain Task8 gates.
+
+## Acceptance preparation (Task8, incomplete)
+
+The private repository field harness now defaults to the native configured route,
+records normal conductor transcripts, and preserves existing installation,
+approval, cleanup and provenance gates. Deterministic daemon tests execute a real
+local failed installer/check, native delta repair, separate consumer check and
+provenance freeze; altered payload/source is refused. Provider answers and the
+container boundary remain substituted in these fixtures. This is not the pinned
+live-project acceptance required for deletion or readiness.
+
+Offline performance measurements on one runner: complete four-MiB paging median
+72.44 ms, peak incremental allocation 9,583,943 bytes; cold daemon import median
+0.82557 s for the prerequisite baseline and 0.83194 s for the candidate. Immutable
+encoded-page caching removed repeated serialization while exact page equality and
+receipt tests remained green. The existing advisory benchmark lane now also runs
+these budgets against the PR's pinned base on the same runner.
+
+The unchanged SQLite throughput test passed in35.82 seconds under Python3.12.15
+with SQLite3.54.1, after repeated90-second timeouts under Python3.14.9 with
+SQLite3.53.1. Local validation now uses Python3.12 to match CI. No SQLite product
+code, assertion or timeout was changed; the full canonical suite is still required.
+
+The explicitly approved saved-review continuation and one retry both stopped before
+inference when model metadata returned HTTP502. The library substituted a32,000-token
+window for the unavailable metadata, smaller than the saved73,383-token estimate.
+Additional model requests/tokens were zero. No assessment or readiness is claimed.
+The production adapter now holds with `agent_context_unavailable` when context
+metadata is missing or invalid, before inference or implicit fallback. Final live
+review and installer/consumer acceptance remain outstanding. No old loop is deleted.

@@ -30,9 +30,11 @@ from coordinare_service_inference.environment.runtime import RuntimePolicy
 from scripts import environment_validation_cleanup
 from scripts.environment_validation_image import candidate_image, verify_image_code
 
-from coordinare.config import EnvCacheConfig
+from coordinare.config import ConductingConfig, EnvCacheConfig, TranscriptsConfig
 from coordinare.models.env_cache import EnvCacheState
-from coordinare.services.conducting import OpenAiApiBackend
+from coordinare.services.activity_log import ActivityLog
+from coordinare.services.agent_runtime.configuration import resolve_conducting
+from coordinare.services.conductor_calls import ConductorCallLog
 from coordinare.services.env_cache import (
     EnvCacheService,
     sanitise_symphony_name,
@@ -61,6 +63,7 @@ from coordinare.services.environment_runtime import (
     runtime_verifier_options,
 )
 from coordinare.services.environment_runtime_evidence import require_runtime_target
+from coordinare.services.run_transcript import TranscriptCollector
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -896,19 +899,24 @@ async def validate_repository(
         "outer_retry_loop_exercised": False,
         "profile": _profile_record(profile),
     }
+    native_model = None
+    native_calls = None
     if chat is None:
-        key = os.environ.get(profile.api_key_env)
-        if not key:
-            raise ValueError("configured model credential is unavailable")
-        backend = OpenAiApiBackend(
-            api_key=key,
-            model=profile.model,
-            base_url=profile.base_url,
-            max_tokens=profile.max_tokens,
-            effort=profile.effort,
-            structured_transport=profile.structured_transport,
-        )
-        chat = backend.chat_json_with_metadata
+        native_model = resolve_conducting(ConductingConfig(backend='openai_api',
+            model=profile.model, base_url=profile.base_url, api_key_env=profile.api_key_env,
+            max_tokens=profile.max_tokens, effort=profile.effort), environ=os.environ)
+        native_calls = ConductorCallLog(TranscriptCollector(output.parent / 'daemon-transcripts',
+            enabled=profile.save_transcripts, max_bytes_per_run=TranscriptsConfig().max_bytes_per_run,
+            ambient_secrets=os.environ))
+        state['conductor_calls'] = native_calls
+        activity = ActivityLog()
+        def progress(entries: Any) -> None:
+            with (output / 'agent-activity.jsonl').open('a') as stream:
+                for entry in entries:
+                    stream.write(json.dumps(entry.to_dict()) + '\n')
+                    _event(repository=snapshot.name, stage='native_agent', progress=entry.text)
+        activity.sink = progress
+        state['activity_log'] = activity
 
     selected_chat = chat
     async def recorded(messages: list[dict[str, str]], *, response_schema: dict[str, Any] | None = None,
@@ -1001,7 +1009,8 @@ async def validate_repository(
                         github_org=snapshot.org, github_service=snapshot, readme_contents={},
                         current_sha=snapshot.commit, cache_dir=cache.cache_dir,
                         cache_mount_path="/devenv/" + cache.sanitised_name,
-                        llm_chat=recorded, cache_state=cache,
+                        llm_chat=recorded if native_model is None else None, cache_state=cache,
+                        agent_model=(lambda: native_model) if native_model is not None else None,
                     )
                     break
                 except EnvironmentDiscoveryError as exc:
@@ -1053,6 +1062,17 @@ async def validate_repository(
             status="held", reason_code="validation_stage_failed", error_type=type(exc).__name__,
         )
     finally:
+        if native_calls is not None:
+            await native_calls.drain()
+            journal = cache.environment_attempt or {}
+            calls = journal.get('calls', 0)
+            identities = [ref.get('identity', {}) for ref in journal.get('agent_checkpoints', {}).values()]
+            source_review_starts = sum(identity.get('phase') in {'scope_review', 'scope_shard_review', 'scope_merge_review'}
+                                      for identity in identities)
+            review_starts = sum(identity.get('role') == 'reviewer' and not str(identity.get('phase', '')).startswith('scope_')
+                                for identity in identities)
+            result['agent_runtime'] = 'nare'
+            _write(output / 'agent-activity.json', state['activity_log'].snapshot())
         with contextlib.suppress(RuntimeError):  # an unconfirmed removal already holds the result
             await _release_kept(service, snapshot.name, kept, image, result)
         if isinstance(cache.environment_attempt, dict):

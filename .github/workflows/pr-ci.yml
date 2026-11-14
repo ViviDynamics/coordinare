@@ -641,6 +641,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Checkout benchmark baseline
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .agents/state/376-benchmark-baseline
+          persist-credentials: false
+
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
@@ -656,7 +663,9 @@ jobs:
           uv pip install -e "agent/performer[dev]"
 
       - name: Run performance benchmarks (T067)
-        run: uv run --extra dev pytest tests/benchmarks/test_performer_perf.py -v -m benchmark
+        env:
+          COORDINARE_BENCHMARK_BASELINE: .agents/state/376-benchmark-baseline
+        run: uv run --extra dev pytest tests/benchmarks/test_performer_perf.py tests/benchmarks/test_376_agent_runtime.py -v -m benchmark
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v6

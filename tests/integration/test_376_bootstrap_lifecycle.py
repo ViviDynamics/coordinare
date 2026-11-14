@@ -82,7 +82,10 @@ def configured_daemon(tmp_path: Any, monkeypatch: Any, transport_type: Any = Boo
     monkeypatch.setattr(AgentModelConfig, 'transport', transport)
     monkeypatch.setenv('BOOTSTRAP_TEST_KEY', 'fixture-key')
     monkeypatch.setattr('coordinare.services.environment_probe_service.execute_environment_probe', probe_transport)
-    monkeypatch.setattr('coordinare.services.environment_capabilities.resolve_execution_capabilities', AsyncMock(return_value=capabilities))
+    async def resolve_capabilities(state: Any, name: str) -> Any:
+        current = state['env_cache'][name]
+        return capabilities.model_copy(update={'cache_mount_path': '/devenv/' + current.sanitised_name})
+    monkeypatch.setattr('coordinare.services.environment_capabilities.resolve_execution_capabilities', resolve_capabilities)
     return daemon, cache, symphony, selected
 
 

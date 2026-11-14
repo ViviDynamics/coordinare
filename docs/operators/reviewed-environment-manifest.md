@@ -7,17 +7,18 @@ agent's approval cannot waive execution evidence.
 
 ## Configure the discovery and review model
 
-This implementation uses the existing conducting brain's `openai_api` JSON-chat
-seam for discovery and coverage review. Configure a model supporting strict JSON Schema
-responses (the default), or explicitly select native function calls with
-`conducting.structured_transport: tool_call`, and supply its credentials to the daemon.
-Function mode requires exactly one advertised call per response; local manifest and
-coverage validation remain mandatory. For endpoints with broken constrained decoding,
-`structured_transport: json_object` requests canonical JSON with a JSON-object syntax guard, without the phase-schema grammar or
-native tools. The same local validation and bounded repairs apply; malformed output
-cannot establish readiness. Unsupported transports hold without automatic fallback. There is no separate
-reviewer model-role configuration: the reviewer receives a fresh conversation using
-the same configured chat callable.
+Bootstrap uses nare with the existing `conducting` model selection. Supported
+backends are `openai_api` (native or OpenAI-compatible) and `anthropic_api`.
+Select a model that supports native tool calls. Scope authors, manifest authors,
+independent reviewers and execution repairs receive separate sessions; all final
+answers still pass Coordinare's domain schemas and admission rules.
+
+The model, endpoint, credential variable, output allowance and supported sampling
+parameters come from conducting configuration. Anthropic does not accept the
+configured temperature option; incompatible parameters and CLI-only backends
+produce named configuration holds. Bootstrap no longer uses
+`conducting.structured_transport` compatibility modes; other conducting tasks
+retain their own behavior. No bootstrap transport fallback is selected.
 
 For example, merge the following into a deployment's existing config, replacing
 the model placeholder with the model served by that endpoint:
@@ -28,7 +29,6 @@ conducting:
   model: "<your JSON-capable model>"
   api_key_env: OPENAI_API_KEY
   max_tokens: 32768
-  structured_transport: json_schema  # tool_call or json_object are explicit compatibility choices
   # base_url: "https://your-compatible-endpoint/v1"
 
 env_cache:
@@ -55,9 +55,11 @@ OpenAI-compatible endpoint; this does not choose a project's toolchain.
 
 Run `python -m coordinare config validate` with the intended environment loaded
 before restarting. Configuration validation does not prove model reachability or
-JSON support. Conducting backends other than the available `openai_api` JSON-chat
-seam, missing JSON-chat configuration or credentials, malformed replies and timed-out
-requests hold environment discovery. They do not enable a legacy parser fallback.
+native tool support. Missing credentials, unsupported parameters, malformed replies
+and timed-out requests hold environment discovery. `agent_context_unavailable`
+means model context-window metadata could not be obtained; restore the configured
+endpoint metadata service before retrying. A metadata outage does not select an
+implicit smaller context window.
 
 ## Understand the contract
 
@@ -196,6 +198,22 @@ proof of token exhaustion. Existing outer retry/repair budgets still apply.
 
 ## Upgrade and recover
 
+Native checkpoints live under the daemon state directory, outside performer
+mounts. They bind the source, scope, policy, schema, model configuration and exact
+delivered evidence. A compatible provider-failure restart preserves usage and the
+original phase/attempt deadlines. A changed identity requires a fresh phase under
+the remaining outer budget; expired allowances are not renewed. Pending external
+actions require reconciliation before another execution. Cancellation, timeout and
+cleanup uncertainty remain terminal holds, not successful preparation.
+
+Existing verified environments retain their acceptance and provenance checks on
+upgrade. Old incomplete chat transcripts remain diagnostics, never native evidence.
+A clean interrupted attempt can begin a native phase with its recorded counters;
+unprovable past trial allowance is held conservatively. The activity feed shows
+source review, installation-plan review and terminal preparation holds before an
+installer job exists. Conductor transcripts account for native model calls.
+
+
 Clean verification requires an immutable `image@sha256:<64 lowercase hex digits>`
 reference on both Docker and Kubernetes. Docker resolves the configured consumer
 image to a locally inspected immutable reference; pin consumer
@@ -257,7 +275,7 @@ When an environment is held:
 1. Read the symphony's bootstrap status and held reason. Identify whether the
    problem is configuration, discovery evidence, review, command execution,
    provenance, transport infrastructure or an exhausted budget.
-2. For missing model configuration, fix the conducting JSON-chat configuration and
+2. For missing model configuration, fix the conducting API configuration and
    daemon credentials. For omissions or conflicting instructions, fix repository
    evidence or the declared requirement; discovery must reassess the new snapshot.
 3. For required check failures, repair the installed environment or the documented

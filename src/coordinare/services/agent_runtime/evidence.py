@@ -49,9 +49,16 @@ def _digest(content: str) -> str:
 
 
 def _envelope(pages: tuple[EvidencePage, ...], remaining: set[int]) -> str:
-    return json.dumps({'pages': [asdict(page) for page in pages],
-                       'unread_count': len(remaining), 'next_unread': min(remaining) if remaining else None},
-                      ensure_ascii=False, separators=(',', ':'))
+    return _encoded_envelope(tuple(_encode_page(page) for page in pages), remaining)
+
+
+def _encode_page(page: EvidencePage) -> str:
+    return json.dumps(asdict(page), ensure_ascii=False, separators=(',', ':'))
+
+
+def _encoded_envelope(pages: tuple[str, ...], remaining: set[int]) -> str:
+    cursor = str(min(remaining)) if remaining else 'null'
+    return '{"pages":[' + ','.join(pages) + '],"unread_count":' + str(len(remaining)) + ',"next_unread":' + cursor + '}'
 
 
 class EvidenceStore:
@@ -83,6 +90,7 @@ class EvidenceStore:
                 if source.key in required:
                     required_ids.add(page.id)
         self._pages = tuple(pages)
+        self._encoded_pages = tuple(_encode_page(page) for page in pages)
         self._required = frozenset(required_ids)
         self._delivered: set[int] = set()
         binding = [(page.id, page.source, page.source_sha256, page.offset, page.end, page.sha256)
@@ -130,15 +138,18 @@ class EvidenceStore:
             message = 'Requested evidence page is outside the pinned catalog.'
             raise EnvironmentDiscoveryError(message, code='agent_evidence_page')
         selected: tuple[EvidencePage, ...] = ()
+        selected_encoded: tuple[str, ...] = ()
         delivered = set(self._delivered)
         serialized = _envelope(selected, set(self._required - delivered))
         for index in dict.fromkeys(ids):
             candidate = (*selected, self._pages[index])
             after = delivered | {index}
-            encoded = _envelope(candidate, set(self._required - after))
+            candidate_encoded = (*selected_encoded, self._encoded_pages[index])
+            encoded = _encoded_envelope(candidate_encoded, set(self._required - after))
             if len(encoded) > self._cap:
                 break
             selected, delivered, serialized = candidate, after, encoded
+            selected_encoded = candidate_encoded
         # Only the returned whole pages count. No await separates this update
         # from returning the exact string the caller-tool transport will deliver.
         self._delivered = delivered

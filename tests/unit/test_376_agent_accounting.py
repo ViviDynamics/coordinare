@@ -371,3 +371,19 @@ async def test_phase_call_reservations_survive_domain_restart(tmp_path: Path) ->
     assert restored.calls == 1
     await BudgetBridge(restored, phase='review', phase_key='review-b', phase_limit=1).reserve()
     assert restored.calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('window', [None, 0])
+async def test_missing_context_metadata_holds_before_nare_default_or_model_request(window: int | None) -> None:
+    from coordinare.services.agent_runtime.nare_runtime import NareRuntime
+
+    class UnknownWindow(ScriptedTransport):
+        async def context_window(self) -> int | None:
+            return window
+    transport = UnknownWindow('{"accepted":true}')
+    req = request(admit)
+    result = await NareRuntime(transport=transport).run(req)
+    assert result.status == 'held' and result.hold_code == 'agent_context_unavailable'
+    assert not transport.requests and req.budget.calls == 0
+    assert req.budget.agent_usage_unknown == 0

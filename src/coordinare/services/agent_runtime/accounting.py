@@ -120,7 +120,12 @@ class BudgetTransport:
 
     async def context_window(self) -> int | None:
         self.bridge.budget.check()
-        return await self.inner.context_window()
+        window = await self.inner.context_window()
+        if type(window) is not int or window <= 0:
+            self.bridge.failure_code = 'agent_context_unavailable'
+            raise EnvironmentDiscoveryError('Configured model context window is unavailable.',
+                                            code=self.bridge.failure_code)
+        return window
 
     def declared_concurrency(self) -> int | None:
         hook = getattr(self.inner, 'declared_concurrency', None)
