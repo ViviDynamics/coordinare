@@ -6,9 +6,9 @@ requirements traceability. No product changes before plan review and analysis.
 
 ## Setup and foundation
 
-- [ ] T001 Resolve prerequisite #355/main lineage and record baseline in specs/376-nare-discovery-spike/validation.md; carry approved specs onto isolated376-nare-bootstrap branch created from main, locally integrate dependencies, test baseline (plan Task1 prerequisite).
-- [ ] T002 Write failing runtime/config tests in tests/unit/test_376_agent_runtime.py and tests/unit/test_376_agent_configuration.py (FR01/FR06).
-- [ ] T003 Implement models/configuration/nare_runtime under src/coordinare/services/agent_runtime/ and verify exact nare2026.11.104 pin in pyproject.toml and uv.lock; run tests and normal build imports, commit (plan Task1).
+- [x] T001 Resolve prerequisite #355/main lineage and record baseline in specs/376-nare-discovery-spike/validation.md; carry approved specs onto isolated376-nare-bootstrap branch created from main, locally integrate dependencies, test baseline (plan Task1 prerequisite).
+- [x] T002 Write failing runtime/config tests in tests/unit/test_376_agent_runtime.py and tests/unit/test_376_agent_configuration.py (FR01/FR06).
+- [x] T003 Implement models/configuration/nare_runtime under src/coordinare/services/agent_runtime/ and verify exact nare2026.11.104 pin in pyproject.toml and uv.lock; run tests and normal build imports, commit (plan Task1).
 
 ## US1: Reliable evidence-backed review (P1)
 

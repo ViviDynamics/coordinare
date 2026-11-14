@@ -261,6 +261,7 @@ def test_release_upload_preserves_build_manifest_and_only_uploads_verified_files
 
 
 def test_staged_packages_have_tag_versions_pinned_siblings_and_legal_files(tmp_path: Path) -> None:
+    source_before = (ROOT / "pyproject.toml").read_bytes()
     projects = release_tools().prepare_projects(ROOT, tmp_path / "stage", VERSION, "ViviDynamics/coordinare")
     assert len(projects) == len(release_tools().PROJECTS)
     for project in projects:
@@ -276,7 +277,10 @@ def test_staged_packages_have_tag_versions_pinned_siblings_and_legal_files(tmp_p
                 assert dependency.endswith(f"-{VERSION}-py3-none-any.whl")
     source = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert "version" in source["project"]["dynamic"]
-    assert not source["tool"]["hatch"].get("metadata", {}).get("allow-direct-references", False)
+    assert (ROOT / "pyproject.toml").read_bytes() == source_before
+    # The published nare wheel is a pinned direct dependency in both source and release.
+    nare_dependency = next(dep for dep in source["project"]["dependencies"] if dep.startswith("nare @ "))
+    assert nare_dependency in tomllib.loads((projects[0] / "pyproject.toml").read_text())["project"]["dependencies"]
     staged = tomllib.loads((projects[0] / "pyproject.toml").read_text())
     for filename in staged["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]:
         assert (projects[0] / filename).is_file(), f"Missing staged force-include source: {filename}"

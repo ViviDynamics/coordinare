@@ -67,7 +67,8 @@ def prepare_projects(root: Path, stage: Path, version: str, repository: str) -> 
         # their tagged dependencies even when no workspace directories exist.
         metadata = re.sub(r"^\[tool\.uv\.sources\]\n.*?(?=^\[|\Z)", "", metadata, flags=re.MULTILINE | re.DOTALL)
         if name == "coordinare":
-            metadata += '\n[tool.hatch.metadata]\nallow-direct-references = true\n'
+            if 'metadata' not in tomllib.loads(metadata).get('tool', {}).get('hatch', {}):
+                metadata += '\n[tool.hatch.metadata]\nallow-direct-references = true\n'
             metadata = metadata.replace('dynamic = ["version"]', f'version = "{version}"', 1)
             stamp_version_module(destination, version)
         metadata, replacements = re.subn(r'^version = "[^"]+"$', f'version = "{version}"', metadata, count=1, flags=re.MULTILINE)
