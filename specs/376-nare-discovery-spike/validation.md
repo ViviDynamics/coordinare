@@ -51,3 +51,11 @@ The normal wheel and daemon image both build. An isolated wheel consumer and a
 network-disabled daemon container import the runtime and report nare2026.11.104;
 the daemon uses Python3.12. Packaging regression checks pass. The full repository
 suite is running; this foundation is not production wiring or acceptance.
+
+## Evidence foundation
+
+Eight evidence tests pass with exact transport-boundary content checks, Unicode
+and escaping under the serialized cap, partial responses, pinned-hash refusal,
+scoped requirements, invalid requests and empty sources. A real nare conversation
+rejects an early answer, delivers all required pages, compacts and rereads without
+losing coverage. Evidence delivery does not establish review validity or readiness.

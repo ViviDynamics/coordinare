@@ -15,8 +15,8 @@ requirements traceability. No product changes before plan review and analysis.
 Independent test: full page bytes cross real nare scripted transport; early answers
 refuse; final assessment passes the unchanged domain validator with separate role.
 
-- [ ] T004 [US1] Write evidence red tests in tests/unit/test_376_agent_evidence.py including Unicode/escaping/partial response/tampered source/compaction (FR02/FR03).
-- [ ] T005 [US1] Implement EvidenceStore.read in src/coordinare/services/agent_runtime/evidence.py, verify exact transport bytes and rereads, commit (plan Task2).
+- [x] T004 [US1] Write evidence red tests in tests/unit/test_376_agent_evidence.py including Unicode/escaping/partial response/tampered source/compaction (FR02/FR03).
+- [x] T005 [US1] Implement EvidenceStore.read in src/coordinare/services/agent_runtime/evidence.py, verify exact transport bytes and rereads, commit (plan Task2).
 
 ## US3: Restart and terminal outcomes (P1 foundation for live review)
 
