@@ -1,7 +1,7 @@
 # Nare bootstrap runtime integration
 
 Date: 2026-11-14
-Status: design for approval; no production implementation authorized by this document yet
+Status: approved by maintainer on 2026-11-14; implementation follows the reviewed plan
 
 ## Intent and decisions
 
