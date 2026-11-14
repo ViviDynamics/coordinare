@@ -38,6 +38,9 @@ from coordinare_service_inference.environment.scope_investigation import (
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from coordinare.lib.redaction import redact_command_text, redact_state_value
+from coordinare.services.agent_runtime.checkpoint import (
+    CheckpointReference,  # noqa: TC001 - pydantic journal field
+)
 from coordinare.services.environment_acceptance import (
     accepted_environment,
     execution_report,
@@ -140,6 +143,7 @@ class RepairJournal(BaseModel):
 
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     version: Literal[9] = 9
+    agent_checkpoints: dict[str, CheckpointReference] = Field(default_factory=dict)
 
     @model_validator(mode='before')
     @classmethod
@@ -543,6 +547,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
         max_reads=journal.max_reads, max_schema_repairs=journal.max_schema_repairs,
         max_coverage_revisions=journal.max_coverage_revisions, max_scope_revisions=journal.max_scope_revisions,
         max_execution_repairs=journal.max_execution_repairs)
+    budget.agent_checkpoints = {key: value.model_copy(deep=True) for key, value in journal.agent_checkpoints.items()}
     budget.scope_investigations = [item.model_copy(deep=True) for item in journal.scope_investigations]
     budget.scope_investigation_results = [item.model_copy(deep=True) for item in journal.scope_investigation_results]
     budget.scope_author_protocol = journal.scope_author_protocol
@@ -645,6 +650,7 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
     journal = journal_for(cache)
     if budget.probe_abandonments != [item.model_dump(mode='json') for item in journal.probe_abandonments]:
         _refuse('abandoned probe history cannot be replaced', code='probe_reservation_invalid')
+    journal.agent_checkpoints = {key: value.model_copy(deep=True) for key, value in budget.agent_checkpoints.items()}
     _save_scope_checkpoint(journal, budget)
     previous, current = journal.finding_ledger, budget.finding_ledger
     if previous is not None and (current is None

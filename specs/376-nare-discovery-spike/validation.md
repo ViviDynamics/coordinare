@@ -59,3 +59,12 @@ and escaping under the serialized cap, partial responses, pinned-hash refusal,
 scoped requirements, invalid requests and empty sources. A real nare conversation
 rejects an early answer, delivers all required pages, compacts and rereads without
 losing coverage. Evidence delivery does not establish review validity or readiness.
+
+## Checkpoint foundation
+
+Seventeen checkpoint tests pass, including all identity dimensions, file tampering,
+interrupted atomic writes, pending probe/trial holds, pinned catalog restoration
+and real nare continuation after interrupted inference. Continuation retains
+usage, turns and corrections and does not replay the completed evidence tool.
+The affected checkpoint/evidence/runtime and existing journal suites total
+96 passing tests. Phase wiring and external-effect reconciliation remain later gates.

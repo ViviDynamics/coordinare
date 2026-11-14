@@ -9,6 +9,7 @@ from typing import Any
 from nare import Tool
 from nare.tools import MAX_TOOL_OUTPUT
 
+from coordinare.services.agent_runtime.checkpoint import EvidenceReceipt
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 
 
@@ -84,6 +85,10 @@ class EvidenceStore:
         self._pages = tuple(pages)
         self._required = frozenset(required_ids)
         self._delivered: set[int] = set()
+        binding = [(page.id, page.source, page.source_sha256, page.offset, page.end, page.sha256)
+                   for page in self._pages]
+        self._catalog_digest = _digest(json.dumps({'pages': binding, 'required': sorted(self._required)},
+                                                ensure_ascii=False, separators=(',', ':')))
 
     def _paginate(self, source: EvidenceSource, first: int) -> list[EvidencePage]:
         pages: list[EvidencePage] = []
@@ -139,6 +144,17 @@ class EvidenceStore:
         self._delivered = delivered
         remaining = self._required - delivered
         return EvidencePageBatch(selected, min(remaining) if remaining else None, len(remaining), serialized)
+
+    def receipt(self) -> EvidenceReceipt:
+        return EvidenceReceipt(catalog_digest=self._catalog_digest, delivered=tuple(sorted(self._delivered)))
+
+    def restore_receipt(self, receipt: EvidenceReceipt) -> None:
+        """Restore only after the checkpoint store verified the domain-owned reference."""
+        if (receipt.catalog_digest != self._catalog_digest
+                or any(index >= self.page_count for index in receipt.delivered)):
+            message = 'Resumed evidence does not match the current pinned catalog.'
+            raise EnvironmentDiscoveryError(message, code='agent_evidence_changed')
+        self._delivered.update(receipt.delivered)
 
     def tool(self) -> Tool:
         async def deliver(arguments: dict[str, Any]) -> str:

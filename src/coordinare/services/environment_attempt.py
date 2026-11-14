@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         ScopeInspectionResult,
     )
 
+    from coordinare.services.agent_runtime.checkpoint import CheckpointReference
     from coordinare.services.environment_repair_triage import RepairTriage
 
 
@@ -173,6 +174,7 @@ class AttemptBudget:
     delta_fallback: bool = False
     # The trusted code of the failure that made a delta repair fall back to the full repair, for the attempt summary.
     delta_fallback_code: str | None = None
+    agent_checkpoints: dict[str, CheckpointReference] = field(default_factory=dict, repr=False)
     checkpoint: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:

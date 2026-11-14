@@ -691,6 +691,8 @@ class EnvCacheStateSnapshot(BaseModel):
     # copies. Old snapshots load with None, which fails closed (one re-bootstrap). The model
     # strips whitespace by default, which would drop the trailing newline and break the exact
     # activate.sh comparison, so these two fields keep their text byte for byte.
+    # Native agent checkpoint references are versioned inside this domain journal;
+    # raw sessions stay in the daemon-owned checkpoint store. Legacy journals omit them.
     environment_attempt: dict[str, Any] | None = None
     environment_attempt_archive: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
     environment_capabilities: dict[str, Any] | None = None
