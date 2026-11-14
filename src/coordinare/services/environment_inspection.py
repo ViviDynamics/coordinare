@@ -155,7 +155,8 @@ class SourceInspection:
                 await self.budget.flush()
 
     async def bind_verified(self, expected: Mapping[str, str], *, phase: str,
-                            cited_by: Mapping[str, Sequence[str]] | None = None) -> list[dict[str, Any]]:
+                            cited_by: Mapping[str, Sequence[str]] | None = None,
+                            retain_content: bool = False) -> list[dict[str, Any]]:
         """Verify inputs by digest and bind them here without loading their contents into the conversation.
 
         The daemon reads through a separately bounded verifier (charged to the attempt). The conversation receives
@@ -170,6 +171,8 @@ class SourceInspection:
             verifier.name = f'{self.name}_binding'
             for item in await prepare_mandatory_evidence(verifier, missing, phase=phase):
                 self.inputs[item['path']] = item['sha256']
+                if retain_content:
+                    self.source_files[item['path']] = item['content']
         return [{'path': path, 'sha256': expected[path],
                  'bytes': self.entries[path].size if self.entries is not None and path in self.entries else None,
                  'cited_by': sorted((cited_by or {}).get(path, []))} for path in sorted(expected)]

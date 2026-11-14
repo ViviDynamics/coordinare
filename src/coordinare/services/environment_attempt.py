@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     )
 
     from coordinare.services.agent_runtime.checkpoint import CheckpointReference
+    from coordinare.services.environment_agent import EnvironmentAgentContext
     from coordinare.services.environment_repair_triage import RepairTriage
 
 
@@ -179,6 +180,8 @@ class AttemptBudget:
     agent_compactions: int = 0
     agent_retries: int = 0
     agent_checkpoints: dict[str, CheckpointReference] = field(default_factory=dict, repr=False)
+    agent_phase_calls: dict[str, int] = field(default_factory=dict, repr=False)
+    agent_context: EnvironmentAgentContext | None = field(default=None, repr=False)
     checkpoint: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:

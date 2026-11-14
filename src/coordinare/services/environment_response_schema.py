@@ -141,6 +141,18 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
     ]
     if allow_patch:
         tools.append(PATCH_SCHEMA)
+    if phase == 'source_tool':
+        return {'type': 'object', 'anyOf': tools}
+    declaration = final_response_schema(phase, scope_contract=scope_contract,
+        review_decision_ids=review_decision_ids, probe_repair=probe_repair)
+    definitions = declaration.pop('$defs', {})
+    return {'type': 'object', 'anyOf': [*tools, declaration], '$defs': definitions}
+
+
+def final_response_schema(phase: str, *, scope_contract: ScopeContract | None = None,
+                          review_decision_ids: Sequence[str] | None = None,
+                          probe_repair: ProbeRepairSchema | None = None) -> dict[str, Any]:
+    """The unchanged domain declaration, without the obsolete JSON source-tool protocol."""
     final: dict[str, Callable[[], dict[str, Any]]] = {'probe': ProbeEnvelope.model_json_schema, 'manifest': _MANIFEST_ENVELOPE.model_json_schema,
              'assessment': assessment_envelope_schema, 'scope': ScopeEnvelope.model_json_schema,
              'scope_assessment': ScopeAssessmentEnvelope.model_json_schema, 'scope_revision': ScopeRevisionEnvelope.model_json_schema,
@@ -148,8 +160,6 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
              'listing_triage': ListingTriageEnvelope.model_json_schema,
              'scope_consolidation': ScopeConsolidationEnvelope.model_json_schema,
              'shard_checks': ShardChecksEnvelope.model_json_schema, 'manifest_delta': MANIFEST_DELTA_ENVELOPE.model_json_schema}
-    if phase == 'source_tool':
-        return {'type': 'object', 'anyOf': tools}
     declaration = final[phase]()
     if phase in {'scope_assessment', 'assessment'}:
         _review_constraints(declaration, phase, review_decision_ids)
@@ -163,8 +173,7 @@ def response_schema(phase: str, *, allow_patch: bool = False, scope_contract: Sc
                 'required': list(probe_repair.command_ids), 'properties': dict.fromkeys(probe_repair.command_ids, value)}
     if phase == 'manifest' and scope_contract is not None:
         _require_scope_mapping(declaration, scope_contract)
-    definitions = declaration.pop('$defs', {})
-    return {'type': 'object', 'anyOf': [*tools, declaration], '$defs': definitions}
+    return declaration
 
 
 # Maintainer ruling 2026-10-31, raised 2026-11-05: a discovery call rides out a provider outage for up to thirty minutes

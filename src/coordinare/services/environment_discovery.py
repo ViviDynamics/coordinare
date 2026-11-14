@@ -134,6 +134,7 @@ from coordinare.services.environment_repair_trial import (
 )
 from coordinare.services.environment_response_schema import (
     ProbeRepairSchema,
+    final_response_schema,
     invoke_recorded,
     response_schema,
 )
@@ -239,7 +240,7 @@ EVIDENCE_ON_DEMAND = (
 )
 
 
-EXECUTABLE_REVIEW_INSTRUCTIONS = (
+EXECUTABLE_REVIEW_CRITERIA = (
     'Independently review coverage of the candidate against the repository snapshot. '
     'Reject incomplete activation: installed tools must be usable by ordinary downstream project commands, not just absolute-path checks. '
     'Reject a check that hides its own failure (the verified work followed by || true, || echo or exit 0): a required '
@@ -293,10 +294,21 @@ EXECUTABLE_REVIEW_INSTRUCTIONS = (
     'Discuss manifest/check/probe references in rationale; never put those labels in sources. '
     'Bind your assessment to the provided manifest digest '
     'and source commit supplied by the daemon. Return verdict, rationale, sources, findings, decisions and capability_unavailable, without provenance fields, '
-    'inside {"assessment":...}. Choose one source tool request or one assessment envelope. '
+    'inside {"assessment":...}. '
+)
+
+EXECUTABLE_REVIEW_INSTRUCTIONS = EXECUTABLE_REVIEW_CRITERIA + (
+    'Choose one source tool request or one assessment envelope. '
     'Never combine an assessment with a tool field, even null. '
     'Do not include an extra top-level key. '
 )
+
+
+def native_review_instructions() -> str:
+    """Share domain criteria without advertising the retired JSON tool transport."""
+    from coordinare.services.environment_discovery_prompts import NATIVE_SOURCE_INSTRUCTIONS
+
+    return NATIVE_SOURCE_INSTRUCTIONS + EXECUTABLE_REVIEW_CRITERIA
 
 
 def scope_citations(scope: Any) -> dict[str, list[str]]:
@@ -701,7 +713,8 @@ async def _prepare_review_evidence(reviewer: _Inspection, manifest: EnvironmentM
                 if inputs.get(path, digest) != digest:
                     refuse_finding('finding source changed', code='source_identity')
                 inputs[path] = digest
-    return await reviewer.bind_verified(inputs, phase="review", cited_by=scope_citations(budget.scope_contract))
+    return await reviewer.bind_verified(inputs, phase="review", cited_by=scope_citations(budget.scope_contract),
+                                        retain_content=budget.agent_context is not None)
 
 
 async def _timed_review_evidence(reviewer: _Inspection, manifest: EnvironmentManifest) -> list[dict[str, str]]:
@@ -1543,11 +1556,9 @@ async def _review(attempt: _Attempt, build: DividedConstruction | None,
     missing = attempt.missing_urls
     if build is not None:
         return await _divided_review(build, attempt, manifest, reviewer, missing=missing)
-    data, reads = await _phase(
-        inspection=reviewer, chat=attempt.chat, budget=budget,
-        validate=partial(_url_checked_assessment, missing, reviewer_reads=reviewer.inputs, manifest=manifest,
-                         require_accept=False, ledger=budget.finding_ledger),
-        messages=[
+    validate = partial(_url_checked_assessment, missing, reviewer_reads=reviewer.inputs, manifest=manifest,
+                       require_accept=False, ledger=budget.finding_ledger)
+    messages = [
         {"role": "system", "content": SOURCE_TOOLS + EXECUTABLE_REVIEW_INSTRUCTIONS
             + 'Return the complete envelope matching this schema: ' + _json(assessment_envelope_schema())},
         {"role": "user", "content": _json({**{key: value for key, value in attempt.identity.items() if key != "bound_scope_inputs"},
@@ -1560,7 +1571,30 @@ async def _review(attempt: _Attempt, build: DividedConstruction | None,
             "finding_ledger": cast("FindingLedger", budget.finding_ledger).model_dump(mode='json'),
             "finding_responses": [response.model_dump(mode='json') for response in discovery.finding_responses],
             **url_check_evidence(missing)})},
-    ])
+    ]
+    if (native := budget.agent_context) is not None:
+        from coordinare.services.agent_runtime.evidence import EvidenceSource
+        from coordinare.services.environment_agent import (
+            EnvironmentPhaseRequest,
+            PinnedSourceTools,
+            run_environment_phase,
+        )
+
+        required = frozenset(item['path'] for item in mandatory_evidence)
+        result = await run_environment_phase(EnvironmentPhaseRequest(
+            attempt_id=native.attempt_id, phase='review', role='reviewer', source_commit=manifest.source_commit,
+            domain_digests=(('manifest', manifest.digest()),), model_config_digest=native.model_config_digest,
+            instructions=native_review_instructions(), packet=json.loads(messages[1]['content']),
+            sources=tuple(EvidenceSource(path, reviewer.source_files[path], reviewer.inputs[path]) for path in sorted(required)),
+            required=required, envelope='assessment', schema=final_response_schema('assessment',
+                review_decision_ids=[record.id for record in budget.finding_ledger.records]
+                if budget.finding_ledger is not None else []), validate=validate,
+            runtime=native.runtime, budget=budget, phase_timeout_seconds=attempt.bounds.phase_timeout_seconds,
+            checkpoint_store=native.checkpoint_store, event_sink=native.event_sink,
+            source_tools=PinnedSourceTools(reviewer, observe_sources=reviewer.observe_sources),
+            max_model_calls=attempt.bounds.max_model_calls))
+        return result.data, dict(reviewer.inputs)
+    data, reads = await _phase(inspection=reviewer, chat=attempt.chat, budget=budget, validate=validate, messages=messages)
     return data, reads
 
 

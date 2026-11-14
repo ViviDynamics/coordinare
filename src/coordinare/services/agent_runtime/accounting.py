@@ -29,9 +29,12 @@ def usage_of(reply: Reply) -> dict[str, int]:
 
 
 class BudgetBridge:
-    def __init__(self, budget: AttemptBudget, *, phase: str) -> None:
+    def __init__(self, budget: AttemptBudget, *, phase: str, phase_key: str | None = None,
+                 phase_limit: int | None = None) -> None:
         self.budget = budget
         self.phase = phase
+        self.phase_key = phase_key
+        self.phase_limit = phase_limit
         self.failure_code: str | None = None
 
     async def persist(self) -> None:
@@ -50,7 +53,12 @@ class BudgetBridge:
 
     async def reserve(self) -> str:
         try:
+            if (self.phase_key is not None and self.phase_limit is not None
+                    and self.budget.agent_phase_calls.get(self.phase_key, 0) >= self.phase_limit):
+                raise EnvironmentDiscoveryError('Native phase call allowance exhausted.', code='phase_call_limit')
             self.budget.reserve_call()
+            if self.phase_key is not None:
+                self.budget.agent_phase_calls[self.phase_key] = self.budget.agent_phase_calls.get(self.phase_key, 0) + 1
             await self.persist()
             self.budget.check()
         except EnvironmentDiscoveryError as exc:

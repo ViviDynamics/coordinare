@@ -30,8 +30,8 @@ refuse stale/tampered receipts; no replay of uncertain external effects.
 
 ## US1 completion: Production reviewer
 
-- [ ] T010 [US1] Write native reviewer contract/independence/early-refusal red tests in tests/unit/test_376_environment_review.py (FR01/FR02).
-- [ ] T011 [US1] Implement environment_agent.py and native reviewer wiring in environment_discovery.py and environment_discovery_prompts.py; run deterministic tests and bounded live replay, record validation.md and commit (plan Task5).
+- [x] T010 [US1] Write native reviewer contract/independence/early-refusal red tests in tests/unit/test_376_environment_review.py (FR01/FR02).
+- [x] T011 [US1] Implement environment_agent.py and native reviewer wiring in environment_discovery.py and environment_discovery_prompts.py; run deterministic tests and bounded live replay, record validation.md and commit (plan Task5).
 
 ## US2: Complete bootstrap through nare (P1)
 

@@ -161,3 +161,14 @@ async def test_empty_required_source_still_needs_delivery() -> None:
     assert payload['pages'][0]['content'] == ''
     assert payload['pages'][0]['offset'] == payload['pages'][0]['end'] == 0
     assert payload['unread_count'] == 0
+
+
+@pytest.mark.asyncio
+async def test_default_read_uses_response_capacity_without_splitting_pages() -> None:
+    from coordinare.services.agent_runtime.evidence import EvidenceRead, EvidenceStore
+
+    store = EvidenceStore((source('x' * 100000),), required=frozenset({'nested/custom.input'}))
+    batch = await store.read(EvidenceRead())
+    assert len(batch.pages) > 4
+    assert len(batch.serialized) <= MAX_TOOL_OUTPUT
+    assert all(len(page.content) == 4096 for page in batch.pages)

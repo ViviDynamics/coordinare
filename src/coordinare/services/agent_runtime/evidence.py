@@ -125,7 +125,7 @@ class EvidenceStore:
         return len(self._required - self._delivered)
 
     async def read(self, request: EvidenceRead) -> EvidencePageBatch:
-        ids = request.pages or tuple(sorted(self._required - self._delivered)[:4])
+        ids = request.pages or tuple(sorted(self._required - self._delivered)[:8])
         if any(type(index) is not int or not 0 <= index < self.page_count for index in ids):
             message = 'Requested evidence page is outside the pinned catalog.'
             raise EnvironmentDiscoveryError(message, code='agent_evidence_page')

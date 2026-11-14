@@ -53,6 +53,8 @@ class AgentRequest:
     checkpoint_store: CheckpointStore | None = None
     evidence_catalog: EvidenceStore | None = None
     event_sink: Callable[[JsonObject], Awaitable[None]] | None = None
+    phase_deadline: float | None = None
+    phase_max_calls: int | None = None
 
 
 @dataclass(frozen=True)

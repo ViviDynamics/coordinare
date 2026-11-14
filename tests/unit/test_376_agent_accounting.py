@@ -13,7 +13,7 @@ from nare import Reply, Usage
 from nare.loop import RetryPolicy
 from nare.transport import Delta
 
-from coordinare.services.environment_attempt import AttemptBudget
+from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 from tests.unit.test_376_agent_runtime import ScriptedTransport, request
 
 
@@ -351,3 +351,23 @@ def test_pre_native_journal_retains_existing_usage_diagnostics(tmp_path: Path) -
     restored = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600, now=200)
     assert restored.usage == {'input_tokens': 321, 'output_tokens': 12}
     assert restored.calls_completed == 2
+
+
+@pytest.mark.asyncio
+async def test_phase_call_reservations_survive_domain_restart(tmp_path: Path) -> None:
+    from coordinare.services.agent_runtime.accounting import BudgetBridge
+    from coordinare.services.environment_discovery import DiscoveryLimits
+    from coordinare.services.environment_repair import begin_attempt, save_attempt
+    from tests.unit.test_353_execution_repair import cache_fixture
+
+    cache = cache_fixture(tmp_path)
+    budget = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600, now=100)
+    await BudgetBridge(budget, phase='review', phase_key='review-a', phase_limit=1).reserve()
+    save_attempt(cache, budget)
+    restored = begin_attempt(cache, DiscoveryLimits(), outer_seconds=600, now=200)
+    with pytest.raises(EnvironmentDiscoveryError) as caught:
+        await BudgetBridge(restored, phase='review', phase_key='review-a', phase_limit=1).reserve()
+    assert caught.value.code == 'phase_call_limit'
+    assert restored.calls == 1
+    await BudgetBridge(restored, phase='review', phase_key='review-b', phase_limit=1).reserve()
+    assert restored.calls == 2

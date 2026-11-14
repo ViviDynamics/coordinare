@@ -72,6 +72,7 @@ class AgentCheckpoint(BaseModel):
     session_text: str = Field(repr=False)
     evidence: EvidenceReceipt
     counters: dict[str, Annotated[int, Field(strict=True, ge=0)]]
+    phase_calls: int = Field(default=0, ge=0, strict=True)
     effects: tuple[EffectReceipt, ...] = ()
 
     @model_validator(mode='after')

@@ -35,7 +35,7 @@ from coordinare_service_inference.environment.scope_investigation import (
     ScopeInspectionBinding,  # noqa: TC002 - pydantic resolves journal field types at runtime
     ScopeInspectionResult,  # noqa: TC002 - pydantic resolves journal field types at runtime
 )
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, ValidationError, model_validator
 
 from coordinare.lib.redaction import redact_command_text, redact_state_value
 from coordinare.services.agent_runtime.checkpoint import (
@@ -144,6 +144,7 @@ class RepairJournal(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     version: Literal[9] = 9
     agent_checkpoints: dict[str, CheckpointReference] = Field(default_factory=dict)
+    agent_phase_calls: dict[str, NonNegativeInt] = Field(default_factory=dict)
     agent_usage_receipts: set[str] = Field(default_factory=set)
     agent_usage_unknown: int = Field(default=0, ge=0)
     agent_compactions: int = Field(default=0, ge=0)
@@ -573,6 +574,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.finish_reasons = dict(journal.finish_reasons)
     budget.metadata_available = journal.metadata_available
     budget.agent_usage_receipts = set(journal.agent_usage_receipts)
+    budget.agent_phase_calls = dict(journal.agent_phase_calls)
     budget.agent_usage_unknown = journal.agent_usage_unknown
     budget.agent_compactions = journal.agent_compactions
     budget.agent_retries = journal.agent_retries
@@ -685,6 +687,7 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
     journal.finish_reasons = dict(budget.finish_reasons)
     journal.metadata_available = budget.metadata_available
     journal.agent_usage_receipts = set(budget.agent_usage_receipts)
+    journal.agent_phase_calls = dict(budget.agent_phase_calls)
     journal.agent_usage_unknown = budget.agent_usage_unknown
     journal.agent_compactions = budget.agent_compactions
     journal.agent_retries = budget.agent_retries

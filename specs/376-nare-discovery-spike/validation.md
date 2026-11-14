@@ -34,7 +34,7 @@ explicitly reject parameters its native transport cannot preserve.
 
 ## Remaining gates
 
-Runtime, evidence, checkpoint, accounting, reviewer and phase migrations;
+Production reviewer acceptance and remaining phase migrations;
 daemon lifecycle tests; bounded real reviewer and installer/repair/clean-consumer
 acceptance; performance measurements; deletion of the old loops; full checks,
 adversarial review and Copilot review remain incomplete.
@@ -49,8 +49,8 @@ unsupported Anthropic temperature are refused explicitly.
 
 The normal wheel and daemon image both build. An isolated wheel consumer and a
 network-disabled daemon container import the runtime and report nare2026.11.104;
-the daemon uses Python3.12. Packaging regression checks pass. The full repository
-suite is running; this foundation is not production wiring or acceptance.
+the daemon uses Python3.12. Packaging regression checks pass. The initial full repository result and subsequent fixes are recorded below;
+this foundation alone is not production wiring or acceptance.
 
 ## Evidence foundation
 
@@ -85,3 +85,24 @@ The initial full repository run finished with 19,430 passed, 97 skipped,
 589 deselected and nine failures. Dependency audit additions, existing test timing
 and dated fixtures, untracked-file discovery, and mixed-version module collection
 are being investigated; the full suite is not claimed green.
+
+## Native reviewer integration (in progress)
+
+Shared domain criteria and the final assessment schema are preserved separately
+from transport instructions. Scripted native tests cover early refusal, real
+accept/revise/indeterminate admission, citation refusal, independent role identity,
+phase deadlines, source navigation and scope observation. Phase call reservations
+survive domain restart and checkpoint rewind is refused. Bounded safe progress
+reports delivered pages without source text.
+
+The combined native and existing bootstrap regression suite passes2,434 tests.
+Native schemas retain ledger-specific decision cardinality and finding-ID constraints. Ruff and strict typechecking pass
+across366 modules. One bounded production-adapter saved-packet replay reached all
+386 complete pages from148 pinned source files, then exhausted its20-minute limit
+before assessment. It reported5,147,093 tokens, six compactions, zero transport
+retries and one interrupted request with unknown usage. No live verdict is claimed.
+The checkpoint and exact launch-code provenance are retained. An optional
+five-minute continuation under the same total8-million token cap awaits explicit
+authorization; final production acceptance remains required on the final code.
+The existing SQLite throughput benchmark still
+hits its90-second limit locally and remains a final verification gate.
