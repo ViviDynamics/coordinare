@@ -38,6 +38,7 @@ from coordinare.services.environment_admission import (
     _repair,
     _validation_feedback,
 )
+from coordinare.services.environment_agent import SourcePhase, run_source_phase
 from coordinare.services.environment_attempt import (
     MAX_PHASE_SECONDS,
     AttemptBudget,
@@ -175,6 +176,23 @@ def preserve_scope(previous: ScopeDefinition, current: ScopeDefinition, *, relea
         _fail('scope_obligation_removed')
 
 
+async def _native_source_phase(inspection: SourceInspection, messages: list[dict[str, str]],
+                               envelope: str, validate: Callable[[dict[str, Any]], Any]) -> Any:
+    budget = inspection.budget
+    if budget is None:
+        _fail('attempt_budget_identity')
+    ledger = budget.scope_findings
+    if ledger is None:
+        _fail('scope_source_identity')
+    schema = final_response_schema(envelope, review_decision_ids=[record.id for record in ledger.records])
+    if envelope == 'scope_assessment' and budget.scope_definition is not None:
+        constrain_source_criteria(schema, [c.id for c in budget.scope_definition.criteria])
+    return await run_source_phase(inspection, messages, SourcePhase(envelope=envelope, schema=schema,
+        source_commit=ledger.source_commit, validate=validate,
+        role='reviewer' if envelope == 'scope_assessment' else 'author',
+        rejection_errors=partial(_scope_rejection_errors, envelope=envelope)))
+
+
 async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *, chat: ChatJson,
                  envelope: Literal['scope', 'scope_revision', 'scope_assessment'], validate: Callable[[dict[str, Any]], Any]) -> Any:
     budget = inspection.budget
@@ -182,18 +200,16 @@ async def _phase(inspection: SourceInspection, messages: list[dict[str, str]], *
         _fail('attempt_budget_identity')
     budget.stage = inspection.name
     if budget.agent_context is not None:
-        from coordinare.services.environment_agent import run_source_phase
+        return await _native_source_phase(inspection, messages, envelope, validate)
+    return await _legacy_source_phase(inspection, messages, chat, envelope, validate)
 
-        ledger = budget.scope_findings
-        if ledger is None:
-            _fail('scope_source_identity')
-        schema = final_response_schema(envelope, review_decision_ids=[record.id for record in ledger.records])
-        if envelope == 'scope_assessment' and budget.scope_definition is not None:
-            constrain_source_criteria(schema, [c.id for c in budget.scope_definition.criteria])
-        return await run_source_phase(inspection, messages, envelope=envelope, schema=schema,
-            source_commit=ledger.source_commit, validate=validate,
-            role='reviewer' if envelope == 'scope_assessment' else 'author',
-            rejection_errors=partial(_scope_rejection_errors, envelope=envelope))
+
+async def _legacy_source_phase(inspection: SourceInspection, messages: list[dict[str, str]], chat: ChatJson,
+                               envelope: Literal['scope', 'scope_revision', 'scope_assessment'],
+                               validate: Callable[[dict[str, Any]], Any]) -> Any:
+    budget = inspection.budget
+    if budget is None:
+        _fail('attempt_budget_identity')
     base_system = messages[0]['content']
     try:
         async with asyncio.timeout_at(min(budget.deadline, time.monotonic()+inspection.limits.phase_timeout_seconds)):

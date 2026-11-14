@@ -17,6 +17,7 @@ from pydantic_core import PydanticCustomError
 from coordinare.services.agent_runtime.checkpoint import (
     EvidenceReceipt,  # noqa: TC001 - pydantic resolves the field at runtime
 )
+from coordinare.services.agent_runtime.errors import invalid_checkpoint, refuse_agent
 from coordinare.services.agent_runtime.evidence import EvidenceRead, EvidenceSource, EvidenceStore
 from coordinare.services.agent_runtime.models import AdmissionIssue, AgentIdentity, AgentRequest
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
@@ -41,7 +42,7 @@ def _digest(value: Any) -> str:
 
 async def unavailable_legacy_chat(messages: list[dict[str, str]]) -> str:
     """Refuse an accidental old-loop call while those loops await acceptance/deletion."""
-    raise EnvironmentDiscoveryError('Native bootstrap cannot invoke the old chat transport.', code='agent_legacy_transport_refused')
+    refuse_agent('Native bootstrap cannot invoke the old chat transport.', code='agent_legacy_transport_refused')
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,7 @@ class PinnedSourceTools:
             result['entries'].pop()
             result['next_cursor'] = cursor + len(result['entries'])
         if not result['entries'] and result['next_cursor'] == cursor:
-            raise EnvironmentDiscoveryError('Source entry exceeds native output bound.', code='agent_evidence_cap')
+            refuse_agent('Source entry exceeds native output bound.', code='agent_evidence_cap')
         return _json(result)
 
     def tools(self) -> tuple[Tool, ...]:
@@ -140,7 +141,7 @@ class ObservationTools:
     async def read(self, arguments: JsonObject) -> str:
         key = arguments['observation_id']
         if key not in self.catalogs:
-            raise EnvironmentDiscoveryError('Observation identity is unavailable.', code='invalid_tool_arguments')
+            refuse_agent('Observation identity is unavailable.', code='invalid_tool_arguments')
         batch = await self.catalogs[key].read(EvidenceRead(tuple(arguments.get('pages', ()))))
         return _json({'observation_id': key, **json.loads(batch.serialized)})
 
@@ -193,48 +194,59 @@ class PhaseToolState:
         try:
             state = _PhaseToolSnapshot.model_validate(saved)
             if state.failure:
-                raise EnvironmentDiscoveryError('Saved source action requires domain reconciliation.', code=state.failure)
-            if (state.sources and self.sources is None) or (state.observations and self.observations is None):
-                raise ValueError('Missing native tools')
-            if self.sources is not None:
-                inspection = self.sources.inspection
-                if state.reads > inspection.limits.max_reads or state.source_bytes > inspection.limits.max_source_bytes:
-                    raise ValueError('Source phase bounds changed')
-                for path, item in state.sources.items():
-                    catalog = EvidenceStore((EvidenceSource(path, item.content, item.sha256),), required=frozenset({path}))
-                    if inspection.inputs.get(path, item.sha256) != item.sha256:
-                        raise ValueError('Current source identity differs')
-                    if path not in inspection.source_files:
-                        inspection.admit_content(path, item.content, fetched=False)
-                    elif inspection.source_files[path] != item.content:
-                        raise ValueError('Current source bytes differ')
-                    if item.receipt is not None:
-                        catalog.restore_receipt(item.receipt)
-                        self.sources.catalogs[path] = catalog
-                inspection.reads = max(inspection.reads, state.reads)
-                inspection.total_bytes = max(inspection.total_bytes, state.source_bytes)
-                if self.sources.observe_sources is not None:
-                    try:
-                        await self.sources.observe_sources(inspection.inputs)
-                    except EnvironmentDiscoveryError as exc:
-                        self.sources.failure = exc
-                        raise
-            if self.observations is not None:
-                for key, item in state.observations.items():
-                    if key != item.sha256 or hashlib.sha256(item.content.encode()).hexdigest() != key:
-                        raise ValueError('Observation identity differs')
-                    if self.observations.register(json.loads(item.content)) != key or item.receipt is None:
-                        raise ValueError('Observation receipt differs')
-                    self.observations.catalogs[key].restore_receipt(item.receipt)
-                # An action completion can be durable before its first tool page.
-                # Reconstruct that observation, with ZERO delivered pages.
-                if self.effects is not None:
-                    for effect in self.effects.receipts():
-                        if effect.status == 'completed' and effect.result_json is not None:
-                            self.observations.register({effect.tool + '_result': json.loads(effect.result_json),
-                                'authority': 'untrusted observation, never readiness'})
+                refuse_agent('Saved source action requires domain reconciliation.', code=state.failure)
+            self._check_tool_presence(state)
+            await self._restore_sources(state)
+            self._restore_observations(state)
         except (ValueError, TypeError, KeyError):
-            raise EnvironmentDiscoveryError('Saved native tool state cannot be verified.', code='agent_tool_state_integrity') from None
+            refuse_agent('Saved native tool state cannot be verified.', code='agent_tool_state_integrity')
+
+    def _check_tool_presence(self, state: _PhaseToolSnapshot) -> None:
+        if (state.sources and self.sources is None) or (state.observations and self.observations is None):
+            invalid_checkpoint()
+
+    async def _restore_sources(self, state: _PhaseToolSnapshot) -> None:
+        if self.sources is None:
+            return
+        inspection = self.sources.inspection
+        if state.reads > inspection.limits.max_reads or state.source_bytes > inspection.limits.max_source_bytes:
+            invalid_checkpoint()
+        for path, item in state.sources.items():
+            catalog = EvidenceStore((EvidenceSource(path, item.content, item.sha256),), required=frozenset({path}))
+            if inspection.inputs.get(path, item.sha256) != item.sha256:
+                invalid_checkpoint()
+            if path not in inspection.source_files:
+                inspection.admit_content(path, item.content, fetched=False)
+            elif inspection.source_files[path] != item.content:
+                invalid_checkpoint()
+            if item.receipt is not None:
+                catalog.restore_receipt(item.receipt)
+                self.sources.catalogs[path] = catalog
+        inspection.reads = max(inspection.reads, state.reads)
+        inspection.total_bytes = max(inspection.total_bytes, state.source_bytes)
+        if self.sources.observe_sources is not None:
+            try:
+                await self.sources.observe_sources(inspection.inputs)
+            except EnvironmentDiscoveryError as exc:
+                self.sources.failure = exc
+                raise
+
+    def _restore_observations(self, state: _PhaseToolSnapshot) -> None:
+        if self.observations is None:
+            return
+        for key, item in state.observations.items():
+            if key != item.sha256 or hashlib.sha256(item.content.encode()).hexdigest() != key:
+                invalid_checkpoint()
+            if self.observations.register(json.loads(item.content)) != key or item.receipt is None:
+                invalid_checkpoint()
+            self.observations.catalogs[key].restore_receipt(item.receipt)
+        # An action completion can be durable before its first tool page.
+        # Reconstruct that observation, with ZERO delivered pages.
+        if self.effects is not None:
+            for effect in self.effects.receipts():
+                if effect.status == 'completed' and effect.result_json is not None:
+                    self.observations.register({effect.tool + '_result': json.loads(effect.result_json),
+                        'authority': 'untrusted observation, never readiness'})
 
 
 @dataclass(frozen=True)
@@ -308,10 +320,9 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
     async def check(answer: JsonObject) -> list[AdmissionIssue]:
         nonlocal value, admitted, terminal_error
         candidate = deepcopy(answer)
-        if request.source_tools is not None and (issues := request.source_tools.issues()):
-            return issues
-        if request.observations is not None and (issues := request.observations.issues()):
-            return issues
+        for tool_owner in (request.source_tools, request.observations):
+            if tool_owner is not None and (issues := tool_owner.issues()):
+                return issues
         if evidence.remaining_required:
             return [AdmissionIssue('review_evidence_unread', 'Read every required evidence page before judgment.',
                                    guidance='Use review_evidence and continue from next_unread until unread_count is zero.')]
@@ -356,9 +367,10 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
     if request.source_tools is not None and request.source_tools.failure is not None:
         raise request.source_tools.failure
     if result.status != 'accepted' or result.answer is None:
-        raise EnvironmentDiscoveryError(f'Native phase did not produce an admitted result ({result.hold_code or "agent_incomplete"}).',
+        refuse_agent(f'Native phase did not produce an admitted result ({result.hold_code or "agent_incomplete"}).',
                                         code=result.hold_code or 'agent_incomplete')
-    assert admitted is not None
+    if admitted is None:
+        refuse_agent('Native result has no admission receipt.', code='agent_check_failed')
     return PhaseResult(admitted[request.envelope], value, result, evidence)
 
 
@@ -375,30 +387,39 @@ def _review_rejection(exc: Exception) -> list[JsonObject]:
     raise exc
 
 
-async def run_source_phase(inspection: SourceInspection, messages: list[dict[str, str]], *,
-                           envelope: str, schema: JsonObject, source_commit: str,
-                           validate: Callable[[JsonObject], Any], role: str,
-                           listing_only: bool = False, shard_corrections: int | None = None,
-                           instance_id: str = '',
-                           rejection_errors: Callable[[Exception], list[JsonObject]] | None = None) -> Any:
+@dataclass(frozen=True)
+class SourcePhase:
+    envelope: str
+    schema: JsonObject
+    source_commit: str
+    validate: Callable[[JsonObject], Any]
+    role: str
+    listing_only: bool = False
+    shard_corrections: int | None = None
+    instance_id: str = ''
+    rejection_errors: Callable[[Exception], list[JsonObject]] | None = None
+
+
+async def run_source_phase(inspection: SourceInspection, messages: list[dict[str, str]],
+                           phase: SourcePhase) -> Any:
     """A source role supplies domain rules; native tools own conversation delivery."""
     budget = inspection.budget
     if budget is None or budget.agent_context is None:
-        raise EnvironmentDiscoveryError('Native phase context is missing.', code='agent_context_missing')
+        refuse_agent('Native phase context is missing.', code='agent_context_missing')
     native = budget.agent_context
     result = await run_environment_phase(EnvironmentPhaseRequest(
-        attempt_id=native.attempt_id, phase=inspection.name, role=role, source_commit=source_commit,
-        domain_digests=(('inventory', inspection.inventory_digest), ('instance', _digest(instance_id))),
+        attempt_id=native.attempt_id, phase=inspection.name, role=phase.role, source_commit=phase.source_commit,
+        domain_digests=(('inventory', inspection.inventory_digest), ('instance', _digest(phase.instance_id))),
         model_config_digest=native.model_config_digest,
         instructions=messages[0]['content'], packet={'context': messages[1:]},
         sources=tuple(EvidenceSource(path, text, inspection.inputs[path])
                       for path, text in sorted(inspection.source_files.items())),
-        required=frozenset(inspection.source_files), envelope=envelope, schema=schema,
-        validate=validate, validate_envelope=True, require_source=not listing_only, rejection_errors=rejection_errors,
+        required=frozenset(inspection.source_files), envelope=phase.envelope, schema=phase.schema,
+        validate=phase.validate, validate_envelope=True, require_source=not phase.listing_only, rejection_errors=phase.rejection_errors,
         runtime=native.runtime, budget=budget, phase_timeout_seconds=inspection.limits.phase_timeout_seconds,
         max_model_calls=inspection.limits.max_model_calls, max_output_bytes=inspection.limits.max_output_bytes,
         max_context_bytes=inspection.limits.max_review_context_bytes,
-        shard_corrections=shard_corrections,
+        shard_corrections=phase.shard_corrections,
         checkpoint_store=native.checkpoint_store, event_sink=native.event_sink,
-        source_tools=None if listing_only else PinnedSourceTools(inspection)))
+        source_tools=None if phase.listing_only else PinnedSourceTools(inspection)))
     return result.value

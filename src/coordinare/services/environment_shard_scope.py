@@ -48,6 +48,7 @@ from coordinare.services.environment_admission import (
     _validation_feedback,
     explain_rejection,
 )
+from coordinare.services.environment_agent import SourcePhase, run_source_phase
 from coordinare.services.environment_agent_pool import ShardOverflowError, run_pool
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_discovery_prompts import source_navigation
@@ -393,8 +394,6 @@ async def run_agent(context: AgentContext, inspection: SourceInspection, message
     budget, limits = context.budget, context.limits
     budget.shard_agents += 1
     if budget.agent_context is not None:
-        from coordinare.services.environment_agent import run_source_phase
-
         ledger = budget.scope_findings or budget.finding_ledger
         if ledger is None:
             _fail('scope_source_identity')
@@ -402,11 +401,11 @@ async def run_agent(context: AgentContext, inspection: SourceInspection, message
         if task.envelope == 'scope_assessment' and task.criterion_ids is not None:
             constrain_source_criteria(schema, list(task.criterion_ids))
         try:
-            return await run_source_phase(inspection, messages, envelope=task.envelope, schema=schema,
+            return await run_source_phase(inspection, messages, SourcePhase(envelope=task.envelope, schema=schema,
                 source_commit=ledger.source_commit, validate=task.validate,
                 role='reviewer' if task.envelope in {'assessment', 'scope_assessment', 'listing_triage'} else 'author',
                 listing_only=task.listing_only, shard_corrections=SHARD_SCHEMA_REPAIRS * (AGENT_RESTARTS + 1),
-                instance_id=task.instance_id, rejection_errors=lambda exc: _rejection_errors(exc, task.envelope))
+                instance_id=task.instance_id, rejection_errors=lambda exc: _rejection_errors(exc, task.envelope)))
         except EnvironmentDiscoveryError as exc:
             if exc.code.endswith('_context_limit'):
                 raise ShardOverflowError(None) from None

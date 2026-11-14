@@ -61,6 +61,9 @@ def _encoded_envelope(pages: tuple[str, ...], remaining: set[int]) -> str:
     return '{"pages":[' + ','.join(pages) + '],"unread_count":' + str(len(remaining)) + ',"next_unread":' + cursor + '}'
 
 
+MIN_OUTPUT_CAP = 512
+
+
 class EvidenceStore:
     """Phase-local coverage over content verified against pinned source hashes.
 
@@ -71,7 +74,7 @@ class EvidenceStore:
 
     def __init__(self, sources: tuple[EvidenceSource, ...], *, required: frozenset[str],
                  output_cap: int = MAX_TOOL_OUTPUT) -> None:
-        if type(output_cap) is not int or not 512 <= output_cap <= MAX_TOOL_OUTPUT:
+        if type(output_cap) is not int or not MIN_OUTPUT_CAP <= output_cap <= MAX_TOOL_OUTPUT:
             message = 'Evidence response cap is outside the runtime limit.'
             raise EnvironmentDiscoveryError(message, code='agent_evidence_cap')
         keys = [source.key for source in sources]

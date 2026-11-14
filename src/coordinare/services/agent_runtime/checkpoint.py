@@ -10,8 +10,10 @@ import tempfile
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+from nare import loads
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from coordinare.services.agent_runtime.errors import invalid_checkpoint
 from coordinare.services.agent_runtime.models import (
     AgentIdentity,  # noqa: TC001 - pydantic resolves the field at runtime
 )
@@ -41,8 +43,7 @@ class EvidenceReceipt(BaseModel):
     @model_validator(mode='after')
     def unique_pages(self) -> EvidenceReceipt:
         if len(set(self.delivered)) != len(self.delivered):
-            message = 'Evidence receipt repeats a page.'
-            raise ValueError(message)
+            invalid_checkpoint('Evidence receipt repeats a page.')
         return self
 
 
@@ -60,10 +61,9 @@ class EffectReceipt(BaseModel):
     @model_validator(mode='after')
     def completion_has_receipt(self) -> EffectReceipt:
         if (self.status == 'completed') != (self.result_digest is not None):
-            message = 'Completed effects require an execution receipt.'
-            raise ValueError(message)
+            invalid_checkpoint('Completed effects require an execution receipt.')
         if self.result_json is not None and hashlib.sha256(self.result_json.encode()).hexdigest() != self.result_digest:
-            raise ValueError('Effect result differs from its receipt.')
+            invalid_checkpoint('Effect result differs from its receipt.')
         return self
 
 
@@ -86,11 +86,9 @@ class AgentCheckpoint(BaseModel):
     @model_validator(mode='after')
     def bounded_authority(self) -> AgentCheckpoint:
         if not set(self.counters) <= COUNTERS:
-            message = 'Checkpoint contains an unknown domain counter.'
-            raise ValueError(message)
+            invalid_checkpoint('Checkpoint contains an unknown domain counter.')
         if len({item.operation_id for item in self.effects}) != len(self.effects):
-            message = 'Checkpoint repeats an external operation.'
-            raise ValueError(message)
+            invalid_checkpoint('Checkpoint repeats an external operation.')
         return self
 
 
@@ -107,12 +105,10 @@ class CheckpointStore:
     async def save(self, checkpoint: AgentCheckpoint) -> str:
         try:
             validated = AgentCheckpoint.model_validate(checkpoint.model_dump(mode='json'))
-            from nare import loads
-
             loads(validated.session_text)
             content = validated.model_dump_json().encode('utf-8')
             if len(content) > MAX_CHECKPOINT_BYTES:
-                raise ValueError
+                invalid_checkpoint()
             return await asyncio.to_thread(self._write, content)
         except (OSError, ValueError, TypeError):
             message = 'Agent checkpoint could not be persisted; no further external work is allowed.'
@@ -120,7 +116,7 @@ class CheckpointStore:
 
     def _write(self, content: bytes) -> str:
         if self.root.is_symlink():
-            raise ValueError
+            invalid_checkpoint()
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         key = 'v1-' + hashlib.sha256(content).hexdigest() + '.json'
         fd, temporary = tempfile.mkstemp(prefix='.pending-', dir=self.root)
@@ -142,13 +138,11 @@ class CheckpointStore:
     async def load_verified(self, key: str, expected: AgentIdentity) -> AgentCheckpoint:
         try:
             if not KEY.fullmatch(key) or self.root.is_symlink():
-                raise ValueError
+                invalid_checkpoint()
             content = await asyncio.to_thread(self._read, key)
             if hashlib.sha256(content).hexdigest() != key[3:-5]:
-                raise ValueError
+                invalid_checkpoint()
             checkpoint = AgentCheckpoint.model_validate_json(content)
-            from nare import loads
-
             loads(checkpoint.session_text)
         except (OSError, ValueError, TypeError):
             message = 'Agent checkpoint integrity could not be verified.'
@@ -166,8 +160,8 @@ class CheckpointStore:
         with os.fdopen(fd, 'rb') as stream:
             info = os.fstat(stream.fileno())
             if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_CHECKPOINT_BYTES:
-                raise ValueError
+                invalid_checkpoint()
             content = stream.read(MAX_CHECKPOINT_BYTES + 1)
             if len(content) > MAX_CHECKPOINT_BYTES:
-                raise ValueError
+                invalid_checkpoint()
             return content

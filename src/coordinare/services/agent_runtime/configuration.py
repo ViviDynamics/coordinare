@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
+from nare import make_transport
+
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 
 if TYPE_CHECKING:
@@ -25,7 +27,6 @@ class AgentModelConfig:
     api_key: str | None = field(default=None, repr=False)
 
     def transport(self, instructions: str) -> Transport:
-        from nare import make_transport
 
         return make_transport(self.provider, model=self.model, base_url=self.base_url,
                               api_key=self.api_key, max_tokens=self.max_tokens,

@@ -7,7 +7,7 @@ from urllib.parse import unquote
 
 from nare.schema import UnsupportedSchema, check_supported
 
-from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.agent_runtime.errors import refuse_agent
 
 if TYPE_CHECKING:
     from coordinare.services.agent_runtime.models import JsonObject
@@ -20,7 +20,8 @@ def native_tool_schema(schema: JsonObject) -> JsonObject:
         if '$ref' in node:
             ref = node.pop('$ref')
             if not isinstance(ref, str) or not ref.startswith('#/') or ref in seen:
-                raise ValueError('Unsupported tool schema reference')
+                message = 'Unsupported tool schema reference'
+                raise ValueError(message)
             target: Any = schema
             for part in unquote(ref[2:]).split('/'):
                 target = target[part.replace('~1', '/').replace('~0', '~')]
@@ -43,6 +44,6 @@ def native_tool_schema(schema: JsonObject) -> JsonObject:
         result = expand(schema)
         check_supported(result)
     except (UnsupportedSchema, ValueError, KeyError, TypeError, RecursionError):
-        raise EnvironmentDiscoveryError('Tool schema cannot preserve its constraints.',
-                                        code='agent_schema_unsupported') from None
+        refuse_agent('Tool schema cannot preserve its constraints.',
+                                        code='agent_schema_unsupported')
     return result

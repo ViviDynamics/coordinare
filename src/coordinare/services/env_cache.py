@@ -72,6 +72,9 @@ from coordinare.services.environment_acceptance import (
     immutable_verifier_image,
     saved_execution_accepted,
 )
+from coordinare.services.environment_agent_lifecycle import (
+    bootstrap_agent_context,
+)
 from coordinare.services.environment_repair import (
     begin_attempt,
     dispatch_refusal,
@@ -1165,6 +1168,20 @@ def _timeout_label(attempt_expired: bool, stage: str) -> tuple[str, str]:
     return "step_timeout", f"environment {stage} step exceeded its own time limit"
 
 
+@dataclass(frozen=True)
+class _BootstrapPreparation:
+    symphony_name: str
+    symphony_config: Any
+    github_service: _GitHubService
+    eff_config: Any
+    current_sha: str
+    cache_state: EnvCacheState
+    dispatch_fn: Callable[[str, BootstrapJobPayload], Coroutine[Any, Any, None]]
+    container_devenv_root: str
+    llm_chat: ChatJson | None
+    agent_model: Callable[[], AgentModelConfig] | None
+
+
 class EnvCacheService:
     """Manages per-symphony env-cache bootstrapping and SHA change detection."""
 
@@ -1675,26 +1692,18 @@ class EnvCacheService:
             return
         self._bootstrap_preparing.add(symphony_name)
         try:
-            await self._prepare_and_dispatch(symphony_name=symphony_name, symphony_config=symphony_config,
+            await self._prepare_and_dispatch(_BootstrapPreparation(symphony_name=symphony_name, symphony_config=symphony_config,
                 github_service=github_service, eff_config=eff_config, current_sha=current_sha, cache_state=cache_state,
-                dispatch_fn=dispatch_fn, container_devenv_root=container_devenv_root, llm_chat=llm_chat, agent_model=agent_model)
+                dispatch_fn=dispatch_fn, container_devenv_root=container_devenv_root, llm_chat=llm_chat, agent_model=agent_model))
         finally:
             self._bootstrap_preparing.discard(symphony_name)
 
-    async def _prepare_and_dispatch(
-        self,
-        *,
-        symphony_name: str,
-        symphony_config: Any,
-        github_service: _GitHubService,
-        eff_config: Any,
-        current_sha: str,
-        cache_state: EnvCacheState,
-        dispatch_fn: Callable[[str, BootstrapJobPayload], Coroutine[Any, Any, None]],
-        container_devenv_root: str = DEFAULT_DEVENV_ROOT,
-        llm_chat: ChatJson | None = None,
-        agent_model: Callable[[], AgentModelConfig] | None = None,
-    ) -> None:
+    async def _prepare_and_dispatch(self, preparation: _BootstrapPreparation) -> None:
+        symphony_name, symphony_config = preparation.symphony_name, preparation.symphony_config
+        github_service, eff_config = preparation.github_service, preparation.eff_config
+        current_sha, cache_state = preparation.current_sha, preparation.cache_state
+        dispatch_fn, container_devenv_root = preparation.dispatch_fn, preparation.container_devenv_root
+        llm_chat, agent_model = preparation.llm_chat, preparation.agent_model
         repo = eff_config.project_name or symphony_name
         if not await _resolve_bootstrap_commit(github_service, eff_config, cache_state):
             return
@@ -2608,9 +2617,6 @@ class EnvCacheService:
         try:
             async with attempt_timer:
                 if agent_model is not None:
-                    from coordinare.services.environment_agent_lifecycle import (
-                        bootstrap_agent_context,
-                    )
 
                     budget.agent_context = bootstrap_agent_context(model=agent_model(), cache=cache_state,
                         state=self._kubernetes_state, config=self._coordinare_config.global_config,

@@ -50,6 +50,7 @@ from coordinare.models.dependency import DependencyStatus
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.observability import HEALTH, HealthStatus, bind_cycle_id, clear_cycle_id
 from coordinare.resilience import CircuitOpenError
+from coordinare.services.agent_runtime.configuration import resolve_conducting
 from coordinare.services.board_provider import (
     GitHubProjectsBoardProvider,
     board_of,
@@ -4147,13 +4148,13 @@ class CoordinareDaemon:
         """Resolve the same conductor selection when the bootstrap phase starts."""
         import os
 
-        from coordinare.services.agent_runtime.configuration import resolve_conducting
         from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 
         config = self._state.get('config')
         conducting = getattr(config, 'conducting', None)
         if conducting is None:
-            raise EnvironmentDiscoveryError('Bootstrap conducting configuration is unavailable.', code='agent_configuration_missing')
+            message = 'Bootstrap conducting configuration is unavailable.'
+            raise EnvironmentDiscoveryError(message, code='agent_configuration_missing')
         return resolve_conducting(conducting, environ=os.environ)
 
     async def _verify_env_cache_clean(

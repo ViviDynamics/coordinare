@@ -35,15 +35,28 @@ from coordinare_service_inference.environment.models import (
     CoverageAssessmentProposal as _CoverageProposal,
 )
 from coordinare_service_inference.environment.static_rules import validate_static_rules
+from nare import Tool
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
+from coordinare.lib.redaction import redact_command_text
+from coordinare.services.agent_runtime.effects import EffectJournal
+from coordinare.services.agent_runtime.errors import refuse_agent
+from coordinare.services.agent_runtime.evidence import EvidenceSource
+from coordinare.services.agent_runtime.schema import native_tool_schema
 from coordinare.services.environment_admission import (
     CorrectionContext,
     _checked_inventory,
     _decode_reply,
     _repair,
     _validation_feedback,
+)
+from coordinare.services.environment_agent import (
+    EnvironmentPhaseRequest,
+    ObservationTools,
+    PinnedSourceTools,
+    run_environment_phase,
+    unavailable_legacy_chat,
 )
 from coordinare.services.environment_agent_pool import ShardOverflowError, run_pool
 from coordinare.services.environment_attempt import (
@@ -70,6 +83,7 @@ from coordinare.services.environment_delta_schema import ManifestDelta, apply_de
 from coordinare.services.environment_discovery_prompts import (
     ADVISORY_AUDIT_CHECKS,
     LOCAL_CREDENTIAL_REVIEW,
+    NATIVE_SOURCE_INSTRUCTIONS,
     SAMPLE_TEST_CHECKS,
     SOURCE_TOOLS,
     TIMEOUT_CEILINGS,
@@ -130,6 +144,7 @@ from coordinare.services.environment_repair_trial import (
     NATIVE_TRIAL_INSTRUCTION,
     TRIAL_INSTRUCTION,
     TrialExecutor,
+    TrialRequest,
     trial_handler,
     trials_left,
     with_trial_tool,
@@ -189,7 +204,6 @@ if TYPE_CHECKING:
     from coordinare_service_inference.environment.inventory import InventoryEntry
     from coordinare_service_inference.environment.scope import ScopeContract
 
-    from coordinare.services.agent_runtime.effects import EffectJournal
 
 
 @dataclass(frozen=True)
@@ -310,8 +324,6 @@ EXECUTABLE_REVIEW_INSTRUCTIONS = EXECUTABLE_REVIEW_CRITERIA + (
 
 def native_review_instructions() -> str:
     """Share domain criteria without advertising the retired JSON tool transport."""
-    from coordinare.services.environment_discovery_prompts import NATIVE_SOURCE_INSTRUCTIONS
-
     return NATIVE_SOURCE_INSTRUCTIONS + EXECUTABLE_REVIEW_CRITERIA
 
 
@@ -714,36 +726,27 @@ async def _phase(
 
 async def _native_author_phase(inspection: _Inspection, messages: list[dict[str, str]], budget: AttemptBudget,
                                validate: Callable[[dict[str, Any]], Any]) -> tuple[dict[str, Any], dict[str, str]]:
-    from nare import Tool
-
-    from coordinare.services.agent_runtime.effects import EffectJournal
-    from coordinare.services.agent_runtime.evidence import EvidenceSource
-    from coordinare.services.agent_runtime.schema import native_tool_schema
-    from coordinare.services.environment_agent import (
-        EnvironmentPhaseRequest,
-        ObservationTools,
-        PinnedSourceTools,
-        run_environment_phase,
-    )
-
     native = budget.agent_context
-    assert native is not None
+    if native is None:
+        refuse_agent('Native phase context is missing.', code='agent_context_missing')
     final = _declared_key(inspection)
     ledger = budget.finding_ledger
     if ledger is None:
-        raise EnvironmentDiscoveryError('Author source identity is unavailable.', code='source_identity')
+        refuse_agent('Author source identity is unavailable.', code='source_identity')
     effects = inspection.native_effects = EffectJournal()
     observations = ObservationTools()
     tools = []
 
     async def probe(arguments: dict[str, Any]) -> str:
-        assert inspection.probe is not None
+        if inspection.probe is None:
+            refuse_agent('Probe executor is unavailable.', code='probe_executor_unavailable')
         report = await inspection.probe(arguments)
         return await observations.add({'probe_result': report.model_dump(mode='json'),
                                        'authority': 'untrusted observation, never readiness'})
 
     async def trial(arguments: dict[str, Any]) -> str:
-        assert inspection.trial is not None
+        if inspection.trial is None:
+            refuse_agent('Trial executor is unavailable.', code='trial_executor_unavailable')
         return await observations.add({'trial_result': await inspection.trial(arguments),
                                        'authority': 'untrusted observation, never readiness'})
 
@@ -751,14 +754,12 @@ async def _native_author_phase(inspection: _Inspection, messages: list[dict[str,
         tools.append(Tool(name='probe', description='Execute a bounded, source-cited capability probe under domain policy.',
                           input_schema=native_tool_schema(ProbeRequest.model_json_schema()), call=probe))
     if inspection.trial is not None:
-        from coordinare.services.environment_repair_trial import TrialRequest
-
         tools.append(Tool(name='trial', description='Try allowed replacement services/checks on the sealed failed-generation disk.',
                           input_schema=native_tool_schema(TrialRequest.model_json_schema()), call=trial))
 
     def admit(envelope: dict[str, Any]) -> None:
         if inspection.require_preflight and not budget.probe_reports:
-            raise EnvironmentDiscoveryError('Required capability preflight has not executed.', code='preflight_required')
+            refuse_agent('Required capability preflight has not executed.', code='preflight_required')
         _validate_phase_declaration(inspection, envelope, validate)
 
     def rejection_errors(exc: Exception) -> list[dict[str, Any]]:
@@ -1129,6 +1130,13 @@ def _execution_repair(options: Any) -> bool:
     return options.previous_manifest is not None and options.execution_feedback is not None
 
 
+def _phase_chat(chat: ChatJson | None, budget: AttemptBudget | None) -> ChatJson:
+    if (chat is None or not callable(chat)) and (budget is None or budget.agent_context is None):
+        message = "environment discovery/review model configuration is required"
+        raise EnvironmentDiscoveryError(message)
+    return unavailable_legacy_chat if chat is None else chat
+
+
 async def discover_and_review(
     *, symphony_name: str, commit: str, paths: Sequence[str], fetch: Fetch,
     chat: ChatJson | None, **options: Unpack[_DiscoveryOptionKeywords],
@@ -1138,14 +1146,7 @@ async def discover_and_review(
     No partial result escapes: malformed/unsupported output, missing configuration,
     incomplete evidence, or any nonaccept verdict raises ``EnvironmentDiscoveryError``.
     """
-    native_budget = options.get('budget')
-    if (chat is None or not callable(chat)) and (native_budget is None or native_budget.agent_context is None):
-        message = "environment discovery/review model configuration is required"
-        raise EnvironmentDiscoveryError(message)
-    if chat is None:
-        from coordinare.services.environment_agent import unavailable_legacy_chat
-
-        chat = unavailable_legacy_chat
+    chat = _phase_chat(chat, options.get('budget'))
     if not symphony_name or not commit:
         message = "environment discovery requires source identity"
         raise EnvironmentDiscoveryError(message)
@@ -1324,7 +1325,8 @@ def _probe_handler(discovery: _Inspection, options: _DiscoveryOptions, commit: s
     budget = cast("AttemptBudget", discovery.budget)
     discovery.require_preflight = options.require_preflight
     async def probe(data: dict[str, Any]) -> ProbeReport:
-        if options.probe_executor is None:
+        executor = options.probe_executor
+        if executor is None:
             message = "probe executor is unavailable"
             raise EnvironmentDiscoveryError(message, code="probe_executor_unavailable")
         request = ProbeRequest.model_validate(data)
@@ -1335,8 +1337,7 @@ def _probe_handler(discovery: _Inspection, options: _DiscoveryOptions, commit: s
             budget.reserve_probe_batch()
             await budget.flush()
             budget.stage = "probe_execution"
-            assert options.probe_executor is not None
-            report = bind_probe_report(plan, await options.probe_executor(plan))
+            report = bind_probe_report(plan, await executor(plan))
             return report.model_dump(mode='json')
 
         if discovery.native_effects is not None:
@@ -1680,13 +1681,6 @@ async def _review(attempt: _Attempt, build: DividedConstruction | None,
             **url_check_evidence(missing)})},
     ]
     if (native := budget.agent_context) is not None:
-        from coordinare.services.agent_runtime.evidence import EvidenceSource
-        from coordinare.services.environment_agent import (
-            EnvironmentPhaseRequest,
-            PinnedSourceTools,
-            run_environment_phase,
-        )
-
         required = frozenset(item['path'] for item in mandatory_evidence)
         result = await run_environment_phase(EnvironmentPhaseRequest(
             attempt_id=native.attempt_id, phase='review', role='reviewer', source_commit=manifest.source_commit,
@@ -1796,6 +1790,14 @@ def compact_scope_identity(identity: dict[str, Any], scope: ScopeContract) -> di
 MERGE_ROUNDS = 3
 
 
+def _prior_check_versions(manifests: Sequence[EnvironmentManifest]) -> dict[str, list[Command]]:
+    versions: dict[str, list[Command]] = {}
+    for manifest in manifests:
+        for check in manifest.checks:
+            versions.setdefault(check.id, []).append(check)
+    return versions
+
+
 async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
                              validate: Callable[[dict[str, Any]], Any]) -> dict[str, Any]:
     """Global author, then check authors in parallel, then a deterministic merge through the full admission.
@@ -1810,10 +1812,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
     executed = {check.id for manifest in budget.executed_manifests for check in manifest.checks}
     redo: list[CheckGroup] = []
     # Every version of each check id across the prior manifests: preservation judges the candidate against each.
-    prior_checks: dict[str, list[Command]] = {}
-    for manifest in attempt.prior_manifests:
-        for check in manifest.checks:
-            prior_checks.setdefault(check.id, []).append(check)
+    prior_checks = _prior_check_versions(attempt.prior_manifests)
     authored_responses = list(attempt.discovery.finding_responses)
     for _ in range(MERGE_ROUNDS):
         if global_data is None:
@@ -2373,8 +2372,6 @@ FIXED_REVISION = ("Commands in fixed_ids belonged to a manifest the project alre
 def _append_coverage_revision(messages: list[dict[str, str]], candidate: dict[str, Any],
                               assessment: CoverageAssessment, required_ids: dict[str, set[str]],
                               obligation_ledger: _ObligationLedger) -> None:
-    from coordinare.lib.redaction import redact_command_text
-
     feedback = redact_command_text(assessment.rationale)[:4096]
     messages.extend([{"role": "assistant", "content": _json({"manifest": candidate})},
         {"role": "user", "content": _json({"coverage_revision": {

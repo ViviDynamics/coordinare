@@ -4,10 +4,12 @@ from __future__ import annotations
 import inspect
 import json
 from contextlib import aclosing, asynccontextmanager
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from nare import Reply
 
+from coordinare.services.agent_runtime.errors import refuse_agent
 from coordinare.services.conductor_calls import NULL_CALL_LOG, ModelReply, ModelRequest, ToolCall
 from coordinare.services.environment_attempt import DiscoveryChatReply, EnvironmentDiscoveryError
 
@@ -55,7 +57,7 @@ class BudgetBridge:
         try:
             if (self.phase_key is not None and self.phase_limit is not None
                     and self.budget.agent_phase_calls.get(self.phase_key, 0) >= self.phase_limit):
-                raise EnvironmentDiscoveryError('Native phase call allowance exhausted.', code='phase_call_limit')
+                refuse_agent('Native phase call allowance exhausted.', code='phase_call_limit')
             self.budget.reserve_call()
             if self.phase_key is not None:
                 self.budget.agent_phase_calls[self.phase_key] = self.budget.agent_phase_calls.get(self.phase_key, 0) + 1
@@ -97,24 +99,32 @@ class ExtendedTransport(Protocol):
     def stream_turn(self, messages: list[Message], tools: list[dict[str, Any]], **kwargs: Any) -> AsyncGenerator[Delta | Reply, None]: ...
 
 
+@dataclass(frozen=True)
+class TransportContext:
+    session_id: str
+    before_send: Callable[[], Awaitable[None]]
+    calls: ConductorCallLog | None = None
+    config: AgentModelConfig | None = None
+    instructions: str = ''
+    max_output_bytes: int | None = None
+    max_context_bytes: int | None = None
+    answer_schema: dict[str, Any] | None = None
+
+
 class BudgetTransport:
     """Nare retries re-enter this seam, so every physical request is reserved."""
 
-    def __init__(self, inner: Transport, bridge: BudgetBridge, *, session_id: str,
-                 before_send: Callable[[], Awaitable[None]], calls: ConductorCallLog | None = None,
-                 config: AgentModelConfig | None = None, instructions: str = '',
-                 max_output_bytes: int | None = None, max_context_bytes: int | None = None,
-                 answer_schema: dict[str, Any] | None = None) -> None:
+    def __init__(self, inner: Transport, bridge: BudgetBridge, context: TransportContext) -> None:
         self.inner = inner
         self.bridge = bridge
-        self.session_id = session_id
-        self.before_send = before_send
-        self.calls = calls or NULL_CALL_LOG
-        self.config = config
-        self.instructions = instructions
-        self.max_output_bytes = max_output_bytes
-        self.max_context_bytes = max_context_bytes
-        self.answer_schema = answer_schema
+        self.session_id = context.session_id
+        self.before_send = context.before_send
+        self.calls = context.calls or NULL_CALL_LOG
+        self.config = context.config
+        self.instructions = context.instructions
+        self.max_output_bytes = context.max_output_bytes
+        self.max_context_bytes = context.max_context_bytes
+        self.answer_schema = context.answer_schema
         self.streaming = bool(getattr(inner, 'streaming', False))
         self.supports_structured_output = bool(getattr(inner, 'supports_structured_output', False))
 
@@ -123,7 +133,7 @@ class BudgetTransport:
         window = await self.inner.context_window()
         if type(window) is not int or window <= 0:
             self.bridge.failure_code = 'agent_context_unavailable'
-            raise EnvironmentDiscoveryError('Configured model context window is unavailable.',
+            refuse_agent('Configured model context window is unavailable.',
                                             code=self.bridge.failure_code)
         return window
 
@@ -138,7 +148,7 @@ class BudgetTransport:
             'tools': tools, 'schema': self.answer_schema}, ensure_ascii=False, separators=(',', ':')).encode())
         if self.max_context_bytes is not None and size > self.max_context_bytes:
             self.bridge.failure_code = self.bridge.phase + '_context_limit'
-            raise EnvironmentDiscoveryError('Complete native context exceeds its bound.', code=self.bridge.failure_code)
+            refuse_agent('Complete native context exceeds its bound.', code=self.bridge.failure_code)
         self.bridge.budget.context_bytes += size
         receipt = self.session_id + ':' + await self.bridge.reserve()
         await self.before_send()
@@ -182,7 +192,7 @@ class BudgetTransport:
                                                     for call in reply.tool_calls)
         if self.max_output_bytes is not None and size > self.max_output_bytes:
             self.bridge.failure_code = 'phase_output_limit'
-            raise EnvironmentDiscoveryError('Native output exceeds its bound.', code='phase_output_limit')
+            refuse_agent('Native output exceeds its bound.', code='phase_output_limit')
 
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]], *,
                    response_schema: dict[str, Any] | None = None, tool_choice: str | None = None) -> Reply:

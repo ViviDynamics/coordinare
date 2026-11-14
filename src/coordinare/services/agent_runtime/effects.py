@@ -6,7 +6,7 @@ import json
 from typing import TYPE_CHECKING
 
 from coordinare.services.agent_runtime.checkpoint import EffectReceipt
-from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.agent_runtime.errors import refuse_agent
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -30,24 +30,24 @@ class EffectJournal:
         code = self.failure or ('agent_effect_pending' if any(
             item.status == 'pending' for item in self._receipts.values()) else None)
         if code:
-            raise EnvironmentDiscoveryError('External action requires reconciliation.', code=code)
+            refuse_agent('External action requires reconciliation.', code=code)
 
     async def _flush(self) -> None:
         try:
             if self.persist is None:
-                raise RuntimeError('No durable action checkpoint')
+                refuse_agent('No durable action checkpoint', code='agent_effect_persistence')
             await self.persist()
         except Exception:
             self.failure = 'agent_effect_persistence'
-            raise EnvironmentDiscoveryError('External action receipt could not be persisted.',
-                                            code=self.failure) from None
+            refuse_agent('External action receipt could not be persisted.',
+                                            code=self.failure)
 
     async def run(self, tool: str, binding_digest: str, execute: Callable[[], Awaitable[JsonObject]]) -> JsonObject:
         await self.ensure_settled()
         key = hashlib.sha256(f'{tool}:{binding_digest}'.encode()).hexdigest()
         if (saved := self._receipts.get(key)) is not None:
             if saved.result_json is None:
-                raise EnvironmentDiscoveryError('Completed action has no reusable result.', code='agent_effect_result_missing')
+                refuse_agent('Completed action has no reusable result.', code='agent_effect_result_missing')
             result: JsonObject = json.loads(saved.result_json)
             return result
         self._receipts[key] = EffectReceipt(operation_id=key, tool=tool, binding_digest=binding_digest, status='pending')

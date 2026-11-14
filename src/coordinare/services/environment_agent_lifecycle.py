@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from coordinare.services.agent_runtime.checkpoint import CheckpointStore
+from coordinare.services.agent_runtime.errors import refuse_agent
 from coordinare.services.agent_runtime.nare_runtime import NareRuntime
 from coordinare.services.bootstrap_history import record_activity
 from coordinare.services.environment_agent import EnvironmentAgentContext
-from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_repair import journal_for, mark_native_attempt
 
 if TYPE_CHECKING:
@@ -28,12 +28,12 @@ def bootstrap_agent_context(*, model: AgentModelConfig, cache: EnvCacheState, st
     attempt_id = hashlib.sha256(identity.encode()).hexdigest()
     state_file = getattr(config, 'state_file_path', None)
     if state_file is None:
-        raise EnvironmentDiscoveryError('Private agent checkpoint directory is unavailable.', code='agent_checkpoint_unavailable')
+        refuse_agent('Private agent checkpoint directory is unavailable.', code='agent_checkpoint_unavailable')
     root = Path(state_file).expanduser().parent / 'bootstrap-agents' / attempt_id
     private_root = root.resolve()
     if any(private_root.is_relative_to(mount.expanduser().resolve())
            or mount.expanduser().resolve().is_relative_to(private_root) for mount in performer_mounts):
-        raise EnvironmentDiscoveryError('Agent checkpoint directory overlaps a performer mount.', code='agent_checkpoint_exposed')
+        refuse_agent('Agent checkpoint directory overlaps a performer mount.', code='agent_checkpoint_exposed')
     model_digest = hashlib.sha256(json.dumps(asdict(model), sort_keys=True).encode()).hexdigest()
     if mark_native_attempt(cache):
         record_activity(state, cache.symphony_name, 'bootstrap_agent',

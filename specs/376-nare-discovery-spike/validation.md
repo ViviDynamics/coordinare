@@ -34,9 +34,9 @@ explicitly reject parameters its native transport cannot preserve.
 
 ## Remaining gates
 
-Production reviewer acceptance and remaining phase migrations;
-daemon lifecycle tests; bounded real reviewer and installer/repair/clean-consumer
-acceptance; performance measurements; deletion of the old loops; full checks,
+Native phase migration and deterministic daemon lifecycle checks are implemented.
+Live reviewer and pinned installer/repair/clean-consumer acceptance, final-code
+performance verification, deletion of the old loops, full repository checks,
 adversarial review and Copilot review remain incomplete.
 
 ## Runtime foundation
@@ -101,11 +101,10 @@ across366 modules. One bounded production-adapter saved-packet replay reached al
 386 complete pages from148 pinned source files, then exhausted its20-minute limit
 before assessment. It reported5,147,093 tokens, six compactions, zero transport
 retries and one interrupted request with unknown usage. No live verdict is claimed.
-The checkpoint and exact launch-code provenance are retained. An optional
-five-minute continuation under the same total8-million token cap awaits explicit
-authorization; final production acceptance remains required on the final code.
-The existing SQLite throughput benchmark still
-hits its90-second limit locally and remains a final verification gate.
+The checkpoint and exact launch-code provenance are retained. The subsequently approved five-minute continuation and its metadata failure are
+recorded below; final production acceptance remains required on the final code.
+The SQLite runtime-environment difference and successful unchanged Python3.12
+benchmark are also recorded below.
 
 ## Native scope, authoring and repair (Task6)
 
@@ -178,3 +177,12 @@ Additional model requests/tokens were zero. No assessment or readiness is claime
 The production adapter now holds with `agent_context_unavailable` when context
 metadata is missing or invalid, before inference or implicit fallback. Final live
 review and installer/consumer acceptance remain outstanding. No old loop is deleted.
+
+The first repository preflight failed the existing lint-debt ratchet. Native
+checkpoint, source-phase, transport and dispatch preparation were split into
+focused helpers and typed contracts, without changing the baseline or suppressing
+rules. The affected regression passed 2,530 tests; checkpoint follow-up passed 30.
+Whole-tree lint, the ratchet and strict typechecking across 370 modules passed.
+After the import refactor, paging measured74.97ms and9,583,943bytes; same-runner
+cold imports measured0.92915s baseline and0.98759s candidate. Both unchanged
+performance budgets passed. Full repository preflight is still pending.

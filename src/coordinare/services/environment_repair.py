@@ -80,6 +80,7 @@ from coordinare.services.environment_repair_triage import (
     part_of,
     triage_failure,
 )
+from coordinare.services.environment_repair_trial import MAX_TRIALS_PER_REPAIR
 from coordinare.services.environment_scope import preserve_scope, released_criteria
 from coordinare.services.environment_scope_investigation import validate_investigation_history
 from coordinare.services.environment_scope_reopening import source_conflict_reopenings
@@ -170,7 +171,6 @@ class RepairJournal(BaseModel):
                     data[name] = data['diagnostics'][name]
         if (isinstance(data, dict) and data.get('version') and 'trial_runs' not in data
                 and isinstance(data.get('execution_repairs'), int) and data['execution_repairs'] > 0):
-            from coordinare.services.environment_repair_trial import MAX_TRIALS_PER_REPAIR
 
             # Old journals did not persist trial spending. Reserve all unprovable
             # past allowance; a later execution repair still earns its own trials.
@@ -577,6 +577,28 @@ def mark_native_attempt(cache: EnvCacheState) -> bool:
     return migrated
 
 
+def _restore_agent_accounting(budget: AttemptBudget, journal: RepairJournal) -> None:
+    budget.agent_usage_receipts = set(journal.agent_usage_receipts)
+    budget.agent_phase_calls = dict(journal.agent_phase_calls)
+    budget.agent_usage_unknown = journal.agent_usage_unknown
+    budget.agent_compactions = journal.agent_compactions
+    budget.agent_retries = journal.agent_retries
+    budget.trial_runs = journal.trial_runs
+    budget.shard_schema_repairs = journal.shard_schema_repairs
+    budget.agent_checkpoints = {key: value.model_copy(deep=True) for key, value in journal.agent_checkpoints.items()}
+
+
+def _save_agent_accounting(journal: RepairJournal, budget: AttemptBudget) -> None:
+    journal.agent_usage_receipts = set(budget.agent_usage_receipts)
+    journal.agent_phase_calls = dict(budget.agent_phase_calls)
+    journal.agent_usage_unknown = budget.agent_usage_unknown
+    journal.agent_compactions = budget.agent_compactions
+    journal.agent_retries = budget.agent_retries
+    journal.trial_runs = max(journal.trial_runs, budget.trial_runs)
+    journal.shard_schema_repairs = max(journal.shard_schema_repairs, budget.shard_schema_repairs)
+    journal.agent_checkpoints = {key: value.model_copy(deep=True) for key, value in budget.agent_checkpoints.items()}
+
+
 def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     if now < journal.started_at:
         _refuse('environment repair clock moved backwards')
@@ -594,14 +616,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.call_stats = {phase: dict(values) for phase, values in journal.call_stats.items()}
     budget.finish_reasons = dict(journal.finish_reasons)
     budget.metadata_available = journal.metadata_available
-    budget.agent_usage_receipts = set(journal.agent_usage_receipts)
-    budget.agent_phase_calls = dict(journal.agent_phase_calls)
-    budget.agent_usage_unknown = journal.agent_usage_unknown
-    budget.agent_compactions = journal.agent_compactions
-    budget.agent_retries = journal.agent_retries
-    budget.trial_runs = journal.trial_runs
-    budget.shard_schema_repairs = journal.shard_schema_repairs
-    budget.agent_checkpoints = {key: value.model_copy(deep=True) for key, value in journal.agent_checkpoints.items()}
+    _restore_agent_accounting(budget, journal)
     budget.scope_investigations = [item.model_copy(deep=True) for item in journal.scope_investigations]
     budget.scope_investigation_results = [item.model_copy(deep=True) for item in journal.scope_investigation_results]
     budget.scope_author_protocol = journal.scope_author_protocol
@@ -709,14 +724,7 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
     journal.call_stats = {phase: dict(values) for phase, values in budget.call_stats.items()}
     journal.finish_reasons = dict(budget.finish_reasons)
     journal.metadata_available = budget.metadata_available
-    journal.agent_usage_receipts = set(budget.agent_usage_receipts)
-    journal.agent_phase_calls = dict(budget.agent_phase_calls)
-    journal.agent_usage_unknown = budget.agent_usage_unknown
-    journal.agent_compactions = budget.agent_compactions
-    journal.agent_retries = budget.agent_retries
-    journal.trial_runs = max(journal.trial_runs, budget.trial_runs)
-    journal.shard_schema_repairs = max(journal.shard_schema_repairs, budget.shard_schema_repairs)
-    journal.agent_checkpoints = {key: value.model_copy(deep=True) for key, value in budget.agent_checkpoints.items()}
+    _save_agent_accounting(journal, budget)
     _save_scope_checkpoint(journal, budget)
     previous, current = journal.finding_ledger, budget.finding_ledger
     if previous is not None and (current is None
