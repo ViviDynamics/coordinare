@@ -186,3 +186,27 @@ Whole-tree lint, the ratchet and strict typechecking across 370 modules passed.
 After the import refactor, paging measured74.97ms and9,583,943bytes; same-runner
 cold imports measured0.92915s baseline and0.98759s candidate. Both unchanged
 performance budgets passed. Full repository preflight is still pending.
+
+Preflight2 completed with lint, the unchanged ratchet, typechecking and changed
+unit tests passing. The full suite reported19,562 passed,96 skipped and589 deselected,
+with one failure: the cold-start benchmark required an explicit baseline path that
+normal preflight does not supply. Its setup now archives an immutable local
+merge-base or parent when no path is configured; Test/Coverage CI checkouts retain
+the parent, while the dedicated benchmark lane continues to use the exact PR base.
+Each import also verifies that the daemon came from the selected source tree.
+Five focused checks passed with automatic selection; explicit selection also passed.
+No benchmark was skipped and no threshold was relaxed. A busy-host paging sample
+exceeded100ms; the subsequent isolated median was75.39ms. Startup measured0.87004s
+against main's baseline and1.00429s for the candidate; explicit prerequisite-base
+measurement was0.92286s against1.00798s. Full preflight must run again on this fix.
+
+The approved saved-packet continuation subsequently completed in197.66 seconds.
+It consumed385,538 additional tokens (5,532,631 total reported tokens, plus a retained
+294,912-token reserve for the interrupted parent request), with zero transport
+retries. A fresh validator invocation rehashed148 source files and verified386
+delivered pages,24 citations, three prior finding decisions and one new finding.
+The genuine verdict was `revise`. Structural admission does not establish review
+accuracy: the new finding appears to cite a historical failure despite the current
+candidate already declaring the requested compile-and-run probe. This remains a
+quality concern. The replay used frozen launch code and executed no installer or
+consumer; final-head live acceptance and legacy-loop deletion remain outstanding.

@@ -116,6 +116,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 2  # Offline startup benchmark needs the immutable parent.
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -166,6 +168,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 2  # Offline startup benchmark needs the immutable parent.
 
       - name: Setup Python
         uses: actions/setup-python@v6
