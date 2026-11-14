@@ -784,6 +784,7 @@ def test_existing_workflows_are_untouched() -> None:
 TIER1_PERMITTED = frozenset(
     {
         "MIT",
+        "MIT-CMU",
         "BSD-2-Clause",
         "BSD-3-Clause",
         "Apache-2.0",
@@ -894,6 +895,9 @@ FIRST_PARTY = frozenset(
         "coordinare-service-inference",
         "coordinare-ci-detection",
         "coordinare-routing-models",
+        # Independently released by the same licensor. Its own shipped license
+        # and notice are asserted below; third-party ELv2 is not allowlisted.
+        "nare",
     },
 )
 
@@ -1161,9 +1165,24 @@ def test_first_party_packages_are_exempt_but_declare_elv2() -> None:
         assert data["project"].get("license") == ELV2_LICENSE_ID
 
 
+def test_external_first_party_nare_retains_its_own_license_and_notice() -> None:
+    """The release dependency is exempt by ownership, never by license alone."""
+    from importlib.metadata import distribution
+
+    package = distribution("nare")
+    assert "nare" in FIRST_PARTY
+    assert package.metadata["License-Expression"] == ELV2_LICENSE_ID
+    licenses = {path.name: package.locate_file(path).read_text()
+                for path in package.files or () if ".dist-info/licenses/" in str(path)}
+    assert licenses["LICENSE"].strip() == _read("LICENSE").strip()
+    assert "Vivi Dynamics LLC is the licensor" in licenses["NOTICE"]
+    assert "nare is the licensed work" in licenses["NOTICE"]
+
+
 def test_tier_classification_handles_real_world_expressions() -> None:
     """FR-019 — the classifier must cope with the metadata actually in the tree."""
     assert _tier_of("MIT") == "permitted"
+    assert _tier_of("MIT-CMU") == "permitted"
     assert _tier_of("BSD License") == "permitted"
     assert _tier_of("Apache Software License") == "permitted"
     assert _tier_of("Apache-2.0 OR MIT") == "permitted"

@@ -1,6 +1,6 @@
 # Dependency Licence Audit
 
-**Feature**: 142-license-and-legal-posture | **Audit date**: 2026-10-24
+**Feature**: 142-license-and-legal-posture | **Audit date**: 2026-11-14
 **Enforces**: FR-018, FR-019, FR-019a, FR-020 | **Contract**: [accepted-licenses.md](./contracts/accepted-licenses.md)
 
 ## How this was produced
@@ -17,10 +17,10 @@ Licence field precedence: `License-Expression` (PEP 639 SPDX), then a short free
 
 | Verdict | Count |
 |---|---|
-| Tier 1, permitted | 81 |
+| Tier 1, permitted | 84 |
 | Tier 2, permitted with rationale | 4 |
 | Tier 3, rejected | 0 |
-| Platform-conditional, not verifiable here | 9 |
+| Platform-conditional, not verifiable here | 7 |
 | Redistributed in the performer image | 1 |
 
 **No distributed dependency carries a licence incompatible with ELv2 distribution.**
@@ -93,7 +93,7 @@ Reachable only through marker-gated edges, so absent from this environment and *
 | `aiosmtplib` | 5.1.3 | `MIT` | `License` |
 | `annotated-doc` | 0.0.4 | `MIT` | `License-Expression` |
 | `annotated-types` | 0.7.0 | `MIT License` | `Classifier` |
-| `anthropic` | 0.104.0 / 0.79.0 | `MIT` | `License` |
+| `anthropic` | 0.104.0 / 2.8.0 | `Apache-2.0` | `License` |
 | `anyio` | 4.14.2 / 4.15.1 | `MIT` | `License-Expression` |
 | `attrs` | 25.4.0 / 26.1.0 | `MIT` | `License-Expression` |
 | `backoff` | 2.2.1 | `MIT` | `License` |
@@ -108,6 +108,7 @@ Reachable only through marker-gated edges, so absent from this environment and *
 | `graphql-core` | 3.2.13 | `MIT license` | `License` |
 | `h11` | 0.16.0 | `MIT` | `License` |
 | `httpcore` | 1.0.9 | `BSD-3-Clause` | `License-Expression` |
+| `httpcore2` | 2.13.1 | `BSD-3-Clause` | `License-Expression` |
 | `httpx` | 0.28.1 | `BSD-3-Clause` | `License` |
 | `httpx2` | 2.13.1 | `BSD-3-Clause` | `License-Expression` |
 | `idna` | 3.20 | `BSD-3-Clause` | `License-Expression` |
@@ -134,6 +135,7 @@ Reachable only through marker-gated edges, so absent from this environment and *
 | `opentelemetry-api` | 1.45.1 | `Apache-2.0` | `License-Expression` |
 | `ormsgpack` | 1.12.2 | `Apache-2.0 OR MIT` | `License-Expression` |
 | `packaging` | 26.0 | `Apache-2.0 OR BSD-2-Clause` | `License-Expression` |
+| `pillow` | 13.0.0 | `MIT-CMU` | `License-Expression` |
 | `prometheus-client` | 0.24.1 | `Apache-2.0 AND BSD-2-Clause` | `License-Expression` |
 | `propcache` | 0.4.1 | `Apache-2.0` | `License` |
 | `psutil` | 7.2.2 | `BSD-3-Clause` | `License` |
@@ -158,6 +160,7 @@ Reachable only through marker-gated edges, so absent from this environment and *
 | `starlette` | 1.3.1 | `BSD-3-Clause` | `License-Expression` |
 | `structlog` | 25.5.0 | `MIT OR Apache-2.0` | `License-Expression` |
 | `tenacity` | 9.1.4 | `Apache 2.0` | `License` |
+| `truststore` | 0.10.4 | `MIT` | `License-Expression` |
 | `typing-extensions` | 4.15.0 / 4.16.0 | `PSF-2.0` | `License-Expression` |
 | `typing-inspection` | 0.4.2 | `MIT` | `License-Expression` |
 | `urllib3` | 2.8.0 | `MIT` | `License-Expression` |
@@ -188,3 +191,11 @@ installations. All three are Tier 1, permitted.
 | `grpcio` | 1.80.0 | `Apache-2.0` | `License-Expression` |
 | `opentelemetry-proto` | 1.40.0 | `Apache-2.0` | `License-Expression` |
 | `protobuf` | 6.33.6 | `3-Clause BSD License` | `License` |
+
+## First-party release dependency
+
+`nare`2026.11.104 is distributed unmodified from the pinned ViviDynamics release.
+The wheel declares `LicenseRef-Elastic-License-2.0` and includes its own LICENSE
+and NOTICE naming Vivi Dynamics LLC. The license text matches the repository
+license. A separate test asserts the license and notice instead of broadly
+allowing ELv2 for third-party packages.

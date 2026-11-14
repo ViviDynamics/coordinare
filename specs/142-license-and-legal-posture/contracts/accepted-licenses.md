@@ -11,6 +11,7 @@ Distributed packages under any of these ship with no further action.
 
 ```
 MIT
+MIT-CMU
 BSD-2-Clause
 BSD-3-Clause
 Apache-2.0
@@ -38,6 +39,12 @@ audit rather than by the check passing.)
 
 Historical spellings of the same licenses appear in real metadata (`BSD License`,
 `Apache Software License`, `MIT license`, `3-Clause BSD License`) and normalize into this tier.
+
+`MIT-CMU` is a separate identifier, not an alias for MIT. Added for Pillow13 in
+issue376 after inspecting the wheel's license: permission to use, copy, modify
+and distribute, subject to retaining notices and the restriction on advertising
+with the authors' names. The wheel retains its license and bundled notices.
+This contract addition receives the same code-review gate as the integration.
 
 **Bare family names.** Some packages publish only a family, with no variant: `xxhash` declares
 `BSD` and ships no license file. Every BSD variant is permissive and ELv2-compatible, so the
@@ -123,6 +130,11 @@ unlicensed, and treating it as a soft warning is how an unlicensed package event
 instead asserted to declare the ELv2 reference in their own packaging metadata (FR-003, FR-004).
 All three currently resolve to `UNKNOWN`, which is the gap FR-003 exists to close, and is why
 the check must special-case them rather than simply rejecting `UNKNOWN` everywhere.
+
+Nare is also first-party, independently released by Vivi Dynamics LLC. Its
+published wheel must declare ELv2 and retain its own LICENSE and NOTICE identifying
+the licensed work and licensor. A dedicated test verifies those shipped files;
+this does not permit arbitrary third-party ELv2 dependencies.
 
 ## Change procedure
 

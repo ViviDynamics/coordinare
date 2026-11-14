@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 from collections import deque
+from datetime import UTC, datetime
 from pathlib import Path
 from statistics import median
 from time import perf_counter
@@ -194,7 +195,8 @@ def legacy_database(path: Path, count: int) -> None:
         db.execute("PRAGMA user_version=2")
         db.executemany(
             "INSERT INTO events (ts,source,run_id,data) VALUES (?,?,?,?)",
-            [("2026-10-15T12:00:00Z", "performer", "run", '{"transcript_seq":1}')] * count,
+            # Exercise duplicate migration independently of retention expiry.
+            [(datetime.now(UTC).isoformat(), "performer", "run", '{"transcript_seq":1}')] * count,
         )
 
 
