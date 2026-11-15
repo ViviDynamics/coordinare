@@ -209,7 +209,7 @@ def _run_semgrep(files: list[str], repo_root: Path) -> list[Finding]:
     for result in payload.get("results", []) or []:
         try:
             findings.append(_normalize_semgrep(result))
-        except (TypeError, ValueError, AttributeError) as exc:
+        except (TypeError, ValueError, AttributeError, OverflowError) as exc:
             raise ScanDiagnostic("semgrep emitted malformed results") from exc
     return findings
 
@@ -226,7 +226,7 @@ def _run_bandit(files: list[str], repo_root: Path) -> list[Finding]:
     for result in payload.get("results", []) or []:
         try:
             findings.append(_normalize_bandit(result))
-        except (TypeError, ValueError, AttributeError) as exc:
+        except (TypeError, ValueError, AttributeError, OverflowError) as exc:
             raise ScanDiagnostic("bandit emitted malformed results") from exc
     return findings
 

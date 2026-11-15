@@ -82,6 +82,10 @@ async def test_exception_text_never_crosses_report_or_status(tmp_path, error_kin
     ('{"results": [], "errors": ["secret-token"]}', 0, 'reported scan errors'),
     ('{"results": [{"extra": "secret-token", "line_number": "secret-token"}]}', 0,
      'emitted malformed results'),
+    ('{"results": [{"start": {"line": 1e999}, "line_number": 1e999}]}', 0,
+     'emitted malformed results'),
+    ('{"results": [{"start": {"line": -1e999}, "line_number": -1e999}]}', 0,
+     'emitted malformed results'),
 ])
 async def test_scanner_identity_and_payload_errors_are_safe(tmp_path, tool, stdout, code, expected):
     def run(cmd, **kwargs):
