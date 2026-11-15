@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 from collections import deque
+from datetime import UTC, datetime
 from pathlib import Path
 from statistics import median
 from time import perf_counter
@@ -188,13 +189,15 @@ async def test_stats_failure_after_commit_never_retries_insert(tmp_path: Path) -
 
 
 def legacy_database(path: Path, count: int) -> None:
+    # Migration fixtures must stay within retention so pruning measures duplicate cleanup.
+    timestamp = datetime.now(UTC).isoformat()
     with sqlite3.connect(path) as db:
         create_schema(db)
         db.execute("DROP INDEX events_performer_seq")
         db.execute("PRAGMA user_version=2")
         db.executemany(
             "INSERT INTO events (ts,source,run_id,data) VALUES (?,?,?,?)",
-            [("2026-10-15T12:00:00Z", "performer", "run", '{"transcript_seq":1}')] * count,
+            [(timestamp, "performer", "run", '{"transcript_seq":1}')] * count,
         )
 
 
