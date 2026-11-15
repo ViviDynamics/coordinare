@@ -1966,12 +1966,13 @@ async def _phase_local_test_gate_s3(
         # 170: the security workflow holds when a scanner is missing or broken,
         # when it could not post its one review, or when it could not read
         # every changed file. No code change fixes any of these.
-        state["system_error_reason"] = redact_state_value(f"the security review could not complete (no code defect):\n{_reason}")
+        state["system_error_reason"] = redact_state_value(f"the security review could not complete:\n{_reason}")
         state["open_questions"] = redact_state_value([
             f"The security stage hit an environment blocker ({_reason}). The card is parked in the "
-            "blocked column: the hold names the tools the model chose and what went wrong with each, "
-            "so check those run in the performer image, then GitHub API access from the performer and "
-            "the size of the injected diff, then re-run the security stage.",
+            "blocked column. For the mandatory Semgrep/Bandit floor, check the reported operation, "
+            "the pinned checkout and trusted scanner installation in the performer. For a configured "
+            "security workflow, check its scanner and GitHub API access. Repair the reported blocker "
+            "before re-running security; this hold does not establish the underlying cause.",
         ])
     else:
         state["system_error_reason"] = (

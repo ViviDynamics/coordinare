@@ -60,9 +60,48 @@ class ScannerError(Exception):
     (possibly empty) list. Callers treat ``ScannerError`` as fail-closed.
     """
 
+_SAFE_DIAGNOSTICS = frozenset({
+    'security scan head changed or unavailable',
+    'scan target is a directory',
+    'scan target is not a regular file',
+    'security export must be outside workspace',
+    'unsupported or missing security scan request',
+    'PR diff unavailable or changed paths overflow',
+    'changed paths unavailable',
+    'security scan head unavailable',
+    'unsafe scan path',
+    "semgrep emitted malformed results", "bandit emitted malformed results",
+} | {
+    f"{tool} {reason}"
+    for tool in ("semgrep", "bandit")
+    for reason in (
+        "binary not found", "timed out", "failed to launch", "produced no output",
+        "emitted unparseable JSON", "failed", "emitted malformed results", "reported scan errors",
+    )
+} | {
+    f"git {operation} {reason}"
+    for operation in ("rev-parse", "ls-tree", "show")
+    for reason in ("failed", "timed out")
+})
+
+
+class ScanDiagnostic(ScannerError):
+    """Code-owned diagnostic; never transport arbitrary exception messages."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason if reason in _SAFE_DIAGNOSTICS else "unexpected security scan failure"
+
 
 class ScannerSetupError(ScannerError):
     """A trusted scanner is unavailable and needs operator installation."""
+
+    def __init__(self, reason: str, *, tool: str = "") -> None:
+        super().__init__(reason)
+        self.reason = (
+            f"{tool} trusted system binary not found. {SCANNER_INSTALLATION_HELP}"
+            if tool in ("semgrep", "bandit") else SCANNER_INSTALLATION_HELP
+        )
 
 
 def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
@@ -111,7 +150,7 @@ def _resolve_binary(tool: str) -> str:
         if _trusted_executable(candidate):
             return str(candidate)
     reason = f"{tool} trusted system binary not found. {SCANNER_INSTALLATION_HELP}"
-    raise ScannerSetupError(reason)
+    raise ScannerSetupError(reason, tool=tool)
 
 
 def _invoke(cmd: list[str], cwd: Path, tool: str) -> dict:
@@ -129,28 +168,28 @@ def _invoke(cmd: list[str], cwd: Path, tool: str) -> dict:
             timeout=_SUBPROCESS_TIMEOUT_S,
         )
     except FileNotFoundError as exc:
-        raise ScannerError(f"{tool} binary not found") from exc
+        raise ScanDiagnostic(f"{tool} binary not found") from exc
     except subprocess.TimeoutExpired as exc:
-        raise ScannerError(f"{tool} timed out") from exc
+        raise ScanDiagnostic(f"{tool} timed out") from exc
     except OSError as exc:
-        raise ScannerError(f"{tool} failed to launch") from exc
+        raise ScanDiagnostic(f"{tool} failed to launch") from exc
 
     if not (proc.stdout or "").strip():
         # No JSON at all : a clean run still emits ``{"results": []}``; empty
         # stdout means the tool crashed before producing output.
-        raise ScannerError(f"{tool} produced no output (exit {proc.returncode})")
+        raise ScanDiagnostic(f"{tool} produced no output")
 
     try:
         payload = json.loads(proc.stdout)
     except (json.JSONDecodeError, ValueError) as exc:
-        raise ScannerError(f"{tool} emitted unparseable JSON") from exc
+        raise ScanDiagnostic(f"{tool} emitted unparseable JSON") from exc
 
     if proc.returncode not in _OK_EXIT_CODES:
-        raise ScannerError(f"{tool} failed")
+        raise ScanDiagnostic(f"{tool} failed")
     if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
-        raise ScannerError(f"{tool} emitted malformed results")
+        raise ScanDiagnostic(f"{tool} emitted malformed results")
     if payload.get("errors") or any(not isinstance(row, dict) for row in payload["results"]):
-        raise ScannerError(f"{tool} reported scan errors")
+        raise ScanDiagnostic(f"{tool} reported scan errors")
     return payload
 
 
@@ -168,7 +207,10 @@ def _run_semgrep(files: list[str], repo_root: Path) -> list[Finding]:
     )
     findings: list[Finding] = []
     for result in payload.get("results", []) or []:
-        findings.append(_normalize_semgrep(result))
+        try:
+            findings.append(_normalize_semgrep(result))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ScanDiagnostic("semgrep emitted malformed results") from exc
     return findings
 
 
@@ -182,7 +224,10 @@ def _run_bandit(files: list[str], repo_root: Path) -> list[Finding]:
     )
     findings: list[Finding] = []
     for result in payload.get("results", []) or []:
-        findings.append(_normalize_bandit(result))
+        try:
+            findings.append(_normalize_bandit(result))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ScanDiagnostic("bandit emitted malformed results") from exc
     return findings
 
 
