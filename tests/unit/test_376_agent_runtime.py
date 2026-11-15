@@ -66,10 +66,13 @@ async def test_failed_check_never_returns_accepted() -> None:
     async def reject(answer: Any) -> list[Any]:
         return [AdmissionIssue(code='missing_receipt', message='Execution proof is absent.')]
 
-    result = await NareRuntime(transport=ScriptedTransport('{"accepted": true}')).run(request(reject))
+    req = request(reject)
+    result = await NareRuntime(transport=ScriptedTransport('{"accepted": true}')).run(req)
     assert result.status == 'held'
     assert result.answer is None
-    assert result.hold_code == 'missing_receipt'
+    assert result.hold_code == 'attempt_schema_limit'
+    assert 'missing_receipt' in req.budget.validation_codes
+    assert req.budget.schema_repairs == req.budget.max_schema_repairs
 
 
 @pytest.mark.asyncio

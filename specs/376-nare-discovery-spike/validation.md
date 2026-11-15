@@ -210,3 +210,35 @@ accuracy: the new finding appears to cite a historical failure despite the curre
 candidate already declaring the requested compile-and-run probe. This remains a
 quality concern. The replay used frozen launch code and executed no installer or
 consumer; final-head live acceptance and legacy-loop deletion remain outstanding.
+
+Preflight3 passed all six configured rows on the subsequent candidate in1,624
+seconds, including the full Coordinare and performer suites. The first production
+native bootstrap acceptance run then reached an independently accepted manifest
+and executed the installer:24 checks passed and5 failed. All installation steps,
+RSpec, Rails boot, database and service lifecycle checks passed; remaining failures
+included a missing Ruby require, a duplicated test path, an unavailable Node CLI,
+a missing database for seeds and a separate service connection check. The clean
+consumer did not run, so this is not environment readiness.
+
+The first repair generation stopped at its unchanged eight-correction allowance
+with `scope_required_check_mapping`, after159 total model calls and zero transport
+retries. Owned runtime containers, registry and temporary image references were
+verified absent; the pinned source snapshot was unchanged. Private artifacts remain
+preserved. Diagnosis found that the native adapter retained generic guidance while
+dropping the domain validator's sanitized missing-criterion and colliding-ID details.
+The saved correction history repeatedly asked the author to fix unspecified IDs.
+Three real-validator tests reproduced the loss at the next nare model request;
+the adapter now serializes the existing sanitized error into its rendered message.
+Thirty focused checks pass without changing admission rules or correction budgets.
+Broader regression and a new live run remain necessary; this fix does not establish
+that all five execution failures have been repaired. Legacy loops remain present.
+
+The feedback fix passed2,495 affected regressions. A second production-path test
+then exposed an exhaustion-routing defect: native schema errors triggered the
+existing delta-to-full repair fallback, but repeated domain mapping errors returned
+the last rejection code instead of `attempt_schema_limit`. The runtime now records
+the domain rejection in validation diagnostics and reports correction exhaustion
+using the existing budget code. The real delta/full pipeline test now covers both
+schema and domain rejection, preserves frozen checks and independent review, and
+proves the full repair retains the already-spent correction count. No allowance is
+reset and a completed rejected checkpoint is not resumed.

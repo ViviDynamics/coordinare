@@ -19,8 +19,8 @@ from tests.unit.test_376_bootstrap_phases import PhaseTransport
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('fallback', [False, True])
-async def test_native_delta_restores_frozen_checks_and_full_escalation_stays_native(tmp_path: Any, fallback: bool) -> None:
+@pytest.mark.parametrize('fallback', [None, 'schema', 'domain'])
+async def test_native_delta_restores_frozen_checks_and_full_escalation_stays_native(tmp_path: Any, fallback: str | None) -> None:
     budget = AttemptBudget(max_schema_repairs=1, max_calls=64)
     authored = []
     identities = []
@@ -50,7 +50,9 @@ async def test_native_delta_restores_frozen_checks_and_full_escalation_stays_nat
                         mapping = {c.id: ['version'] for c in budget.scope_contract.definition.criteria}
                         if 'repair_delta' in context:
                             authored.append('delta')
-                            answer = {} if fallback else {'manifest_delta': {'criterion_checks': mapping, 'checks': [
+                            if fallback == 'domain':
+                                mapping = {identifier: ['missing-check'] for identifier in mapping}
+                            answer = {} if fallback == 'schema' else {'manifest_delta': {'criterion_checks': mapping, 'checks': [
                                 {'id': 'other', 'argv': ['zog', '--changed'], 'required': False}]}, 'finding_responses': []}
                         else:
                             authored.append('full')
@@ -67,9 +69,11 @@ async def test_native_delta_restores_frozen_checks_and_full_escalation_stays_nat
     manifest, assessed = await delta_run(legacy, budget=budget, executed=True)
     assert assessed.verdict == 'accept' and assessed.manifest_digest == manifest.digest()
     assert [check.argv for check in manifest.checks if check.id == 'other'] == [['zog', '--other']]
-    assert bool(budget.delta_fallback) is fallback
+    assert bool(budget.delta_fallback) is bool(fallback)
     assert authored == (['delta', 'delta', 'full'] if fallback else ['delta'])
-    assert budget.schema_repairs == int(fallback)
+    assert budget.schema_repairs == int(bool(fallback))
     assert any(identity.role == 'reviewer' for identity in identities)
     if fallback:
         assert budget.delta_fallback_code == 'attempt_schema_limit'
+    if fallback == 'domain':
+        assert 'scope_required_check_mapping' in budget.validation_codes

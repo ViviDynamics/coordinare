@@ -107,7 +107,9 @@ async def test_schema_and_domain_criteria_are_preserved(tmp_path: Any) -> None:
     assert request.schema == assessment_envelope_schema()
     with pytest.raises(EnvironmentDiscoveryError) as caught:
         await run_environment_phase(request)
-    assert caught.value.code == 'review_citations_invalid'
+    assert caught.value.code == 'attempt_schema_limit'
+    assert 'review_citations_invalid' in request.budget.validation_codes
+    assert request.budget.schema_repairs == request.budget.max_schema_repairs
 
 
 @pytest.mark.asyncio

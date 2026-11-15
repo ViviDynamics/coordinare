@@ -339,7 +339,10 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
             except EnvironmentDiscoveryError as fatal:
                 terminal_error = fatal
                 raise
-            return [AdmissionIssue(error['code'], str(error.get('guidance') or error['code']),
+            # Nare renders message/location/guidance, not arbitrary error fields.
+            # Preserve the domain's already-sanitized IDs, bounds and repair details
+            # in the message instead of reducing them to generic guidance.
+            return [AdmissionIssue(error['code'], _json(error),
                     location=tuple(error.get('location', ()))) for error in errors]
         admitted = candidate
         return []

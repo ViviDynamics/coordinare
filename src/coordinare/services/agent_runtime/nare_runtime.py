@@ -269,6 +269,7 @@ class _Execution:
             raise
         self.admitted = answer if not issues else None
         self.hold_code = issues[0].code if issues else None
+        self.request.budget.validation_codes.extend(issue.code for issue in issues)
         self.free_reminder = bool(issues and len(issues) == 1 and issues[0].code in self.request.prerequisites)
         if self.free_reminder:
             if issues[0].code in self.prerequisite_reminders:
@@ -277,7 +278,8 @@ class _Execution:
         if (issues and self.request.shard_corrections is None
                 and not self.free_reminder
                 and self.request.budget.schema_repairs >= self.request.budget.max_schema_repairs):
-            refuse_agent('Domain correction allowance exhausted.', code=issues[0].code)
+            self.hold_code = 'attempt_schema_limit'
+            refuse_agent('Domain correction allowance exhausted.', code='attempt_schema_limit')
         return [asdict(issue) for issue in issues]
 
     async def event(self, event: Event) -> None:
@@ -326,8 +328,10 @@ class _Execution:
             self.status, self.hold_code = 'accepted', None
         elif self.failed_check:
             self.status, self.hold_code = 'error', 'agent_check_failed'
+        elif self.session.stop_reason == 'schema_violation':
+            self.hold_code = 'attempt_schema_limit'
         elif self.hold_code is None:
-            self.hold_code = 'attempt_schema_limit' if self.session.stop_reason == 'schema_violation' else 'agent_incomplete'
+            self.hold_code = 'agent_incomplete'
 
     def result(self) -> AgentResult:
         receipt = self.request.evidence_catalog.receipt() if self.request.evidence_catalog is not None else None
