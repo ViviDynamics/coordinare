@@ -27,6 +27,7 @@ from coordinare.services.agent_runtime.checkpoint import (
     EvidenceReceipt,
 )
 from coordinare.services.agent_runtime.errors import refuse_agent
+from coordinare.services.agent_runtime.evidence_protocol import EvidenceFailureBudget
 from coordinare.services.agent_runtime.models import AgentResult
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 
@@ -93,6 +94,9 @@ class NareRuntime:
             except Exception:
                 execution.status, execution.hold_code = 'held', 'agent_transport_cleanup'
         try:
+            for event in execution.session.events:
+                await execution.evidence_failures.reconcile(
+                    event.detail, session_id=execution.session.id, turn=execution.session.turns)
             await execution.save()
             await execution.emit('terminal')
         except Exception:
@@ -169,6 +173,7 @@ class _Execution:
         self.slot = hashlib.sha256(json.dumps(asdict(request.identity), sort_keys=True).encode()).hexdigest()
         self.bridge = BudgetBridge(request.budget, phase=request.identity.phase,
                                    phase_key=self.slot, phase_limit=request.phase_max_calls)
+        self.evidence_failures = EvidenceFailureBudget(self.bridge, request.evidence_tools)
         self.admitted: JsonObject | None = None
         self.status: Literal['accepted', 'held', 'cancelled', 'error'] = 'held'
         self.hold_code: str | None = None
@@ -184,11 +189,15 @@ class _Execution:
 
     async def restore(self) -> None:
         req = self.request
+        self.evidence_failures.check()
         if self.key is not None:
             if req.checkpoint_store is None:
                 refuse_agent('Checkpoint storage is unavailable.', code='agent_checkpoint_unavailable')
             saved = await req.checkpoint_store.load_verified(self.key, req.identity)
             self._restore_authority(saved)
+            if saved.terminal_status in {'held', 'error'} and saved.hold_code != 'provider_request_failed':
+                refuse_agent('Saved phase has a terminal domain refusal.',
+                    code=saved.hold_code or 'agent_checkpoint_terminal')
             await self._restore_tools(saved)
             self.session = loads(saved.session_text)
             if self.session.status in {'error', 'blocked'}:
@@ -216,6 +225,8 @@ class _Execution:
             refuse_agent('Domain accounting is behind the checkpoint.', code='agent_checkpoint_accounting')
         if saved.phase_calls > req.budget.agent_phase_calls.get(self.slot, 0):
             refuse_agent('Phase accounting is behind the checkpoint.', code='agent_checkpoint_accounting')
+        if not saved.evidence_error_receipts <= req.budget.agent_evidence_error_receipts:
+            refuse_agent('Evidence-call accounting is behind the checkpoint.', code='agent_checkpoint_accounting')
 
     async def _restore_tools(self, saved: AgentCheckpoint) -> None:
         req = self.request
@@ -247,6 +258,7 @@ class _Execution:
             phase_expires_at=self.phase_expires_at,
             terminal_status=self.status if self.terminal else None,
             hold_code=self.hold_code if self.terminal else None,
+            evidence_error_receipts=frozenset(req.budget.agent_evidence_error_receipts),
             effects=req.effects.receipts() if req.effects is not None else ())
         try:
             self.key = await req.checkpoint_store.save(saved)
@@ -284,6 +296,7 @@ class _Execution:
 
     async def event(self, event: Event) -> None:
         kind = 'progress'
+        await self.evidence_failures.observe(event.detail, session_id=self.session.id, turn=self.session.turns)
         if 'schema_correction' in event.detail:
             if self.free_reminder:
                 self.free_reminder = False
@@ -312,6 +325,7 @@ class _Execution:
                             'turn': self.session.turns, 'calls': budget.calls, 'schema_repairs': budget.schema_repairs,
                             'compactions': budget.agent_compactions, 'retries': budget.agent_retries,
                             'usage_unknown': budget.agent_usage_unknown}
+        safe['invalid_evidence_calls'] = budget.agent_evidence_errors
         if (evidence := self.request.evidence_catalog) is not None:
             safe.update(evidence_delivered=len(evidence.delivered), evidence_remaining=evidence.remaining_required)
         if kind == 'terminal':

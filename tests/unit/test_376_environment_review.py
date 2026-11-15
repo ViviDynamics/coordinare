@@ -36,8 +36,9 @@ class ReviewerTransport:
     async def turn(self, messages: Any, tools: Any) -> Reply:
         self.calls += 1
         self.requests.append(messages.copy())
-        assert {tool['name'] for tool in tools} == ({'review_evidence', 'read_source', 'list_sources'}
-                                                   if self.navigation else {'review_evidence'})
+        assert {tool['name'] for tool in tools} == (
+            {'review_evidence', 'reread_evidence', 'read_source', 'reread_source', 'list_sources'}
+            if self.navigation else {'review_evidence', 'reread_evidence'})
         for message in messages:
             for block in message.content:
                 if block.get('type') == 'tool_result':

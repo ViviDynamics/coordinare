@@ -55,6 +55,7 @@ class AgentRequest:
     check: AgentCheck
     budget: AttemptBudget
     allowed_tools: tuple[Tool, ...] = ()
+    evidence_tools: frozenset[str] = frozenset()
     checkpoint_key: str | None = None
     checkpoint_store: CheckpointStore | None = None
     evidence_catalog: EvidenceStore | None = None

@@ -188,6 +188,11 @@ class BudgetTransport:
             tool_calls=tuple(ToolCall(name=call.name, call_id=call.id, input=call.args) for call in reply.tool_calls))
         record.decide('model reply received; domain admission is separate')
         await self.bridge.record_reply(receipt, reply)
+        identities = [call.id for call in reply.tool_calls]
+        if (any(not isinstance(identity, str) or not identity for identity in identities)
+                or len(set(identities)) != len(identities)):
+            self.bridge.failure_code = 'agent_tool_identity'
+            refuse_agent('Native reply has missing or duplicate tool-call identities.', code=self.bridge.failure_code)
         size = len(record.reply.text.encode()) + sum(len(json.dumps(call.args, ensure_ascii=False).encode())
                                                     for call in reply.tool_calls)
         if self.max_output_bytes is not None and size > self.max_output_bytes:

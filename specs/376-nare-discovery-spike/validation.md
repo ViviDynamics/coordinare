@@ -242,3 +242,44 @@ using the existing budget code. The real delta/full pipeline test now covers bot
 schema and domain rejection, preserves frozen checks and independent review, and
 proves the full repair retains the already-spent correction count. No allowance is
 reset and a completed rejected checkpoint is not resumed.
+
+The stopped second native run exposed an evidence-navigation failure: repeated
+invalid page ranges consumed calls while delivering almost no additional evidence.
+The replacement protocol gives forward sequencing to the runtime and separates
+explicit rereads. Whole-page delivery and required-evidence admission remain
+unchanged. A separate attempt-wide allowance holds after eight invalid evidence
+calls, including native schema refusals, with persisted deduplicated receipts.
+Successful reads do not replenish the allowance; valid rereads do not consume it.
+
+Against an isolated normally installed candidate nare wheel, all 2,510 affected
+353/376 unit and integration tests pass in 133.94 seconds. This includes recovery
+from invalid navigation through real native dispatch to the real domain validator,
+exact source bytes, repeated-error exhaustion, valid rereads, journal persistence
+and zero-inference refusal on exhausted resume. A batch test records the important
+limit: already dispatched sibling actions may run before result-event enforcement;
+no subsequent model request is made after exhaustion.
+
+The candidate dependency has passed its own full preflight and independent review,
+including a compatibility fix preserving existing ToolError positional arguments.
+Its published release remains pending. These offline results do not establish
+installer success, clean-consumer acceptance or environment readiness. The original
+stopped run and its accounting remain preserved; no checkpoint was reset.
+Candidate performance checks also pass with unchanged limits: complete 4 MiB paging
+has a 74.16 ms median and 9,583,943-byte peak; cold start is 0.9524 s against 0.8459 s
+for the immutable local baseline, within the existing 1.1x+0.1 s allowance.
+
+Recovery now pins official nare 2026.11.105, released automatically from merged
+commit `07207e61f6a3b9d7b45d173a01b1a48df2b93870` after upstream PR 309 passed
+all seven checks. The downloaded wheel SHA256 is
+`becd13ed799cc718995e3a093edb17a350f9ae90ea565a9f9227f3e92aaa5d10`.
+All 32 packaged Python files other than the generated version module match that
+commit exactly; LICENSE and NOTICE also match. Normal resolution changes only
+nare in the lockfile, and the production virtual environment reports 2026.11.105.
+
+Independent recovery review found three accounting/resume issues. New failing
+then passing tests cover interrupted batches retaining completed invalid-call
+charges, domain-held checkpoints refusing inference despite native working status,
+and duplicate tool-call identities refusing before dispatch in both streaming and
+ordinary transports. Clean-interruption resume remains supported and retains its
+spent allowance. Already completed invalid calls in a batch can exceed eight;
+the exact consumption is preserved and prevents any subsequent inference.

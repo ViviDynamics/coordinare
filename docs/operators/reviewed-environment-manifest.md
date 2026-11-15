@@ -213,6 +213,26 @@ unprovable past trial allowance is held conservatively. The activity feed shows
 source review, installation-plan review and terminal preparation holds before an
 installer job exists. Conductor transcripts account for native model calls.
 
+Evidence continuation is runtime-owned: `review_evidence()` takes no page IDs,
+and source/observation continuation takes only its pinned identity. Separate
+reread tools accept explicit page IDs for revisiting evidence after compaction.
+Responses contain complete pages and bounded catalog metadata; invalid rereads
+deliver nothing and identify the continuation operation to use.
+
+Eight invalid evidence calls exhaust an attempt-wide allowance distinct from
+schema corrections. Typed native outcomes identify both argument rejection and
+invalid catalog selections. Consumption persists across phases and resume;
+successful reads do not replenish it, and valid rereads do not spend it.
+Exhaustion holds with `agent_evidence_call_limit` before another model request.
+Native result events arrive after the current tool batch, so independently
+authorized sibling actions in that batch may already have executed. Their
+existing admission, receipt and cleanup requirements still apply. Unprovable
+prior evidence-call accounting refuses resume before inference.
+Completed invalid calls remain charged if a later action in the batch is
+interrupted. The recorded count may exceed eight when more calls already
+completed in that batch. Missing or duplicate call identities refuse dispatch;
+a domain-held checkpoint cannot reopen merely because native status is working.
+
 
 Clean verification requires an immutable `image@sha256:<64 lowercase hex digits>`
 reference on both Docker and Kubernetes. Docker resolves the configured consumer

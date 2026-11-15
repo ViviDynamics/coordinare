@@ -194,7 +194,7 @@ installations. All three are Tier 1, permitted.
 
 ## First-party release dependency
 
-`nare`2026.11.104 is distributed unmodified from the pinned ViviDynamics release.
+`nare` 2026.11.105 is distributed unmodified from the pinned ViviDynamics release.
 The wheel declares `LicenseRef-Elastic-License-2.0` and includes its own LICENSE
 and NOTICE naming Vivi Dynamics LLC. The license text matches the repository
 license. A separate test asserts the license and notice instead of broadly

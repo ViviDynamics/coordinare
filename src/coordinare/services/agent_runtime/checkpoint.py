@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from nare import loads
+from nare.contract import NARE_VERSION
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from coordinare.services.agent_runtime.errors import invalid_checkpoint
@@ -23,7 +24,8 @@ Digest = Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]
 MAX_CHECKPOINT_BYTES = 32 * 1024 * 1024
 KEY = re.compile(r'v1-[0-9a-f]{64}\.json\Z')
 COUNTERS = frozenset({'calls', 'reads', 'verification_reads', 'schema_repairs', 'scope_revisions',
-                      'coverage_revisions', 'execution_repairs', 'probe_batches', 'trial_runs', 'shard_schema_repairs'})
+                      'coverage_revisions', 'execution_repairs', 'probe_batches', 'trial_runs', 'shard_schema_repairs',
+                      'agent_evidence_errors'})
 
 
 class CheckpointReference(BaseModel):
@@ -70,7 +72,7 @@ class EffectReceipt(BaseModel):
 class AgentCheckpoint(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True)
     version: Literal[1] = 1
-    nare_version: Literal['2026.11.104'] = '2026.11.104'
+    nare_version: str = NARE_VERSION
     identity: AgentIdentity
     session_text: str = Field(repr=False)
     evidence: EvidenceReceipt
@@ -82,9 +84,12 @@ class AgentCheckpoint(BaseModel):
     phase_expires_at: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     terminal_status: Literal['accepted', 'held', 'cancelled', 'error'] | None = None
     hold_code: str | None = None
+    evidence_error_receipts: frozenset[Digest] = frozenset()
 
     @model_validator(mode='after')
     def bounded_authority(self) -> AgentCheckpoint:
+        if self.nare_version != NARE_VERSION:
+            invalid_checkpoint('Checkpoint belongs to a different native runtime version.')
         if not set(self.counters) <= COUNTERS:
             invalid_checkpoint('Checkpoint contains an unknown domain counter.')
         if len({item.operation_id for item in self.effects}) != len(self.effects):

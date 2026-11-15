@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 from nare import Tool
 from nare.tools import MAX_TOOL_OUTPUT
@@ -48,17 +48,18 @@ def _digest(content: str) -> str:
     return hashlib.sha256(content.encode('utf-8')).hexdigest()
 
 
-def _envelope(pages: tuple[EvidencePage, ...], remaining: set[int]) -> str:
-    return _encoded_envelope(tuple(_encode_page(page) for page in pages), remaining)
+def _envelope(pages: tuple[EvidencePage, ...], remaining: set[int], page_count: int) -> str:
+    return _encoded_envelope(tuple(_encode_page(page) for page in pages), remaining, page_count)
 
 
 def _encode_page(page: EvidencePage) -> str:
     return json.dumps(asdict(page), ensure_ascii=False, separators=(',', ':'))
 
 
-def _encoded_envelope(pages: tuple[str, ...], remaining: set[int]) -> str:
+def _encoded_envelope(pages: tuple[str, ...], remaining: set[int], page_count: int) -> str:
     cursor = str(min(remaining)) if remaining else 'null'
-    return '{"pages":[' + ','.join(pages) + '],"unread_count":' + str(len(remaining)) + ',"next_unread":' + cursor + '}'
+    return ('{"pages":[' + ','.join(pages) + '],"unread_count":' + str(len(remaining))
+            + ',"next_unread":' + cursor + ',"page_count":' + str(page_count) + '}')
 
 
 MIN_OUTPUT_CAP = 512
@@ -111,7 +112,7 @@ class EvidenceStore:
                 page = EvidencePage(first + len(pages), source.key, source.sha256, offset,
                                     offset + size, _digest(content), content)
                 # Leave room for the changing cursor/count even for a large catalog.
-                if len(_envelope((page,), set())) + 64 <= self._cap:
+                if len(_envelope((page,), set(), first + len(pages) + 1)) + 64 <= self._cap:
                     break
                 if size <= 1:
                     message = 'Evidence identity cannot fit a complete runtime response.'
@@ -143,12 +144,12 @@ class EvidenceStore:
         selected: tuple[EvidencePage, ...] = ()
         selected_encoded: tuple[str, ...] = ()
         delivered = set(self._delivered)
-        serialized = _envelope(selected, set(self._required - delivered))
+        serialized = _envelope(selected, set(self._required - delivered), self.page_count)
         for index in dict.fromkeys(ids):
             candidate = (*selected, self._pages[index])
             after = delivered | {index}
             candidate_encoded = (*selected_encoded, self._encoded_pages[index])
-            encoded = _encoded_envelope(candidate_encoded, set(self._required - after))
+            encoded = _encoded_envelope(candidate_encoded, set(self._required - after), self.page_count)
             if len(encoded) > self._cap:
                 break
             selected, delivered, serialized = candidate, after, encoded
@@ -172,11 +173,39 @@ class EvidenceStore:
 
     def tool(self) -> Tool:
         async def deliver(arguments: dict[str, Any]) -> str:
-            return (await self.read(EvidenceRead(pages=tuple(arguments.get('pages', ()))))).serialized
+            return (await self.read(EvidenceRead())).serialized
 
         return Tool(name='review_evidence',
-                    description='Read immutable evidence pages. Omit pages to continue required evidence; '
-                                'only returned pages were delivered. Follow next_unread until unread_count is zero.',
-                    input_schema={'type': 'object', 'properties': {'pages': {'type': 'array',
-                        'items': {'type': 'integer', 'minimum': 0}, 'maxItems': 128}}, 'additionalProperties': False},
+                    description='Read the next required immutable evidence batch. Call with {} repeatedly until '
+                                'unread_count is zero. next_unread is informational; never calculate a page range. '
+                                'Use reread_evidence only to revisit specific pages.',
+                    input_schema={'type': 'object', 'properties': {}, 'additionalProperties': False},
                     call=deliver)
+
+    async def reread(self, pages: tuple[int, ...], *, continuation_tool: str) -> str:
+        if not pages:
+            self._refuse_reread(continuation_tool)
+        try:
+            return (await self.read(EvidenceRead(pages))).serialized
+        except EnvironmentDiscoveryError as exc:
+            if exc.code != 'agent_evidence_page':
+                raise
+            self._refuse_reread(continuation_tool)
+
+    def _refuse_reread(self, continuation_tool: str) -> NoReturn:
+        remaining = self._required - self._delivered
+        message = json.dumps({'code': 'agent_evidence_page', 'page_count': self.page_count,
+            'next_unread': min(remaining) if remaining else None, 'unread_count': len(remaining),
+            'recovery': f'Call {continuation_tool} without pages to continue; reuse its source/observation identity.'},
+            separators=(',', ':'))
+        raise EnvironmentDiscoveryError(message, code='agent_evidence_page') from None
+
+    def reread_tool(self) -> Tool:
+        async def deliver(arguments: dict[str, Any]) -> str:
+            return await self.reread(tuple(arguments['pages']), continuation_tool='review_evidence')
+
+        return Tool(name='reread_evidence', description='Revisit explicit immutable evidence page IDs. '
+                    'IDs range from zero to page_count minus one. For required forward reading use review_evidence({}).',
+                    input_schema={'type': 'object', 'properties': {'pages': {'type': 'array',
+                        'items': {'type': 'integer', 'minimum': 0}, 'minItems': 1, 'maxItems': 128}},
+                        'required': ['pages'], 'additionalProperties': False}, call=deliver)

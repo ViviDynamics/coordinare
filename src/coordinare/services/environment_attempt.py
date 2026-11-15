@@ -179,6 +179,9 @@ class AttemptBudget:
     agent_usage_unknown: int = 0
     agent_compactions: int = 0
     agent_retries: int = 0
+    agent_evidence_protocol: int = 1
+    agent_evidence_errors: int = 0
+    agent_evidence_error_receipts: set[str] = field(default_factory=set, repr=False)
     agent_checkpoints: dict[str, CheckpointReference] = field(default_factory=dict, repr=False)
     agent_phase_calls: dict[str, int] = field(default_factory=dict, repr=False)
     agent_context: EnvironmentAgentContext | None = field(default=None, repr=False)
@@ -314,6 +317,7 @@ class AttemptBudget:
                 "transport_fallbacks": self.transport_fallbacks,
                 "agent_usage_unknown": self.agent_usage_unknown, "agent_compactions": self.agent_compactions,
                 "agent_retries": self.agent_retries,
+                "invalid_evidence_calls": self.agent_evidence_errors,
                 "shard_agents": self.shard_agents, "shard_schema_repairs": self.shard_schema_repairs,
                 "validation_codes": list(self.validation_codes),
                 "call_stats": {phase: dict(stats) for phase, stats in self.call_stats.items()},

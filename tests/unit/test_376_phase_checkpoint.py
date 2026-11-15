@@ -120,13 +120,18 @@ async def test_prerequisite_reminder_cannot_reset_at_resume(tmp_path: Any) -> No
 
     saved = await req.checkpoint_store.load_verified(result.checkpoint_key, req.identity)
     assert saved.prerequisite_reminders == frozenset({'preflight_required'})
-    # A domain owner may resume a held session, but its free reminder remains spent.
+    before = len(transport.requests)
+    held = await runtime.run(replace(req, checkpoint_key=result.checkpoint_key))
+    assert held.hold_code == 'preflight_required'
+    assert len(transport.requests) == before
+    # Construct a nonterminal checkpoint to isolate reminder persistence. Merely
+    # changing native status does not reopen a domain-held checkpoint.
     from nare import dumps, loads
 
     session = loads(saved.session_text)
     session.status, session.error, session.stop_reason = 'working', None, None
-    key = await req.checkpoint_store.save(saved.model_copy(update={'session_text': dumps(session)}))
-    before = len(transport.requests)
+    key = await req.checkpoint_store.save(saved.model_copy(update={
+        'session_text': dumps(session), 'terminal_status': None, 'hold_code': None}))
     resumed = await runtime.run(replace(req, checkpoint_key=key))
     assert resumed.hold_code == 'preflight_required'
     assert len(transport.requests) == before + 1

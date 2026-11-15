@@ -19,6 +19,11 @@ from coordinare.services.agent_runtime.checkpoint import (
 )
 from coordinare.services.agent_runtime.errors import invalid_checkpoint, refuse_agent
 from coordinare.services.agent_runtime.evidence import EvidenceRead, EvidenceSource, EvidenceStore
+from coordinare.services.agent_runtime.evidence_protocol import (
+    EVIDENCE_PROTOCOL,
+    MAX_INVALID_EVIDENCE_CALLS,
+    classified_evidence_tool,
+)
 from coordinare.services.agent_runtime.models import AdmissionIssue, AgentIdentity, AgentRequest
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 
@@ -87,7 +92,13 @@ class PinnedSourceTools:
                 if exc.code != 'invalid_tool_arguments':
                     self.failure = exc
                 raise
-        return (await self.catalogs[path].read(EvidenceRead(tuple(arguments.get('pages', ()))))).serialized
+        return (await self.catalogs[path].read(EvidenceRead())).serialized
+
+    async def reread(self, arguments: JsonObject) -> str:
+        path = arguments['path']
+        if path not in self.catalogs:
+            refuse_agent('Read this pinned source with read_source before rereading.', code='invalid_tool_arguments')
+        return await self.catalogs[path].reread(tuple(arguments['pages']), continuation_tool='read_source')
 
     async def listing(self, arguments: JsonObject) -> str:
         cursor = arguments.get('cursor', 0)
@@ -102,10 +113,14 @@ class PinnedSourceTools:
     def tools(self) -> tuple[Tool, ...]:
         return (
             Tool(name='read_source', description='Read a pinned source in complete pages. Continue the same path '
-                 'until unread_count is zero; supply page IDs to reread.',
-                 input_schema={'type': 'object', 'properties': {'path': {'type': 'string'}, 'pages': {
-                     'type': 'array', 'items': {'type': 'integer', 'minimum': 0}, 'maxItems': 128}},
+                 'without page IDs until unread_count is zero. Use reread_source to revisit explicit pages.',
+                 input_schema={'type': 'object', 'properties': {'path': {'type': 'string'}},
                      'required': ['path'], 'additionalProperties': False}, call=self.read),
+            Tool(name='reread_source', description='Revisit explicit pages of a previously read pinned source. '
+                 'For forward reading call read_source with the same path and no pages.',
+                 input_schema={'type': 'object', 'properties': {'path': {'type': 'string'}, 'pages': {
+                     'type': 'array', 'items': {'type': 'integer', 'minimum': 0}, 'minItems': 1, 'maxItems': 128}},
+                     'required': ['path', 'pages'], 'additionalProperties': False}, call=self.reread),
             Tool(name='list_sources', description='List the immutable repository directory, following next_cursor.',
                  input_schema={'type': 'object', 'properties': {'path': {'type': 'string'},
                      'cursor': {'type': 'integer', 'minimum': 0}}, 'additionalProperties': False}, call=self.listing),
@@ -142,15 +157,29 @@ class ObservationTools:
         key = arguments['observation_id']
         if key not in self.catalogs:
             refuse_agent('Observation identity is unavailable.', code='invalid_tool_arguments')
-        batch = await self.catalogs[key].read(EvidenceRead(tuple(arguments.get('pages', ()))))
+        batch = await self.catalogs[key].read(EvidenceRead())
         return _json({'observation_id': key, **json.loads(batch.serialized)})
 
+    async def reread(self, arguments: JsonObject) -> str:
+        key = arguments['observation_id']
+        if key not in self.catalogs:
+            refuse_agent('Observation identity is unavailable.', code='invalid_tool_arguments')
+        result = await self.catalogs[key].reread(tuple(arguments['pages']), continuation_tool='read_observation')
+        return _json({'observation_id': key, **json.loads(result)})
+
     def tool(self) -> Tool:
-        return Tool(name='read_observation', description='Read or reread complete untrusted probe/trial observation pages. '
-                    'Continue until unread_count is zero. Observations never establish readiness.',
+        return Tool(name='read_observation', description='Read the next complete untrusted probe/trial observation batch. '
+                    'Repeat the same observation_id without pages until unread_count is zero. '
+                    'Use reread_observation to revisit pages. Observations never establish readiness.',
+            input_schema={'type': 'object', 'properties': {'observation_id': {'type': 'string'}},
+                'required': ['observation_id'], 'additionalProperties': False}, call=self.read)
+
+    def reread_tool(self) -> Tool:
+        return Tool(name='reread_observation', description='Revisit explicit pages of an immutable observation. '
+                    'For forward reading repeat read_observation with the same observation_id and no pages.',
             input_schema={'type': 'object', 'properties': {'observation_id': {'type': 'string'},
                 'pages': {'type': 'array', 'items': {'type': 'integer', 'minimum': 0}, 'maxItems': 128}},
-                'required': ['observation_id'], 'additionalProperties': False}, call=self.read)
+                'required': ['observation_id', 'pages'], 'additionalProperties': False}, call=self.reread)
 
 
 class _CachedSource(BaseModel):
@@ -299,13 +328,16 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
     packet = _json(request.packet)
     sources = (*request.sources, EvidenceSource('@phase-packet', packet, hashlib.sha256(packet.encode()).hexdigest()))
     evidence = EvidenceStore(sources, required=request.required | {'@phase-packet'})
-    tools = (evidence.tool(), *request.tools, *(request.source_tools.tools() if request.source_tools else ()),
-             *((request.observations.tool(),) if request.observations else ()))
+    evidence_tools = tuple(classified_evidence_tool(tool) for tool in (evidence.tool(), evidence.reread_tool(),
+             *(request.source_tools.tools() if request.source_tools else ()),
+             *((request.observations.tool(), request.observations.reread_tool()) if request.observations else ())))
+    tools = (*evidence_tools, *request.tools)
     identity = AgentIdentity(attempt_id=request.attempt_id, phase=request.phase, role=request.role,
         source_commit=request.source_commit,
         domain_digests=tuple(sorted((*request.domain_digests, ('packet', _digest(request.packet)),
                                     ('evidence', evidence.receipt().catalog_digest)))),
         policy_digest=_digest({'tools': [{'name': tool.name, 'schema': tool.input_schema} for tool in tools],
+            'evidence_protocol': EVIDENCE_PROTOCOL, 'invalid_evidence_calls': MAX_INVALID_EVIDENCE_CALLS,
             'phase_calls': request.max_model_calls, 'phase_seconds': request.phase_timeout_seconds,
             'attempt_calls': request.budget.max_calls, 'reads': request.budget.max_reads,
             'schema_repairs': request.budget.max_schema_repairs, 'output_bytes': request.max_output_bytes,
@@ -325,7 +357,7 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
                 return issues
         if evidence.remaining_required:
             return [AdmissionIssue('review_evidence_unread', 'Read every required evidence page before judgment.',
-                                   guidance='Use review_evidence and continue from next_unread until unread_count is zero.')]
+                                   guidance='Call review_evidence({}) repeatedly until unread_count is zero; do not supply page IDs.')]
         if request.require_source and (request.source_tools is None or not request.source_tools.inspection.inputs):
             return [AdmissionIssue('source_evidence_required', 'Read pinned source using read_source before answering.')]
         if request.envelope not in answer or not isinstance(answer[request.envelope], dict):
@@ -355,6 +387,7 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
         instructions=request.instructions, task=f'Read the immutable phase packet and required sources using review_evidence. '
             f'There are {evidence.page_count} pages in this catalog. Then return the {request.envelope} envelope.',
         answer_schema=request.schema, check=check, budget=request.budget, allowed_tools=tools,
+        evidence_tools=frozenset(tool.name for tool in evidence_tools),
         checkpoint_key=checkpoint_key, checkpoint_store=request.checkpoint_store,
         evidence_catalog=evidence, event_sink=request.event_sink,
         phase_deadline=time.monotonic() + request.phase_timeout_seconds, phase_max_calls=request.max_model_calls,
