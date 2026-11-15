@@ -39,6 +39,7 @@ from coordinare.services import performer_lifecycle
 from coordinare.services.docker_executor import DockerExecutor
 from coordinare.services.docker_runtime import DockerRuntime
 from coordinare.services.env_provenance import image_capability_refusal
+from coordinare.services.environment_runtime import launch_runtime_policy
 from coordinare.services.event_capture import capture_usage_records
 from coordinare.services.run_header import build_run_header
 from coordinare.services.run_log import RunLogBusyError, redact_log_text
@@ -105,6 +106,7 @@ UNDRAINED_REASON = "transcript not fully drained"
 _TRANSCRIPT_MARKER_SECONDS = 1.0
 # The most aclose waits for teardown steps still running (review 6, F2).
 _CLOSE_TEARDOWN_SECONDS = 10.0
+_CANCEL_CREATE_SECONDS = 5.0
 # How many finished runs are remembered, so that a late poll or teardown never
 # recreates a writer for them (129 review, item 7).
 _TRANSCRIPT_FINALISED_MEMORY = 4096
@@ -159,6 +161,20 @@ def _inject_claude_code_secrets(
             secrets["ANTHROPIC_API_KEY"] = anthropic_key
     if role_base_url:
         secrets["ANTHROPIC_BASE_URL"] = str(role_base_url)
+
+
+def _runtime_launch_options(runtime: Any, metadata: dict[str, Any]) -> dict[str, Any]:
+    message = 'private runtime launch policy is unsupported or lacks independent review'
+    try:
+        policy = launch_runtime_policy(metadata)
+        if policy is None:
+            return {}
+        parameters = inspect.signature(runtime.start_ephemeral).parameters
+    except (ValueError, TypeError):
+        raise performer_lifecycle.ContainerStartError(message) from None
+    if 'runtime_policy' not in parameters:
+        raise performer_lifecycle.ContainerStartError(message)
+    return {'runtime_policy': policy}
 
 
 def _runtime_accepts_backend(runtime: Any) -> bool:
@@ -335,6 +351,7 @@ class HTTPPerformerService:
         self._undrained: dict[str, str] = {}
         # Shielded teardown steps still running; aclose waits for them (review 6, F2).
         self._teardown_tasks: set[asyncio.Task[Any]] = set()
+        self._pending_creations: dict[str, asyncio.Future[Any]] = {}
         # Spec 146: which runtime starts performers. Defaults to Docker so every
         # existing deployment and test behaves exactly as before; the Kubernetes
         # runtime is opted into via agent_transport config.
@@ -447,6 +464,47 @@ class HTTPPerformerService:
                 task.exception()
             raise
 
+    async def _run_creation[T](self, session_id: str, awaitable: Awaitable[T]) -> T:
+        """Bound cancellation settlement while retaining ownership of late creates."""
+        task = asyncio.ensure_future(awaitable)
+        self._pending_creations[session_id] = task
+        self._teardown_tasks.add(task)
+        task.add_done_callback(self._teardown_tasks.discard)
+        cancelled = False
+        try:
+            await asyncio.wait({task})
+            return task.result()
+        except asyncio.CancelledError:
+            cancelled = True
+            await asyncio.wait({task}, timeout=_CANCEL_CREATE_SECONDS)
+            raise
+        finally:
+            if not cancelled or (task.done() and not task.cancelled() and task.exception() is None):
+                self._pending_creations.pop(session_id, None)
+            else:
+                task.add_done_callback(lambda completed: self._schedule_created_cleanup(session_id, completed))
+
+    def _schedule_created_cleanup(self, session_id: str, created: asyncio.Future[Any]) -> None:
+        if created.cancelled() or created.exception() is not None:
+            # A cancelled or failed request may have reached the server. Retain
+            # uncertain ownership; label absence cannot settle an in-flight create.
+            logger.warning('http_performer.cancelled_creation_unconfirmed', session_id=session_id)
+            return
+        task = asyncio.create_task(self._cleanup_created_session(session_id))
+        self._teardown_tasks.add(task)
+        task.add_done_callback(self._teardown_tasks.discard)
+
+    async def _cleanup_created_session(self, session_id: str) -> None:
+        self._pending_creations.pop(session_id, None)
+        try:
+            confirmed = await self.stop_session_confirmed(session_id)
+        except Exception as exc:
+            logger.warning('http_performer.late_creation_cleanup_failed', session_id=session_id,
+                           error_type=type(exc).__name__)
+            return
+        if not confirmed:
+            logger.warning('http_performer.late_creation_cleanup_unconfirmed', session_id=session_id)
+
     async def aclose(self) -> None:
         # Teardown steps still running are awaited, bounded, so a shutdown does not
         # abandon a container stop half way (review 6, F2).
@@ -535,20 +593,38 @@ class HTTPPerformerService:
             if self._stop_event is not None and self._stop_event.is_set():
                 logger.info("http_performer.dispatch_stopped", performer_id=self._config.id)
                 raise DispatchStoppingError
-            started: dict[str, Any] = {}
+            owner: dict[str, Any] = {"session_id": str(uuid.uuid4())}
             try:
                 return await self._dispatch_card_locked(
-                    card_context, workspace_info, extra_volumes, run_inputs, started,
+                    card_context, workspace_info, extra_volumes, run_inputs, owner,
                 )
-            except BaseException:
-                # A cancellation leaks the container as surely as an error does. The teardown is
-                # shielded, and its own failure never replaces the original error.
+            except asyncio.CancelledError:
+                await self._stop_cancelled_dispatch(owner)
+                raise
+            except Exception:
+                # Expected refusals tear their container down in-line; any other failure once a container
+                # exists still stops it. A teardown failure never replaces the original error.
                 try:
-                    await self._stop_failed_dispatch(started)
+                    await self._stop_failed_dispatch(owner)
                 except Exception as exc:
                     logger.warning("http_performer.failed_dispatch_teardown_error", performer_id=self._config.id,
                                    error=str(exc))
                 raise
+
+    async def _stop_cancelled_dispatch(self, owner: dict[str, Any]) -> None:
+        """A cancelled dispatch's container is stopped and confirmed absent, unless already torn down."""
+        job = owner.get("job")
+        if job is not None and job.torn_down:
+            return
+        if job is not None:
+            self._active_jobs.setdefault(owner["session_id"], job)
+        confirmed = await self.stop_session_confirmed(owner["session_id"])
+        if not confirmed:
+            logger.warning("http_performer.cancelled_dispatch_cleanup_unconfirmed", session_id=owner["session_id"])
+            # Unconfirmed is never treated as stopped, but a known container is still stopped by its
+            # handle (a runtime without find_session or label stops would otherwise stop nothing).
+            with contextlib.suppress(Exception):
+                await self._stop_failed_dispatch(owner)
 
     async def _stop_failed_dispatch(self, started: dict[str, Any]) -> None:
         """Expected refusals tear their container down in-line. Anything else raised once a container
@@ -567,6 +643,7 @@ class HTTPPerformerService:
 
     async def _require_provenance_capability(
         self, payload: JobInitPayload, ready_status: PerformerStatus | None,
+        *, launched_image: str | None = None,
     ) -> None:
         """234: raise ``ValueError`` (the job is refused before it is posted) when the image cannot take a frozen
         payload. The old image would drop the field and run the cache's own scripts.
@@ -589,30 +666,29 @@ class HTTPPerformerService:
             if getattr(status, "environment_manifest_version", 0) < 1:
                 message = "performer image too old for reviewed environment manifests (#351); roll out daemon and performer together"
                 raise ValueError(message)
-            if payload.role != "env_bootstrap":
-                verified_image = payload.metadata.get("environment_verification_image")
-                if not isinstance(verified_image, str) or not verified_image:
-                    message = "consumer requires immutable clean verified image identity; rebuild the environment"
+            verified_image = payload.metadata.get("environment_verification_image")
+            if not isinstance(verified_image, str) or not verified_image:
+                message = "consumer requires immutable clean verified image identity; rebuild the environment"
+                raise ValueError(message)
+            if verified_image is not None:
+                from coordinare.services.environment_acceptance import immutable_verifier_image
+
+                image = immutable_verifier_image(launched_image if launched_image is not None else str(self._config.image))
+                if image != verified_image:
+                    message = "consumer image differs from the clean verified image; rebuild the environment"
                     raise ValueError(message)
-                if verified_image is not None:
-                    from coordinare.services.environment_acceptance import immutable_verifier_image
+                verified_platform = payload.metadata.get("environment_verification_platform")
+                advertised = "environment_platform" in getattr(status, "model_fields_set", {"environment_platform"})
+                actual_platform = getattr(status, "environment_platform", "") if advertised else ""
+                if not verified_platform or not actual_platform or actual_platform != verified_platform:
+                    message = "consumer runtime platform differs from the clean verified platform; rebuild the environment"
+                    if verified_platform and actual_platform:
+                        from coordinare.services.environment_acceptance import (
+                            EnvironmentIdentityMismatchError,
+                        )
 
-                    image = immutable_verifier_image(str(self._config.image))
-                    if image != verified_image:
-                        message = "consumer image differs from the clean verified image; rebuild the environment"
-                        raise ValueError(message)
-                    verified_platform = payload.metadata.get("environment_verification_platform")
-                    advertised = "environment_platform" in getattr(status, "model_fields_set", {"environment_platform"})
-                    actual_platform = getattr(status, "environment_platform", "") if advertised else ""
-                    if not verified_platform or not actual_platform or actual_platform != verified_platform:
-                        message = "consumer runtime platform differs from the clean verified platform; rebuild the environment"
-                        if verified_platform and actual_platform:
-                            from coordinare.services.environment_acceptance import (
-                                EnvironmentIdentityMismatchError,
-                            )
-
-                            raise EnvironmentIdentityMismatchError(message)
-                        raise ValueError(message)
+                        raise EnvironmentIdentityMismatchError(message)
+                    raise ValueError(message)
         if payload.role == "env_bootstrap":
             return  # the cache writer has capability/isolation gates but no frozen payload
         if payload.env_provenance is None:
@@ -634,10 +710,11 @@ class HTTPPerformerService:
         workspace_info: WorkspaceInfo | None = None,
         extra_volumes: list[VolumeMount] | None = None,
         run_inputs: dict[str, Any] | None = None,
-        started_job: dict[str, Any] | None = None,
+        owner: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         ephemeral_job: _EphemeralJob | None = None
         ready_status: PerformerStatus | None = None
+        launched_image: str | None = None
 
         # 076 (T016) — pre-allocate the coordinare-side session_id BEFORE
         # spinning up the container so it can be set as the
@@ -646,7 +723,8 @@ class HTTPPerformerService:
         # running container to its persisted session.  Distinct from the
         # job-runner's ``response.job_id`` (which is used as the
         # ``/jobs/<id>/...`` URL component for HTTP calls).
-        session_id = str(uuid.uuid4())
+        owner = owner if owner is not None else {"session_id": str(uuid.uuid4())}
+        session_id = str(owner["session_id"])
 
         # Resolve the effective config: if extra_volumes are provided, create a
         # shallow copy with the updated volumes list (containerized performers only).
@@ -692,11 +770,15 @@ class HTTPPerformerService:
                 # kwarg would otherwise fail here with TypeError.
                 backend = str(card_context.get("backend") or "") or None
                 start_kwargs: dict[str, Any] = {"extra_labels": extra_labels}
+                start_kwargs.update(_runtime_launch_options(self._runtime, card_context))
                 if _runtime_accepts_backend(self._runtime):
                     start_kwargs["backend"] = backend
-                started = await self._runtime.start_ephemeral(
+                # Cancellation retains late-create ownership and never treats
+                # label absence as confirmation while a create is unresolved.
+                started = await self._run_creation(session_id, self._runtime.start_ephemeral(
                     effective_config, **start_kwargs,
-                )
+                ))
+                launched_image = getattr(started, 'image_ref', None)
                 SYSTEM_HEALTH.record_performer_start(type(self._runtime).__name__, ok=True)
             except performer_lifecycle.LifecycleError as exc:
                 # 151: the class name only; the message can carry runtime detail.
@@ -732,8 +814,7 @@ class HTTPPerformerService:
                 client=ep_client,
                 run_id=session_id,
             )
-            if started_job is not None:
-                started_job.update(job=ephemeral_job, session_id=session_id)
+            owner["job"] = ephemeral_job
             try:
                 ready_status = await performer_lifecycle.wait_ready(
                     started.endpoint,
@@ -748,7 +829,7 @@ class HTTPPerformerService:
         # Build the job-init payload.
         try:
             payload = self._build_job_payload(card_context, workspace_info)
-            await self._require_provenance_capability(payload, ready_status)
+            await self._require_provenance_capability(payload, ready_status, launched_image=launched_image)
         except ValueError as exc:
             if ephemeral_job is not None:
                 await self._refuse_job(ephemeral_job)
@@ -1726,6 +1807,8 @@ class HTTPPerformerService:
         item 6). The confirmation runs in a finally, shielded, so a cancelled drain still
         stops the container once.
         """
+        if session_id in self._pending_creations:
+            return False
         confirmed = False
         try:
             await self._teardown_drain(session_id)
@@ -1756,11 +1839,10 @@ class HTTPPerformerService:
                 if started is None:
                     return True
                 handle = started.handle
-            if job is not None:
-                job.torn_down = True  # this confirmed stop owns the container from here
             try:
-                # 132: the full log is read before the stop removes it.
                 if job is not None:
+                    job.torn_down = True  # this confirmed stop owns the container from here
+                    # 132: the full log is read before the stop removes it.
                     await self._capture_run_log(job)
             finally:
                 await self._runtime.stop(handle)

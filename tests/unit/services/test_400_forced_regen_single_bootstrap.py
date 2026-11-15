@@ -37,6 +37,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from coordinare.services.env_cache import EnvCacheService
+from tests.unit.env_manifest_fixture import record_verified_cache_fixture
 from tests.unit.services.test_env_cache_phase4 import _make_cfg, _seed_state
 from tests.unit.test_060_env_cache import (
     _accepted_discovery as _accepted_discovery,
@@ -85,6 +86,7 @@ async def test_a_forced_regen_costs_one_bootstrap(tmp_path: Path) -> None:
     assert len(dispatched) == 1
 
     _seed_toolchain(_cache_dir)  # a real bootstrap leaves a toolchain; an empty dir reads as a failed run
+    record_verified_cache_fixture(state["env_cache"][sym_name])
     svc.on_bootstrap_complete(sym_name, True, state)
     assert cs.bootstrap_in_flight is False
 
@@ -115,6 +117,7 @@ async def test_a_manifest_change_during_a_forced_regen_still_rebootstraps(tmp_pa
     assert len(dispatched) == 1, "still in flight; the change is queued, not dispatched"
 
     _seed_toolchain(_cache_dir)  # a real bootstrap leaves a toolchain; an empty dir reads as a failed run
+    record_verified_cache_fixture(state["env_cache"][sym_name])
     svc.on_bootstrap_complete(sym_name, True, state)
     await _cycle(svc, sym_name, sym, gh, state, dispatched)
     assert len(dispatched) == 2, "the changed manifest must be built"
@@ -132,6 +135,7 @@ async def test_forced_bookkeeping_is_cleared_on_completion(tmp_path: Path) -> No
     await _cycle(svc, sym_name, sym, _github("sealed-sha"), state, dispatched)
     assert cs.bootstrap_forced is True
     _seed_toolchain(_cache_dir)  # a real bootstrap leaves a toolchain; an empty dir reads as a failed run
+    record_verified_cache_fixture(state["env_cache"][sym_name])
     svc.on_bootstrap_complete(sym_name, True, state)
     assert cs.bootstrap_forced is False
     assert cs.forced_manifest_sha is None
@@ -165,6 +169,7 @@ async def test_a_forced_dispatch_that_never_starts_leaves_no_forced_markers(tmp_
     recorded = cs.readme_sha  # the manifest SHA the ordinary dispatch was keyed on
     assert recorded is not None
     _seed_toolchain(_cache_dir)  # a real bootstrap leaves a toolchain; an empty dir reads as a failed run
+    record_verified_cache_fixture(state["env_cache"][sym_name])
     svc.on_bootstrap_complete(sym_name, True, state)
     assert cs.readme_sha == recorded, "ordinary completion adopted a stale forced SHA"
     await _cycle(svc, sym_name, sym, gh, state, dispatched)

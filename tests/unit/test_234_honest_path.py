@@ -48,7 +48,11 @@ def _bootstrapped(tmp_path: Path) -> tuple[EnvCacheState, Path]:
         cache_dir_ready=True,
         last_seen_spec_sha="spec-sha",
     )
-    reviewed_cache(state)
+    from coordinare_service_inference.environment.models import ExecutionCapabilities
+
+    reviewed_cache(state, capabilities=ExecutionCapabilities(schema_version=1,
+        image_ref="img@sha256:"+"1"*64, platform=platform.system().lower()+"/"+platform.machine().lower(),
+        cache_mount_path="/devenv/sym-abc", install_network="enabled", verify_network="disabled"))
     assert state.environment_verification is not None
     state.environment_verification.update({"image_ref": "img@sha256:" + "1" * 64,
                                       "platform": platform.system().lower() + "/" + platform.machine().lower()})

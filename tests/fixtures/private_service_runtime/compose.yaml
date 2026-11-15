@@ -1,0 +1,10 @@
+services:
+  first:
+    build: .
+    image: coordinare-runtime-fixture:local
+    pull_policy: never
+    ports: ["8080:8080"]
+  second:
+    image: busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+    pull_policy: never
+    command: ["sh", "-c", "until wget -qO- http://first:8080/message.txt; do sleep 1; done"]

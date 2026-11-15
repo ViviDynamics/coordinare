@@ -116,7 +116,7 @@ class BootstrapEnvironment:
                 "verify_basis": workspace.verify_basis_for(self.score.bootstrap_verify_sh, passed=passed)}
 
     async def run(self, step: str) -> dict[str, Any]:
-        """Execute one gate. Only verification/readiness failures are repairable."""
+        """Execute one gate; the daemon owns repairs of rejected reviewed executions."""
         if step == "snapshot":
             return self._snapshot()
         if step == "integrity":

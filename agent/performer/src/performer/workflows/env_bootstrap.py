@@ -1,4 +1,4 @@
-"""174: bounded harness installation followed by deterministic gates and repair."""
+"""Execute the reviewed installation and return failures to daemon-owned repair."""
 from __future__ import annotations
 
 import asyncio
@@ -46,7 +46,7 @@ STEPS: tuple[str, ...] = (
 
 
 class EnvBootstrapWorkflow:
-    """Keep the install harness; bound retries and never trust its success claim."""
+    """Execute only the accepted contract; the daemon owns reviewed repairs."""
 
     name = "env_bootstrap"
     steps = STEPS
@@ -56,7 +56,7 @@ class EnvBootstrapWorkflow:
 
 
 class _BootstrapSession:
-    """One bounded installation/repair sequence and its parent-collected evidence."""
+    """One deterministic installation and its parent-collected evidence."""
 
     def __init__(self, score: Score, toolkit: Toolkit) -> None:
         self.score = score
@@ -95,58 +95,21 @@ class _BootstrapSession:
         self.verification = checked.get("environment_verification")
         return checked
 
-    async def _repair(self, attempt: int, feedback: str, execution_budget_seconds: int) -> dict[str, Any]:
-        kind = "install" if attempt == 0 else "repair"
-        self.toolkit.emit(BackendEvent(type=BackendEventType.progress, text=f"env_bootstrap.{kind}"))
-        started = time.monotonic()
-        try:
-            turn = await self.toolkit.run_agent_turn({
-                "kind": kind,
-                "persona": self.score.persona_instructions + (
-                    "\n\nRepair only the failed environment checks. Preserve coordinare-owned "
-                    "verify.sh and activate.sh. Failure details:\n" + feedback if attempt else ""
-                ),
-            }, timeout_s=execution_budget_seconds)
-        finally:
-            self._duration(kind, started)
-        integrity = await self.step("integrity")
-        if not integrity["passed"]:
-            return {**integrity, "terminal": True}
-        if turn["exit_state"] != "done":
-            return {"passed": False, "reason": turn.get("output_tail") or "install turn failed", "terminal": True}
-        inferred = await self.step("inference")
-        self.inference = inferred.get("inference", {})
-        checked = await self.step("readiness")
-        integrity = await self.step("integrity")
-        if not integrity["passed"]:
-            return {**integrity, "terminal": True}
-        if checked["passed"]:
-            checked = await self.step("verify")
-            self.verification = checked.get("environment_verification")
-        return checked
-
-    async def _execute(self, max_repairs: int, execution_budget_seconds: int) -> WorkflowResult:
+    async def _execute(self) -> WorkflowResult:
         snapshot = await self.step("snapshot")
         if not snapshot["passed"]:
             return self.report("error", snapshot["reason"])
-        feedback = ""
-        for attempt in range(max_repairs + 1):
-            self.repairs = attempt
-            checked = (await self._install() if attempt == 0 and self.score.environment_manifest is not None
-                       else await self._repair(attempt, feedback, execution_budget_seconds))
-            if checked.get("integrity_failure") or checked.get("terminal"):
-                return self.report("error", checked["reason"])
-            if checked["passed"]:
-                return self.report("complete", verify_basis=checked.get("verify_basis"))
-            feedback = checked.get("reason") or "environment verification failed"
-        return self.report("error", "repair budget exhausted: " + feedback)
+        checked = await self._install()
+        if checked["passed"]:
+            return self.report("complete", verify_basis=checked.get("verify_basis"))
+        return self.report("error", checked.get("reason") or "environment verification failed")
 
     async def run(self) -> WorkflowResult:
         try:
-            max_repairs = _budget(self.score.workflow_env, "ENV_BOOTSTRAP_MAX_REPAIRS", 1, 0, 2)
+            _budget(self.score.workflow_env, "ENV_BOOTSTRAP_MAX_REPAIRS", 1, 0, 2)
             timeout = _budget(self.score.workflow_env, "ENV_BOOTSTRAP_TIMEOUT_SECONDS", 1800, 1, 3600)
             async with asyncio.timeout(timeout):
-                return await self._execute(max_repairs, timeout)
+                return await self._execute()
         except TimeoutError:
             return self.report("error", "bootstrap workflow timeout")
         except (ValueError, OSError) as exc:

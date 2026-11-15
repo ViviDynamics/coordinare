@@ -114,25 +114,44 @@ def _manifest(cache: Path, performer_mounts: tuple[Path, ...] = ()) -> tuple[str
     from coordinare_service_inference.environment.models import (
         CoverageAssessment,
         EnvironmentManifest,
+        ExecutionCapabilities,
     )
 
     service = EnvCacheService(_configured(MagicMock()))
     commit = _head("safe-write-source")
-    metadata = reviewed_metadata(source_commit=commit,
+    capabilities = ExecutionCapabilities(schema_version=1, image_ref="trusted/global@sha256:" + "a" * 64,
+        platform="linux/x86_64", cache_mount_path="/devenv/sym", install_network="enabled", verify_network="disabled")
+    metadata = reviewed_metadata(source_commit=commit, capabilities=capabilities,
         checks=[{"id": "baseline", "argv": ["zog", "--check", "7"]}],
         activation={"path": ["{cache}/toolchain/bin"]})
     manifest = EnvironmentManifest.model_validate(metadata["environment_manifest"])
     assessment = CoverageAssessment.model_validate(metadata["environment_assessment"])
     state = EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=cache,
         bootstrap_commit_sha=commit)
+    import hashlib
+
+    from coordinare_service_inference.environment.execution_source import (
+        ExecutionSourceBundle,
+        ExecutionSourceIdentity,
+    )
+
+    from tests.unit.test_353_execution_source import bundle_file
+
+    async def source(owner, repo, *, commit, destination, deadline):
+        destination.mkdir(parents=True)
+        payload, identity = bundle_file(destination, {'tools.plan': (b'baseline', '100644')}, commit=commit)
+        return ExecutionSourceBundle(ExecutionSourceIdentity.model_validate(identity), payload,
+            hashlib.sha256(payload.read_bytes()).hexdigest(), payload.stat().st_size)
+
     github = AsyncMock()
+    github.prepare_execution_source = source
     github.get_repository_paths.return_value = ["tools.plan"]
     with patch("coordinare.services.environment_discovery.discover_and_review",
                AsyncMock(return_value=(manifest, assessment))):
         return asyncio.run(service._build_manifest_artifacts(
             performer_mounts=performer_mounts, symphony_name="sym", repo="sym", github_org="org",
             github_service=github, readme_contents={}, current_sha="source-key", cache_dir=cache,
-            cache_mount_path="/devenv/sym", llm_chat=AsyncMock(), cache_state=state))
+            cache_mount_path="/devenv/sym", llm_chat=AsyncMock(), cache_state=state, capabilities=capabilities))
 
 
 # ---------------------------------------------------------------------------

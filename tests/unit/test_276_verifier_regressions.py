@@ -232,6 +232,9 @@ def test_configuration_exhaustion_reason_clears_when_breaker_rearms(tmp_path: Pa
     if reset == "manual":
         reset_env_bootstrap_breaker(state, "sym", ec, "operator", ActivityLog())
     else:
+        from tests.unit.env_manifest_fixture import record_verified_cache_fixture
+
+        record_verified_cache_fixture(ec)
         service.on_bootstrap_complete("sym", True, state)
     assert not ec.bootstrap_exhausted
     assert ec.bootstrap_exhaustion_reason is None
