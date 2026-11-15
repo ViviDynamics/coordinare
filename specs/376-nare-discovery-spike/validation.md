@@ -283,3 +283,60 @@ and duplicate tool-call identities refusing before dispatch in both streaming an
 ordinary transports. Clean-interruption resume remains supported and retains its
 spent allowance. Already completed invalid calls in a batch can exceed eight;
 the exact consumption is preserved and prevents any subsequent inference.
+
+
+## Response and transport contract audit
+
+A parallel audit after the held native trials identified correction accounting,
+stop-reason translation, source-only tool guidance and answer-encoding contract
+gaps. Offline reproductions now cover uncharged corrections, queued corrections
+at cancellation, zero-budget terminal holds, provider cutoff/refusal labels,
+and preserving fatal bound-source failures while reporting unavailable new paths.
+Pure reviewer diagnostics report independent structural, citation, UTF-8 and
+required-read issues together before unchanged final admission. They do not
+normalize answers, add a correction producer or increase any allowance.
+
+Exact duplicate source bodies in known native packet fields now use canonical
+path/digest references. Replacement requires the recorded digest, cached content
+and recomputed digest to agree. Canonical bytes and mandatory receipts remain
+required; legacy packets and unmatched records retain their original content.
+Investigation evidence can be reconstructed to its original bound digest.
+
+The isolated candidate regression passed **2,583 tests** with 18 existing warnings
+in 346.16 seconds. The preceding run's eight integration failures were test
+transports missing the now-required output capability; the fixture signatures and
+capabilities were updated without weakening production checks. All 14 lifecycle
+and acceptance tests passed before the full rerun. Whole Ruff, the unchanged debt
+ratchet and strict typechecking across 372 modules pass.
+
+Nare PR313 merged after seven checks and an exact-commit preflight. It adds explicit
+answer encodings and restores evidence tools after domain corrections within the
+same allowance. Independent review exposed two streaming gaps, both reproduced
+and fixed: forced-function repetition detection and malformed fragments retaining
+known usage. Optional null fragments and legacy transport signatures are covered.
+The candidate wheel remains isolated until its official release is verified.
+Production currently pins verified release106 from commit90c33c749, SHA256
+`41e33ce60b7347e8ee82f82b60f781ad20068be6def72250338814a0ef48769d`.
+All 32 source files plus LICENSE and NOTICE match the release commit.
+
+These checks establish offline contract behavior. Both project-specific live
+installer/repair/clean-consumer/provenance gates remain unfulfilled. No terminal
+trial was resumed, allowance reset, legacy loop removed or readiness asserted.
+
+
+Official release **2026.11.107** is now verified and pinned through the normal
+resolver. Its tag targets merged commit
+`4baaeb8527478401cbd7bf54b74f48c286d8a093`; the wheel SHA256 is
+`8b00e7a098c2a9f87357fcb0893b6f86f06191074beb2d33b9e3b93e09eea509`.
+All 32 packaged Python source files other than the generated version module,
+LICENSE and NOTICE match that commit. The lockfile changes only nare, and both
+the installed distribution and runtime report 2026.11.107. No source patch or
+sibling import path is used in production.
+
+The final candidate's unchanged performance gates passed: 4 MiB paging median
+77.094 ms, peak 9,583,943 bytes; cold-start median 1.2612 s versus 1.3572 s for
+the immutable baseline. Full exact-commit repository preflight remains the next
+gate before another bounded acceptance run.
+The normally installed 107 wheel also passes all 213 native unit/integration
+checks. Whole Ruff, the unchanged debt ratchet and strict typing across 372
+modules pass against that published dependency.

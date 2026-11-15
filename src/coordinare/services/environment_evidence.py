@@ -5,14 +5,37 @@ import asyncio
 import hashlib
 import json
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from coordinare.services.environment_inspection import SourceInspection
+
+
+def source_evidence_refs(inspection: SourceInspection, evidence: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Native presentation references only exact bodies also required in the phase's source catalog.
+
+    Only call for daemon-built source evidence fields. Investigation bindings/results remain unchanged;
+    their nested evidence may reference the same canonical source. Legacy evidence retains its full body.
+    """
+    native = inspection.budget is not None and inspection.budget.agent_context is not None
+
+    def reference(item: Mapping[str, Any]) -> dict[str, Any]:
+        if native and set(item) == {'path', 'sha256', 'content'}:
+            path, digest, content = item['path'], item['sha256'], item['content']
+            if (isinstance(path, str) and isinstance(content, str)
+                    and inspection.inputs.get(path) == digest
+                    and inspection.source_files.get(path) == content
+                    and hashlib.sha256(content.encode()).hexdigest() == digest):
+                return {'path': path, 'sha256': digest, 'content_ref': path}
+        return dict(item)
+
+    return [{**item, 'evidence': reference(item['evidence'])}
+            if set(item) == {'binding', 'result', 'evidence'} and isinstance(item['evidence'], dict)
+            else reference(item) for item in evidence]
 
 
 async def _prepare_mandatory_evidence(

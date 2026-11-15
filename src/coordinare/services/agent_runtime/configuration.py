@@ -25,6 +25,7 @@ class AgentModelConfig:
     effort: Literal['low', 'medium', 'high'] | None
     base_url: str | None = field(default=None, repr=False)
     api_key: str | None = field(default=None, repr=False)
+    structured_transport: Literal['json_schema', 'tool_call', 'json_object'] = 'json_schema'
 
     def transport(self, instructions: str) -> Transport:
 
@@ -54,4 +55,5 @@ def resolve_conducting(config: ConductingConfig, *, environ: Mapping[str, str]) 
         effort=None if anthropic else config.effort,
         base_url=config.base_url,
         api_key=key,
+        structured_transport=config.structured_transport,
     )

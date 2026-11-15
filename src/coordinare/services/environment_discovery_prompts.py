@@ -63,15 +63,25 @@ SOURCE_TOOLS = SOURCE_NAVIGATION + CAPABILITY_CRITERIA
 
 NATIVE_SOURCE_INSTRUCTIONS = (
     'Use the supplied native tools to read immutable evidence. '
-    'review_evidence returns complete pages; it may return fewer pages than requested. '
-    'Continue from next_unread until unread_count is zero before answering. '
-    'Reread pages when compaction removes needed detail. '
+    'Call review_evidence({}) repeatedly until unread_count is zero before answering. '
+    'Each response contains complete pages; next_unread is informational, never a page-range argument. '
+    'Use reread_evidence for explicit page IDs when compaction removes needed detail. '
+    'An evidence content_ref names the canonical source in review_evidence; its path and sha256 bind the complete '
+    'content. Read those source pages as well as the packet before answering. '
     'Return only the final JSON envelope matching the supplied phase schema. '
-) + SOURCE_CRITERIA + CAPABILITY_CRITERIA
+) + SOURCE_CRITERIA
 
 
 def source_navigation(budget: AttemptBudget | None) -> str:
     return NATIVE_SOURCE_INSTRUCTIONS if budget is not None and budget.agent_context is not None else SOURCE_NAVIGATION
+
+
+def source_tool_guidance(budget: AttemptBudget | None, text: str) -> str:
+    """Render trusted navigation prose for its transport, never domain operation tags or source evidence."""
+    if budget is None or budget.agent_context is None:
+        return text
+    return (text.replace('read_file or read_files', 'read_source').replace('read_files', 'read_source')
+            .replace('read_file', 'read_source').replace('list_files', 'list_sources'))
 
 LOCAL_CREDENTIAL_AUTHORING = (
     'Never write a literal credential, even a throwaway test password. A credential for a service this manifest '
@@ -264,7 +274,7 @@ def legacy_discovery_system() -> str:
 
 def native_discovery_system(*, delta: bool, preflight: bool, trial: bool, global_part: bool = False) -> str:
     envelope = 'manifest_delta' if delta else 'manifest'
-    return (NATIVE_SOURCE_INSTRUCTIONS + ('' if global_part else _WHOLE_MANIFEST_MAPPING) + _MANIFEST_RULES +
+    return (NATIVE_SOURCE_INSTRUCTIONS + CAPABILITY_CRITERIA + ('' if global_part else _WHOLE_MANIFEST_MAPPING) + _MANIFEST_RULES +
         f'Return the complete {envelope} envelope and finding_responses. ' +
         ('For this repair, declare only records changed or added, preserving every frozen obligation. ' if delta else '') +
         ('Before a final declaration, use the native probe tool to observe uncertain base-image prerequisites. '

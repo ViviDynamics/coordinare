@@ -19,12 +19,15 @@ from tests.unit.test_376_bootstrap_phases import PhaseTransport
 
 
 class BootstrapTransport(PhaseTransport):
+    supports_structured_output = True
+
     def __init__(self, instructions: str) -> None:
         super().__init__({}, read_path='guide')
         self.instructions = instructions
         self.probed = False
 
-    async def turn(self, messages: Any, tools: Any) -> Reply:
+    async def turn(self, messages: Any, tools: Any, *, response_schema: Any = None) -> Reply:
+        assert response_schema is None or not tools
         reply = await super().turn(messages, tools)
         if reply.stop_reason != 'end_turn':
             return reply
@@ -94,6 +97,7 @@ async def test_daemon_cycle_uses_selected_native_model_and_publishes_progress(tm
     daemon, cache, symphony, selected = configured_daemon(tmp_path, monkeypatch)
     await daemon._run_env_cache_and_cardless_cycle({'suite': symphony})
     assert selected and {model.model for model in selected} == {'selected/bootstrap'}
+    assert all(model.structured_transport == 'json_schema' for model in selected)
     assert all(model.api_key == 'fixture-key' and model.base_url == 'https://provider.example/v1' for model in selected)
     daemon._execute_bootstrap_dispatch.assert_awaited_once()
     assert cache.environment_assessment['verdict'] == 'accept'
@@ -113,10 +117,10 @@ async def test_daemon_preparation_has_one_owner_and_cancellation_is_terminal(tmp
 
     entered = asyncio.Event()
     class Waiting(BootstrapTransport):
-        async def turn(self, messages: Any, tools: Any) -> Reply:
+        async def turn(self, messages: Any, tools: Any, *, response_schema: Any = None) -> Reply:
             entered.set()
             await asyncio.Event().wait()
-            return await super().turn(messages, tools)
+            return await super().turn(messages, tools, response_schema=response_schema)
     daemon, cache, symphony, selected = configured_daemon(tmp_path, monkeypatch, Waiting)
     first = asyncio.create_task(daemon._run_env_cache_and_cardless_cycle({'suite': symphony}))
     try:
@@ -188,7 +192,7 @@ async def test_daemon_restart_resumes_verified_provider_failure_without_renewing
     from coordinare.daemon import _persist_env_cache, _rehydrate_env_cache
 
     class Broken(BootstrapTransport):
-        async def turn(self, messages: Any, tools: Any) -> Reply:
+        async def turn(self, messages: Any, tools: Any, *, response_schema: Any = None) -> Reply:
             raise ConnectionError('synthetic provider outage')
 
     daemon, cache, symphony, _ = configured_daemon(tmp_path, monkeypatch, Broken)

@@ -63,7 +63,7 @@ async def test_native_daemon_execution_repair_requires_clean_consumer_and_proven
 
     authored = []
     class Repairing(BootstrapTransport):
-        async def turn(self, messages: Any, tools: Any) -> Reply:
+        async def turn(self, messages: Any, tools: Any, *, response_schema: Any = None) -> Reply:
             first = await PhaseTransport.turn(self, messages, tools)
             if first.stop_reason != 'end_turn':
                 return first
@@ -75,7 +75,7 @@ async def test_native_daemon_execution_repair_requires_clean_consumer_and_proven
                     "import pathlib,sys;pathlib.Path(sys.argv[1]).write_text('ready')", '{cache}/payload']}]},
                     'finding_responses': []}
                 return Reply([{'type': 'text', 'text': json.dumps(answer)}], [], Usage(input=100, output=20), 'end_turn')
-            reply = await super().turn(messages, tools)
+            reply = await super().turn(messages, tools, response_schema=response_schema)
             if reply.stop_reason == 'end_turn':
                 answer = json.loads(reply.content[0]['text'])
                 if 'manifest' in answer:

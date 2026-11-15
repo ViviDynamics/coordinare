@@ -258,6 +258,15 @@ EVIDENCE_ON_DEMAND = (
 )
 
 
+def evidence_navigation(budget: AttemptBudget) -> str:
+    if budget.agent_context is None:
+        return EVIDENCE_ON_DEMAND
+    return ('bound_scope_inputs indexes reviewed scope inputs (path, digest, size and the criteria citing each). '
+            'The daemon verified and bound them to the manifest. Read their canonical source pages using '
+            'review_evidence before relying on them; use read_source for additional source inspection. '
+            'The complete pinned evidence remains required, including files the current criteria cite. ')
+
+
 EXECUTABLE_REVIEW_CRITERIA = (
     'Independently review coverage of the candidate against the repository snapshot. '
     'Reject incomplete activation: installed tools must be usable by ordinary downstream project commands, not just absolute-path checks. '
@@ -1470,7 +1479,7 @@ async def _discover_attempt(
     discovery = _Inspection("discovery", options.entries or inventory, fetch, bounds, budget)
     scope_evidence = await discovery.bind_verified(scope.all_inputs, phase="construction", cited_by=scope_citations(scope))
     discovery.observe_sources = construction.observe_sources
-    identity = {**construction.context(), "bound_scope_inputs": scope_evidence, "evidence_rule": EVIDENCE_ON_DEMAND,
+    identity = {**construction.context(), "bound_scope_inputs": scope_evidence, "evidence_rule": evidence_navigation(budget),
                 "symphony_name": symphony_name, "source_commit": commit,
                 "requested_coverage_scope": {"environment": "whole documented development/test environment",
                                              "operator_authorized_exclusions": []},

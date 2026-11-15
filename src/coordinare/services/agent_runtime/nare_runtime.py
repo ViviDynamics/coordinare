@@ -12,7 +12,7 @@ from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Literal
 
 from nare import Policy, dumps, loads, new_session, run
-from nare.loop import RetryPolicy
+from nare.loop import RetryPolicy, check_structured_output
 from nare.schema import UnsupportedSchema, check_supported, validate
 
 from coordinare.services.agent_runtime.accounting import (
@@ -32,6 +32,8 @@ from coordinare.services.agent_runtime.models import AgentResult
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from nare import Event, Transport
 
     from coordinare.services.agent_runtime.configuration import AgentModelConfig
@@ -61,6 +63,9 @@ class NareRuntime:
             if execution.session.status == 'done':
                 if not isinstance(execution.session.output, dict) or validate(execution.session.output, schema):
                     refuse_agent('Saved answer no longer satisfies the declared schema.',
+                        code='agent_checkpoint_answer')
+                if await execution.diagnose(deepcopy(execution.session.output)):
+                    refuse_agent('Saved answer no longer satisfies response diagnostics.',
                         code='agent_checkpoint_answer')
                 await execution.check(deepcopy(execution.session.output))
             else:
@@ -94,7 +99,12 @@ class NareRuntime:
             except Exception:
                 execution.status, execution.hold_code = 'held', 'agent_transport_cleanup'
         try:
-            for event in execution.session.events:
+            for event in tuple(execution.session.events):
+                if 'schema_correction' in event.detail:
+                    await execution.record_correction(event.detail['schema_correction'], reconcile=True)
+                    # This event has now crossed the domain accounting boundary.
+                    # Keeping it in a resumed native queue would charge it twice.
+                    execution.session.events.remove(event)
                 await execution.evidence_failures.reconcile(
                     event.detail, session_id=execution.session.id, turn=execution.session.turns)
             await execution.save()
@@ -108,18 +118,26 @@ class NareRuntime:
             before_send=execution.save, calls=self._calls, config=self._config, instructions=request.instructions,
             max_output_bytes=request.max_output_bytes, max_context_bytes=request.max_context_bytes,
             answer_schema=schema))
+        mode = self._config.structured_transport if self._config is not None else None
+        try:
+            check_structured_output(wrapped, schema, mode)
+        except ValueError:
+            refuse_agent(
+                'Selected answer encoding is not supported by the configured transport and schema.',
+                code='agent_transport_unsupported')
         names = frozenset(tool.name for tool in request.allowed_tools)
         deadline = min(request.budget.deadline, time.monotonic() + execution.phase_expires_at - time.time())
+        diagnostics: dict[str, Any] = {'diagnose': execution.diagnose} if request.diagnose is not None else {}
         async with asyncio.timeout_at(deadline):
             events = run(execution.session, transport=wrapped,
                 policy=Policy(tools=names, pending=names), tools=request.allowed_tools,
-                schema=schema, check=execution.check,
+                schema=schema, check=execution.check, structured_output=mode,
                 max_turns=max(1, request.budget.max_calls - request.budget.calls),
                 max_corrections=request.shard_corrections if request.shard_corrections is not None else
                     max(1, execution.session.schema_corrections
                         + request.budget.max_schema_repairs - request.budget.schema_repairs
                         + len(request.prerequisites - execution.prerequisite_reminders)),
-                retry=self._retry, compaction='elide', compaction_trigger=0.6, compaction_target=0.4)
+                retry=self._retry, compaction='elide', compaction_trigger=0.6, compaction_target=0.4, **diagnostics)
             async with aclosing(events):
                 async for event in events:
                     await execution.event(event)
@@ -268,6 +286,21 @@ class _Execution:
             self.bridge.failure_code = exc.code
             raise
 
+    async def diagnose(self, answer: object) -> list[JsonObject]:
+        """Independent errors only: no admission, effects, or correction reservation."""
+        if self.request.diagnose is None:
+            return []
+        try:
+            issues = await self.request.diagnose(answer)
+        except EnvironmentDiscoveryError as exc:
+            self.hold_code = exc.code
+            raise
+        except Exception:
+            self.failed_check = True
+            raise
+        self.request.budget.validation_codes.extend(issue.code for issue in issues)
+        return [asdict(issue) for issue in issues]
+
     async def check(self, answer: JsonObject) -> list[JsonObject]:
         try:
             if self.request.effects is not None:
@@ -294,22 +327,28 @@ class _Execution:
             refuse_agent('Domain correction allowance exhausted.', code='attempt_schema_limit')
         return [asdict(issue) for issue in issues]
 
+    async def record_correction(self, correction: JsonObject, *, reconcile: bool = False) -> None:
+        budget = self.request.budget
+        if self.free_reminder:
+            self.free_reminder = False
+        elif not correction['charged']:
+            budget.validation_codes.append('correction_progress')
+        elif self.request.shard_corrections is not None:
+            budget.shard_schema_repairs += 1
+        elif not reconcile:
+            await self.bridge.correction()
+            return
+        elif budget.schema_repairs < budget.max_schema_repairs:
+            # Completed correction, not new inference: account even on expiry.
+            budget.schema_repairs += 1
+        else:
+            self.status, self.hold_code = 'held', 'attempt_schema_limit'
+        await self.bridge.persist()
+
     async def event(self, event: Event) -> None:
         kind = 'progress'
-        await self.evidence_failures.observe(event.detail, session_id=self.session.id, turn=self.session.turns)
         if 'schema_correction' in event.detail:
-            if self.free_reminder:
-                self.free_reminder = False
-                await self.bridge.persist()
-            elif self.request.shard_corrections is None:
-                await self.bridge.correction()
-            else:
-                self.request.budget.check()
-                if event.detail['schema_correction']['charged']:
-                    self.request.budget.shard_schema_repairs += 1
-                else:
-                    self.request.budget.validation_codes.append('correction_progress')
-                await self.bridge.persist()
+            await self.record_correction(event.detail['schema_correction'])
             kind = 'correction'
         elif 'compaction' in event.detail:
             self.request.budget.agent_compactions += 1
@@ -317,6 +356,7 @@ class _Execution:
         elif 'retry' in event.detail:
             self.request.budget.agent_retries += 1
             kind = 'retry'
+        await self.evidence_failures.observe(event.detail, session_id=self.session.id, turn=self.session.turns)
         await self.emit(kind)
 
     async def emit(self, kind: str) -> None:
@@ -345,7 +385,8 @@ class _Execution:
         elif self.session.stop_reason == 'schema_violation':
             self.hold_code = 'attempt_schema_limit'
         elif self.hold_code is None:
-            self.hold_code = 'agent_incomplete'
+            self.hold_code = {'max_tokens': 'agent_output_truncated',
+                              'refusal': 'agent_provider_refusal'}.get(self.session.stop_reason or '', 'agent_incomplete')
 
     def result(self) -> AgentResult:
         receipt = self.request.evidence_catalog.receipt() if self.request.evidence_catalog is not None else None

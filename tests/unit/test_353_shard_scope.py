@@ -64,8 +64,10 @@ class Router:
         system, context = messages[0]['content'], json.loads(messages[1]['content'])
         user = {**context.pop('_shared_context', {}), **context}
         role = ('consolidation' if CONSOLIDATION_INSTRUCTIONS in system else 'triage' if TRIAGE_INSTRUCTIONS in system
-                else 'author' if SHARD_AUTHOR_INSTRUCTIONS in system else 'review' if SHARD_REVIEW_PREAMBLE in system
-                else 'merge' if MERGE_REVIEW_PREAMBLE in system else 'revision' if SHARD_REVISION_PREAMBLE in system else '?')
+                else 'author' if SHARD_AUTHOR_INSTRUCTIONS.split('. ', 1)[0] in system
+                else 'review' if SHARD_REVIEW_PREAMBLE.split('. ', 1)[0] in system
+                else 'merge' if MERGE_REVIEW_PREAMBLE.split('. ', 1)[0] in system
+                else 'revision' if SHARD_REVISION_PREAMBLE in system else '?')
         self.conversations.append((role, copy.deepcopy(messages)))
         return json.dumps(getattr(self, role)(messages, user))
 

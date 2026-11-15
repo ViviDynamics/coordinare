@@ -51,10 +51,14 @@ from coordinare.services.environment_admission import (
 from coordinare.services.environment_agent import SourcePhase, run_source_phase
 from coordinare.services.environment_agent_pool import ShardOverflowError, run_pool
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
-from coordinare.services.environment_discovery_prompts import source_navigation
+from coordinare.services.environment_discovery_prompts import (
+    source_navigation,
+    source_tool_guidance,
+)
 from coordinare.services.environment_evidence import (
     check_evidence_context,
     prepare_mandatory_evidence,
+    source_evidence_refs,
 )
 from coordinare.services.environment_findings import MAX_FINDINGS, FindingValidationError
 from coordinare.services.environment_inspection import SourceInspection
@@ -734,6 +738,11 @@ class ShardedScope:
     async def author_shard(self, shard: Shard) -> ShardSummary:
         inspection = self.view(shard.paths, name='scope_shard_author')
         spine = self.admit_spine(inspection)
+        instructions = SHARD_AUTHOR_INSTRUCTIONS
+        if inspection.budget is not None and inspection.budget.agent_context is not None:
+            instructions = instructions.replace(
+                'shard_evidence already holds the content of every shard file: judge it directly, without reading it again.',
+                'shard_evidence indexes every shard file; read its content_ref source pages through review_evidence.')
         # Every named file is read by the daemon for the author: none can be skipped, and no call is spent reading it.
         # Daemon-selected, so counted with verification rather than against the model's read cap or allowance.
         evidence: list[dict[str, str]] = []
@@ -741,18 +750,19 @@ class ShardedScope:
         for offset in range(0, len(unread), 8):
             batch = await inspection.read_files(unread[offset:offset + 8], navigation=True, verification=True)
             evidence.extend(item for item in batch['files'] if 'error' not in item)
-        messages = [{'role': 'system', 'content': source_navigation(inspection.budget) + SHARD_AUTHOR_INSTRUCTIONS + PHASE_CONTRACT
+        messages = [{'role': 'system', 'content': source_navigation(inspection.budget) + instructions
+                     + source_tool_guidance(inspection.budget, PHASE_CONTRACT)
                      + SHARED_CONTEXT_NOTE},
                     {'role': 'user', 'content': agent_context(
                         {'requested_scope': 'whole_documented_development_test_environment',
                          'phase_contract': {'subject': 'source_obligations',
                                             'runtime_evidence': 'required_after_scope_acceptance',
                                             'readiness_authority': False},
-                         'spine_evidence': spine},
+                         'spine_evidence': source_evidence_refs(inspection, spine)},
                         # The root listing is this agent's view, so it is not shared.
                         {'root_directory': inspection.list_directory(),
                          'shard': {'id': shard.id, 'files': len(shard.paths)}, 'shard_files': self.file_list(shard.paths),
-                         'shard_evidence': evidence})}]
+                         'shard_evidence': source_evidence_refs(inspection, evidence)})}]
         summary: ShardSummary = await self.agent_phase(inspection, messages, AgentTask('shard_summary',
             partial(self._validate_summary, inspection=inspection, shard=shard)))
         completed = dict((self.budget.scope_shards or {}).get('summaries', {}))
@@ -766,7 +776,7 @@ class ShardedScope:
         errors = []
         for index, criterion in enumerate(proposal.criteria):
             errors.extend(_criterion_citation_errors(criterion.sources, inspection.inputs,
-                ('shard_summary', 'criteria', str(index), 'sources')))
+                ('shard_summary', 'criteria', str(index), 'sources'), budget=inspection.budget))
         if errors:
             raise _ResponseReferenceError(errors)
         # Cross references are navigation hints: a path outside the pinned inventory is dropped, not corrected.
@@ -842,7 +852,9 @@ class ShardedScope:
         cited = sorted({path for c in criteria for path in c.sources}
                        | {path for record in records for path in record['proposal']['sources']})
         resolved = resolved_elsewhere(ledger, owned, {*cited, *material.paths})
-        return [{'role': 'system', 'content': source_navigation(inspection.budget) + preamble + REVIEW_INSTRUCTIONS + PHASE_CONTRACT
+        return [{'role': 'system', 'content': source_navigation(inspection.budget)
+                 + source_tool_guidance(inspection.budget, preamble) + REVIEW_INSTRUCTIONS
+                 + source_tool_guidance(inspection.budget, PHASE_CONTRACT)
                  + SHARED_CONTEXT_NOTE + (RESOLVED_ELSEWHERE if resolved else '')},
                 {'role': 'user', 'content': agent_context(
                     {'requested_scope': 'whole_documented_development_test_environment',
@@ -852,7 +864,7 @@ class ShardedScope:
                      'criterion_index': [_compact(c) for c in definition.criteria]}, {
                     'root_directory': inspection.list_directory(), 'shard_files': self.file_list(material.paths),
                     'scope_criteria': [c.model_dump(mode='json') for c in criteria],
-                    'mandatory_evidence': evidence, 'assigned_findings': records,
+                    'mandatory_evidence': source_evidence_refs(inspection, evidence), 'assigned_findings': records,
                     'cited_files': cited,
                     **({'resolved_findings': resolved} if resolved else {}),
                     'required_decision_ids': list(owned), 'finding_responses': responses, 'findings_capacity': capacity,
@@ -861,8 +873,8 @@ class ShardedScope:
                         'unread_unsure': [item.model_dump(mode='json') for item in definition.unread_unsure],
                         'consolidated': [item.model_dump(mode='json') for item in definition.consolidated]}
                        if preamble == MERGE_REVIEW_PREAMBLE else {}),
-                    'investigation_evidence': investigation_evidence(inspection=inspection, bindings=bindings,
-                        results=self.budget.scope_investigation_results),
+                    'investigation_evidence': source_evidence_refs(inspection, investigation_evidence(inspection=inspection,
+                        bindings=bindings, results=self.budget.scope_investigation_results)),
                     'review_resolution': {'unread_available_source': 'inspect', 'actionable_findings': 'revise',
                                           'unable_to_judge': 'indeterminate'}})}]
 
@@ -881,11 +893,11 @@ class ShardedScope:
                 'required_decision_ids': list(owned),
                 'guidance': 'Supply exactly one decision for every required_decision_ids entry and no others.'}])
         errors = [*unknown_applicability_errors(assessment, material.criteria),
-                  *uninspected_sources_errors(assessment.sources, inspection.inputs)]
+                  *uninspected_sources_errors(assessment.sources, inspection.inputs, budget=inspection.budget)]
         for field_name in ('findings', 'decisions'):
             for index, item in enumerate(getattr(assessment, field_name)):
                 errors.extend(uninspected_sources_errors(item.sources, inspection.inputs,
-                    location=('scope_assessment', field_name, str(index), 'sources')))
+                    location=('scope_assessment', field_name, str(index), 'sources'), budget=inspection.budget))
         errors.extend(_decision_reference_errors(assessment, definition=definition))
         errors.extend(_request_rule_errors(assessment, reviewer=self.view(name='scope_review')))
         gaps = any(decision.disposition == 'source_gap' for decision in assessment.decisions)
@@ -1046,20 +1058,21 @@ class ShardedScope:
                     if path in budget.scope_inputs and path not in inspection.inputs}
         evidence = await prepare_mandatory_evidence(inspection, expected, phase='scope_revision')
         messages = [{'role': 'system', 'content': source_navigation(inspection.budget) + SHARD_REVISION_PREAMBLE + REVISION_INSTRUCTIONS
-                     + PHASE_CONTRACT + SHARED_CONTEXT_NOTE},
+                     + source_tool_guidance(inspection.budget, PHASE_CONTRACT) + SHARED_CONTEXT_NOTE},
                     {'role': 'user', 'content': agent_context(
                         {'requested_scope': 'whole_documented_development_test_environment',
                          'inventory_digest': inspection.inventory_digest,
                          'scope_base_digest': base.digest(), 'criterion_index': [_compact(c) for c in base.criteria],
-                         'spine_evidence': spine}, {'root_directory': inspection.list_directory(),
+                         'spine_evidence': source_evidence_refs(inspection, spine)}, {'root_directory': inspection.list_directory(),
                         'scope_criteria': [c.model_dump(mode='json') for c in concerned],
                         'reopened_criterion_ids': sorted(source_conflict_reopenings(budget, base, finding_ids=ids)),
                         'current_source_conflicts': {identifier: conflict.model_dump(mode='json')
                                                      for identifier, conflict in conflicts.items()},
-                        'mandatory_evidence': evidence, 'assigned_findings': [r.model_dump(mode='json') for r in records],
+                        'mandatory_evidence': source_evidence_refs(inspection, evidence),
+                        'assigned_findings': [r.model_dump(mode='json') for r in records],
                         'required_response_ids': list(ids),
-                        'investigation_evidence': investigation_evidence(inspection=inspection, bindings=bindings,
-                            results=budget.scope_investigation_results)})}]
+                        'investigation_evidence': source_evidence_refs(inspection, investigation_evidence(inspection=inspection,
+                            bindings=bindings, results=budget.scope_investigation_results))})}]
         result: tuple[ScopeRevision, list[FindingResponse]] = await self.agent_phase(inspection, messages, AgentTask(
             'scope_revision', partial(self._validate_group, inspection=inspection, base=base,
                                       assignment=Assignment(owner, ids, bindings))))
@@ -1096,7 +1109,7 @@ class ShardedScope:
         for index, response in enumerate(responses):
             errors.extend(uninspected_sources_errors(response.sources, inspection.inputs,
                                                      location=('finding_responses', str(index), 'sources'),
-                                                     code='scope_response_ids_invalid'))
+                                                     code='scope_response_ids_invalid', budget=inspection.budget))
             if not set(response.affected_ids) <= current:
                 errors.append({'code': 'scope_response_ids_invalid', 'location': ['finding_responses', str(index), 'affected_ids'],
                                'guidance': 'Use current criterion IDs, or [] for new or reassessed criteria.'})
@@ -1115,11 +1128,12 @@ class ShardedScope:
                            'guidance': 'Use the exact scope_base_digest.'})
         for index, criterion in enumerate(revision.add):
             errors.extend(_criterion_citation_errors(criterion.sources, inspection.inputs,
-                                                     ('scope_revision', 'add', str(index), 'sources')))
+                                                     ('scope_revision', 'add', str(index), 'sources'), budget=inspection.budget))
         by_id = {criterion.id: criterion for criterion in base.criteria}
         for index, change in enumerate(revision.reassess):
             errors.extend(_criterion_citation_errors(change.criterion.sources, inspection.inputs,
-                                                     ('scope_revision', 'reassess', str(index), 'criterion', 'sources')))
+                                                     ('scope_revision', 'reassess', str(index), 'criterion', 'sources'),
+                                                     budget=inspection.budget))
             target = by_id.get(change.criterion_id)
             if owner != MERGE_OWNER and target is not None and criterion_owner(target, self.work) != owner:
                 errors.append({'code': 'scope_revision_target', 'location': ['scope_revision', 'reassess', str(index), 'criterion_id'],

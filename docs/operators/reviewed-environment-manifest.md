@@ -16,9 +16,19 @@ answers still pass Coordinare's domain schemas and admission rules.
 The model, endpoint, credential variable, output allowance and supported sampling
 parameters come from conducting configuration. Anthropic does not accept the
 configured temperature option; incompatible parameters and CLI-only backends
-produce named configuration holds. Bootstrap no longer uses
-`conducting.structured_transport` compatibility modes; other conducting tasks
-retain their own behavior. No bootstrap transport fallback is selected.
+produce named configuration holds.
+
+`conducting.structured_transport` selects the answer encoding. OpenAI-compatible
+backends support `json_schema`, `json_object` and `tool_call`; Anthropic supports
+`json_schema`. Encoding constraints apply to tool-free answer turns and structural
+correction turns. Evidence-reading turns retain their approved tools, including
+after a domain correction. JSON-object mode guarantees syntax only; every mode
+still faces the complete local schema and domain checks. The forced answer
+function carries an answer and never executes an action.
+
+Unsupported modes refuse before inference. The native runtime does not silently
+change encoding after a provider grammar-compilation refusal. Select a supported
+mode explicitly; configuration changes alter checkpoint identity.
 
 For example, merge the following into a deployment's existing config, replacing
 the model placeholder with the model served by that endpoint:

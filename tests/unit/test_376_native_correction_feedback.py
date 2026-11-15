@@ -66,3 +66,111 @@ async def test_domain_error_details_reach_the_next_native_model_request(mutation
         assert criterion_id in transport.feedback
         assert ('missing_criteria' if mutation == 'missing' else 'invalid_criteria') in transport.feedback
     assert 'absent-check' not in transport.feedback  # Arbitrary candidate values stay excluded.
+
+
+@pytest.mark.asyncio
+async def test_strictly_improving_native_correction_is_not_charged_twice() -> None:
+    from dataclasses import replace
+
+    from nare import Reply, Usage
+
+    from tests.unit.test_376_agent_runtime import ScriptedTransport, request
+
+    class Improving(ScriptedTransport):
+        async def turn(self, messages: Any, tools: Any) -> Reply:
+            replies = ['{}', '{"accepted":true}', '{"accepted":true,"reason":"verified"}']
+            reply = replies[len(self.requests)]
+            self.requests.append({'messages': messages.copy()})
+            return Reply([{'type': 'text', 'text': reply}], [], Usage(input=10, output=5), 'end_turn')
+
+    async def admit(answer: Any) -> list[Any]:
+        return []
+
+    budget = AttemptBudget(max_calls=3, max_schema_repairs=2)
+    schema = {'type': 'object', 'properties': {'accepted': {'type': 'boolean'}, 'reason': {'type': 'string'}},
+              'required': ['accepted', 'reason'], 'additionalProperties': False}
+    result = await NareRuntime(transport=Improving('')).run(replace(request(admit), budget=budget, answer_schema=schema))
+    assert result.status == 'accepted'
+    assert budget.calls == 3
+    assert budget.schema_repairs == 1
+    assert 'correction_progress' in budget.validation_codes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('native_reason', 'hold_code'), [
+    ('max_tokens', 'agent_output_truncated'), ('refusal', 'agent_provider_refusal'),
+])
+async def test_native_terminal_reason_survives_domain_classification(native_reason: str, hold_code: str) -> None:
+    from nare import Reply, Usage
+
+    from tests.unit.test_376_agent_runtime import ScriptedTransport, request
+
+    class Unfinished(ScriptedTransport):
+        async def turn(self, messages: Any, tools: Any) -> Reply:
+            return Reply([], [], Usage(input=10, output=5), native_reason)
+
+    async def admit(answer: Any) -> list[Any]:
+        return []
+
+    result = await NareRuntime(transport=Unfinished('')).run(request(admit))
+    assert result.status == 'held'
+    assert result.answer is None
+    assert result.hold_code == hold_code
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('shard', [False, True])
+async def test_cancellation_before_correction_event_keeps_completed_charge(tmp_path: Any, shard: bool) -> None:
+    import asyncio
+    from dataclasses import replace
+
+    from nare import loads
+
+    from coordinare.services.agent_runtime.checkpoint import CheckpointStore
+    from tests.unit.test_376_agent_runtime import ScriptedTransport, request
+
+    async def admit(answer: Any) -> list[Any]:
+        return []
+
+    async def interrupt(event: dict[str, Any]) -> None:
+        if event['calls'] == 1 and event['turn'] == 1 and event['kind'] == 'progress':
+            raise asyncio.CancelledError
+
+    disk = CheckpointStore(tmp_path)
+    budget = AttemptBudget(max_calls=4, max_schema_repairs=1)
+    req = replace(request(admit), budget=budget, checkpoint_store=disk, event_sink=interrupt,
+                  shard_corrections=1 if shard else None)
+    first = await NareRuntime(transport=ScriptedTransport('{}')).run(req)
+    assert first.status == 'cancelled'
+    saved = await disk.load_verified(first.checkpoint_key, req.identity)
+    assert loads(saved.session_text).schema_corrections == 1
+    assert (budget.shard_schema_repairs if shard else budget.schema_repairs) == 1
+    resumed = await NareRuntime(transport=ScriptedTransport('{}')).run(
+        replace(req, checkpoint_key=first.checkpoint_key, event_sink=None))
+    assert resumed.status == 'held' and resumed.hold_code == 'attempt_schema_limit'
+    assert budget.calls == 2
+    assert (budget.shard_schema_repairs if shard else budget.schema_repairs) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_queued_correction_cannot_create_a_zero_budget_resume(tmp_path: Any) -> None:
+    import asyncio
+    from dataclasses import replace
+
+    from coordinare.services.agent_runtime.checkpoint import CheckpointStore
+    from tests.unit.test_376_agent_runtime import ScriptedTransport, request
+
+    async def admit(answer: Any) -> list[Any]:
+        return []
+
+    async def interrupt(event: dict[str, Any]) -> None:
+        if event['calls'] == 1 and event['turn'] == 1 and event['kind'] == 'progress':
+            raise asyncio.CancelledError
+
+    req = replace(request(admit), checkpoint_store=CheckpointStore(tmp_path), event_sink=interrupt)
+    first = await NareRuntime(transport=ScriptedTransport('{}')).run(req)
+    assert first.status == 'held' and first.hold_code == 'attempt_schema_limit'
+    assert req.budget.schema_repairs == 0
+    resumed = await NareRuntime(transport=ScriptedTransport('{}')).run(
+        replace(req, checkpoint_key=first.checkpoint_key, event_sink=None))
+    assert resumed.status == 'held' and req.budget.calls == 1

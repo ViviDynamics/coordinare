@@ -26,6 +26,11 @@ from coordinare.services.agent_runtime.evidence_protocol import (
 )
 from coordinare.services.agent_runtime.models import AdmissionIssue, AgentIdentity, AgentRequest
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.environment_response_diagnostics import (
+    REVIEW_DIAGNOSTICS_POLICY,
+    REVIEW_ENVELOPES,
+    review_response_diagnostics,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -83,7 +88,9 @@ class PinnedSourceTools:
             if policy != 'readable':
                 return _json({'path': path, 'error': policy})
             try:
-                item = await self.inspection.read(path)
+                item = (await self.inspection.read_files([path], navigation=True))['files'][0]
+                if 'error' in item:
+                    return _json(item)
                 if self.observe_sources is not None:
                     await self.observe_sources(self.inspection.inputs)
                 self.catalogs[path] = EvidenceStore((EvidenceSource(path, item['content'], item['sha256']),),
@@ -178,7 +185,7 @@ class ObservationTools:
         return Tool(name='reread_observation', description='Revisit explicit pages of an immutable observation. '
                     'For forward reading repeat read_observation with the same observation_id and no pages.',
             input_schema={'type': 'object', 'properties': {'observation_id': {'type': 'string'},
-                'pages': {'type': 'array', 'items': {'type': 'integer', 'minimum': 0}, 'maxItems': 128}},
+                'pages': {'type': 'array', 'items': {'type': 'integer', 'minimum': 0}, 'minItems': 1, 'maxItems': 128}},
                 'required': ['observation_id', 'pages'], 'additionalProperties': False}, call=self.reread)
 
 
@@ -321,6 +328,21 @@ class PhaseResult:
     evidence: EvidenceStore
 
 
+def _diagnose_review(request: EnvironmentPhaseRequest, evidence: EvidenceStore,
+                     answer: object) -> list[AdmissionIssue]:
+    if request.source_tools is None:
+        refuse_agent('Review diagnostics require pinned source authority.', code='agent_context_missing')
+    issues = [issue for owner in (request.source_tools, request.observations)
+              if owner is not None for issue in owner.issues()]
+    if evidence.remaining_required:
+        issues.append(AdmissionIssue('review_evidence_unread', 'Read every required evidence page before judgment.',
+            guidance='Call review_evidence({}) repeatedly until unread_count is zero; do not supply page IDs.'))
+    if request.require_source and not request.source_tools.inspection.inputs:
+        issues.append(AdmissionIssue('source_evidence_required', 'Read pinned source using read_source before answering.'))
+    return [*issues, *review_response_diagnostics(answer, envelope=request.envelope,
+        inspected=request.source_tools.inspection.inputs)]
+
+
 async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult:
     """An admitted assessment can still reject the environment it assesses."""
     request.budget.check()
@@ -332,12 +354,15 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
              *(request.source_tools.tools() if request.source_tools else ()),
              *((request.observations.tool(), request.observations.reread_tool()) if request.observations else ())))
     tools = (*evidence_tools, *request.tools)
+    diagnostics_policy = (REVIEW_DIAGNOSTICS_POLICY
+        if request.envelope in REVIEW_ENVELOPES and request.source_tools is not None else None)
     identity = AgentIdentity(attempt_id=request.attempt_id, phase=request.phase, role=request.role,
         source_commit=request.source_commit,
         domain_digests=tuple(sorted((*request.domain_digests, ('packet', _digest(request.packet)),
                                     ('evidence', evidence.receipt().catalog_digest)))),
         policy_digest=_digest({'tools': [{'name': tool.name, 'schema': tool.input_schema} for tool in tools],
             'evidence_protocol': EVIDENCE_PROTOCOL, 'invalid_evidence_calls': MAX_INVALID_EVIDENCE_CALLS,
+            **({'response_diagnostics': diagnostics_policy} if diagnostics_policy is not None else {}),
             'phase_calls': request.max_model_calls, 'phase_seconds': request.phase_timeout_seconds,
             'attempt_calls': request.budget.max_calls, 'reads': request.budget.max_reads,
             'schema_repairs': request.budget.max_schema_repairs, 'output_bytes': request.max_output_bytes,
@@ -348,6 +373,9 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
     value: Any = None
     admitted: JsonObject | None = None
     terminal_error: EnvironmentDiscoveryError | None = None
+
+    async def diagnose(answer: object) -> list[AdmissionIssue]:
+        return _diagnose_review(request, evidence, answer)
 
     async def check(answer: JsonObject) -> list[AdmissionIssue]:
         nonlocal value, admitted, terminal_error
@@ -387,6 +415,7 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
         instructions=request.instructions, task=f'Read the immutable phase packet and required sources using review_evidence. '
             f'There are {evidence.page_count} pages in this catalog. Then return the {request.envelope} envelope.',
         answer_schema=request.schema, check=check, budget=request.budget, allowed_tools=tools,
+        diagnose=diagnose if diagnostics_policy is not None else None,
         evidence_tools=frozenset(tool.name for tool in evidence_tools),
         checkpoint_key=checkpoint_key, checkpoint_store=request.checkpoint_store,
         evidence_catalog=evidence, event_sink=request.event_sink,

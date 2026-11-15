@@ -26,6 +26,7 @@ class AdmissionIssue:
 
 
 type AgentCheck = Callable[[JsonObject], Awaitable[list[AdmissionIssue]]]
+type AgentDiagnose = Callable[[object], Awaitable[list[AdmissionIssue]]]
 
 
 class AgentToolState(Protocol):
@@ -54,6 +55,7 @@ class AgentRequest:
     answer_schema: JsonObject
     check: AgentCheck
     budget: AttemptBudget
+    diagnose: AgentDiagnose | None = None
     allowed_tools: tuple[Tool, ...] = ()
     evidence_tools: frozenset[str] = frozenset()
     checkpoint_key: str | None = None

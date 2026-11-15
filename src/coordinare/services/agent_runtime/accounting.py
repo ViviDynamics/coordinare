@@ -30,6 +30,12 @@ def usage_of(reply: Reply) -> dict[str, int]:
             'cache_read': reply.usage.cache_read, 'cache_write': reply.usage.cache_write}
 
 
+def _domain_finish_reason(reply: Reply) -> str:
+    """Translate native reasons for existing domain diagnostics, leaving the reply intact."""
+    return {'end_turn': 'stop', 'stop_sequence': 'stop', 'tool_use': 'tool_calls',
+            'max_tokens': 'length', 'refusal': 'content_filter'}.get(reply.stop_reason, reply.stop_reason)
+
+
 class BudgetBridge:
     def __init__(self, budget: AttemptBudget, *, phase: str, phase_key: str | None = None,
                  phase_limit: int | None = None) -> None:
@@ -75,7 +81,7 @@ class BudgetBridge:
         if reply.usage.total_tokens == 0:
             self.budget.agent_usage_unknown += 1
         self.budget.record_reply(DiscoveryChatReply(text='', usage=usage_of(reply) if reply.usage.total_tokens else None,
-            finish_reason=reply.stop_reason), phase=self.phase)
+            finish_reason=_domain_finish_reason(reply)), phase=self.phase)
         await self.persist()
 
     async def record_unknown(self, receipt: str) -> None:
@@ -127,6 +133,13 @@ class BudgetTransport:
         self.answer_schema = context.answer_schema
         self.streaming = bool(getattr(inner, 'streaming', False))
         self.supports_structured_output = bool(getattr(inner, 'supports_structured_output', False))
+        self.structured_output_modes = getattr(inner, 'structured_output_modes',
+            ('json_schema',) if self.supports_structured_output else ())
+
+    def check_response_schema(self, schema: dict[str, Any]) -> None:
+        vet = getattr(self.inner, 'check_response_schema', None)
+        if callable(vet):
+            vet(schema)
 
     async def context_window(self) -> int | None:
         self.bridge.budget.check()
@@ -158,7 +171,8 @@ class BudgetTransport:
                 endpoint=self.config.provider if self.config else 'injected', system=self.instructions,
                 prompt=json.dumps([{'role': message.role, 'content': message.content} for message in messages]),
                 parameters=({'max_tokens': self.config.max_tokens, 'temperature': self.config.temperature,
-                             'effort': self.config.effort} if self.config else {}))
+                             'effort': self.config.effort,
+                             'structured_transport': self.config.structured_transport} if self.config else {}))
             try:
                 yield receipt, record
             except BaseException as exc:
@@ -168,14 +182,16 @@ class BudgetTransport:
                 await self.bridge.record_unknown(receipt)
                 raise
 
-    @staticmethod
-    def _parameters(method: Any, response_schema: dict[str, Any] | None, tool_choice: str | None) -> dict[str, Any]:
-        desired = {key: value for key, value in {'response_schema': response_schema, 'tool_choice': tool_choice}.items()
+    def _parameters(self, method: Any, response_schema: dict[str, Any] | None, tool_choice: str | None,
+                    response_mode: str | None = None) -> dict[str, Any]:
+        desired = {key: value for key, value in {'response_schema': response_schema, 'tool_choice': tool_choice,
+                                               'response_mode': response_mode}.items()
                    if value is not None}
         if desired:
             parameters = inspect.signature(method).parameters
             if (not any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
                     and not desired.keys() <= parameters.keys()):
+                self.bridge.failure_code = 'agent_transport_unsupported'
                 message = 'Native transport cannot preserve the requested response constraints.'
                 raise EnvironmentDiscoveryError(message, code='agent_transport_unsupported')
         return desired
@@ -184,7 +200,7 @@ class BudgetTransport:
         self.bridge.failure_code = None
         record.reply = ModelReply(text=''.join(str(block.get('text', '')) for block in reply.content
                                                if block.get('type') == 'text'),
-            usage=usage_of(reply) if reply.usage.total_tokens else None, finish_reason=reply.stop_reason,
+            usage=usage_of(reply) if reply.usage.total_tokens else None, finish_reason=_domain_finish_reason(reply),
             tool_calls=tuple(ToolCall(name=call.name, call_id=call.id, input=call.args) for call in reply.tool_calls))
         record.decide('model reply received; domain admission is separate')
         await self.bridge.record_reply(receipt, reply)
@@ -200,8 +216,9 @@ class BudgetTransport:
             refuse_agent('Native output exceeds its bound.', code='phase_output_limit')
 
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]], *,
-                   response_schema: dict[str, Any] | None = None, tool_choice: str | None = None) -> Reply:
-        kwargs = self._parameters(self.inner.turn, response_schema, tool_choice)
+                   response_schema: dict[str, Any] | None = None, tool_choice: str | None = None,
+                   response_mode: str | None = None) -> Reply:
+        kwargs = self._parameters(self.inner.turn, response_schema, tool_choice, response_mode)
         async with self._record(messages, tools) as (receipt, record):
             reply = await cast('ExtendedTransport', self.inner).turn(messages, tools, **kwargs)
             await self._reply(receipt, record, reply)
@@ -209,9 +226,10 @@ class BudgetTransport:
 
     async def stream_turn(self, messages: list[Message], tools: list[dict[str, Any]], *,
                           response_schema: dict[str, Any] | None = None,
-                          tool_choice: str | None = None) -> AsyncIterator[Delta | Reply]:
+                          tool_choice: str | None = None,
+                          response_mode: str | None = None) -> AsyncIterator[Delta | Reply]:
         inner = cast('ExtendedTransport', self.inner)
-        kwargs = self._parameters(inner.stream_turn, response_schema, tool_choice)
+        kwargs = self._parameters(inner.stream_turn, response_schema, tool_choice, response_mode)
         async with (self._record(messages, tools) as (receipt, record),
                     aclosing(inner.stream_turn(messages, tools, **kwargs)) as stream):
             async for item in stream:

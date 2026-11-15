@@ -41,6 +41,7 @@ from coordinare.services.environment_discovery_prompts import (
     SAMPLE_TEST_CHECKS,
     TIMEOUT_CEILINGS,
     source_navigation,
+    source_tool_guidance,
 )
 from coordinare.services.environment_findings import BARE_INDETERMINATE, MAX_FINDINGS
 from coordinare.services.environment_inspection import SourceInspection
@@ -722,7 +723,8 @@ class DividedConstruction:
         inherited = replace(inherit(self.previous, group, parent), mapped=self._kept_mappings(group),
                             retirable=self.retirable)
         brief = canonical({
-            'check_id_prefix': group.prefix, 'delta_instruction': DELTA_CHECK_INSTRUCTION,
+            'check_id_prefix': group.prefix,
+            'delta_instruction': source_tool_guidance(self.context.budget, DELTA_CHECK_INSTRUCTION),
             **({'carrier_process_policy': self.carrier_process_policy} if self.carrier_process_policy is not None else {}),
             'closure_checks': plan.closure_checks(group), 'closure_criteria': plan.closure_criteria(frozenset(group.ids)),
             **({'fixed_check_ids': fixed} if (fixed := sorted(identifier for identifier in plan.closure & plan.fixed
@@ -750,7 +752,8 @@ class DividedConstruction:
             reused = validate(saved['data'])
             self.group_inputs.update(inspection.inputs)
             return reused
-        messages = [{'role': 'system', 'content': source_navigation(self.context.budget) + CHECK_AUTHOR_INSTRUCTIONS},
+        messages = [{'role': 'system', 'content': source_navigation(self.context.budget)
+                     + source_tool_guidance(self.context.budget, CHECK_AUTHOR_INSTRUCTIONS)},
                     {'role': 'user', 'content': brief}]
         part: ShardChecks = await run_agent(self.context, inspection, messages, AgentTask('shard_checks', validate))
         self.group_inputs.update(inspection.inputs)
@@ -792,7 +795,8 @@ class DividedConstruction:
             reused = validate(saved['data'])
             self.group_inputs.update(inspection.inputs)
             return reused
-        messages = [{'role': 'system', 'content': source_navigation(self.context.budget) + CHECK_AUTHOR_INSTRUCTIONS},
+        messages = [{'role': 'system', 'content': source_navigation(self.context.budget)
+                     + source_tool_guidance(self.context.budget, CHECK_AUTHOR_INSTRUCTIONS)},
                     {'role': 'user', 'content': brief}]
         part: ShardChecks = await run_agent(self.context, inspection, messages, AgentTask('shard_checks', validate))
         self.group_inputs.update(inspection.inputs)

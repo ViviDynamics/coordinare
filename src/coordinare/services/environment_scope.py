@@ -47,11 +47,13 @@ from coordinare.services.environment_attempt import (
 from coordinare.services.environment_discovery_prompts import (
     NATIVE_SOURCE_INSTRUCTIONS,
     SOURCE_NAVIGATION,
+    source_tool_guidance,
 )
 from coordinare.services.environment_evidence import (
     AuthorEvidenceCache,
     check_evidence_context,
     prepare_mandatory_evidence,
+    source_evidence_refs,
 )
 from coordinare.services.environment_findings import (
     FindingValidationError,
@@ -103,16 +105,17 @@ def held_files(inputs: Mapping[str, str]) -> dict[str, Any]:
 
 def uninspected_sources_errors(sources: Sequence[str], inputs: Mapping[str, str], *,
                                location: Sequence[str] = ('scope_assessment', 'sources'),
-                               code: str = 'scope_citations_invalid') -> list[dict[str, Any]]:
+                               code: str = 'scope_citations_invalid',
+                               budget: AttemptBudget | None = None) -> list[dict[str, Any]]:
     """One correction for every uninspected citation, by position (model text is never echoed), with the files
     the agent does hold, which come from the daemon's own verified reads."""
     invalid = [str(index) for index, path in enumerate(sources) if path not in inputs]
     if not invalid:
         return []
     return [{'code': code, 'location': [*location, invalid[0]], 'invalid_source_indices': invalid, **held_files(inputs),
-             'guidance': 'Sources may list only files you hold: those in inspected_files, or files you read with '
+             'guidance': source_tool_guidance(budget, 'Sources may list only files you hold: those in inspected_files, or files you read with '
                          'read_files before answering. Each source at invalid_source_indices is uninspected: remove it, '
-                         'or read it first. Keep the rest of your reply unchanged.'}]
+                         'or read it first. Keep the rest of your reply unchanged.')}]
 
 
 def unknown_applicability_errors(assessment: ScopeAssessmentProposal,
@@ -141,17 +144,17 @@ class _ResponseReferenceError(FindingValidationError):
 
 
 def _criterion_citation_errors(sources: Sequence[str], inputs: dict[str, str],
-                               location: tuple[str, ...]) -> list[dict[str, Any]]:
+                               location: tuple[str, ...], *, budget: AttemptBudget | None = None) -> list[dict[str, Any]]:
     # Criterion proposals already bound sources to 32; group rather than repeat guidance.
     invalid = [str(index) for index, path in enumerate(sources) if path not in inputs]
     if not invalid:
         return []
     return [{'code': 'scope_citations_invalid', 'location': [*location, invalid[0]],
         'invalid_source_indices': invalid, **held_files(inputs),
-        'guidance': 'Cite only files in inspected_files, or use read_file or read_files to inspect a file before citing it. '
+        'guidance': source_tool_guidance(budget, 'Cite only files in inspected_files, or use read_file or read_files to inspect a file before citing it. '
                     'A directory listing is navigation evidence, not inspected content. '
                     'Each source at invalid_source_indices is uninspected; preserve proposed criteria/revision operations '
-                    'while inspecting the files or correcting unsupported citations.'}]
+                    'while inspecting the files or correcting unsupported citations.')}]
 
 
 RELEASE_CATEGORIES = frozenset({'remote_state', 'runtime_network', 'deployment_image'})
@@ -348,7 +351,7 @@ def _validate_review(data: dict[str, Any], *, reviewer: SourceInspection, defini
         raise FindingValidationError(message,
             code='review_findings_invalid', location=('scope_assessment', 'decisions'))
     errors = [*unknown_applicability_errors(assessment, definition.criteria),
-              *uninspected_sources_errors(assessment.sources, reviewer.inputs),
+              *uninspected_sources_errors(assessment.sources, reviewer.inputs, budget=reviewer.budget),
               *_decision_reference_errors(assessment, definition=definition),
               *_request_rule_errors(assessment, reviewer=reviewer)]
     if errors:
@@ -540,7 +543,7 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
         instructions = REVISION_INSTRUCTIONS
     navigation = NATIVE_SOURCE_INSTRUCTIONS if inspection.budget and inspection.budget.agent_context else SOURCE_NAVIGATION
     return [{'role': 'system', 'content': navigation+instructions+
-             PHASE_CONTRACT},
+             source_tool_guidance(inspection.budget, PHASE_CONTRACT)},
             {'role': 'user', 'content': canonical({'requested_scope': 'whole_documented_development_test_environment',
                 'phase_contract': {'subject': 'source_obligations',
                     'runtime_evidence': 'required_after_scope_acceptance', 'readiness_authority': False},
@@ -552,16 +555,16 @@ def _messages(inspection: SourceInspection, *, review: bool, definition: ScopeDe
                         in current_source_conflicts(inspection.budget, definition).items()}}
                    if not review and definition is not None and inspection.budget is not None
                    and inspection.budget.scope_phase in {'investigation', 'revision'} else {}),
-                'mandatory_evidence': evidence, 'finding_ledger': ledger.model_dump(mode='json'),
+                'mandatory_evidence': source_evidence_refs(inspection, evidence), 'finding_ledger': ledger.model_dump(mode='json'),
                 **({'required_decision_ids': [record.id for record in ledger.records],
                     'review_resolution': {'unread_available_source': 'inspect',
                         'actionable_findings': 'revise', 'unable_to_judge': 'indeterminate'}} if review else {}),
                 'finding_responses': responses or [],
                 **({'release_requests': sorted(inspection.budget.release_requests)}
                    if inspection.budget is not None and inspection.budget.release_requests else {}),
-                'investigation_evidence': investigation_evidence(inspection=inspection,
+                'investigation_evidence': source_evidence_refs(inspection, investigation_evidence(inspection=inspection,
                     bindings=_current_investigations(inspection.budget),
-                    results=inspection.budget.scope_investigation_results) if inspection.budget is not None else []}).decode()}]
+                    results=inspection.budget.scope_investigation_results)) if inspection.budget is not None else []}).decode()}]
 
 
 class ScopeRunOptions(TypedDict):
@@ -643,7 +646,7 @@ def _validate_author(data: dict[str, Any], *, author: SourceInspection, commit: 
     errors = []
     for criterion_index, criterion in enumerate(envelope.scope.criteria):
         errors.extend(_criterion_citation_errors(criterion.sources, author.inputs,
-            ('scope', 'criteria', str(criterion_index), 'sources')))
+            ('scope', 'criteria', str(criterion_index), 'sources'), budget=author.budget))
     if errors:
         raise _ResponseReferenceError(errors)
     definition = ScopeDefinition(source_commit=commit, inventory_digest=author.inventory_digest, inputs=dict(author.inputs),
@@ -740,7 +743,7 @@ def _validate_revision(data: dict[str, Any], *, author: SourceInspection, commit
             location = ['scope_revision', operation, str(index)]
             if operation == 'reassess':
                 location.append('criterion')
-            errors.extend(_criterion_citation_errors(criterion.sources, author.inputs, (*location, 'sources')))
+            errors.extend(_criterion_citation_errors(criterion.sources, author.inputs, (*location, 'sources'), budget=author.budget))
     if errors:
         raise _ResponseReferenceError(errors)
     reopenings = source_conflict_reopenings(budget, base)

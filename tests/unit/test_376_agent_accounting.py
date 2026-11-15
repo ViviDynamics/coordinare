@@ -387,3 +387,81 @@ async def test_missing_context_metadata_holds_before_nare_default_or_model_reque
     assert result.status == 'held' and result.hold_code == 'agent_context_unavailable'
     assert not transport.requests and req.budget.calls == 0
     assert req.budget.agent_usage_unknown == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('native_reason', 'domain_reason'), [
+    ('max_tokens', 'length'), ('end_turn', 'stop'), ('tool_use', 'tool_calls'),
+    ('refusal', 'content_filter'), ('stop_sequence', 'stop'), ('repetition', 'repetition'),
+])
+async def test_native_finish_reasons_reach_domain_diagnostics_once(native_reason: str, domain_reason: str) -> None:
+    from coordinare.services.agent_runtime.accounting import BudgetBridge
+
+    budget = AttemptBudget()
+    bridge = BudgetBridge(budget, phase='review')
+    reply = Reply([], [], Usage(input=17, output=9), native_reason)
+    await bridge.record_reply('physical-1', reply)
+    await bridge.record_reply('physical-1', reply)
+    assert budget.finish_reasons == {domain_reason: 1}
+    assert budget.call_stats['review']['length_stops'] == (domain_reason == 'length')
+    assert budget.last_finish_reason == domain_reason
+    assert reply.stop_reason == native_reason  # The native loop still owns its vocabulary.
+
+
+@pytest.mark.asyncio
+async def test_native_truncation_reason_reaches_the_call_record() -> None:
+    from datetime import UTC, datetime
+
+    from coordinare.services.agent_runtime.accounting import (
+        BudgetBridge,
+        BudgetTransport,
+        TransportContext,
+    )
+    from coordinare.services.conductor_calls import CallRecord
+
+    native_reply = Reply([{'type': 'text', 'text': '{'}], [], Usage(input=11, output=7), 'max_tokens')
+
+    async def save() -> None:
+        pass
+
+    budget = AttemptBudget()
+    transport = BudgetTransport(ScriptedTransport(''), BudgetBridge(budget, phase='review'),
+        TransportContext(session_id='fixture', before_send=save))
+    record = CallRecord(kind='environment_review', card_id=None, symphony='fixture', call_id='physical-1',
+                        started_at=datetime.now(UTC))
+    await transport._reply('physical-1', record, native_reply)
+    assert record.reply is not None and record.reply.finish_reason == 'length'
+    assert budget.finish_reasons == {'length': 1}
+    assert native_reply.stop_reason == 'max_tokens'
+
+
+@pytest.mark.asyncio
+async def test_provider_schema_rejection_precedes_any_reserved_request() -> None:
+    from nare import new_session, run
+    from nare.transport.anthropic import check_response_schema
+
+    from coordinare.services.agent_runtime.accounting import (
+        BudgetBridge,
+        BudgetTransport,
+        TransportContext,
+    )
+
+    class SchemaAware(ScriptedTransport):
+        supports_structured_output = True
+
+        def check_response_schema(self, schema: dict[str, Any]) -> None:
+            check_response_schema(schema)
+
+    async def save() -> None:
+        pass
+
+    budget = AttemptBudget()
+    inner = SchemaAware('{}')
+    wrapped = BudgetTransport(inner, BudgetBridge(budget, phase='review'),
+        TransportContext(session_id='fixture', before_send=save))
+    schema = {'type': 'object', 'additionalProperties': {'type': 'string'}}
+    with pytest.raises(ValueError, match='a map at the root'):
+        async for _ in run(new_session('Return an object.'), transport=wrapped,
+                           schema=schema, structured_output='json_schema', tools=()):
+            pass
+    assert budget.calls == 0 and inner.requests == []
