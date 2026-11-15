@@ -176,3 +176,18 @@ async def test_security_107_request_pins_file_list_to_verified_head(heads):
         assert request["diff_status"] == "ok"
     else:
         assert request["diff_status"] not in ("ok", "empty")
+
+
+@pytest.mark.asyncio
+async def test_security_379_hold_guidance_distinguishes_mandatory_floor():
+    reason = 'security scanner unavailable: semgrep timed out'
+    state = _sec_state(response={
+        'status': 'env_blocked', 'reason': reason,
+        'report': {'security_floor': {**_scan(), 'complete': False, 'reason': 'semgrep timed out'}},
+    })
+    result = await monitor_performer(state)
+    message = ' '.join(result['open_questions'])
+    assert reason in message
+    assert 'mandatory Semgrep/Bandit' in message
+    assert 'model chose' not in message
+    assert result['phase'] == 'blocked'

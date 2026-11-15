@@ -10,8 +10,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from performer.security_scanner import (
-    SCANNER_INSTALLATION_HELP,
-    ScannerError,
+    ScanDiagnostic,
     ScannerSetupError,
     scan_diff,
 )
@@ -32,14 +31,20 @@ _EXPORT_DEFAULT_SUFFIX = ".scanned"
 
 
 def _fail(reason: str) -> None:
-    raise ScannerError(reason)
+    raise ScanDiagnostic(reason)
 
 
 def _git(root: Path, *args: str, stdout: BinaryIO | int = subprocess.PIPE) -> bytes:
-    return subprocess.run(
-        [_GIT, *args], cwd=root, check=True, stdout=stdout, stderr=subprocess.PIPE,
-        timeout=_GIT_TIMEOUT_SECONDS,
-    ).stdout or b""
+    try:
+        return subprocess.run(
+            [_GIT, *args], cwd=root, check=True, stdout=stdout, stderr=subprocess.PIPE,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        ).stdout or b""
+    except subprocess.TimeoutExpired as exc:
+        raise ScanDiagnostic(f"git {args[0]} timed out") from exc
+    except (subprocess.CalledProcessError, OSError) as exc:
+        raise ScanDiagnostic(f"git {args[0]} failed") from exc
+
 
 
 def _scan_head(request: Any, root: Path) -> tuple[list[dict], bool]:
@@ -109,9 +114,10 @@ async def run_security_floor(score: Score, stand: Stand) -> dict[str, Any]:
     except Exception as exc:
         # Only code-owned summaries cross the wire, never raw scanner output.
         report["reason"] = (
-            SCANNER_INSTALLATION_HELP if isinstance(exc, ScannerSetupError) else "scan request or tool failed"
+            exc.reason if isinstance(exc, (ScannerSetupError, ScanDiagnostic))
+            else "unexpected security scan failure"
         )
-        logger.warning("security_floor.unavailable", error_type=type(exc).__name__)
+        logger.warning("security_floor.unavailable", reason=report["reason"])
     return report
 
 
