@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from coordinare.services.agent_runtime.checkpoint import CheckpointStore
     from coordinare.services.agent_runtime.effects import EffectJournal
     from coordinare.services.agent_runtime.evidence import EvidenceStore
+    from coordinare.services.agent_runtime.request_stage import RequestStage
     from coordinare.services.environment_attempt import AttemptBudget
 
 JsonObject = dict[str, Any]
@@ -70,6 +71,7 @@ class AgentRequest:
     effects: EffectJournal | None = None
     tool_state: AgentToolState | None = None
     prerequisites: frozenset[str] = frozenset()
+    request_stage: RequestStage | None = None
 
 
 @dataclass(frozen=True)

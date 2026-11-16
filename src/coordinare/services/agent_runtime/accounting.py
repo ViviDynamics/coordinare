@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from nare import Reply
 
 from coordinare.services.agent_runtime.errors import refuse_agent
+from coordinare.services.agent_runtime.request_stage import RequestSelection, RequestStage
 from coordinare.services.conductor_calls import NULL_CALL_LOG, ModelReply, ModelRequest, ToolCall
 from coordinare.services.environment_attempt import DiscoveryChatReply, EnvironmentDiscoveryError
 
@@ -115,6 +116,7 @@ class TransportContext:
     max_output_bytes: int | None = None
     max_context_bytes: int | None = None
     answer_schema: dict[str, Any] | None = None
+    request_stage: RequestStage | None = None
 
 
 class BudgetTransport:
@@ -131,6 +133,7 @@ class BudgetTransport:
         self.max_output_bytes = context.max_output_bytes
         self.max_context_bytes = context.max_context_bytes
         self.answer_schema = context.answer_schema
+        self.request_stage = context.request_stage
         self.streaming = bool(getattr(inner, 'streaming', False))
         self.supports_structured_output = bool(getattr(inner, 'supports_structured_output', False))
         self.structured_output_modes = getattr(inner, 'structured_output_modes',
@@ -155,10 +158,10 @@ class BudgetTransport:
         return hook() if callable(hook) else None
 
     @asynccontextmanager
-    async def _record(self, messages: list[Message], tools: list[dict[str, Any]]) -> AsyncIterator[tuple[str, CallRecord]]:
+    async def _record(self, messages: list[Message], selection: RequestSelection) -> AsyncIterator[tuple[str, CallRecord]]:
         size = len(json.dumps({'system': self.instructions, 'messages': [
             {'role': message.role, 'content': message.content} for message in messages],
-            'tools': tools, 'schema': self.answer_schema}, ensure_ascii=False, separators=(',', ':')).encode())
+            'schema': self.answer_schema, **selection.metadata()}, ensure_ascii=False, separators=(',', ':')).encode())
         if self.max_context_bytes is not None and size > self.max_context_bytes:
             self.bridge.failure_code = self.bridge.phase + '_context_limit'
             refuse_agent('Complete native context exceeds its bound.', code=self.bridge.failure_code)
@@ -172,7 +175,9 @@ class BudgetTransport:
                 prompt=json.dumps([{'role': message.role, 'content': message.content} for message in messages]),
                 parameters=({'max_tokens': self.config.max_tokens, 'temperature': self.config.temperature,
                              'effort': self.config.effort,
-                             'structured_transport': self.config.structured_transport} if self.config else {}))
+                             'structured_transport': self.config.structured_transport,
+                             'native_request': selection.metadata()} if self.config else
+                            {'native_request': selection.metadata()}))
             try:
                 yield receipt, record
             except BaseException as exc:
@@ -218,10 +223,12 @@ class BudgetTransport:
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]], *,
                    response_schema: dict[str, Any] | None = None, tool_choice: str | None = None,
                    response_mode: str | None = None) -> Reply:
-        kwargs = self._parameters(self.inner.turn, response_schema, tool_choice, response_mode)
-        async with self._record(messages, tools) as (receipt, record):
-            reply = await cast('ExtendedTransport', self.inner).turn(messages, tools, **kwargs)
+        selection = self._selection(tools, response_schema, response_mode, tool_choice)
+        kwargs = self._parameters(self.inner.turn, selection.response_schema, selection.tool_choice, selection.response_mode)
+        async with self._record(messages, selection) as (receipt, record):
+            reply = await cast('ExtendedTransport', self.inner).turn(messages, selection.tools, **kwargs)
             await self._reply(receipt, record, reply)
+            self._validate_stage(selection, reply)
             return reply
 
     async def stream_turn(self, messages: list[Message], tools: list[dict[str, Any]], *,
@@ -229,10 +236,25 @@ class BudgetTransport:
                           tool_choice: str | None = None,
                           response_mode: str | None = None) -> AsyncIterator[Delta | Reply]:
         inner = cast('ExtendedTransport', self.inner)
-        kwargs = self._parameters(inner.stream_turn, response_schema, tool_choice, response_mode)
-        async with (self._record(messages, tools) as (receipt, record),
-                    aclosing(inner.stream_turn(messages, tools, **kwargs)) as stream):
+        selection = self._selection(tools, response_schema, response_mode, tool_choice)
+        kwargs = self._parameters(inner.stream_turn, selection.response_schema, selection.tool_choice, selection.response_mode)
+        async with (self._record(messages, selection) as (receipt, record),
+                    aclosing(inner.stream_turn(messages, selection.tools, **kwargs)) as stream):
             async for item in stream:
                 if isinstance(item, Reply):
                     await self._reply(receipt, record, item)
+                    self._validate_stage(selection, item)
                 yield item
+
+    def _selection(self, tools: list[dict[str, Any]], schema: dict[str, Any] | None,
+                   mode: str | None, choice: str | None) -> RequestSelection:
+        if self.request_stage is not None:
+            return self.request_stage.select(tools, schema, mode, choice)
+        return RequestSelection(tools, schema, mode, choice)
+
+    def _validate_stage(self, selection: RequestSelection, reply: Reply) -> None:
+        try:
+            selection.validate_reply(reply)
+        except EnvironmentDiscoveryError as exc:
+            self.bridge.failure_code = exc.code
+            raise

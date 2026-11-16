@@ -117,7 +117,7 @@ class NareRuntime:
         wrapped = BudgetTransport(transport, execution.bridge, TransportContext(session_id=execution.session.id,
             before_send=execution.save, calls=self._calls, config=self._config, instructions=request.instructions,
             max_output_bytes=request.max_output_bytes, max_context_bytes=request.max_context_bytes,
-            answer_schema=schema))
+            answer_schema=schema, request_stage=request.request_stage))
         mode = self._config.structured_transport if self._config is not None else None
         try:
             check_structured_output(wrapped, schema, mode)

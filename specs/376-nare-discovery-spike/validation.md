@@ -340,3 +340,13 @@ gate before another bounded acceptance run.
 The normally installed 107 wheel also passes all 213 native unit/integration
 checks. Whole Ruff, the unchanged debt ratchet and strict typing across 372
 modules pass against that published dependency.
+
+The runtime-controlled-read prototype now has a production request-stage seam:
+selection precedes accounting and call recording, and the same selection rejects
+out-of-stage tool calls before native dispatch. Known physical usage is recorded
+before refusal, on both plain and streaming paths. The original declared-schema
+context-budget floor remains enforced. Eight new checks were developed RED/GREEN;
+all 221 native unit/integration checks pass, whole lint and the unchanged debt
+ratchet pass, and mypy passes across 373 modules. This slice does not yet activate
+the read controller in bootstrap phases or establish live acceptance. Next wire
+the phase controller, policy-bound identity, and explicit transport capability.
