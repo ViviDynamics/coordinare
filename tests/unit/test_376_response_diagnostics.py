@@ -276,3 +276,20 @@ async def test_phase_reports_all_unread_evidence_with_first_schema_correction(co
         assert not sources.issues() and not observations.issues()
     assert budget.schema_repairs == budget.max_schema_repairs == 1
     assert budget.calls == budget.calls_completed == len(transport.requests)
+
+
+def test_a_text_bound_correction_names_how_much_to_cut_and_a_target_with_margin() -> None:
+    """nare-native-004: a shard reviewer trimmed 22-84 bytes per correction (2252..2052) until its allowance ran out."""
+    from coordinare.services.environment_response_diagnostics import (
+        REVIEW_TEXT_MAX_UTF8_BYTES,
+        REVIEW_TEXT_TARGET_UTF8_BYTES,
+    )
+
+    issues = diagnose_candidate({'scope_assessment': {'rationale': 'a' * 2252, 'sources': ['README.md'],
+                                                      'findings': [], 'decisions': []}})
+    [issue] = [item for item in issues if item.code == 'response_utf8_limit']
+    details = json.loads(issue.message)
+    assert details['remove_at_least_utf8_bytes'] == 2252 - REVIEW_TEXT_MAX_UTF8_BYTES
+    assert details['target_utf8_bytes'] == REVIEW_TEXT_TARGET_UTF8_BYTES < REVIEW_TEXT_MAX_UTF8_BYTES
+    assert 'at least 204 UTF-8 bytes' in details['guidance'] and str(REVIEW_TEXT_TARGET_UTF8_BYTES) in details['guidance']
+    assert details['max_utf8_bytes'] == 2048

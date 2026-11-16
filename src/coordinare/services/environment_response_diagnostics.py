@@ -11,10 +11,15 @@ if TYPE_CHECKING:
 
 # This policy is checkpoint-bound by the phase adapter. Changing the selected
 # fields or their meaning requires a version change, even if JSON Schema is stable.
-REVIEW_DIAGNOSTICS_POLICY = 'review_sources_utf8_and_read_completion_v2'
+REVIEW_DIAGNOSTICS_POLICY = 'review_sources_utf8_target_and_read_completion_v3'
 REVIEW_ENVELOPES = frozenset({'scope_assessment', 'assessment'})
 # FindingEvidence.bounded_text and ScopeAssessmentProposal share this domain bound.
 REVIEW_TEXT_MAX_UTF8_BYTES = 2048
+# nare-native-004: told only to rewrite within the bound, a shard reviewer trimmed 22-84 bytes per correction
+# (2252, 2200, 2178, 2094, 2076, 2052) until its shared correction allowance was spent. A concrete target with margin
+# lets one rewrite land; the bound and the allowance are unchanged.
+REVIEW_TEXT_TARGET_UTF8_BYTES = REVIEW_TEXT_MAX_UTF8_BYTES * 4 // 5
+UTF8_BYTES_PER_WORD = 6
 
 
 def review_response_diagnostics(candidate: object, *, envelope: str,
@@ -59,10 +64,15 @@ def review_response_diagnostics(candidate: object, *, envelope: str,
                 issues.append(AdmissionIssue('response_utf8_invalid', 'Use valid Unicode text.', (*location, field)))
                 continue
             if byte_length > REVIEW_TEXT_MAX_UTF8_BYTES:
+                excess = byte_length - REVIEW_TEXT_MAX_UTF8_BYTES
                 details = {'max_utf8_bytes': REVIEW_TEXT_MAX_UTF8_BYTES, 'actual_utf8_bytes': byte_length,
-                           'actual_characters': len(value),
-                           'guidance': 'Rewrite this summary within the UTF-8 byte bound while preserving its meaning; '
-                           'keep findings, decisions, sources and all other fields unchanged.'}
+                           'actual_characters': len(value), 'remove_at_least_utf8_bytes': excess,
+                           'target_utf8_bytes': REVIEW_TEXT_TARGET_UTF8_BYTES,
+                           'guidance': f'Shorten this summary by at least {excess} UTF-8 bytes, and aim for '
+                           f'{REVIEW_TEXT_TARGET_UTF8_BYTES} bytes or fewer (about '
+                           f'{REVIEW_TEXT_TARGET_UTF8_BYTES // UTF8_BYTES_PER_WORD} words) so one rewrite is enough: '
+                           'trimming a few words at a time spends a correction each. Keep its meaning, and keep '
+                           'findings, decisions, sources and all other fields unchanged.'}
                 issues.append(AdmissionIssue('response_utf8_limit', json.dumps(details, sort_keys=True),
                                              (*location, field)))
     return issues
