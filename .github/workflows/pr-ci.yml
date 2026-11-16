@@ -156,8 +156,7 @@ jobs:
 
       - name: Install coordinare and performer packages
         run: |
-          uv venv
-          uv pip install -e ".[dev]"
+          uv sync --extra dev --frozen
           uv pip install -e "agent/performer[dev]"
 
       - name: Run pytest
@@ -165,7 +164,7 @@ jobs:
         # $(...) would leave pytest with no paths, and it would run everything.
         run: |
           files=$(python scripts/ci_shard.py --shard ${{ matrix.shard }} --of 4 tests --exclude tests/e2e)
-          uv run pytest --junitxml=junit-test-${{ matrix.shard }}.xml $files
+          uv run pytest --durations=50 --junitxml=junit-test-${{ matrix.shard }}.xml $files
 
       - name: Verify OTLP wire protocols and licences
         if: ${{ matrix.shard == 1 }}
@@ -376,8 +375,7 @@ jobs:
 
       - name: Install coordinare and performer packages
         run: |
-          uv venv
-          uv pip install -e ".[dev]"
+          uv sync --extra dev --frozen
           uv pip install -e "agent/performer[dev]"
 
       - name: Run coverage shard
@@ -388,7 +386,16 @@ jobs:
         # $(...) would leave pytest with no paths, and it would run everything.
         run: |
           files=$(python scripts/ci_shard.py --shard ${{ matrix.shard }} --of 4 tests --exclude tests/e2e)
-          uv run pytest --cov=coordinare --cov-report= --cov-fail-under=0 $files
+          uv run pytest --durations=50 --junitxml=junit-coverage-${{ matrix.shard }}.xml --cov=coordinare --cov-report= --cov-fail-under=0 $files
+
+      - name: Upload coverage timings
+        # Keep instrumented timings separate from the plain-test observations.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: junit-coverage-${{ matrix.shard }}
+          path: junit-coverage-${{ matrix.shard }}.xml
+          retention-days: 14
 
       - name: Upload coverage data
         uses: actions/upload-artifact@v6
