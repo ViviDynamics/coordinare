@@ -106,6 +106,14 @@ not alternatives in the final-answer schema. Use nare's check callback for
 correctable domain refusals and preserve named errors and existing correction
 accounting. Do not silently relax schemas to accommodate the runtime.
 
+The approved cutoff-recovery ruling charges repetition and truncated-response
+recovery to the existing correction allowance, shared with schema/domain repairs.
+The shard allowance remains local; the global allowance remains attempt-wide.
+Completed charges must survive cancellation without double-charging on resume.
+No unfinished tool call executes and no cut-off answer is admitted. A corrected
+reply retains all validators, physical-request accounting and call/time limits.
+Bind this recovery policy before checkpoint lookup; terminal refusals stay closed.
+
 ## Evidence delivery and compaction
 
 Large inventories, ledgers, prior execution output, and source text are immutable,

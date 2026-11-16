@@ -105,6 +105,9 @@ class NareRuntime:
                     # This event has now crossed the domain accounting boundary.
                     # Keeping it in a resumed native queue would charge it twice.
                     execution.session.events.remove(event)
+                elif 'cutoff' in event.detail:
+                    await execution.record_cutoff(event.detail['cutoff'], reconcile=True)
+                    execution.session.events.remove(event)
                 await execution.evidence_failures.reconcile(
                     event.detail, session_id=execution.session.id, turn=execution.session.turns)
             await execution.save()
@@ -140,6 +143,7 @@ class NareRuntime:
                     max(1, execution.session.schema_corrections
                         + request.budget.max_schema_repairs - request.budget.schema_repairs
                         + len(request.prerequisites - execution.prerequisite_reminders)),
+                max_cutoffs=execution.cutoffs_remaining(),
                 retry=self._retry, compaction='elide', compaction_trigger=0.6, compaction_target=0.4, **diagnostics)
             async with aclosing(events):
                 async for event in events:
@@ -337,7 +341,7 @@ class _Execution:
         elif not correction['charged']:
             budget.validation_codes.append('correction_progress')
         elif self.request.shard_corrections is not None:
-            budget.shard_schema_repairs += 1
+            self._charge_shard_correction(reconcile=reconcile)
         elif not reconcile:
             await self.bridge.correction()
             return
@@ -348,11 +352,49 @@ class _Execution:
             self.status, self.hold_code = 'held', 'attempt_schema_limit'
         await self.bridge.persist()
 
+    def cutoffs_remaining(self) -> int:
+        """Native cutoff limits are invocation-local; restored counters are not."""
+        if self.request.shard_corrections is not None:
+            return max(0, self.request.shard_corrections - self.session.schema_corrections - self.session.cutoffs)
+        budget = self.request.budget
+        return max(0, budget.max_schema_repairs - budget.schema_repairs)
+
+    def _charge_shard_correction(self, *, reconcile: bool) -> None:
+        # Native counters include this completed correction already. Both kinds
+        # share the shard's original allowance, including after checkpoint resume.
+        if (self.request.shard_corrections is not None
+                and self.session.schema_corrections + self.session.cutoffs > self.request.shard_corrections):
+            self.status, self.hold_code = 'held', 'attempt_schema_limit'
+            if not reconcile:
+                refuse_agent('Domain correction allowance exhausted.', code='attempt_schema_limit')
+            return
+        self.request.budget.shard_schema_repairs += 1
+
+    async def record_cutoff(self, cutoff: JsonObject, *, reconcile: bool = False) -> None:
+        if not cutoff['corrected']:
+            return
+        # A cutoff is never an uncharged prerequisite reminder or improving
+        # schema correction. Its physical response usage was recorded already.
+        budget = self.request.budget
+        if self.request.shard_corrections is not None:
+            self._charge_shard_correction(reconcile=reconcile)
+        elif not reconcile:
+            await self.bridge.correction()
+            return
+        elif budget.schema_repairs < budget.max_schema_repairs:
+            budget.schema_repairs += 1
+        else:
+            self.status, self.hold_code = 'held', 'attempt_schema_limit'
+        await self.bridge.persist()
+
     async def event(self, event: Event) -> None:
         kind = 'progress'
         if 'schema_correction' in event.detail:
             await self.record_correction(event.detail['schema_correction'])
             kind = 'correction'
+        elif 'cutoff' in event.detail:
+            await self.record_cutoff(event.detail['cutoff'])
+            kind = 'correction' if event.detail['cutoff']['corrected'] else 'progress'
         elif 'compaction' in event.detail:
             self.request.budget.agent_compactions += 1
             kind = 'compaction'
@@ -389,6 +431,7 @@ class _Execution:
             self.hold_code = 'attempt_schema_limit'
         elif self.hold_code is None:
             self.hold_code = {'max_tokens': 'agent_output_truncated',
+                              'repetition': 'agent_output_repetition',
                               'refusal': 'agent_provider_refusal'}.get(self.session.stop_reason or '', 'agent_incomplete')
 
     def result(self) -> AgentResult:

@@ -30,6 +30,17 @@ after a domain correction. JSON-object mode guarantees syntax only; every mode
 still faces the complete local schema and domain checks. The forced answer
 function carries an answer and never executes an action.
 
+Replies stopped for repetition or output truncation may be corrected using the
+existing schema-correction allowance. Cutoffs and charged schema/domain repairs
+share that allowance (the local allowance for sharded phases), including across
+verified interruption and resume. No separate cutoff budget is added. Unfinished
+tool calls are refused; a corrected reply must pass all original validators.
+Every physical request retains its call/time limits and usage accounting, including
+unknown usage when a repetitive stream ends before its usage record arrives.
+Provider refusals remain terminal. With no recovery allowance, repetition and
+truncation retain named output holds; exhaustion shared with another correction
+holds at the correction limit. This policy is part of checkpoint identity.
+
 Required phase evidence, requested source remainders, and existing observations
 are drained by a runtime-selected continuation tool before ordinary navigation or
 answer generation resumes. This does not choose new sources or execute probes or

@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from coordinare.services.environment_attempt import AttemptBudget
 
 JsonObject = dict[str, Any]
+CUTOFF_POLICY = 'shared-corrections-v1'
 
 
 @dataclass(frozen=True)

@@ -29,7 +29,12 @@ from coordinare.services.agent_runtime.evidence_protocol import (
     MAX_INVALID_EVIDENCE_CALLS,
     classified_evidence_tool,
 )
-from coordinare.services.agent_runtime.models import AdmissionIssue, AgentIdentity, AgentRequest
+from coordinare.services.agent_runtime.models import (
+    CUTOFF_POLICY,
+    AdmissionIssue,
+    AgentIdentity,
+    AgentRequest,
+)
 from coordinare.services.agent_runtime.required_reads import (
     NAME,
     REQUIRED_READ_POLICY,
@@ -395,6 +400,7 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
         policy_digest=_digest({'tools': [{'name': tool.name, 'schema': tool.input_schema} for tool in tools],
             'evidence_navigation': NAVIGATION_POLICY,
             'required_read_policy': REQUIRED_READ_POLICY,
+            'cutoff_policy': CUTOFF_POLICY,
             'evidence_protocol': EVIDENCE_PROTOCOL, 'invalid_evidence_calls': MAX_INVALID_EVIDENCE_CALLS,
             **({'response_diagnostics': diagnostics_policy} if diagnostics_policy is not None else {}),
             'phase_calls': request.max_model_calls, 'phase_seconds': request.phase_timeout_seconds,

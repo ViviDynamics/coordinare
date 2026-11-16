@@ -397,3 +397,24 @@ bounded empty-result fix. All 14 retrieval cases then passed in 2.05 seconds.
 Whole Ruff, the unchanged lint-debt ratchet and mypy (375 source files) pass.
 The final committed head still requires full repository preflight and live
 acceptance; no successful environment or semantic review is claimed.
+
+Repetition and output-truncation recovery now consume the existing correction
+allowance, shared with charged schema/domain repairs. The native invocation-local
+cutoff limit is derived from remaining domain authority; shard accounting combines
+persisted native schema and cutoff counters. Queued corrections are reconciled on
+cancellation and removed before resume, including exhausted-allowance holds.
+Provider refusals remain terminal. Recovery policy participates in checkpoint
+identity before lookup. No validator, call/time limit or performance threshold was
+relaxed, and no terminal live trial was resumed.
+
+Fourteen initially failing cases demonstrated the missing recovery. Further RED
+cases covered policy-bound resume and exhausted queued shard accounting. The final
+38 focused recovery/correction tests passed, including real native OpenAI plain
+and streaming wire detection, admission refusal, unfinished-tool refusal, mixed
+correction exhaustion, cancellation/resume, deadlines and call limits. Streaming
+repetition can terminate before its usage trailer; the unknown-usage receipt is
+preserved rather than replaced with an invented token count. The broader bootstrap
+suite passed 2,662 tests with 18 existing warnings in 148.45 seconds, and both
+unchanged performance benchmarks passed in 10.12 seconds. Whole lint, the unchanged
+lint-debt ratchet and typechecking of 375 source files passed. These are offline
+mechanics results; final-head live acceptance and shipping remain outstanding.
