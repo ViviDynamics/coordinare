@@ -60,6 +60,52 @@ class ProbeRequest(ProbeBase):
         return self
 
 
+# nare-native-005: a repair author called the probe tool with a question inside each command; the strict schema refused
+# the call, the author returned its manifest without the required preflight, and a 3.7-hour attempt held. Each command's
+# own question and citations have exactly one place to go, so the tool accepts them there too.
+PER_COMMAND_KEYS = (('question', 'questions'), ('questions', 'questions'), ('citations', 'citations'))
+
+
+def probe_tool_schema() -> dict[str, Any]:
+    """ProbeRequest's schema, also accepting each command's question and citations inside the command itself."""
+    schema = ProbeRequest.model_json_schema()
+    definitions = schema.get('$defs', {})
+    command = definitions.get('ProbeCommand')
+    if isinstance(command, dict):
+        properties = command.setdefault('properties', {})
+        properties['question'] = {'type': 'string', 'description': "This command's question; may instead go in questions."}
+        properties['questions'] = {'type': 'string', 'description': 'Same as question.'}
+        properties['citations'] = {'type': 'array', 'items': {'type': 'string'},
+                                   'description': "This command's inspected-source paths; may instead go in citations."}
+    schema['required'] = [key for key in schema.get('required', []) if key not in {'questions', 'citations'}]
+    return schema
+
+
+def settle_probe_arguments(data: Any) -> Any:
+    """Move each command's own question and citations into the keyed maps, never over a different value there."""
+    if not isinstance(data, dict) or not isinstance(data.get('commands'), list):
+        return data
+    settled = dict(data)
+    commands = []
+    for command in data['commands']:
+        if not isinstance(command, dict) or not isinstance(command.get('id'), str):
+            commands.append(command)
+            continue
+        command = dict(command)
+        for own, mapped in PER_COMMAND_KEYS:
+            if own not in command:
+                continue
+            target = settled.get(mapped)
+            target = dict(target) if isinstance(target, dict) else ({} if target is None else None)
+            if target is None or (command['id'] in target and target[command['id']] != command[own]):
+                continue  # ambiguous: strict validation reports it
+            target[command['id']] = command.pop(own)
+            settled[mapped] = target
+        commands.append(command)
+    settled['commands'] = commands
+    return settled
+
+
 class ProbeEnvelope(ProbeBase):
     probe: ProbeRequest
 

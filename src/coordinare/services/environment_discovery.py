@@ -126,7 +126,9 @@ from coordinare.services.environment_probes import (
     ProbeReport,
     ProbeRequest,
     bind_probe_report,
+    probe_tool_schema,
     select_current_probe_reports,
+    settle_probe_arguments,
 )
 from coordinare.services.environment_proposal_patch import (
     MAX_CHANGES,
@@ -749,7 +751,7 @@ async def _native_author_phase(inspection: _Inspection, messages: list[dict[str,
     async def probe(arguments: dict[str, Any]) -> str:
         if inspection.probe is None:
             refuse_agent('Probe executor is unavailable.', code='probe_executor_unavailable')
-        report = await inspection.probe(arguments)
+        report = await inspection.probe(settle_probe_arguments(arguments))
         return await observations.add({'probe_result': report.model_dump(mode='json'),
                                        'authority': 'untrusted observation, never readiness'})
 
@@ -761,7 +763,7 @@ async def _native_author_phase(inspection: _Inspection, messages: list[dict[str,
 
     if inspection.probe_enabled:
         tools.append(Tool(name='probe', description='Execute a bounded, source-cited capability probe under domain policy.',
-                          input_schema=native_tool_schema(ProbeRequest.model_json_schema()), call=probe))
+                          input_schema=native_tool_schema(probe_tool_schema()), call=probe))
     if inspection.trial is not None:
         tools.append(Tool(name='trial', description='Try allowed replacement services/checks on the sealed failed-generation disk.',
                           input_schema=native_tool_schema(TrialRequest.model_json_schema()), call=trial))
