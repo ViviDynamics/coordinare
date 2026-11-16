@@ -7,6 +7,7 @@ import json
 import time
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from nare import Tool
@@ -25,6 +26,11 @@ from coordinare.services.agent_runtime.evidence_protocol import (
     classified_evidence_tool,
 )
 from coordinare.services.agent_runtime.models import AdmissionIssue, AgentIdentity, AgentRequest
+from coordinare.services.agent_runtime.required_reads import (
+    NAME,
+    REQUIRED_READ_POLICY,
+    RequiredReads,
+)
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_response_diagnostics import (
     REVIEW_DIAGNOSTICS_POLICY,
@@ -343,6 +349,24 @@ def _diagnose_review(request: EnvironmentPhaseRequest, evidence: EvidenceStore,
         inspected=request.source_tools.inspection.inputs)]
 
 
+def _next_required_read(request: EnvironmentPhaseRequest, evidence: EvidenceStore) -> Callable[[], Awaitable[str]] | None:
+    if request.source_tools is not None:
+        request.source_tools.issues()  # Re-raise a fatal pinned-source failure.
+    if evidence.remaining_required:
+        async def packet() -> str:
+            return (await evidence.read(EvidenceRead())).serialized
+        return packet
+    if request.source_tools is not None:
+        for path, store in sorted(request.source_tools.catalogs.items()):
+            if store.remaining_required:
+                return partial(request.source_tools.read, {'path': path})
+    if request.observations is not None:
+        for key, store in sorted(request.observations.catalogs.items()):
+            if store.remaining_required:
+                return partial(request.observations.read, {'observation_id': key})
+    return None
+
+
 async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult:
     """An admitted assessment can still reject the environment it assesses."""
     request.budget.check()
@@ -350,7 +374,10 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
     packet = _json(request.packet)
     sources = (*request.sources, EvidenceSource('@phase-packet', packet, hashlib.sha256(packet.encode()).hexdigest()))
     evidence = EvidenceStore(sources, required=request.required | {'@phase-packet'})
-    evidence_tools = tuple(classified_evidence_tool(tool) for tool in (evidence.tool(), evidence.reread_tool(),
+    stage = RequiredReads(partial(_next_required_read, request, evidence), request.budget.check)
+    if any(tool.name == NAME for tool in request.tools):
+        refuse_agent('Required-read tool identity collides with an existing tool.', code='agent_prerequisite_tool_collision')
+    evidence_tools = tuple(classified_evidence_tool(tool) for tool in (stage.tool, evidence.tool(), evidence.reread_tool(),
              *(request.source_tools.tools() if request.source_tools else ()),
              *((request.observations.tool(), request.observations.reread_tool()) if request.observations else ())))
     tools = (*evidence_tools, *request.tools)
@@ -361,6 +388,7 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
         domain_digests=tuple(sorted((*request.domain_digests, ('packet', _digest(request.packet)),
                                     ('evidence', evidence.receipt().catalog_digest)))),
         policy_digest=_digest({'tools': [{'name': tool.name, 'schema': tool.input_schema} for tool in tools],
+            'required_read_policy': REQUIRED_READ_POLICY,
             'evidence_protocol': EVIDENCE_PROTOCOL, 'invalid_evidence_calls': MAX_INVALID_EVIDENCE_CALLS,
             **({'response_diagnostics': diagnostics_policy} if diagnostics_policy is not None else {}),
             'phase_calls': request.max_model_calls, 'phase_seconds': request.phase_timeout_seconds,
@@ -423,7 +451,7 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
         max_output_bytes=request.max_output_bytes, max_context_bytes=request.max_context_bytes,
         shard_corrections=request.shard_corrections, effects=request.effects,
         tool_state=PhaseToolState(request.source_tools, request.observations, request.effects),
-        prerequisites=request.prerequisites))
+        prerequisites=request.prerequisites, request_stage=stage))
     if result.status == 'cancelled':
         request.budget.error_code = result.hold_code or 'agent_cancelled'
         raise asyncio.CancelledError

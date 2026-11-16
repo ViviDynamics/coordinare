@@ -35,8 +35,8 @@ async def test_divided_native_authoring_merges_all_criteria_without_global_mappi
             if '"tool":"read_file"' in req.instructions:
                 raise FixtureAssertionError('Native role advertised old transport')
             class Routed(PhaseTransport):
-                async def turn(self, messages: Any, tools: Any) -> Reply:
-                    reply = await super().turn(messages, tools)
+                async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
+                    reply = await super().turn(messages, tools, tool_choice=tool_choice)
                     if reply.stop_reason != 'end_turn':
                         return reply
                     packet = json.loads(''.join(self.packet_pages[k] for k in sorted(self.packet_pages)))

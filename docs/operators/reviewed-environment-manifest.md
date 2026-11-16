@@ -9,7 +9,11 @@ agent's approval cannot waive execution evidence.
 
 Bootstrap uses nare with the existing `conducting` model selection. Supported
 backends are `openai_api` (native or OpenAI-compatible) and `anthropic_api`.
-Select a model that supports native tool calls. Scope authors, manifest authors,
+Select a model that supports native tool calls and required tool selection.
+OpenAI transports support plain and streaming reads. The Anthropic read stage
+supports the configured non-thinking, non-streaming path; thinking or streaming
+Anthropic transports hold with `agent_required_tools_unsupported` before inference.
+The runtime never disables thinking or changes providers to get past that hold. Scope authors, manifest authors,
 independent reviewers and execution repairs receive separate sessions; all final
 answers still pass Coordinare's domain schemas and admission rules.
 
@@ -25,6 +29,15 @@ correction turns. Evidence-reading turns retain their approved tools, including
 after a domain correction. JSON-object mode guarantees syntax only; every mode
 still faces the complete local schema and domain checks. The forced answer
 function carries an answer and never executes an action.
+
+Required phase evidence, requested source remainders, and existing observations
+are drained by a runtime-selected continuation tool before ordinary navigation or
+answer generation resumes. This does not choose new sources or execute probes or
+installers. Every physical request retains its original call/time budget; complete
+page receipts and read-policy identity survive verified resume. Final admission
+still checks every required read if a provider ignores required tool selection.
+A tool call outside the active read stage is refused before dispatch, after its
+known physical usage is recorded. Call records describe the selected request.
 
 Unsupported modes refuse before inference. The native runtime does not silently
 change encoding after a provider grammar-compilation refusal. Select a supported

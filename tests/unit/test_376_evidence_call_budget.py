@@ -22,7 +22,17 @@ from tests.unit.test_376_agent_runtime import request
 from tests.unit.test_376_environment_review import phase, review
 
 
+def required_read_reply(owner: Any, choice: str | None) -> Reply | None:
+    if choice != 'required':
+        return None
+    owner.required_calls = getattr(owner, 'required_calls', 0) + 1
+    call = ToolCall('required-' + str(owner.required_calls), 'continue_required_reads', {})
+    return Reply([{'type': 'tool_use', 'id': call.id, 'name': call.name, 'input': {}}],
+                 [call], Usage(input=10, output=5), 'tool_use')
+
+
 class InvalidEvidenceTransport:
+    required_tool_choice = 'required'
     def __init__(self, *, schema: bool, progress: bool = False) -> None:
         self.calls = 0
         self.schema = schema
@@ -31,7 +41,9 @@ class InvalidEvidenceTransport:
     async def context_window(self) -> int:
         return 262144
 
-    async def turn(self, messages: Any, tools: Any) -> Reply:
+    async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
+        if (required := required_read_reply(self, tool_choice)) is not None:
+            return required
         self.calls += 1
         if self.progress and self.calls == 5:
             name, args = 'review_evidence', {}
@@ -68,13 +80,16 @@ async def test_invalid_calls_have_monotonic_allowance_and_exhausted_resume_refus
 
 
 class RereadingTransport:
+    required_tool_choice = 'required'
     def __init__(self) -> None:
         self.calls = 0
 
     async def context_window(self) -> int:
         return 262144
 
-    async def turn(self, messages: Any, tools: Any) -> Reply:
+    async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
+        if (required := required_read_reply(self, tool_choice)) is not None:
+            return required
         self.calls += 1
         if self.calls > 14:
             return Reply([{'type': 'text', 'text': json.dumps(review())}], [], Usage(input=10, output=5), 'end_turn')
@@ -96,7 +111,9 @@ async def test_valid_rereads_do_not_spend_protocol_allowance(tmp_path: Path) -> 
 
 
 class BatchedFailureTransport(InvalidEvidenceTransport):
-    async def turn(self, messages: Any, tools: Any) -> Reply:
+    async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
+        if (required := required_read_reply(self, tool_choice)) is not None:
+            return required
         self.calls += 1
         calls = [ToolCall(str(i), 'review_evidence', {'pages': [999]}) for i in range(8)]
         calls.append(ToolCall('action', 'approved_action', {}))
@@ -149,7 +166,9 @@ class RecoveringTransport(InvalidEvidenceTransport):
         super().__init__(schema=schema)
         self.received: dict[int, dict[str, Any]] = {}
 
-    async def turn(self, messages: Any, tools: Any) -> Reply:
+    async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
+        if (required := required_read_reply(self, tool_choice)) is not None:
+            return required
         if not self.calls:
             return await super().turn(messages, tools)
         self.calls += 1
@@ -196,7 +215,9 @@ class InterruptedBatchTransport(InvalidEvidenceTransport):
         super().__init__(schema=True)
         self.failures = failures
 
-    async def turn(self, messages: Any, tools: Any) -> Reply:
+    async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
+        if (required := required_read_reply(self, tool_choice)) is not None:
+            return required
         self.calls += 1
         calls = [ToolCall(str(i), 'review_evidence', {'pages': [999]}) for i in range(self.failures)]
         calls.append(ToolCall('cancel', 'interrupted_action', {}))
@@ -257,14 +278,16 @@ async def test_held_evidence_failure_cannot_resume_a_native_working_session(tmp_
 
 
 class DuplicateIdentityTransport(InvalidEvidenceTransport):
-    async def turn(self, messages: Any, tools: Any) -> Reply:
+    async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
+        if (required := required_read_reply(self, tool_choice)) is not None:
+            return required
         self.calls += 1
         calls = [ToolCall('duplicate', 'review_evidence', {'pages': [999]}) for _ in range(8)]
         return Reply([{'type': 'tool_use', 'id': c.id, 'name': c.name, 'input': c.args} for c in calls],
                      calls, Usage(input=10, output=5), 'tool_use')
 
-    async def stream_turn(self, messages: Any, tools: Any):
-        yield await self.turn(messages, tools)
+    async def stream_turn(self, messages: Any, tools: Any, **kwargs: Any):
+        yield await self.turn(messages, tools, **kwargs)
 
 
 @pytest.mark.asyncio

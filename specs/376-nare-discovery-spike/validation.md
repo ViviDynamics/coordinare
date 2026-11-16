@@ -350,3 +350,20 @@ all 221 native unit/integration checks pass, whole lint and the unchanged debt
 ratchet pass, and mypy passes across 373 modules. This slice does not yet activate
 the read controller in bootstrap phases or establish live acceptance. Next wire
 the phase controller, policy-bound identity, and explicit transport capability.
+
+Required-read control is now wired into every native bootstrap phase. The policy
+is bound before checkpoint lookup; packet, already-requested sources and existing
+observations use their original complete-page tools and receipts. All original
+schemas, domain validators and budgets remain. The wider bootstrap regression
+passed 2,616 tests with 18 existing warnings in 140.09 seconds. Twenty-eight
+controller tests pass through the production phase and native loop, including
+plain/SSE OpenAI wire requests for all three answer encodings. A subsequent
+Anthropic wire test verifies `any` for the configured non-thinking, non-streaming
+transport. Thinking/streaming Anthropic combinations refuse explicitly before
+inference; no provider or thinking-mode fallback is used. These are offline
+contract results, not live installer or clean-consumer acceptance.
+The final native/benchmark run reported 250 passes and one genuine cold-start
+failure caused by eager provider-SDK imports in the new controller. Moving SDK
+type resolution to transport validation fixed it without changing the threshold:
+both original benchmarks and all 28 controller checks pass (30 total, 13.12s).
+Whole lint, the unchanged lint-debt ratchet and mypy across 374 modules pass.

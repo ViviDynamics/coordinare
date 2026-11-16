@@ -208,10 +208,11 @@ async def test_phase_reports_all_unread_evidence_with_first_schema_correction(co
     diagnostic_receipts = []
 
     class CompletingTransport(ScriptedTransport):
+        required_tool_choice = 'required'
         evidence: Any
         initial_evidence_receipt: Any
 
-        async def turn(self, messages: Any, tools: Any) -> Reply:
+        async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
             self.requests.append({'messages': deepcopy(messages), 'tools': tools})
             if len(self.requests) == 1:
                 return Reply([{'type': 'text', 'text': json.dumps(candidate('x' * 2266))}],
@@ -223,7 +224,9 @@ async def test_phase_reports_all_unread_evidence_with_first_schema_correction(co
             if not complete_reads:
                 return Reply([{'type': 'text', 'text': json.dumps(candidate())}],
                     [], Usage(input=1, output=1), 'end_turn')
-            if sources.issues():
+            if tool_choice == 'required':
+                call = ToolCall(str(len(self.requests)), 'continue_required_reads', {})
+            elif sources.issues():
                 call = ToolCall(str(len(self.requests)), 'read_source', {'path': 'README.md'})
             elif observations.issues():
                 call = ToolCall(str(len(self.requests)), 'read_observation', {'observation_id': observation_id})

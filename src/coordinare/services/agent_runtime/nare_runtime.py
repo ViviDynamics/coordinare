@@ -114,6 +114,9 @@ class NareRuntime:
 
     async def _converse(self, execution: _Execution, transport: Transport, schema: JsonObject) -> None:
         request = execution.request
+        validate_transport = getattr(request.request_stage, 'validate_transport', None)
+        if callable(validate_transport):
+            validate_transport(transport)
         wrapped = BudgetTransport(transport, execution.bridge, TransportContext(session_id=execution.session.id,
             before_send=execution.save, calls=self._calls, config=self._config, instructions=request.instructions,
             max_output_bytes=request.max_output_bytes, max_context_bytes=request.max_context_bytes,

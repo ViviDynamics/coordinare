@@ -23,11 +23,11 @@ class CorrectionTransport(PhaseTransport):
         self.proposed = False
         self.feedback = ''
 
-    async def turn(self, messages: Any, tools: Any) -> Any:
+    async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Any:
         if self.proposed:
             self.feedback = '\n'.join(block.get('text', '') for block in messages[-1].content)
             self.answer = {'manifest': self.good}
-        reply = await super().turn(messages, tools)
+        reply = await super().turn(messages, tools, tool_choice=tool_choice)
         self.proposed |= reply.stop_reason == 'end_turn'
         return reply
 
@@ -77,7 +77,7 @@ async def test_strictly_improving_native_correction_is_not_charged_twice() -> No
     from tests.unit.test_376_agent_runtime import ScriptedTransport, request
 
     class Improving(ScriptedTransport):
-        async def turn(self, messages: Any, tools: Any) -> Reply:
+        async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
             replies = ['{}', '{"accepted":true}', '{"accepted":true,"reason":"verified"}']
             reply = replies[len(self.requests)]
             self.requests.append({'messages': messages.copy()})
@@ -106,7 +106,7 @@ async def test_native_terminal_reason_survives_domain_classification(native_reas
     from tests.unit.test_376_agent_runtime import ScriptedTransport, request
 
     class Unfinished(ScriptedTransport):
-        async def turn(self, messages: Any, tools: Any) -> Reply:
+        async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
             return Reply([], [], Usage(input=10, output=5), native_reason)
 
     async def admit(answer: Any) -> list[Any]:

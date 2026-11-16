@@ -26,9 +26,9 @@ class BootstrapTransport(PhaseTransport):
         self.instructions = instructions
         self.probed = False
 
-    async def turn(self, messages: Any, tools: Any, *, response_schema: Any = None) -> Reply:
+    async def turn(self, messages: Any, tools: Any, *, response_schema: Any = None, tool_choice: str | None = None) -> Reply:
         assert response_schema is None or not tools
-        reply = await super().turn(messages, tools)
+        reply = await super().turn(messages, tools, tool_choice=tool_choice)
         if reply.stop_reason != 'end_turn':
             return reply
         packet = json.loads(''.join(self.packet_pages[k] for k in sorted(self.packet_pages)))
@@ -117,7 +117,7 @@ async def test_daemon_preparation_has_one_owner_and_cancellation_is_terminal(tmp
 
     entered = asyncio.Event()
     class Waiting(BootstrapTransport):
-        async def turn(self, messages: Any, tools: Any, *, response_schema: Any = None) -> Reply:
+        async def turn(self, messages: Any, tools: Any, *, response_schema: Any = None, tool_choice: str | None = None) -> Reply:
             entered.set()
             await asyncio.Event().wait()
             return await super().turn(messages, tools, response_schema=response_schema)
@@ -192,7 +192,7 @@ async def test_daemon_restart_resumes_verified_provider_failure_without_renewing
     from coordinare.daemon import _persist_env_cache, _rehydrate_env_cache
 
     class Broken(BootstrapTransport):
-        async def turn(self, messages: Any, tools: Any, *, response_schema: Any = None) -> Reply:
+        async def turn(self, messages: Any, tools: Any, *, response_schema: Any = None, tool_choice: str | None = None) -> Reply:
             raise ConnectionError('synthetic provider outage')
 
     daemon, cache, symphony, _ = configured_daemon(tmp_path, monkeypatch, Broken)

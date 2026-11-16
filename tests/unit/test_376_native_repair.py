@@ -28,14 +28,14 @@ async def test_native_delta_restores_frozen_checks_and_full_escalation_stays_nat
         async def run(self, req: Any) -> Any:
             identities.append(req.identity)
             class Repair(PhaseTransport):
-                async def turn(self, messages: Any, tools: Any) -> Reply:
+                async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
                     try:
-                        return await self.answer_turn(messages, tools)
+                        return await self.answer_turn(messages, tools, tool_choice=tool_choice)
                     except Exception as exc:
                         raise FixtureAssertionError(f'{req.identity.phase}: {type(exc).__name__}: {exc}') from exc
 
-                async def answer_turn(self, messages: Any, tools: Any) -> Reply:
-                    reply = await super().turn(messages, tools)
+                async def answer_turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
+                    reply = await super().turn(messages, tools, tool_choice=tool_choice)
                     if reply.stop_reason != 'end_turn':
                         return reply
                     packet = json.loads(''.join(self.packet_pages[k] for k in sorted(self.packet_pages)))

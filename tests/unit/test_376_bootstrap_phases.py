@@ -43,6 +43,7 @@ async def test_native_context_cap_includes_system_tools_and_schema_before_infere
 
 
 class PhaseTransport:
+    required_tool_choice = 'required'
     def __init__(self, answer: dict[str, Any], *, read_path: str | None = None) -> None:
         self.answer, self.read_path = answer, read_path
         self.calls = 0
@@ -54,7 +55,7 @@ class PhaseTransport:
     async def context_window(self) -> int:
         return 262144
 
-    async def turn(self, messages: Any, tools: Any) -> Reply:
+    async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
         self.calls += 1
         self.messages.append(messages.copy())
         names = {b['id']: b['name'] for m in messages for b in m.content if b.get('type') == 'tool_use'}
@@ -63,12 +64,14 @@ class PhaseTransport:
                 if block.get('type') == 'tool_result':
                     value = json.loads(block['content'])
                     if value.get('pages'):
-                        if names.get(block['tool_use_id']) == 'review_evidence':
+                        if names.get(block['tool_use_id']) in {'review_evidence', 'continue_required_reads'}:
                             self.delivered = value['unread_count'] == 0
                         self.packet_pages.update({p['offset']: p['content'] for p in value['pages']
                                                   if p['source'] == '@phase-packet'})
                         self.read |= any(p['source'] == self.read_path for p in value['pages'])
-        if not self.delivered:
+        if tool_choice == 'required':
+            call = ToolCall(str(self.calls), 'continue_required_reads', {})
+        elif not self.delivered:
             call = ToolCall(str(self.calls), 'review_evidence', {})
         elif self.read_path and not self.read:
             call = ToolCall(str(self.calls), 'read_source', {'path': self.read_path})
@@ -141,8 +144,8 @@ async def test_sharded_check_author_uses_own_correction_budget_and_preserves_map
     answer = group_reply(group)
     bad = group_reply(group, criterion_checks={})
     class Correcting(PhaseTransport):
-        async def turn(self, messages: Any, tools: Any) -> Reply:
-            reply = await super().turn(messages, tools)
+        async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
+            reply = await super().turn(messages, tools, tool_choice=tool_choice)
             if reply.stop_reason == 'end_turn':
                 self.answer = answer
             return reply
@@ -194,8 +197,8 @@ async def test_complete_native_pipeline_executes_bound_probe_once_before_manifes
         pytest.fail('Complete native bootstrap must not use legacy chat')
     class Author(PhaseTransport):
         probes = 0
-        async def turn(self, messages: Any, tools: Any) -> Reply:
-            reply = await super().turn(messages, tools)
+        async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
+            reply = await super().turn(messages, tools, tool_choice=tool_choice)
             if reply.stop_reason == 'end_turn' and self.probes < 2:
                 self.probes += 1
                 call = ToolCall(f'probe{self.probes}', 'probe', request_data())
@@ -255,8 +258,8 @@ async def test_native_repair_trial_is_deduplicated_and_cannot_supply_artifacts(t
     executed = []
     class Author(PhaseTransport):
         trials = 0
-        async def turn(self, messages: Any, tools: Any) -> Reply:
-            reply = await super().turn(messages, tools)
+        async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
+            reply = await super().turn(messages, tools, tool_choice=tool_choice)
             if reply.stop_reason == 'end_turn' and self.trials < 2:
                 self.trials += 1
                 call = ToolCall(f'trial{self.trials}', 'trial', {'checks': [{'id': 'smoke', 'argv': ['true']}]})
@@ -334,8 +337,8 @@ async def test_native_preflight_has_one_free_reminder_then_holds_or_executes(tmp
     executed = []
     class Author(PhaseTransport):
         answers = 0
-        async def turn(self, messages: Any, tools: Any) -> Reply:
-            reply = await super().turn(messages, tools)
+        async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
+            reply = await super().turn(messages, tools, tool_choice=tool_choice)
             if reply.stop_reason == 'end_turn':
                 self.answers += 1
                 if self.answers == 2 and recover:
@@ -389,8 +392,8 @@ async def test_real_sharded_scope_uses_native_tools_and_separate_triage_identiti
                 raise FixtureAssertionError('Sharded phase advertises obsolete source protocol')
             phases.append(req)
             class Routed(PhaseTransport):
-                async def turn(self, messages: Any, tools: Any) -> Reply:
-                    reply = await super().turn(messages, tools)
+                async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
+                    reply = await super().turn(messages, tools, tool_choice=tool_choice)
                     if reply.stop_reason == 'end_turn':
                         packet = json.loads(''.join(self.packet_pages[k] for k in sorted(self.packet_pages)))
                         # Only the synthetic provider uses the existing domain-proposal router.

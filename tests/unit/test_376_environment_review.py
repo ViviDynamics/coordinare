@@ -22,6 +22,7 @@ from tests.unit.test_353_review_findings_flow import finding, review
 
 
 class ReviewerTransport:
+    required_tool_choice = 'required'
     def __init__(self, answer: dict[str, Any], *, early: bool = True) -> None:
         self.answer, self.early = answer, early
         self.calls = 0
@@ -33,12 +34,12 @@ class ReviewerTransport:
     async def context_window(self) -> int:
         return 262144
 
-    async def turn(self, messages: Any, tools: Any) -> Reply:
+    async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
         self.calls += 1
         self.requests.append(messages.copy())
-        assert {tool['name'] for tool in tools} == (
+        assert {tool['name'] for tool in tools} == ({'continue_required_reads'} if tool_choice == 'required' else (
             {'review_evidence', 'reread_evidence', 'read_source', 'reread_source', 'list_sources'}
-            if self.navigation else {'review_evidence', 'reread_evidence'})
+            if self.navigation else {'review_evidence', 'reread_evidence'}))
         for message in messages:
             for block in message.content:
                 if block.get('type') == 'tool_result':
@@ -47,7 +48,7 @@ class ReviewerTransport:
                     self.received.update({page['id']: page for page in value['pages']})
         if (self.early and self.calls == 1) or not self.unread:
             return Reply([{'type': 'text', 'text': json.dumps(self.answer)}], [], Usage(input=100, output=20), 'end_turn')
-        call = ToolCall(str(self.calls), 'review_evidence', {})
+        call = ToolCall(str(self.calls), 'continue_required_reads' if tool_choice == 'required' else 'review_evidence', {})
         return Reply([{'type': 'tool_use', 'id': call.id, 'name': call.name, 'input': call.args}],
                      [call], Usage(input=100, output=20), 'tool_use')
 
@@ -134,7 +135,7 @@ async def test_phase_deadline_preserves_outer_budget(tmp_path: Any) -> None:
     from coordinare.services.environment_agent import run_environment_phase
 
     class Waiting(ReviewerTransport):
-        async def turn(self, messages: Any, tools: Any) -> Reply:
+        async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
             await asyncio.sleep(10)
             return await super().turn(messages, tools)
 
@@ -177,7 +178,11 @@ async def test_source_observer_reopening_survives_native_tool_error(tmp_path: An
         raise refusal
     navigation = PinnedSourceTools(SourceInspection(['new'], fetch, DiscoveryLimits()), observe_sources=observe)
     class Navigating(ReviewerTransport):
-        async def turn(self, messages: Any, tools: Any) -> Reply:
+        async def turn(self, messages: Any, tools: Any, *, tool_choice: str | None = None) -> Reply:
+            if tool_choice == 'required':
+                call = ToolCall('prerequisite', 'continue_required_reads', {})
+                return Reply([{'type': 'tool_use', 'id': call.id, 'name': call.name, 'input': {}}],
+                             [call], Usage(input=100, output=20), 'tool_use')
             self.calls += 1
             if self.calls == 1:
                 call = ToolCall('source', 'read_source', {'path': 'new'})
