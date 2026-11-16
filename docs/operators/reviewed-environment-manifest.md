@@ -242,6 +242,16 @@ reread tools accept explicit page IDs for revisiting evidence after compaction.
 Responses contain complete pages and bounded catalog metadata; invalid rereads
 deliver nothing and identify the continuation operation to use.
 
+The initial task retains a bounded inventory of phase-packet field names, without
+embedding their values. `locate_evidence({})` lists canonical source identities
+and page ranges; an optional exact source and literal query locate text, including
+matches across page boundaries. Results are bounded and use a continuation cursor.
+The agent can then use `reread_evidence` to retrieve the original pages even after
+their previous tool results were elided. Lookup itself does not satisfy a required
+read, modify receipts, fetch new sources, or change the review verdict. Invalid
+lookup arguments use the same attempt-wide evidence-call allowance. This makes
+lost context retrievable; it does not prove the model understood the evidence.
+
 Eight invalid evidence calls exhaust an attempt-wide allowance distinct from
 schema corrections. Typed native outcomes identify both argument rejection and
 invalid catalog selections. Consumption persists across phases and resume;

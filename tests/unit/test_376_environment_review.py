@@ -38,8 +38,8 @@ class ReviewerTransport:
         self.calls += 1
         self.requests.append(messages.copy())
         assert {tool['name'] for tool in tools} == ({'continue_required_reads'} if tool_choice == 'required' else (
-            {'review_evidence', 'reread_evidence', 'read_source', 'reread_source', 'list_sources'}
-            if self.navigation else {'review_evidence', 'reread_evidence'}))
+            {'review_evidence', 'reread_evidence', 'locate_evidence', 'read_source', 'reread_source', 'list_sources'}
+            if self.navigation else {'review_evidence', 'reread_evidence', 'locate_evidence'}))
         for message in messages:
             for block in message.content:
                 if block.get('type') == 'tool_result':

@@ -10,6 +10,7 @@ from nare import Tool
 from nare.tools import MAX_TOOL_OUTPUT
 
 from coordinare.services.agent_runtime.checkpoint import EvidenceReceipt
+from coordinare.services.agent_runtime.evidence_navigation import EvidenceLocator
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 
 
@@ -94,6 +95,7 @@ class EvidenceStore:
                 if source.key in required:
                     required_ids.add(page.id)
         self._pages = tuple(pages)
+        self._sources = sources
         self._encoded_pages = tuple(_encode_page(page) for page in pages)
         self._required = frozenset(required_ids)
         self._delivered: set[int] = set()
@@ -209,3 +211,8 @@ class EvidenceStore:
                     input_schema={'type': 'object', 'properties': {'pages': {'type': 'array',
                         'items': {'type': 'integer', 'minimum': 0}, 'minItems': 1, 'maxItems': 128}},
                         'required': ['pages'], 'additionalProperties': False}, call=deliver)
+
+    def locator_tool(self) -> Tool:
+        # Source text is already immutable and verified; do not reconstruct it
+        # from a compacted session or a redacted event stream.
+        return EvidenceLocator(self._sources, self._pages, self._cap).tool()

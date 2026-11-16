@@ -367,3 +367,33 @@ failure caused by eager provider-SDK imports in the new controller. Moving SDK
 type resolution to transport validation fixed it without changing the threshold:
 both original benchmarks and all 28 controller checks pass (30 total, 13.12s).
 Whole lint, the unchanged lint-debt ratchet and mypy across 374 modules pass.
+### Evidence retrieval after context elision
+
+A bounded native trial reached a valid indeterminate assessment claiming the
+candidate was absent. Private checkpoint reconstruction verified the complete
+phase-packet hash and candidate equality: all candidate pages had been delivered,
+but none remained in the final active context after elision. Delivery receipts
+therefore did their job, while the reviewer failed to retrieve the candidate.
+The trial ran no installer or clean consumer; owned cleanup was verified.
+
+The recovery change supplies a bounded, durable packet-field inventory and a
+generic immutable-evidence locator. It locates source identities or literal text
+and returns page references for the existing reread tool. It neither invents a
+summary nor overrides domain judgments, required reads, or budgets. The navigation
+policy is bound before checkpoint selection.
+
+Five retrieval cases first failed, then passed; two durable-inventory cases also
+failed before implementation and passed afterward. The real nare compactor and
+production admission path run with scripted inference. Exact cross-page Unicode
+retrieval, bounded cursor results, all three verdicts, durable inventory and
+attempt-wide invalid-call accounting pass. Twelve focused cases plus both
+unchanged performance benchmarks pass (14 total, 12.77 seconds). The native suite
+passed 256 cases before the five additional invalid-call cases. Live semantic
+acceptance remains outstanding; these tests establish retrieval mechanics.
+The broader bootstrap regression run passed 2,631 tests with 18 existing warnings
+in 137.48 seconds. A subsequent boundary test exposed machine-integer overflow
+for an enormous lookup cursor; both catalog and search cases failed before the
+bounded empty-result fix. All 14 retrieval cases then passed in 2.05 seconds.
+Whole Ruff, the unchanged lint-debt ratchet and mypy (375 source files) pass.
+The final committed head still requires full repository preflight and live
+acceptance; no successful environment or semantic review is claimed.
