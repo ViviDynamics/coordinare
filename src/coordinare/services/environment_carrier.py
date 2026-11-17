@@ -29,7 +29,7 @@ CARRIER_USER = f'{CARRIER_UID}:{CARRIER_UID}'
 CARRIER_ACCOUNT = 'coordinare'
 # Under /tmp, every carrier's writable scratch; tools such as uv, pip and git keep their per-user state under HOME and
 # create it on first use. Never /tmp itself: the private runtime refuses to export the user's home as its scratch.
-CARRIER_HOME = '/tmp/home'
+CARRIER_HOME = '/tmp/home'  # noqa: S108, RUF100 - a carrier container path, never opened on this host
 
 # Docker's default profile, verbatim from moby/moby at tag docker-v29.9.3
 # (vendor/github.com/moby/profiles/seccomp/default.json, Apache License 2.0; see NOTICE).
