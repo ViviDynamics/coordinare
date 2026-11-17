@@ -13,6 +13,7 @@ from nare import Reply, Usage
 from coordinare.services.agent_runtime.checkpoint import CheckpointStore
 from coordinare.services.agent_runtime.nare_runtime import NareRuntime
 from coordinare.services.environment_attempt import AttemptBudget
+from coordinare.services.environment_response_diagnostics import diagnostic_details
 from tests.unit.test_376_agent_runtime import ScriptedTransport, request
 
 
@@ -123,7 +124,7 @@ def test_executable_assessment_does_not_invent_a_top_level_summary_bound() -> No
 def test_mixed_shape_sources_still_report_independent_unread_citations() -> None:
     issues = diagnose_candidate({'scope_assessment': {'sources': [None, 'unread.md']}})
     assert len(issues) == 1 and issues[0].code == 'scope_citations_invalid'
-    assert json.loads(issues[0].message)['invalid_source_indices'] == [1]
+    assert diagnostic_details(issues[0].message)['invalid_source_indices'] == [1]
 
 
 @pytest.mark.asyncio
@@ -288,8 +289,32 @@ def test_a_text_bound_correction_names_how_much_to_cut_and_a_target_with_margin(
     issues = diagnose_candidate({'scope_assessment': {'rationale': 'a' * 2252, 'sources': ['README.md'],
                                                       'findings': [], 'decisions': []}})
     [issue] = [item for item in issues if item.code == 'response_utf8_limit']
-    details = json.loads(issue.message)
+    details = diagnostic_details(issue.message)
     assert details['remove_at_least_utf8_bytes'] == 2252 - REVIEW_TEXT_MAX_UTF8_BYTES
     assert details['target_utf8_bytes'] == REVIEW_TEXT_TARGET_UTF8_BYTES < REVIEW_TEXT_MAX_UTF8_BYTES
     assert 'at least 204 UTF-8 bytes' in details['guidance'] and str(REVIEW_TEXT_TARGET_UTF8_BYTES) in details['guidance']
     assert details['max_utf8_bytes'] == 2048
+
+
+def test_a_bound_still_broken_keeps_one_identity_and_names_where_to_cut() -> None:
+    """nare-native-009: 2161, 2089, 2083 and 2070 bytes read to nare as four different checks, and each correction
+    told the reviewer three of them were fixed. The rule now precedes nare's ", got " separator."""
+    from nare.corrections import code_of
+
+    from coordinare.services.environment_response_diagnostics import REVIEW_TEXT_TARGET_UTF8_BYTES
+
+    def issue(text: str) -> Any:
+        found = diagnose_candidate({'scope_assessment': {'rationale': text, 'sources': ['README.md'],
+                                                         'findings': [], 'decisions': []}})
+        [only] = [item for item in found if item.code == 'response_utf8_limit']
+        return only
+
+    head = 'k' * REVIEW_TEXT_TARGET_UTF8_BYTES
+    first, second = issue(head + ' Marker passage starts here. ' + 'z' * 500), issue(head + ' Marker passage ' + 'y' * 400)
+    rendered = [f"scope_assessment.rationale: {item.message}" for item in (first, second)]
+    assert code_of(rendered[0]) == code_of(rendered[1]) == 'scope_assessment.rationale: exceeds 2048 UTF-8 bytes'
+    details = diagnostic_details(first.message)
+    assert details['passage_past_target'].startswith('Marker passage starts here.')
+    assert 'end the summary before it' in details['guidance']
+    # A multi-byte character straddling the target is never split.
+    assert diagnostic_details(issue('é' * 1100).message)['passage_past_target'].startswith('é')
