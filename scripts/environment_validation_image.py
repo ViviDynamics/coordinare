@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 
 import coordinare_service_inference.environment as environment_package
 
+from coordinare.services.environment_carrier import CARRIER_IMAGE_USER_STEP
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -110,6 +112,10 @@ def candidate_image(base_image: str, output: Path, *, allow_local_image_id: bool
         'COPY ["performer/", "/tmp/coordinare-validation-performer/"]\n'
         + "RUN "
         + json.dumps(["/usr/local/bin/python", "-I", "-c", program])
+        + "\n"
+        # The unprivileged account every carrier runs as (environment_carrier).
+        + "RUN "
+        + json.dumps(["/bin/sh", "-c", CARRIER_IMAGE_USER_STEP])
         + "\n",
     )
     nonce = uuid.uuid4().hex[:12]

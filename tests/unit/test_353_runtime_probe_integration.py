@@ -42,7 +42,8 @@ def test_outer_probe_wire_identity_keeps_legacy_serialization():
 def test_private_probe_container_keeps_readonly_inputs_and_uses_policy_limits(tmp_path):
     args = probe_container_argv(private_plan(), tmp_path/'repo', tmp_path/'cache', scratch=tmp_path/'scratch')
     assert '--network=none' in args and '--read-only' in args
-    assert '--cap-drop=ALL' in args and '--security-opt=no-new-privileges' in args
+    assert args[args.index('--cap-drop') + 1] == 'ALL'
+    assert args[args.index('--security-opt') + 1] == 'no-new-privileges'
     assert '--memory=4096m' in args and '--memory-swap=4096m' in args and '--cpus=2' in args
     mounts = [args[index+1] for index, item in enumerate(args) if item == '--mount']
     assert any('target=/repo,readonly' in item for item in mounts)

@@ -20,6 +20,7 @@ from coordinare.services.environment_acceptance import (
     saved_execution_accepted,
 )
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.environment_carrier import carrier_isolation_options
 from coordinare.services.environment_repair import journal_for, remaining_seconds
 from coordinare.services.environment_runtime_evidence import require_runtime_target
 
@@ -105,7 +106,7 @@ def runtime_verifier_options(manifest: EnvironmentManifest, source_root: Path) -
     scratch = source_root/'runtime-scratch'
     scratch.mkdir(mode=0o700)
     limits = runtime.policy.resources
-    return ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--cpus', str(limits.cpus),
+    return [*carrier_isolation_options(), '--cpus', str(limits.cpus),
             '--memory', str(limits.memory_mib)+'m', '--memory-swap', str(limits.memory_mib)+'m',
             '--pids-limit', '512', '-v', str(scratch)+':/tmp']
 

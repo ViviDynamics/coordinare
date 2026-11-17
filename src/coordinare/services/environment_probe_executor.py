@@ -21,6 +21,7 @@ from coordinare.lib.redaction import redact_command_text
 from coordinare.services import environment_probe_runtime
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
 from coordinare.services.environment_capabilities import _docker_identity
+from coordinare.services.environment_carrier import carrier_isolation_options
 from coordinare.services.environment_probes import (
     ProbeCommandResult,
     ProbePlan,
@@ -55,8 +56,7 @@ def probe_container_argv(plan: ProbePlan, source: Path, cache: Path, *, scratch:
             f'--memory-swap={limits.memory_mib}m', f'--cpus={limits.cpus}',
             '--mount', f'type=bind,source={scratch},target=/scratch']
     return ["docker", "create", "--name", "coordinare-probe-" + plan.digest()[:24],
-        "--platform", platform, "--network=none", "--read-only", "--cap-drop=ALL",
-        "--security-opt=no-new-privileges", *resources,
+        "--platform", platform, "--network=none", "--read-only", *carrier_isolation_options(), *resources,
         "--tmpfs", str(Path("/") / "tmp") + ":rw,nosuid,nodev,size=16m",
         "--mount", f"type=bind,source={source},target=/repo,readonly",
         "--mount", f"type=bind,source={cache},target=/cache,readonly",

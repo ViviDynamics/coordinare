@@ -19,7 +19,10 @@ def test_probe_container_has_no_network_writable_source_or_credentials(tmp_path)
     args = probe_container_argv(plan(), tmp_path/'repo', tmp_path/'cache')
     assert '--network=none' in args
     assert '--read-only' in args
-    assert '--cap-drop=ALL' in args
+    assert args[args.index('--cap-drop') + 1] == 'ALL'
+    # A probe runs as the same unprivileged carrier identity as an install or check, so it observes what they get.
+    from coordinare.services.environment_carrier import carrier_isolation_options
+    assert args[args.index('--user'):args.index('--user') + len(carrier_isolation_options())] == carrier_isolation_options()
     assert all('readonly' in args[i+1] for i, arg in enumerate(args) if arg == '--mount')
     assert not any('socket' in arg or '--env' in arg for arg in args)
     assert plan().capabilities.image_ref in args

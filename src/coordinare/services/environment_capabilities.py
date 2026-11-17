@@ -21,6 +21,7 @@ from coordinare.services.environment_acceptance import (
     accepted_environment,
     immutable_verifier_image,
 )
+from coordinare.services.environment_carrier import CARRIER_ACCOUNT, CARRIER_HOME, CARRIER_UID
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -124,7 +125,9 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
     return {"applies_to": "installer_and_check_carrier_processes", "linux_capabilities": [],
             "session_budget": {"seconds": resources.max_seconds, "container_cpus": resources.cpus,
                                "guest_cpus": guest_cpus(resources)},
-            "no_new_privileges": True, "uid_zero_restores_capabilities": False,
+            "no_new_privileges": True,
+            "run_as": {"user": CARRIER_ACCOUNT, "uid": CARRIER_UID, "root": False, "home": CARRIER_HOME},
+            "unprivileged_user_namespaces": True,
             "guest_docker_ready_before_manifest_commands": True,
             "manifest_execution_order": ["guest_readiness", "activation_environment", "install_if_requested",
                 "activation_path_validation", "service_init_start_health_if_installs_passed", "checks", "service_stop",
@@ -142,7 +145,11 @@ def carrier_process_policy(capabilities: ExecutionCapabilities) -> dict[str, Any
                 "(each owned by a service this manifest starts, usable only by service and check commands, never install "
                 "or activation). Generate any other secret a check needs inside its command, for example "
                 "NAME=$(openssl rand -hex 64) before the test command.",
-            "installation_guidance": "Even UID 0 cannot assume permission for user, group or ownership changes. "
+            "installation_guidance": "Every install, service and check command runs as the unprivileged user "
+                + CARRIER_ACCOUNT + f" (uid {CARRIER_UID}, HOME={CARRIER_HOME}) with no Linux capabilities, as on a "
+                "developer machine or CI runner: it cannot change users, groups or ownership, and cannot write system "
+                "directories, so never use sudo or install into the system Python or /usr. Unprivileged user "
+                "namespaces are available, so sandbox tools such as bubblewrap work without privileges. "
                 "Use inspected tools and cache-local dependency artifacts under {cache}. System packages cannot be "
                 "installed here: the carrier has no Linux capabilities, so apt-get or apt install, dpkg -i, apk add and "
                 "dnf or yum install all fail, and plain apt-get update and download fail too (apt's fetch helper needs "

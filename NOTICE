@@ -10,3 +10,11 @@ license. See LICENSE for the full terms.
 
 The Elastic License 2.0 identifies the licensor and the licensed work by
 description rather than by name, so this file records both.
+
+Third-party material
+
+src/coordinare/services/docker_default_seccomp.json is Docker's default seccomp
+profile, copied unmodified from the Moby project (github.com/moby/moby, tag
+docker-v29.9.3, vendor/github.com/moby/profiles/seccomp/default.json).
+Copyright Docker, Inc. It is licensed under the Apache License, Version 2.0
+(https://www.apache.org/licenses/LICENSE-2.0).

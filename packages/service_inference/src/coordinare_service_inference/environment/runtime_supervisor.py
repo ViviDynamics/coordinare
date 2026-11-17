@@ -358,6 +358,16 @@ async def _prepare_control(lease: RuntimeLease, *, repo: Path) -> list[str]:
                           carrier_platform=lease.spec.policy.identity.carrier_platform, kvm_usable=host_kvm_usable())
 
 
+# The carrier runs as an unprivileged user (coordinare environment_carrier), so the scratch's parent may be the
+# root-owned container root (scratch mounted at /tmp). Its working disk then goes beside it, in the container's own
+# sticky world-writable /var/tmp, on the same container filesystem the parent would have used.
+RUNTIME_WORK_FALLBACK = Path('/var/tmp')
+
+
+def runtime_work_parent(scratch: Path) -> Path:
+    return scratch.parent if os.access(scratch.parent, os.W_OK | os.X_OK) else RUNTIME_WORK_FALLBACK
+
+
 async def open_runtime(spec: RuntimeSpec, *, artifacts: RuntimeArtifactReceipt | None,
                        repo: Path, cache: Path, scratch: Path, install: bool, deadline: float,
                        manifest_digest: str | None = None, source_digest: str | None = None,
@@ -389,7 +399,7 @@ async def open_runtime(spec: RuntimeSpec, *, artifacts: RuntimeArtifactReceipt |
                 or await run_io(partial(_digest, path), deadline=deadline) != artifact.sha256):
             raise ValueError('private runtime artifact identity differs')
         initial[path] = artifact.sha256
-    work = Path(tempfile.mkdtemp(prefix='coordinare-runtime-', dir=scratch.parent))
+    work = Path(tempfile.mkdtemp(prefix='coordinare-runtime-', dir=runtime_work_parent(scratch)))
     lease = RuntimeLease(spec, bundle, uuid.uuid4().hex, work, cache, scratch,
                          deadline, install,
                          manifest_digest, source_digest, {}, initial_artifacts=initial, purpose=purpose)

@@ -24,7 +24,7 @@ def test_native_execution_does_not_invent_a_capability_policy():
     assert carrier_process_policy(SimpleNamespace(runtime=None)) is None
 
 
-def test_private_runtime_policy_does_not_equate_uid_zero_with_capabilities():
+def test_private_runtime_policy_states_the_unprivileged_carrier_identity():
     from coordinare.services.environment_capabilities import carrier_process_policy
 
     runtime = SimpleNamespace(resources=SimpleNamespace(cpus=8, memory_mib=4096, max_seconds=3600))
@@ -32,7 +32,9 @@ def test_private_runtime_policy_does_not_equate_uid_zero_with_capabilities():
     assert result['applies_to'] == 'installer_and_check_carrier_processes'
     assert result['linux_capabilities'] == []
     assert result['no_new_privileges'] is True
-    assert result['uid_zero_restores_capabilities'] is False
+    assert result['run_as'] == {'user': 'coordinare', 'uid': 10001, 'root': False, 'home': '/tmp/home'}
+    assert result['unprivileged_user_namespaces'] is True
+    assert 'uid 10001' in result['installation_guidance'] and 'bubblewrap' in result['installation_guidance']
     assert 'group' in result['installation_guidance'] and '{cache}' in result['installation_guidance']
     assert result['guest_docker_ready_before_manifest_commands'] is True
     assert result['manifest_execution_order']==['guest_readiness','activation_environment','install_if_requested',
@@ -88,6 +90,9 @@ def test_private_policy_matches_actual_docker_carrier_options(tmp_path):
     assert policy['linux_capabilities'] == []
     assert options[options.index('--security-opt') + 1] == 'no-new-privileges'
     assert policy['no_new_privileges'] is True
+    # The identity the author is told is the one the carrier runs as.
+    assert options[options.index('--user') + 1] == f"{policy['run_as']['uid']}:{policy['run_as']['uid']}"
+    assert 'systempaths=unconfined' in options
 
 
 @pytest.mark.asyncio

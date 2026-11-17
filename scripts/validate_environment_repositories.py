@@ -51,6 +51,7 @@ from coordinare.services.environment_attempt import (
     DiscoveryChatReply,
     EnvironmentDiscoveryError,
 )
+from coordinare.services.environment_carrier import carrier_isolation_options
 from coordinare.services.environment_repair import (
     journal_for,
     provenance_refusal_evidence,
@@ -414,7 +415,7 @@ async def _install(
     expires_at = time.time()+timeout
     if cache.environment_attempt is not None:
         expires_at = min(expires_at, time.time()+remaining_seconds(cache))
-    options = ['--cpus', '2', '--memory', '4g', '--pids-limit', '512']
+    options = [*carrier_isolation_options(), '--cpus', '2', '--memory', '4g', '--pids-limit', '512']
     if manifest.runtime is not None:
         require_runtime_target(manifest, cache)
         if cache.environment_attempt is None or journal_for(cache).status != 'executing':
