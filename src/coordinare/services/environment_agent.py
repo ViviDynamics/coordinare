@@ -510,6 +510,12 @@ class SourcePhase:
     rejection_errors: Callable[[Exception], list[JsonObject]] | None = None
 
 
+def required_sources(inspection: SourceInspection) -> frozenset[str]:
+    """Every bound file must be read, except one an earlier independent review already read at the same digest."""
+    return frozenset(path for path in inspection.source_files
+                     if inspection.bound_inputs.get(path) is None or inspection.bound_inputs[path] != inspection.inputs.get(path))
+
+
 async def run_source_phase(inspection: SourceInspection, messages: list[dict[str, str]],
                            phase: SourcePhase) -> Any:
     """A source role supplies domain rules; native tools own conversation delivery."""
@@ -524,7 +530,7 @@ async def run_source_phase(inspection: SourceInspection, messages: list[dict[str
         instructions=messages[0]['content'], packet={'context': messages[1:]},
         sources=tuple(EvidenceSource(path, text, inspection.inputs[path])
                       for path, text in sorted(inspection.source_files.items())),
-        required=frozenset(inspection.source_files), envelope=phase.envelope, schema=phase.schema,
+        required=required_sources(inspection), envelope=phase.envelope, schema=phase.schema,
         validate=phase.validate, validate_envelope=True, require_source=not phase.listing_only, rejection_errors=phase.rejection_errors,
         runtime=native.runtime, budget=budget, phase_timeout_seconds=inspection.limits.phase_timeout_seconds,
         max_model_calls=inspection.limits.max_model_calls, max_output_bytes=inspection.limits.max_output_bytes,

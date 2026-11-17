@@ -47,6 +47,9 @@ class SourceInspection:
         self.limits = limits
         self.inputs: dict[str, str] = {}
         self.source_files: dict[str, str] = {}
+        # Inputs an earlier independent review already read at these digests. A native agent may open them on
+        # demand, but is not required to page through them again; any other bound input stays required.
+        self.bound_inputs: dict[str, str] = {}
         self.reads = 0
         self.total_bytes = 0
         self.inventory_digest = hashlib.sha256(json.dumps(self.paths, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()

@@ -41,10 +41,16 @@ def test_every_author_gets_the_granularity_rule():
 def test_a_group_keeps_every_citation_and_the_strongest_applicability():
     a = proposal('scripts/a.sh', 'a', applicability='unknown')
     b = proposal('scripts/b.sh', 'b')
-    keep = criterion('scripts/a.sh', 'merged')
+    # A source outside the members' union is still rejected; the daemon never drops what the author wrote.
+    stray = {**criterion('scripts/a.sh', 'merged'), 'sources': ['scripts/a.sh', 'scripts/c.sh']}
     with pytest.raises(_ResponseReferenceError) as failure:
-        validate_consolidation({'scope_consolidation': {'groups': [group([a, b], keep)]}}, criteria=[a, b])
+        validate_consolidation({'scope_consolidation': {'groups': [group([a, b], stray)]}}, criteria=[a, b])
     assert {error['code'] for error in failure.value.errors} == {'consolidation_sources_invalid'}
+    # A partial citation is completed to exactly the union, so no correction is spent retyping it.
+    partial_sources = criterion('scripts/a.sh', 'merged')
+    [filled] = validate_consolidation({'scope_consolidation': {'groups': [group([a, b], partial_sources)]}},
+                                      criteria=[a, b])
+    assert filled.criterion.sources == ['scripts/a.sh', 'scripts/b.sh']
     weak = {**criterion('scripts/a.sh', 'merged'), 'sources': ['scripts/a.sh', 'scripts/b.sh'], 'applicability': 'unknown'}
     with pytest.raises(_ResponseReferenceError) as failure:
         validate_consolidation({'scope_consolidation': {'groups': [group([a, b], weak)]}}, criteria=[a, b])
@@ -125,11 +131,15 @@ def test_a_group_keeps_every_runtime_need():
     a = proposal('scripts/a.sh', 'a', runtime_needs=['postgres:16'])
     b = proposal('scripts/b.sh', 'b')
     dropped = {**criterion('scripts/a.sh', 'merged'), 'sources': ['scripts/a.sh', 'scripts/b.sh']}
+    [filled] = validate_consolidation({'scope_consolidation': {'groups': [group([a, b], dropped)]}}, criteria=[a, b])
+    assert filled.criterion.runtime_needs == ['postgres:16']
+    missing = {key: value for key, value in dropped.items() if key != 'runtime_needs'}
+    [filled] = validate_consolidation({'scope_consolidation': {'groups': [group([a, b], missing)]}}, criteria=[a, b])
+    assert filled.criterion.runtime_needs == ['postgres:16']
+    invented = {**dropped, 'runtime_needs': ['postgres:16', 'redis:7']}
     with pytest.raises(_ResponseReferenceError) as failure:
-        validate_consolidation({'scope_consolidation': {'groups': [group([a, b], dropped)]}}, criteria=[a, b])
+        validate_consolidation({'scope_consolidation': {'groups': [group([a, b], invented)]}}, criteria=[a, b])
     assert failure.value.errors[0]['code'] == 'consolidation_runtime_needs_invalid'
-    kept = {**dropped, 'runtime_needs': ['postgres:16']}
-    assert validate_consolidation({'scope_consolidation': {'groups': [group([a, b], kept)]}}, criteria=[a, b])
 
 
 @pytest.mark.asyncio

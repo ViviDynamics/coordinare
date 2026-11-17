@@ -211,8 +211,10 @@ CONSOLIDATION_INSTRUCTIONS = (
     'You consolidate a source-defined scope assembled from many per-shard authors, so it states environment '
     'obligations at the right level. You see criteria only, never file contents. Group criteria that describe the same '
     'environment obligation, or steps and internals of one documented operation, and give each group one criterion '
-    'that states the obligation and its observable result. A group criterion must cite exactly the union of its '
-    'members\' sources, keep the strongest member applicability (required over unknown over not_applicable), and keep '
+    'that states the obligation and its observable result. A group criterion cites exactly the union of its members\' '
+    'sources and runtime_needs: cite at least one member source, and the daemon adds any member source or runtime need '
+    'you leave out, so never retype long lists. Keep the strongest member applicability (required over unknown over '
+    'not_applicable), and keep '
     'every member\'s substance; never drop an obligation to make the scope smaller. Leave distinct obligations out of '
     'any group. Groups need at least two member ids. Independent reviewers judge the result and can restore anything '
     'lost. Return {"scope_consolidation":{"groups":[{"member_ids":[...],"criterion":{...}}]}} with no other keys; '
@@ -1226,9 +1228,38 @@ async def _bounded_tool_result(inspection: SourceInspection, reply: dict[str, An
     return await inspection.tool_result(reply)
 
 
+def settle_consolidation_unions(data: Any, *, criteria: Sequence[ScopeCriterionProposal]) -> Any:
+    """Place the member union the daemon already computes. A group criterion that omits sources or runtime_needs, or
+    names only some of its members' values, gets exactly the union. A value outside the union is left in place, so it is
+    still rejected. Groups with unknown or repeated members are left for the member check."""
+    by_id = {criterion_id(criterion): criterion for criterion in criteria}
+    groups = data.get('scope_consolidation', {}).get('groups') if isinstance(data, dict) else None
+    if not isinstance(groups, list):
+        return data
+    settled = []
+    for group in groups:
+        member_ids = group.get('member_ids') if isinstance(group, dict) else None
+        criterion = group.get('criterion') if isinstance(group, dict) else None
+        if (not isinstance(member_ids, list) or not isinstance(criterion, dict)
+                or len(set(map(str, member_ids))) != len(member_ids) or any(member not in by_id for member in member_ids)):
+            settled.append(group)
+            continue
+        members = [by_id[member] for member in member_ids]
+        criterion = dict(criterion)
+        for key in ('sources', 'runtime_needs'):
+            union = sorted({value for member in members for value in getattr(member, key)})
+            given = criterion.get(key) or []
+            if (isinstance(given, list) and all(isinstance(value, str) for value in given)
+                    and set(given) <= set(union) and len(union) <= MAX_CRITERION_SOURCES):
+                criterion[key] = union
+        settled.append({**group, 'criterion': criterion})
+    return {**data, 'scope_consolidation': {**data['scope_consolidation'], 'groups': settled}}
+
+
 def validate_consolidation(data: dict[str, Any], *, criteria: Sequence[ScopeCriterionProposal]) -> list[ConsolidationGroup]:
     """Groups keep every member citation and the strongest applicability; each criterion joins at most one group."""
     by_id = {criterion_id(criterion): criterion for criterion in criteria}
+    data = settle_consolidation_unions(data, criteria=criteria)
     groups = ScopeConsolidationEnvelope.model_validate(data).scope_consolidation.groups
     errors: list[dict[str, Any]] = []
     seen: set[str] = set()

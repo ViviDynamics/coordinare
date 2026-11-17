@@ -55,6 +55,7 @@ from coordinare.services.environment_agent import (
     EnvironmentPhaseRequest,
     ObservationTools,
     PinnedSourceTools,
+    required_sources,
     run_environment_phase,
     unavailable_legacy_chat,
 )
@@ -335,7 +336,20 @@ EXECUTABLE_REVIEW_INSTRUCTIONS = EXECUTABLE_REVIEW_CRITERIA + (
 
 def native_review_instructions() -> str:
     """Share domain criteria without advertising the retired JSON tool transport."""
-    return NATIVE_SOURCE_INSTRUCTIONS + EXECUTABLE_REVIEW_CRITERIA
+    return NATIVE_SOURCE_INSTRUCTIONS + EXECUTABLE_REVIEW_CRITERIA + REVIEWED_INPUTS_NOTE
+
+
+# Required reads cover the packet and inputs no independent review has read; scope-reviewed files are on demand.
+REVIEWED_INPUTS_NOTE = (
+    'Required reads cover your packet and every input the independent scope review did not already read at the same '
+    'digest. Scope-reviewed inputs are listed in mandatory_evidence but are not required reading: open any of them with '
+    'read_source when your judgment depends on its content. '
+)
+
+
+def reviewed_scope_inputs(scope: Any) -> dict[str, str]:
+    """The inputs independent scope review already read, at their reviewed digests."""
+    return dict(getattr(scope, 'review_inputs', None) or {})
 
 
 def scope_citations(scope: Any) -> dict[str, list[str]]:
@@ -1692,7 +1706,8 @@ async def _review(attempt: _Attempt, build: DividedConstruction | None,
             **url_check_evidence(missing)})},
     ]
     if (native := budget.agent_context) is not None:
-        required = frozenset(item['path'] for item in mandatory_evidence)
+        reviewer.bound_inputs = reviewed_scope_inputs(budget.scope_contract)
+        required = required_sources(reviewer) & {item['path'] for item in mandatory_evidence}
         result = await run_environment_phase(EnvironmentPhaseRequest(
             attempt_id=native.attempt_id, phase='review', role='reviewer', source_commit=manifest.source_commit,
             domain_digests=(('manifest', manifest.digest()),), model_config_digest=native.model_config_digest,
@@ -2219,6 +2234,7 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
                  else set(manifest.inputs))
         index = await inspection.bind_verified({path: digest for path, digest in manifest.inputs.items() if path in cited},
                                                phase='review', cited_by=scope_citations(build.scope))
+        inspection.bound_inputs = reviewed_scope_inputs(build.scope)
         mine = [record.model_dump(mode='json') for record in ledger.records if record.id in owned.get(owner, [])]
         system = (native_review_instructions() + REVIEW_PART_PREAMBLE if budget.agent_context is not None
                   else SOURCE_TOOLS + REVIEW_PART_PREAMBLE + EXECUTABLE_REVIEW_INSTRUCTIONS)
