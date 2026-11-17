@@ -25,6 +25,7 @@ from pydantic_core import PydanticCustomError
 from .evidence_safety import reject_literal_credentials, reject_nested_credentials, source_path
 from .findings import (
     MAX_LEDGER_FINDINGS,
+    REVIEW_RATIONALE_BYTES,
     FindingDecisionProposal,
     FindingLedger,
     FindingProposal,
@@ -699,7 +700,7 @@ class CriterionRulingProposal(StrictModel):
 
     criterion_id: str = Field(min_length=1, max_length=128)
     verdict: Literal["accept", "revise"]
-    rationale: str = Field(min_length=1, max_length=2048)
+    rationale: str = Field(min_length=1, max_length=REVIEW_RATIONALE_BYTES)
 
 
 class CoverageAssessmentProposal(StrictModel):

@@ -141,11 +141,11 @@ def test_an_over_length_review_rationale_is_cut_with_a_mark_and_nothing_else_cha
         normalize_source_assessment,
     )
 
-    long = 'é' + 'evidence ' * 400
+    long = 'é' + 'evidence ' * 600
     data = {'scope_assessment': {'verdict': 'revise', 'rationale': long, 'sources': ['README.md'],
                                  'findings': [{'issue': 'x' * 3000}], 'decisions': []}}
     normalized = normalize_source_assessment(data)['scope_assessment']
-    assert len(normalized['rationale'].encode()) <= 2048 and normalized['rationale'].endswith(' [truncated]')
+    assert len(normalized['rationale'].encode()) <= 4096 and normalized['rationale'].endswith(' [truncated]')
     assert normalized['findings'] == data['scope_assessment']['findings'] and normalized['verdict'] == 'revise'
     assert bounded_rationale('short') == 'short'
 

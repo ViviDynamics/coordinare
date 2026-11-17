@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import Field, field_validator, model_serializer, model_validator
 from pydantic_core import PydanticCustomError
@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from .models import EnvironmentManifest
 
 from .findings import (
+    REVIEW_RATIONALE_BYTES,
     Commit,
     Digest,
     FindingDecisionProposal,
@@ -222,6 +223,7 @@ class ScopeFindingProposal(FindingProposal):
 
 
 class _SourceDecision(FindingEvidence):
+    rationale_bytes: ClassVar[int] = REVIEW_RATIONALE_BYTES
     finding_id: FindingId
     rationale: str
     sources: list[str] = Field(min_length=1)
@@ -271,7 +273,7 @@ _DECISION_BRANCHES: dict[str, type[_SourceDecision]] = {'covered': CoveredDecisi
     'source_correction': SourceCorrectionDecision, 'source_gap': SourceGapDecision, 'duplicate': DuplicateDecision}
 
 
-RATIONALE_LIMIT = 2048
+RATIONALE_LIMIT = REVIEW_RATIONALE_BYTES
 TRUNCATION_MARK = ' [truncated]'
 
 
@@ -318,8 +320,10 @@ def derive_finding_decision(decision: SourceFindingDecision) -> FindingDecisionP
 
 
 class ScopeAssessmentProposal(FindingEvidence):
+    rationale_bytes: ClassVar[int] = REVIEW_RATIONALE_BYTES
     verdict: Literal['accept', 'revise', 'indeterminate']
-    rationale: str = Field(min_length=1, max_length=2048, description='Nonblank evidence summary, at most 2048 UTF-8 bytes.')
+    rationale: str = Field(min_length=1, max_length=REVIEW_RATIONALE_BYTES,
+                           description=f'Nonblank evidence summary, at most {REVIEW_RATIONALE_BYTES} UTF-8 bytes.')
     sources: list[str] = Field(min_length=1)
     findings: list[ScopeFindingProposal] = Field(max_length=MAX_SCOPE_FINDINGS)
     decisions: list[SourceFindingDecision] = Field(max_length=MAX_SCOPE_FINDINGS)

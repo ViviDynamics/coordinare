@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import TYPE_CHECKING, Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
 from .evidence_safety import reject_nested_credentials, source_path
@@ -29,8 +29,15 @@ Category = Literal['coverage', 'capability', 'activation', 'service_lifecycle', 
                    'runtime_network', 'deployment_image']
 
 
+TEXT_BYTES = 2048
+# A reviewer's rationale summarizes a whole judgment; nare-native-004, -009 and -010 lost their attempts to reviewers
+# that could not bring one under 2048 bytes. Findings, criteria and author responses keep TEXT_BYTES.
+REVIEW_RATIONALE_BYTES = 4096
+
+
 class FindingEvidence(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
+    rationale_bytes: ClassVar[int] = TEXT_BYTES
 
     @model_validator(mode='before')
     @classmethod
@@ -40,9 +47,10 @@ class FindingEvidence(BaseModel):
 
     @field_validator('issue', 'rationale', check_fields=False)
     @classmethod
-    def bounded_text(cls, value: str) -> str:
-        if not value.strip() or len(value.encode('utf-8')) > 2048:
-            raise ValueError('finding text must contain 1 to 2048 UTF-8 bytes')
+    def bounded_text(cls, value: str, info: ValidationInfo) -> str:
+        limit = cls.rationale_bytes if info.field_name == 'rationale' else TEXT_BYTES
+        if not value.strip() or len(value.encode('utf-8')) > limit:
+            raise ValueError(f'finding text must contain 1 to {limit} UTF-8 bytes')
         return value
 
     @field_validator('sources', check_fields=False)
@@ -75,6 +83,7 @@ class FindingResponse(FindingEvidence):
 
 
 class FindingDecisionProposal(FindingEvidence):
+    rationale_bytes: ClassVar[int] = REVIEW_RATIONALE_BYTES
     finding_id: FindingId
     status: Literal['open', 'resolved']
     rationale: str

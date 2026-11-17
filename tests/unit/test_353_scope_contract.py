@@ -276,10 +276,11 @@ def test_scope_wire_schema_publishes_existing_rationale_bounds():
         ScopeEnvelope,
     )
 
-    for envelope, definition in ((ScopeEnvelope, 'ScopeCriterionProposal'),
-                                 (ScopeAssessmentEnvelope, 'ScopeAssessmentProposal')):
+    # An author's criterion rationale keeps 2048 bytes; a reviewer's summary takes 4096 (nare-native-010 ruling).
+    for envelope, definition, bound in ((ScopeEnvelope, 'ScopeCriterionProposal', 2048),
+                                        (ScopeAssessmentEnvelope, 'ScopeAssessmentProposal', 4096)):
         schema = envelope.model_json_schema()['$defs'][definition]['properties']['rationale']
-        assert schema.get('maxLength') == 2048
+        assert schema.get('maxLength') == bound
         assert schema.get('minLength') == 1
         assert 'UTF-8' in schema.get('description', '')
 
@@ -316,12 +317,12 @@ def test_scope_rationale_feedback_reports_length_constraint_without_echoing_text
     from coordinare.services.environment_admission import _validation_feedback
 
     value = review()
-    value['scope_assessment']['rationale'] = 'private-evidence-' * 200
+    value['scope_assessment']['rationale'] = 'private-evidence-' * 300
     with pytest.raises(ValidationError) as failure:
         ScopeAssessmentEnvelope.model_validate(value)
     errors = _validation_feedback(failure.value)
     assert [{key: error[key] for key in ('location', 'code', 'max_length')} for error in errors] == [
-        {'location': ['scope_assessment', 'rationale'], 'code': 'string_too_long', 'max_length': 2048}]
+        {'location': ['scope_assessment', 'rationale'], 'code': 'string_too_long', 'max_length': 4096}]
     assert 'at most max_length' in errors[0]['guidance']
     assert 'private-evidence' not in json.dumps(errors)
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from coordinare_service_inference.environment.findings import REVIEW_RATIONALE_BYTES, TEXT_BYTES
+
 from coordinare.services.agent_runtime.models import AdmissionIssue
 
 if TYPE_CHECKING:
@@ -11,14 +13,21 @@ if TYPE_CHECKING:
 
 # This policy is checkpoint-bound by the phase adapter. Changing the selected
 # fields or their meaning requires a version change, even if JSON Schema is stable.
-REVIEW_DIAGNOSTICS_POLICY = 'review_sources_utf8_cut_point_stable_rules_and_read_completion_v4'
+REVIEW_DIAGNOSTICS_POLICY = 'review_sources_rationale_4096_cut_point_stable_rules_and_read_completion_v5'
 REVIEW_ENVELOPES = frozenset({'scope_assessment', 'assessment'})
-# FindingEvidence.bounded_text and ScopeAssessmentProposal share this domain bound.
-REVIEW_TEXT_MAX_UTF8_BYTES = 2048
+# The domain bounds FindingEvidence.bounded_text applies: a finding's issue, and a reviewer's rationale.
+REVIEW_TEXT_MAX_UTF8_BYTES = TEXT_BYTES
+REVIEW_RATIONALE_MAX_UTF8_BYTES = REVIEW_RATIONALE_BYTES
 # nare-native-004: told only to rewrite within the bound, a shard reviewer trimmed 22-84 bytes per correction
 # (2252, 2200, 2178, 2094, 2076, 2052) until its shared correction allowance was spent. A concrete target with margin
 # lets one rewrite land; the bound and the allowance are unchanged.
 REVIEW_TEXT_TARGET_UTF8_BYTES = REVIEW_TEXT_MAX_UTF8_BYTES * 4 // 5
+
+
+def text_bound(field: str) -> tuple[int, int]:
+    """A bounded field's maximum and its target with margin, in UTF-8 bytes."""
+    maximum = REVIEW_RATIONALE_MAX_UTF8_BYTES if field == 'rationale' else REVIEW_TEXT_MAX_UTF8_BYTES
+    return maximum, maximum * 4 // 5
 UTF8_BYTES_PER_WORD = 6
 
 
@@ -64,22 +73,23 @@ def review_response_diagnostics(candidate: object, *, envelope: str,
             except UnicodeEncodeError:
                 issues.append(AdmissionIssue('response_utf8_invalid', 'Use valid Unicode text.', (*location, field)))
                 continue
-            if byte_length > REVIEW_TEXT_MAX_UTF8_BYTES:
-                excess = byte_length - REVIEW_TEXT_MAX_UTF8_BYTES
-                cut = cut_point(value, REVIEW_TEXT_TARGET_UTF8_BYTES)
-                details = {'max_utf8_bytes': REVIEW_TEXT_MAX_UTF8_BYTES, 'actual_utf8_bytes': byte_length,
+            maximum, target = text_bound(field)
+            if byte_length > maximum:
+                excess = byte_length - maximum
+                cut = cut_point(value, target)
+                details = {'max_utf8_bytes': maximum, 'actual_utf8_bytes': byte_length,
                            'actual_characters': len(value), 'remove_at_least_utf8_bytes': excess,
-                           'target_utf8_bytes': REVIEW_TEXT_TARGET_UTF8_BYTES,
+                           'target_utf8_bytes': target,
                            'passage_past_target': cut,
                            'guidance': f'Shorten this summary by at least {excess} UTF-8 bytes, and aim for '
-                           f'{REVIEW_TEXT_TARGET_UTF8_BYTES} bytes or fewer (about '
-                           f'{REVIEW_TEXT_TARGET_UTF8_BYTES // UTF8_BYTES_PER_WORD} words) so one rewrite is enough: '
+                           f'{target} bytes or fewer (about '
+                           f'{target // UTF8_BYTES_PER_WORD} words) so one rewrite is enough: '
                            'trimming a few words at a time spends a correction each. The target is reached at the '
                            'passage quoted in passage_past_target: end the summary before it, folding anything '
                            'essential from that passage and what follows into the text before it. Keep findings, '
                            'decisions, sources and all other fields unchanged.'}
                 issues.append(AdmissionIssue('response_utf8_limit',
-                                             diagnostic_message(f'exceeds {REVIEW_TEXT_MAX_UTF8_BYTES} UTF-8 bytes',
+                                             diagnostic_message(f'exceeds {maximum} UTF-8 bytes',
                                                                 details), (*location, field)))
     return issues
 

@@ -25,16 +25,17 @@ def diagnose_candidate(candidate: object, envelope: str = 'scope_assessment') ->
 
 @pytest.mark.parametrize('envelope', ['scope_assessment', 'assessment'])
 def test_unicode_bounds_and_nested_citations_are_reported_without_mutation(envelope: str) -> None:
-    candidate = {envelope: {'rationale': 'é' * 1025, 'sources': ['README.md'],
-        'findings': [{'issue': 'a finding', 'sources': ['private-draft-value']}],
-        'decisions': [{'rationale': 'é' * 1025, 'sources': ['README.md', 'unread.md']}]}}
+    candidate = {envelope: {'rationale': 'é' * 2049, 'sources': ['README.md'],
+        'findings': [{'issue': 'é' * 1025, 'sources': ['private-draft-value']}],
+        'decisions': [{'rationale': 'é' * 2049, 'sources': ['README.md', 'unread.md']}]}}
     before = deepcopy(candidate)
     issues = diagnose_candidate(candidate, envelope)
     assert candidate == before
     assert {item.code for item in issues} == {'response_utf8_limit',
         'scope_citations_invalid' if envelope == 'scope_assessment' else 'review_citations_invalid'}
     rendered = json.dumps([item.message for item in issues])
-    assert '2050' in rendered and '2048' in rendered
+    # A reviewer's rationale is bounded at 4096 bytes and a finding's issue at 2048.
+    assert '4098' in rendered and '4096' in rendered and '2050' in rendered and '2048' in rendered
     assert 'read_source' in rendered
     assert 'private-draft-value' not in rendered and 'unread.md' not in rendered
 
@@ -286,8 +287,9 @@ def test_a_text_bound_correction_names_how_much_to_cut_and_a_target_with_margin(
         REVIEW_TEXT_TARGET_UTF8_BYTES,
     )
 
-    issues = diagnose_candidate({'scope_assessment': {'rationale': 'a' * 2252, 'sources': ['README.md'],
-                                                      'findings': [], 'decisions': []}})
+    issues = diagnose_candidate({'scope_assessment': {'rationale': 'ok', 'sources': ['README.md'],
+                                                      'findings': [{'issue': 'a' * 2252, 'sources': ['README.md']}],
+                                                      'decisions': []}})
     [issue] = [item for item in issues if item.code == 'response_utf8_limit']
     details = diagnostic_details(issue.message)
     assert details['remove_at_least_utf8_bytes'] == 2252 - REVIEW_TEXT_MAX_UTF8_BYTES
@@ -301,20 +303,55 @@ def test_a_bound_still_broken_keeps_one_identity_and_names_where_to_cut() -> Non
     told the reviewer three of them were fixed. The rule now precedes nare's ", got " separator."""
     from nare.corrections import code_of
 
-    from coordinare.services.environment_response_diagnostics import REVIEW_TEXT_TARGET_UTF8_BYTES
+    from coordinare.services.environment_response_diagnostics import text_bound
 
+    _, target = text_bound('rationale')
     def issue(text: str) -> Any:
         found = diagnose_candidate({'scope_assessment': {'rationale': text, 'sources': ['README.md'],
                                                          'findings': [], 'decisions': []}})
         [only] = [item for item in found if item.code == 'response_utf8_limit']
         return only
 
-    head = 'k' * REVIEW_TEXT_TARGET_UTF8_BYTES
-    first, second = issue(head + ' Marker passage starts here. ' + 'z' * 500), issue(head + ' Marker passage ' + 'y' * 400)
+    head = 'k' * target
+    first, second = issue(head + ' Marker passage starts here. ' + 'z' * 900), issue(head + ' Marker passage ' + 'y' * 850)
     rendered = [f"scope_assessment.rationale: {item.message}" for item in (first, second)]
-    assert code_of(rendered[0]) == code_of(rendered[1]) == 'scope_assessment.rationale: exceeds 2048 UTF-8 bytes'
+    assert code_of(rendered[0]) == code_of(rendered[1]) == 'scope_assessment.rationale: exceeds 4096 UTF-8 bytes'
     details = diagnostic_details(first.message)
     assert details['passage_past_target'].startswith('Marker passage starts here.')
     assert 'end the summary before it' in details['guidance']
     # A multi-byte character straddling the target is never split.
-    assert diagnostic_details(issue('é' * 1100).message)['passage_past_target'].startswith('é')
+    assert diagnostic_details(issue('é' * 2100).message)['passage_past_target'].startswith('é')
+
+
+def test_reviewer_rationales_take_4096_bytes_while_issues_and_authored_text_keep_2048() -> None:
+    """User ruling after nare-native-010: review summaries were lost at 2048 bytes three times."""
+    from coordinare_service_inference.environment.findings import (
+        FindingDecisionProposal,
+        FindingResponse,
+    )
+    from coordinare_service_inference.environment.models import CriterionRulingProposal
+    from coordinare_service_inference.environment.scope import (
+        CoveredDecision,
+        ScopeAssessmentProposal,
+        ScopeCriterionProposal,
+        bounded_rationale,
+    )
+    from pydantic import ValidationError
+
+    long, too_long = 'r' * 4096, 'r' * 4097
+    ScopeAssessmentProposal(verdict='accept', rationale=long, sources=['a'], findings=[], decisions=[])
+    FindingDecisionProposal(finding_id='F0001', status='resolved', rationale=long, sources=['a'])
+    CoveredDecision(finding_id='F0001', rationale=long, sources=['a'], disposition='covered', criterion_ids=['S1'])
+    CriterionRulingProposal(criterion_id='S1', verdict='accept', rationale=long)
+    for build in (lambda: ScopeAssessmentProposal(verdict='accept', rationale=too_long, sources=['a'], findings=[],
+                                                  decisions=[]),
+                  lambda: FindingDecisionProposal(finding_id='F0001', status='resolved', rationale=too_long,
+                                                  sources=['a'])):
+        with pytest.raises(ValidationError):
+            build()
+    with pytest.raises(ValidationError):
+        FindingResponse(finding_id='F0001', rationale='r' * 2049, sources=['a'], affected_ids=[])
+    with pytest.raises(ValidationError):
+        ScopeCriterionProposal(description='d', sources=['a'], applicability='required', rationale='r' * 2049,
+                               usability='u', runtime_needs=[])
+    assert bounded_rationale(long) == long and len(bounded_rationale(too_long).encode()) == 4096
