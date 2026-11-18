@@ -126,10 +126,11 @@ from coordinare.services.environment_probes import (
     ProbePlan,
     ProbeReport,
     ProbeRequest,
-    bind_probe_report,
     probe_tool_schema,
     select_current_probe_reports,
     settle_probe_arguments,
+    validate_probe_identity,
+    validate_probe_observations,
 )
 from coordinare.services.environment_proposal_patch import (
     MAX_CHANGES,
@@ -1362,8 +1363,11 @@ def _probe_handler(discovery: _Inspection, options: _DiscoveryOptions, commit: s
             budget.reserve_probe_batch()
             await budget.flush()
             budget.stage = "probe_execution"
-            report = bind_probe_report(plan, await executor(plan))
-            return report.model_dump(mode='json')
+            report = await executor(plan)
+            # Settled once this plan's batch ran and its guest is gone, even when a probe saw no observation:
+            # nare-native-012 left the receipt pending on that refusal and every later probe was refused unrun.
+            validate_probe_identity(plan, report)
+            return report.model_copy(update={"plan": plan.model_copy(deep=True)}).model_dump(mode='json')
 
         if discovery.native_effects is not None:
             binding = hashlib.sha256(_json(plan.model_dump(mode='json', exclude={'execution_id'})).encode()).hexdigest()
@@ -1371,6 +1375,7 @@ def _probe_handler(discovery: _Inspection, options: _DiscoveryOptions, commit: s
         else:
             data = await execute()
         report = ProbeReport.model_validate(data)
+        validate_probe_observations(report)
         if data not in budget.probe_reports:
             budget.probe_reports.append(data)
         budget.stage = "discovery"

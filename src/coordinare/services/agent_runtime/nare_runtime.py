@@ -121,7 +121,7 @@ class NareRuntime:
         if callable(validate_transport):
             validate_transport(transport)
         wrapped = BudgetTransport(transport, execution.bridge, TransportContext(session_id=execution.session.id,
-            before_send=execution.save, calls=self._calls, config=self._config, instructions=request.instructions,
+            before_send=execution.before_send, calls=self._calls, config=self._config, instructions=request.instructions,
             max_output_bytes=request.max_output_bytes, max_context_bytes=request.max_context_bytes,
             answer_schema=schema, request_stage=request.request_stage))
         mode = self._config.structured_transport if self._config is not None else None
@@ -267,6 +267,17 @@ class _Execution:
             req.evidence_catalog.restore_receipt(saved.evidence)
         elif saved.evidence.delivered:
             refuse_agent('Resumed evidence catalog is missing.', code='agent_evidence_changed')
+
+    async def before_send(self) -> None:
+        """An external action still unsettled when the model is next asked is a hold, not a tool error to retry:
+        nare-native-012 spent 621 calls on probes refused because one batch's receipt stayed pending."""
+        if self.request.effects is not None:
+            try:
+                await self.request.effects.ensure_settled()
+            except EnvironmentDiscoveryError as exc:
+                self.bridge.failure_code = exc.code
+                raise
+        await self.save()
 
     async def save(self) -> None:
         req = self.request

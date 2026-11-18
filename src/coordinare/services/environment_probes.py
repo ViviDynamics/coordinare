@@ -252,6 +252,12 @@ def select_current_probe_reports(reports: list[dict[str, Any]], source_commit: s
 
 
 def validate_probe_report(plan: ProbePlan, report: ProbeReport) -> None:
+    validate_probe_identity(plan, report)
+    validate_probe_observations(report)
+
+
+def validate_probe_identity(plan: ProbePlan, report: ProbeReport) -> None:
+    """The batch ran for this plan and its guest was torn down: the external action is settled, whatever it saw."""
     if (report.execution_source_digest != plan.execution_source_digest or report.plan_digest != plan.digest() or (report.plan is not None and report.plan.digest() != plan.digest())
             or report.source_commit != plan.source_commit
             or report.image_ref != plan.capabilities.image_ref or report.platform != plan.capabilities.platform
@@ -259,6 +265,9 @@ def validate_probe_report(plan: ProbePlan, report: ProbeReport) -> None:
             or not report.cleanup_confirmed):
         message = "probe evidence identity, completeness or cleanup is invalid"
         raise EnvironmentDiscoveryError(message, code="probe_report_invalid")
+
+
+def validate_probe_observations(report: ProbeReport) -> None:
     # A probe that timed out or whose output was truncated is still an observation, carried to the author with its
     # status: Dettmore e2e-15 held a whole attempt, after 58 minutes, on one probe in a batch of seven. Only a failure
     # of the probe machinery itself leaves the batch unobserved.

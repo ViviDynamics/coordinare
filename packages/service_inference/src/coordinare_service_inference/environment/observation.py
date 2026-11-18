@@ -85,6 +85,12 @@ def execute(command: dict[str, Any], seconds: float, *, runtime_env: dict[str, s
             result.update(status="timed_out", exit_code=None)
     except FileNotFoundError:
         result.update(status="completed", exit_code=127, output="executable or working directory unavailable")
+    except PermissionError:
+        # An observation, as a shell reports it: a PATH entry this user cannot search (the base image's
+        # /root/.local/bin for the unprivileged carrier) makes the lookup of an absent tool fail with EACCES rather
+        # than ENOENT. nare-native-012 lost its probe batch to reading that as a probe machinery failure.
+        result.update(status="completed", exit_code=127,
+                      output="executable or working directory unavailable or not accessible to this user")
     except (OSError, ValueError):
         result["output"] = "probe process or environment could not be resolved"
     finally:
