@@ -963,10 +963,12 @@ class _ObligationLedger:
 
     def record(self, data: dict[str, Any]) -> None:
         installation = self._commands(data.get("install"))
+        # Every missing install at once: nare-native-015's repair author was told one at a time, restored that one and
+        # dropped another, and spent all eight schema corrections on four installs.
+        if missing := [key for key in self.install if key not in installation]:
+            message = f"required installation obligation removed: {', '.join(_safe_id(key) for key in missing)}"
+            raise EnvironmentDiscoveryError(message, code="obligation_removed")
         for key, previous in self.install.items():
-            if key not in installation:
-                message = f"required installation obligation removed: {_safe_id(key)}"
-                raise EnvironmentDiscoveryError(message, code="obligation_removed")
             self._check(previous, installation.get(key))
         self.install.update({key: item for key, item in installation.items() if item.required})
         checks = self._commands(data.get("checks"))
