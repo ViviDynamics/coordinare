@@ -137,3 +137,47 @@ async def test_an_unsettled_effect_holds_the_phase_before_the_model_is_asked_aga
     result = await NareRuntime(transport=transport).run(req)
     assert result.status == 'held' and result.hold_code == 'agent_effect_pending'
     assert executed == ['probe'] and len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_probe_past_the_batch_limit_is_refused_without_reserving_an_effect() -> None:
+    """nare-native-016: the limit refusal came after the reservation, and the empty receipt held the phase."""
+    from coordinare.services import environment_discovery as discovery
+    from coordinare.services.agent_runtime.effects import EffectJournal
+    from coordinare.services.environment_attempt import MAX_PROBE_BATCHES
+    from coordinare.services.environment_probes import ProbeReport
+
+    effects = EffectJournal()
+
+    async def persist() -> None:
+        pass
+
+    effects.persist = persist
+    budget = AttemptBudget()
+
+    async def flush() -> None:
+        pass
+
+    budget.flush = flush  # type: ignore[method-assign]
+    executed = []
+
+    async def executor(executed_plan: Any) -> ProbeReport:
+        executed.append(executed_plan.digest())
+        return ProbeReport.model_validate({**report_data(executed_plan), 'plan': None})
+
+    inspection = SimpleNamespace(budget=budget, inventory_digest='b' * 64, inputs={PATH: 'c' * 64},
+                                 native_effects=effects, require_preflight=False)
+    options = SimpleNamespace(probe_executor=executor, require_preflight=False, execution_source_digest='1' * 64,
+                              capabilities=CAPABILITIES)
+    probe = discovery._probe_handler(inspection, options, COMMIT)  # type: ignore[arg-type]
+    first = await probe(request_data())
+    budget.probe_batches = MAX_PROBE_BATCHES
+    other = request_data()
+    other['commands'][0]['argv'] = ['bash', '-c', 'command -v unfamiliar-tool']
+    with pytest.raises(EnvironmentDiscoveryError) as refused:
+        await probe(other)
+    assert refused.value.code == 'attempt_probe_limit'
+    assert [receipt.status for receipt in effects.receipts()] == ['completed']
+    await effects.ensure_settled()
+    # The completed batch's result is still reused once the limit is reached.
+    assert (await probe(request_data())).results == first.results and len(executed) == 1

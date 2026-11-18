@@ -1380,7 +1380,7 @@ def _probe_handler(discovery: _Inspection, options: _DiscoveryOptions, commit: s
 
         if discovery.native_effects is not None:
             binding = hashlib.sha256(_json(plan.model_dump(mode='json', exclude={'execution_id'})).encode()).hexdigest()
-            data = await discovery.native_effects.run('probe', binding, execute)
+            data = await discovery.native_effects.run('probe', binding, execute, admit=budget.admit_probe_batch)
         else:
             data = await execute()
         report = ProbeReport.model_validate(data)

@@ -42,7 +42,11 @@ class EffectJournal:
             refuse_agent('External action receipt could not be persisted.',
                                             code=self.failure)
 
-    async def run(self, tool: str, binding_digest: str, execute: Callable[[], Awaitable[JsonObject]]) -> JsonObject:
+    async def run(self, tool: str, binding_digest: str, execute: Callable[[], Awaitable[JsonObject]], *,
+                  admit: Callable[[], None] | None = None) -> JsonObject:
+        """``admit`` refuses a new action before it is reserved, so a refusal leaves nothing pending; a completed
+        action's result is still reused after its admission would now be refused (nare-native-016's probe batch limit
+        was refused after the reservation, and the empty receipt held the phase)."""
         await self.ensure_settled()
         key = hashlib.sha256(f'{tool}:{binding_digest}'.encode()).hexdigest()
         if (saved := self._receipts.get(key)) is not None:
@@ -50,6 +54,8 @@ class EffectJournal:
                 refuse_agent('Completed action has no reusable result.', code='agent_effect_result_missing')
             result: JsonObject = json.loads(saved.result_json)
             return result
+        if admit is not None:
+            admit()
         self._receipts[key] = EffectReceipt(operation_id=key, tool=tool, binding_digest=binding_digest, status='pending')
         await self._flush()
         result = await execute()
