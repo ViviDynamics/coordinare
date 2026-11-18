@@ -98,7 +98,8 @@ RUN sed -i '/\[tool\.uv\.sources\]/,/^$/d' pyproject.toml && \
 COPY agent/performer/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 # The unprivileged account environment carriers run every manifest command as
-# (src/coordinare/services/environment_carrier.py); ssh needs its passwd entry.
-RUN getent passwd 10001 >/dev/null || { groupadd -g 10001 coordinare && useradd -u 10001 -g 10001 -M -d /tmp/home -s /bin/bash coordinare; }
+# (src/coordinare/services/environment_carrier.py); ssh needs its passwd entry. Manifest
+# and probe commands use /var/tmp/coordinare as TMPDIR (runner.COMMAND_TMPDIR).
+RUN getent passwd 10001 >/dev/null || { groupadd -g 10001 coordinare && useradd -u 10001 -g 10001 -M -d /tmp/home -s /bin/bash coordinare; }; install -d -m 1777 /var/tmp/coordinare
 ENV PATH="/root/.local/bin:${PATH}"
 ENTRYPOINT ["/entrypoint.sh"]

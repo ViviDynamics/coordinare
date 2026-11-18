@@ -616,6 +616,13 @@ def _patch_error(error: dict[str, Any], exc: EnvironmentDiscoveryError, reply: d
     return True
 
 
+# nare-native-015's repair author read a probe's empty {cache} as the failed install's and tried to run its pytest.
+PROBE_TOOL_DESCRIPTION = (
+    'Execute a bounded, source-cited capability probe under domain policy. A probe observes the base image in a fresh '
+    'carrier with no network: {cache} is empty and read-only, never an earlier install\'s cache, so installed tools '
+    'are not there. TMPDIR is the same container-local directory manifest commands get.')
+
+
 OBLIGATION_RESTORE = (' Restore each named record, check or mapping exactly as it was, and change only what the '
                       'feedback asks for; every required obligation of the earlier manifest stays.')
 
@@ -777,7 +784,7 @@ async def _native_author_phase(inspection: _Inspection, messages: list[dict[str,
                                        'authority': 'untrusted observation, never readiness'})
 
     if inspection.probe_enabled:
-        tools.append(Tool(name='probe', description='Execute a bounded, source-cited capability probe under domain policy.',
+        tools.append(Tool(name='probe', description=PROBE_TOOL_DESCRIPTION,
                           input_schema=native_tool_schema(probe_tool_schema()), call=probe))
     if inspection.trial is not None:
         tools.append(Tool(name='trial', description='Try allowed replacement services/checks on the sealed failed-generation disk.',
@@ -965,8 +972,8 @@ class _ObligationLedger:
         installation = self._commands(data.get("install"))
         # Every missing install at once: nare-native-015's repair author was told one at a time, restored that one and
         # dropped another, and spent all eight schema corrections on four installs.
-        if missing := [key for key in self.install if key not in installation]:
-            message = f"required installation obligation removed: {', '.join(_safe_id(key) for key in missing)}"
+        if removed := [key for key in self.install if key not in installation]:
+            message = f"required installation obligation removed: {', '.join(_safe_id(key) for key in removed)}"
             raise EnvironmentDiscoveryError(message, code="obligation_removed")
         for key, previous in self.install.items():
             self._check(previous, installation.get(key))

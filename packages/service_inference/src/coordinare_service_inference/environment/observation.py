@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 from coordinare_service_inference.environment.models import environment_order
-from coordinare_service_inference.environment.runner import _expand
+from coordinare_service_inference.environment.runner import _expand, command_tmpdir
 
 from .runtime_cli import run_cli
 from .runtime_observation import PrivateTeardownError, observe_private
@@ -22,6 +22,8 @@ def command_environment(command: dict[str, Any], *, runtime_env: dict[str, str] 
                         roots: dict[str, str] | None = None) -> dict[str, str]:
     roots = roots or {"repo":"/repo", "cache":"/cache", "scratch":"/scratch"}
     env = {"PATH":os.environ.get("PATH", os.defpath), "HOME":roots['scratch'], "TMPDIR":roots['scratch'], "LANG":"C.UTF-8"}
+    # The same temporary directory a manifest command gets, so a probe observes what an install will.
+    command_tmpdir(env)
     declared = command.get("env", {})
     for key in environment_order(declared):
         if key in {"BASH_ENV", "ENV"}:

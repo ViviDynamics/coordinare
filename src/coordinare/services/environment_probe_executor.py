@@ -16,6 +16,7 @@ from coordinare_service_inference.environment.execution_source import (
 from coordinare_service_inference.environment.execution_source_restore import (
     restore_execution_bundle,
 )
+from coordinare_service_inference.environment.runner import COMMAND_TMPDIR
 
 from coordinare.lib.redaction import redact_command_text
 from coordinare.services import environment_probe_runtime
@@ -58,6 +59,8 @@ def probe_container_argv(plan: ProbePlan, source: Path, cache: Path, *, scratch:
     return ["docker", "create", "--name", "coordinare-probe-" + plan.digest()[:24],
         "--platform", platform, "--network=none", "--read-only", *carrier_isolation_options(), *resources,
         "--tmpfs", str(Path("/") / "tmp") + ":rw,nosuid,nodev,size=16m",
+        # The manifest commands' temporary directory, container-local as theirs is (runner.COMMAND_TMPDIR).
+        "--tmpfs", COMMAND_TMPDIR + ":rw,nosuid,nodev,size=64m,mode=1777",
         "--mount", f"type=bind,source={source},target=/repo,readonly",
         "--mount", f"type=bind,source={cache},target=/cache,readonly",
         "--entrypoint", "/usr/local/bin/python", plan.capabilities.image_ref,

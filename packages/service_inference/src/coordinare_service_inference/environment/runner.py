@@ -41,6 +41,17 @@ _ERROR_LINE = re.compile(rb"(?i)\b(error|fatal|failed|failure|exception|not avai
 _STACK_FRAME = re.compile(rb"^\s*(from\s+)?\S+:\d+:in\b|^\s+at\s")
 ATTEMPT_OUTPUT_LIMIT = 256 * 1024
 GENERATED_NAMES_ENV = "COORDINARE_ENV_GENERATED_NAMES"
+# Every manifest and probe command's temporary directory, on the container's own filesystem. The carrier's /tmp may be
+# a host bind mount (the private runtime keeps its work there), and Docker Desktop's file sharing cannot truncate an
+# unlinked file, which pytest's output capture does: nare-native-015's sampled pytest checks all crashed that way.
+# Carrier images create it world-writable and sticky; probes mount a tmpfs there. Where it is absent, as on a
+# developer host, the inherited TMPDIR stays.
+COMMAND_TMPDIR = "/var/tmp/coordinare"
+
+
+def command_tmpdir(env: dict[str, str]) -> None:
+    if os.path.isdir(COMMAND_TMPDIR):
+        env["TMPDIR"] = COMMAND_TMPDIR
 _VALUE_REFERENCE = re.compile(r"\$\{(?P<environment>[A-Za-z_][A-Za-z0-9_]*)\}|\{(?P<root>cache|repo|scratch)\}")
 
 
@@ -315,6 +326,7 @@ def manifest_environment(
     # Bash startup hooks must never run before an explicit declared command.
     env.pop("BASH_ENV", None)
     env.pop("ENV", None)
+    command_tmpdir(env)
     if runtime_env is not None:
         env.update({key: value for key, value in runtime_env.items() if key != "PATH"})
     if set(generated) & set(runtime_env or {}):

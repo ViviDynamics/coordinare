@@ -21,6 +21,8 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+from coordinare_service_inference.environment.runner import COMMAND_TMPDIR
+
 # The coordinare daemon's own unprivileged uid (deploy/helm runAsUser), so a daemon-created directory on a Linux host
 # is already owned by the carrier. Each carrier image defines this user, because ssh and ssh-keygen (the private
 # runtime's guest control) refuse to run for a uid with no passwd entry.
@@ -43,7 +45,8 @@ USER_NAMESPACE_RULE: dict[str, Any] = {
 
 CARRIER_IMAGE_USER_STEP = (
     f'getent passwd {CARRIER_UID} >/dev/null || {{ groupadd -g {CARRIER_UID} {CARRIER_ACCOUNT} && '
-    f'useradd -u {CARRIER_UID} -g {CARRIER_UID} -M -d {CARRIER_HOME} -s /bin/bash {CARRIER_ACCOUNT}; }}')
+    f'useradd -u {CARRIER_UID} -g {CARRIER_UID} -M -d {CARRIER_HOME} -s /bin/bash {CARRIER_ACCOUNT}; }}; '
+    f'install -d -m 1777 {COMMAND_TMPDIR}')
 
 
 def carrier_seccomp_profile() -> dict[str, Any]:
