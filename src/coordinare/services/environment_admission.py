@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING, Any, get_args
 
 from coordinare_service_inference.environment.models import MAX_DUPLICATE_PAIRS
 from coordinare_service_inference.environment.scope_revision import MAX_SCOPE_REVISION_CHANGES
+from coordinare_service_inference.environment.system_packages import (
+    COMMAND as SYSTEM_PACKAGES_COMMAND,
+)
 from pydantic import BaseModel
 
 from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDiscoveryError
@@ -188,9 +191,8 @@ GRAPH_GUIDANCE = {
                                'dpkg -i, apk add, dnf or yum install), or an apt fetch (update, download, install -d) '
                                'without the unprivileged options, which this carrier refuses: it has no Linux '
                                'capabilities. Fetch native packages with the daemon command the installation guidance '
-                               'gives (python3 -m coordinare_service_inference.environment.system_packages --into '
-                               '{cache}/deps <packages>) and source {cache}/deps/system-packages.env in each command '
-                               'that builds against them; or download a prebuilt release archive for '
+                               'gives (' + SYSTEM_PACKAGES_COMMAND + ') and source {cache}/deps/system-packages.env in '
+                               'each command that builds against them; or download a prebuilt release archive for '
                                'execution_capabilities.platform.'),
     'forwarded_secret_unset': ('The named command forwards the listed variables to a container by name alone (-e NAME), but '
                                'this command never defines them, so the container receives nothing. Pass the value the '

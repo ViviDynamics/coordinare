@@ -1,6 +1,6 @@
 """Fetch and unpack this carrier's own release packages without privileges, ready to build against.
 
-    python3 -m coordinare_service_inference.environment.system_packages --into {cache}/deps PACKAGE...
+    /usr/local/bin/python3 -m coordinare_service_inference.environment.system_packages --into {cache}/deps PACKAGE...
 
 The carrier has no Linux capabilities, so packages cannot be installed. apt can still download them without privileges,
 and their contents are unpacked under ``--into``. Each step is one the build needs, in one command so none is dropped:
@@ -38,8 +38,12 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
 ENV_FILE = "system-packages.env"
+# The carrier's own interpreter, where this package is installed (agent/performer/Dockerfile.base is python:3.12-slim).
+# Never a bare python3: an install runs with the manifest's activation PATH first, so nare-native-013's python3 was
+# the project's own virtualenv, which lacks this package; Debian's /usr/bin/python3 lacks it too.
+CARRIER_PYTHON = "/usr/local/bin/python3"
 # The command the installation guidance and the static-rule correction give, with its placeholders.
-COMMAND = "python3 -m coordinare_service_inference.environment.system_packages --into {cache}/deps <packages>"
+COMMAND = f"{CARRIER_PYTHON} -m coordinare_service_inference.environment.system_packages --into {{cache}}/deps <packages>"
 # A Debian package name, optionally with an architecture or an exact version.
 _PACKAGE = re.compile(r"[a-z0-9][a-z0-9+.-]+(:[a-z0-9-]+)?(=[A-Za-z0-9.+~:-]+)?")
 _PKG_CONFIG_PATH_VARIABLE = re.compile(r"(?P<name>prefix|exec_prefix|libdir|includedir|sharedlibdir)=(?P<value>/usr(/.*)?)$")
@@ -227,7 +231,7 @@ def fetch(packages: Sequence[str], into: Path, *, run: Callable[[Sequence[str]],
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python3 -m coordinare_service_inference.environment.system_packages",
+    parser = argparse.ArgumentParser(prog=f"{CARRIER_PYTHON} -m coordinare_service_inference.environment.system_packages",
                                      description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("--into", type=Path, required=True, help="directory to unpack into, normally {cache}/deps")
     parser.add_argument("packages", nargs="+", help="Debian package names, for example libssl-dev zlib1g-dev")
