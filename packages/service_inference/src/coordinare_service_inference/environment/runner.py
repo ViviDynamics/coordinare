@@ -388,8 +388,10 @@ async def _terminate(process: asyncio.subprocess.Process) -> None:
             return
         except TimeoutError:
             pass
-    # A successful parent can still leave descendants behind in its process group.
-    with contextlib.suppress(ProcessLookupError):
+    # A successful parent can still leave descendants behind in its process group. EPERM means none of ours remain:
+    # macOS answers it for a group whose exited leader is all that is left (preflight 27's fast `true` check), and
+    # anywhere it can only name a group that is no longer this command's.
+    with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(process.pid, signal.SIGKILL)
     if process.returncode is None:
         # Process.wait() can also wait for inherited stdout to reach EOF. Keep
