@@ -1102,19 +1102,6 @@ async def _run_consumer_phase(
     execution_source_digest: str | None,
 ) -> VerificationReport:
     """Activation, services and checks, in the source copy a clean consumer would see."""
-    # Activation paths are execution prerequisites, even when a command uses absolute argv.
-    missing = [
-        path for path in manifest.activation.path if not Path(_expand(path, roots, env)).is_dir()
-    ]
-    if missing:
-        results["activation"] = CheckResult(
-            id="activation",
-            status="fail",
-            required=True,
-            output="declared activation path missing",
-            manifest_digest=digest,
-            context=scope,
-        )
     # Dettmore e2e-54: with install-ruby failed, every generation still started the services, whose ruby-based mock
     # failed with "env: 'ruby': No such file or directory" and read as a fault of its own. A service starts only when
     # every required install passed; otherwise its steps are not_run and name the installs.
@@ -1124,8 +1111,23 @@ async def _run_consumer_phase(
     blocked = [command.id for command in manifest.install
                if install and command.required and in_scope(command)
                and (command.id not in results or results[command.id].status != "pass")]
+    note = "required install did not pass: " + ", ".join(blocked[:8])
+    # Activation paths are execution prerequisites, even when a command uses absolute argv. One a failed install was
+    # to create is that install's consequence, not a fault of its own: nare-native-013's and -018's repair authors
+    # read it as one, pre-created the virtualenv's bin directory, and uv then refused the existing directory.
+    missing = [
+        path for path in manifest.activation.path if not Path(_expand(path, roots, env)).is_dir()
+    ]
+    if missing:
+        results["activation"] = CheckResult(
+            id="activation",
+            status="not_run" if blocked else "fail",
+            required=True,
+            output=("declared activation path not created; " + note) if blocked else "declared activation path missing",
+            manifest_digest=digest,
+            context=scope,
+        )
     if blocked:
-        note = "required install did not pass: " + ", ".join(blocked[:8])
         for service in manifest.services:
             if scope and service.start.scope and scope not in service.start.scope:
                 continue
