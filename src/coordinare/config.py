@@ -1122,8 +1122,9 @@ class EnvCacheConfig(BaseModel):
     manifest_max_inventory_entries: int = Field(default=100_000, ge=1, le=1_000_000)
     # Over one hour only for sharded discovery; one phase may take up to four hours of an attempt's six.
     manifest_phase_timeout_seconds: float = Field(default=120.0, gt=0, le=4 * 3600)
-    # Up to one hour; sharded discovery (manifest_shard_context_tokens set) may run up to six.
-    manifest_attempt_timeout_seconds: float = Field(default=600.0, gt=0, le=6 * 3600)
+    # Up to one hour; sharded discovery (manifest_shard_context_tokens set) may run up to eight
+    # (environment_attempt.MAX_SHARDED_ATTEMPT_SECONDS); its defaults keep six.
+    manifest_attempt_timeout_seconds: float = Field(default=600.0, gt=0, le=8 * 3600)
     manifest_max_model_calls: int = Field(default=128, ge=1, le=4096)
     manifest_max_total_reads: int = Field(default=512, ge=1, le=8192)
     manifest_max_review_context_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)
@@ -1566,7 +1567,7 @@ class ProjectConfiguration(BaseSettings):
     # re-dispatches it (automatic retry).  Set to 0 to restore the legacy
     # ~2 h behaviour (no early reap).  Tune up for slow single-tenant
     # backends whose first-run install legitimately exceeds the default.
-    bootstrap_max_seconds: int = Field(default=3600, ge=0, le=21600)
+    bootstrap_max_seconds: int = Field(default=3600, ge=0, le=8 * 3600)
 
     # Bootstrap silence outside a tool call is bounded separately from installs.
     # Open tools get a 45 minute ceiling; the job wall clock still applies.

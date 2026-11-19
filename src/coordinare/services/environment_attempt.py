@@ -32,9 +32,11 @@ if TYPE_CHECKING:
 
 MAX_ATTEMPT_SECONDS = 3600
 # Maintainer rulings (issue 353): sharded discovery on a self-hosted model may run up to six hours (raised from four
-# on 2026-10-29: scope re-review, review rounds, install, a repair and the offline consumer ran past four).
-MAX_SHARDED_ATTEMPT_SECONDS = 6 * 3600
-# One phase stays within four hours of the six (the config caps manifest_phase_timeout_seconds the same way).
+# on 2026-10-29: scope re-review, review rounds, install, a repair and the offline consumer ran past four). Maintainer
+# ruling 2026-11-19 (issue 376, nare-native-017 to -019): the ceiling is eight hours, so an acceptance run may ask for
+# more than the six the sharded defaults keep; scope and a reviewed manifest alone took up to five.
+MAX_SHARDED_ATTEMPT_SECONDS = 8 * 3600
+# One phase stays within four hours of an attempt (the config caps manifest_phase_timeout_seconds the same way).
 MAX_PHASE_SECONDS = 4 * 3600
 # Maintainer ruling 2026-10-31: four execution repairs (Dettmore e2e-33 held with every install but one passing).
 # Maintainer decision 2026-11-12 (Dettmore e2e-86, e2e-87): both stopped at four execution repairs with three hours
