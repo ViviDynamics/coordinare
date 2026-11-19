@@ -1509,8 +1509,7 @@ async def _discover_attempt(
     scope = await construction.prepare(options.previous_manifest.inputs if options.previous_manifest is not None else None)
     discovery = _Inspection("discovery", options.entries or inventory, fetch, bounds, budget)
     scope_evidence = await discovery.bind_verified(scope.all_inputs, phase="construction", cited_by=scope_citations(scope))
-    discovery.observe_sources = construction.observe_sources
-    discovery.scope_refusal = construction.delta_scope_refusal
+    discovery.observe_sources, discovery.scope_refusal = construction.observe_sources, construction.delta_scope_refusal
     identity = {**construction.context(), "bound_scope_inputs": scope_evidence, "evidence_rule": evidence_navigation(budget),
                 "symphony_name": symphony_name, "source_commit": commit,
                 "requested_coverage_scope": {"environment": "whole documented development/test environment",
