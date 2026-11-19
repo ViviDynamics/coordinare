@@ -24,7 +24,7 @@ from coordinare_service_inference.environment.models import (
     ExecutionCapabilities,
     VerificationReport,
 )
-from coordinare_service_inference.environment.runner import stopped_at_limit
+from coordinare_service_inference.environment.runner import ACTIVATION_CONSEQUENCE, stopped_at_limit
 from coordinare_service_inference.environment.scope import (
     ScopeContract,
     ScopeDefinition,
@@ -891,10 +891,11 @@ def finish_probe(cache: EnvCacheState, report: ProbeReport) -> None:
 
 
 def _activation_failure(result: CheckResult, manifest: EnvironmentManifest) -> bool:
-    """Recognize only the runner's bound missing-activation failure, never success."""
+    """Recognize only the runner's bound missing-activation result, never success: a failure of its own, or the
+    not_run consequence of a failed install (nare-native-020 held unrepaired when only the failure was known)."""
     return (bool(manifest.activation.path) and result.id == "activation" and result.required
-        and result.status == "fail" and result.exit_code is None
-        and result.manifest_digest == manifest.digest() and result.context == "")
+        and (result.status == "fail" or (result.status == "not_run" and result.output.startswith(ACTIVATION_CONSEQUENCE)))
+        and result.exit_code is None and result.manifest_digest == manifest.digest() and result.context == "")
 
 
 PROVENANCE_REFUSED = "env-cache provenance refused"

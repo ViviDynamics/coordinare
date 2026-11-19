@@ -481,3 +481,23 @@ def test_an_install_only_repair_is_estimated_from_earlier_install_only_repairs()
     assert repair_time_estimate(rejected, install_only=False)['discovery_seconds'] == 2400
     assert repair_time_estimate(rejected[:1], install_only=True)['discovery_seconds'] == FIRST_REPAIR_DISCOVERY_SECONDS
     assert repair_time_estimate([{'report': {}}], install_only=False) is None
+
+
+def test_an_activation_consequence_of_a_failed_install_admits_repair(tmp_path):
+    """nare-native-020: the runner's not_run activation consequence read as unknown evidence, and the run held."""
+    from coordinare_service_inference.environment.runner import ACTIVATION_CONSEQUENCE
+
+    cache, report = activation_failure_case(tmp_path)
+    report['results'][0].update(status='fail', exit_code=1)
+    report['results'][1].update(status='not_run', output=ACTIVATION_CONSEQUENCE + 'required install did not pass: x')
+    assert record_execution_failure(cache, report, cleanup_confirmed=True, now=101)
+    assert cache.environment_attempt['status'] == 'repair_pending'
+
+
+def test_a_not_run_activation_without_the_runner_consequence_still_holds(tmp_path):
+    cache, report = activation_failure_case(tmp_path)
+    report['results'][0].update(status='fail', exit_code=1)
+    report['results'][1].update(status='not_run', output='something else')
+    assert not record_execution_failure(cache, report, cleanup_confirmed=True, now=101)
+    assert cache.environment_attempt['status'] == 'held'
+    assert cache.environment_attempt['last_error'] == 'execution_evidence_indeterminate'

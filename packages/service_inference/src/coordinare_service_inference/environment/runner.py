@@ -47,6 +47,8 @@ GENERATED_NAMES_ENV = "COORDINARE_ENV_GENERATED_NAMES"
 # Carrier images create it world-writable and sticky; probes mount a tmpfs there. Where it is absent, as on a
 # developer host, the inherited TMPDIR stays.
 COMMAND_TMPDIR = "/var/tmp/coordinare"
+# The activation result a failed required install leaves: not_run, its output led by this and naming the installs.
+ACTIVATION_CONSEQUENCE = "declared activation path not created; "
 
 
 def command_tmpdir(env: dict[str, str]) -> None:
@@ -1125,7 +1127,7 @@ async def _run_consumer_phase(
             id="activation",
             status="not_run" if blocked else "fail",
             required=True,
-            output=("declared activation path not created; " + note) if blocked else "declared activation path missing",
+            output=(ACTIVATION_CONSEQUENCE + note) if blocked else "declared activation path missing",
             manifest_digest=digest,
             context=scope,
         )
