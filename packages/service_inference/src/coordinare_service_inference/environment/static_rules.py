@@ -131,7 +131,10 @@ _FD_REDIRECT = re.compile(r"(\d*[<>])&(\d+|-)|&>")
 
 # Constructs this lexer cannot follow without misreading text as commands: a heredoc body, a quoted argument made
 # only of operator characters, or an escaped operator. A script containing any of them is not judged.
-_UNJUDGED = re.compile(r"<<|(['\"])[;&|()\s]+\1|\\[;&|()]")
+# A quoted word made only of separators (';' or " | ") is one the lexer would misread, so the script is unjudged. The
+# quote must open a word: between adjacent quoted words ('{cache}/x' '{scratch}') a closing quote, the space and the
+# next opening quote only look like one, and nare-native-019 lost every static rule, the URL check among them, to that.
+_UNJUDGED = re.compile(r"<<|(?<![^\s;&|()])(['\"])[;&|()\s]+\1(?![^\s;&|()])|\\[;&|()]")
 
 
 _REDIRECTION = re.compile(r"\d*[<>]+")
