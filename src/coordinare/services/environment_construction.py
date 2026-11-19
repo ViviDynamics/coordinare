@@ -72,6 +72,18 @@ class ReviewedConstruction:
                     'the explicitly configured private-service policy; runtime identity, resources and privileges '
                     'are daemon-owned. Supply one complete executable manifest.'}
 
+    def delta_scope_refusal(self, path: str) -> dict[str, str] | None:
+        """A delta repair reads only the reviewed scope: a source outside it would reopen scope review, which a delta
+        cannot survive (nare-native-017's delta read one test file outside scope, was rejected, and the full repair
+        it fell back to spent the rest of the attempt). The read is answered instead, so the delta goes on in scope;
+        a repair that needs the source fails as a delta and the full repair, which may reopen scope, takes over."""
+        scope = self.budget.scope_contract
+        if not self.budget.repair_delta or scope is None or path in scope.all_inputs:
+            return None
+        return {'path': path, 'error': 'outside_reviewed_scope',
+                'guidance': 'This delta repair reads only sources in the reviewed scope. Repair the failed commands '
+                            'from the scope sources and execution feedback you have.'}
+
     async def observe_sources(self, inputs: dict[str, str]) -> None:
         scope = self.budget.scope_contract
         if scope is None:

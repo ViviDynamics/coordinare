@@ -102,6 +102,9 @@ class PinnedSourceTools:
             policy = self.inspection.policy_status(path)
             if policy != 'readable':
                 return _json({'path': path, 'error': policy})
+            refuse = getattr(self.inspection, 'scope_refusal', None)
+            if refuse is not None and (refusal := refuse(path)) is not None:
+                return _json(refusal)
             try:
                 item = (await self.inspection.read_files([path], navigation=True))['files'][0]
                 if 'error' in item:

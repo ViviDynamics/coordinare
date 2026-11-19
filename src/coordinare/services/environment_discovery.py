@@ -376,6 +376,7 @@ class _Inspection(SourceInspection):
         self.stage_prompts: DiscoveryPrompts | None = None
         self.require_preflight = False
         self.observe_sources: Callable[[dict[str, str]], Awaitable[None]] | None = None
+        self.scope_refusal: Callable[[str], dict[str, str] | None] | None = None
         self.preflight_reminded = False
         self.probe_repair: dict[str, Any] | None = None
         # The complete declaration a coverage revision revises: its author may correct it instead of restating it.
@@ -1509,6 +1510,7 @@ async def _discover_attempt(
     discovery = _Inspection("discovery", options.entries or inventory, fetch, bounds, budget)
     scope_evidence = await discovery.bind_verified(scope.all_inputs, phase="construction", cited_by=scope_citations(scope))
     discovery.observe_sources = construction.observe_sources
+    discovery.scope_refusal = construction.delta_scope_refusal
     identity = {**construction.context(), "bound_scope_inputs": scope_evidence, "evidence_rule": evidence_navigation(budget),
                 "symphony_name": symphony_name, "source_commit": commit,
                 "requested_coverage_scope": {"environment": "whole documented development/test environment",
