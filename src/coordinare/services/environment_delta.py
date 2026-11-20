@@ -12,6 +12,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from coordinare_service_inference.environment.models import Command
 from pydantic import ValidationError
 
 from coordinare.services.environment_delta_schema import RECORD_GROUPS
@@ -45,6 +46,26 @@ _PROPOSAL_FIELDS = ("runtime_endpoints", "criterion_checks", "requirements", "in
                     "empty_reason", "local_credentials")
 
 
+_COMMAND_CONTENT_EXCLUDED = ('required', 'timeout_seconds')
+
+
+def _same_command(item: Mapping[str, Any], original: Mapping[str, Any]) -> bool:
+    """Whether a check record runs what the original ran: everything but required and the timeout."""
+    try:
+        current, before = Command.model_validate(item), Command.model_validate(original)
+    except ValidationError:
+        return True  # an unparsable record is left for admission to report
+    excluded = set(_COMMAND_CONTENT_EXCLUDED)
+    return bool(current.model_dump(mode='json', exclude=excluded) == before.model_dump(mode='json', exclude=excluded))
+
+
+def _redepend(item: Any, renamed: Mapping[str, str]) -> Any:
+    """A required command that depended on a retired check depends on its replacement instead."""
+    if not isinstance(item, dict) or not isinstance(depends := item.get('depends_on'), list) or item.get('required') is False:
+        return item
+    return {**item, 'depends_on': [renamed.get(identifier, identifier) for identifier in depends]}
+
+
 def proposal_of(manifest: EnvironmentManifest) -> dict[str, Any]:
     """The model-owned proposal fields of a manifest, as the authors and the admission rules see them.
 
@@ -74,6 +95,8 @@ class DeltaPlan:
     triage: RepairTriage
     # Commands an earlier execution fixed (fixed_command_ids): a closure record among them keeps all but its timeout.
     fixed: frozenset[str] = frozenset()
+    # Checks that failed in an execution and never passed (budget.retirable_checks): one may be retired and replaced.
+    retirable: frozenset[str] = frozenset()
 
     @property
     def closure(self) -> frozenset[str]:
@@ -122,7 +145,62 @@ class DeltaPlan:
             items = [originals.get(item.get('id'), item) if isinstance(item, dict) else item for item in candidate.get(key) or []]
             present = {item.get('id') for item in items if isinstance(item, dict)}
             restored[key] = [*items, *(record for identifier, record in originals.items() if identifier not in present)]
-        return restored
+        return self.retire_edited(base, restored)
+
+    def retire_edited(self, base: Mapping[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+        """The candidate with each failed check it rewrote in place retired as it ran and replaced by the rewrite.
+
+        nare-native-024: five checks failed because they were wrong, and the delta author rewrote one in place ten
+        times though each correction said to retire it (keep it exactly as it ran, required false) and add a new
+        check; the attempt ran out of schema corrections. A rewrite of a check that failed and never passed can only
+        be that retirement, so it is made here: the executed record stays, not required, and the rewrite becomes a
+        new required check under a derived id that takes over the old one's mappings and dependents. Review still
+        judges the replacement.
+        """
+        editable = self.closure & self.fixed & self.retirable
+        originals = {item['id']: item for item in base.get('checks') or []
+                     if isinstance(item, dict) and item.get('id') in editable}
+        if not originals or not isinstance(candidate.get('checks'), list):
+            return candidate
+        taken = {item.get('id') for key in ('install', 'checks') for item in candidate.get(key) or [] if isinstance(item, dict)}
+        taken |= {command.get('id') for service in candidate.get('services') or [] if isinstance(service, dict)
+                  for command in (service.get(phase) for phase in ('init', 'start', 'health', 'stop'))
+                  if isinstance(command, dict)}
+        renamed: dict[str, str] = {}
+        checks: list[Any] = []
+        for item in candidate['checks']:
+            original = originals.get(item.get('id')) if isinstance(item, dict) else None
+            if original is None or _same_command(item, original):
+                checks.append(item)
+                continue
+            new_id = next(f"{original['id']}-r{n}" for n in range(1, len(taken) + 2) if f"{original['id']}-r{n}" not in taken)
+            taken.add(new_id)
+            renamed[original['id']] = new_id
+            timeout = item.get('timeout_seconds')
+            retired = {**original, 'required': False}
+            if type(timeout) in {int, float} and timeout > original.get('timeout_seconds', 0):
+                retired['timeout_seconds'] = timeout
+            checks += [retired, {**item, 'id': new_id, 'required': True}]
+        if not renamed:
+            return candidate
+        result = {**candidate, 'checks': checks}
+        if isinstance(mapping := candidate.get('criterion_checks'), dict):
+            result['criterion_checks'] = {criterion: [renamed.get(identifier, identifier) for identifier in ids]
+                                          if isinstance(ids, list) else ids for criterion, ids in mapping.items()}
+        if isinstance(requirements := candidate.get('requirements'), list):
+            result['requirements'] = [{**requirement, 'checks': [renamed.get(identifier, identifier)
+                                                                 for identifier in requirement['checks']]}
+                                      if isinstance(requirement, dict) and isinstance(requirement.get('checks'), list)
+                                      else requirement for requirement in requirements]
+        for key in ('install', 'checks'):
+            if isinstance(result.get(key), list):
+                result[key] = [_redepend(item, renamed) for item in result[key]]
+        if isinstance(services := candidate.get('services'), list):
+            result['services'] = [{**service, **{phase: _redepend(service[phase], renamed)
+                                                 for phase in ('init', 'start', 'health', 'stop')
+                                                 if isinstance(service.get(phase), dict)}}
+                                  if isinstance(service, dict) else service for service in services]
+        return result
 
     def guard_part(self, base: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:
         """Inside an author's own phase, the merge guard's rules over the records this part owns, so the author can

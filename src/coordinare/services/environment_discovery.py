@@ -1322,7 +1322,8 @@ async def _bind_delta(messages: list[dict[str, str]], options: _DiscoveryOptions
                       previous: EnvironmentManifest) -> None:
     """A delta repair's author sees the closure, the failure, and the evidence for the closure's criteria only."""
     budget = cast("AttemptBudget", options.budget)
-    plan = DeltaPlan(previous, cast("RepairTriage", budget.repair_triage), fixed_command_ids(budget.executed_manifests))
+    plan = DeltaPlan(previous, cast("RepairTriage", budget.repair_triage), fixed_command_ids(budget.executed_manifests),
+                     frozenset(budget.retirable_checks))
     if previous.digest() != plan.triage.manifest_digest:
         message = "repair triage was computed for another manifest"
         raise EnvironmentDiscoveryError(message, code="repair_triage_stale")
@@ -1618,7 +1619,8 @@ class _Attempt:
 
 def _delta_plan(discovery: _Inspection, budget: AttemptBudget, prior_manifests: list[EnvironmentManifest]) -> DeltaPlan | None:
     """The failed accepted manifest and its closure, when this attempt authors a delta; the inspection knows which."""
-    delta = (DeltaPlan(prior_manifests[0], budget.repair_triage, fixed_command_ids(budget.executed_manifests))
+    delta = (DeltaPlan(prior_manifests[0], budget.repair_triage, fixed_command_ids(budget.executed_manifests),
+                       frozenset(budget.retirable_checks))
              if budget.repair_delta and budget.repair_triage is not None and prior_manifests else None)
     discovery.delta = delta is not None
     return delta
