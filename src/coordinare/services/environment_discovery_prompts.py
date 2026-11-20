@@ -140,6 +140,12 @@ _MANIFEST_RULES = (
     'Use generic probes to establish uncertain base-image prerequisites before final declarations. '
     'Declare required executable installation assertions after artifact producers and before '
     'consumers using depends_on; verify persisted outputs and portability. '
+    # nare-native-021: every install and check passed, then the clean consumer failed five checks: the project was an
+    # editable install bound to the install-time checkout, and one check resolved dependencies over the network.
+    'Checks run again in a clean consumer: a fresh copy of {repo} at another path, with no network. Install the '
+    'project itself into {cache} as a copy, never as a link back to the install-time checkout (an editable or '
+    'development install of the checked-out project fails there), and keep checks from resolving or downloading '
+    'dependencies at run time: use the installed environment directly, or the package manager\'s offline or frozen mode. '
     'Commands run in list order where depends_on allows; still declare depends_on on every install a command needs, '
     'including another toolchain one of its steps calls (an asset build whose plugin runs the language package '
     'manager depends on the install that provides that manager). '
