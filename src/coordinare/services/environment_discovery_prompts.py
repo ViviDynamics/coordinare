@@ -146,6 +146,9 @@ _MANIFEST_RULES = (
     'project itself into {cache} as a copy, never as a link back to the install-time checkout (an editable or '
     'development install of the checked-out project fails there), and keep checks from resolving or downloading '
     'dependencies at run time: use the installed environment directly, or the package manager\'s offline or frozen mode. '
+    # nare-native-023: the clean consumer failed because the package manager and linter wrote their caches into {cache}.
+    'There {cache} is read-only: point every tool cache (package manager, linter, type checker, build) at a temporary '
+    'directory, never into {cache}. '
     'Commands run in list order where depends_on allows; still declare depends_on on every install a command needs, '
     'including another toolchain one of its steps calls (an asset build whose plugin runs the language package '
     'manager depends on the install that provides that manager). '
