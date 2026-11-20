@@ -421,7 +421,7 @@ async def _install(
         if cache.environment_attempt is None or journal_for(cache).status != 'executing':
             raise ValueError('private runtime installer requires an executing original attempt')
         expires_at = min(expires_at, time.time()+manifest.runtime.policy.resources.max_seconds)
-        options = runtime_verifier_options(manifest, target)
+        options = runtime_verifier_options(manifest)
         options.extend(['-e', 'COORDINARE_ENV_RUNTIME_EXPIRES_AT='+str(guest_expiry(expires_at, time.time()))])
     phase_deadline = time.monotonic()+timeout
 
@@ -537,7 +537,7 @@ async def run_repair_trial(snapshot: Snapshot, kept: KeptGeneration, image: str,
     started = time.monotonic()
     try:
         await _clone_pinned(snapshot, root / "source", time_left)
-        options = [*runtime_verifier_options(kept.manifest, root), "--network", "none",
+        options = [*runtime_verifier_options(kept.manifest), "--network", "none",
                    "-e", "COORDINARE_ENV_RUNTIME_EXPIRES_AT=" + str(guest_expiry(expires_at, time.time()))]
         process = await asyncio.create_subprocess_exec(
             "docker", "run", "--rm", "-i", "--name", name, *options,

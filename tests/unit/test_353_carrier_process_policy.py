@@ -85,7 +85,7 @@ def test_private_policy_matches_actual_docker_carrier_options(tmp_path):
     manifest = EnvironmentManifest.model_validate(cache.environment_manifest)
     capabilities = ExecutionCapabilities.model_validate(cache.environment_capabilities)
     policy = carrier_process_policy(capabilities)
-    options = runtime_verifier_options(manifest, tmp_path)
+    options = runtime_verifier_options(manifest)
     assert options[options.index('--cap-drop') + 1] == 'ALL'
     assert policy['linux_capabilities'] == []
     assert options[options.index('--security-opt') + 1] == 'no-new-privileges'

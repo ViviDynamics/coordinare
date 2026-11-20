@@ -113,7 +113,7 @@ async def test_installer_uses_original_deadline_policy_limits_and_private_host_s
     assert command[command.index('--security-opt')+1] == 'no-new-privileges'
     assert command[command.index('--memory')+1] == '4096m'
     assert command[command.index('--memory-swap')+1] == '4096m'
-    assert any(str(target) in item and item.endswith(':/tmp') for item in command)
+    assert command[command.index('--mount')+1] == 'type=volume,target=/tmp'
     assert not any('COORDINARE_ENV_RUNTIME_ARTIFACTS=' in item for item in command)
     assert 0 < waits[-1] <= 99
 

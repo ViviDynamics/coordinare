@@ -99,16 +99,20 @@ def guest_expiry(expires_at: float, now: float) -> float:
     return expires_at - min(RUNTIME_REPORT_GRACE_SECONDS, max(0.0, expires_at-now)/2)
 
 
-def runtime_verifier_options(manifest: EnvironmentManifest, source_root: Path) -> list[str]:
+# The carrier's /tmp holds the runtime's project scratch. It is an anonymous volume, removed with the --rm carrier, so it
+# is on Docker's own storage. nare-native-022: as a host bind it was on Docker Desktop file sharing, which refuses an
+# owner's chmod of a directory that is not owner-writable, so every cp -a of the project into {scratch} failed.
+CARRIER_TMP_MOUNT = 'type=volume,target=/tmp'
+
+
+def runtime_verifier_options(manifest: EnvironmentManifest) -> list[str]:
     runtime = manifest.runtime
     if runtime is None:
         _refuse('private runtime verifier has no accepted policy')
-    scratch = source_root/'runtime-scratch'
-    scratch.mkdir(mode=0o700)
     limits = runtime.policy.resources
     return [*carrier_isolation_options(), '--cpus', str(limits.cpus),
             '--memory', str(limits.memory_mib)+'m', '--memory-swap', str(limits.memory_mib)+'m',
-            '--pids-limit', '512', '-v', str(scratch)+':/tmp']
+            '--pids-limit', '512', '--mount', CARRIER_TMP_MOUNT]
 
 
 def runtime_verifier_context(cache: EnvCacheState, *, now: float | None = None) -> RuntimeVerifierContext | None:

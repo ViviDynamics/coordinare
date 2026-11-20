@@ -881,7 +881,7 @@ async def _verify_cache_runtime_with_source(
     ]
     if runtime_context is not None and contract is not None:
 
-        cmd[2:2] = runtime_verifier_options(contract, source_root)
+        cmd[2:2] = runtime_verifier_options(contract)
 
     try:
         immutable_verifier_image(image)
