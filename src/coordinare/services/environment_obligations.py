@@ -243,12 +243,16 @@ def validate_retirements(manifest: EnvironmentManifest, previous: Sequence[Envir
 
 def preservation_view(manifest: EnvironmentManifest, previous: EnvironmentManifest,
                       retired: Collection[str]) -> EnvironmentManifest:
-    """The manifest as preservation judges it against ``previous``: each retired check still required and still
-    mapped where ``previous`` mapped it. Its replacements were judged by validate_retirements; nothing else changes."""
+    """The manifest as preservation judges it against ``previous``: each retired check required as ``previous`` had it
+    and still mapped where ``previous`` mapped it. Its replacements were judged by validate_retirements; nothing else
+    changes. nare-native-023: a check ``previous`` had already retired was viewed as required again, so an unchanged
+    copy of it read as changed and every delta repair after a retirement was refused."""
     retired = set(retired)
     if not retired:
         return manifest
-    checks = [check.model_copy(update={"required": True}) if check.id in retired else check for check in manifest.checks]
+    was_required = {check.id: check.required for check in previous.checks}
+    checks = [check.model_copy(update={"required": was_required.get(check.id, True)}) if check.id in retired else check
+              for check in manifest.checks]
     mapping = {criterion: [*ids, *(item for item in previous.criterion_checks.get(criterion, [])
                                    if item in retired and item not in ids)]
                for criterion, ids in manifest.criterion_checks.items()}
