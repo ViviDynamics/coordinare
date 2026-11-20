@@ -39,7 +39,7 @@ def test_category_config_defaults_legacy_alias_and_mixed_setting_rejection():
     assert legacy.manifest_max_execution_repairs == 0
     with pytest.raises(ValueError, match='cannot combine'):
         EnvCacheConfig(manifest_max_repairs=1, manifest_max_schema_repairs=2)
-    for name, invalid_upper in [('manifest_max_schema_repairs', 9), ('manifest_max_coverage_revisions', 9),
+    for name, invalid_upper in [('manifest_max_schema_repairs', 17), ('manifest_max_coverage_revisions', 9),
                                 ('manifest_max_execution_repairs', 9)]:
         for invalid in (-1, invalid_upper):
             with pytest.raises(ValueError):

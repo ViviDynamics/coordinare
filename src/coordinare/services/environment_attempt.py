@@ -41,7 +41,9 @@ MAX_PHASE_SECONDS = 4 * 3600
 # Maintainer ruling 2026-10-31: four execution repairs (Dettmore e2e-33 held with every install but one passing).
 # Maintainer decision 2026-11-12 (Dettmore e2e-86, e2e-87): both stopped at four execution repairs with three hours
 # left. The attempt deadline and the repair time gate already refuse a repair that cannot finish, so time is the bound.
-REPAIR_LIMITS = {"schema": 8, "coverage": 8, "scope": 8, "execution": 8}
+# Maintainer ruling 2026-11-19 (issue 376, nare-native-021): up to sixteen schema corrections an attempt; 021 passed every
+# install and check, then held when its eighth correction ran out with over a thousand calls and three hours left.
+REPAIR_LIMITS = {"schema": 16, "coverage": 8, "scope": 8, "execution": 8}
 MAX_PROBE_BATCHES = 2
 # Each execution repair relocates its cache and brings one more probe batch (see reserve_probe_batch).
 PROBE_BATCH_CEILING = MAX_PROBE_BATCHES + REPAIR_LIMITS["execution"]
