@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from coordinare_service_inference.environment.models import Command
+from coordinare_service_inference.environment.models import Command, content_key
 from pydantic import ValidationError
 
 from coordinare.services.environment_delta_schema import RECORD_GROUPS
@@ -57,6 +57,14 @@ def _same_command(item: Mapping[str, Any], original: Mapping[str, Any]) -> bool:
         return True  # an unparsable record is left for admission to report
     excluded = set(_COMMAND_CONTENT_EXCLUDED)
     return bool(current.model_dump(mode='json', exclude=excluded) == before.model_dump(mode='json', exclude=excluded))
+
+
+def _content(item: Mapping[str, Any]) -> str | None:
+    """The duplicate-content key of a check record (argv, cwd, env and scope), or None when it does not parse."""
+    try:
+        return str(content_key(Command.model_validate(item)))
+    except ValidationError:
+        return None
 
 
 def _redepend(item: Any, renamed: Mapping[str, str]) -> Any:
@@ -166,6 +174,10 @@ class DeltaPlan:
         taken |= {command.get('id') for service in candidate.get('services') or [] if isinstance(service, dict)
                   for command in (service.get(phase) for phase in ('init', 'start', 'health', 'stop'))
                   if isinstance(command, dict)}
+        # nare-native-026: the author both rewrote a check in place and added its own replacement with the same
+        # command; a second copy under a derived id was refused as duplicate content. That replacement takes over.
+        existing = {key: item['id'] for item in candidate['checks'] if isinstance(item, dict)
+                    and item.get('id') not in originals and (key := _content(item)) is not None}
         renamed: dict[str, str] = {}
         checks: list[Any] = []
         for item in candidate['checks']:
@@ -173,14 +185,22 @@ class DeltaPlan:
             if original is None or _same_command(item, original):
                 checks.append(item)
                 continue
-            new_id = next(f"{original['id']}-r{n}" for n in range(1, len(taken) + 2) if f"{original['id']}-r{n}" not in taken)
-            taken.add(new_id)
-            renamed[original['id']] = new_id
             timeout = item.get('timeout_seconds')
             retired = {**original, 'required': False}
             if type(timeout) in {int, float} and timeout > original.get('timeout_seconds', 0):
                 retired['timeout_seconds'] = timeout
+            if (kept := existing.get(_content(item) or '')) is not None:
+                renamed[original['id']] = kept
+                checks.append(retired)
+                continue
+            new_id = next(f"{original['id']}-r{n}" for n in range(1, len(taken) + 2) if f"{original['id']}-r{n}" not in taken)
+            taken.add(new_id)
+            renamed[original['id']] = new_id
             checks += [retired, {**item, 'id': new_id, 'required': True}]
+        # Each replacement carries its retired check's obligations, so it is required.
+        replacements = set(renamed.values())
+        checks = [{**item, 'required': True} if isinstance(item, dict) and item.get('id') in replacements else item
+                  for item in checks]
         if not renamed:
             return candidate
         result = {**candidate, 'checks': checks}

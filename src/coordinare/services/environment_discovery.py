@@ -2117,8 +2117,12 @@ def _global_rules(merge: Callable[[dict[str, Any]], Any] | None) -> Callable[[di
         if shared := sorted(identifier for identifier, count in Counter(_record_ids(data)).items() if count > 1):
             errors.append({'type': PydanticCustomError('record_id_collision', 'record ids must be unambiguous',
                                                        {'unavailable': shared[:16]}), 'loc': (), 'input': None})
+        # nare-native-026: a retired check stays declared, not required, as the candidate validator's lock allows;
+        # counting it removed refused every retirement the global part made.
+        retirable = merge.budget.retirable_checks
         missing = sorted(identifier for key, previous in merge.required_ids.items() if key in records
-                         for identifier in previous - {item.get('id') for item in records[key] if item.get('required', True)}
+                         for identifier in previous - {item.get('id') for item in records[key]
+                                                       if item.get('required', True) or item.get('id') in retirable}
                          if not PREFIX.match(identifier))
         if missing:
             errors.append({'type': PydanticCustomError('global_obligation_removed', 'required records removed',
