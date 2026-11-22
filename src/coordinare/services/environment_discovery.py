@@ -1864,19 +1864,8 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
     authored_responses = list(attempt.discovery.finding_responses)
     for _ in range(MERGE_ROUNDS):
         if global_data is None:
-            # A delta repair authors only the touched groups; every other group carries its failed part. A coverage
-            # revision authors only the groups its findings name, and carries the rest when they still admit.
-            carry = build.untouched() if plan is None and build.revising else []
-            build.revising = False
-            kept = {group.prefix for group in carry}
-            groups = ([group for group in build.groups if group.prefix not in kept] if plan is None
-                      else [group for group in build.groups if plan.group_touched(group)])
-            global_data, authored = await _global_and_groups(build, attempt, validate, _speculative_base(build, attempt), groups)
+            global_data, parts = await _author_round(build, attempt, validate)
             authored_responses = list(attempt.discovery.finding_responses)
-            if carry:
-                authored = {**authored, **await _carry_untouched(build, carry, global_summary(global_data),
-                                                                 budget.probe_reports)}
-            parts = authored if plan is None else {**_carried_parts(plan, build.groups), **authored}
         else:
             # A redone group replaces every part authored under it, including earlier split remainders.
             parts = {prefix: entry for prefix, entry in parts.items() if not any(owns(group.prefix, prefix) for group in redo)}
@@ -2350,6 +2339,24 @@ def _declared_scope(plan: DeltaPlan | None, manifest: EnvironmentManifest, group
     if not any(records.values()) and not mappings:
         return None
     return {**records, 'criteria': mappings, 'touched_criteria': sorted(c for c in plan.triage.criterion_ids if in_part(c))}
+
+
+async def _author_round(build: DividedConstruction, attempt: _Attempt, validate: Callable[[dict[str, Any]], Any],
+                        ) -> tuple[dict[str, Any], dict[str, tuple[CheckGroup, ShardChecks]]]:
+    """The global part and every group's part for a fresh round. A delta repair authors only the touched groups and
+    every other group carries its failed part; a coverage revision authors only the groups its findings name and
+    carries the rest when they still admit."""
+    plan = attempt.delta
+    carry = build.untouched() if plan is None and build.revising else []
+    build.revising = False
+    kept = {group.prefix for group in carry}
+    groups = ([group for group in build.groups if group.prefix not in kept] if plan is None
+              else [group for group in build.groups if plan.group_touched(group)])
+    global_data, authored = await _global_and_groups(build, attempt, validate, _speculative_base(build, attempt), groups)
+    if carry:
+        authored = {**authored, **await _carry_untouched(build, carry, global_summary(global_data),
+                                                         attempt.budget.probe_reports)}
+    return global_data, authored if plan is None else {**_carried_parts(plan, build.groups), **authored}
 
 
 async def _carry_untouched(build: DividedConstruction, carry: Sequence[CheckGroup], summary: Mapping[str, Any],
