@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import time
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -45,6 +46,8 @@ class BudgetBridge:
         self.phase_key = phase_key
         self.phase_limit = phase_limit
         self.failure_code: str | None = None
+        # Each reserved call's start, so its reply records the seconds it took (call_stats.seconds was always 0).
+        self._started: dict[str, float] = {}
 
     async def persist(self) -> None:
         # Persist terminal accounting even after expiry. This performs no new
@@ -73,16 +76,20 @@ class BudgetBridge:
         except EnvironmentDiscoveryError as exc:
             self.failure_code = exc.code
             raise
-        return str(self.budget.calls)
+        receipt = str(self.budget.calls)
+        self._started[receipt] = time.monotonic()
+        return receipt
 
     async def record_reply(self, receipt: str, reply: Reply) -> None:
+        started = self._started.pop(receipt, None)
         if receipt in self.budget.agent_usage_receipts:
             return
         self.budget.agent_usage_receipts.add(receipt)
         if reply.usage.total_tokens == 0:
             self.budget.agent_usage_unknown += 1
         self.budget.record_reply(DiscoveryChatReply(text='', usage=usage_of(reply) if reply.usage.total_tokens else None,
-            finish_reason=_domain_finish_reason(reply)), phase=self.phase)
+            finish_reason=_domain_finish_reason(reply)), phase=self.phase,
+            seconds=None if started is None else max(0.0, time.monotonic() - started))
         await self.persist()
 
     async def record_unknown(self, receipt: str) -> None:

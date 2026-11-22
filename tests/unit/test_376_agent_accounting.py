@@ -465,3 +465,19 @@ async def test_provider_schema_rejection_precedes_any_reserved_request() -> None
                            schema=schema, structured_output='json_schema', tools=()):
             pass
     assert budget.calls == 0 and inner.requests == []
+
+
+@pytest.mark.asyncio
+async def test_a_reply_records_the_seconds_since_its_call_was_reserved(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runs 025-028 showed call_stats.seconds as 0 for every phase: the bridge never passed a duration."""
+    from types import SimpleNamespace
+
+    from coordinare.services.agent_runtime import accounting
+
+    clock = iter([100.0, 112.5])
+    monkeypatch.setattr(accounting, 'time', SimpleNamespace(monotonic=lambda: next(clock)))
+    budget = AttemptBudget()
+    bridge = accounting.BudgetBridge(budget, phase='review')
+    receipt = await bridge.reserve()
+    await bridge.record_reply(receipt, Reply([], [], Usage(input=1, output=1), 'end_turn'))
+    assert budget.call_stats['review']['seconds'] == 12.5
