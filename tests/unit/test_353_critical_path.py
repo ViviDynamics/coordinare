@@ -46,6 +46,7 @@ class TimedBuild:
         self.previous: dict[str, Any] = {}
         self.group_inputs: dict[str, str] = {}
         self.global_part: dict[str, Any] | None = None
+        self.revising = False
         self.concurrency = 12
         self.events: list[tuple[str, str]] = []
         self.in_flight = 0

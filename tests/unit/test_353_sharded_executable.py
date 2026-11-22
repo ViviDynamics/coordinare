@@ -155,6 +155,7 @@ class FakeBuild:
         self.previous: dict = {}
         self.group_inputs: dict = {}
         self.global_part: dict | None = None
+        self.revising = False
         self.concurrency = 12
         self.rounds: list[list[str]] = []
 

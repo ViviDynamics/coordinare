@@ -256,6 +256,7 @@ class FakeBuild:
         self.previous: dict = {}
         self.group_inputs: dict = {}
         self.global_part = None
+        self.revising = False
 
     async def author_all(self, *, summary, probes, groups=None):
         asked = list(self.groups if groups is None else groups)

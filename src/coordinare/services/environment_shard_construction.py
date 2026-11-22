@@ -689,10 +689,23 @@ class DividedConstruction:
     # Checks that failed and never passed (retirable_check_ids): an author may retire its own.
     retirable: frozenset[str] = frozenset()
     carrier_process_policy: dict[str, Any] | None = None
+    # Set by a coverage revision: its next build carries the groups no finding or feedback names (see ``untouched``).
+    revising: bool = False
 
     @property
     def groups(self) -> list[CheckGroup]:
         return check_groups(self.scope)
+
+    def untouched(self) -> list[CheckGroup]:
+        """Groups with a reviewed part that no routed finding or feedback names, under their own or a split prefix.
+
+        nare-native-028: each of three coverage revisions re-ran every check author for about 30 minutes, though the
+        findings named only some groups. A carried part still has to pass its group admission under the new global
+        part, and the whole merged manifest is reviewed again.
+        """
+        return [group for group in self.groups if group.prefix in self.obligations
+                and base_prefix(group.prefix) not in self.feedback
+                and not any(owns(group.prefix, prefix) for prefix in self.feedback)]
 
     def _citations(self, group: CheckGroup) -> dict[str, str]:
         cited = {path for criterion in group.criteria for path in criterion.sources}
