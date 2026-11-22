@@ -145,3 +145,23 @@ def test_check_authors_correct_a_named_unexecuted_check_in_place_rather_than_cop
     assert 'keep_check_ids unchanged' not in CHECK_AUTHOR_INSTRUCTIONS
     assert KEEP_AND_CORRECT in CHECK_AUTHOR_INSTRUCTIONS
     assert 'correct that check itself' in KEEP_AND_CORRECT and 'Never leave it as it was' in KEEP_AND_CORRECT
+
+
+def test_a_check_author_may_drop_the_mapping_of_a_check_the_global_part_retired():
+    """nare-native-029: the global author retired check-nare-imports and added a replacement. The c00- author was told
+    both to keep the check mapped (inherited_mapping_missing) and that it was unusable, not required
+    (criterion_mapping_invalid), and no answer satisfied both until its corrections ran out."""
+    group = cast('CheckGroup', SimpleNamespace(prefix='c00', ids={CRITERION}))
+    inherited = Inheritance(own=frozenset(), mapped={CRITERION: frozenset({'check-imports', 'check-cli'})},
+                            retirable=frozenset({'check-imports'}))
+    summary = {'checks': [{'id': 'check-imports', 'required': False}, {'id': 'check-deps-imports'},
+                          {'id': 'check-cli'}], 'readiness_ids': []}
+    part = {'checks': [], 'criterion_checks': {CRITERION: ['check-deps-imports', 'check-cli']}}
+    assert isinstance(validate_group({'shard_checks': part}, group=group, summary=summary, inherited=inherited),
+                      ShardChecks)
+    # A global check that is still required, or that is not retirable, still has to stay mapped.
+    required = {**summary, 'checks': [{'id': 'check-imports'}, {'id': 'check-deps-imports'}, {'id': 'check-cli'}]}
+    for refused_summary, refused_inherited in ((required, inherited), (summary, replace(inherited, retirable=frozenset()))):
+        with pytest.raises(_ResponseReferenceError) as refused:
+            validate_group({'shard_checks': part}, group=group, summary=refused_summary, inherited=refused_inherited)
+        assert 'inherited_mapping_missing' in str(refused.value.errors)

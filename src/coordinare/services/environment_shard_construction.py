@@ -324,8 +324,12 @@ def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[
         errors.append({'code': 'inherited_check_missing', 'location': ['shard_checks', 'checks'], 'missing': missing[:32],
                        'guidance': 'Keep every keep_check_ids check that was required; revise it in place (a '
                                    'fixed_checks check exactly as fixed_checks gives it), never drop it.'})
-    # A retired check leaves its criteria to new checks; admission judges that the replacements are there.
+    # A retired check leaves its criteria to new checks; admission judges that the replacements are there. So does one
+    # the global part retired: nare-native-029's global author retired check-nare-imports, and the c00-
+    # author was told both to keep it mapped and that it was unusable, until its corrections ran out.
     retired = {identifier for identifier, check in own.items() if identifier in inherited.retirable and not check.required}
+    retired |= {identifier for identifier, item in global_checks.items()
+                if identifier in inherited.retirable and not item.get('required', True)}
     unmapped = {criterion: sorted(ids - set(part.criterion_checks.get(criterion, [])) - retired)
                 for criterion, ids in sorted(inherited.mapped.items())
                 if ids - set(part.criterion_checks.get(criterion, [])) - retired}
