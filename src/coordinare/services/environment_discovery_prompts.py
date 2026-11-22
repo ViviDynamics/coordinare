@@ -173,9 +173,17 @@ _MANIFEST_RULES = (
     f'{LOCAL_CREDENTIAL_AUTHORING} '
     f'{ADVISORY_AUDIT_CHECKS} '
     f'{SAMPLE_TEST_CHECKS} '
+    # nare-native-027: a required install ran a full benchmark verify for 48 minutes, left containers behind, and
+    # every execution repair went to install steps, so no check ever ran.
+    'Install commands only install and build what the checks use: never run a test, verification or benchmark suite '
+    'in an install; that is a check, sampled as above. A command that starts containers removes them before it '
+    'exits, including when it fails. '
     f'{TIMEOUT_CEILINGS} '
     'Create every declared activation directory during installation; do not hide a missing path by removing useful activation. '
     'List tool directories in activation.path, which is prepended to the guest PATH; never set PATH in activation.env. '
+    # nare-native-027: an offline switch set in activation.env blocked the dependency install for four generations.
+    'Activation applies to install commands too: never set an offline or no-download switch in activation.env that '
+    'an install needs; set it on the checks that need it. '
     'The project environment scope is fixed by pinned development/test evidence, never by image convenience. '
     'Include finding_responses for every open finding ID: rationale, sources and affected_ids. '
     'Resolve missing capabilities or provide source-backed explanations; no new privileges or verification networking. '
