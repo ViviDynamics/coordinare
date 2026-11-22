@@ -481,3 +481,21 @@ async def test_a_reply_records_the_seconds_since_its_call_was_reserved(monkeypat
     receipt = await bridge.reserve()
     await bridge.record_reply(receipt, Reply([], [], Usage(input=1, output=1), 'end_turn'))
     assert budget.call_stats['review']['seconds'] == 12.5
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_call_records_its_seconds_through_the_session_receipt() -> None:
+    """nare-native-029 still recorded 0 seconds: sessions prefix the bridge's receipt with their id, so the reply's
+    receipt never matched the start the bridge stored. The real runtime path, not the bridge alone, is checked here."""
+    from coordinare.services.agent_runtime.nare_runtime import NareRuntime
+
+    class Slow(ScriptedTransport):
+        async def turn(self, messages: Any, tools: Any) -> Reply:
+            await asyncio.sleep(0.05)
+            return await super().turn(messages, tools)
+
+    budget = AttemptBudget(max_calls=2)
+    result = await NareRuntime(transport=Slow('{"accepted":true}')).run(replace(request(admit), budget=budget))
+    assert result.status == 'accepted'
+    [stats] = budget.call_stats.values()
+    assert stats['calls'] == 1 and stats['seconds'] >= 0.05

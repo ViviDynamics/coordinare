@@ -80,8 +80,14 @@ class BudgetBridge:
         self._started[receipt] = time.monotonic()
         return receipt
 
+    @staticmethod
+    def _call(receipt: str) -> str:
+        """The call number a receipt ends with: sessions prefix the one reserve returns with their id (nare-native-029
+        recorded every call's seconds as 0 because the prefixed receipt never matched its start)."""
+        return receipt.rpartition(':')[2]
+
     async def record_reply(self, receipt: str, reply: Reply) -> None:
-        started = self._started.pop(receipt, None)
+        started = self._started.pop(self._call(receipt), None)
         if receipt in self.budget.agent_usage_receipts:
             return
         self.budget.agent_usage_receipts.add(receipt)
@@ -93,6 +99,7 @@ class BudgetBridge:
         await self.persist()
 
     async def record_unknown(self, receipt: str) -> None:
+        self._started.pop(self._call(receipt), None)
         if receipt not in self.budget.agent_usage_receipts:
             self.budget.agent_usage_receipts.add(receipt)
             self.budget.agent_usage_unknown += 1
