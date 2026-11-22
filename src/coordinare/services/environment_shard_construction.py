@@ -758,7 +758,7 @@ class DividedConstruction:
             plan.guard_part(plan.base_group(group) or {}, applied['shard_checks'])
             return admitted
 
-        key = delta_part_key(plan.digest, self.carrier_process_policy)
+        key = delta_part_key(plan.digest, self.carrier_process_policy, self.context.budget.delta_revisions)
         saved = saved_part(self.context.budget, 'delta', group.prefix, key)
         if saved is not None:
             await inspection.bind_verified(saved['inputs'], phase='construction')
@@ -874,14 +874,16 @@ class DividedConstruction:
 DELTA_BRIEF_VERSION = 3
 
 
-def delta_part_key(triage_digest: str, process_policy: Mapping[str, Any] | None) -> str:
+def delta_part_key(triage_digest: str, process_policy: Mapping[str, Any] | None, revision: int = 0) -> str:
     """Every key depends on the brief version, so a part saved under an earlier brief is never replayed; private parts
     also depend on the delivered carrier policy. (Native keys were the bare triage digest until version 3, when a part
-    saved without the fixed-record rule would otherwise replay and fail preservation at merge.)"""
+    saved without the fixed-record rule would otherwise replay and fail preservation at merge.) A delta revision round
+    keys its parts apart, so the part review rejected is never replayed as its revision."""
     if process_policy is None:
-        return f'{triage_digest}-v{DELTA_BRIEF_VERSION}'
+        return f'{triage_digest}-v{DELTA_BRIEF_VERSION}' + (f'-r{revision}' if revision else '')
     return hashlib.sha256(canonical({'triage_digest': triage_digest, 'carrier_process_policy': process_policy,
-                                     'brief_version': DELTA_BRIEF_VERSION})).hexdigest()
+                                     'brief_version': DELTA_BRIEF_VERSION,
+                                     **({'revision': revision} if revision else {})})).hexdigest()
 
 
 def saved_part(budget: AttemptBudget, kind: str, name: str, key: str) -> dict[str, Any] | None:

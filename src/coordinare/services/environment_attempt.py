@@ -179,6 +179,12 @@ class AttemptBudget:
     delta_fallback: bool = False
     # The trusted code of the failure that made a delta repair fall back to the full repair, for the attempt summary.
     delta_fallback_code: str | None = None
+    # nare-native-028: wall-clock time (time.time()) the delta fell back, so the repair timing splits delta from full
+    # repair; and the seconds a full repair is measured to need, which gates the fallback itself (persisted).
+    delta_fallback_at: float | None = None
+    fallback_estimate_seconds: float | None = None
+    # Revision rounds a review-rejected delta has had before the full repair takes over (persisted).
+    delta_revisions: int = 0
     agent_usage_receipts: set[str] = field(default_factory=set, repr=False)
     agent_usage_unknown: int = 0
     agent_compactions: int = 0
@@ -313,7 +319,7 @@ class AttemptBudget:
                 "scope_criterion_count": len(self.scope_definition.criteria) if self.scope_definition is not None else 0,
                 "scope_review_count": len(self.scope_findings.reviews) if self.scope_findings is not None else 0,
                 "scope_contract_digest": self.scope_contract.digest() if self.scope_contract is not None else None, "stage": self.stage, "outcome": self.outcome, "error_code": self.error_code,
-                "delta_fallback_code": self.delta_fallback_code, "error_detail": self.error_detail, "guest": self.guest,
+                "delta_fallback_code": self.delta_fallback_code, "delta_revisions": self.delta_revisions, "error_detail": self.error_detail, "guest": self.guest,
                 "elapsed_seconds": round(time.monotonic() - self.started, 3),
                 "probe_batches": self.probe_batches, "abandoned_probe_batches": len(self.probe_abandonments),
                 "max_probe_batches": MAX_PROBE_BATCHES, "calls": self.calls, "calls_completed": self.calls_completed, "reads": self.reads,
