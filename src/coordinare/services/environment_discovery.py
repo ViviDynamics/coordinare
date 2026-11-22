@@ -103,6 +103,7 @@ from coordinare.services.environment_findings import (
     apply_finding_review,
     manifest_obligation_ids,
     refuse_finding,
+    validate_finding_response_ids,
     validate_finding_responses,
 )
 from coordinare.services.environment_inspection import SourceInspection
@@ -2465,6 +2466,7 @@ async def _delta_global_part(attempt: _Attempt, validate: Callable[[dict[str, An
     budget, discovery, plan = attempt.budget, attempt.discovery, cast('DeltaPlan', attempt.delta)
 
     def check(delta: dict[str, Any]) -> Any:
+        _delta_response_ids(discovery, budget)
         applied = plan.restore_frozen(base, apply_delta(base, _delta_record(delta)))
         admitted = validate(applied)
         plan.guard_part(base, applied)
@@ -2492,6 +2494,7 @@ async def _delta_candidate(attempt: _Attempt, validate: Callable[[dict[str, Any]
     base = plan.base_proposal()
 
     def check(delta: dict[str, Any]) -> Any:
+        _delta_response_ids(discovery, budget)
         applied = plan.restore_frozen(base, apply_delta(base, _delta_record(delta)))
         admitted = validate(applied)
         plan.guard_part(base, applied)
@@ -2509,6 +2512,14 @@ async def _delta_candidate(attempt: _Attempt, validate: Callable[[dict[str, Any]
         await budget.flush()
     attempt.delta_reply = _delta_reply(data, discovery)
     return plan.restore_frozen(base, apply_delta(base, _delta_record(data)))
+
+
+def _delta_response_ids(discovery: _Inspection, budget: AttemptBudget) -> None:
+    """nare-native-029: the global delta author answered a finding id it made up. Only the merge checked the ids, and a
+    merge error discards a delta outright, so the attempt fell back to the full repair. Checked in the author's own
+    phase, the existing correction lists the allowed ids instead."""
+    if budget.finding_ledger is not None:
+        validate_finding_response_ids(discovery.finding_responses, cast("FindingLedger", budget.finding_ledger))
 
 
 def _delta_reply(data: dict[str, Any], discovery: _Inspection) -> dict[str, Any]:

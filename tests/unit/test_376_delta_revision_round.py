@@ -178,3 +178,23 @@ def test_a_divided_delta_revision_routes_findings_to_its_check_groups_and_shows_
     assistant, user = attempt.messages[2:]
     assert json.loads(assistant["content"]) == attempt.delta_reply
     assert json.loads(user["content"])["delta_revision"]["untrusted_review_feedback"] == "needs a sample"
+
+
+def test_a_delta_author_answering_an_unknown_finding_is_corrected_in_its_own_phase() -> None:
+    """nare-native-029: the global delta author answered F0007, which no review raised; only the merge checked the
+    ids, and a merge error discards a delta, so the attempt fell back. The author's own phase now refuses it with the
+    existing correction (finding_response_ids_invalid lists the allowed ids)."""
+    from coordinare_service_inference.environment.findings import FindingLedger, FindingResponse
+
+    from coordinare.services import environment_discovery as discovery_module
+    from coordinare.services.environment_findings import FindingValidationError
+
+    budget = AttemptBudget()
+    budget.finding_ledger = FindingLedger(source_commit="a" * 40)
+    response = {"finding_id": "F0007", "rationale": "r", "sources": ["README.md"], "affected_ids": []}
+    discovery = SimpleNamespace(finding_responses=[FindingResponse.model_validate(response)])
+    with pytest.raises(FindingValidationError) as raised:
+        discovery_module._delta_response_ids(discovery, budget)  # type: ignore[arg-type]
+    assert raised.value.code == "finding_response_ids_invalid"
+    discovery.finding_responses = []
+    discovery_module._delta_response_ids(discovery, budget)  # type: ignore[arg-type]

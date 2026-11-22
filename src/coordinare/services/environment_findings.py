@@ -76,12 +76,17 @@ def manifest_obligation_ids(manifest: EnvironmentManifest) -> set[str]:
     return _ids(manifest)
 
 
-def validate_finding_responses(responses: list[FindingResponse], *, ledger: FindingLedger,
-                               inspected: Mapping[str, str], manifest: EnvironmentManifest) -> None:
+def validate_finding_response_ids(responses: list[FindingResponse], ledger: FindingLedger) -> None:
+    """One response to every open finding, none twice, and none to a finding the ledger does not hold."""
     ids = [response.finding_id for response in responses]
     if (len(set(ids)) != len(ids) or not set(ledger.open_ids()) <= set(ids)
             or not set(ids) <= {record.id for record in ledger.records}):
         refuse_finding('finding response IDs must match established objections', code='finding_response_ids_invalid')
+
+
+def validate_finding_responses(responses: list[FindingResponse], *, ledger: FindingLedger,
+                               inspected: Mapping[str, str], manifest: EnvironmentManifest) -> None:
+    validate_finding_response_ids(responses, ledger)
     known = _ids(manifest)
     problems = [_response_problem(response, inspected, known) for response in responses]
     if any(problems):
