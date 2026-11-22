@@ -67,6 +67,19 @@ def _content(item: Mapping[str, Any]) -> str | None:
         return None
 
 
+def _restore_activation(base: Mapping[str, Any], candidate: Any) -> dict[str, Any]:
+    """Frozen activation as it was, with the author's growth the guard allows: new PATH entries after the existing
+    ones, in the author's order, and new environment keys. nare-native-028: the global delta author reordered the
+    PATH entries, was refused nine times, and the delta was rejected."""
+    old_path = list(base.get('path') or [])
+    old_env = dict(base.get('env') or {})
+    new: dict[str, Any] = candidate if isinstance(candidate, dict) else {}
+    new_path: list[Any] = path if isinstance(path := new.get('path'), list) else []
+    new_env: dict[str, Any] = values if isinstance(values := new.get('env'), dict) else {}
+    return {**new, 'path': [*old_path, *(entry for entry in new_path if entry not in old_path)],
+            'env': {**new_env, **old_env}}
+
+
 def _redepend(item: Any, renamed: Mapping[str, str]) -> Any:
     """A required command that depended on a retired check depends on its replacement instead."""
     if not isinstance(item, dict) or not isinstance(depends := item.get('depends_on'), list) or item.get('required') is False:
@@ -137,15 +150,19 @@ class DeltaPlan:
         Dettmore e2e-13: execution feedback named c00-gh-cli and c00-repo-env, outside the closure; the delta author,
         never shown their records, rewrote them, and three corrections asking it to restore them exactly as they were
         went unanswered until the schema budget ran out. A delta may not change a frozen record, so restoring it is
-        exactly the correction; the author's closure changes stand. Service, requirement, mapping and activation
-        changes are still corrected by the guard. An unparsable part is returned unchanged for admission to report.
+        exactly the correction; the author's closure changes stand. Frozen activation is put back the same way, keeping
+        the growth the guard allows. Service, requirement and mapping changes are still corrected by the guard. An
+        unparsable part is returned unchanged for admission to report.
         """
         try:
             before = part_records(base)
-            frozen = frozen_records(before, part_records(candidate), self.triage) & set(before.commands)
+            frozen = frozen_records(before, part_records(candidate), self.triage)
         except ValidationError:
             return candidate
         restored = dict(candidate)
+        if ACTIVATION in frozen and isinstance(base.get('activation'), dict):
+            restored['activation'] = _restore_activation(base['activation'], candidate.get('activation'))
+        frozen &= set(before.commands)
         for key in ('install', 'checks'):
             originals = {item['id']: item for item in base.get(key) or [] if isinstance(item, dict) and item.get('id') in frozen}
             if not originals:
