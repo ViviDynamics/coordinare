@@ -252,6 +252,10 @@ class RepairJournal(BaseModel):
     repair_triage: dict[str, Any] | None = None
     # A delta repair fell back to the full repair; an old journal has none, so it keeps the delta default.
     delta_fallback: bool = False
+    # When (time.time()) this generation's delta fell back, so its timing splits the delta from the full repair.
+    fallback_started_at: float | None = None
+    # Revision rounds this generation's review-rejected delta has had.
+    delta_revisions: int = Field(default=0, ge=0)
     # Triage was impossible (no failed result): the full repair runs for this generation.
     repair_triage_unavailable: bool = False
     last_error: str | None = None
@@ -651,7 +655,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.executed_manifests = executed_manifests(journal.rejected, source_commit=journal.source_commit)
     budget.retirable_checks = retirable_check_ids(journal.rejected, source_commit=journal.source_commit)
     budget.repair_triage = repair_triage_for(journal)
-    budget.delta_fallback = journal.delta_fallback
+    _restore_delta(budget, journal)
     budget.execution_review_evidence = execution_review_evidence(journal.rejected)
     budget.execution_attempt_history = repair_attempt_history(journal.rejected)
     budget.calls, budget.reads = journal.calls, journal.reads
@@ -667,6 +671,19 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
     budget.scope_revisions = journal.scope_revisions
     budget.execution_repairs = journal.execution_repairs
     return budget
+
+
+def _restore_delta(budget: AttemptBudget, journal: RepairJournal) -> None:
+    budget.delta_fallback = journal.delta_fallback
+    budget.delta_fallback_at = journal.fallback_started_at
+    budget.delta_revisions = journal.delta_revisions
+    budget.fallback_estimate_seconds = fallback_time_estimate(journal)
+
+
+def _save_delta(journal: RepairJournal, budget: AttemptBudget) -> None:
+    journal.delta_fallback = journal.delta_fallback or budget.delta_fallback
+    journal.fallback_started_at = journal.fallback_started_at or budget.delta_fallback_at
+    journal.delta_revisions = max(journal.delta_revisions, budget.delta_revisions)
 
 
 def begin_attempt(cache: EnvCacheState, limits: DiscoveryLimits, *, outer_seconds: float,
@@ -769,7 +786,7 @@ def save_attempt(cache: EnvCacheState, budget: AttemptBudget, *, executing: bool
     journal.coverage_revisions = max(journal.coverage_revisions, budget.coverage_revisions)
     journal.scope_revisions = max(journal.scope_revisions, budget.scope_revisions)
     journal.execution_repairs = max(journal.execution_repairs, budget.execution_repairs)
-    journal.delta_fallback = journal.delta_fallback or budget.delta_fallback
+    _save_delta(journal, budget)
     if executing:
         capabilities = ExecutionCapabilities.model_validate(cache.environment_capabilities)
         if journal.target is not None and (
@@ -1297,16 +1314,30 @@ def _generation_timing(journal: RepairJournal, now: float) -> dict[str, Any] | N
     executing = journal.executing_started_at
     if started is None or executing is None or not started <= executing <= now:
         return None
-    return {'generation': journal.generation, 'install_only': journal.generation_install_only,
-            'discovery_seconds': round(executing - started, 1), 'execution_seconds': round(now - executing, 1)}
+    timing = {'generation': journal.generation, 'install_only': journal.generation_install_only,
+              'discovery_seconds': round(executing - started, 1), 'execution_seconds': round(now - executing, 1)}
+    # nare-native-028: a delta that fell back measured both repairs as one; each is kept apart for the next estimate.
+    fallback = journal.fallback_started_at
+    if fallback is not None and started <= fallback <= executing:
+        timing |= {'delta_seconds': round(fallback - started, 1), 'fallback_seconds': round(executing - fallback, 1)}
+    return timing
 
 
-def repair_time_estimate(rejected: Sequence[Mapping[str, Any]], *, install_only: bool,
+def _discovery_seconds(timing: Mapping[str, Any], *, delta: bool) -> float:
+    """A repair's measured discovery: only its delta part when the next repair starts as a delta, only its full repair
+    when it does not, and the whole when it never fell back."""
+    split = timing.get('delta_seconds' if delta else 'fallback_seconds')
+    return float(split if split is not None else timing['discovery_seconds'])
+
+
+def repair_time_estimate(rejected: Sequence[Mapping[str, Any]], *, install_only: bool, delta: bool = False,
                          margin: float = REPAIR_TIME_MARGIN_SECONDS) -> dict[str, float] | None:
     """Seconds the next repair generation is expected to need, from this attempt's own measured generations.
 
     Discovery: the latest measured repair of the same kind (install-only or not), else the latest repair, else the
-    first generation's, capped. Execution: the latest execution. None without any measurement.
+    first generation's, capped. A repair that fell back counts its delta when the next repair is a delta (the fallback
+    is gated on its own when it happens) and its full repair otherwise. Execution: the latest execution. None without
+    any measurement.
     """
     timings = [entry['timing'] for entry in rejected if isinstance(entry.get('timing'), dict)]
     if not timings:
@@ -1314,28 +1345,42 @@ def repair_time_estimate(rejected: Sequence[Mapping[str, Any]], *, install_only:
     repairs = [timing for timing in timings if timing.get('generation')]
     same = [timing for timing in repairs if bool(timing.get('install_only')) == install_only]
     source = (same or repairs or [None])[-1]
-    discovery = (float(source['discovery_seconds']) if source is not None
+    discovery = (_discovery_seconds(source, delta=delta) if source is not None
                  else min(float(timings[0]['discovery_seconds']), FIRST_REPAIR_DISCOVERY_SECONDS))
     execution = float(timings[-1]['execution_seconds'])
     return {'discovery_seconds': discovery, 'execution_seconds': execution, 'margin_seconds': margin,
             'total_seconds': discovery + execution + margin}
 
 
-def _time_gate(cache: EnvCacheState, journal: RepairJournal, *, install_only: bool, now: float) -> None:
+def _time_margin(journal: RepairJournal) -> float:
+    """The margin is 10 minutes, or a tenth of a shorter attempt."""
+    return min(REPAIR_TIME_MARGIN_SECONDS, REPAIR_TIME_MARGIN_FRACTION * (journal.expires_at - journal.started_at))
+
+
+def fallback_time_estimate(journal: RepairJournal) -> float | None:
+    """Seconds a full repair a rejected delta falls back to needs through one execution: the latest measured fallback,
+    the latest execution and the margin. None until a fallback was measured, and the fallback then runs ungated."""
+    timings = [entry['timing'] for entry in journal.rejected if isinstance(entry.get('timing'), dict)]
+    fallbacks = [timing for timing in timings if timing.get('fallback_seconds') is not None]
+    if not fallbacks:
+        return None
+    return float(fallbacks[-1]['fallback_seconds']) + float(timings[-1]['execution_seconds']) + _time_margin(journal)
+
+
+def _time_gate(cache: EnvCacheState, journal: RepairJournal, *, install_only: bool, delta: bool, now: float) -> None:
     """Hold early, with the measurements, rather than start a generation that cannot finish.
 
     An install-only repair (no rediscovery, a smaller closure) is estimated from earlier install-only repairs, so it can
     still fit when a full repair would not.
     """
-    # The margin is 10 minutes, or a tenth of a shorter attempt.
-    margin = min(REPAIR_TIME_MARGIN_SECONDS, REPAIR_TIME_MARGIN_FRACTION * (journal.expires_at - journal.started_at))
-    estimate = repair_time_estimate(journal.rejected, install_only=install_only, margin=margin)
+    margin = _time_margin(journal)
+    estimate = repair_time_estimate(journal.rejected, install_only=install_only, delta=delta, margin=margin)
     remaining = journal.expires_at - now
     if estimate is None or remaining >= estimate['total_seconds']:
         return
     journal.status, journal.last_error = 'held', 'attempt_time_insufficient'
     journal.diagnostics = {**journal.diagnostics, 'time_gate': {**estimate, 'remaining_seconds': round(remaining, 1),
-                                                                'install_only': install_only}}
+                                                                'install_only': install_only, 'delta': delta}}
     _publish(cache, journal)
     kind = 'install-only repair' if install_only else 'repair'
     _refuse(f'stopped early: {round(remaining)} s remain, but the next {kind} needs about '
@@ -1354,7 +1399,9 @@ def prepare_repair(cache: EnvCacheState, *, now: float | None = None) -> tuple[E
     previous = EnvironmentManifest.model_validate(entry['manifest'])
     triage = _triage_or_none(entry)
     install_only = triage is not None and install_only_failure(triage, previous)
-    _time_gate(cache, journal, install_only=install_only, now=time.time() if now is None else now)
+    # A repair with a triage starts as a delta; one without runs the full repair.
+    _time_gate(cache, journal, install_only=install_only, delta=triage is not None,
+               now=time.time() if now is None else now)
     journal.generation = len(journal.rejected)
     journal.generation_nonce = uuid.uuid4().hex[:12]
     journal.generation_started_at = time.time() if now is None else now
@@ -1365,6 +1412,8 @@ def prepare_repair(cache: EnvCacheState, *, now: float | None = None) -> tuple[E
     journal.repair_triage_unavailable = triage is None
     # Each generation starts from delta repair again; a fallback applies to the generation that needed it.
     journal.delta_fallback = False
+    journal.fallback_started_at = None
+    journal.delta_revisions = 0
     # Maintainer ruling (2026-10-29): each execution repair gets its own schema-correction budget. Construction's review
     # rounds used six of e2e-11's eight, leaving its repair two.
     journal.schema_repairs = 0
