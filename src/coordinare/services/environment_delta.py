@@ -16,7 +16,13 @@ from coordinare_service_inference.environment.models import Command, content_key
 from pydantic import ValidationError
 
 from coordinare.services.environment_delta_schema import RECORD_GROUPS
-from coordinare.services.environment_obligations import frozen_records, part_records, refuse_frozen
+from coordinare.services.environment_obligations import (
+    PartView,
+    frozen_records,
+    part_records,
+    refuse_frozen,
+    refuse_unrepaired_roots,
+)
 from coordinare.services.environment_repair_triage import (
     ACTIVATION,
     GLOBAL,
@@ -98,6 +104,10 @@ def proposal_of(manifest: EnvironmentManifest) -> dict[str, Any]:
     runtime = data.pop("runtime", None)
     data["runtime_endpoints"] = list(runtime.get("endpoints") or []) if isinstance(runtime, dict) else []
     return dict(data)
+
+
+def _ids_of(records: Any) -> frozenset[str]:
+    return frozenset({item['id'] for item in records or [] if isinstance(item, dict) and isinstance(item.get('id'), str)})
 
 
 def _record_dump(item: Any) -> dict[str, Any]:
@@ -241,8 +251,15 @@ class DeltaPlan:
 
     def guard_part(self, base: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:
         """Inside an author's own phase, the merge guard's rules over the records this part owns, so the author can
-        correct an out-of-closure edit before any merge. Ids only in the correction."""
-        refuse_frozen(frozen_records(part_records(base), part_records(candidate), self.triage))
+        correct an out-of-closure edit, or a failed command left as it ran, before any merge. Ids only in the
+        correction."""
+        before, after = part_records(base), part_records(candidate)
+        refuse_frozen(frozen_records(before, after, self.triage))
+        # A check group's part holds no installs and cannot see the global part: its failed checks are judged only when
+        # the closure leaves the global part untouched, so nothing it relies on can change elsewhere.
+        refuse_unrepaired_roots(before, after, self.triage, PartView(
+            _ids_of(base.get('install')), _ids_of(candidate.get('install')),
+            environment_changed='install' not in base and GLOBAL in self.touched))
 
     def base_proposal(self) -> dict[str, Any]:
         return proposal_of(self.base)

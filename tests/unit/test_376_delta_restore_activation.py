@@ -43,6 +43,9 @@ def test_reordered_frozen_activation_is_restored_keeping_added_entries() -> None
 def test_dropped_frozen_activation_is_restored() -> None:
     plan, base = _plan()
     candidate = {key: value for key, value in copy.deepcopy(base).items() if key != "activation"}
+    # The failed check itself changes, as a repair must (nare-native-029); only activation is under test here.
+    candidate["checks"] = [{**check, "timeout_seconds": 900} if check["id"] == "check-ruby-pinned" else check
+                           for check in candidate["checks"]]
 
     restored = plan.restore_frozen(base, candidate)
     assert restored["activation"] == {"path": base["activation"]["path"], "env": base["activation"]["env"]}

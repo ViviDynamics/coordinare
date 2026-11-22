@@ -53,7 +53,10 @@ async def test_native_delta_restores_frozen_checks_and_full_escalation_stays_nat
                             if fallback == 'domain':
                                 mapping = {identifier: ['missing-check'] for identifier in mapping}
                             answer = {} if fallback == 'schema' else {'manifest_delta': {'criterion_checks': mapping, 'checks': [
-                                {'id': 'other', 'argv': ['zog', '--changed'], 'required': False}]}, 'finding_responses': []}
+                                {'id': 'other', 'argv': ['zog', '--changed'], 'required': False},
+                                # The failed check's timeout grows: left as it ran, the daemon refuses it.
+                                {'id': 'version', 'argv': ['zog', '--version'], 'required': True, 'timeout_seconds': 600}]},
+                                'finding_responses': []}
                         else:
                             authored.append('full')
                             full = candidate()

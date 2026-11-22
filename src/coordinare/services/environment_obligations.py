@@ -455,7 +455,10 @@ REPAIR_TRIAGE_STALE = "repair_triage_stale"
 # Dettmore e2e-73: a delta author rewrote three failed checks in place, which execution preservation refuses (a check
 # that ran is fixed; a failed one is retired and replaced). The refusal was fatal, with no correction and no fallback,
 # and held the attempt after two calls. The author can act on the named ids, so it is a correction.
-REPAIR_CORRECTABLE = frozenset({REPAIR_OUTSIDE_CLOSURE, EXECUTION_COMMAND_CHANGED})
+# nare-native-029: both delta rounds left a failed install exactly as it ran, and review spent a round each time saying
+# so before the full repair took over. The daemon refuses it in the author's own phase instead.
+REPAIR_ROOT_UNCHANGED = "repair_root_unchanged"
+REPAIR_CORRECTABLE = frozenset({REPAIR_OUTSIDE_CLOSURE, EXECUTION_COMMAND_CHANGED, REPAIR_ROOT_UNCHANGED})
 _PHASES = ("init", "start", "health", "stop")
 
 
@@ -557,6 +560,49 @@ def refuse_frozen(frozen: set[str]) -> None:
                    f"{_ids(set(sorted(frozen)[:16]))}. Restore each listed record exactly as it was; a consequence "
                    "re-runs unchanged once its prerequisites pass. Add new records for any new obligation.")
         raise EnvironmentDiscoveryError(message, code=REPAIR_OUTSIDE_CLOSURE)
+
+
+@dataclass(frozen=True)
+class PartView:
+    """What a repair part can see: the base part's install ids, the candidate's, and whether anything outside the part
+    may change."""
+
+    installs: frozenset[str]
+    candidate_installs: frozenset[str]
+    environment_changed: bool = False
+
+
+def unrepaired_roots(before: RecordSet, after: RecordSet, triage: RepairTriage, view: PartView) -> list[str]:
+    """Failed commands a repair part leaves exactly as they ran while nothing they could rely on changes. Each would
+    fail the same way again.
+
+    Nothing is judged when an install is added, activation changes, or the view says something outside the part may
+    change. A failed install is also excused by a change to
+    what it depends on; a failed check or service command by that, or by any install or service change, since it may
+    rely on one without naming it.
+    """
+    changed = {identifier for identifier, command in before.commands.items() if identifier not in after.commands
+               or after.commands[identifier].model_dump(mode="json") != command.model_dump(mode="json")}
+    installs = view.installs
+    if (view.environment_changed or view.candidate_installs - installs
+            or (after.activation is not None and after.activation != before.activation)):
+        return []
+    services = ([service.model_dump(mode="json") for service in before.services]
+                != [service.model_dump(mode="json") for service in after.services])
+    environment = services or bool(changed & installs)
+    return sorted(identifier for identifier, root in triage.roots.items()
+                  if root == "command" and identifier in before.commands and identifier not in changed
+                  and not set(before.commands[identifier].depends_on) & changed
+                  and (identifier in installs or not environment))
+
+
+def refuse_unrepaired_roots(before: RecordSet, after: RecordSet, triage: RepairTriage, view: PartView) -> None:
+    if unchanged := unrepaired_roots(before, after, triage, view):
+        message = (f"repair leaves failed commands exactly as they ran, and nothing they rely on changed: "
+                   f"{_ids(set(unchanged))}. Each would fail the same way again: change it, or what it relies on, to "
+                   "address its failure in the execution feedback (a timeout that expired may only be increased; a "
+                   "failed check is retired and replaced by rewriting it).")
+        raise EnvironmentDiscoveryError(message, code=REPAIR_ROOT_UNCHANGED)
 
 
 def guard_repair_diff(candidate: EnvironmentManifest, previous: EnvironmentManifest, triage: RepairTriage) -> None:

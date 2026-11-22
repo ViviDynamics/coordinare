@@ -578,7 +578,8 @@ async def test_an_accepted_delta_repair_reaches_the_author_without_the_previous_
         contexts.append(context)
         # The added mapping is the only change: the scope's one required criterion now maps the failed check.
         mapping = {criterion["id"]: ["version"] for criterion in context["scope_contract"]["definition"]["criteria"]}
-        return json.dumps({"manifest_delta": {"criterion_checks": mapping}, "finding_responses": []})
+        # The failed check itself changes too: left as it ran, the daemon refuses it (nare-native-029).
+        return json.dumps({"manifest_delta": {"criterion_checks": mapping, "checks": [{"id": "version", "argv": ["zog", "--version"], "required": True, "timeout_seconds": 600}]}, "finding_responses": []})
 
     budget = AttemptBudget()
     await delta_run(chat, budget=budget)
@@ -609,7 +610,7 @@ async def test_a_delta_that_rewrites_a_frozen_check_keeps_the_original_and_needs
             # 'other' is outside the failure's closure.
             mapping = {criterion["id"]: ["version"] for criterion in context["scope_contract"]["definition"]["criteria"]}
             return json.dumps({"manifest_delta": {"criterion_checks": mapping, "checks": [
-                {"id": "other", "argv": ["zog", "--changed"], "required": False}]}, "finding_responses": []})
+                {"id": "other", "argv": ["zog", "--changed"], "required": False}, {"id": "version", "argv": ["zog", "--version"], "required": True, "timeout_seconds": 600}]}, "finding_responses": []})
         kinds.append("full")
         return json.dumps({"manifest": candidate(), "finding_responses": []})
 

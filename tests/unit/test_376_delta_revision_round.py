@@ -41,7 +41,8 @@ def _delta_chat(reviews: list[str], kinds: list[str], revisions: list[dict[str, 
                 revisions.append(last)
             mapping = {criterion["id"]: ["version"] for criterion in context["scope_contract"]["definition"]["criteria"]}
             responses = finding_responses() if "delta_revision" in last else []
-            return json.dumps({"manifest_delta": {"criterion_checks": mapping}, "finding_responses": responses})
+            return json.dumps({"manifest_delta": {"criterion_checks": mapping, "checks": [{"id": "version", "argv": ["zog", "--version"], "required": True, "timeout_seconds": 600}]},
+                               "finding_responses": responses})
         kinds.append("full")
         return json.dumps({"manifest": candidate(), "finding_responses": finding_responses()})
     return chat

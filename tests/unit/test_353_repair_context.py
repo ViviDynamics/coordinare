@@ -17,7 +17,7 @@ from coordinare.services.environment_delta import DeltaPlan
 
 def _plan(closure, *, requirements=(), criteria=()):
     triage = SimpleNamespace(closure_ids=list(closure), touched_parts=[], requirement_ids=list(requirements),
-                             criterion_ids=list(criteria))
+                             criterion_ids=list(criteria), roots={})
     return DeltaPlan(base=SimpleNamespace(), triage=triage)
 
 
