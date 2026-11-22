@@ -146,6 +146,7 @@ class RepairJournal(BaseModel):
     version: Literal[9] = 9
     agent_checkpoints: dict[str, CheckpointReference] = Field(default_factory=dict)
     agent_phase_calls: dict[str, NonNegativeInt] = Field(default_factory=dict)
+    author_reads: dict[str, dict[str, str]] = Field(default_factory=dict)
     agent_usage_receipts: set[str] = Field(default_factory=set)
     agent_usage_unknown: int = Field(default=0, ge=0)
     agent_compactions: int = Field(default=0, ge=0)
@@ -583,6 +584,7 @@ def mark_native_attempt(cache: EnvCacheState) -> bool:
 def _restore_agent_accounting(budget: AttemptBudget, journal: RepairJournal) -> None:
     budget.agent_usage_receipts = set(journal.agent_usage_receipts)
     budget.agent_phase_calls = dict(journal.agent_phase_calls)
+    budget.author_reads = {key: dict(value) for key, value in journal.author_reads.items()}
     budget.agent_usage_unknown = journal.agent_usage_unknown
     budget.agent_compactions = journal.agent_compactions
     budget.agent_retries = journal.agent_retries
@@ -597,6 +599,7 @@ def _restore_agent_accounting(budget: AttemptBudget, journal: RepairJournal) -> 
 def _save_agent_accounting(journal: RepairJournal, budget: AttemptBudget) -> None:
     journal.agent_usage_receipts = set(budget.agent_usage_receipts)
     journal.agent_phase_calls = dict(budget.agent_phase_calls)
+    journal.author_reads = {key: dict(value) for key, value in budget.author_reads.items()}
     journal.agent_usage_unknown = budget.agent_usage_unknown
     journal.agent_compactions = budget.agent_compactions
     journal.agent_retries = budget.agent_retries

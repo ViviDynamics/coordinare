@@ -55,6 +55,8 @@ from coordinare.services.environment_agent import (
     EnvironmentPhaseRequest,
     ObservationTools,
     PinnedSourceTools,
+    author_required,
+    record_author_reads,
     required_sources,
     run_environment_phase,
     unavailable_legacy_chat,
@@ -807,6 +809,8 @@ async def _native_author_phase(inspection: _Inspection, messages: list[dict[str,
             return _declaration_feedback(exc, inspection, budget)
         raise exc
 
+    read_key = f'{inspection.name}:global' if inspection.global_part else inspection.name
+    required = author_required(inspection, budget, read_key)
     result = await run_environment_phase(EnvironmentPhaseRequest(
         attempt_id=native.attempt_id, phase=inspection.name, role='author', source_commit=ledger.source_commit,
         domain_digests=(('inventory', inspection.inventory_digest), ('ledger', ledger.digest())),
@@ -815,7 +819,7 @@ async def _native_author_phase(inspection: _Inspection, messages: list[dict[str,
                                              trial=inspection.trial is not None, global_part=inspection.global_part)
             + (GLOBAL_AUTHOR_INSTRUCTION if inspection.global_part else ''),
         packet={'context': messages[1:]}, sources=tuple(EvidenceSource(path, text, inspection.inputs[path])
-            for path, text in sorted(inspection.source_files.items())), required=frozenset(inspection.source_files),
+            for path, text in sorted(inspection.source_files.items())), required=required,
         envelope=final, schema=final_response_schema(final,
             scope_contract=None if inspection.global_part else budget.scope_contract),
         validate=admit, validate_envelope=True, require_source=True, rejection_errors=rejection_errors,
@@ -825,6 +829,7 @@ async def _native_author_phase(inspection: _Inspection, messages: list[dict[str,
         max_output_bytes=inspection.limits.max_output_bytes, max_context_bytes=inspection.limits.max_review_context_bytes,
         checkpoint_store=native.checkpoint_store, event_sink=native.event_sink, tools=tuple(tools), effects=effects,
         observations=observations, source_tools=PinnedSourceTools(inspection, observe_sources=inspection.observe_sources)))
+    record_author_reads(inspection, budget, read_key, required)
     return result.data, dict(inspection.inputs)
 
 

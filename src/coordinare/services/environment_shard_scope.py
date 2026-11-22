@@ -355,6 +355,8 @@ class AgentTask:
     criterion_ids: Sequence[str] | None = None
     listing_only: bool = False  # Triage judges a listing; it never reads source.
     instance_id: str = ''
+    # An author's identity across this attempt's passes; a later pass is not made to re-read what it already read.
+    read_key: str | None = None
 
     def schema(self, *, final: bool) -> dict[str, Any]:
         """Source tools only until the agent holds evidence, as in the single-conversation path."""
@@ -411,7 +413,8 @@ async def run_agent(context: AgentContext, inspection: SourceInspection, message
                 source_commit=ledger.source_commit, validate=task.validate,
                 role='reviewer' if task.envelope in {'assessment', 'scope_assessment', 'listing_triage'} else 'author',
                 listing_only=task.listing_only, shard_corrections=SHARD_SCHEMA_REPAIRS * (AGENT_RESTARTS + 1),
-                instance_id=task.instance_id, rejection_errors=lambda exc: _rejection_errors(exc, task.envelope)))
+                instance_id=task.instance_id, rejection_errors=lambda exc: _rejection_errors(exc, task.envelope),
+                read_key=task.read_key))
         except EnvironmentDiscoveryError as exc:
             if exc.code.endswith('_context_limit'):
                 raise ShardOverflowError(None) from None

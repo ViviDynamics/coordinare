@@ -755,7 +755,8 @@ class DividedConstruction:
         messages = [{'role': 'system', 'content': source_navigation(self.context.budget)
                      + source_tool_guidance(self.context.budget, CHECK_AUTHOR_INSTRUCTIONS)},
                     {'role': 'user', 'content': brief}]
-        part: ShardChecks = await run_agent(self.context, inspection, messages, AgentTask('shard_checks', validate))
+        part: ShardChecks = await run_agent(self.context, inspection, messages, AgentTask('shard_checks', validate,
+                                                                                    read_key=f'executable_checks:{group.prefix}'))
         self.group_inputs.update(inspection.inputs)
         save_part(self.context.budget, 'delta', group.prefix, key, data={'shard_checks': captured['patch']},
                   inputs=dict(inspection.inputs))
@@ -798,7 +799,8 @@ class DividedConstruction:
         messages = [{'role': 'system', 'content': source_navigation(self.context.budget)
                      + source_tool_guidance(self.context.budget, CHECK_AUTHOR_INSTRUCTIONS)},
                     {'role': 'user', 'content': brief}]
-        part: ShardChecks = await run_agent(self.context, inspection, messages, AgentTask('shard_checks', validate))
+        part: ShardChecks = await run_agent(self.context, inspection, messages, AgentTask('shard_checks', validate,
+                                                                                    read_key=f'executable_checks:{group.prefix}'))
         self.group_inputs.update(inspection.inputs)
         save_part(self.context.budget, 'groups', group.prefix, key,
                   data={'shard_checks': part.model_dump(mode='json')}, inputs=dict(inspection.inputs))

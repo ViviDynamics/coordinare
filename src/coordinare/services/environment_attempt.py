@@ -188,6 +188,10 @@ class AttemptBudget:
     agent_evidence_error_receipts: set[str] = field(default_factory=set, repr=False)
     agent_checkpoints: dict[str, CheckpointReference] = field(default_factory=dict, repr=False)
     agent_phase_calls: dict[str, int] = field(default_factory=dict, repr=False)
+    # Per author (discovery, its global part, each check group): the source files, by digest, it read in full in an
+    # earlier pass of this attempt. nare-native-028: authors re-read every bound file on every pass (8 passes, 23-51%
+    # of wall time). A later pass is not made to read them again; they stay available on demand.
+    author_reads: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
     agent_context: EnvironmentAgentContext | None = field(default=None, repr=False)
     checkpoint: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
