@@ -17,7 +17,7 @@ from coordinare.services.environment_attempt import AttemptBudget, EnvironmentDi
 from coordinare.services.environment_evidence import prepare_mandatory_evidence
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from coordinare.services.environment_discovery import DiscoveryLimits, Fetch
 
@@ -39,6 +39,8 @@ class SourceInspection:
         self.budget = budget
         self.retained_inputs = retained_inputs
         self.name = "discovery"
+        # A delta repair's refusal of a read outside the reviewed scope (environment_agent reads it), when set.
+        self.scope_refusal: Callable[[str], dict[str, str] | None] | None = None
         self.paths = sorted(paths)
         self.entries = dict(paths) if isinstance(paths, Mapping) else None
         paths = list(paths)

@@ -137,6 +137,11 @@ def test_a_command_failing_in_two_executions_must_change_method():
     assert context['persistent_failure_ids'] == ['install-ruby']
     assert context['change_method'] == CHANGE_METHOD_INSTRUCTION
     assert 'not a change of method' in CHANGE_METHOD_INSTRUCTION
+    # nare-native-031: a command that failed four times and then passed is no longer a persistent failure.
+    recovered = SimpleNamespace(execution_attempt_history=[
+        {'attempt': 1, 'failed_ids': ['install-aws']}, {'attempt': 2, 'failed_ids': ['install-aws']},
+        {'attempt': 3, 'failed_ids': ['c00-replay']}])
+    assert 'persistent_failure_ids' not in _attempt_history(recovered)
 
 
 def test_runtime_guidance_forbids_copying_tools_out_of_images_and_names_no_stack():

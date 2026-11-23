@@ -58,7 +58,7 @@ from coordinare.services.environment_shard_scope import (
 from coordinare.services.environment_url_check import missing_url_error, unnamed_missing_commands
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Mapping, Sequence
+    from collections.abc import Callable, Collection, Mapping, Sequence
 
     from coordinare_service_inference.environment.findings import FindingLedger, FindingRecord
     from coordinare_service_inference.environment.inventory import InventoryEntry
@@ -696,6 +696,10 @@ class DividedConstruction:
     carrier_process_policy: dict[str, Any] | None = None
     # Set by a coverage revision: its next build carries the groups no finding or feedback names (see ``untouched``).
     revising: bool = False
+    # A delta repair's refusal of reads outside the reviewed scope, which the global author already met. nare-native-031:
+    # a check author read a test file outside it, and the read reopened scope review on the attempt's last coverage
+    # revision.
+    scope_refusal: Callable[[str], dict[str, str] | None] | None = None
 
     @property
     def groups(self) -> list[CheckGroup]:
@@ -730,6 +734,7 @@ class DividedConstruction:
         plan = cast('DeltaPlan', self.delta)
         inspection = SourceInspection(self.entries, self.fetch, self.context.limits, self.context.budget)
         inspection.name = 'executable_checks'
+        inspection.scope_refusal = self.scope_refusal
         assigned = [criterion for criterion in group.criteria if criterion.id in plan.triage.criterion_ids]
         cited_by: dict[str, list[str]] = {}
         for criterion in assigned:
@@ -786,6 +791,7 @@ class DividedConstruction:
             return await self.author_delta(group, summary=summary, probes=probes)
         inspection = SourceInspection(self.entries, self.fetch, self.context.limits, self.context.budget)
         inspection.name = 'executable_checks'
+        inspection.scope_refusal = self.scope_refusal
         cited_by: dict[str, list[str]] = {}
         for criterion in group.criteria:
             for path in criterion.sources:

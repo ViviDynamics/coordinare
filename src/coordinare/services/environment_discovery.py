@@ -1317,16 +1317,21 @@ def _attempt_history(budget: AttemptBudget) -> dict[str, Any]:
 
 
 def persistent_failures(history: list[dict[str, Any]]) -> list[str]:
-    """Commands that failed in at least two executions of this attempt, one repair or more apart.
+    """Commands that failed in at least two executions of this attempt, one repair or more apart, and still failed in
+    the latest.
 
     Dettmore e2e-75: install-ruby failed in all five executions, each repair adjusting the same method (copying the
     runtime out of a container image); "do not repeat a change that already failed" let each variant through.
+    nare-native-031: install-aws-cli failed four times and then passed, and the next repair was still told to replace
+    its method.
     """
     counts: dict[str, int] = {}
     for item in history:
         for identifier in set(item.get("failed_ids") or []):
             counts[identifier] = counts.get(identifier, 0) + 1
-    return sorted(identifier for identifier, count in counts.items() if count >= PERSISTENT_FAILURE_COUNT)
+    latest = set(history[-1].get("failed_ids") or []) if history else set()
+    return sorted(identifier for identifier, count in counts.items()
+                  if count >= PERSISTENT_FAILURE_COUNT and identifier in latest)
 
 
 PERSISTENT_FAILURE_COUNT = 2
@@ -1731,15 +1736,46 @@ DELTA_REVISION_INSTRUCTION = (
 
 def _delta_revision(attempt: _Attempt, build: DividedConstruction | None, assessment: CoverageAssessment) -> None:
     """The rejected delta's authors see the review: the global (or only) author in its own conversation after the delta
-    it returned, and each touched check group through its routed findings."""
+    it returned, and each touched check group through its routed findings. Records the open findings name that never
+    ran join the closure first, so the revision may change them."""
+    widened = _widen_delta(attempt, build, cast("FindingLedger", assessment.finding_ledger))
     if build is not None:
         build.route_findings(cast("FindingLedger", assessment.finding_ledger))
+    plan = cast("DeltaPlan", attempt.delta)
     attempt.messages.extend([
         {"role": "assistant", "content": _json(attempt.delta_reply or {})},
         {"role": "user", "content": _json({"delta_revision": {
             "untrusted_review_feedback": redact_command_text(assessment.rationale)[:4096],
-            "sources": assessment.sources, "finding_ledger": _ledger_for_prompt(assessment.finding_ledger)},
-            "instruction": DELTA_REVISION_INSTRUCTION})}])
+            "sources": assessment.sources, "finding_ledger": _ledger_for_prompt(assessment.finding_ledger),
+            **({"widened_closure_records": {identifier: record for identifier, record in plan.closure_records().items()
+                                            if identifier in widened}} if widened else {})},
+            "instruction": DELTA_REVISION_INSTRUCTION + (WIDENED_CLOSURE if widened else "")})}])
+
+
+WIDENED_CLOSURE = (" widened_closure_records are records the open findings name that never ran; they are now in the "
+                   "closure, so correct them here as the findings ask.")
+
+
+def _widen_delta(attempt: _Attempt, build: DividedConstruction | None, ledger: FindingLedger) -> list[str]:
+    """Records an open finding names that the failed execution never ran (consequences, not executed) join the closure.
+
+    nare-native-031: review flagged check-aws-usable, which still ran the help syntax that had failed in an install but
+    had never run itself, so it was frozen. The revision fixed it, restore_frozen put it back, and the revision could
+    only be rejected again. A record that never ran has no executed form to preserve; review still judges the change."""
+    plan = cast("DeltaPlan", attempt.delta)
+    named = {identifier for record in ledger.records if record.id in ledger.open_ids()
+             for identifier in record.proposal.affected_ids}
+    extra = sorted((named & set(plan.triage.consequences)) - plan.closure - plan.fixed)
+    if not extra:
+        return []
+    triage = plan.triage.model_copy(update={
+        "closure_ids": tuple(sorted({*plan.triage.closure_ids, *extra})),
+        "touched_parts": tuple(sorted({*plan.triage.touched_parts, *(part_of(identifier) for identifier in extra)}))})
+    attempt.delta = replace(plan, triage=triage)
+    attempt.budget.repair_triage = triage
+    if build is not None:
+        build.delta = attempt.delta
+    return extra
 
 
 async def _revise(attempt: _Attempt, build: DividedConstruction | None, candidate: dict[str, Any],
@@ -1877,7 +1913,8 @@ def _divided_construction(scope: ScopeContract, attempt: _Attempt) -> DividedCon
     build = DividedConstruction(AgentContext(attempt.budget, attempt.bounds, attempt.chat), options.entries or attempt.inventory,
                                 attempt.fetch, scope, attempt.bounds.agent_concurrency,
                                 previous=parts_from_manifest(prior[-1] if prior else None, groups),
-                                carrier_process_policy=carrier_process_policy(attempt.construction.capabilities))
+                                carrier_process_policy=carrier_process_policy(attempt.construction.capabilities),
+                                scope_refusal=attempt.construction.delta_scope_refusal)
     build.obligations = dict(build.previous)
     build.delta = attempt.delta
     build.fixed = fixed_commands(attempt.budget.executed_manifests)

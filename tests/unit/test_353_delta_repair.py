@@ -512,7 +512,10 @@ async def test_a_touched_group_is_authored_as_a_patch_applied_to_its_failed_part
             self.inputs.update(expected)
             return []
 
+    refusals: list[Any] = []
+
     async def agent(_context, _inspection, _messages, task):
+        refusals.append(_inspection.scope_refusal)
         reply = {"shard_checks": {"checks": [cmd("c00-b", ["b", "--strict"])], "criterion_checks": {"S2": ["c00-b"]}}}
         return task.validate(reply)
 
@@ -522,10 +525,16 @@ async def test_a_touched_group_is_authored_as_a_patch_applied_to_its_failed_part
     scope = SimpleNamespace(definition=SimpleNamespace(criteria=criteria), finding_ledger=FindingLedger(source_commit=COMMIT),
                             all_inputs={"src/1.md": "a" * 64, "src/2.md": "b" * 64})
     previous = {"c00-": {"checks": [c.model_dump(mode="json") for c in base.checks], "criterion_checks": dict(base.criterion_checks)}}
-    build = DividedConstruction(AgentContext(budget, DiscoveryLimits(), None), {}, None, scope, 1, previous=previous, delta=plan)
+    def refuse(path: str) -> dict[str, str] | None:
+        return None
+
+    build = DividedConstruction(AgentContext(budget, DiscoveryLimits(), None), {}, None, scope, 1, previous=previous, delta=plan,
+                                scope_refusal=refuse)
     summary = {"services": [], "readiness_ids": [], "checks": [], "install_ids": [], "activation": {}, "local_credentials": [],
                "runtime_endpoints": []}
     part = await build.author_delta(group, summary=summary, probes=[])
+    # nare-native-031: a check author's out-of-scope read reopened scope review; it meets the global author's refusal.
+    assert refusals == [refuse]
 
     assert [check.id for check in part.checks] == ["c00-a", "c00-b"]
     assert part.checks[1].argv == ["b", "--strict"]

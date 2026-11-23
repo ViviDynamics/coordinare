@@ -170,7 +170,9 @@ def test_a_divided_delta_revision_routes_findings_to_its_check_groups_and_shows_
 
     ledger = FindingLedger(source_commit="a" * 40)
     attempt = SimpleNamespace(messages=[{"role": "system", "content": ""}, {"role": "user", "content": "{}"}],
-                              delta_reply={"manifest_delta": {"install": []}, "finding_responses": []})
+                              delta_reply={"manifest_delta": {"install": []}, "finding_responses": []},
+                              delta=SimpleNamespace(triage=SimpleNamespace(consequences=()), closure=frozenset(),
+                                                    fixed=frozenset()))
     review = SimpleNamespace(finding_ledger=ledger, rationale="needs a sample", sources=["README.md"])
     discovery_module._delta_revision(attempt, build, review)  # type: ignore[arg-type]
 
@@ -218,3 +220,35 @@ def test_a_first_global_author_answering_a_finding_it_was_never_shown_is_correct
     with pytest.raises(FindingValidationError) as raised:
         discovery_module._global_rules(merge)(global_part())
     assert raised.value.code == "finding_response_ids_invalid"
+
+
+def test_a_delta_revision_widens_the_closure_to_never_run_records_its_findings_name() -> None:
+    """nare-native-031: review flagged check-aws-usable, which repeated an install's failed help syntax but had never run
+    (a consequence, frozen). The revision fixed it, restore_frozen put it back, and the round could only fail again."""
+    from coordinare.services import environment_discovery as discovery_module
+    from coordinare.services.environment_delta import DeltaPlan
+    from coordinare.services.environment_repair_triage import RepairTriage
+
+    triage = RepairTriage(manifest_digest="m" * 64, roots={"install-aws": "command"},
+                          consequences=("check-aws-usable", "c00-aws", "check-docker"), closure_ids=("install-aws",),
+                          criterion_ids=(), requirement_ids=(), touched_parts=("global",), digest="d" * 64)
+    plan = DeltaPlan(base=None, triage=triage, fixed=frozenset({"check-docker"}))  # type: ignore[arg-type]
+    budget = AttemptBudget()
+    build = SimpleNamespace(delta=plan)
+    attempt = SimpleNamespace(delta=plan, budget=budget)
+
+    def record(identifier: str, affected: list[str]) -> Any:
+        return SimpleNamespace(id=identifier, proposal=SimpleNamespace(affected_ids=affected))
+
+    # An executed (fixed) record and an id outside the consequences stay frozen; a closed finding widens nothing.
+    ledger = SimpleNamespace(records=[record("F0001", ["check-aws-usable", "c00-aws"]),
+                                      record("F0002", ["check-docker", "unknown"]), record("F0003", ["c00-other"])],
+                             open_ids=lambda: ["F0001", "F0002"])
+    widened = discovery_module._widen_delta(attempt, build, ledger)  # type: ignore[arg-type]
+
+    assert widened == ["c00-aws", "check-aws-usable"]
+    assert attempt.delta.closure == {"install-aws", "check-aws-usable", "c00-aws"}
+    assert set(attempt.delta.triage.touched_parts) == {"global", "c00-"}
+    assert build.delta is attempt.delta and budget.repair_triage is attempt.delta.triage
+    assert attempt.delta.triage.digest == triage.digest
+    assert discovery_module._widen_delta(attempt, build, ledger) == []  # type: ignore[arg-type]
