@@ -194,7 +194,27 @@ def test_a_delta_author_answering_an_unknown_finding_is_corrected_in_its_own_pha
     response = {"finding_id": "F0007", "rationale": "r", "sources": ["README.md"], "affected_ids": []}
     discovery = SimpleNamespace(finding_responses=[FindingResponse.model_validate(response)])
     with pytest.raises(FindingValidationError) as raised:
-        discovery_module._delta_response_ids(discovery, budget)  # type: ignore[arg-type]
+        discovery_module._response_ids_in_phase(discovery, budget)  # type: ignore[arg-type]
     assert raised.value.code == "finding_response_ids_invalid"
     discovery.finding_responses = []
-    discovery_module._delta_response_ids(discovery, budget)  # type: ignore[arg-type]
+    discovery_module._response_ids_in_phase(discovery, budget)  # type: ignore[arg-type]
+
+
+def test_a_first_global_author_answering_a_finding_it_was_never_shown_is_corrected_in_its_own_phase() -> None:
+    """nare-native-030: the first global author answered scope finding F0001 with an empty coverage ledger. The merge
+    error re-ran every check group, and one looped until the attempt held. The global part's own rules now refuse it."""
+    from coordinare_service_inference.environment.findings import FindingLedger, FindingResponse
+
+    from coordinare.services import environment_discovery as discovery_module
+    from coordinare.services.environment_findings import FindingValidationError
+    from tests.unit.test_353_sharded_executable import global_part
+
+    budget = AttemptBudget()
+    budget.finding_ledger = FindingLedger(source_commit="a" * 40)
+    response = {"finding_id": "F0001", "rationale": "Placeholder", "sources": ["README.md"], "affected_ids": []}
+    merge = object.__new__(discovery_module._CandidateValidator)
+    merge.budget = budget
+    merge.discovery = SimpleNamespace(finding_responses=[FindingResponse.model_validate(response)])  # type: ignore[assignment]
+    with pytest.raises(FindingValidationError) as raised:
+        discovery_module._global_rules(merge)(global_part())
+    assert raised.value.code == "finding_response_ids_invalid"

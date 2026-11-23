@@ -2163,6 +2163,7 @@ def _global_rules(merge: Callable[[dict[str, Any]], Any] | None) -> Callable[[di
 
     def check(data: dict[str, Any]) -> dict[str, Any]:
         validate_global(data)
+        _response_ids_in_phase(merge.discovery, merge.budget)
         proposal = EnvironmentManifestProposal.model_validate(data)
         try:
             # v28 set DOCKER_CONFIG in activation, which the private runtime owns; the merge reported it unlocated.
@@ -2466,7 +2467,7 @@ async def _delta_global_part(attempt: _Attempt, validate: Callable[[dict[str, An
     budget, discovery, plan = attempt.budget, attempt.discovery, cast('DeltaPlan', attempt.delta)
 
     def check(delta: dict[str, Any]) -> Any:
-        _delta_response_ids(discovery, budget)
+        _response_ids_in_phase(discovery, budget)
         applied = plan.restore_frozen(base, apply_delta(base, _delta_record(delta)))
         admitted = validate(applied)
         plan.guard_part(base, applied)
@@ -2494,7 +2495,7 @@ async def _delta_candidate(attempt: _Attempt, validate: Callable[[dict[str, Any]
     base = plan.base_proposal()
 
     def check(delta: dict[str, Any]) -> Any:
-        _delta_response_ids(discovery, budget)
+        _response_ids_in_phase(discovery, budget)
         applied = plan.restore_frozen(base, apply_delta(base, _delta_record(delta)))
         admitted = validate(applied)
         plan.guard_part(base, applied)
@@ -2514,10 +2515,11 @@ async def _delta_candidate(attempt: _Attempt, validate: Callable[[dict[str, Any]
     return plan.restore_frozen(base, apply_delta(base, _delta_record(data)))
 
 
-def _delta_response_ids(discovery: _Inspection, budget: AttemptBudget) -> None:
-    """nare-native-029: the global delta author answered a finding id it made up. Only the merge checked the ids, and a
-    merge error discards a delta outright, so the attempt fell back to the full repair. Checked in the author's own
-    phase, the existing correction lists the allowed ids instead."""
+def _response_ids_in_phase(discovery: _Inspection, budget: AttemptBudget) -> None:
+    """A global or delta author's finding ids, checked in its own phase, where the existing correction lists the
+    allowed ids. Only the merge checked them before: nare-native-029's global delta author answered a finding id it
+    made up and the merge discarded the delta; nare-native-030's first global author answered a scope finding it was
+    never shown, and the merge error re-ran every check group, one of which looped until the attempt held."""
     if budget.finding_ledger is not None:
         validate_finding_response_ids(discovery.finding_responses, cast("FindingLedger", budget.finding_ledger))
 

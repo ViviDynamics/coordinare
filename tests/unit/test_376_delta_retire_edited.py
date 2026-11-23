@@ -105,15 +105,16 @@ def test_the_global_part_keeps_a_retired_check_without_counting_it_removed() -> 
     from tests.unit.test_353_sharded_executable import global_part, make_criterion, scope_of
 
     merge = discovery_module._CandidateValidator.__new__(discovery_module._CandidateValidator)
+    merge.discovery = SimpleNamespace(finding_responses=[])  # type: ignore[assignment]
     merge.construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=scope_of([make_criterion(1)])),
                                          capabilities=SimpleNamespace(runtime=None, platform='linux/aarch64'))
     merge.required_ids = {'requirements': set(), 'checks': {'toolchain'}, 'install': set(), 'services': set()}
     retired = global_part(checks=[{'id': 'toolchain', 'argv': ['true'], 'required': False},
                                   {'id': 'toolchain-r1', 'argv': ['true', 'fixed']}])
-    merge.budget = SimpleNamespace(executed_manifests=[], retirable_checks=frozenset({'toolchain'}))
+    merge.budget = SimpleNamespace(finding_ledger=None, executed_manifests=[], retirable_checks=frozenset({'toolchain'}))
     discovery_module._global_rules(merge)(copy.deepcopy(retired))
     # A check that may not be retired is still a removed obligation when it stops being required.
-    merge.budget = SimpleNamespace(executed_manifests=[], retirable_checks=frozenset())
+    merge.budget = SimpleNamespace(finding_ledger=None, executed_manifests=[], retirable_checks=frozenset())
     with pytest.raises(ValidationError) as caught:
         discovery_module._global_rules(merge)(copy.deepcopy(retired))
     assert {item['code'] for item in _validation_feedback(caught.value)} == {'global_obligation_removed'}

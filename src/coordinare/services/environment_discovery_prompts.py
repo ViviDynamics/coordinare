@@ -293,6 +293,9 @@ def native_discovery_system(*, delta: bool, preflight: bool, trial: bool, global
     envelope = 'manifest_delta' if delta else 'manifest'
     return (NATIVE_SOURCE_INSTRUCTIONS + CAPABILITY_CRITERIA + ('' if global_part else _WHOLE_MANIFEST_MAPPING) + _MANIFEST_RULES +
         f'Return the complete {envelope} envelope and finding_responses. ' +
+        # nare-native-030: the native author, never told this, answered a scope finding it had not been shown.
+        'finding_responses answer only the coverage finding ids the daemon gave you (finding_ledger or open findings); '
+        'when it gave none, finding_responses is []. Never invent an id or answer a scope finding. ' +
         ('For this repair, declare only records changed or added, preserving every frozen obligation. ' if delta else '') +
         ('Before a final declaration, use the native probe tool to observe uncertain base-image prerequisites. '
          'Probe commands have no network, secrets or installed cache, and source is read-only. Do not install anything. '
