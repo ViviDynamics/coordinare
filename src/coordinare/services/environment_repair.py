@@ -1417,6 +1417,9 @@ def prepare_repair(cache: EnvCacheState, *, now: float | None = None) -> tuple[E
     # Maintainer ruling (2026-10-29): each execution repair gets its own schema-correction budget. Construction's review
     # rounds used six of e2e-11's eight, leaving its repair two.
     journal.schema_repairs = 0
+    # Maintainer ruling (2026-11-23): coverage revisions too. nare-native-031 held on attempt_coverage_limit in its
+    # sixth generation: the first manifest's review used four of the attempt's eight, and five repairs the rest.
+    journal.coverage_revisions = 0
     journal.status = 'discovering'
     new_path = cache.cache_dir.parent / _generation(journal)
     if new_path.exists() or new_path.is_symlink():

@@ -84,3 +84,24 @@ def test_each_execution_repair_gets_its_own_schema_correction_budget(tmp_path):
     _publish(cache, journal)
     prepare_repair(cache)
     assert journal_for(cache).schema_repairs == 0
+
+
+def test_each_execution_repair_gets_its_own_coverage_revisions(tmp_path):
+    """Maintainer ruling 2026-11-23: nare-native-031 held on attempt_coverage_limit in its sixth generation, its first
+    review having used four of the attempt's eight coverage revisions."""
+    from coordinare.services.environment_repair import (
+        _publish,
+        journal_for,
+        prepare_repair,
+        record_execution_failure,
+    )
+    from tests.unit.test_353_execution_repair import cache_fixture, failed_report, started
+
+    cache = cache_fixture(tmp_path)
+    started(cache)
+    assert record_execution_failure(cache, failed_report(cache), cleanup_confirmed=True, now=101)
+    journal = journal_for(cache)
+    journal.coverage_revisions = journal.max_coverage_revisions
+    _publish(cache, journal)
+    prepare_repair(cache)
+    assert journal_for(cache).coverage_revisions == 0
