@@ -112,6 +112,16 @@ SAMPLE_TEST_CHECKS = (
     "reported a failed assertion: decide from the runner's own result (the exit statuses it documents, or its summary "
     "showing the sample executed with no error outside assertions), never by discarding the status. Running a sample "
     "is required here, not a selective omission.")
+# nare-native-024, -026, -028 and -031: checks called the project's own command line without an argument it requires
+# (a prompt) or without its non-interactive confirmation, and a tool with a help syntax its version rejects; each cost
+# a repair. Every one of those invocations was written out in the repository's own tests and documentation.
+INVOCATION_SOURCES = (
+    "Copy each command's invocation from the repository, never from memory: its tests, CI workflows, scripts and "
+    "documentation show the arguments, flags and input a command needs (a positional argument or subcommand it "
+    "requires, the switch that lets it run without a terminal or confirmation, the help or version syntax its version "
+    "accepts). Read where the repository calls the command before you write a check that calls it, and keep every "
+    "required argument. When the repository never shows an invocation, use only what the tool's own documentation in "
+    "the repository or a probe of its help output shows.")
 # Dettmore e2e-66: reviewers summed every command's timeout_seconds (13,800 s) against the 7,200 s session budget and
 # held findings open until the author cut the heavy builds' and suites' ceilings, spending six coverage revisions
 # before any execution. A ceiling is not a plan: the session deadline still ends the whole run.
@@ -172,7 +182,7 @@ _MANIFEST_RULES = (
     'For shell-local variables assigned inside bash -c, use $name rather than ${name}. '
     f'{LOCAL_CREDENTIAL_AUTHORING} '
     f'{ADVISORY_AUDIT_CHECKS} '
-    f'{SAMPLE_TEST_CHECKS} '
+    f'{SAMPLE_TEST_CHECKS} {INVOCATION_SOURCES} '
     # nare-native-027: a required install ran a full benchmark verify for 48 minutes, left containers behind, and
     # every execution repair went to install steps, so no check ever ran.
     'Install commands only install and build what the checks use: never run a test, verification or benchmark suite '
