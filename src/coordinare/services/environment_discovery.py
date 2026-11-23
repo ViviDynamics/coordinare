@@ -18,6 +18,7 @@ from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, Unpack, cast
 
+from coordinare_service_inference.environment.cache_links import LINK_GUIDANCE
 from coordinare_service_inference.environment.findings import FindingLedger, FindingResponse
 from coordinare_service_inference.environment.models import (
     Command,
@@ -295,7 +296,7 @@ EXECUTABLE_REVIEW_CRITERIA = (
     'Unchanged command text alone does not prove unchanged coverage. '
     f'{LOCAL_CREDENTIAL_REVIEW} '
     f'{ADVISORY_AUDIT_CHECKS} '
-    f'{SAMPLE_TEST_CHECKS} {INVOCATION_SOURCES} '
+    f'{SAMPLE_TEST_CHECKS} {INVOCATION_SOURCES} {LINK_GUIDANCE} '
     f'{TIMEOUT_CEILINGS} '
     'Explicitly decide EVERY retained finding ID, including previously resolved findings, against this candidate. '
     'Use open or resolved with repository citations; silence or calling an objection non-blocking cannot close it. '

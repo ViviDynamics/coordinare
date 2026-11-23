@@ -25,13 +25,18 @@ import re
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 import structlog
+from coordinare_service_inference.environment.cache_links import (
+    LINK_GUIDANCE,
+    describe,
+    escaping_links,
+)
 from coordinare_service_inference.manual_override import SERVICES_SUBDIR
 
 from coordinare.services.mounted_file import (
@@ -96,7 +101,6 @@ _HEALTH_RELPATH = f"{SERVICES_SUBDIR}/services-health.sh"
 _ACTIVATE_RELPATH = "activate.sh"
 _DEBS_PREFIX = "debs/"
 _REASON_LIMIT = 10
-_MAX_LINK_HOPS = 40
 _ENTRY_KINDS = frozenset({"file", "dir", "link"})
 _READ_CHUNK_BYTES = 1024 * 1024
 
@@ -212,41 +216,6 @@ def _bound_message(exc: MountedFileRefusedError) -> str:
     if isinstance(exc, TreeBoundError):
         return f"cache {exc}; raise {_KNOB_FOR_BOUND[exc.bound]} if this cache is legitimately this large"
     return f"cache {exc}"
-
-
-def _link_refusal(rel: str, target: str, links: dict[str, str]) -> str | None:
-    """Why a link leaves the cache or cannot be resolved, or None when it stays inside.
-
-    Each component of the target is resolved in turn. A component that names another link in the cache is followed
-    through that link's own target, so a chain of links cannot reach outside by way of a ``..`` that only the kernel
-    would apply. The hop count bounds the chain.
-    """
-    if not target or target.startswith("/"):
-        return "points outside the cache"
-    current = list(PurePosixPath(rel).parent.parts)
-    stack = list(reversed(target.split("/")))
-    hops = 0
-    while stack:
-        part = stack.pop()
-        if part in ("", "."):
-            continue
-        if part == "..":
-            if not current:
-                return "points outside the cache"
-            current.pop()
-            continue
-        key = "/".join([*current, part])
-        if key in links:
-            hops += 1
-            if hops > _MAX_LINK_HOPS:
-                return f"is a link loop (more than {_MAX_LINK_HOPS} hops)"
-            through = links[key]
-            if not through or through.startswith("/"):
-                return "points outside the cache"
-            stack.extend(reversed(through.split("/")))
-            continue
-        current.append(part)
-    return None
 
 
 class _StatDigest:
@@ -383,11 +352,12 @@ def freeze_cache(
                 spool.write(_row_bytes(entry))
         except MountedFileRefusedError as exc:
             raise ProvenanceRefusedError(_bound_message(exc)) from exc
-        for rel, target in links.items():
-            reason = _link_refusal(rel, target, links)
-            if reason is not None:
-                message = f"link {rel} {reason} (target {target!r})"
-                raise ProvenanceRefusedError(message)
+        # nare-native-032 was refused twice, one interpreter link per freeze, and each refusal cost a full repair:
+        # every escaping link is named at once.
+        if escaping := escaping_links(links):
+            noun = "link" if len(escaping) == 1 else f"{len(escaping)} links"
+            message = f"{noun} leave the cache: {describe(escaping)}. {LINK_GUIDANCE}"
+            raise ProvenanceRefusedError(message)
         if special[_ACTIVATE_RELPATH] != hashlib.sha256(activate_sh.encode()).hexdigest():
             message = "activate.sh in the cache does not match the daemon-rendered text"
             raise ProvenanceRefusedError(message)

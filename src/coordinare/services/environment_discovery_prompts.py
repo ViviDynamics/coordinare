@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from coordinare_service_inference.environment.cache_links import LINK_GUIDANCE
 from coordinare_service_inference.environment.findings import FindingResponse
 from coordinare_service_inference.environment.models import (
     CoverageAssessmentProposal,
@@ -182,7 +183,7 @@ _MANIFEST_RULES = (
     'For shell-local variables assigned inside bash -c, use $name rather than ${name}. '
     f'{LOCAL_CREDENTIAL_AUTHORING} '
     f'{ADVISORY_AUDIT_CHECKS} '
-    f'{SAMPLE_TEST_CHECKS} {INVOCATION_SOURCES} '
+    f'{SAMPLE_TEST_CHECKS} {INVOCATION_SOURCES} {LINK_GUIDANCE} '
     # nare-native-027: a required install ran a full benchmark verify for 48 minutes, left containers behind, and
     # every execution repair went to install steps, so no check ever ran.
     'Install commands only install and build what the checks use: never run a test, verification or benchmark suite '

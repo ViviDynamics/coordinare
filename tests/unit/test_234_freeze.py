@@ -99,7 +99,8 @@ def test_relative_link_that_stays_inside_the_cache_is_accepted(tmp_path: Path) -
 
 def test_absolute_link_refuses_the_freeze(tmp_path: Path) -> None:
     cache, mounts = _cache(tmp_path)
-    os.symlink("/bin/sh", cache / "bin" / "sh")
+    # Outside the base image's system directories (which a cache may link into: see test_376_cache_links).
+    os.symlink("/tmp/sh", cache / "bin" / "sh")
     with pytest.raises(ProvenanceRefusedError, match="link"):
         _freeze(cache, mounts, _out(tmp_path))
 
