@@ -22,6 +22,8 @@ from graphlib import TopologicalSorter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .cache_links import LINK_GUIDANCE, EscapingLink, cache_links, escaping_links
+from .cache_links import describe as describe_links
 from .models import CheckResult, Command, EnvironmentManifest, VerificationReport, environment_order
 from .runtime_cli import run_cli
 
@@ -789,6 +791,24 @@ def _left_behind(result: CheckResult, left: Collection[tuple[str, str]], env: di
     result.output = f'{result.output}\n{detail}' if result.output else detail
 
 
+def _escaping(cache: Path | None) -> list[EscapingLink] | None:
+    if cache is None:
+        return None
+    try:
+        return escaping_links(cache_links(cache))
+    except OSError:
+        return None
+
+
+def _linked_out(result: CheckResult, made: list[EscapingLink], env: dict[str, str], redactions: frozenset[str]) -> None:
+    """nare-native-032: links to an interpreter outside the cache passed every installer and clean-consumer check and
+    were found only at the provenance freeze, one per repair. The install that made one fails as it finishes."""
+    detail = _redact(f'this command left links pointing outside the cache: {describe_links(made)}. {LINK_GUIDANCE}',
+                     env, extra_values=redactions)
+    result.status = 'fail'
+    result.output = f'{result.output}\n{detail}' if result.output else detail
+
+
 async def _environment_health(*, roots: dict[str, str], env: dict[str, str], digest: str, scope: str,
                               redactions: frozenset[str]) -> str | None:
     """None when a trivial command still runs with the activated environment; otherwise its first output line."""
@@ -812,8 +832,10 @@ async def _commands(
     health: bool = False,
     budget: float | None = None,
     residual: bool = False,
+    cache: Path | None = None,
 ) -> None:
-    """``residual``: in a private runtime guest, Docker state a command leaves fails that command and is removed."""
+    """``residual``: in a private runtime guest, Docker state a command leaves fails that command and is removed.
+    ``cache``: links a command leaves pointing outside the cache fail that command (installs only)."""
     pending = {command.id: command for command in commands}
     while pending:
         ready = [
@@ -838,6 +860,7 @@ async def _commands(
                 )
             else:
                 before = await _guest_docker_state(env) if residual else None
+                links_before = _escaping(cache) if cache is not None else None
                 results[command.id] = await _execute(
                     command,
                     roots=roots,
@@ -856,6 +879,9 @@ async def _commands(
                 if before is not None and (after := await _guest_docker_state(env)) is not None and (left := after - before):
                     _left_behind(results[command.id], left, env, redactions)
                     await _remove_guest_docker_state(left, env)
+                if links_before is not None and (made := [item for item in _escaping(cache) or []
+                                                          if item not in links_before]):
+                    _linked_out(results[command.id], made, env, redactions)
             del pending[command.id]
 
 
@@ -1108,7 +1134,7 @@ async def _run_manifest_commands(
         shutil.copytree(repo, consumer_repo, symlinks=True)
         await _commands(
             manifest.install, roots=roots, env=env, digest=digest, scope=scope, results=results, redactions=redactions,
-            health=True, budget=command_deadline, residual=runtime_env is not None,
+            health=True, budget=command_deadline, residual=runtime_env is not None, cache=Path(cache),
         )
         roots = {**roots, "repo": str(consumer_repo)}
         env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env,
@@ -1116,8 +1142,12 @@ async def _run_manifest_commands(
     # Dettmore e2e-83, e2e-92 and e2e-94: bundler wrote Gemfile.lock into {cache}, which the clean consumer mounts
     # read-only, after every installer check had passed. Services and checks see {cache} read-only here too.
     read_only = _read_only_tree(Path(cache)) if install and Path(cache).is_dir() else contextlib.nullcontext()
+    # nare-native-032: an editable project install linked back to the install-time {repo}; it resolved for every installer
+    # check, which still had that checkout beside the copy they ran in, and failed only in the clean consumer. The
+    # install-time checkout is out of reach while services and checks run.
+    hidden = _hidden_checkout(Path(repo)) if install else contextlib.nullcontext()
     try:
-        with read_only:
+        with read_only, hidden:
             return await _run_consumer_phase(
                 manifest, roots=roots, env=env, digest=digest, results=results, redactions=redactions,
                 install=install, scope=scope, secret_names=secret_names, runtime_env=runtime_env,
@@ -1130,6 +1160,22 @@ async def _run_manifest_commands(
 
 
 _WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+
+
+@contextlib.contextmanager
+def _hidden_checkout(repo: Path) -> Iterator[None]:
+    """The install-time checkout moved aside, and put back afterwards. Where it cannot move (a mount point), it stays."""
+    aside = repo.with_name(f".{repo.name}.install-time-{secrets.token_hex(4)}")
+    try:
+        repo.rename(aside)
+    except OSError:
+        yield
+        return
+    try:
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            aside.rename(repo)
 
 
 @contextlib.contextmanager

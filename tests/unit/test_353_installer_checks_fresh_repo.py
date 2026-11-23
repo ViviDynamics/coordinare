@@ -55,3 +55,23 @@ async def test_installer_checks_see_cache_read_only_and_its_modes_come_back(tmp_
     assert not (roots["cache"] / "lock").exists()
     assert roots["cache"].stat().st_mode & 0o777 == before
     assert (roots["cache"] / "tool").stat().st_mode & 0o200
+
+
+@pytest.mark.asyncio
+async def test_a_cache_link_back_to_the_install_time_checkout_fails_in_the_installer(tmp_path):
+    """nare-native-032: an editable install pointed back into the install-time {repo}; every installer check passed,
+    because that checkout was still beside the copy they ran in, and the clean consumer failed. It is now moved aside
+    while services and checks run, and put back afterwards."""
+    roots = _dirs(tmp_path)
+    install_time = roots["repo"].resolve()
+    manifest = contract([{"id": "baseline", "argv": ["bash", "-c", "test -f source.txt && cat \"$(cat {cache}/editable)\""],
+                          "cwd": "{repo}"}],
+                        install=[{"id": "install-editable",
+                                  "argv": ["bash", "-c", f"echo {install_time}/source.txt > {{cache}}/editable"],
+                                  "cwd": "{repo}"}])
+    report = await run_manifest(manifest, **roots, install=True)
+    statuses = {result.id: result.status for result in report.results}
+    assert statuses["install-editable"] == "pass" and statuses["baseline"] == "fail"
+    # The checkout is back, unchanged, and nothing else was left beside it.
+    assert (roots["repo"] / "source.txt").read_text() == "tracked\n"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["cache", "repo", "scratch"]
