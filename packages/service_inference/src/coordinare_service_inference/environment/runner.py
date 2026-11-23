@@ -734,6 +734,61 @@ UNHEALTHY = ("environment health check failed after this step: a trivial command
              "(for example a library or PATH entry that replaces a system one): ")
 
 
+COMMAND_RESIDUAL_GUIDANCE = ('A command that creates Docker state must remove it before it exits, when it fails too '
+                             '(docker run --rm, or remove it in a trap): the guest cannot shut down cleanly while any '
+                             'remains.')
+_DOCKER_LISTINGS = (('containers', ('docker', 'ps', '-a', '--format', '{{.Names}}')),
+                    ('volumes', ('docker', 'volume', 'ls', '-q')),
+                    ('networks', ('docker', 'network', 'ls', '--filter', 'type=custom', '--format', '{{.Name}}')))
+_DOCKER_REMOVE = {'containers': ('docker', 'rm', '-f', '-v'), 'volumes': ('docker', 'volume', 'rm', '-f'),
+                  'networks': ('docker', 'network', 'rm')}
+DOCKER_LISTING_SECONDS = 30.0
+
+
+async def _docker_run(argv: Sequence[str], env: dict[str, str]) -> bytes | None:
+    process = await asyncio.create_subprocess_exec(*argv, env=env, stdin=asyncio.subprocess.DEVNULL,
+                                                   stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(), DOCKER_LISTING_SECONDS)
+    except TimeoutError:
+        await _terminate(process)
+        return None
+    return output if process.returncode == 0 else None
+
+
+async def _guest_docker_state(env: dict[str, str]) -> frozenset[tuple[str, str]] | None:
+    """The private runtime guest's Docker state by kind and name; None outside a guest or when it cannot be listed.
+
+    Only a runtime lease's DOCKER_HOST (an ssh:// endpoint into the guest) is ever listed, never a host daemon."""
+    if not env.get('DOCKER_HOST', '').startswith('ssh://') or shutil.which('docker', path=env.get('PATH')) is None:
+        return None
+    state: set[tuple[str, str]] = set()
+    for kind, argv in _DOCKER_LISTINGS:
+        output = await _docker_run(argv, env)
+        if output is None:
+            return None
+        state.update((kind, name) for name in output.decode(errors='replace').split())
+    return frozenset(state)
+
+
+async def _remove_guest_docker_state(left: Collection[tuple[str, str]], env: dict[str, str]) -> None:
+    for kind in ('containers', 'volumes', 'networks'):
+        if names := sorted(name for item_kind, name in left if item_kind == kind):
+            await _docker_run([*_DOCKER_REMOVE[kind], *names], env)
+
+
+def _left_behind(result: CheckResult, left: Collection[tuple[str, str]], env: dict[str, str],
+                 redactions: frozenset[str]) -> None:
+    """nare-native-031: a container a test sample created was found only at teardown and blamed on every command whose
+    argv mentioned docker, failing seven that exited 0. Found after the command that left it, it fails that command."""
+    found = '; '.join(f'{kind} {" ".join(sorted(name for item_kind, name in left if item_kind == kind)[:16])}'
+                      for kind in ('containers', 'volumes', 'networks') if any(k == kind for k, _ in left))
+    detail = _redact(f'this command left Docker state behind: {found}. {COMMAND_RESIDUAL_GUIDANCE}', env,
+                     extra_values=redactions)
+    result.status = 'fail'
+    result.output = f'{result.output}\n{detail}' if result.output else detail
+
+
 async def _environment_health(*, roots: dict[str, str], env: dict[str, str], digest: str, scope: str,
                               redactions: frozenset[str]) -> str | None:
     """None when a trivial command still runs with the activated environment; otherwise its first output line."""
@@ -756,7 +811,9 @@ async def _commands(
     redactions: frozenset[str] = frozenset(),
     health: bool = False,
     budget: float | None = None,
+    residual: bool = False,
 ) -> None:
+    """``residual``: in a private runtime guest, Docker state a command leaves fails that command and is removed."""
     pending = {command.id: command for command in commands}
     while pending:
         ready = [
@@ -780,6 +837,7 @@ async def _commands(
                     context=scope,
                 )
             else:
+                before = await _guest_docker_state(env) if residual else None
                 results[command.id] = await _execute(
                     command,
                     roots=roots,
@@ -795,6 +853,9 @@ async def _commands(
                     result = results[command.id]
                     result.status = "fail"
                     result.output = UNHEALTHY + broken + ("\n" + result.output if result.output else "")
+                if before is not None and (after := await _guest_docker_state(env)) is not None and (left := after - before):
+                    _left_behind(results[command.id], left, env, redactions)
+                    await _remove_guest_docker_state(left, env)
             del pending[command.id]
 
 
@@ -1047,7 +1108,7 @@ async def _run_manifest_commands(
         shutil.copytree(repo, consumer_repo, symlinks=True)
         await _commands(
             manifest.install, roots=roots, env=env, digest=digest, scope=scope, results=results, redactions=redactions,
-            health=True, budget=command_deadline,
+            health=True, budget=command_deadline, residual=runtime_env is not None,
         )
         roots = {**roots, "repo": str(consumer_repo)}
         env = manifest_environment(manifest, **roots, secret_names=secret_names, runtime_env=runtime_env,
@@ -1163,7 +1224,7 @@ async def _run_consumer_phase(
             else:
                 await _commands(
                     manifest.checks, roots=roots, env=env, digest=digest, scope=scope, results=results,
-                    redactions=redactions, budget=command_deadline,
+                    redactions=redactions, budget=command_deadline, residual=runtime_env is not None,
                 )
     if not any(
         check.required and (not scope or not check.scope or scope in check.scope) for check in manifest.checks

@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
+from .runner import COMMAND_RESIDUAL_GUIDANCE
 from .runtime_io import settle as _settle
 from .runtime_supervisor import CLEANUP_SECONDS, RuntimeScanStoppedError, open_runtime, seal_runtime, seal_trial
 
@@ -59,9 +60,6 @@ RESIDUAL_REMOVE = ("docker ps -aq | xargs -r docker rm -f -v >/dev/null; docker 
                    ">/dev/null; docker network ls --filter type=custom -q | xargs -r docker network rm >/dev/null")
 RESIDUAL_GUIDANCE = ('Every service stop must remove the Docker state its service created, including anonymous volumes '
                      '(docker rm -f -v) and custom networks: the guest cannot shut down cleanly while any remain.')
-COMMAND_RESIDUAL_GUIDANCE = ('A command that creates Docker state must remove it before it exits, when it fails too '
-                             '(docker run --rm, or remove it in a trap): the guest cannot shut down cleanly while any '
-                             'remains.')
 MAX_RESIDUAL_NAMES = 16
 
 
