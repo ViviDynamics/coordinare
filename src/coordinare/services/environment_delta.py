@@ -53,6 +53,8 @@ _PROPOSAL_FIELDS = ("runtime_endpoints", "criterion_checks", "requirements", "in
 
 
 _COMMAND_CONTENT_EXCLUDED = ('required', 'timeout_seconds')
+# The timeout a command record gets when it names none.
+DEFAULT_COMMAND_TIMEOUT: float = Command.model_fields['timeout_seconds'].default
 
 
 def _same_command(item: Mapping[str, Any], original: Mapping[str, Any]) -> bool:
@@ -63,6 +65,15 @@ def _same_command(item: Mapping[str, Any], original: Mapping[str, Any]) -> bool:
         return True  # an unparsable record is left for admission to report
     excluded = set(_COMMAND_CONTENT_EXCLUDED)
     return bool(current.model_dump(mode='json', exclude=excluded) == before.model_dump(mode='json', exclude=excluded))
+
+
+def _ran_timeout(item: dict[str, Any], original: Mapping[str, Any]) -> dict[str, Any]:
+    """The record with at least the timeout its executed original ran with. nare-native-031: a check author resent two
+    retirements without timeout_seconds; the 180 s default replaced 1800 s and 300 s and the merge refused the delta."""
+    timeout, ran = item.get('timeout_seconds', DEFAULT_COMMAND_TIMEOUT), original.get('timeout_seconds')
+    if type(ran) in {int, float} and type(timeout) in {int, float} and timeout < ran:
+        return {**item, 'timeout_seconds': ran}
+    return item
 
 
 def _content(item: Mapping[str, Any]) -> str | None:
@@ -207,10 +218,13 @@ class DeltaPlan:
                     and item.get('id') not in originals and (key := _content(item)) is not None}
         renamed: dict[str, str] = {}
         checks: list[Any] = []
+        lengthened = False
         for item in candidate['checks']:
             original = originals.get(item.get('id')) if isinstance(item, dict) else None
             if original is None or _same_command(item, original):
-                checks.append(item)
+                kept = item if original is None else _ran_timeout(item, original)
+                lengthened |= kept is not item
+                checks.append(kept)
                 continue
             timeout = item.get('timeout_seconds')
             retired = {**original, 'required': False}
@@ -229,7 +243,7 @@ class DeltaPlan:
         checks = [{**item, 'required': True} if isinstance(item, dict) and item.get('id') in replacements else item
                   for item in checks]
         if not renamed:
-            return candidate
+            return {**candidate, 'checks': checks} if lengthened else candidate
         result = {**candidate, 'checks': checks}
         if isinstance(mapping := candidate.get('criterion_checks'), dict):
             result['criterion_checks'] = {criterion: [renamed.get(identifier, identifier) for identifier in ids]

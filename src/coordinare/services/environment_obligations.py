@@ -273,7 +273,12 @@ def _restored(item: dict[str, Any], old: Command, restored: list[str], retirable
     retiring = old.id in retirable and current is not None and not current.required
     excluded = {"timeout_seconds", "required"} if retiring else {"timeout_seconds"}
     if current is not None and current.model_dump(exclude=excluded) == old.model_dump(exclude=excluded):
-        return item
+        if current.timeout_seconds >= old.timeout_seconds:
+            return item
+        # nare-native-031: a check author resent its retirements without timeout_seconds, so two retired checks fell to
+        # the 180 s default; retirement keeps what ran, and the delta was discarded at the merge.
+        restored.append(old.id)
+        return {**item, "timeout_seconds": old.timeout_seconds}
     record: dict[str, Any] = old.model_dump(mode="json")
     if retiring:
         record["required"] = False

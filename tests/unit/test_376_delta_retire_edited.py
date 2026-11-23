@@ -118,3 +118,33 @@ def test_the_global_part_keeps_a_retired_check_without_counting_it_removed() -> 
     with pytest.raises(ValidationError) as caught:
         discovery_module._global_rules(merge)(copy.deepcopy(retired))
     assert {item['code'] for item in _validation_feedback(caught.value)} == {'global_obligation_removed'}
+
+
+def test_a_retirement_resent_without_its_timeout_keeps_the_timeout_it_ran_with() -> None:
+    """nare-native-031: after a correction the c00- author resent two retirements without timeout_seconds; the 180 s
+    default replaced 1800 s and 300 s, retirement refused it at the merge, and the delta fell back. Both the author's
+    own phase (retire_edited) and the merge's restoration now keep at least the executed timeout."""
+    from types import SimpleNamespace
+
+    from coordinare_service_inference.environment.models import EnvironmentManifest
+
+    from coordinare.services.environment_delta import DeltaPlan
+    from coordinare.services.environment_obligations import restore_execution_commands
+    from tests.unit.test_351_environment_discovery import candidate
+
+    ran = {"id": "c00-docker-sample", "argv": ["runner", "-m", "docker"], "required": True, "timeout_seconds": 1800}
+    resent = {key: value for key, value in ran.items() if key != "timeout_seconds"} | {"required": False}
+    plan = DeltaPlan(base=None, triage=SimpleNamespace(closure_ids=["c00-docker-sample"]),  # type: ignore[arg-type]
+                     fixed=frozenset({"c00-docker-sample"}), retirable=frozenset({"c00-docker-sample"}))
+    [kept] = plan.retire_edited({"checks": [ran]}, {"checks": [resent]})["checks"]
+    assert kept == {**resent, "timeout_seconds": 1800}
+
+    data = candidate()
+    data["checks"] = [{**ran, "id": "version"}]
+    executed = EnvironmentManifest.model_validate({**candidate(), "checks": [{**ran, "id": "version"}]})
+    merged = {"checks": [{**resent, "id": "version"}]}
+    assert restore_execution_commands(merged, [executed], frozenset({"version"})) == ["version"]
+    assert merged["checks"] == [{**resent, "id": "version", "timeout_seconds": 1800}]
+    # A longer timeout is the one change preservation allows, and it stays.
+    longer = {"checks": [{**resent, "id": "version", "timeout_seconds": 2400}]}
+    assert restore_execution_commands(longer, [executed], frozenset({"version"})) == []
