@@ -595,8 +595,13 @@ def unrepaired_roots(before: RecordSet, after: RecordSet, triage: RepairTriage, 
     services = ([service.model_dump(mode="json") for service in before.services]
                 != [service.model_dump(mode="json") for service in after.services])
     environment = services or bool(changed & installs)
+    # nare-native-032: replay-done-verified was already retired (not required) and still failed, so it was a root. Its
+    # only legal form is the retired record as it ran (retire_edited puts any rewrite back to exactly that), so every
+    # reply read as unchanged and fourteen corrections spent the delta's schema budget. A retired command obliges
+    # nothing: only a required one is judged.
     return sorted(identifier for identifier, root in triage.roots.items()
-                  if root == "command" and identifier in before.commands and identifier not in changed
+                  if root == "command" and identifier in before.commands and before.commands[identifier].required
+                  and identifier not in changed
                   and not set(before.commands[identifier].depends_on) & changed
                   and (identifier in installs or not environment))
 

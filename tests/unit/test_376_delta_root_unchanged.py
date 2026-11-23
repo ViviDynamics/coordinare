@@ -95,3 +95,14 @@ def test_a_check_group_judges_its_failed_check_only_when_the_global_part_cannot_
         check_plan(['c00-']).guard_part(group, group)
     check_plan(['global', 'c00-']).guard_part(group, group)
     check_plan(['c00-']).guard_part(group, {**group, 'checks': [cmd('c00-a', ['a', '--fixed'])]})
+
+
+def test_a_failed_check_already_retired_is_never_judged_unchanged() -> None:
+    """nare-native-032: replay-done-verified, retired since gen3, still failed in gen4 and so was a root. Its only legal
+    form is the retired record as it ran, so the guard refused every reply fourteen times and the delta fell back on
+    attempt_schema_limit. A retired command obliges nothing; a required one in the same position is still refused."""
+    retired = {**WHOLE, 'checks': [cmd('c00-a', ['a'], required=False), cmd('check-b', ['b'])]}
+    plan = check_plan(['global', 'c00-'])
+    plan.guard_part(retired, retired)
+    with pytest.raises(EnvironmentDiscoveryError, match='c00-a'):
+        plan.guard_part(WHOLE, WHOLE)
