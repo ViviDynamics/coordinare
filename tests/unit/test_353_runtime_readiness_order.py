@@ -105,6 +105,13 @@ async def exercise(tmp_path, monkeypatch, *, install, health_fails, never_ready=
         assert argv[0] == sys.executable or tuple(argv) == ('sh', '-c', 'true'), 'Only Python marker subprocesses permitted'
         return await actual_spawn(*argv, **kwargs)
     monkeypatch.setattr(asyncio, 'create_subprocess_exec', spawn)
+    # The test guest has no Docker daemon: the runner's per-command listing of its state (test_376_command_docker_residue)
+    # reports nothing to judge, as it does when the guest cannot be listed.
+    from coordinare_service_inference.environment import runner as runner_module
+
+    async def no_guest_docker(_env):
+        return None
+    monkeypatch.setattr(runner_module, '_guest_docker_state', no_guest_docker)
     polls = []
     readiness_clock=[time.monotonic()]
     if never_ready:
