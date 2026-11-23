@@ -194,6 +194,10 @@ GRAPH_GUIDANCE = {
                                'gives (' + SYSTEM_PACKAGES_COMMAND + ') and source {cache}/deps/system-packages.env in '
                                'each command that builds against them; or download a prebuilt release archive for '
                                'execution_capabilities.platform.'),
+    'system_packages_interpreter': ('The named command runs the daemon\'s system-package module through another '
+                                    'interpreter. Only the carrier\'s own interpreter has it: an activated environment\'s '
+                                    'python (first on PATH) does not. Run it exactly as given: ' + SYSTEM_PACKAGES_COMMAND
+                                    + '.'),
     'forwarded_secret_unset': ('The named command forwards the listed variables to a container by name alone (-e NAME), but '
                                'this command never defines them, so the container receives nothing. Pass the value the '
                                'command does have (-e NAME="$OTHER") or declare NAME in the command env as NAME: ${NAME}.'),

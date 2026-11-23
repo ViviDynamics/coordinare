@@ -11,6 +11,7 @@ import shlex
 from typing import TYPE_CHECKING
 
 from .models import _graph_error
+from .system_packages import CARRIER_PYTHON
 from .system_packages import COMMAND as SYSTEM_PACKAGES_COMMAND
 from .system_packages import ENV_FILE as SYSTEM_PACKAGES_ENV_FILE
 
@@ -314,6 +315,23 @@ def _download_only(word: str) -> bool:
             or (re.fullmatch(r"-[A-Za-z]{2,}", word) is not None and "d" in word[1:]))
 
 
+SYSTEM_PACKAGES_MODULE = "coordinare_service_inference.environment.system_packages"
+
+
+def system_packages_interpreter(command: Command) -> bool:
+    """A command that runs the daemon's system-package module through another interpreter than the carrier's.
+
+    nare-native-032: the command given was ``/usr/local/bin/python3 -m ...``; an install wrote ``python3 -m ...``, which
+    the activation PATH resolved to a virtual environment's python without the module, and every check behind it was
+    skipped."""
+    for words in _segments(command):
+        words = _program(words)
+        for index, word in enumerate(words[1:-1], 1):
+            if word == "-m" and words[index + 1] == SYSTEM_PACKAGES_MODULE and words[0] != CARRIER_PYTHON:
+                return True
+    return False
+
+
 def system_package_install(command: Command) -> bool:
     """A package manager whose subcommand (its first non-option word) installs, or dpkg -i: an option before the
     subcommand that takes a separate value hides it, which is an accepted miss; apt's -o settings are skipped, since
@@ -523,6 +541,10 @@ def validate_static_rules(install: Sequence[Command], activation: Activation, pl
                                    "this carrier's own release packages, unpacks and relinks them: " + SYSTEM_PACKAGES_COMMAND
                                    + "; then source {cache}/deps/" + SYSTEM_PACKAGES_ENV_FILE + " in each command that "
                                    "builds against them", command.id, set())
+    for command in [*install, *others]:
+        if system_packages_interpreter(command):
+            raise _graph_error("system_packages_interpreter", "the daemon's system-package command runs only through the "
+                               "carrier's own interpreter, exactly as given: " + SYSTEM_PACKAGES_COMMAND, command.id, set())
     for command in others:
         if unset := forwarded_unset_secrets(command, {*activation.env, *credentials}):
             raise _graph_error("forwarded_secret_unset", "a container run forwards a secret variable by name that this "
