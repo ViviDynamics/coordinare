@@ -60,7 +60,8 @@ def test_encoded_environment_correction_still_passes_the_unchanged_global_admiss
     from tests.unit.test_353_sharded_executable import global_part
 
     validator = discovery._CandidateValidator.__new__(discovery._CandidateValidator)
-    validator.budget = SimpleNamespace(executed_manifests=[], retirable_checks=frozenset())
+    validator.discovery = SimpleNamespace(finding_responses=[])  # type: ignore[assignment]
+    validator.budget = SimpleNamespace(finding_ledger=None, executed_manifests=[], retirable_checks=frozenset())
     validator.construction = SimpleNamespace(budget=SimpleNamespace(scope_contract=None),
         capabilities=SimpleNamespace(runtime=object(), platform='linux/aarch64'))
     validator.required_ids = {}
