@@ -1143,9 +1143,12 @@ async def _run_manifest_commands(
     # read-only, after every installer check had passed. Services and checks see {cache} read-only here too.
     read_only = _read_only_tree(Path(cache)) if install and Path(cache).is_dir() else contextlib.nullcontext()
     # nare-native-032: an editable project install linked back to the install-time {repo}; it resolved for every installer
-    # check, which still had that checkout beside the copy they ran in, and failed only in the clean consumer. The
-    # install-time checkout is out of reach while services and checks run.
-    hidden = _hidden_checkout(Path(repo)) if install else contextlib.nullcontext()
+    # check, which still had that checkout beside the copy they ran in, and failed only in the clean consumer. In a
+    # private runtime, whose {repo} is a disposable source checkout, it is out of reach while services and checks run.
+    # A performer's {repo} is its own workspace (and may hold the cache), so it is never moved.
+    hidden = (_hidden_checkout(Path(repo))
+              if install and runtime_env is not None and not _holds(Path(repo), Path(cache), Path(scratch))
+              else contextlib.nullcontext())
     try:
         with read_only, hidden:
             return await _run_consumer_phase(
@@ -1160,6 +1163,12 @@ async def _run_manifest_commands(
 
 
 _WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+
+
+def _holds(repo: Path, *paths: Path) -> bool:
+    """Whether any of ``paths`` lies inside ``repo`` (or is it)."""
+    root = repo.resolve()
+    return any(path.resolve() == root or root in path.resolve().parents for path in paths)
 
 
 @contextlib.contextmanager

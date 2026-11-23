@@ -6,7 +6,7 @@ consumer, which gets a fresh {repo} and keeps only {cache}, failed with "tailwin
 from __future__ import annotations
 
 import pytest
-from coordinare_service_inference.environment.runner import run_manifest
+from coordinare_service_inference.environment.runner import _run_manifest_commands, run_manifest
 
 from tests.unit.test_351_environment_runner import contract
 
@@ -69,9 +69,26 @@ async def test_a_cache_link_back_to_the_install_time_checkout_fails_in_the_insta
                         install=[{"id": "install-editable",
                                   "argv": ["bash", "-c", f"echo {install_time}/source.txt > {{cache}}/editable"],
                                   "cwd": "{repo}"}])
-    report = await run_manifest(manifest, **roots, install=True)
+    # A private runtime's installer (runtime_env set); a performer's {repo} is its workspace and never moves.
+    report = await _run_manifest_commands(manifest, **roots, install=True, runtime_env={})
     statuses = {result.id: result.status for result in report.results}
     assert statuses["install-editable"] == "pass" and statuses["baseline"] == "fail"
     # The checkout is back, unchanged, and nothing else was left beside it.
     assert (roots["repo"] / "source.txt").read_text() == "tracked\n"
     assert sorted(path.name for path in tmp_path.iterdir()) == ["cache", "repo", "scratch"]
+    # Outside a private runtime the checkout stays where it is.
+    performer = await run_manifest(manifest, **roots, install=True)
+    assert {result.id: result.status for result in performer.results}["baseline"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_a_checkout_that_holds_the_cache_is_never_moved(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "cache").mkdir(parents=True)
+    (tmp_path / "scratch").mkdir()
+    (repo / "source.txt").write_text("tracked\n")
+    manifest = contract([{"id": "baseline", "argv": ["bash", "-c", f"test -f {repo.resolve()}/source.txt"]}],
+                        install=[{"id": "install-deps", "argv": ["touch", "{cache}/tool"]}])
+    report = await _run_manifest_commands(manifest, cache=repo / "cache", repo=repo, scratch=tmp_path / "scratch",
+                                          install=True, runtime_env={})
+    assert report.passed
