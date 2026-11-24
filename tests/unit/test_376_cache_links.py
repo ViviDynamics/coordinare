@@ -52,6 +52,8 @@ def test_every_escaping_link_is_named_in_one_refusal(tmp_path: Path) -> None:
     assert 'bin/tool' in str(refused.value) and 'venv/src' in str(refused.value)
     assert 'venv/bin/python ' not in str(refused.value)
     assert 'must copy it into {cache}' in str(refused.value)
+    # nare-native-033: the AWS CLI installer wrote absolute links into the cache's own mount path.
+    assert 'A link to something inside {cache} is relative' in str(refused.value)
 
 
 def test_a_cache_whose_only_external_links_name_the_base_image_freezes(tmp_path: Path) -> None:

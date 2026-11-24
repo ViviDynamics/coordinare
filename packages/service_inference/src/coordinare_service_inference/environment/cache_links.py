@@ -21,7 +21,9 @@ OUTSIDE = 'points outside the cache'
 LINK_GUIDANCE = ('Nothing in {cache} may link outside it, except into the base image\'s own system directories '
                  '(/usr, /bin, /sbin, /lib, /lib64), which the clean consumer shares: an environment or tool that links '
                  'to an interpreter, library or file anywhere else (the source checkout, scratch, a temporary or home '
-                 'directory) must copy it into {cache} or be installed there.')
+                 'directory) must copy it into {cache} or be installed there. A link to something inside {cache} is '
+                 'relative (ln -sr, or ../ from where the link lives): the cache is mounted at another path for the '
+                 'clean consumer, so an absolute path into it, as some installers write, leaves it too.')
 
 
 class EscapingLink(NamedTuple):
