@@ -81,6 +81,8 @@ from coordinare.services.environment_delta import (
     changed_ids,
     dependency_digest,
     proposal_of,
+    renamed_part,
+    retirement_renames,
     standing_view,
 )
 from coordinare.services.environment_delta_schema import ManifestDelta, apply_delta
@@ -2510,7 +2512,11 @@ async def _author_round(build: DividedConstruction, attempt: _Attempt, validate:
     if carry:
         authored = {**authored, **await _carry_untouched(build, carry, global_summary(global_data),
                                                          attempt.budget.probe_reports)}
-    return global_data, authored if plan is None else {**_carried_parts(plan, build.groups), **authored}
+    if plan is None:
+        return global_data, authored
+    renames = retirement_renames(plan.base_global(build.groups), global_data)
+    return global_data, {prefix: (group, ShardChecks.model_validate(renamed_part(part.model_dump(mode='json'), renames)))
+                         for prefix, (group, part) in {**_carried_parts(plan, build.groups), **authored}.items()}
 
 
 async def _carry_untouched(build: DividedConstruction, carry: Sequence[CheckGroup], summary: Mapping[str, Any],

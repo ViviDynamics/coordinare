@@ -7,6 +7,7 @@ proposal passes the unchanged manifest admission. Review is divided the same way
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import re
@@ -349,9 +350,13 @@ def validate_group(data: dict[str, Any], *, group: CheckGroup, summary: Mapping[
         return item is not None and bool(item.get('required', True)) and not item.get('scope')
 
     for criterion, identifiers in part.criterion_checks.items():
-        if not identifiers or any(not usable(identifier) for identifier in identifiers):
+        if not identifiers or (unusable := [identifier for identifier in identifiers if not usable(identifier)]):
+            # nare-native-036: the correction named no check, and the author kept a retired one mapped for four rounds.
             errors.append({'code': 'criterion_mapping_invalid', 'location': ['shard_checks', 'criterion_checks', criterion],
-                           'guidance': 'Map each criterion to one or more required, unscoped checks that exist.'})
+                           **({'unusable': unusable[:16]} if identifiers else {}),
+                           'guidance': 'Map each criterion to one or more required, unscoped checks that exist. The ids in '
+                                       'unusable are not: a check retired (required false) or scoped is never mapped; map '
+                                       'its required replacement instead.'})
     if errors:
         raise _ResponseReferenceError(errors)
     return part
@@ -772,9 +777,12 @@ class DividedConstruction:
         saved = saved_part(self.context.budget, 'delta', group.prefix, key)
         if saved is not None:
             await inspection.bind_verified(saved['inputs'], phase='construction')
-            reused = validate(saved['data'])
-            self.group_inputs.update(inspection.inputs)
-            return reused
+            # nare-native-036: a part authored under an earlier global summary was replayed after the global part
+            # changed, failed admission with no model call, and held the attempt. A stale part is authored again.
+            with contextlib.suppress(_ResponseReferenceError):
+                reused = validate(saved['data'])
+                self.group_inputs.update(inspection.inputs)
+                return reused
         messages = [{'role': 'system', 'content': source_navigation(self.context.budget)
                      + source_tool_guidance(self.context.budget, CHECK_AUTHOR_INSTRUCTIONS)},
                     {'role': 'user', 'content': brief}]

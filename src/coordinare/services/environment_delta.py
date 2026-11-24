@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -43,8 +44,10 @@ if TYPE_CHECKING:
     from coordinare_service_inference.environment.models import EnvironmentManifest
 
 # Failures a delta repair does not correct in place: the full repair runs instead while budget remains.
+# nare-native-036: a group's mappings still named global checks the global author retired, and the error held the
+# attempt with 5.8 hours left; the full repair can re-derive every mapping.
 DELTA_FALLBACK = frozenset({"attempt_schema_limit", "repair_delta_rejected", "executable_merge_invalid", "repair_triage_stale",
-                            "execution_command_changed"})
+                            "execution_command_changed", "criterion_mapping_invalid", "inherited_mapping_missing"})
 # Proposal fields a manifest's standing review depends on; provenance and cache-only facts never change a judgment.
 STANDING_EXCLUDED = frozenset({"manifest_digest", "probe_evidence", "untrusted_execution_history", "fixed_ids",
                                "execution_capabilities", "capabilities_digest"})
@@ -52,7 +55,10 @@ _PROPOSAL_FIELDS = ("runtime_endpoints", "criterion_checks", "requirements", "in
                     "empty_reason", "local_credentials")
 
 
-_COMMAND_CONTENT_EXCLUDED = ('required', 'timeout_seconds')
+# nare-native-036: a retirement that also dropped the check's depends_on read as a rewrite, and retire_edited minted a
+# replacement running the same argv, which admission then refused as duplicate content naming an id the author never
+# wrote. What a check depends on is not what it runs.
+_COMMAND_CONTENT_EXCLUDED = ('required', 'timeout_seconds', 'depends_on')
 # The timeout a command record gets when it names none.
 DEFAULT_COMMAND_TIMEOUT: float = Command.model_fields['timeout_seconds'].default
 
@@ -65,6 +71,13 @@ def _same_command(item: Mapping[str, Any], original: Mapping[str, Any]) -> bool:
         return True  # an unparsable record is left for admission to report
     excluded = set(_COMMAND_CONTENT_EXCLUDED)
     return bool(current.model_dump(mode='json', exclude=excluded) == before.model_dump(mode='json', exclude=excluded))
+
+
+def _as_ran(item: dict[str, Any], original: Mapping[str, Any]) -> dict[str, Any]:
+    """The same command as it ran: its executed dependencies, and at least its executed timeout."""
+    kept = _ran_timeout(item, original)
+    ran = list(original.get('depends_on') or [])
+    return kept if list(kept.get('depends_on') or []) == ran else {**kept, 'depends_on': ran}
 
 
 def _ran_timeout(item: dict[str, Any], original: Mapping[str, Any]) -> dict[str, Any]:
@@ -102,6 +115,36 @@ def _redepend(item: Any, renamed: Mapping[str, str]) -> Any:
     if not isinstance(item, dict) or not isinstance(depends := item.get('depends_on'), list) or item.get('required') is False:
         return item
     return {**item, 'depends_on': [renamed.get(identifier, identifier) for identifier in depends]}
+
+
+def retirement_renames(base: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, str]:
+    """Global checks the candidate retired (required in ``base``, not in ``candidate``) and the required ``-rN``
+    replacement retire_edited minted for each."""
+    before = {item['id']: item for item in base.get('checks') or [] if isinstance(item, dict)}
+    after = {item['id']: item for item in candidate.get('checks') or [] if isinstance(item, dict)}
+    renames: dict[str, str] = {}
+    for identifier, old in before.items():
+        new = after.get(identifier)
+        if new is None or not old.get('required', True) or new.get('required', True):
+            continue
+        pattern = re.compile(re.escape(identifier) + r'-r\d+')
+        if replacement := next((other for other in sorted(after) if pattern.fullmatch(other)
+                                and after[other].get('required', True)), None):
+            renames[identifier] = replacement
+    return renames
+
+
+def renamed_part(part: Mapping[str, Any], renames: Mapping[str, str]) -> dict[str, Any]:
+    """A check group's part with every mapping and dependency on a retired global check moved to its replacement.
+
+    nare-native-036: the global delta author retired check-replay and check-pytest-sample by rewriting them; the c00-
+    and c01- criteria still mapped the old ids, the global author may not write mappings and c01- was not touched, so
+    nobody could move them and the attempt held on criterion_mapping_invalid."""
+    if not renames:
+        return dict(part)
+    mapping = {criterion: list(dict.fromkeys(renames.get(identifier, identifier) for identifier in ids))
+               for criterion, ids in (part.get('criterion_checks') or {}).items()}
+    return {**part, 'criterion_checks': mapping, 'checks': [_redepend(item, renames) for item in part.get('checks') or []]}
 
 
 def proposal_of(manifest: EnvironmentManifest) -> dict[str, Any]:
@@ -222,7 +265,7 @@ class DeltaPlan:
         for item in candidate['checks']:
             original = originals.get(item.get('id')) if isinstance(item, dict) else None
             if original is None or _same_command(item, original):
-                kept = item if original is None else _ran_timeout(item, original)
+                kept = item if original is None else _as_ran(item, original)
                 lengthened |= kept is not item
                 checks.append(kept)
                 continue

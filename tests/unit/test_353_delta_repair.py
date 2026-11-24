@@ -543,6 +543,12 @@ async def test_a_touched_group_is_authored_as_a_patch_applied_to_its_failed_part
     assert saved["key"] == construction_module.delta_part_key("d" * 64, None)
     assert [check["id"] for check in saved["data"]["shard_checks"]["checks"]] == ["c00-b"]
 
+    # nare-native-036: a saved part that no longer admits under the current global summary was replayed with no model
+    # call and held the attempt. It is authored again instead.
+    saved["data"]["shard_checks"]["criterion_checks"] = {"S2": ["check-gone"]}
+    again = await build.author_delta(group, summary=summary, probes=[])
+    assert len(refusals) == 2 and again.criterion_checks == {"S1": ["c00-a"], "S2": ["c00-b"]}
+
 
 # --- end to end through the real discovery entry point ---------------------------------------------------------------
 
