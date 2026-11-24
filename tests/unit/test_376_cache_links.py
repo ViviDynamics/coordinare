@@ -53,7 +53,11 @@ def test_every_escaping_link_is_named_in_one_refusal(tmp_path: Path) -> None:
     assert 'venv/bin/python ' not in str(refused.value)
     assert 'must copy it into {cache}' in str(refused.value)
     # nare-native-033: the AWS CLI installer wrote absolute links into the cache's own mount path.
-    assert 'A link to something inside {cache} is relative' in str(refused.value)
+    assert 'A link to something inside {cache} must be relative' in str(refused.value)
+    # nare-native-034: an earlier wording claimed the clean consumer mounts the cache elsewhere, which is false, and
+    # sent authors after relocatable environments (an invalid flag) and launcher wrappers.
+    assert 'mounted at another path' not in str(refused.value)
+    assert 'the cache keeps the same absolute path at install and in the clean consumer' in str(refused.value)
 
 
 def test_a_cache_whose_only_external_links_name_the_base_image_freezes(tmp_path: Path) -> None:
