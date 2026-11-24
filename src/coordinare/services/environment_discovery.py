@@ -1231,13 +1231,14 @@ async def discover_and_review(
             history = list(budget.probe_reports)
             budget.repair_delta = _delta_repair(configured, bounds, budget)
             install_only = _install_only_repair(configured, budget, paths)
-            # Journal history remains append-only. A prepared execution repair may retire old-cache observations,
-            # then must spend a fresh probe batch; a delta repair keeps those no command reads, unless a capability failed.
-            # An install-only repair keeps them too, also in the full repair it may fall back to (Dettmore e2e-54 spent
-            # four probe batches on an unchanged inventory).
+            # Journal history remains append-only. A prepared execution repair retires old-cache observations and keeps
+            # those no command reads, unless a capability failed; an install-only repair keeps them even then (Dettmore
+            # e2e-54 spent four probe batches on an unchanged inventory). Maintainer ruling 2026-11-24: a full repair keeps
+            # them too. nare-native-034's full repair dropped every base-image observation on the cache move, its
+            # required preflight then needed a fresh batch, and the attempt's two were spent: it held.
+            reuse = not _capability_root(budget.repair_triage) or install_only
             budget.probe_reports = select_current_probe_reports(history, commit, capabilities,
-                allow_cache_relocation=_execution_repair(configured),
-                reuse_unreferenced=(budget.repair_delta and not _capability_root(budget.repair_triage)) or install_only)
+                allow_cache_relocation=_execution_repair(configured), reuse_unreferenced=reuse)
             selected = len(budget.probe_reports)
             try:
                 result = await _discover_attempt(source_identity=(symphony_name, commit), paths=paths,
@@ -1247,9 +1248,9 @@ async def discover_and_review(
                     raise
                 # The delta could not be admitted or reviewed: the full repair is the backstop while budget remains.
                 _fall_back(budget, exc.code)
-                # The full repair must not inherit a cache-only reuse decided for the delta.
+                # The full repair reselects from the whole history, including the delta's own probe batches, by the same rule.
                 budget.probe_reports = select_current_probe_reports(history + budget.probe_reports[selected:], commit,
-                    capabilities, allow_cache_relocation=_execution_repair(configured), reuse_unreferenced=install_only)
+                    capabilities, allow_cache_relocation=_execution_repair(configured), reuse_unreferenced=reuse)
                 result = await _discover_attempt(source_identity=(symphony_name, commit), paths=paths,
                     fetch=fetch, chat=chat, options=replace(configured, budget=budget))
             budget.outcome = "accepted"

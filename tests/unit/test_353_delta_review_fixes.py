@@ -164,7 +164,11 @@ def test_the_duplicate_guidance_names_the_merge_the_correction_must_make():
 # 4. probes on fallback --------------------------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_a_fallback_reselects_probe_observations_without_cache_only_reuse(monkeypatch):
+@pytest.mark.parametrize("capability", [False, True])
+async def test_a_fallback_reselects_probe_observations_by_the_same_rule(monkeypatch, capability):
+    """Maintainer ruling 2026-11-24: a full repair, the delta's fallback included, keeps observations no probe command
+    reads from the cache (nare-native-034 held on preflight_required with both probe batches spent); a capability
+    failure still forces a fresh batch."""
     calls: list[dict] = []
     budget = AttemptBudget()
     budget.repair_triage = triage_of(load_gen0()[0], failed=["install-helm-gh"])
@@ -184,11 +188,12 @@ async def test_a_fallback_reselects_probe_observations_without_cache_only_reuse(
     monkeypatch.setattr(discovery_module, "_discover_attempt", attempt)
     monkeypatch.setattr(discovery_module, "_delta_repair", lambda *_args: True)
     monkeypatch.setattr(discovery_module, "select_current_probe_reports", select)
+    monkeypatch.setattr(discovery_module, "_capability_root", lambda _triage: capability)
     await discovery_module.discover_and_review(symphony_name="suite", commit="c" * 40, paths=[], fetch=None,
         chat=_chat, budget=budget, capabilities=_capabilities(), previous_manifest=object(), execution_feedback={"results": []})
 
     selects = [call["select"] for call in calls if "select" in call]
-    assert selects == [True, False]
+    assert selects == [not capability, not capability]
 
 
 async def _chat(_messages):
@@ -369,3 +374,26 @@ def test_a_bare_indeterminate_review_part_is_sent_back():
                                        "sources": ["a.md"], "affected_ids": []}]
     proposal, _inputs = validate_review_part(data, inspection=_inspection(), owned=[], capacity=8)
     assert proposal.verdict == "indeterminate"
+
+
+@pytest.mark.asyncio
+async def test_a_full_repair_keeps_observations_that_never_name_the_cache(monkeypatch):
+    """nare-native-034: a full repair dropped every base-image observation on the cache move; its required preflight
+    needed a fresh batch, the attempt's two were spent, and it held on preflight_required."""
+    calls: list[bool] = []
+    budget = AttemptBudget()
+    budget.repair_triage = triage_of(load_gen0()[0], failed=["install-helm-gh"])
+
+    async def attempt(**_kwargs):
+        return "manifest", "assessment"
+
+    def select(reports, *_args, **kwargs):
+        calls.append(kwargs.get("reuse_unreferenced"))
+        return reports
+
+    monkeypatch.setattr(discovery_module, "_discover_attempt", attempt)
+    monkeypatch.setattr(discovery_module, "_delta_repair", lambda *_args: False)
+    monkeypatch.setattr(discovery_module, "select_current_probe_reports", select)
+    await discovery_module.discover_and_review(symphony_name="suite", commit="c" * 40, paths=[], fetch=None,
+        chat=_chat, budget=budget, capabilities=_capabilities(), previous_manifest=object(), execution_feedback={"results": []})
+    assert calls == [True]
