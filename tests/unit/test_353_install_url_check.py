@@ -23,7 +23,6 @@ from tests.unit.test_353_discovery_repair import (
     Replies,
     assessment,
     candidate,
-    finding_responses,
     run,
 )
 
@@ -152,7 +151,10 @@ def test_the_review_part_error_names_the_command_and_its_url():
 
 
 @pytest.mark.asyncio
-async def test_the_reviewer_is_told_and_cannot_accept_until_it_reports_the_missing_url():
+async def test_a_missing_url_goes_straight_back_to_its_author_without_a_review_round():
+    """nare-native-034: a dead download URL cost a whole review round (F0007) before the author saw it. The daemon's
+    definite check now goes to the author as a coverage revision; the reviewer sees only the corrected manifest.
+    The reviewer path (above) still serves a delta repair and an attempt with no coverage revision left."""
     original = candidate()
     target = original['checks'][0]['id']
     revised = copy.deepcopy(original)
@@ -163,20 +165,17 @@ async def test_the_reviewer_is_told_and_cannot_accept_until_it_reports_the_missi
     async def checker(manifest: EnvironmentManifest):
         return answers.pop(0)
 
-    flagged = assessment(original, 'revise')
-    flagged['assessment']['findings'][0].update(category='execution_definition', affected_ids=[target])
     replies = Replies([{'tool': 'read_file', 'path': PATH}, {'manifest': original},
-        {'tool': 'read_file', 'path': PATH}, assessment(original), flagged,
-        {'manifest': revised, 'finding_responses': finding_responses()},
-        {'tool': 'read_file', 'path': PATH}, assessment(revised, retained=True)])
+        {'manifest': revised, 'finding_responses': []},
+        {'tool': 'read_file', 'path': PATH}, assessment(revised)])
     manifest, review = await run(replies, url_checker=checker)
     assert review.verdict == 'accept' and manifest.digest() == review.manifest_digest
-    reviewer_prompt = json.loads(replies.messages[2][1]['content'])
-    assert reviewer_prompt['daemon_url_checks'] == missing and 'daemon_url_check_note' in reviewer_prompt
-    correction = json.loads(replies.messages[4][-1]['content'])
-    assert correction['validation_errors'][0]['code'] == 'review_findings_invalid'
-    assert target in correction['validation_errors'][0]['guidance']
-    assert 'daemon_url_checks' not in json.loads(replies.messages[6][1]['content'])
+    revision = json.loads(replies.messages[2][-1]['content'])['daemon_url_revision']
+    assert revision['daemon_url_checks'] == missing and 'daemon_url_check_note' in revision
+    # One review session (a read, then its assessment), of the corrected manifest, with no daemon URL fact to report.
+    review_context = json.loads(replies.messages[3][1]['content'])
+    assert len(replies.messages) == 5 and 'bound_scope_inputs' not in review_context
+    assert 'daemon_url_checks' not in review_context
 
 
 def test_the_global_review_part_cannot_accept_while_a_missing_url_is_unnamed():
@@ -197,3 +196,32 @@ def test_the_global_review_part_cannot_accept_while_a_missing_url_is_unnamed():
     validate_review_part(accepted, inspection=inspection, owned=[], capacity=0, known=told)
     # A check group's part is never told about install URLs, so it is never held for them.
     validate_review_part(accepted, inspection=inspection, owned=[], capacity=4, known=ReviewIds(obligations={'install-ruby'}))
+
+
+@pytest.mark.asyncio
+async def test_a_divided_build_sends_a_missing_url_to_its_global_author_and_keeps_every_check_group(monkeypatch):
+    from types import SimpleNamespace
+
+    from coordinare.services import environment_discovery as discovery_module
+    from coordinare.services.environment_attempt import AttemptBudget
+
+    missing = [{'url': BAD, 'status': 404, 'command_ids': ['install-tool']}]
+
+    async def missing_urls(_attempt, _manifest):
+        return missing
+
+    monkeypatch.setattr(discovery_module, '_missing_urls', missing_urls)
+    monkeypatch.setattr(discovery_module, 'parts_from_manifest', lambda _manifest, _groups: {'c00-': {'checks': []}})
+    budget = AttemptBudget(max_coverage_revisions=2)
+    build = SimpleNamespace(groups=[], global_part={'install': [{'id': 'install-tool'}]}, previous={}, obligations={},
+                            revising=False)
+    attempt = SimpleNamespace(missing_urls=[], reported_urls=set(), delta=None, budget=budget,
+                              messages=[{'role': 'system', 'content': ''}, {'role': 'user', 'content': '{}'},
+                                        {'role': 'assistant', 'content': '{}'}])
+    assert await discovery_module._url_revision(attempt, build, {}, object())
+    assert build.revising and build.obligations == {'c00-': {'checks': []}} and budget.coverage_revisions == 1
+    assert [message['role'] for message in attempt.messages] == ['system', 'user', 'assistant', 'user']
+    assert json.loads(attempt.messages[-1]['content'])['daemon_url_revision']['daemon_url_checks'] == missing
+    # Once reported, the same URL goes to the reviewer as evidence only.
+    assert not await discovery_module._url_revision(attempt, build, {}, object())
+    assert attempt.missing_urls[0]['reported_before'] is True

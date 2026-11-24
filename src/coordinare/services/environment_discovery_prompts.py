@@ -155,11 +155,14 @@ _MANIFEST_RULES = (
     # editable install bound to the install-time checkout, and one check resolved dependencies over the network.
     'Checks run again in a clean consumer: a fresh copy of {repo} at another path, with no network. Install the '
     'project itself into {cache} as a copy, never as a link back to the install-time checkout (an editable or '
-    'development install of the checked-out project fails there), and keep checks from resolving or downloading '
-    'dependencies at run time: use the installed environment directly, or the package manager\'s offline or frozen mode. '
+    'development install of the checked-out project fails there). A check uses the environment the installs built, '
+    'directly (its interpreter, binaries, or a run command that does not sync), and never resolves, downloads or '
+    're-syncs dependencies, not even offline: a re-sync must write a cache, lock or environment. '
     # nare-native-023: the clean consumer failed because the package manager and linter wrote their caches into {cache}.
-    'There {cache} is read-only: point every tool cache (package manager, linter, type checker, build) at a temporary '
-    'directory, never into {cache}. '
+    # nare-native-034: reviewers read this as forbidding reads too, and two findings asked opposite things.
+    'There {cache} is read-only: checks read what the installs persisted in {cache}, which is how they use it, but '
+    'every file a tool writes while a check runs (its cache, lockfile, home, build output) goes under {scratch}, '
+    'never into {cache}. '
     'Commands run in list order where depends_on allows; still declare depends_on on every install a command needs, '
     'including another toolchain one of its steps calls (an asset build whose plugin runs the language package '
     'manager depends on the install that provides that manager). '

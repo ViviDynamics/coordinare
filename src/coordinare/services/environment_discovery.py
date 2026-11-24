@@ -1561,8 +1561,9 @@ async def _discover_attempt(
                 "Even in the installer execution, services and checks run in a copy of {repo} taken before any install: "
                 "a package install into {repo} (such as node_modules or vendor) is invisible to them, so install into "
                 "{cache} and point the tool there (PATH, NODE_PATH, a config path) or link it into {repo} in the check. "
-                "They also see {cache} read-only, as the clean consumer does: a lockfile, tool cache or HOME a service "
-                "or check writes goes under {scratch}, never {cache}. "
+                "They also see {cache} read-only, as the clean consumer does: they read what the installs persisted in "
+                "{cache}, but a lockfile, tool cache or HOME a service or check writes goes under {scratch}, never {cache}, "
+                "and no check re-syncs dependencies, not even offline. "
                 "Required installed artifacts must persist there and work in a fresh image with the cache read-only. "
                 "Use {repo}/{cache}/{scratch} roots literally; ${NAME} references runtime env, not roots. "
                 "The lowercase shell variables ${repo}, ${cache} and ${scratch} are not automatically defined. "
@@ -1599,10 +1600,9 @@ async def _discover_attempt(
             try:
                 await construction.observe_sources(discovery.inputs)
                 candidate = await _author_candidate(attempt, divided_build, validate_candidate)
-                manifest = validate_candidate(candidate)
-                prior_manifests.append(manifest)
-                attempt.missing_urls = [{**item, 'reported_before': True} if item['url'] in attempt.reported_urls else item
-                                        for item in await _missing_urls(attempt, manifest)]
+                prior_manifests.append(manifest := validate_candidate(candidate))
+                if await _url_revision(attempt, divided_build, candidate, manifest):
+                    continue
                 assessment_data, reviewer_reads = await _review(attempt, divided_build, manifest)
                 attempt.reported_urls.update(item['url'] for item in attempt.missing_urls)
                 assessment = _validated_assessment(assessment_data, reviewer_reads, manifest, require_accept=False,
@@ -1791,6 +1791,45 @@ async def _revise(attempt: _Attempt, build: DividedConstruction | None, candidat
         attempt.discovery.revision_base = {'manifest': copy.deepcopy(candidate), 'finding_responses': []}
     if released := release_requests(attempt.budget.finding_ledger, attempt.prior_manifests[-1], attempt.construction.require_scope()):
         await _reopen_for_release(attempt, released)
+
+
+URL_REVISION_INSTRUCTION = (
+    "The daemon's pre-review check found install URLs that answer a definite not-found (daemon_url_checks): those "
+    "installs will fail as written. Replace each with a download the repository or the tool's own documentation names "
+    "for this platform, or another install method, and return the complete declaration again. Every other record "
+    "stays as it is.")
+
+
+async def _url_revision(attempt: _Attempt, build: DividedConstruction | None, candidate: dict[str, Any],
+                        manifest: EnvironmentManifest) -> bool:
+    """Missing install URLs go straight back to their author, without a review round; True when they did.
+
+    nare-native-034: a dead AWS download URL went through a whole review round (F0007) before the author saw it. The
+    daemon's check is definite, so the author is told directly, once per URL and as a coverage revision. A delta repair
+    and an attempt without a coverage revision left still hand them to the reviewer as before."""
+    attempt.missing_urls = [{**item, 'reported_before': True} if item['url'] in attempt.reported_urls else item
+                            for item in await _missing_urls(attempt, manifest)]
+    fresh = [item for item in attempt.missing_urls if not item.get('reported_before')]
+    budget = attempt.budget
+    if not fresh or attempt.delta is not None or budget.coverage_revisions >= budget.max_coverage_revisions:
+        return False
+    budget.reserve_repair('coverage')
+    await budget.flush()
+    attempt.reported_urls.update(item['url'] for item in fresh)
+    feedback = {**url_check_evidence(fresh), 'instruction': URL_REVISION_INSTRUCTION}
+    if build is None:
+        attempt.messages.extend([{'role': 'assistant', 'content': _json({'manifest': candidate})},
+                                 {'role': 'user', 'content': _json({'daemon_url_revision': feedback})}])
+        attempt.discovery.revision_base = {'manifest': copy.deepcopy(candidate), 'finding_responses': []}
+        return True
+    # Installs are the global author's; every check group keeps its part.
+    build.previous = parts_from_manifest(manifest, build.groups)
+    build.obligations = dict(build.previous)
+    build.revising = True
+    del attempt.messages[2:]
+    attempt.messages.extend([{'role': 'assistant', 'content': _json({'manifest': build.global_part or {}})},
+                             {'role': 'user', 'content': _json({'daemon_url_revision': feedback})}])
+    return True
 
 
 def _url_checked_assessment(missing: Sequence[Mapping[str, Any]], data: dict[str, Any], **kwargs: Any) -> CoverageAssessment:
