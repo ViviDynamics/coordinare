@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, NoReturn
 
 from coordinare_service_inference.environment.findings import (
+    TEXT_BYTES,
     FindingLedger,
+    FindingProposal,
     FindingRecord,
     FindingReview,
 )
@@ -130,9 +132,36 @@ def _check_duplicate_decisions(ledger: FindingLedger, proposal: CoverageAssessme
                 location=(*location, 'duplicate_of'))
 
 
+ALSO_REPORTED = '\n\nAlso reported: '
+
+
+def merge_duplicate_findings(findings: list[FindingProposal]) -> list[FindingProposal]:
+    """One finding per category and set of affected ids in a review: their texts and sources are kept in the first.
+
+    nare-native-034: two reviewers of a divided manifest filed F0010 and F0011 for the same install-aws launcher, with
+    the same category and affected ids, and the author answered both. A finding naming no ids is never merged."""
+    merged: dict[tuple[str, frozenset[str]], FindingProposal] = {}
+    kept: list[FindingProposal] = []
+    for finding in findings:
+        key = (finding.category, frozenset(finding.affected_ids))
+        first = merged.get(key) if finding.affected_ids else None
+        if first is None:
+            if finding.affected_ids:
+                merged[key] = finding
+            kept.append(finding)
+            continue
+        issue = (first.issue + ALSO_REPORTED + finding.issue).encode()[:TEXT_BYTES].decode(errors='ignore')
+        combined = first.model_copy(update={
+            'issue': issue, 'sources': [*first.sources, *(path for path in finding.sources if path not in first.sources)]})
+        kept[kept.index(first)] = combined
+        merged[key] = combined
+    return kept
+
+
 def apply_evidence_review(ledger: FindingLedger, *, subject: ReviewSubject, proposal: CoverageAssessmentProposal,
                           reviewer_inputs: Mapping[str, str]) -> FindingLedger:
     """Produce a new checked ledger; never mutate history during model correction."""
+    proposal = proposal.model_copy(update={'findings': merge_duplicate_findings(list(proposal.findings))})
     source_commit, subject_digest, obligation_ids = subject.source_commit, subject.digest, subject.obligation_ids
     if ledger.source_commit != source_commit:
         refuse_finding('finding source identity changed', code='source_identity')
