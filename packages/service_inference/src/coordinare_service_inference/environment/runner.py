@@ -1177,7 +1177,9 @@ def _hidden_checkout(repo: Path) -> Iterator[None]:
     aside = repo.with_name(f".{repo.name}.install-time-{secrets.token_hex(4)}")
     try:
         repo.rename(aside)
-    except OSError:
+    except OSError as exc:
+        # nare-native-033: this fell back silently on a bind-mounted checkout, and the gap went unseen for a whole run.
+        sys.stderr.write(f"coordinare: install-time checkout {repo} stays reachable during installer checks: {exc}\n")
         yield
         return
     try:

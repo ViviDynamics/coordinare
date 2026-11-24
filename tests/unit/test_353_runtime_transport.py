@@ -94,7 +94,7 @@ def test_verifier_cli_passes_trusted_deadline_to_runtime(monkeypatch, capsys):
     assert capsys.readouterr().out == '{}\n'
 
 
-def test_source_installer_preserves_the_same_original_deadline(monkeypatch):
+def test_source_installer_preserves_the_same_original_deadline(monkeypatch, tmp_path):
     import io
     import sys
     from types import SimpleNamespace
@@ -102,7 +102,11 @@ def test_source_installer_preserves_the_same_original_deadline(monkeypatch):
     from coordinare_service_inference.environment import execution_source_install as entry
     from coordinare_service_inference.environment import runtime_transport
 
-    monkeypatch.setattr(sys, 'argv', ['installer', '--cache', '/cache', '--repo', '/repo', '--scratch', '/scratch'])
+    # The installer copies the verified checkout under scratch (test_376_installer_owned_checkout), so both exist.
+    for name in ('repo', 'scratch'):
+        (tmp_path / name).mkdir()
+    monkeypatch.setattr(sys, 'argv', ['installer', '--cache', '/cache', '--repo', str(tmp_path / 'repo'),
+                                      '--scratch', str(tmp_path / 'scratch')])
     monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(b'{"manifest":{},"execution_source":{}}')))
     manifest = SimpleNamespace(runtime=object(), source_commit='a'*40, inputs={})
     source = SimpleNamespace(digest=lambda: 'b'*64)
