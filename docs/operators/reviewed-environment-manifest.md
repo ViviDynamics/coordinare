@@ -402,6 +402,21 @@ entrypoint tests, not a live daemon or outer retry-loop test. Runtime cache cont
 and temporary images are removed by default; readiness in a report is historical
 for that validation attempt, not an installed deployment.
 
+On macOS, the installer's environment cache is a bind mount of a directory under
+`--output`. The default macOS file system (APFS) is case-insensitive. A toolchain
+that ships file names differing only in case fails to install there, although the
+same install works on Linux. One example is the Python builds that `uv python install`
+downloads, whose `terminfo` data holds both `2621A` and `2621a`. Put `--output` on a
+case-sensitive volume to validate such toolchains. For example, create and attach a
+sparse image:
+
+```sh
+hdiutil create -size 300g -type SPARSE -fs "Case-sensitive APFS" -volname validation validation.sparseimage
+hdiutil attach -nobrowse -mountpoint /private/validation validation.sparseimage
+```
+
+Docker Desktop must share the mount point.
+
 
 ## Complete reviewer evidence and correction limits
 

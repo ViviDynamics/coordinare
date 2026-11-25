@@ -17,16 +17,19 @@ async def _run(monkeypatch: pytest.MonkeyPatch, states: list[frozenset[tuple[str
     async def execute(command: Command, **_: Any) -> CheckResult:
         return CheckResult(id=command.id, status='pass', required=True, output='ok', manifest_digest='d' * 64)
 
-    listed = iter(states)
+    listed = list(states)
 
     async def state(_env: dict[str, str]) -> frozenset[tuple[str, str]] | None:
-        return next(listed)
+        # The last listing repeats: a settle re-lists until its grace ends.
+        return listed.pop(0) if len(listed) > 1 else listed[0]
 
     removed: list[Any] = []
 
     async def remove(left: Any, _env: dict[str, str]) -> None:
         removed.append(sorted(left))
 
+    monkeypatch.setattr(runner, 'RESIDUE_SETTLE_SECONDS', 0.05)
+    monkeypatch.setattr(runner, 'RESIDUE_POLL_SECONDS', 0.0)
     monkeypatch.setattr(runner, '_execute', execute)
     monkeypatch.setattr(runner, '_guest_docker_state', state)
     monkeypatch.setattr(runner, '_remove_guest_docker_state', remove)
@@ -74,3 +77,24 @@ async def test_only_a_runtime_guest_daemon_is_ever_listed(monkeypatch: pytest.Mo
     assert called == []
     assert await runner._guest_docker_state(dict(GUEST)) == frozenset()
     assert len(called) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_container_still_being_removed_is_not_blamed_once_it_goes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """nare-native-039: a sample's `docker run --rm` container, killed at its timeout, was listed mid-removal as the
+    command exited, failing a check whose test passed (the same check had passed a generation earlier)."""
+    empty: frozenset[tuple[str, str]] = frozenset()
+    removing = frozenset({('containers', 'nare-bench-616424c1c331')})
+    results, removed = await _run(monkeypatch, [empty, empty, empty, removing, removing, empty], residual=True)
+    assert {result.status for result in results.values()} == {'pass'} and removed == []
+
+
+@pytest.mark.asyncio
+async def test_state_created_while_settling_is_not_blamed_on_the_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    empty: frozenset[tuple[str, str]] = frozenset()
+    kept = frozenset({('containers', 'left-by-sample')})
+    later = frozenset({('containers', 'left-by-sample'), ('volumes', 'unrelated')})
+    results, removed = await _run(monkeypatch, [empty, empty, empty, kept, later], residual=True)
+    sample = results['check-sample']
+    assert sample.status == 'fail' and 'left-by-sample' in sample.output and 'unrelated' not in sample.output
+    assert removed == [[('containers', 'left-by-sample')]]

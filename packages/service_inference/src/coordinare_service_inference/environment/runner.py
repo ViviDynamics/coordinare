@@ -773,6 +773,27 @@ async def _guest_docker_state(env: dict[str, str]) -> frozenset[tuple[str, str]]
     return frozenset(state)
 
 
+# nare-native-039: a test sample ran `docker run --rm` and `docker kill`ed it at its timeout; the daemon removes such a
+# container asynchronously, and a listing taken as the command exited caught it mid-removal (the same check had passed
+# a generation earlier). What a command appears to leave is listed again until it is gone or this grace runs out.
+RESIDUE_SETTLE_SECONDS = 15.0
+RESIDUE_POLL_SECONDS = 1.0
+
+
+async def _settled_residue(before: frozenset[tuple[str, str]], after: frozenset[tuple[str, str]],
+                           env: dict[str, str]) -> frozenset[tuple[str, str]]:
+    """The Docker state a command left once removals already under way have had a bounded grace to finish."""
+    left = after - before
+    deadline = time.monotonic() + RESIDUE_SETTLE_SECONDS
+    while left and time.monotonic() < deadline:
+        await asyncio.sleep(RESIDUE_POLL_SECONDS)
+        if (now := await _guest_docker_state(env)) is None:
+            break
+        # Only what was left and is still there counts: state created meanwhile is not this command's.
+        left &= now - before
+    return left
+
+
 async def _remove_guest_docker_state(left: Collection[tuple[str, str]], env: dict[str, str]) -> None:
     for kind in ('containers', 'volumes', 'networks'):
         if names := sorted(name for item_kind, name in left if item_kind == kind):
@@ -876,7 +897,8 @@ async def _commands(
                     result = results[command.id]
                     result.status = "fail"
                     result.output = UNHEALTHY + broken + ("\n" + result.output if result.output else "")
-                if before is not None and (after := await _guest_docker_state(env)) is not None and (left := after - before):
+                if (before is not None and (after := await _guest_docker_state(env)) is not None
+                        and (left := await _settled_residue(before, after, env))):
                     _left_behind(results[command.id], left, env, redactions)
                     await _remove_guest_docker_state(left, env)
                 if links_before is not None and (made := [item for item in _escaping(cache) or []
