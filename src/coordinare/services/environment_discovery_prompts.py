@@ -123,6 +123,13 @@ INVOCATION_SOURCES = (
     "accepts). Read where the repository calls the command before you write a check that calls it, and keep every "
     "required argument. When the repository never shows an invocation, use only what the tool's own documentation in "
     "the repository or a probe of its help output shows.")
+# nare-native-029, -031 and -037: installs extracted a release archive with a standard-library zip module, which drops
+# the executable bit, and the extracted installer or program failed with Permission denied, a repair each time.
+ARCHIVE_MODES = (
+    "An install that extracts an archive must keep each file's mode: some extractors (a language runtime's "
+    "standard-library zip module, for one) drop the executable bit, and an extracted program or installer then fails "
+    "with Permission denied. Use an extractor that keeps modes (unzip or tar), or restore the modes before running "
+    "anything extracted.")
 # Dettmore e2e-66: reviewers summed every command's timeout_seconds (13,800 s) against the 7,200 s session budget and
 # held findings open until the author cut the heavy builds' and suites' ceilings, spending six coverage revisions
 # before any execution. A ceiling is not a plan: the session deadline still ends the whole run.
@@ -186,7 +193,7 @@ _MANIFEST_RULES = (
     'For shell-local variables assigned inside bash -c, use $name rather than ${name}. '
     f'{LOCAL_CREDENTIAL_AUTHORING} '
     f'{ADVISORY_AUDIT_CHECKS} '
-    f'{SAMPLE_TEST_CHECKS} {INVOCATION_SOURCES} {LINK_GUIDANCE} '
+    f'{SAMPLE_TEST_CHECKS} {INVOCATION_SOURCES} {LINK_GUIDANCE} {ARCHIVE_MODES} '
     # nare-native-027: a required install ran a full benchmark verify for 48 minutes, left containers behind, and
     # every execution repair went to install steps, so no check ever ran.
     'Install commands only install and build what the checks use: never run a test, verification or benchmark suite '

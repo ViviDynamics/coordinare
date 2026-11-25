@@ -20,6 +20,15 @@ Dettmore e2e-57's authors were given the steps as a recipe and left out the reli
 6. ``--into``/system-packages.env sets the compiler, linker (with an rpath, never LD_LIBRARY_PATH) and pkg-config paths,
    and appends ``--into``/bin to PATH. Source it in each command that builds against the packages; put ``--into``/bin
    on activation's PATH to use the programs.
+7. A link a package makes by absolute path to its own file is pointed, relatively, at the copy unpacked under
+   ``--into`` (nare-native-037: groff-base's usr/share/groff/site-tmac -> /etc/groff left the cache and was refused).
+   Any link still leaving ``--into`` other than into the base image's system directories is reported, since the cache
+   check refuses it.
+
+The launchers fix libraries only. An unpacked program still looks for its own data files (fonts, templates,
+configuration) at the paths it was built with, under /usr or /etc, not under ``--into``: one that needs them fails
+relocated (nare-native-037: groff could not load its device description) unless its documented search-path variables
+point at the unpacked copies. Prefer a program that needs no data files.
 """
 from __future__ import annotations
 
@@ -34,8 +43,10 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .cache_links import base_image_target
+
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
 ENV_FILE = "system-packages.env"
 # The carrier's own interpreter, where this package is installed (agent/performer/Dockerfile.base is python:3.12-slim).
@@ -88,6 +99,51 @@ def triplet() -> str:
     if machine not in _MACHINE_TRIPLETS:
         raise SystemPackageError(f"cannot determine the multiarch triplet for machine {machine!r}")
     return _MACHINE_TRIPLETS[machine]
+
+
+DATA_PATH_NOTE = ("unpacked programs still look for their own data files (fonts, templates, configuration) at the "
+                  "/usr or /etc paths they were built with, not here: one that needs them fails relocated unless its "
+                  "documented search-path variables point at the unpacked copies; prefer a program that needs none")
+
+
+def _links(root: Path) -> Iterator[Path]:
+    """Every symbolic link under ``root``, files and directories alike, without following any."""
+    for directory, dirs, files in os.walk(root):
+        for name in sorted([*dirs, *files]):
+            if (path := Path(directory) / name).is_symlink():
+                yield path
+
+
+def relink_unpacked(into: Path) -> list[str]:
+    """Point each absolute link whose target was unpacked under ``into`` at that copy, relatively; the links changed.
+
+    A package can link to its own file by absolute path, as groff-base's usr/share/groff/site-tmac -> /etc/groff does.
+    Unpacked, that link leaves the cache (nare-native-037 was refused for it) while its target sits under ``into``.
+    """
+    changed: list[str] = []
+    for path in list(_links(into)):
+        target = os.readlink(path)
+        if not target.startswith("/") or ".." in Path(target).parts:
+            continue
+        # An installer can also name ``into`` itself by absolute path; the cache check refuses that too.
+        local = Path(target) if Path(target).is_relative_to(into) else into / target.lstrip("/")
+        if not (local.exists() or local.is_symlink()):
+            continue
+        path.unlink()
+        path.symlink_to(os.path.relpath(local, path.parent))
+        changed.append(str(path.relative_to(into)))
+    return changed
+
+
+def escaping_links(into: Path) -> list[str]:
+    """Each link under ``into`` naming an absolute target the cache check refuses, as ``link -> target``: any but the
+    base image's system directories, including one inside ``into``."""
+    found: list[str] = []
+    for path in _links(into):
+        target = os.readlink(path)
+        if target.startswith("/") and not base_image_target(target):
+            found.append(f"{path.relative_to(into)} -> {target}")
+    return found
 
 
 def relink_dangling(into: Path, library_dirs: Sequence[Path]) -> tuple[list[str], list[str]]:
@@ -221,12 +277,14 @@ def fetch(packages: Sequence[str], into: Path, *, run: Callable[[Sequence[str]],
         deb.unlink()
     name = triplet_name or triplet()
     library_dirs = [library_root / part for part in (f"usr/lib/{name}", f"lib/{name}", "usr/lib", "lib")]
+    unpacked = relink_unpacked(into)
     relinked, dangling = relink_dangling(into, library_dirs)
     relocated = relocate_pkg_config(into)
     launchers = write_launchers(into, [into / part for part in (f"usr/lib/{name}", f"lib/{name}", "usr/lib", "lib")])
     env_path = into / ENV_FILE
     env_path.write_text(environment_file(into, name))
     return {"fetched": [deb.name for deb in debs], "relinked": relinked, "dangling": dangling,
+            "relinked_unpacked": unpacked, "escaping": escaping_links(into),
             "pkg_config_relocated": relocated, "launchers": launchers, "environment_file": str(env_path)}
 
 
@@ -247,8 +305,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     sys.stdout.write(f"unpacked {len(summary['fetched'])} packages into {args.into}\n")
     for item in summary["dangling"]:
         sys.stderr.write(f"warning: {item} points at a library neither fetched nor on the carrier\n")
+    for item in summary["escaping"]:
+        sys.stderr.write(f"warning: {item} leaves the cache, which the cache check refuses: remove the link if nothing "
+                         "needs it, or copy what it names into the cache and link to that relatively\n")
     if summary["launchers"]:
         sys.stdout.write(f"programs ({', '.join(summary['launchers'][:20])}) run from {args.into / 'bin'}\n")
+        sys.stdout.write(f"note: {DATA_PATH_NOTE}\n")
     sys.stdout.write(f"build with: . {shlex.quote(str(summary['environment_file']))}\n")
     return 0
 

@@ -161,3 +161,39 @@ def test_each_unpacked_program_gets_a_launcher_that_finds_its_libraries_for_its_
     assert f'exec {real.resolve()} "$@"' in launcher and f'LD_LIBRARY_PATH="{libraries[0]}' in launcher
     env = packages.environment_file(into, TRIPLET)
     assert f':{into}/bin:{into}/usr/bin"' in env and 'LD_LIBRARY_PATH' not in env
+
+
+def test_a_package_link_to_its_own_file_by_absolute_path_is_pointed_at_the_unpacked_copy(tmp_path):
+    # nare-native-037: groff-base's usr/share/groff/site-tmac -> /etc/groff left the cache and the cache check refused
+    # it, while the package had unpacked etc/groff under --into.
+    into = (tmp_path / 'cache' / 'deps').absolute()
+    (into / 'etc' / 'groff').mkdir(parents=True)
+    (into / 'usr' / 'share' / 'groff').mkdir(parents=True)
+    (into / 'usr' / 'share' / 'groff' / 'site-tmac').symlink_to('/etc/groff')
+    (into / 'usr' / 'lib').mkdir(parents=True)
+    (into / 'usr' / 'lib' / 'tool.so.1').write_bytes(b'elf')
+    (into / 'usr' / 'lib' / 'by-cache-path').symlink_to(into / 'usr' / 'lib' / 'tool.so.1')
+    (into / 'usr' / 'lib' / 'carrier-file').symlink_to('/usr/lib/os-release')  # a base-image path it did not unpack
+    (into / 'usr' / 'lib' / 'host-only').symlink_to('/etc/not-unpacked')
+    assert packages.relink_unpacked(into) == ['usr/lib/by-cache-path', 'usr/share/groff/site-tmac']
+    assert os.readlink(into / 'usr' / 'share' / 'groff' / 'site-tmac') == '../../../etc/groff'
+    assert (into / 'usr' / 'share' / 'groff' / 'site-tmac').resolve() == (into / 'etc' / 'groff').resolve()
+    assert os.readlink(into / 'usr' / 'lib' / 'by-cache-path') == 'tool.so.1'
+    assert os.readlink(into / 'usr' / 'lib' / 'carrier-file') == '/usr/lib/os-release'
+    # Only the link nothing could fix is left, and it is reported: the cache check would refuse it.
+    assert packages.escaping_links(into) == ['usr/lib/host-only -> /etc/not-unpacked']
+
+
+def test_fetch_reports_escaping_links_and_the_command_warns_about_them_and_data_paths(tmp_path, monkeypatch, capsys):
+    into = tmp_path / 'deps'
+
+    def fetch(names, target):
+        return {'fetched': ['groff.deb'], 'dangling': [], 'escaping': ['usr/lib/host-only -> /etc/not-unpacked'],
+                'launchers': ['groff'], 'environment_file': str(target / packages.ENV_FILE)}
+
+    monkeypatch.setattr(packages, 'fetch', fetch)
+    monkeypatch.setattr(packages.shutil, 'which', lambda name: f'/usr/bin/{name}')
+    assert packages.main(['--into', str(into), 'groff']) == 0
+    shown = capsys.readouterr()
+    assert 'usr/lib/host-only -> /etc/not-unpacked leaves the cache' in shown.err
+    assert 'look for their own data files' in shown.out and 'search-path variables' in shown.out

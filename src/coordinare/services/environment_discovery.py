@@ -88,6 +88,7 @@ from coordinare.services.environment_delta import (
 from coordinare.services.environment_delta_schema import ManifestDelta, apply_delta
 from coordinare.services.environment_discovery_prompts import (
     ADVISORY_AUDIT_CHECKS,
+    ARCHIVE_MODES,
     INVOCATION_SOURCES,
     LOCAL_CREDENTIAL_REVIEW,
     NATIVE_SOURCE_INSTRUCTIONS,
@@ -298,7 +299,7 @@ EXECUTABLE_REVIEW_CRITERIA = (
     'Unchanged command text alone does not prove unchanged coverage. '
     f'{LOCAL_CREDENTIAL_REVIEW} '
     f'{ADVISORY_AUDIT_CHECKS} '
-    f'{SAMPLE_TEST_CHECKS} {INVOCATION_SOURCES} {LINK_GUIDANCE} '
+    f'{SAMPLE_TEST_CHECKS} {INVOCATION_SOURCES} {LINK_GUIDANCE} {ARCHIVE_MODES} '
     f'{TIMEOUT_CEILINGS} '
     'Explicitly decide EVERY retained finding ID, including previously resolved findings, against this candidate. '
     'Use open or resolved with repository citations; silence or calling an objection non-blocking cannot close it. '
