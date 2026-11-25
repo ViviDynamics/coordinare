@@ -59,7 +59,7 @@ from coordinare.services.environment_shard_scope import (
 from coordinare.services.environment_url_check import missing_url_error, unnamed_missing_commands
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Mapping, Sequence
+    from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 
     from coordinare_service_inference.environment.findings import FindingLedger, FindingRecord
     from coordinare_service_inference.environment.inventory import InventoryEntry
@@ -720,6 +720,20 @@ class DividedConstruction:
         return [group for group in self.groups if group.prefix in self.obligations
                 and base_prefix(group.prefix) not in self.feedback
                 and not any(owns(group.prefix, prefix) for prefix in self.feedback)]
+
+    def pinned_checks(self, groups: Iterable[CheckGroup]) -> frozenset[str]:
+        """The checks each group's author was told to keep (its previously required keep_check_ids): it may not drop
+        one (inherited_check_missing), so only another author can resolve a conflict with it.
+
+        nare-native-038: the global author rewrote check-replay-done into c00-replay-done-jsonl's exact command; the
+        duplicate went only to c00, which may neither drop its kept check nor edit a global one, and every merge round
+        repeated it.
+        """
+        pinned: set[str] = set()
+        for group in groups:
+            parent = next((candidate for candidate in self.groups if candidate.prefix == base_prefix(group.prefix)), None)
+            pinned |= inherit(self.previous, group, parent).required
+        return frozenset(pinned)
 
     def _citations(self, group: CheckGroup) -> dict[str, str]:
         cited = {path for criterion in group.criteria for path in criterion.sources}

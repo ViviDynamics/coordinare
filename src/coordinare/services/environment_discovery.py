@@ -1151,10 +1151,10 @@ def _delta_repair(options: Any, bounds: DiscoveryLimits, budget: AttemptBudget) 
             and not budget.delta_revisions and _execution_repair(options))
 
 
-def _fall_back(budget: AttemptBudget, code: str) -> None:
-    """Its code is kept for the attempt summary (Dettmore e2e-62 and e2e-65 fell back with no trace of why), and its
-    start time so the repair's timing keeps the delta and the full repair apart."""
-    budget.delta_fallback_code = code
+def _fall_back(budget: AttemptBudget, code: str, detail: str | None = None) -> None:
+    """Its code and daemon-composed detail are kept for the attempt summary (Dettmore e2e-62 and e2e-65 fell back with
+    no trace of why), and its start time so the repair's timing keeps the delta and the full repair apart."""
+    budget.delta_fallback_code, budget.delta_fallback_detail = code, detail
     _fallback_time_gate(budget)
     budget.repair_delta, budget.delta_fallback, budget.error_code = False, True, None
     budget.delta_fallback_at = time.time()
@@ -1250,7 +1250,7 @@ async def discover_and_review(
                 if not budget.repair_delta or exc.code not in DELTA_FALLBACK:
                     raise
                 # The delta could not be admitted or reviewed: the full repair is the backstop while budget remains.
-                _fall_back(budget, exc.code)
+                _fall_back(budget, exc.code, exc.detail)
                 # The full repair reselects from the whole history, including the delta's own probe batches, by the same rule.
                 budget.probe_reports = select_current_probe_reports(history + budget.probe_reports[selected:], commit,
                     capabilities, allow_cache_relocation=_execution_repair(configured), reuse_unreferenced=reuse)
@@ -1672,7 +1672,28 @@ def _delta_merge_rejected(budget: AttemptBudget, exc: Exception) -> EnvironmentD
               else [{'code': getattr(exc, 'code', type(exc).__name__)}])
     budget.validation_codes.extend(str(error.get('code')) for error in errors)
     message = "delta repair could not be merged into a complete manifest"
-    return EnvironmentDiscoveryError(message, code="repair_delta_rejected")
+    return EnvironmentDiscoveryError(message, code="repair_delta_rejected", detail=merge_detail(errors, exc))
+
+
+# What a merge error may contribute to a hold's detail: its code and these id lists. Never guidance or rendered input.
+_DETAIL_ID_KEYS = ('pairs', 'missing', 'unusable', 'unexpected', 'unknown')
+
+
+def merge_detail(errors: Sequence[Mapping[str, Any]], exc: Exception | None = None, limit: int = 500) -> str:
+    """A merge failure as daemon-composed text safe for a hold's error_detail: each error's code and the ids it names.
+
+    nare-native-038 held on executable_merge_invalid with error_detail None, and its delta's obligation_removed message
+    was lost when the full repair took over, so neither said which checks blocked the merge.
+    """
+    parts: list[str] = []
+    for error in errors:
+        ids = {key: error[key] for key in _DETAIL_ID_KEYS if error.get(key)}
+        parts.append(f"{error.get('code')}" + (f" {_json(ids)}" if ids else ''))
+    if isinstance(exc, EnvironmentDiscoveryError) and exc.code == 'obligation_removed':
+        # Daemon-composed, naming only id-shaped values (see the attempt's own obligation_removed handling).
+        parts.append(str(exc))
+    text = '; '.join(parts)
+    return text if len(text) <= limit else text[:limit - 3] + '...'
 
 
 async def _author_candidate(attempt: _Attempt, divided_build: DividedConstruction | None,
@@ -2018,6 +2039,10 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
     # Every version of each check id across the prior manifests: preservation judges the candidate against each.
     prior_checks = _prior_check_versions(attempt.prior_manifests)
     authored_responses = list(attempt.discovery.finding_responses)
+    # Each round's errors with who was sent them: the same errors returning to the same authors means they cannot fix
+    # them (nare-native-038 spent every merge round on one pair c00 was forbidden to change).
+    seen: set[str] = set()
+    errors: list[dict[str, Any]] = []
     for _ in range(MERGE_ROUNDS):
         if global_data is None:
             global_data, parts = await _author_round(build, attempt, validate)
@@ -2039,7 +2064,9 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
             validate(merged)
         except (EnvironmentDiscoveryError, ValidationError) as exc:
             promoted = _promoted_sources(folded, global_data)
-            if (copies := _global_copies(exc, executed)) or folded:
+            # A group check its author may not change: one an execution ran, or one it was told to keep.
+            pinned = executed | build.pinned_checks(group for group, _part in parts.values())
+            if (copies := _global_copies(exc, pinned)) or folded:
                 _undo_folds(attempt, before, validate,
                             _unfolded(global_data, [part for _group, part in parts.values()], folded, copies))
             if plan is not None:
@@ -2052,7 +2079,7 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
                       else [{'location': [], 'code': exc.code, 'guidance': str(exc)}])
             # Recorded so a held attempt shows what the merge rejected.
             budget.validation_codes.extend(str(error.get('code')) for error in errors)
-            redo = _attributed(_group_errors(errors, executed), exc, parts, promoted)
+            redo = _unrepeated(seen, errors, _attributed(_group_errors(errors, pinned), exc, parts, promoted), exc)
             for group in redo:
                 build.feedback[group.prefix] = {**build.feedback.get(group.prefix, {}), 'merge_errors': errors}
                 build.previous[group.prefix] = parts[group.prefix][1].model_dump(mode='json')
@@ -2074,7 +2101,21 @@ async def _divided_candidate(build: DividedConstruction, attempt: _Attempt,
                                         if not any(owns(group.prefix, check['id']) for group in build.groups)]}
         return merged
     message = 'divided executable proposal could not be merged'
-    raise EnvironmentDiscoveryError(message, code='executable_merge_invalid')
+    raise EnvironmentDiscoveryError(message, code='executable_merge_invalid', detail=merge_detail(errors))
+
+
+def _unrepeated(seen: set[str], errors: list[dict[str, Any]], redo: list[CheckGroup], exc: Exception) -> list[CheckGroup]:
+    """Who corrects this merge round: ``redo``, unless they already returned these same errors. Groups that did hand
+    them to the global author, whose records the errors also name; a global author that did ends the merge early,
+    naming them."""
+    key = _json({'errors': errors, 'to': sorted(group.prefix for group in redo)})
+    if key in seen:
+        if not redo:
+            message = 'divided executable proposal repeated the same merge errors after the global author revised it'
+            raise EnvironmentDiscoveryError(message, code='executable_merge_invalid', detail=merge_detail(errors)) from exc
+        redo = []
+    seen.add(key)
+    return redo
 
 
 def _carry_folds(attempt: _Attempt, folded: Mapping[str, str], authored_responses: Sequence[FindingResponse]) -> None:
@@ -2341,8 +2382,8 @@ def _attributed(errors: list[dict[str, Any]], exc: Exception, parts: Mapping[str
             or any(criterion in text for criterion in group.ids)]
 
 
-GLOBAL_COPY_GUIDANCE = ("A pair that names a global check of yours and a check group's executed check runs the same "
-    "command twice. The executed check must stay under its own id, so its group cannot change it: remove your copy from "
+GLOBAL_COPY_GUIDANCE = ("A pair that names a global check of yours and a check group's executed or kept check runs the "
+    "same command twice. That check must stay under its own id, so its group cannot change it: remove your copy from "
     "the global part, and name the group's check wherever you named the copy.")
 
 
@@ -2369,7 +2410,7 @@ def _group_errors(errors: list[dict[str, Any]], executed: Collection[str]) -> li
 
 
 def _global_copies(exc: Exception, executed: Collection[str]) -> set[str]:
-    """The global ids a rejected candidate's duplicate errors pair with an executed group check."""
+    """The global ids a rejected candidate's duplicate errors pair with a pinned (executed or kept) group check."""
     errors = _validation_feedback(exc) if isinstance(exc, ValidationError) else []
     return {identifier for error in errors if error.get('code') == 'duplicate_command_content'
             for pair in error.get('pairs') or [] if _global_copy_pair(pair, executed)

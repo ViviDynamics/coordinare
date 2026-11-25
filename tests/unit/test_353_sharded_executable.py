@@ -162,6 +162,9 @@ class FakeBuild:
     def admits(self, group, part, *, summary):
         return True
 
+    def pinned_checks(self, groups):
+        return frozenset(getattr(self, 'pinned', ()))
+
     async def author_all(self, *, summary, probes, groups=None, concurrency=None):
         asked = list(self.groups if groups is None else groups)
         self.rounds.append([group.prefix for group in asked])
