@@ -49,7 +49,8 @@ if TYPE_CHECKING:
 DELTA_FALLBACK = frozenset({"attempt_schema_limit", "repair_delta_rejected", "executable_merge_invalid", "repair_triage_stale",
                             "execution_command_changed", "criterion_mapping_invalid", "inherited_mapping_missing"})
 # Proposal fields a manifest's standing review depends on; provenance and cache-only facts never change a judgment.
-STANDING_EXCLUDED = frozenset({"manifest_digest", "probe_evidence", "untrusted_execution_history", "fixed_ids",
+STANDING_EXCLUDED = frozenset({"manifest_digest", "probe_evidence", "untrusted_execution_history",
+                               "untrusted_trial_observations", "fixed_ids",
                                "execution_capabilities", "capabilities_digest"})
 _PROPOSAL_FIELDS = ("runtime_endpoints", "criterion_checks", "requirements", "install", "checks", "activation", "services",
                     "empty_reason", "local_credentials")

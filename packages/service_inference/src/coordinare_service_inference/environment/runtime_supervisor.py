@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from .runtime import TRIAL_DISK, RuntimeArtifact, RuntimeArtifactReceipt, RuntimeIdentity, RuntimeSpec, TrialReceipt
 from .runtime_bundle import RuntimeBundleInputs, bundle_path, inspect_bundle, read_bundle
 from .runtime_cleanup import remove_control_material, remove_owned_tree
+from .runner import COMMAND_TMPDIR
 from .runtime_guest import cloud_configuration, host_kvm_usable, qemu_arguments
 from .runtime_io import RuntimeIOStoppedError as RuntimeScanStoppedError
 from .runtime_io import digest_file as _digest
@@ -348,14 +349,21 @@ async def _prepare_control(lease: RuntimeLease, *, repo: Path) -> list[str]:
     (work/'bin/ssh').chmod(0o700)
     (work/'docker').mkdir()
     (work/'docker/config.json').write_text('{"auths":{}}\n')
+    tmpdir = guest_tmpdir()
     (work/'user-data').write_text(cloud_configuration(repo=repo, cache=lease.cache,
-        scratch=lease.scratch, readonly=not lease.install, guest_platform=lease.bundle.guest_platform))
+        scratch=lease.scratch, readonly=not lease.install, guest_platform=lease.bundle.guest_platform, tmpdir=tmpdir))
     (work/'meta-data').write_text('instance-id: coordinare-' + lease.owner_id + '\n')
     await _command(['genisoimage', '-quiet', '-output', str(work/'seed.iso'), '-volid', 'cidata', '-joliet', '-rock',
                     str(work/'user-data'), str(work/'meta-data')], deadline=lease.deadline)
     return qemu_arguments(lease.spec, lease.bundle, disk=work/'working.qcow2', seed=work/'seed.iso',
                           repo=repo, cache=lease.cache, scratch=lease.scratch, control=guest_control, install=lease.install,
-                          carrier_platform=lease.spec.policy.identity.carrier_platform, kvm_usable=host_kvm_usable())
+                          carrier_platform=lease.spec.policy.identity.carrier_platform, kvm_usable=host_kvm_usable(),
+                          tmpdir=tmpdir)
+
+
+def guest_tmpdir() -> Path | None:
+    """The commands' TMPDIR, shared into the guest where the carrier has it (runner.COMMAND_TMPDIR)."""
+    return Path(COMMAND_TMPDIR) if os.path.isdir(COMMAND_TMPDIR) else None
 
 
 # The carrier runs as an unprivileged user (coordinare environment_carrier), so the scratch's parent may be the

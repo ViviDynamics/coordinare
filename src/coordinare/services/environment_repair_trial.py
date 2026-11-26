@@ -113,7 +113,9 @@ def trial_handler(executor: Callable[[TrialRequest], Awaitable[VerificationRepor
                 if effects is not None:
                     raise  # No execution receipt: native resume must reconcile the pending action.
                 return {'unavailable': f'the trial could not run ({type(exc).__name__})', 'trials_left': trials_left(budget)}
-            return {**trial_summary(report), 'trials_left': trials_left(budget)}
+            summary = trial_summary(report)
+            record_trial(budget, request, summary)
+            return {**summary, 'trials_left': trials_left(budget)}
 
         if effects is not None:
             binding = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
@@ -121,6 +123,15 @@ def trial_handler(executor: Callable[[TrialRequest], Awaitable[VerificationRepor
         return await execute()
 
     return run
+
+
+def record_trial(budget: AttemptBudget, request: TrialRequest, summary: dict[str, Any]) -> None:
+    """Keep a trial's result for this repair's reviewers. nare-native-043's reviewers asked seven times for recorded
+    results of checks the candidate had just added, which nothing runs before acceptance, while three trials of those
+    checks stayed in the author's conversation."""
+    budget.trial_observations = [*budget.trial_observations, {
+        'trial': budget.trial_runs, 'checks': [check.id for check in request.checks],
+        'services': [service.id for service in request.services], **summary}][-MAX_TRIALS_PER_REPAIR:]
 
 
 def trial_summary(report: VerificationReport) -> dict[str, Any]:

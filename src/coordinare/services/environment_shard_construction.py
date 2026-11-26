@@ -157,8 +157,11 @@ FIXED_DELTA = ('A record in repair_delta.fixed_ids ran in an earlier execution: 
 REVIEW_PART_PREAMBLE = (
     'You independently review ONE part of a divided executable manifest: for a check group, its assigned criteria and '
     'the checks that map them; for the global part, installation, activation, services, requirements and global checks. '
-    'manifest holds the complete merged candidate for reference. required_decision_ids are the retained findings '
+    'part holds the records you review; global_part summarizes the merged candidate\'s installation, activation, '
+    'services and requirements for reference. required_decision_ids are the retained findings '
     'assigned to you; decide exactly those, and report at most findings_capacity new findings. '
+    'A new finding names at least one record of your part in affected_ids (or none, for an uncovered obligation): '
+    'another part\'s records are its own reviewer\'s to judge. '
 )
 
 
@@ -983,6 +986,22 @@ def _finding_reference_errors(proposal: CoverageAssessmentProposal, *, inspectio
     return errors
 
 
+def _foreign_finding_errors(proposal: CoverageAssessmentProposal, known: ReviewIds) -> list[dict[str, Any]]:
+    """A part reviewer's new finding must concern its own part. nare-native-043's c00 reviewer raised F0023 about a c01
+    check the c01 reviewer had just accepted (and that was already optional), and it stayed open to the end."""
+    if known.owner is None or not known.groups:
+        return []
+    errors: list[dict[str, Any]] = []
+    for index, finding in enumerate(proposal.findings):
+        owners = finding_parts(finding.affected_ids, known.groups)
+        if finding.affected_ids and known.owner not in owners:
+            errors.append({'code': 'review_findings_invalid', 'location': ['assessment', 'findings', str(index), 'affected_ids'],
+                           'owners': owners,
+                           'guidance': 'This finding names only records another part owns; that part\'s reviewer judges '
+                                       'them. Name a record of your own part that the problem affects, or drop it.'})
+    return errors
+
+
 def _decision_errors(proposal: CoverageAssessmentProposal, *, inspection: SourceInspection,
                      retained_ids: Collection[str]) -> list[dict[str, Any]]:
     """The combined review's decision rules, per part: v33 held when a part's duplicate decision stayed open and only
@@ -1017,6 +1036,8 @@ class ReviewIds:
     rulings: Sequence[str] | None = None
     missing_urls: Sequence[Mapping[str, Any]] = ()
     records: Sequence[FindingRecord] = ()
+    owner: str | None = None
+    groups: Sequence[CheckGroup] = ()
 
 
 NO_REVIEW_IDS = ReviewIds()
@@ -1048,6 +1069,7 @@ def validate_review_part(data: dict[str, Any], *, inspection: SourceInspection, 
         errors.append({'code': 'review_citations_invalid', 'location': ['assessment', 'sources'],
                        'guidance': 'Cite only files indexed in mandatory_evidence or read with tools.'})
     errors.extend(_finding_reference_errors(proposal, inspection=inspection, obligation_ids=known.obligations))
+    errors.extend(_foreign_finding_errors(proposal, known))
     errors.extend(_decision_errors(proposal, inspection=inspection, retained_ids=known.retained))
     opened = any(decision.status == 'open' for decision in proposal.decisions)
     if (proposal.verdict == 'accept' and (proposal.findings or opened)) or (

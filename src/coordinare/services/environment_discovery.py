@@ -280,6 +280,30 @@ def evidence_navigation(budget: AttemptBudget) -> str:
             'The complete pinned evidence remains required, including files the current criteria cite. ')
 
 
+# nare-native-043: nare's sandbox tests bind-mounted a mkdtemp directory into containers run by the guest daemon, which
+# served it as an empty root-owned directory, and the repair answered with a world-writable image layer the bind hid.
+RUNTIME_BIND_MOUNTS = (
+    'Docker commands reach the private runtime guest\'s daemon through DOCKER_HOST, not the machine the commands run '
+    'on. That daemon sees only {repo}, {cache}, {scratch} and the commands\' TMPDIR, each at the same absolute path. '
+    'A bind-mount source anywhere else (another temporary directory, HOME) is an empty root-owned directory in the '
+    'guest, and no image layer can make a bind-mounted path writable. Keep what a container bind-mounts under one of '
+    'those roots, and leave TMPDIR as the daemon sets it so the project\'s own temporary directories land there.'
+)
+# nare-native-043: reviewers held findings open for want of recorded results of checks the candidate had just added.
+UNRUN_CHECKS_REVIEW = (
+    'A check or service this candidate adds or changes has not run: execution follows acceptance. Judge it by its '
+    'definition, the sources and the probe evidence; a missing recorded result is never by itself a blocking finding. '
+    'untrusted_trial_observations, when present, are the repair author\'s trial runs of commands on the failed '
+    'execution\'s installed environment: untrusted observations, never evidence, that may show a command already failing '
+    'or working there.'
+)
+
+
+def trial_observations(budget: AttemptBudget) -> dict[str, Any]:
+    """The review packet's trial results, present only once a repair has run one."""
+    return {'untrusted_trial_observations': budget.trial_observations} if budget.trial_observations else {}
+
+
 EXECUTABLE_REVIEW_CRITERIA = (
     'Independently review coverage of the candidate against the repository snapshot. '
     'Reject incomplete activation: installed tools must be usable by ordinary downstream project commands, not just absolute-path checks. '
@@ -291,6 +315,7 @@ EXECUTABLE_REVIEW_CRITERIA = (
     'Compare every prior rejected manifest and execution result in untrusted_execution_history with this candidate. '
     'Its failure_output shows why each failed command failed; global_part.install shows this candidate\'s install commands. '
     'A failed step resubmitted unchanged, with nothing it depends on changed, does not repair that failure. '
+    f'{UNRUN_CHECKS_REVIEW} '
     'fixed_ids lists commands an earlier execution ran: no repair may change them (only a longer timeout). A finding '
     'about one must ask for what can change: installation, activation (for example its env or PATH), or another '
     'service or check, and never for that command\'s own text. '
@@ -1558,6 +1583,7 @@ async def _discover_attempt(
                 "inventory_digest": hashlib.sha256(_json(inventory).encode()).hexdigest(),
                 "execution_capabilities": capabilities.model_dump(), "capabilities_digest": capabilities.digest(),
                 "platform_roles": platform_roles(capabilities),
+                **({"runtime_bind_mounts": RUNTIME_BIND_MOUNTS} if capabilities.runtime is not None else {}),
                 "execution_rules": "{cache} persists across jobs and is read-only in clean verification; "
                 "{repo} is disposable pinned source, {scratch} is fresh writable storage. "
                 "They may have different absolute paths in installer, verifier and consumer. "
@@ -1716,7 +1742,7 @@ async def _author_candidate(attempt: _Attempt, divided_build: DividedConstructio
             candidate.get('criterion_checks') or {}) == (plan.base_proposal().get('criterion_checks') or {}):
         # A delta that changes nothing would execute the failed manifest again: it is a delta failure, not a repair.
         message = "delta repair changed no record"
-        raise EnvironmentDiscoveryError(message, code="repair_delta_rejected")
+        raise EnvironmentDiscoveryError(message, code="repair_delta_rejected", detail="unchanged: no record changed")
     return candidate
 
 
@@ -1737,9 +1763,9 @@ async def _require_delta_accepted(attempt: _Attempt, build: DividedConstruction 
         return False
     ledger = cast("FindingLedger", assessment.finding_ledger)
     budget.finding_ledger = ledger
+    releases = release_requests(ledger, attempt.prior_manifests[-1], attempt.construction.require_scope())
     if (assessment.verdict == "revise" and budget.delta_revisions < DELTA_REVISION_ROUNDS
-            and budget.coverage_revisions < budget.max_coverage_revisions
-            and not release_requests(ledger, attempt.prior_manifests[-1], attempt.construction.require_scope())):
+            and budget.coverage_revisions < budget.max_coverage_revisions and not releases):
         budget.reserve_repair("coverage")
         budget.delta_revisions += 1
         await budget.flush()
@@ -1747,7 +1773,30 @@ async def _require_delta_accepted(attempt: _Attempt, build: DividedConstruction 
         return True
     await budget.flush()
     message = "delta repair was not accepted by independent review"
-    raise EnvironmentDiscoveryError(message, code="repair_delta_rejected")
+    raise EnvironmentDiscoveryError(message, code="repair_delta_rejected",
+                                    detail=delta_rejection_detail(assessment.verdict, budget, releases, ledger.open_ids()))
+
+
+def delta_rejection_detail(verdict: str, budget: AttemptBudget, releases: Collection[str], open_ids: Collection[str],
+                           limit: int = 500) -> str:
+    """Why a reviewed delta fell back, in daemon-composed words and ids only. nare-native-043's delta fell back twice
+    rejected with no detail, and the fallback's cause had to be rebuilt from transcripts."""
+    if verdict != "revise":
+        reason = f"review verdict {verdict}"
+    elif releases:
+        reason = "release requested"
+    elif budget.delta_revisions >= DELTA_REVISION_ROUNDS:
+        reason = "delta revisions exhausted"
+    else:
+        reason = "coverage revisions exhausted"
+    parts = [reason, f"delta revisions {budget.delta_revisions}/{DELTA_REVISION_ROUNDS}",
+             f"coverage revisions {budget.coverage_revisions}/{budget.max_coverage_revisions}"]
+    if releases:
+        parts.append("release " + ",".join(sorted(releases)))
+    if open_ids:
+        parts.append("open " + ",".join(sorted(open_ids)))
+    text = "; ".join(parts)
+    return text if len(text) <= limit else text[:limit - 3] + "..."
 
 
 async def _settle_review(attempt: _Attempt, build: DividedConstruction | None, assessment: CoverageAssessment,
@@ -1904,6 +1953,7 @@ async def _review(attempt: _Attempt, build: DividedConstruction | None,
             "mandatory_evidence": mandatory_evidence, "probe_evidence": budget.probe_reports,
             "declared_services": attempt.options.declared_services,
             "untrusted_execution_history": budget.execution_review_evidence,
+            **trial_observations(budget),
             "fixed_ids": sorted(fixed_command_ids(budget.executed_manifests)),
             "retirable_check_ids": sorted(budget.retirable_checks),
             "finding_ledger": cast("FindingLedger", budget.finding_ledger).model_dump(mode='json'),
@@ -1935,7 +1985,7 @@ async def _rescope(attempt: _Attempt, build: DividedConstruction | None) -> Divi
     """Independent scope review reopened: every author reconstructs against the current criteria."""
     if attempt.budget.repair_delta:
         message = "source scope was reopened during a delta repair"
-        raise EnvironmentDiscoveryError(message, code="repair_delta_rejected")
+        raise EnvironmentDiscoveryError(message, code="repair_delta_rejected", detail="scope reopened")
     construction = attempt.construction
     attempt.identity.update(construction.context())
     rescoped = construction.require_scope()
@@ -2467,7 +2517,7 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
         system = (native_review_instructions() + REVIEW_PART_PREAMBLE if budget.agent_context is not None
                   else SOURCE_TOOLS + REVIEW_PART_PREAMBLE + EXECUTABLE_REVIEW_INSTRUCTIONS)
         shared = {**base, 'manifest_digest': manifest.digest(), 'global_part': summary, 'probe_evidence': budget.probe_reports,
-                  'untrusted_execution_history': budget.execution_review_evidence,
+                  'untrusted_execution_history': budget.execution_review_evidence, **trial_observations(budget),
                   'fixed_ids': sorted(fixed_command_ids(budget.executed_manifests)),
                   'retirable_check_ids': sorted(budget.retirable_checks)}
         own: dict[str, Any] = {'part': part_manifest_view(manifest, group, groups=groups), 'mandatory_evidence': index, 'assigned_findings': mine,
@@ -2488,7 +2538,7 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
         messages = review_part_messages(system, shared, own)
         validate = partial(validate_review_part, inspection=inspection, owned=owned.get(owner, []), capacity=capacities[owner],
                            known=ReviewIds(obligations, [record.id for record in ledger.records], rulings,
-                                           missing if group is None else (), ledger.records))
+                                           missing if group is None else (), ledger.records, owner=owner, groups=groups))
         # Standing: a part with unchanged content keeps its reviewed verdict, without a new judgment.
         key = hashlib.sha256(_json(review_part_messages(system, standing_view(shared), own)).encode()).hexdigest()
         saved = saved_part(budget, 'reviews', owner, key)

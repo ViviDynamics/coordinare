@@ -7,6 +7,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import contextvars
 import functools
 import json
 import os
@@ -89,6 +90,25 @@ if os.getppid() != parent:
     stopping = True
 with os.fdopen(int(sys.argv[1]), 'r') as stream:
     environment = json.load(stream)
+read_only = environment.pop('=read_only', None)
+# Mount flags a remount must keep (the kernel locks them in a new user namespace): nosuid, nodev, noexec and the
+# atime flags. statvfs reports them with the same bit values the mount call takes.
+KEPT_FLAGS = 2 | 4 | 8 | 1024 | 2048 | 4096
+def read_only_view(paths):
+    uid, gid = os.getuid(), os.getgid()
+    os.unshare(os.CLONE_NEWUSER | os.CLONE_NEWNS)
+    for name, text in (('setgroups', 'deny'), ('uid_map', f'{uid} {uid} 1'), ('gid_map', f'{gid} {gid} 1')):
+        with open(f'/proc/self/{name}', 'w') as stream:
+            stream.write(text)
+    def mount(source, target, flags):
+        if libc.mount(source, target, None, flags, None) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), target)
+    mount(None, b'/', (1 << 14) | (1 << 18))  # MS_REC | MS_PRIVATE
+    for path in paths:
+        target = os.fsencode(path)
+        mount(target, target, 4096 | (1 << 14))  # MS_BIND | MS_REC
+        mount(None, target, 4096 | 32 | 1 | (os.statvfs(path).f_flag & KEPT_FLAGS))  # MS_BIND | MS_REMOUNT | MS_RDONLY
 service = sys.argv[2] == 'service'
 ack_fd = int(sys.argv[3])
 control_fd = int(sys.argv[4])
@@ -121,6 +141,12 @@ if child == 0:
         os.close(control_fd)
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(signum, signal.SIG_DFL)
+    if read_only:
+        try:
+            read_only_view(read_only)
+        except OSError as exc:
+            sys.stderr.write(f'coordinare: the read-only view of {read_only} is unavailable ({exc}); '
+                             'only its write bits are removed\n')
     try:
         os.execvpe(argv[0], argv, environment)
     except OSError:
@@ -534,7 +560,9 @@ async def _execute(
                 os.close(read_fd)
                 read_fd = None
             if write_fd is not None:
-                payload = json.dumps(child_env).encode()
+                read_only = _READ_ONLY_ROOTS.get()
+                # '=' cannot begin an environment variable's name, so this key never meets a real one.
+                payload = json.dumps({**child_env, '=read_only': list(read_only)} if read_only else child_env).encode()
                 target_fd = write_fd
                 write_fd = None
 
@@ -1211,19 +1239,29 @@ def _hidden_checkout(repo: Path) -> Iterator[None]:
             aside.rename(repo)
 
 
+# The roots each command launched in the block sees read-only (_read_only_tree).
+_READ_ONLY_ROOTS: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar("read_only_roots", default=())
+
+
 @contextlib.contextmanager
 def _read_only_tree(root: Path) -> Iterator[None]:
-    """Remove every write bit under ``root`` for the block, then restore each original mode.
+    """Remove every write bit under ``root`` for the block, then restore each original mode. On Linux each command also
+    runs in its own mount namespace, where ``root`` is a read-only bind, as the clean consumer's read-only mount is.
 
-    The carrier runs without Linux capabilities, so even its root user is held to these bits. Links are left alone.
+    The carrier runs without Linux capabilities, so even its root user is held to these bits where the filesystem keeps
+    them. A macOS host bind under Docker Desktop does not: nare-native-043's installer checks wrote uv's lock into a
+    {cache} stripped of its write bits, passed, and its repair trial on the consumer's read-only mount failed. Links
+    are left alone.
     """
     modes = {path: stat.S_IMODE(path.lstat().st_mode) for path in (root, *root.rglob("*")) if not path.is_symlink()}
+    token = _READ_ONLY_ROOTS.set((*_READ_ONLY_ROOTS.get(), str(root)))
     try:
         for path, mode in modes.items():
             with contextlib.suppress(OSError):
                 path.chmod(mode & ~_WRITE_BITS)
         yield
     finally:
+        _READ_ONLY_ROOTS.reset(token)
         for path, mode in modes.items():
             with contextlib.suppress(OSError):
                 path.chmod(mode)

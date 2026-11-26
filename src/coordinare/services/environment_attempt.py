@@ -172,6 +172,8 @@ class AttemptBudget:
     retirable_checks: frozenset[str] = frozenset()
     execution_review_evidence: list[dict[str, Any]] = field(default_factory=list, repr=False)
     execution_attempt_history: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    # This repair's trial results (environment_repair_trial), shown to its reviewers as untrusted observations.
+    trial_observations: list[dict[str, Any]] = field(default_factory=list, repr=False)
     # The failed execution's triage while a repair is pending; its closure is the only part a repair may change.
     repair_triage: RepairTriage | None = field(default=None, repr=False)
     # Whether this attempt authors a delta, and whether a delta already fell back to the full repair (persisted).

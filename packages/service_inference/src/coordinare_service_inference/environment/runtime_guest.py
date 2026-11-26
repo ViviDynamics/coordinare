@@ -38,10 +38,19 @@ def binfmt_entry(guest_platform: str) -> str | None:
     return f':qemu-{arch}:M::{escape}:{mask}:{INTERPRETER_DIR}/qemu-{arch}-static:OCF'
 
 
-def cloud_configuration(*, repo: Path, cache: Path, scratch: Path, readonly: bool, guest_platform: str | None = None) -> str:
+def _shares(repo: Path, cache: Path, scratch: Path, tmpdir: Path | None, *, cache_readonly: bool) -> list[tuple[str, Path, bool]]:
+    """The carrier directories the guest mounts at their own paths, so a Docker bind mount of any of them is the same
+    directory in the guest daemon. The commands' TMPDIR is one: nare-native-043's sandbox tests bind-mounted a mkdtemp
+    directory, which the guest, whose /tmp is its own, served as an empty root-owned directory."""
+    shares = [('repo', repo, False), ('cache', cache, cache_readonly), ('scratch', scratch, False)]
+    return [*shares, ('tmpdir', tmpdir, False)] if tmpdir is not None else shares
+
+
+def cloud_configuration(*, repo: Path, cache: Path, scratch: Path, readonly: bool, guest_platform: str | None = None,
+                        tmpdir: Path | None = None) -> str:
     mounts = []
-    for tag, path, ro in [('repo', str(repo), False), ('cache', str(cache), readonly),
-                          ('scratch', str(scratch), False), ('control', '/run/coordinare-runtime-control', True)]:
+    shares = [(tag, str(path), ro) for tag, path, ro in _shares(repo, cache, scratch, tmpdir, cache_readonly=readonly)]
+    for tag, path, ro in [*shares, ('control', '/run/coordinare-runtime-control', True)]:
         quoted = shlex.quote(path)
         mounts.append(f'mkdir -p {quoted}; mount -t 9p -o trans=virtio,version=9p2000.L' + (',ro' if ro else '') + f' {tag} {quoted}')
     script = '\n'.join([
@@ -99,7 +108,7 @@ def accelerator_arguments(*, kvm: bool) -> list[str]:
 
 def qemu_arguments(spec: RuntimeSpec, bundle: RuntimeBundleInputs, *, disk: Path, seed: Path,
                    repo: Path, cache: Path, scratch: Path, control: Path, install: bool,
-                   carrier_platform: str | None = None, kvm_usable: bool = False) -> list[str]:
+                   carrier_platform: str | None = None, kvm_usable: bool = False, tmpdir: Path | None = None) -> list[str]:
     forwarding = [f'hostfwd=tcp:127.0.0.1:{spec.policy.control_port}-:22']
     forwarding.extend(f'hostfwd=tcp:127.0.0.1:{port.outer_port}-:{port.guest_port}' for port in spec.endpoints)
     # KVM only helps a guest of the carrier's own architecture; a cross-architecture guest stays on TCG.
@@ -113,8 +122,7 @@ def qemu_arguments(spec: RuntimeSpec, bundle: RuntimeBundleInputs, *, disk: Path
     if bundle.guest_platform == 'linux/aarch64':
         # KVM cannot emulate a different CPU model, so a same-architecture guest runs the host's own.
         arguments += ['-M', 'virt', '-cpu', 'host' if kvm else 'cortex-a72']
-    for tag, path, readonly in [('repo', repo, False), ('cache', cache, not install),
-                                 ('scratch', scratch, False), ('control', control, True)]:
+    for tag, path, readonly in [*_shares(repo, cache, scratch, tmpdir, cache_readonly=not install), ('control', control, True)]:
         # QEMU's comma-delimited option syntax escapes literal commas by doubling.
         arguments += ['-virtfs', 'local,path=' + str(path).replace(',', ',,')
                       + f',mount_tag={tag},security_model=none' + (',readonly=on' if readonly else '')]
