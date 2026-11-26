@@ -36,6 +36,9 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+#: The longest output_tail a turn result carries.
+_TAIL_CHARS = 4000
+
 # Read timeout for one model call. 300 s killed the first live QA run: a
 # reasoning model producing a doubled 6000-token plan budget needs longer
 # than that at the on-prem host's generation rate. Connect stays short so a dead
@@ -362,15 +365,17 @@ def build_agent_turn_runner(
         wall_ms = int((time.monotonic() - started_at) * 1000)
 
         if final_status and final_status.state == "blocked":
-            # 383: an error that keeps the questions (and what the agent wrote
-            # before asking), so a caller can hand them back on its retry.
+            # 383: an error that keeps the questions, so a caller can hand them
+            # back on its retry. The prefix and questions come first and are never
+            # cut; any output a backend reported fills the space left after them.
             questions = "; ".join(final_status.questions) or "no question given"
-            asked = f"{BLOCKED_TURN_PREFIX}{questions}"
-            if output_tail:
-                asked = f"{asked}\n\n{output_tail}"
+            asked = f"{BLOCKED_TURN_PREFIX}{questions}"[:_TAIL_CHARS]
+            room = _TAIL_CHARS - len(asked) - 2
+            if output_tail and room > 0:
+                asked = f"{asked}\n\n{output_tail[-room:]}"
             return {
                 "exit_state": "error",
-                "output_tail": asked[-4000:],
+                "output_tail": asked,
                 "changed_paths": changed_paths,
                 "wall_ms": wall_ms,
                 "harness_commits": harness_commits,

@@ -89,6 +89,8 @@ class FakeBackend:
             return BackendStatus(state="error", error_reason="backend failed")
         if self.behavior == "blocked":
             return BackendStatus(state="blocked", questions=["Which database?", "Keep the old API?"])
+        if self.behavior == "blocked_long":
+            return BackendStatus(state="blocked", questions=["Which database?"], output="x" * 6000)
         if self.behavior == "timeout":
             return BackendStatus(state="working")
         return BackendStatus(state="working")
@@ -486,3 +488,21 @@ async def test_a_blocked_turn_survives_a_failing_stop(stand, temp_git_repo):
     result = await asyncio.wait_for(runner({"persona": "p"}, timeout_s=30.0), timeout=10.0)
     assert result["exit_state"] == "error"
     assert "Which database?" in result["output_tail"]
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_turn_keeps_its_prefix_and_question_past_a_long_output(stand, temp_git_repo):
+    """Copilot on #385: slicing the combined text from the left dropped the prefix,
+    so the implementer no longer saw the turn had asked."""
+    from performer.workflows.base import BLOCKED_TURN_PREFIX
+
+    backend = FakeBackend(behavior="blocked_long")
+    runner = build_agent_turn_runner(
+        stand=stand,
+        score=_make_score(workspace_path=str(temp_git_repo)),
+        backend_name="example",
+        backend_factory=lambda _name: backend,
+    )
+    result = await asyncio.wait_for(runner({"persona": "p"}, timeout_s=30.0), timeout=10.0)
+    assert result["output_tail"].startswith(f"{BLOCKED_TURN_PREFIX}Which database?")
+    assert len(result["output_tail"]) <= 4000
