@@ -675,7 +675,8 @@ class PerformerRoleConfig(BaseModel):
     defaults (e.g. agent_transport, agent_executable, transport_timeout_seconds).
     """
 
-    backend: str = "opencode"
+    # 382: nare is the harness a role runs when it names none.
+    backend: str = "nare"
     # 164: optional role workflow. None (default) means the pre-164 path —
     # one backend invocation plus role post-processing — so existing configs
     # are unaffected (FR-005). A name here selects a multi-step workflow that

@@ -70,12 +70,15 @@ Have these ready:
   for fine-grained permissions. Complete the [branch protection setup](#branch-protection)
   before dispatch: the Coordinare identity must be allowed to push to the protected
   branch for squash merge to succeed.
-- One harness: Codex (`codex`), Claude Code (`claude`) or OpenCode (`opencode`).
-  For local mode, install git and the CLI on PATH and authenticate the CLI. Codex and Claude
-  Code can reuse a harness login; OpenCode's native provider requires
+- One harness. nare (`nare`) is the default; Codex (`codex`), Claude Code
+  (`claude`) and OpenCode (`opencode`) also work. For local mode, install git and
+  the CLI on PATH. nare installs with
+  `uv tool install "https://github.com/ViviDynamics/nare/releases/download/<version>/nare-<version>-py3-none-any.whl"`
+  and reads `ANTHROPIC_API_KEY` (or the key of the endpoint you configure). Codex and
+  Claude Code can reuse a harness login; OpenCode's native provider requires
   `OPENAI_API_KEY`. You can supply a model API key during setup instead.
-  [Docker mode](docs/docker-mode-setup.md) installs the harness in containers
-  and requires an API key for native providers.
+  [Docker mode](docs/docker-mode-setup.md) runs the harness in containers, where nare
+  is preinstalled, and requires an API key for native providers.
 
 ### 2. Install
 

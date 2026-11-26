@@ -315,7 +315,7 @@ human_reviewers:                    # Required. GitHub logins who can approve PR
 #   curator     — proposes ready issues to the board backlog (separate from lifecycle)
 #
 # Available backends: codex | claude_code | opencode | opencode_compat | junie | hermes | nare
-#   nare             : nare agent harness, in every performer image; anthropic rail by default, the
+#   nare             : the default; nare agent harness, in every performer image; anthropic rail by default, the
 #                      role's endpoint kind picks openai or a self-hosted gateway instead
 #   codex            — OpenAI Codex CLI; needs OPENAI_API_KEY in coordinare environment
 #   claude_code      — Anthropic Claude Code CLI; needs ANTHROPIC_API_KEY in coordinare environment
@@ -355,7 +355,7 @@ modes:
 
 performers:
   default:
-    backend: codex                  # inherited by all roles below unless overridden
+    backend: nare                   # inherited by all roles below unless overridden (the default)
     mode: single-gpt54              # 080: model selection via a mode reference
     effort: medium                  # "low" | "medium" | "high"
     temperature: 0.2                # 0.0–1.0

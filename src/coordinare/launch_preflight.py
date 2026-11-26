@@ -391,6 +391,12 @@ def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
         binary = HARNESS_COMMANDS.get(harness, harness)
         cli_executable = shutil.which(binary)
         fix = f"Install and authenticate {binary}, ensure it is on PATH, or correct performers.default.backend (harness for a preset)."
+        if harness == "nare":
+            fix = (
+                "Install nare (uv tool install the release wheel from "
+                "https://github.com/ViviDynamics/nare/releases), or name another backend "
+                "in performers.default.backend (harness for a preset)."
+            )
         if cli_executable is None:
             results.append(
                 CheckResult(
@@ -452,7 +458,7 @@ def _container_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
             and resolved.max_concurrency > 0
         }
         if not harnesses:
-            harnesses = {endpoint.env.get("BACKEND", "opencode").replace("-", "_").lower()}
+            harnesses = {endpoint.env.get("BACKEND", "nare").replace("-", "_").lower()}
         for harness in sorted(harnesses):
             name = "coordinare-preflight-" + uuid.uuid4().hex
             binary = HARNESS_COMMANDS.get(harness, harness)

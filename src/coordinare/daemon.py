@@ -1403,13 +1403,15 @@ class _BootstrapPollState:
 class _BootstrapBackend:
     """Resolved performer-backend parameters for one env_bootstrap dispatch."""
 
-    backend: str = "codex"
+    backend: str = "nare"
     model: str | None = None
     effort: str | None = None
     temperature: float | None = None
     base_url: str | None = None
     api_key_env: str | None = None
     auth_token_env: str | None = None
+    # 382: nare picks its provider rail from the endpoint kind (see #360).
+    endpoint_kind: str | None = None
     orchestration: dict[str, Any] | None = None
 
 
@@ -4845,7 +4847,7 @@ class CoordinareDaemon:
         global_cfg = getattr(coordinare_cfg, "global_config", None) or cfg
         if sym_cfg is not None and hasattr(sym_cfg, "effective_config") and global_cfg is not None:
             cfg = sym_cfg.effective_config(global_cfg)
-        persona, backend, model_block = "", "codex", {}
+        persona, backend, model_block = "", "nare", {}
         workflow_fields: dict[str, Any] = {}
         if cfg is not None:
             try:
@@ -4930,7 +4932,7 @@ class CoordinareDaemon:
             persona = get_effective_instructions(role, cfg.personas)
         except Exception:
             persona = ""
-        backend = str(getattr(role_cfg, "backend", "") or "hermes")
+        backend = str(getattr(role_cfg, "backend", "") or "nare")
         try:
             model_block = cfg.resolve_performer_dispatch_model(role)
         except Exception:
@@ -5272,8 +5274,8 @@ class CoordinareDaemon:
     ) -> tuple[_BootstrapBackend, Any]:
         """Resolve backend for env_bootstrap from the symphony's role config so
         the performer matches the same agent backend used for implementing/etc.
-        Default to "codex" (matches coordinare-performer:full image) when no
-        role config is available.  Also returns the effective config the
+        Default to "nare" (in every performer image, #382) when no role config
+        is available.  Also returns the effective config the
         resolution used (the symphony override when present, else the global
         config), for the workflow-override block."""
 
@@ -5315,6 +5317,7 @@ class CoordinareDaemon:
                     resolved.auth_token_env = model_resolution.get("auth_token_env") or getattr(
                         rc, "auth_token_env", None,
                     )
+                    resolved.endpoint_kind = model_resolution.get("endpoint_kind")
                     if hasattr(cfg, "resolve_performer_orchestration"):
                         orchestration = cfg.resolve_performer_orchestration(_probe_role)
                         if isinstance(orchestration, dict):
@@ -5486,6 +5489,8 @@ class CoordinareDaemon:
             dispatch_dict["api_key_env"] = bootstrap_api_key_env
         if bootstrap_auth_token_env:
             dispatch_dict["auth_token_env"] = bootstrap_auth_token_env
+        if bootstrap.endpoint_kind:
+            dispatch_dict["endpoint_kind"] = bootstrap.endpoint_kind
         if bootstrap.orchestration:
             dispatch_dict["orchestration"] = bootstrap.orchestration
         logger.info(

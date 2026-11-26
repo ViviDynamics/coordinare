@@ -1,0 +1,100 @@
+# =============================================================================
+# Coordinare Configuration Example: nare backend
+# =============================================================================
+#
+# nare is the default harness: a role that names no backend runs nare. This
+# file spells the choice out and shows both of nare's provider rails. See
+# config.example.yaml for the full reference.
+#
+# How nare runs under coordinare:
+#   - One `nare run` process per card (one per resume turn), speaking nare's
+#     machine contract 3 over JSONL. The task and persona travel by file.
+#   - The performer base image installs a pinned nare release, so containerized
+#     performers need nothing extra. For local (solo) runs, install nare on PATH:
+#       uv tool install "https://github.com/ViviDynamics/nare/releases/download/<version>/nare-<version>-py3-none-any.whl"
+#   - The role's endpoint picks nare's rail: an `anthropic` endpoint uses the
+#     anthropic rail and ANTHROPIC_API_KEY; an `openai` endpoint uses the openai
+#     rail and OPENAI_API_KEY; a self-hosted endpoint (litellm, vllm, ollama)
+#     uses the openai rail at its base_url with its auth_env as the bearer.
+#   - nare enforces max_tool_calls itself, so persona scope caps work.
+# =============================================================================
+
+
+# --- GitHub ---
+
+github_org: "your-org"
+github_token: "${COORDINARE_GITHUB_TOKEN}"
+github_auth: "pat"
+
+human_reviewers:
+  - "your-github-handle"
+
+
+# --- Symphonies ---
+
+symphonies:
+  - name: my-project
+    github_project_number: 1
+
+
+# --- Containerized performer ---
+#
+# ANTHROPIC_API_KEY (or the key your endpoint names) must be exported in the
+# coordinare host environment; coordinare injects it into each job.
+
+performer_endpoints:
+  - id: nare-ephemeral
+    mode: ephemeral
+    roles:
+      - assessor
+      - architect
+      - implementer
+      - reviewer
+      - security
+      - qa
+      - tech_writer
+      - closer
+      - env_bootstrap
+    image: coordinare-performer:full
+    env:
+      BACKEND: nare
+
+
+# --- Model catalogs ---
+
+endpoints:
+  - name: anthropic
+    kind: anthropic
+    auth_env: ANTHROPIC_API_KEY
+  # A self-hosted OpenAI-compatible gateway, for roles that should run there:
+  # - {name: litellm, kind: litellm, base_url: http://localhost:4000/v1, auth_env: LITELLM_PROXY_AUTH_TOKEN}
+
+model_endpoints:
+  - {name: sonnet, endpoint: anthropic, model: claude-sonnet-5}
+  # - {name: local-qwen, endpoint: litellm, model: local/qwen3.6:35b}
+
+modes:
+  - {name: single-sonnet, strategy: single, tool: sonnet}
+  # - {name: single-local, strategy: single, tool: local-qwen}
+
+
+# --- Performers ---
+#
+# Every role inherits `default`. `backend: nare` is what an unset backend
+# means already; it is written out here so the file reads on its own.
+
+performers:
+  default:
+    backend: nare
+    mode: single-sonnet
+    effort: medium
+    max_tokens: 8192
+  assessor: {}
+  architect: {}
+  implementer: {}
+  reviewer: {}
+  security: {}
+  qa: {}
+  tech_writer: {}
+  closer: {}
+  env_bootstrap: {}
