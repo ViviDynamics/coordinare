@@ -370,7 +370,7 @@ def build_agent_turn_runner(
                 asked = f"{asked}\n\n{output_tail}"
             return {
                 "exit_state": "error",
-                "output_tail": asked[-4000:] if len(asked) > 4000 else asked,
+                "output_tail": asked[-4000:],
                 "changed_paths": changed_paths,
                 "wall_ms": wall_ms,
                 "harness_commits": harness_commits,
