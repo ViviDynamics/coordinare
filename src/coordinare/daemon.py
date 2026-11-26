@@ -5062,7 +5062,7 @@ class CoordinareDaemon:
         from coordinare.services.persona_service import get_effective_instructions
 
         cfg = self._state.get("config")
-        persona, backend, model_block = "", "hermes", {}
+        persona, backend, model_block = "", "nare", {}
         role_workflow_env: dict[str, str] = {}
         if cfg is not None:
             try:

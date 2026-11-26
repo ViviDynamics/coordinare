@@ -122,6 +122,10 @@ def _choose_project(questions: Questions) -> None:
     init_probes.verify_board(questions.answers)
 
 
+#: Harnesses with no login of their own to fall back on: a native provider needs a key.
+_KEY_ONLY_HARNESSES = frozenset({"nare", "opencode"})
+
+
 def _choose_harness(questions: Questions, secrets: dict[str, str]) -> None:
     init_stage.set("model_endpoint")
     harness = questions.ask("harness", "Harness (installed CLIs preferred)")
@@ -133,11 +137,15 @@ def _choose_harness(questions: Questions, secrets: dict[str, str]) -> None:
     questions.ask("endpoint", "Endpoint URL (none uses the native provider)")
     key = os.environ.get(credential) or secrets.get(credential, "")
     questions.answers.setdefault("api_key", key)
-    label = (f"{credential} (required for native providers in Docker)"
-             if questions.answers.get("run_mode") == "docker" else f"{credential} (none uses the harness login)")
+    if questions.answers.get("run_mode") == "docker":
+        label = f"{credential} (required for native providers in Docker)"
+    elif harness in _KEY_ONLY_HARNESSES:
+        label = f"{credential} (required for the native provider)"
+    else:
+        label = f"{credential} (none uses the harness login)"
     questions.ask("api_key", label, secret=True)
-    if harness == "opencode" and not questions.answers.get("api_key") and not questions.answers.get("endpoint"):
-        fail("api_key is required for the opencode native provider. Set OPENAI_API_KEY or --api-key.")
+    if harness in _KEY_ONLY_HARNESSES and not questions.answers.get("api_key") and not questions.answers.get("endpoint"):
+        fail(f"api_key is required for the {harness} native provider. Set {credential} or --api-key.")
     if questions.answers.get("run_mode") == "docker":
         if not questions.answers.get("api_key") and not questions.answers.get("endpoint"):
             fail("Docker mode requires a model API key for a native provider. Set " + credential + " or supply api_key; host harness login files are not mounted.")

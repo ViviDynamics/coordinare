@@ -385,3 +385,14 @@ async def test_a_missing_cache_parent_is_not_added(tmp_path, monkeypatch) -> Non
     recorded = _capture_exec(monkeypatch)
     await NareBackend().start(_stand(tmp_path), _score(env_cache_path=str(tmp_path / "nope" / "c")))
     assert "--add-root" not in recorded[0]
+
+
+@pytest.mark.asyncio
+async def test_a_consumer_role_gets_no_writable_cache_root(tmp_path, monkeypatch) -> None:
+    """Only env_bootstrap writes the cache; a consumer's added root would reach
+    every symphony's cache under the same parent in local mode."""
+    recorded = _capture_exec(monkeypatch)
+    cache_parent = tmp_path / "devenv"
+    cache_parent.mkdir()
+    await NareBackend().start(_stand(tmp_path), _score(role="implementer", env_cache_path=str(cache_parent / "c")))
+    assert "--add-root" not in recorded[0]

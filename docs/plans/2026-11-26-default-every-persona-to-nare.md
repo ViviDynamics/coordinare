@@ -23,3 +23,4 @@ already carry it), and env bootstrap's own conversation loop (#376).
 - [x] 3. Tests that pinned opencode as the default now pin nare.
 - [x] 4. Starter configs, `config.example.nare.yaml`, README and first-launch docs.
 - [x] 5. env_bootstrap on nare reaches its cache: nare 2026.11.111 (`--add-root`, ViviDynamics/nare#319), the cache's parent passed as an added root: `test_env_bootstrap_file_tools_reach_the_cache`, `test_an_env_bootstrap_run_writes_into_its_cache`.
+- [x] 6. Review round 1: the wiki-init fallback, service inference keys on a nare bootstrap, init refuses nare with no key and no endpoint, the cache root only for env_bootstrap, run-performer's usage text, the base-image capability test.

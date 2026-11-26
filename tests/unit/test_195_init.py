@@ -167,6 +167,8 @@ def test_interactive_defaults_with_stubbed_input(
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setenv("GH_TOKEN", "private-token")
     monkeypatch.setenv("OPENAI_API_KEY", "private-api-key")
+    # 382: the detected default harness is nare, which reads ANTHROPIC_API_KEY.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "private-api-key")
     responses = iter(["example/demo", "", "", "", "", "", "", "", "", ""])
     prompts: list[str] = []
 
@@ -189,6 +191,8 @@ def test_a_saved_credential_can_be_replaced_at_the_prompt(
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setenv("GH_TOKEN", "stale-token")
     monkeypatch.setenv("OPENAI_API_KEY", "private-api-key")
+    # 382: the detected default harness is nare, which reads ANTHROPIC_API_KEY.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "private-api-key")
     responses = iter(["example/demo", "", "", "", "", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt: next(responses))
     typed = {"GitHub": "fresh-token"}

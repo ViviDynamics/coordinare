@@ -82,8 +82,9 @@ async def test_dockerfile_base_advertises_universal_capabilities(require_docker:
 
         status_data = await wait_for_status(container_id)
 
-        # Check that backends list is empty (base has no backend CLIs)
-        assert status_data.get("capabilities", {}).get("backends", []) == []
+        # The base image carries one backend CLI, nare, the default harness
+        # (#360/#382); every other CLI is installed at start by entrypoint.sh.
+        assert status_data.get("capabilities", {}).get("backends", []) == ["nare"]
 
         # Check that universal tool flags are present (git, python, shell, etc.)
         # Base should have git, node, shell; no backend-specific flags

@@ -168,7 +168,11 @@ class NareBackend:
         }
         self._max_tool_calls = getattr(score, "max_tool_calls", None)
         self._tool_calls_used = 0
-        self._added_roots = _cache_roots(getattr(score, "env_cache_path", "") or "")
+        # Only env_bootstrap writes the cache; consumers read it through activate.sh.
+        self._added_roots = (
+            _cache_roots(getattr(score, "env_cache_path", "") or "")
+            if score.role == "env_bootstrap" else []
+        )
         # 223: a restart after a format failure reuses this instance. It gets a
         # new session file, and get_status() must not return the previous run.
         self._remove_run_dir()

@@ -2266,6 +2266,13 @@ class HTTPPerformerService:
         role_api_key_env = card_context.get("api_key_env")
         role_auth_token_env = card_context.get("auth_token_env")
         if bootstrap_backend == "nare":
+            # Service inference in the bootstrap performer reads the vendor keys
+            # whatever rail nare rides (main._run_service_inference), so they
+            # stay as before; the endpoint's own key then wins for nare.
+            for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+                val = os.environ.get(key, "")
+                if val:
+                    secrets[key] = val
             _inject_nare_secrets(secrets, card_context)
         elif bootstrap_backend == "claude_code":
             _inject_claude_code_secrets(
