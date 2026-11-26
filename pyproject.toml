@@ -96,6 +96,7 @@ include = ["/src/coordinare", "/pyproject.toml", "/README.md", "/LICENSE", "/NOT
 "config.example.opencode.yaml" = "coordinare/data/config.example.opencode.yaml"
 "config.example.opencode_compat.yaml" = "coordinare/data/config.example.opencode_compat.yaml"
 "config.example.pi.yaml" = "coordinare/data/config.example.pi.yaml"
+"config.example.nare.yaml" = "coordinare/data/config.example.nare.yaml"
 
 # T003: Ruff configuration
 [tool.ruff]

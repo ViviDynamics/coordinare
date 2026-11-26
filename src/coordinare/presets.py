@@ -7,13 +7,15 @@ from typing import Any
 
 PRESET_NAMES = ("solo", "containers")
 # Model choices match the full reference examples. Operators can replace the catalogs.
+# The first entry is the default harness (#382) and the one init offers first.
 HARNESS_DEFAULTS = {
+    # nare's own default rail (anthropic) and default model.
+    "nare": ("anthropic", "ANTHROPIC_API_KEY", "claude-sonnet-5"),
     "codex": ("openai", "OPENAI_API_KEY", "gpt-5.4"),
     "claude_code": ("anthropic", "ANTHROPIC_API_KEY", "claude-sonnet-4-6"),
     "opencode": ("openai", "OPENAI_API_KEY", "gpt-5.4"),
-    # nare's own default rail (anthropic) and default model.
-    "nare": ("anthropic", "ANTHROPIC_API_KEY", "claude-sonnet-5"),
 }
+DEFAULT_HARNESS = next(iter(HARNESS_DEFAULTS))
 HARNESS_COMMANDS = {
     "codex": "codex",
     "claude_code": "claude",
@@ -54,7 +56,7 @@ def expand_preset(raw: dict[str, Any]) -> dict[str, Any]:
     if name not in PRESET_NAMES:
         msg = f"Unknown preset {name!r}. Set preset to solo or containers."
         raise ValueError(msg)
-    harness = raw.get("harness")
+    harness = raw.get("harness", DEFAULT_HARNESS)
     if not isinstance(harness, str) or harness not in HARNESS_DEFAULTS:
         msg = "Set harness to nare, codex, claude_code or opencode, or use the full config reference."
         raise ValueError(msg)

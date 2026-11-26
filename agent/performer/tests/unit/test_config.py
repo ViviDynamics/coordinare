@@ -9,7 +9,7 @@ from performer.config import Settings, get_settings
 class TestSettings:
     def test_default_agent_backend(self) -> None:
         s = Settings()
-        assert s.AGENT_BACKEND == "opencode"
+        assert s.AGENT_BACKEND == "nare"  # 382: the default harness
 
     def test_default_agent_timeout(self) -> None:
         s = Settings()

@@ -19,7 +19,7 @@ from coordinare.launch_preflight import (
     check_harnesses,
     check_token_and_repo,
 )
-from coordinare.presets import HARNESS_COMMANDS, HARNESS_DEFAULTS
+from coordinare.presets import DEFAULT_HARNESS, HARNESS_COMMANDS, HARNESS_DEFAULTS
 
 if TYPE_CHECKING:
     from coordinare.doctor import CheckResult
@@ -63,7 +63,7 @@ def detected_defaults(saved_token: str = "") -> dict[str, Any]:
     match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+?)(?:\.git)?", remote)
     harnesses = [name for name in HARNESS_DEFAULTS if shutil.which(HARNESS_COMMANDS[name])]
     return {"github_token": token, "repository": match[1] if match else "",
-            "harness": harnesses[0] if harnesses else "codex"}
+            "harness": harnesses[0] if harnesses else DEFAULT_HARNESS}
 
 
 def require_checks(results: list[CheckResult]) -> None:
@@ -81,7 +81,7 @@ def probe_config(answers: dict[str, Any]) -> ProjectConfiguration:
     owner, _, repo = (answers.get("repository") or "example/setup").partition("/")
     config = ProjectConfiguration(
         preset="containers" if answers.get("run_mode") == "docker" else "solo",
-        harness=answers.get("harness", "codex"), github_org=owner, github_repo=repo,
+        harness=answers.get("harness", DEFAULT_HARNESS), github_org=owner, github_repo=repo,
         github_project_number=answers.get("project_number") or 1,
         github_token=answers["github_token"],
         human_reviewers=["setup"],

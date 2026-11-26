@@ -3,8 +3,9 @@
 Use the [Quick Start](quickstart.md) to install a release and run `coordinare init`.
 Init writes configuration and private credentials, checks the setup and offers a
 login service or foreground start. The installer already bundles the performer.
-Local Codex and Claude Code can use an existing harness login when no API key is
-supplied; OpenCode's native provider needs `OPENAI_API_KEY`. Docker native
+nare is the default harness and needs an API key for its provider (`ANTHROPIC_API_KEY`
+by default). Local Codex and Claude Code can use an existing harness login when no API
+key is supplied; OpenCode's native provider needs `OPENAI_API_KEY`. Docker native
 providers need an API key because host harness logins are not mounted.
 
 Create a GitHub Project Status field with To Do (or Ready), In Progress, In Review,
