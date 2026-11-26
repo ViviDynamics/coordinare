@@ -22,3 +22,4 @@ already carry it), and env bootstrap's own conversation loop (#376).
 - [x] 2. A nare bootstrap gets its rail from the endpoint: `test_a_nare_bootstrap_gets_its_rail_from_the_endpoint`.
 - [x] 3. Tests that pinned opencode as the default now pin nare.
 - [x] 4. Starter configs, `config.example.nare.yaml`, README and first-launch docs.
+- [x] 5. env_bootstrap on nare reaches its cache: nare 2026.11.111 (`--add-root`, ViviDynamics/nare#319), the cache's parent passed as an added root: `test_env_bootstrap_file_tools_reach_the_cache`, `test_an_env_bootstrap_run_writes_into_its_cache`.
