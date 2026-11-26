@@ -1742,7 +1742,7 @@ def test_build_env_bootstrap_payload_synthesizes_workspace(monkeypatch) -> None:
     assert payload.role == "env_bootstrap"
     assert str(payload.repo_url).startswith("https://github.com/VividyNamics/vivi-website")
     assert payload.branch.startswith("env-bootstrap-")
-    assert payload.backend == "claude_code"
+    assert payload.backend == "nare"  # 382: the default harness
     assert "/devenv/website-abc123" in payload.persona
     assert payload.metadata["environment_manifest"]["install"][0]["argv"] == ["npm", "install"]
     assert payload.metadata["env_spec_contents"] == card_context["env_spec_contents"]

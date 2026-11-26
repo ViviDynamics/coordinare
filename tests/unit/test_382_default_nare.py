@@ -124,3 +124,48 @@ def test_a_nare_bootstrap_gets_its_rail_from_the_endpoint(monkeypatch) -> None:
     # The rail travels in metadata, which becomes the performer's Score.
     assert payload.metadata["endpoint_kind"] == "litellm"
     assert payload.metadata["base_url"] == "http://gateway/v1"
+
+
+def test_the_wiki_init_seed_run_falls_back_to_nare() -> None:
+    from coordinare.daemon import CoordinareDaemon
+
+    daemon = CoordinareDaemon.__new__(CoordinareDaemon)
+    daemon._state = {}
+    assert daemon._build_wiki_init_card_context("demo", "org", "demo")["backend"] == "nare"
+
+
+def test_a_nare_bootstrap_keeps_the_key_service_inference_reads(monkeypatch) -> None:
+    """Service inference in the bootstrap performer reads ANTHROPIC_API_KEY on its
+    default provider, whatever rail the harness itself rides."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("PROXY_KEY", "bearer")
+    payload = _bootstrap_payload(
+        backend="nare", endpoint_kind="litellm", base_url="http://gateway/v1",
+        auth_token_env="PROXY_KEY",
+    )
+    secrets = {k: v.get_secret_value() for k, v in payload.secrets.items()}
+    assert secrets["ANTHROPIC_API_KEY"] == "anthropic-key"
+    assert secrets["OPENAI_API_KEY"] == "bearer"
+
+
+def _harness_questions(monkeypatch, *, api_key: str = "", endpoint: str = ""):
+    from coordinare import init_answers
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(init_answers.init_probes, "verify_harness", lambda _answers: None)
+    supplied = {"harness": "nare", "model": "m", "endpoint": endpoint, "api_key": api_key, "run_mode": "local"}
+    return init_answers, init_answers.Questions(supplied, {}, interactive=False)
+
+
+def test_init_refuses_nare_with_no_key_and_no_endpoint(monkeypatch) -> None:
+    """nare has no harness login to fall back on."""
+    from coordinare.init_files import SetupError
+
+    init_answers, questions = _harness_questions(monkeypatch)
+    with pytest.raises(SetupError, match="nare"):
+        init_answers._choose_harness(questions, {})
+
+
+def test_init_accepts_nare_with_a_key(monkeypatch) -> None:
+    init_answers, questions = _harness_questions(monkeypatch, api_key="sk-test")
+    init_answers._choose_harness(questions, {})
