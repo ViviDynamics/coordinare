@@ -123,6 +123,14 @@ INVOCATION_SOURCES = (
     "accepts). Read where the repository calls the command before you write a check that calls it, and keep every "
     "required argument. When the repository never shows an invocation, use only what the tool's own documentation in "
     "the repository or a probe of its help output shows.")
+# nare-native-040: the scope criterion named "the editable root package", and the check author spent four coverage
+# revisions asserting an editable install under the checkout, which the clean consumer's copy install cannot satisfy.
+INSTALL_MODE_OBLIGATIONS = (
+    "A criterion that names how a developer installs the project (an editable or development install linked to the "
+    "checkout) states the outcome it serves, not a mode to reproduce: here the project is installed into {cache} as a "
+    "copy for the clean consumer. Verify that outcome (the project imports and its commands run from the installed "
+    "environment, built from the pinned source), never the install mode, the package's file path, or a version "
+    "string read from a file the build computes it from.")
 # nare-native-029, -031 and -037: installs extracted a release archive with a standard-library zip module, which drops
 # the executable bit, and the extracted installer or program failed with Permission denied, a repair each time.
 ARCHIVE_MODES = (
@@ -193,7 +201,7 @@ _MANIFEST_RULES = (
     'For shell-local variables assigned inside bash -c, use $name rather than ${name}. '
     f'{LOCAL_CREDENTIAL_AUTHORING} '
     f'{ADVISORY_AUDIT_CHECKS} '
-    f'{SAMPLE_TEST_CHECKS} {INVOCATION_SOURCES} {LINK_GUIDANCE} {ARCHIVE_MODES} '
+    f'{SAMPLE_TEST_CHECKS} {INVOCATION_SOURCES} {INSTALL_MODE_OBLIGATIONS} {LINK_GUIDANCE} {ARCHIVE_MODES} '
     # nare-native-027: a required install ran a full benchmark verify for 48 minutes, left containers behind, and
     # every execution repair went to install steps, so no check ever ran.
     'Install commands only install and build what the checks use: never run a test, verification or benchmark suite '
