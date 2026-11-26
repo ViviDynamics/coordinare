@@ -87,6 +87,8 @@ class FakeBackend:
             if self.poll_count < self.polls_until_done:
                 return BackendStatus(state="working")
             return BackendStatus(state="error", error_reason="backend failed")
+        if self.behavior == "blocked":
+            return BackendStatus(state="blocked", questions=["Which database?", "Keep the old API?"])
         if self.behavior == "timeout":
             return BackendStatus(state="working")
         return BackendStatus(state="working")
@@ -443,3 +445,23 @@ def test_backend_names_are_normalised_like_main_py():
     with pytest.raises(RuntimeError):
         asyncio.run(runner({"persona": "x", "kind": "tests", "milestone_index": 0}, timeout_s=1))
     assert seen == ["claude_code"]
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_backend_ends_the_turn_at_once(stand, temp_git_repo):
+    """#383: a backend that asks instead of finishing (nare's ask tool) must not
+    hold the turn until its wall-clock timeout; there is no board to answer on."""
+    backend = FakeBackend(behavior="blocked")
+    runner = build_agent_turn_runner(
+        stand=stand,
+        score=_make_score(workspace_path=str(temp_git_repo)),
+        backend_name="example",
+        backend_factory=lambda _name: backend,
+    )
+
+    result = await asyncio.wait_for(runner({"persona": "p"}, timeout_s=30.0), timeout=10.0)
+
+    assert result["exit_state"] == "error"
+    assert "Which database?" in result["output_tail"]
+    assert "Keep the old API?" in result["output_tail"]
+    assert backend.poll_count == 1

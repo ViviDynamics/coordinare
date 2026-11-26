@@ -276,6 +276,12 @@ def build_agent_turn_runner(
 
                 if status.state in {"done", "error"}:
                     break
+                if status.state == "blocked":
+                    # 383: the agent asked instead of finishing (nare's ask tool).
+                    # A workflow turn has no board to answer on, so waiting would
+                    # only spend the turn's timeout.
+                    await backend.stop()
+                    break
 
                 await asyncio.sleep(poll_interval_s)
         except asyncio.CancelledError:
@@ -350,6 +356,18 @@ def build_agent_turn_runner(
             output_tail = output[-4000:] if len(output) > 4000 else output
 
         wall_ms = int((time.monotonic() - started_at) * 1000)
+
+        if final_status and final_status.state == "blocked":
+            # 383: an error that keeps the questions, so the workflow's retry
+            # budget applies and the run log says what the agent wanted.
+            questions = "; ".join(final_status.questions) or "no question given"
+            return {
+                "exit_state": "error",
+                "output_tail": f"agent asked instead of finishing: {questions}",
+                "changed_paths": changed_paths,
+                "wall_ms": wall_ms,
+                "harness_commits": harness_commits,
+            }
 
         if final_status and final_status.state == "error":
             return {
