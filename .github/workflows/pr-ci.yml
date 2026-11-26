@@ -40,6 +40,7 @@ jobs:
               - 'agent/performer/README.md'
               - 'agent/performer/src/**'
               - 'agent/performer/entrypoint.sh'
+              - 'agent/performer/nare-requirements.txt'
               - 'agent/performer/devenv-profile.sh'
               - 'agent/performer/.dockerignore'
               - 'agent/performer/Dockerfile.full.dockerignore'
