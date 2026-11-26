@@ -33,6 +33,7 @@ from performer.backends._card_docs import completed_documentation_prompt_section
 from performer.degeneracy import classify_file, format_refusal
 from performer.noise_paths import AGENT_CONFIG_DIRS
 from performer.test_results import TestSummary
+from performer.workflows.base import BLOCKED_TURN_PREFIX
 from performer.workflows.implementer import commits as git
 from performer.workflows.implementer.baseline import new_failures, run_tests
 from performer.workflows.implementer.scoping import scoped_command
@@ -578,6 +579,24 @@ async def _red_phase(
     raise MilestoneFailed(milestone.index, milestone.goal, "red was not observed: the tests did not fail for the right reason after one reprompt")
 
 
+def _failed_turn_excerpt(result: TurnResult) -> str:
+    """The retry's failure excerpt for a turn that did not finish.
+
+    383: a turn that asked a question gets it back with an instruction to
+    decide, since a workflow turn has no one to answer it; a retry told only
+    "the previous turn error" asks the same thing again.
+    """
+    tail = str(getattr(result, "output_tail", "") or "")
+    if tail.startswith(BLOCKED_TURN_PREFIX):
+        return (
+            f"The previous turn stopped to ask: {tail[len(BLOCKED_TURN_PREFIX):]}\n"
+            "You cannot ask questions in this run and no answer will come. Choose the "
+            "option the card and the code best support, state that assumption in your "
+            "commit message, and finish the work."
+        )
+    return f"the previous turn {result.exit_state}"
+
+
 async def _green_phase(
     ctx: RunContext,
     milestone: MilestonePlan,
@@ -596,7 +615,7 @@ async def _green_phase(
         record.implement_attempts.append(attempt)
         changed_all.update(changed)
         if result.exit_state != "done":
-            excerpt = f"the previous turn {result.exit_state}"
+            excerpt = _failed_turn_excerpt(result)
             persona_kind = "REPAIR_IMPLEMENT"
             continue
         # 379: scoped to this milestone's test files. regressions() is NOT

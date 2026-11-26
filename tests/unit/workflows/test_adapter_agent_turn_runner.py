@@ -465,3 +465,24 @@ async def test_a_blocked_backend_ends_the_turn_at_once(stand, temp_git_repo):
     assert "Which database?" in result["output_tail"]
     assert "Keep the old API?" in result["output_tail"]
     assert backend.poll_count == 1
+    assert backend.stopped
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_turn_survives_a_failing_stop(stand, temp_git_repo):
+    """The questions are the result; a backend whose stop() raises must not lose them."""
+    backend = FakeBackend(behavior="blocked")
+
+    async def _raise() -> None:
+        raise ProcessLookupError("already gone")
+
+    backend.stop = _raise
+    runner = build_agent_turn_runner(
+        stand=stand,
+        score=_make_score(workspace_path=str(temp_git_repo)),
+        backend_name="example",
+        backend_factory=lambda _name: backend,
+    )
+    result = await asyncio.wait_for(runner({"persona": "p"}, timeout_s=30.0), timeout=10.0)
+    assert result["exit_state"] == "error"
+    assert "Which database?" in result["output_tail"]

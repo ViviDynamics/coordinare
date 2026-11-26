@@ -26,7 +26,7 @@ import structlog
 
 from performer.backends.base import BackendStatus
 from performer.workflows import get_workflow
-from performer.workflows.base import SchemaViolation, WorkflowMetrics, WorkflowResult
+from performer.workflows.base import BLOCKED_TURN_PREFIX, SchemaViolation, WorkflowMetrics, WorkflowResult
 from performer.workflows.budget import ModelReply
 from performer.workflows.toolkit import Toolkit
 _GIT = shutil.which("git") or "git"  # 440: resolve the real git path once
@@ -279,8 +279,12 @@ def build_agent_turn_runner(
                 if status.state == "blocked":
                     # 383: the agent asked instead of finishing (nare's ask tool).
                     # A workflow turn has no board to answer on, so waiting would
-                    # only spend the turn's timeout.
-                    await backend.stop()
+                    # only spend the turn's timeout. The questions are the result,
+                    # so a stop that fails must not lose them.
+                    try:
+                        await backend.stop()
+                    except Exception as exc:
+                        log.warning("workflow.turn_stop_failed", error=str(exc))
                     break
 
                 await asyncio.sleep(poll_interval_s)
@@ -358,12 +362,15 @@ def build_agent_turn_runner(
         wall_ms = int((time.monotonic() - started_at) * 1000)
 
         if final_status and final_status.state == "blocked":
-            # 383: an error that keeps the questions, so the workflow's retry
-            # budget applies and the run log says what the agent wanted.
+            # 383: an error that keeps the questions (and what the agent wrote
+            # before asking), so a caller can hand them back on its retry.
             questions = "; ".join(final_status.questions) or "no question given"
+            asked = f"{BLOCKED_TURN_PREFIX}{questions}"
+            if output_tail:
+                asked = f"{asked}\n\n{output_tail}"
             return {
                 "exit_state": "error",
-                "output_tail": f"agent asked instead of finishing: {questions}",
+                "output_tail": asked[-4000:] if len(asked) > 4000 else asked,
                 "changed_paths": changed_paths,
                 "wall_ms": wall_ms,
                 "harness_commits": harness_commits,

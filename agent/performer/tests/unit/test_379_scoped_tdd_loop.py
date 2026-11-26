@@ -418,3 +418,35 @@ async def test_the_baseline_uses_the_configured_timeout_not_a_hardcoded_600(tmp_
     await capture_baseline(toolkit, SimpleNamespace(test_command="bundle exec rspec"),
                            tmp_path, timeout_s=1800)
     assert seen == [1800], f"the baseline ignored the configured timeout: {seen}"
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_asked_carries_its_question_into_the_retry(tmp_path, monkeypatch):
+    """#383: a turn that asked instead of finishing must not be retried blind;
+    the next brief names the question and tells the agent to decide."""
+    from performer.workflows.adapter import BLOCKED_TURN_PREFIX
+    from performer.workflows.implementer import driver
+    from performer.workflows.implementer.driver import MilestoneFailed
+
+    briefs: list[dict] = []
+
+    async def fake_tests(ctx, files=None, *, scope=False):
+        return TestObservation(outcome="assertion_failure", failed=["spec/a_spec.rb:1"]).to_summary(1, "")
+
+    def fake_brief(ctx, milestone, **kw):
+        briefs.append(kw)
+        return SimpleNamespace(scope_paths=None, milestone_index=0)
+
+    asked = SimpleNamespace(exit_state="error", output_tail=f"{BLOCKED_TURN_PREFIX}Which database?")
+    monkeypatch.setattr(driver, "_tests", fake_tests)
+    monkeypatch.setattr(driver, "_build_brief", fake_brief)
+    monkeypatch.setattr(driver, "run_turn", AsyncMock(return_value=(asked, SimpleNamespace(), {})))
+
+    ctx = _phase_ctx(tmp_path, impl_attempts=2)
+    red = TestObservation(outcome="assertion_failure", failed=["spec/a_spec.rb:1"]).to_summary(1, "")
+    with pytest.raises(MilestoneFailed):
+        await driver._green_phase(ctx, _milestone(), _record(), ["spec/a_spec.rb"], red)
+
+    retry = str(briefs[1].get("failure_excerpt") or "")
+    assert "Which database?" in retry
+    assert "cannot ask" in retry
