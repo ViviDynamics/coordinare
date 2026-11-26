@@ -119,6 +119,8 @@ def test_a_nare_bootstrap_gets_its_rail_from_the_endpoint(monkeypatch) -> None:
         auth_token_env="PROXY_KEY",
     )
     secrets = {k: v.get_secret_value() for k, v in payload.secrets.items()}
-    assert secrets["NARE_PROVIDER"] == "openai"
-    assert secrets["NARE_BASE_URL"] == "http://gateway/v1"
     assert secrets["OPENAI_API_KEY"] == "bearer"
+    assert "NARE_PROVIDER" not in secrets
+    # The rail travels in metadata, which becomes the performer's Score.
+    assert payload.metadata["endpoint_kind"] == "litellm"
+    assert payload.metadata["base_url"] == "http://gateway/v1"
