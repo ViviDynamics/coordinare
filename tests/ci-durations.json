@@ -13,7 +13,7 @@
  "tests/contract/test_dispatch_payload.py": 0.1,
  "tests/contract/test_diverse_routing_077.py": 0.03,
  "tests/contract/test_docker_label_schema.py": 0.01,
- "tests/contract/test_driver_contract.py": 0.02,
+ "tests/contract/test_nare_contract.py": 0.02,
  "tests/contract/test_env_cache_payload.py": 0.0,
  "tests/contract/test_force_poll_contract.py": 0.14,
  "tests/contract/test_gate_decision_schema.py": 0.02,
