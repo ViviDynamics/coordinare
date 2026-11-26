@@ -140,6 +140,9 @@ def test_a_group_keeps_every_runtime_need():
     with pytest.raises(_ResponseReferenceError) as failure:
         validate_consolidation({'scope_consolidation': {'groups': [group([a, b], invented)]}}, criteria=[a, b])
     assert failure.value.errors[0]['code'] == 'consolidation_runtime_needs_invalid'
+    # nare-native-041: eleven rejections never named the stray need, and the model kept it every time.
+    assert failure.value.errors[0]['unexpected_runtime_needs'] == ['redis:7']
+    assert 'remove each unexpected need' in failure.value.errors[0]['guidance']
 
 
 @pytest.mark.asyncio

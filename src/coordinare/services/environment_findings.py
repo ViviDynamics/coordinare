@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from coordinare_service_inference.environment.findings import (
     TEXT_BYTES,
@@ -151,11 +151,28 @@ def merge_duplicate_findings(findings: list[FindingProposal]) -> list[FindingPro
             kept.append(finding)
             continue
         issue = (first.issue + ALSO_REPORTED + finding.issue).encode()[:TEXT_BYTES].decode(errors='ignore')
-        combined = first.model_copy(update={
-            'issue': issue, 'sources': [*first.sources, *(path for path in finding.sources if path not in first.sources)]})
+        update: dict[str, Any] = {
+            'issue': issue, 'sources': [*first.sources, *(path for path in finding.sources if path not in first.sources)]}
+        if hasattr(first, 'inspection_requests'):
+            # Scope findings keep every request either reviewer asked for, bound to the one finding id.
+            update['inspection_requests'] = _merged_requests(first, finding)
+        combined = first.model_copy(update=update)
         kept[kept.index(first)] = combined
         merged[key] = combined
     return kept
+
+
+# A scope finding's inspection requests, as ScopeFindingProposal bounds them.
+MAX_MERGED_REQUESTS = 8
+
+
+def _merged_requests(first: FindingProposal, other: FindingProposal) -> list[Any]:
+    """Both scope findings' inspection requests, first's first, without repeats and within the finding's bound."""
+    merged: list[Any] = []
+    for request in [*getattr(first, 'inspection_requests', []), *getattr(other, 'inspection_requests', [])]:
+        if request not in merged:
+            merged.append(request)
+    return merged[:MAX_MERGED_REQUESTS]
 
 
 def apply_evidence_review(ledger: FindingLedger, *, subject: ReviewSubject, proposal: CoverageAssessmentProposal,

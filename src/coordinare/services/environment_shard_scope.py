@@ -1282,7 +1282,10 @@ def validate_consolidation(data: dict[str, Any], *, criteria: Sequence[ScopeCrit
                            'guidance': f'A group may cite at most {MAX_CRITERION_SOURCES} sources; split it into smaller groups.'})
         elif sorted(group.criterion.sources) != union:
             errors.append({'code': 'consolidation_sources_invalid', 'location': [*location, 'criterion', 'sources'],
-                           'required_sources': union, 'guidance': 'Cite exactly the union of the members\' sources.'})
+                           'required_sources': union,
+                           'unexpected_sources': sorted(set(group.criterion.sources) - set(union)),
+                           'guidance': 'Cite exactly the union of the members\' sources: remove each unexpected '
+                                       'source, or return [] and the daemon fills in the union.'})
         needs = sorted({need for member in members for need in member.runtime_needs})
         if len(needs) > MAX_CRITERION_SOURCES:
             errors.append({'code': 'consolidation_group_too_large', 'location': [*location, 'criterion', 'runtime_needs'],
@@ -1290,7 +1293,12 @@ def validate_consolidation(data: dict[str, Any], *, criteria: Sequence[ScopeCrit
         elif sorted(group.criterion.runtime_needs) != needs:
             errors.append({'code': 'consolidation_runtime_needs_invalid', 'location': [*location, 'criterion', 'runtime_needs'],
                            'required_runtime_needs': needs,
-                           'guidance': 'Keep exactly the union of the members\' runtime_needs; never drop an environment need.'})
+                           # nare-native-041: eleven rejections never named the stray value, a need copied from a
+                           # criterion outside the group, and the model kept it every time.
+                           'unexpected_runtime_needs': sorted(set(group.criterion.runtime_needs) - set(needs)),
+                           'guidance': 'A group criterion\'s runtime_needs are exactly its members\' runtime_needs, '
+                                       'as written: remove each unexpected need (it belongs to no member), or return '
+                                       '[] and the daemon fills in the union.'})
         strongest = max((member.applicability for member in members), key=APPLICABILITY_RANK.__getitem__)
         if group.criterion.applicability != strongest:
             errors.append({'code': 'consolidation_applicability_invalid', 'location': [*location, 'criterion', 'applicability'],

@@ -59,6 +59,7 @@ from coordinare.services.environment_findings import (
     FindingValidationError,
     ReviewSubject,
     apply_evidence_review,
+    merge_duplicate_findings,
 )
 from coordinare.services.environment_inspection import SourceInspection
 from coordinare.services.environment_response_schema import (
@@ -356,6 +357,10 @@ def _validate_review(data: dict[str, Any], *, reviewer: SourceInspection, defini
               *_request_rule_errors(assessment, reviewer=reviewer)]
     if errors:
         raise _ResponseReferenceError(errors)
+    # The ledger merges duplicate findings (same category and affected ids), so the assessment the inspection requests
+    # bind to and the saved record must hold the same merged list. nare-native-041: two shard reviewers filed the same
+    # remote_state finding, the ledger kept one id, and binding two findings to it held the attempt.
+    assessment = assessment.model_copy(update={'findings': merge_duplicate_findings(list(assessment.findings))})
     base = assessment.model_dump(exclude={'findings', 'decisions'})
     proposal = CoverageAssessmentProposal(**base, capability_unavailable=False,
         findings=[item.model_dump(exclude={'inspection_requests', 'gap_kind'}) for item in assessment.findings],

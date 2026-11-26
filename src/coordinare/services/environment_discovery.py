@@ -1266,7 +1266,8 @@ async def discover_and_review(
     except EnvironmentDiscoveryError as exc:
         budget.error_code = exc.code
         # An obligation message is daemon-composed and names only id-shaped values, so the hold can say what was lost.
-        budget.error_detail = exc.detail or (str(exc)[:500] if exc.code == "obligation_removed" else None) or budget.error_detail
+        budget.error_detail = (exc.detail or (str(exc)[:500] if exc.code in MESSAGE_DETAIL_CODES else None)
+                               or budget.error_detail)
         raise
     except (ValueError, TypeError) as exc:
         budget.error_code, budget.error_detail = "invalid_contract", failure_detail(exc)
@@ -1664,6 +1665,11 @@ def _delta_plan(discovery: _Inspection, budget: AttemptBudget, prior_manifests: 
              if budget.repair_delta and budget.repair_triage is not None and prior_manifests else None)
     discovery.delta = delta is not None
     return delta
+
+
+# Codes whose messages the daemon composes from constants and id-shaped values only, so a hold may carry them as its
+# detail. nare-native-041 held on scope_investigation_identity, raised at a dozen sites, with error_detail None.
+MESSAGE_DETAIL_CODES = frozenset({'obligation_removed', 'scope_investigation_identity', 'scope_investigation_limit'})
 
 
 def _delta_merge_rejected(budget: AttemptBudget, exc: Exception) -> EnvironmentDiscoveryError:
