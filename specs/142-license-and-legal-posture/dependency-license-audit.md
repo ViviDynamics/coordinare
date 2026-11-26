@@ -21,7 +21,7 @@ Licence field precedence: `License-Expression` (PEP 639 SPDX), then a short free
 | Tier 2, permitted with rationale | 4 |
 | Tier 3, rejected | 0 |
 | Platform-conditional, not verifiable here | 9 |
-| Redistributed in the performer image | 1 |
+| Redistributed in the performer image | 2 |
 
 **No distributed dependency carries a licence incompatible with ELv2 distribution.**
 
@@ -71,6 +71,13 @@ Not present in either lock closure, because it is not a Python dependency. It is
 - **Consumed as**: subprocess
 - **Distributed via**: container_image
 - **Rationale**: Installed by `agent/performer/Dockerfile.full` and invoked as a separate process by `src/coordinare/services/security_scanner.py`. Two independent questions, and conflating them is the usual error. As a *combined work*: invoking a separate executable is aggregation, not linking, so LGPL-2.1's obligations do not reach coordinare's own source. As *distribution*: the image does bundle the binary, which carries notice and source-availability obligations for semgrep itself. Both are satisfied trivially, since semgrep is published on PyPI and GitHub and we do not modify it.
+
+### `nare`
+
+- **Licence**: `LicenseRef-Elastic-License-2.0` (first-party, Vivi Dynamics LLC)
+- **Consumed as**: subprocess
+- **Distributed via**: container_image
+- **Rationale**: Installed by `agent/performer/Dockerfile.base` from a pinned, SHA-256 checked release wheel into its own virtualenv at `/opt/nare`, and invoked as a separate process by `agent/performer/src/performer/backends/nare.py` (#360). It is not a Python dependency of coordinare or the performer, so it is absent from both lock closures. It is first-party and released under the same licence as coordinare, with its own LICENSE and NOTICE in the wheel. Its own dependencies in that virtualenv are `anthropic` (Apache-2.0), `mcp` (MIT), `pillow` (MIT-CMU, a permissive notice licence) and the AWS signer `botocore` (Apache-2.0), with their permissive closures; each is redistributed unmodified.
 
 ## Platform-conditional dependencies
 

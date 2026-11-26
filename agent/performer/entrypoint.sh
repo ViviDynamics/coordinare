@@ -174,6 +174,13 @@ case "${BACKEND:-}" in
     pip install --upgrade --quiet hermes-agent 2>&1 \
       || echo "WARNING: hermes upgrade failed, continuing with installed version" >&2
     ;;
+  nare)
+    # nare is baked into the base image at a pinned release (Dockerfile.base,
+    # #360); nothing is downloaded at start. A missing binary is reported here
+    # rather than on the first card.
+    nare --version >/dev/null 2>&1 \
+      || echo "WARNING: nare is not on PATH; the base image installs it at /opt/nare" >&2
+    ;;
   "")
     echo "INFO: BACKEND not set — starting performer without a backend CLI" >&2
     ;;

@@ -25,6 +25,8 @@ _BACKEND_BINARIES: dict[str, str] = {
     # capability-selected pool: PerformerPool._find_candidate() rejects any
     # endpoint whose advertised backends omit the requested harness.
     "prime_agent": "prime-agent",
+    # #360: baked into the performer base image at the pinned release.
+    "nare": "nare",
 }
 
 _TOOL_BINARIES: dict[str, str] = {

@@ -40,6 +40,14 @@ def test_prime_agent_binary_is_advertised(mock_paths: dict[str, bool]) -> None:
     assert caps.backends == ["prime_agent"]
 
 
+def test_nare_binary_is_advertised(mock_paths: dict[str, bool]) -> None:
+    """#360: the base image bakes nare in; the probe must find it, or a pool
+    endpoint asking for the default harness is rejected."""
+    mock_paths["nare"] = True
+    caps = capabilities.probe_capabilities()
+    assert caps.backends == ["nare"]
+
+
 def test_every_probed_backend_is_a_known_backend_name(
     mock_paths: dict[str, bool],
 ) -> None:

@@ -11,6 +11,8 @@ HARNESS_DEFAULTS = {
     "codex": ("openai", "OPENAI_API_KEY", "gpt-5.4"),
     "claude_code": ("anthropic", "ANTHROPIC_API_KEY", "claude-sonnet-4-6"),
     "opencode": ("openai", "OPENAI_API_KEY", "gpt-5.4"),
+    # nare's own default rail (anthropic) and default model.
+    "nare": ("anthropic", "ANTHROPIC_API_KEY", "claude-sonnet-5"),
 }
 HARNESS_COMMANDS = {
     "codex": "codex",
@@ -18,6 +20,7 @@ HARNESS_COMMANDS = {
     "opencode": "opencode",
     "opencode_compat": "opencode",
     "prime_agent": "prime-agent",
+    "nare": "nare",
 }
 
 
@@ -53,7 +56,7 @@ def expand_preset(raw: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(msg)
     harness = raw.get("harness")
     if not isinstance(harness, str) or harness not in HARNESS_DEFAULTS:
-        msg = "Set harness to codex, claude_code or opencode, or use the full config reference."
+        msg = "Set harness to nare, codex, claude_code or opencode, or use the full config reference."
         raise ValueError(msg)
     repo = raw.get("github_repo")
     if not isinstance(repo, str) or not repo.strip() or "/" in repo:

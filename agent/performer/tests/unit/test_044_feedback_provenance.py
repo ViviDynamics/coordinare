@@ -9,7 +9,7 @@ import pytest
 
 from performer.models import Score
 
-BACKENDS = ["claude_code", "codex", "opencode", "opencode_compat", "hermes", "junie", "pi", "driver", "prime_agent", "openclaw"]
+BACKENDS = ["claude_code", "codex", "opencode", "opencode_compat", "hermes", "junie", "pi", "nare", "prime_agent", "openclaw"]
 CORRECTION = "I have not authorized the next step. Ask and wait for my answer."
 CONTINUATION = "Continue from the prior checkpoint. Next focus: implement step 2."
 

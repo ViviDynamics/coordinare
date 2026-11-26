@@ -254,7 +254,7 @@ class TestRuntimeWiring:
         with patch.object(
             _lifecycle_module(), "start_ephemeral", side_effect=fake_start_ephemeral,
         ):
-            started = await runtime.start_ephemeral(config, backend="driver")
+            started = await runtime.start_ephemeral(config, backend="nare")
         assert captured["image"] == "coordinare-performer@sha256:abc123"
         assert started.endpoint.startswith("http://")
 
@@ -337,7 +337,7 @@ class TestKubernetesManifest:
             return manifest
 
         with patch.object(k8s_mod, "build_pod_manifest", side_effect=spy):
-            await runtime.start_ephemeral(_ephemeral_config(), backend="driver")
+            await runtime.start_ephemeral(_ephemeral_config(), backend="nare")
         assert captured["image"] == "coordinare-performer@sha256:abc123"
         assert captured_manifest.get("image") == "coordinare-performer@sha256:abc123"
 

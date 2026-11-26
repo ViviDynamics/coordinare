@@ -11,7 +11,7 @@ from tests.unit.env_mount_stub import mount_config
 
 @pytest.mark.parametrize(
     "backend",
-    ["claude_code", "codex", "opencode", "junie", "driver", "hermes", "pi", "openclaw"],
+    ["claude_code", "codex", "opencode", "junie", "nare", "hermes", "pi", "openclaw"],
 )
 @pytest.mark.parametrize("bootstrap", [False, True])
 def test_orchestration_credentials_reach_each_leg(monkeypatch, backend, bootstrap):

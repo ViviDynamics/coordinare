@@ -3,6 +3,31 @@
 Issue #515 · Status: **normative draft** · Coordinare performer protocol as of
 spec 076 + 080 · driver machine contract **v1**.
 
+> **Superseded in part by #360 (2026-11-26).** "driver" shipped as **nare**
+> (github.com/ViviDynamics/nare), which now speaks machine contract **3**. The
+> backend is registered as `nare` (`performer.backends.nare.NareBackend`); the
+> `driver` name is removed. Where this document says `driver`, read `nare`, with
+> these changes:
+>
+> - **C1.** `nare run --yes --contract 3 --jsonl --session|--resume <path>
+>   --prompt-file <file> [--append-system-file <file>] --root <workspace>`. The
+>   task and persona ride files: argv is world-readable and Linux caps one
+>   argument at 128 KiB, which a review diff exceeds.
+> - **C3.** A resume repeats the provider, model and budget flags: the session
+>   records the transcript and system prompt, not the run flags.
+> - **C5.** Each event is `{type, text, detail, timestamp}` plus `tool_use_id` on
+>   a tool call's events. A tool result is a `progress` event with
+>   `detail.tool_result`. The final reply is one `output` event.
+> - **C7.** Usage fields are `input`, `output`, `cache_read`, `cache_write`,
+>   `total` and `cost`; `total` is the count to use. A `cost` event carries one
+>   request's usage in `detail`.
+> - **C8.** The answer is `result.output` under `--schema` (the validated
+>   document) and `result.text` otherwise.
+> - **§3.5.** The proxy seam is `NARE_BASE_URL` with a `/v1` base; the rail is
+>   `NARE_PROVIDER`, chosen by the daemon from the role's endpoint kind.
+> - **Image.** The performer base image installs a pinned nare release
+>   (`NARE_VERSION`, `NARE_SHA256` in `agent/performer/Dockerfile.base`).
+
 The key words **MUST**, **SHOULD**, and **MAY** are to be interpreted as
 described in RFC 2119. Every claim is annotated with the evidence it is built
 on; if the code moves, the contract moves with it.

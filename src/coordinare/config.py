@@ -1786,8 +1786,8 @@ class ProjectConfiguration(BaseSettings):
     def resolve_performer_dispatch_model(self, role_name: str) -> dict[str, str]:
         """080: resolve a role's mode → model/endpoint into dispatch card_context.
 
-        Returns the subset of {model, base_url, api_key_env, auth_token_env} that
-        applies (empty when the role has no mode). Self-hosted endpoints map to
+        Returns the subset of {model, endpoint_kind, base_url, api_key_env,
+        auth_token_env} that applies (empty when the role has no mode). Self-hosted endpoints map to
         bearer auth (auth_token_env) + a base_url override; native endpoints map
         to api_key_env with no override. Uses the mode's ``tool`` leg as the
         primary model — correct for ``single`` and the executor leg for the
@@ -1809,6 +1809,9 @@ class ProjectConfiguration(BaseSettings):
         ep = self.resolve_endpoint(me.endpoint)
         if ep is None:
             return out
+        # 360: a harness with more than one provider rail (nare) picks it from
+        # the endpoint kind; the auth fields alone cannot tell anthropic from openai.
+        out["endpoint_kind"] = ep.kind
         if ep.is_native:
             if ep.auth_env:
                 out["api_key_env"] = ep.auth_env

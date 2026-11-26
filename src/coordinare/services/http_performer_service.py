@@ -266,32 +266,43 @@ class _EphemeralJob:
     torn_down: bool = False
 
 
-def _inject_driver_secrets(
-    secrets: dict[str, str],
-    role_auth_token_env: Any,
-    role_api_key_env: Any,
-) -> None:
-    """Inject provider secrets for the driver backend (521/C2).
+def _inject_nare_secrets(secrets: dict[str, str], card_context: dict[str, Any]) -> None:
+    """Provider env for the nare backend (#360).
 
-    argv is world-readable, so driver takes provider config by flags and API
-    keys by env only (ANTHROPIC_API_KEY / OPENAI_API_KEY) — inject whichever
-    keys the daemon has, exactly like the opencode/junie dual-provider family;
-    nothing else. 080 catalog resolution: a self-hosted mode resolves to
-    auth_token_env (proxy bearer) and a native mode to api_key_env; either
-    rides OPENAI_API_KEY — driver speaks Chat Completions with provider openai
-    (§3.5).
+    argv is world-readable, so keys ride env only. nare reads its rail from
+    ``NARE_PROVIDER`` and an OpenAI-compatible gateway from ``NARE_BASE_URL``,
+    so the role's resolved endpoint picks both, plus the one key that rail reads:
+
+    - self-hosted (``auth_token_env``): the openai rail at ``base_url``, the
+      endpoint's bearer as ``OPENAI_API_KEY``;
+    - native ``anthropic`` or ``openai``: that rail, its key from ``api_key_env``;
+    - no mode: whichever provider keys the daemon holds, and nare's default rail.
     """
     import os
 
+    auth_token_env = card_context.get("auth_token_env")
+    api_key_env = card_context.get("api_key_env")
+    kind = str(card_context.get("endpoint_kind") or "")
+    if auth_token_env:
+        secrets["NARE_PROVIDER"] = "openai"
+        base_url = card_context.get("base_url")
+        if base_url:
+            secrets["NARE_BASE_URL"] = str(base_url)
+        token = os.environ.get(str(auth_token_env), "")
+        if token:
+            secrets["OPENAI_API_KEY"] = token
+        return
+    if kind in {"anthropic", "openai"}:
+        key_name = "ANTHROPIC_API_KEY" if kind == "anthropic" else "OPENAI_API_KEY"
+        secrets["NARE_PROVIDER"] = kind
+        value = os.environ.get(str(api_key_env or key_name), "")
+        if value:
+            secrets[key_name] = value
+        return
     for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
         val = os.environ.get(key, "")
         if val:
             secrets[key] = val
-    endpoint_key_env = role_auth_token_env or role_api_key_env
-    if endpoint_key_env:
-        token = os.environ.get(str(endpoint_key_env), "")
-        if token:
-            secrets["OPENAI_API_KEY"] = token
 
 
 class HTTPPerformerService:
@@ -2067,12 +2078,8 @@ class HTTPPerformerService:
             _proxy_bearer = os.environ.get("LITELLM_MASTER_KEY", "")
             if _proxy_bearer:
                 secrets["COORDINARE_PROXY_AUTH"] = _proxy_bearer
-        elif backend == "driver":
-            # 521/C2: argv is world-readable, so driver takes provider config by
-            # flags and API keys by env only. See _inject_driver_secrets.
-            _inject_driver_secrets(
-                secrets, role_auth_token_env, role_api_key_env,
-            )
+        elif backend == "nare":
+            _inject_nare_secrets(secrets, card_context)
 
         _inject_orchestration_secrets(secrets, card_context.get("orchestration"))
 

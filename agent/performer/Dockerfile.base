@@ -48,6 +48,25 @@ RUN python -m pip install --no-cache-dir --no-deps \
     "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70" \
     "certifi @ https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl#sha256=42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b"
 
+# #360: nare, the default agent harness, pinned to one release and checked against
+# the SHA-256 in that release's notes. It gets its own virtualenv so its
+# dependencies never meet the performer's constraints, and the backend adapter
+# (performer/backends/nare.py) speaks the machine contract this release speaks.
+# These two lines are the only pin: the adapter's end-to-end contract test
+# installs the same wheel, checked against the same hash.
+ARG NARE_VERSION=2026.11.109
+ARG NARE_SHA256=be535eaed1cce34e850a0ed73d971a61d596eef292497ab996135add2a7a6409
+RUN set -eu \
+    && wheel="nare-${NARE_VERSION}-py3-none-any.whl" \
+    && curl -fsSL -o "/tmp/${wheel}" \
+         "https://github.com/ViviDynamics/nare/releases/download/${NARE_VERSION}/${wheel}" \
+    && echo "${NARE_SHA256}  /tmp/${wheel}" | sha256sum -c - \
+    && python -m venv /opt/nare \
+    && /opt/nare/bin/pip install --no-cache-dir "/tmp/${wheel}[bedrock]" \
+    && ln -s /opt/nare/bin/nare /usr/local/bin/nare \
+    && rm -f "/tmp/${wheel}" \
+    && test "$(nare --version)" = "${NARE_VERSION}"
+
 # Install shared service_inference package first (performer depends on it).
 # Build context must be repo root so we can reach ../../packages/.
 # Export the reviewed runtime lock before pip installs any project packages.
