@@ -305,3 +305,54 @@ async def test_start_and_stop_remove_the_run_directory(tmp_path, monkeypatch) ->
     backend._proc = None
     await backend.stop()
     assert second is not None and not second.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_spawn_removes_the_run_directory(tmp_path, monkeypatch) -> None:
+    """Copilot on #386: handle_dispatch discards the backend without stop()."""
+    backend = NareBackend()
+    seen: list[pathlib.Path] = []
+
+    async def _boom(*cmd: str, **kwargs: Any) -> _FakeProc:
+        assert backend._run_dir is not None
+        seen.append(backend._run_dir)
+        raise FileNotFoundError("nare")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _boom)
+    with pytest.raises(FileNotFoundError):
+        await backend.start(_stand(tmp_path), _score())
+    assert seen and not seen[0].exists()
+    assert backend._run_dir is None
+
+
+@pytest.mark.asyncio
+async def test_a_new_start_retires_the_previous_reader_and_process(tmp_path, monkeypatch) -> None:
+    """Copilot on #386: the documenter starts each page on the same instance; the
+    previous run's reader must not outlive it and touch the next run."""
+    _capture_exec(monkeypatch)
+    terminated: list[int] = []
+
+    async def _terminate(self) -> None:
+        terminated.append(1)
+
+    monkeypatch.setattr(NareBackend, "_terminate", _terminate)
+    backend = NareBackend()
+    await backend.start(_stand(tmp_path), _score())
+    gate = asyncio.Event()
+    old_reader = asyncio.create_task(gate.wait())
+    backend._reader_task = old_reader
+    await backend.start(_stand(tmp_path), _score())
+    assert old_reader.cancelled()
+    assert terminated
+
+
+def test_the_failure_tail_never_carries_a_secret_value(monkeypatch) -> None:
+    """Copilot on #386: nare's stderr is merged into the tail that becomes
+    error_reason and a log field; a provider echo must not expose a key."""
+    backend = NareBackend()
+    backend._env = {"OPENAI_API_KEY": "sk-live-abcdefghijklmnop", "PATH": "/usr/bin"}
+    backend._log_buffer.append("upstream said: bad key sk-live-abcdefghijklmnop")
+    backend._handle_exit(1)
+    reason = backend.get_status().error_reason or ""
+    assert "sk-live-abcdefghijklmnop" not in reason
+    assert "upstream said" in reason

@@ -266,6 +266,10 @@ class _EphemeralJob:
     torn_down: bool = False
 
 
+#: The OPENAI_API_KEY a keyless self-hosted endpoint gets (nare requires one).
+_KEYLESS_GATEWAY_KEY = "unused"
+
+
 def _inject_nare_secrets(secrets: dict[str, str], card_context: dict[str, Any]) -> None:
     """Provider keys for the nare backend (#360), by env only: argv is world-readable.
 
@@ -286,8 +290,10 @@ def _inject_nare_secrets(secrets: dict[str, str], card_context: dict[str, Any]) 
     kind = str(card_context.get("endpoint_kind") or "")
     if card_context.get("base_url") or auth_token_env:
         token = os.environ.get(str(auth_token_env), "") if auth_token_env else ""
-        if token:
-            secrets["OPENAI_API_KEY"] = token
+        # A keyless gateway still needs a value (nare's openai rail refuses an
+        # empty one), and setting it here replaces any OPENAI_API_KEY the
+        # performer container inherited, which the gateway must never see.
+        secrets["OPENAI_API_KEY"] = token or _KEYLESS_GATEWAY_KEY
         return
     if kind in {"anthropic", "openai"}:
         key_name = "ANTHROPIC_API_KEY" if kind == "anthropic" else "OPENAI_API_KEY"

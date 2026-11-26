@@ -309,12 +309,14 @@ class TestJobPayload:
         assert self._secret(payload, "OPENAI_API_KEY") == "bearer"
         assert "ANTHROPIC_API_KEY" not in payload.secrets
 
-    def test_keyless_self_hosted_endpoint_injects_no_ambient_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An Ollama endpoint with no auth_env must not leak the vendor keys to it."""
+    def test_keyless_self_hosted_endpoint_gets_a_placeholder_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An Ollama endpoint with no auth_env must never see a vendor key. The
+        payload sets a placeholder, which also replaces any OPENAI_API_KEY the
+        performer container inherited (Copilot on #386)."""
         monkeypatch.setenv("OPENAI_API_KEY", "ambient")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
         payload = self._payload({"endpoint_kind": "ollama", "base_url": "http://localhost:11434/v1"})
-        assert "OPENAI_API_KEY" not in payload.secrets
+        assert self._secret(payload, "OPENAI_API_KEY") == "unused"
         assert "ANTHROPIC_API_KEY" not in payload.secrets
 
     def test_absent_keys_stay_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:

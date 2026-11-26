@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import pathlib
+import re
 import shutil
 import signal
 import tempfile
@@ -49,7 +50,7 @@ from performer.backends._scope import scope_prompt_section
 from performer.backends._tool_summary import primary_argument
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
-from performer.models import BackendEvent, BackendEventType, Score, Stand
+from performer.models import BackendEvent, BackendEventType, Score, Stand, redact_command
 
 log = structlog.get_logger(__name__)
 
@@ -77,6 +78,10 @@ _NATIVE_RAILS = frozenset({"anthropic", "openai"})
 #: nare's openai rail refuses to start without OPENAI_API_KEY, and a keyless
 #: gateway (Ollama, a local vLLM) ignores whatever it is sent.
 _KEYLESS_GATEWAY_KEY = "unused"
+
+#: Env names whose values are credentials, and the shortest value worth matching.
+_SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", re.IGNORECASE)
+_MIN_SECRET_CHARS = 8
 
 #: nare's built-in tool names, mapped to the names the 148 activity-feed summary knows.
 _SUMMARY_TOOL_NAMES = {
@@ -141,6 +146,10 @@ class NareBackend:
         max_tokens: int | None = None,
     ) -> None:
         """Launch a fresh ``nare run`` session for *score*."""
+        # The documenter starts each page on the same instance right after the
+        # last one reports done; retire that run before its state is replaced.
+        await self._cancel_reader()
+        await self._terminate()
         env = build_subprocess_env(
             cache_env=stand.cache_env,
             git_env=stand.git_env,
@@ -318,15 +327,20 @@ class NareBackend:
         return ["--max-tool-calls", str(remaining)] if remaining > 0 else ["--tools", "none"]
 
     async def _spawn(self, cmd: list[str]) -> None:
-        self._proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=self._cwd,
-            start_new_session=True,
-            env=self._env,
-        )
+        try:
+            self._proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=self._cwd,
+                start_new_session=True,
+                env=self._env,
+            )
+        except BaseException:
+            # A dispatch that fails here never calls stop(); keep nothing behind.
+            self._remove_run_dir()
+            raise
         self._reader_task = asyncio.create_task(self._read_loop(), name="nare-reader")
 
     # ------------------------------------------------------------------
@@ -552,7 +566,7 @@ class NareBackend:
             return
         if self._status.state != "working":
             return
-        tail = " | ".join(list(self._log_buffer)[-10:])
+        tail = self._redacted(" | ".join(list(self._log_buffer)[-10:]))
         if returncode == 0:
             # nare writes a result line for every run that started, so a clean
             # exit without one is a crash; waiting on it would hang the card.
@@ -576,6 +590,14 @@ class NareBackend:
                     else f"nare exited rc={returncode}"
                 ),
             )
+
+    def _redacted(self, text: str) -> str:
+        """nare's stderr is merged into stdout, and a provider error can echo a
+        key; the failure tail becomes error_reason and a log field."""
+        for name, value in self._env.items():
+            if value and len(value) >= _MIN_SECRET_CHARS and _SECRET_NAME.search(name):
+                text = text.replace(value, "[REDACTED]")
+        return redact_command(text)
 
     async def _terminate(self) -> None:
         if self._proc is None or self._proc.returncode is not None:
