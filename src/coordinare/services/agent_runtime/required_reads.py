@@ -21,8 +21,11 @@ class RequiredReads:
                  check_budget: Callable[[], None]) -> None:
         self.next_read, self.check_budget = next_read, check_budget
         self.tool_choice: str | None = None
-        self.tool = Tool(name=NAME, description='Read the next runtime-selected required batch. Call with {}. '
-            'Normal tools return when all outstanding required reads finish.',
+        # nare-native-042: on a forced first turn a shard author, told about review and answer tools it did not yet
+        # have, put its answer's fields into this call.
+        self.tool = Tool(name=NAME, description='Read the next runtime-selected required batch. Call with {} and no '
+            'arguments. Until every required read finishes this is your only tool; the tools and answer your '
+            'instructions describe become available afterwards, so never put their arguments or your answer here.',
             input_schema={'type': 'object', 'properties': {}, 'additionalProperties': False}, call=self.read)
 
     def validate_transport(self, transport: object) -> None:

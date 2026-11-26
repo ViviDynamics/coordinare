@@ -8,8 +8,20 @@ from coordinare_service_inference.environment.findings import REVIEW_RATIONALE_B
 
 from coordinare.services.agent_runtime.models import AdmissionIssue
 
+# nare-native-042: the phase packet is cited as @phase-packet in evidence results, a shard reviewer cited it, was told
+# to read each uninspected cited file with read_source, and spent invalid evidence calls on it twice.
+PACKET_SOURCE = '@phase-packet'
+PACKET_CITATION_NOTE = (f' {PACKET_SOURCE} is your task packet, not a repository file: remove it from sources and '
+                        'never read it with read_source.')
+
+
+def packet_citation_note(sources: Sequence[Any], invalid: Sequence[int | str]) -> str:
+    """The packet note when an uninspected citation names the task packet rather than a file; otherwise ''."""
+    named = [sources[int(index)] for index in invalid if 0 <= int(index) < len(sources)]
+    return PACKET_CITATION_NOTE if PACKET_SOURCE in named else ''
+
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 # This policy is checkpoint-bound by the phase adapter. Changing the selected
 # fields or their meaning requires a version change, even if JSON Schema is stable.
@@ -59,7 +71,8 @@ def review_response_diagnostics(candidate: object, *, envelope: str,
                 details = {'code': code, 'invalid_source_indices': invalid, 'inspected_files': sorted(inspected)[:200],
                            'more_inspected_files': max(0, len(inspected) - 200),
                            'guidance': 'Read each uninspected cited file with read_source({"path":...}) before '
-                           'answering. Preserve the evidence needed for the judgment and return the complete envelope.'}
+                           'answering. Preserve the evidence needed for the judgment and return the complete envelope.'
+                           + packet_citation_note(sources, invalid)}
                 issues.append(AdmissionIssue(code, diagnostic_message('cites files not yet read', details),
                                              (*location, 'sources')))
         bounded_fields = (('rationale',) if envelope == 'scope_assessment' else ()) if len(location) == 1 else (

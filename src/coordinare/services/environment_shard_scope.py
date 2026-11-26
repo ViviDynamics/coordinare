@@ -1252,8 +1252,11 @@ def settle_consolidation_unions(data: Any, *, criteria: Sequence[ScopeCriterionP
         for key in ('sources', 'runtime_needs'):
             union = sorted({value for member in members for value in getattr(member, key)})
             given = criterion.get(key) or []
+            # nare-native-042: each consolidation spent a correction copying the members' runtime needs word for word
+            # after rewording one. The union is the daemon's to state: a group's runtime_needs are always exactly its
+            # members'. A source outside the union is still refused, since a citation must name a file read.
             if (isinstance(given, list) and all(isinstance(value, str) for value in given)
-                    and set(given) <= set(union) and len(union) <= MAX_CRITERION_SOURCES):
+                    and (key == 'runtime_needs' or set(given) <= set(union)) and len(union) <= MAX_CRITERION_SOURCES):
                 criterion[key] = union
         settled.append({**group, 'criterion': criterion})
     return {**data, 'scope_consolidation': {**data['scope_consolidation'], 'groups': settled}}

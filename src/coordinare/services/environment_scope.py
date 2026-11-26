@@ -62,6 +62,7 @@ from coordinare.services.environment_findings import (
     merge_duplicate_findings,
 )
 from coordinare.services.environment_inspection import SourceInspection
+from coordinare.services.environment_response_diagnostics import packet_citation_note
 from coordinare.services.environment_response_schema import (
     constrain_source_criteria,
     final_response_schema,
@@ -116,7 +117,7 @@ def uninspected_sources_errors(sources: Sequence[str], inputs: Mapping[str, str]
     return [{'code': code, 'location': [*location, invalid[0]], 'invalid_source_indices': invalid, **held_files(inputs),
              'guidance': source_tool_guidance(budget, 'Sources may list only files you hold: those in inspected_files, or files you read with '
                          'read_files before answering. Each source at invalid_source_indices is uninspected: remove it, '
-                         'or read it first. Keep the rest of your reply unchanged.')}]
+                         'or read it first. Keep the rest of your reply unchanged.' + packet_citation_note(sources, invalid))}]
 
 
 def unknown_applicability_errors(assessment: ScopeAssessmentProposal,
@@ -155,7 +156,7 @@ def _criterion_citation_errors(sources: Sequence[str], inputs: dict[str, str],
         'guidance': source_tool_guidance(budget, 'Cite only files in inspected_files, or use read_file or read_files to inspect a file before citing it. '
                     'A directory listing is navigation evidence, not inspected content. '
                     'Each source at invalid_source_indices is uninspected; preserve proposed criteria/revision operations '
-                    'while inspecting the files or correcting unsupported citations.')}]
+                    'while inspecting the files or correcting unsupported citations.' + packet_citation_note(sources, invalid))}]
 
 
 RELEASE_CATEGORIES = frozenset({'remote_state', 'runtime_network', 'deployment_image'})

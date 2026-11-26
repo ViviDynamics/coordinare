@@ -74,7 +74,11 @@ class SourceInspection:
                          for path, children in self._directories.items()}
 
     def list_directory(self, path: str = "", cursor: int = 0) -> dict[str, Any]:
-        """Return a bounded page; the complete inventory never enters a tool result."""
+        """Return a bounded page; the complete inventory never enters a tool result.
+
+        nare-native-042: a reviewer listed "." and was refused; the root is "", and "." or "/" name it too."""
+        if isinstance(path, str):
+            path = "" if path in {".", "/", "./"} else path.removeprefix("./").rstrip("/")
         if not isinstance(path, str) or path not in self._entries or type(cursor) is not int:
             message = "source directory or cursor is invalid"
             raise EnvironmentDiscoveryError(message, code="invalid_tool_arguments")

@@ -195,6 +195,10 @@ class AttemptBudget:
     agent_evidence_protocol: int = 1
     agent_evidence_errors: int = 0
     agent_evidence_error_receipts: set[str] = field(default_factory=set, repr=False)
+    # nare-native-042: per agent session (its phase key), the invalid evidence calls it made. The allowance is each
+    # session's own: a fresh divided scope ran 35 sessions, and the merge reviewer's one slip, after shard agents had
+    # spent seven, held the attempt.
+    agent_evidence_phase_errors: dict[str, int] = field(default_factory=dict, repr=False)
     agent_checkpoints: dict[str, CheckpointReference] = field(default_factory=dict, repr=False)
     agent_phase_calls: dict[str, int] = field(default_factory=dict, repr=False)
     # Per author (discovery, its global part, each check group): the source files, by digest, it read in full in an

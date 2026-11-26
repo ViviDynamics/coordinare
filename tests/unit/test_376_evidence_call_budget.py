@@ -302,3 +302,39 @@ async def test_duplicate_tool_identities_refuse_before_dispatch(tmp_path: Path, 
     assert transport.calls == 1
     assert req.budget.agent_evidence_errors == 0
     assert req.budget.agent_usage_unknown == 0
+
+
+def test_each_agent_session_has_its_own_invalid_call_allowance() -> None:
+    """nare-native-042: a fresh divided scope ran 35 sessions; shard agents spent seven invalid calls, and the merge
+    reviewer's first slip held the attempt. Another session's slips never spend this session's allowance."""
+    from coordinare.services.agent_runtime.accounting import BudgetBridge
+    from coordinare.services.agent_runtime.evidence_protocol import (
+        MAX_INVALID_EVIDENCE_CALLS,
+        EvidenceFailureBudget,
+    )
+
+    budget = AttemptBudget(max_calls=40)
+    budget.agent_evidence_phase_errors['shard-session'] = MAX_INVALID_EVIDENCE_CALLS
+    tools = frozenset({'read_source'})
+    spent = EvidenceFailureBudget(BudgetBridge(budget, phase='scope_shard_review', phase_key='shard-session'), tools)
+    fresh = EvidenceFailureBudget(BudgetBridge(budget, phase='scope_merge_review', phase_key='merge-session'), tools)
+    with pytest.raises(EnvironmentDiscoveryError) as caught:
+        spent.check()
+    assert caught.value.code == 'agent_evidence_call_limit'
+    fresh.check()
+
+
+def test_per_session_invalid_calls_survive_the_attempt_journal() -> None:
+    from coordinare.services.environment_repair import (
+        RepairJournal,
+        _restore_agent_accounting,
+        _save_agent_accounting,
+    )
+
+    budget = AttemptBudget(max_calls=40)
+    budget.agent_evidence_phase_errors = {'a': 3, 'b': 1}
+    journal = RepairJournal.model_construct()
+    _save_agent_accounting(journal, budget)
+    restored = AttemptBudget(max_calls=40)
+    _restore_agent_accounting(restored, journal)
+    assert restored.agent_evidence_phase_errors == {'a': 3, 'b': 1}

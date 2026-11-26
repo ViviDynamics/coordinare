@@ -33,6 +33,8 @@ def classified_evidence_tool(tool: Tool) -> Tool:
 class EvidenceFailureBudget:
     def __init__(self, bridge: BudgetBridge, tools: frozenset[str]) -> None:
         self.bridge, self.tools = bridge, tools
+        # The session's own key (its identity slot); a bridge without one is charged under its phase.
+        self._session_key = bridge.phase_key or bridge.phase
 
     def _check_accounting(self) -> None:
         if not self.tools:
@@ -43,8 +45,11 @@ class EvidenceFailureBudget:
             refuse_agent('Evidence-call accounting is unavailable or incompatible.', code='agent_evidence_policy')
 
     def check(self) -> None:
+        """Each agent session has its own allowance (MAX_INVALID_EVIDENCE_CALLS); the attempt's call, time and read
+        budgets still bound the total."""
         self._check_accounting()
-        if self.tools and self.bridge.budget.agent_evidence_errors >= MAX_INVALID_EVIDENCE_CALLS:
+        spent = self.bridge.budget.agent_evidence_phase_errors.get(self._session_key, 0)
+        if self.tools and spent >= MAX_INVALID_EVIDENCE_CALLS:
             refuse_agent('Invalid evidence-call allowance exhausted.', code='agent_evidence_call_limit')
 
     def _error(self, detail: dict[str, Any]) -> dict[str, Any] | None:
@@ -90,4 +95,6 @@ class EvidenceFailureBudget:
         if receipt not in budget.agent_evidence_error_receipts:
             budget.agent_evidence_error_receipts.add(receipt)
             budget.agent_evidence_errors += 1
+            key = self._session_key
+            budget.agent_evidence_phase_errors[key] = budget.agent_evidence_phase_errors.get(key, 0) + 1
             await self.bridge.persist()

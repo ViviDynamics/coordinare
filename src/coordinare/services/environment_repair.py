@@ -154,6 +154,7 @@ class RepairJournal(BaseModel):
     agent_evidence_protocol: int = Field(default=0, ge=0)
     agent_evidence_errors: int = Field(default=0, ge=0)
     agent_evidence_error_receipts: set[str] = Field(default_factory=set)
+    agent_evidence_phase_errors: dict[str, NonNegativeInt] = Field(default_factory=dict)
     trial_runs: int = Field(default=0, ge=0)
     trial_usage_unknown: bool = False
     agent_runtime: Literal['legacy', 'nare'] = 'legacy'
@@ -595,6 +596,7 @@ def _restore_agent_accounting(budget: AttemptBudget, journal: RepairJournal) -> 
     budget.agent_evidence_protocol = journal.agent_evidence_protocol if journal.calls else 1
     budget.agent_evidence_errors = journal.agent_evidence_errors
     budget.agent_evidence_error_receipts = set(journal.agent_evidence_error_receipts)
+    budget.agent_evidence_phase_errors = dict(journal.agent_evidence_phase_errors)
     budget.trial_runs = journal.trial_runs
     budget.shard_schema_repairs = journal.shard_schema_repairs
     budget.agent_checkpoints = {key: value.model_copy(deep=True) for key, value in journal.agent_checkpoints.items()}
@@ -610,6 +612,8 @@ def _save_agent_accounting(journal: RepairJournal, budget: AttemptBudget) -> Non
     journal.agent_evidence_protocol = budget.agent_evidence_protocol
     journal.agent_evidence_errors = max(journal.agent_evidence_errors, budget.agent_evidence_errors)
     journal.agent_evidence_error_receipts |= budget.agent_evidence_error_receipts
+    journal.agent_evidence_phase_errors = {key: max(journal.agent_evidence_phase_errors.get(key, 0), value)
+                                           for key, value in budget.agent_evidence_phase_errors.items()}
     journal.trial_runs = max(journal.trial_runs, budget.trial_runs)
     journal.shard_schema_repairs = max(journal.shard_schema_repairs, budget.shard_schema_repairs)
     journal.agent_checkpoints = {key: value.model_copy(deep=True) for key, value in budget.agent_checkpoints.items()}

@@ -42,6 +42,7 @@ from coordinare.services.agent_runtime.required_reads import (
 )
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_response_diagnostics import (
+    PACKET_SOURCE,
     REVIEW_DIAGNOSTICS_POLICY,
     REVIEW_ENVELOPES,
     review_response_diagnostics,
@@ -98,6 +99,11 @@ class PinnedSourceTools:
 
     async def read(self, arguments: JsonObject) -> str:
         path = arguments['path']
+        if path == PACKET_SOURCE and path not in self.inspection.inventory:
+            # nare-native-042: locate_evidence reported matches in @phase-packet and the reviewer passed that name here.
+            refuse_agent(f'{PACKET_SOURCE} is your task packet, not a repository file: revisit its pages with '
+                         'reread_evidence using the page ids review_evidence or locate_evidence gave.',
+                         code='invalid_tool_arguments')
         if path not in self.catalogs:
             policy = self.inspection.policy_status(path)
             if policy != 'readable':
@@ -146,7 +152,8 @@ class PinnedSourceTools:
                  input_schema={'type': 'object', 'properties': {'path': {'type': 'string'}, 'pages': {
                      'type': 'array', 'items': {'type': 'integer', 'minimum': 0}, 'minItems': 1, 'maxItems': 128}},
                      'required': ['path', 'pages'], 'additionalProperties': False}, call=self.reread),
-            Tool(name='list_sources', description='List the immutable repository directory, following next_cursor.',
+            Tool(name='list_sources', description='List the immutable repository directory, following next_cursor. '
+                 'The repository root is "" (or "."); give a directory, never a file.',
                  input_schema={'type': 'object', 'properties': {'path': {'type': 'string'},
                      'cursor': {'type': 'integer', 'minimum': 0}}, 'additionalProperties': False}, call=self.listing),
         )
@@ -384,8 +391,8 @@ async def run_environment_phase(request: EnvironmentPhaseRequest) -> PhaseResult
     request.budget.check()
     request.budget.stage = request.phase
     packet = _json(request.packet)
-    sources = (*request.sources, EvidenceSource('@phase-packet', packet, hashlib.sha256(packet.encode()).hexdigest()))
-    evidence = EvidenceStore(sources, required=request.required | {'@phase-packet'})
+    sources = (*request.sources, EvidenceSource(PACKET_SOURCE, packet, hashlib.sha256(packet.encode()).hexdigest()))
+    evidence = EvidenceStore(sources, required=request.required | {PACKET_SOURCE})
     stage = RequiredReads(partial(_next_required_read, request, evidence), request.budget.check)
     if any(tool.name == NAME for tool in request.tools):
         refuse_agent('Required-read tool identity collides with an existing tool.', code='agent_prerequisite_tool_collision')

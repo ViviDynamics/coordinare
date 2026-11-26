@@ -136,13 +136,10 @@ def test_a_group_keeps_every_runtime_need():
     missing = {key: value for key, value in dropped.items() if key != 'runtime_needs'}
     [filled] = validate_consolidation({'scope_consolidation': {'groups': [group([a, b], missing)]}}, criteria=[a, b])
     assert filled.criterion.runtime_needs == ['postgres:16']
-    invented = {**dropped, 'runtime_needs': ['postgres:16', 'redis:7']}
-    with pytest.raises(_ResponseReferenceError) as failure:
-        validate_consolidation({'scope_consolidation': {'groups': [group([a, b], invented)]}}, criteria=[a, b])
-    assert failure.value.errors[0]['code'] == 'consolidation_runtime_needs_invalid'
-    # nare-native-041: eleven rejections never named the stray need, and the model kept it every time.
-    assert failure.value.errors[0]['unexpected_runtime_needs'] == ['redis:7']
-    assert 'remove each unexpected need' in failure.value.errors[0]['guidance']
+    # nare-native-042: a reworded or stray need is replaced by the members' union, never a correction round.
+    invented = {**dropped, 'runtime_needs': ['postgres 16', 'redis:7']}
+    [filled] = validate_consolidation({'scope_consolidation': {'groups': [group([a, b], invented)]}}, criteria=[a, b])
+    assert filled.criterion.runtime_needs == ['postgres:16']
 
 
 @pytest.mark.asyncio
