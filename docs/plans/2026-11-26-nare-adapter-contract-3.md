@@ -32,3 +32,4 @@ conversation loop (#376).
 - [x] 6. Daemon side: `endpoint_kind`, `_inject_nare_secrets`, validation, effort, preset entry, proxy seam: `test_360_nare_backend_wiring.py`, `TestJobPayload`.
 - [x] 7. Base image installs the pinned release; entrypoint and slim image know `nare`.
 - [x] 8. The real binary end to end on nare's fake provider: `test_nare_real_binary.py`.
+- [x] 9. Review round 1: the rail and base URL ride metadata, not secrets (redaction); a base URL always means the openai rail; a keyless gateway gets a placeholder key; the image installs nare's dependencies hash-pinned; run directories are removed; the tool cap and token count carry across a resume; a run with no result line is an error.

@@ -267,34 +267,30 @@ class _EphemeralJob:
 
 
 def _inject_nare_secrets(secrets: dict[str, str], card_context: dict[str, Any]) -> None:
-    """Provider env for the nare backend (#360).
+    """Provider keys for the nare backend (#360), by env only: argv is world-readable.
 
-    argv is world-readable, so keys ride env only. nare reads its rail from
-    ``NARE_PROVIDER`` and an OpenAI-compatible gateway from ``NARE_BASE_URL``,
-    so the role's resolved endpoint picks both, plus the one key that rail reads:
+    Only keys ride ``secrets``. The rail and base URL are not secret and travel
+    in metadata (``endpoint_kind``, ``base_url``), because every secret value is
+    redacted from transcripts and logs, and a provider name there would erase
+    each mention of it. The adapter picks the rail from those fields.
 
-    - self-hosted (``auth_token_env``): the openai rail at ``base_url``, the
-      endpoint's bearer as ``OPENAI_API_KEY``;
-    - native ``anthropic`` or ``openai``: that rail, its key from ``api_key_env``;
-    - no mode: whichever provider keys the daemon holds, and nare's default rail.
+    - self-hosted (a ``base_url``): its ``auth_env`` bearer as ``OPENAI_API_KEY``,
+      and no vendor key, which the gateway must never see;
+    - native ``anthropic`` or ``openai``: that rail's key, from ``api_key_env``;
+    - no mode: whichever provider keys the daemon holds.
     """
     import os
 
     auth_token_env = card_context.get("auth_token_env")
     api_key_env = card_context.get("api_key_env")
     kind = str(card_context.get("endpoint_kind") or "")
-    if auth_token_env:
-        secrets["NARE_PROVIDER"] = "openai"
-        base_url = card_context.get("base_url")
-        if base_url:
-            secrets["NARE_BASE_URL"] = str(base_url)
-        token = os.environ.get(str(auth_token_env), "")
+    if card_context.get("base_url") or auth_token_env:
+        token = os.environ.get(str(auth_token_env), "") if auth_token_env else ""
         if token:
             secrets["OPENAI_API_KEY"] = token
         return
     if kind in {"anthropic", "openai"}:
         key_name = "ANTHROPIC_API_KEY" if kind == "anthropic" else "OPENAI_API_KEY"
-        secrets["NARE_PROVIDER"] = kind
         value = os.environ.get(str(api_key_env or key_name), "")
         if value:
             secrets[key_name] = value

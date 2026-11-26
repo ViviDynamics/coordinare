@@ -221,10 +221,14 @@ class TestExitCodes:
         backend._handle_exit(1)
         assert backend.get_status().state == "error"
 
-    async def test_exit_0_without_result_is_consumable(self) -> None:
+    async def test_exit_0_without_result_is_an_error(self) -> None:
+        """nare writes a result line for every run that started; a run that
+        ends without one crashed, and waiting on it would hang the card."""
         backend = NareBackend()
         backend._handle_exit(0)
-        assert backend.get_status().state != "error"
+        status = backend.get_status()
+        assert status.state == "error"
+        assert "result line" in (status.error_reason or "")
 
 
 @pytest.mark.asyncio
@@ -261,42 +265,56 @@ class TestJobPayload:
         value = payload.secrets.get(name)
         return None if value is None else value.get_secret_value()
 
-    def test_without_a_mode_injects_ambient_keys_and_no_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_without_a_mode_injects_ambient_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "oai")
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
         payload = self._payload({})
         assert self._secret(payload, "OPENAI_API_KEY") == "oai"
-        assert self._secret(payload, "ANTHROPIC_API_KEY") == "anthropic"
-        assert "NARE_PROVIDER" not in payload.secrets
+        assert self._secret(payload, "ANTHROPIC_API_KEY") == "anthropic-key"
 
-    def test_native_anthropic_endpoint_selects_the_anthropic_rail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_rail_settings_never_ride_the_secrets_channel(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Every secret value is redacted from transcripts and logs, so a provider
+        name there would erase each mention of "anthropic" from a run's record."""
+        monkeypatch.setenv("MY_PROXY_KEY", "bearer-token")
+        payload = self._payload({
+            "endpoint_kind": "litellm", "auth_token_env": "MY_PROXY_KEY",
+            "base_url": "http://litellm:4000/v1",
+        })
+        assert set(payload.secrets) <= {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN"}
+        assert payload.metadata["endpoint_kind"] == "litellm"
+        assert payload.metadata["base_url"] == "http://litellm:4000/v1"
+
+    def test_native_anthropic_endpoint_injects_only_its_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "oai")
         monkeypatch.setenv("TEAM_ANTHROPIC_KEY", "team")
         payload = self._payload({"endpoint_kind": "anthropic", "api_key_env": "TEAM_ANTHROPIC_KEY"})
-        assert self._secret(payload, "NARE_PROVIDER") == "anthropic"
         assert self._secret(payload, "ANTHROPIC_API_KEY") == "team"
         assert "OPENAI_API_KEY" not in payload.secrets
-        assert "NARE_BASE_URL" not in payload.secrets
 
-    def test_native_openai_endpoint_selects_the_openai_rail(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic")
+    def test_native_openai_endpoint_injects_only_its_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
         monkeypatch.setenv("ENDPOINT_KEY", "native-key")
         payload = self._payload({"endpoint_kind": "openai", "api_key_env": "ENDPOINT_KEY"})
-        assert self._secret(payload, "NARE_PROVIDER") == "openai"
         assert self._secret(payload, "OPENAI_API_KEY") == "native-key"
         assert "ANTHROPIC_API_KEY" not in payload.secrets
 
-    def test_self_hosted_endpoint_rides_the_openai_rail_with_its_bearer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_self_hosted_endpoint_sends_its_bearer_as_the_openai_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "ambient")
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
         monkeypatch.setenv("MY_PROXY_KEY", "bearer")
         payload = self._payload({
             "endpoint_kind": "litellm", "auth_token_env": "MY_PROXY_KEY",
             "base_url": "http://litellm:4000/v1",
         })
-        assert self._secret(payload, "NARE_PROVIDER") == "openai"
-        assert self._secret(payload, "NARE_BASE_URL") == "http://litellm:4000/v1"
         assert self._secret(payload, "OPENAI_API_KEY") == "bearer"
+        assert "ANTHROPIC_API_KEY" not in payload.secrets
+
+    def test_keyless_self_hosted_endpoint_injects_no_ambient_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An Ollama endpoint with no auth_env must not leak the vendor keys to it."""
+        monkeypatch.setenv("OPENAI_API_KEY", "ambient")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+        payload = self._payload({"endpoint_kind": "ollama", "base_url": "http://localhost:11434/v1"})
+        assert "OPENAI_API_KEY" not in payload.secrets
         assert "ANTHROPIC_API_KEY" not in payload.secrets
 
     def test_absent_keys_stay_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:

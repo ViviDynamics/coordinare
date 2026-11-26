@@ -77,7 +77,7 @@ Not present in either lock closure, because it is not a Python dependency. It is
 - **Licence**: `LicenseRef-Elastic-License-2.0` (first-party, Vivi Dynamics LLC)
 - **Consumed as**: subprocess
 - **Distributed via**: container_image
-- **Rationale**: Installed by `agent/performer/Dockerfile.base` from a pinned, SHA-256 checked release wheel into its own virtualenv at `/opt/nare`, and invoked as a separate process by `agent/performer/src/performer/backends/nare.py` (#360). It is not a Python dependency of coordinare or the performer, so it is absent from both lock closures. It is first-party and released under the same licence as coordinare, with its own LICENSE and NOTICE in the wheel. Its own dependencies in that virtualenv are `anthropic` (Apache-2.0), `mcp` (MIT), `pillow` (MIT-CMU, a permissive notice licence) and the AWS signer `botocore` (Apache-2.0), with their permissive closures; each is redistributed unmodified.
+- **Rationale**: Installed by `agent/performer/Dockerfile.base` from a pinned, SHA-256 checked release wheel, with its dependencies hash-pinned in `agent/performer/nare-requirements.txt`, into its own virtualenv at `/opt/nare`, and invoked as a separate process by `agent/performer/src/performer/backends/nare.py` (#360). It is not a Python dependency of coordinare or the performer, so it is absent from both lock closures. It is first-party and released under the same licence as coordinare, with its own LICENSE and NOTICE in the wheel. Its own dependencies in that virtualenv are `anthropic` (Apache-2.0), `mcp` (MIT), `pillow` (MIT-CMU, a permissive notice licence) and the AWS signer `botocore` (Apache-2.0), with their permissive closures; each is redistributed unmodified.
 
 ## Platform-conditional dependencies
 

@@ -7,8 +7,8 @@ and everything above the transport (tools, the session file, the event stream,
 the result line, exit codes) is nare's own code. No key and no network after
 the wheel is installed.
 
-The wheel is the one ``agent/performer/Dockerfile.base`` installs, checked
-against the same SHA-256, so a release bump that changes the wire is caught here.
+The wheel and its hashed requirements are the ones ``agent/performer/Dockerfile.base``
+installs, so a release bump that changes the wire is caught here.
 """
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from performer.models import Score, Stand
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO / "agent" / "performer" / "Dockerfile.base"
+REQUIREMENTS = REPO / "agent" / "performer" / "nare-requirements.txt"
 
 
 def _pinned_release() -> tuple[str, str]:
@@ -58,7 +59,9 @@ def real_nare(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
         f"https://github.com/ViviDynamics/nare/releases/download/{version}/"
         f"nare-{version}-py3-none-any.whl#sha256={sha}"
     )
-    subprocess.run([uv, "pip", "install", "-q", "--python", str(python), f"nare @ {url}"], check=True)
+    install = [uv, "pip", "install", "-q", "--python", str(python)]
+    subprocess.run([*install, "--require-hashes", "-r", str(REQUIREMENTS)], check=True)
+    subprocess.run([*install, "--no-deps", f"nare @ {url}"], check=True)
     binary = python.parent / "nare"
     out = subprocess.run([str(binary), "--version"], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == version
@@ -110,6 +113,11 @@ async def _run(backend: NareBackend, stand: Stand, score: Score) -> None:
     await backend.start(stand, score, model="fake-model")
     assert backend._reader_task is not None
     await backend._reader_task
+
+
+def test_the_requirements_belong_to_the_pinned_release() -> None:
+    version, _sha = _pinned_release()
+    assert f"# nare {version} runtime dependencies" in REQUIREMENTS.read_text(encoding="utf-8")
 
 
 def test_the_pinned_release_speaks_the_adapters_contract(real_nare: pathlib.Path) -> None:

@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import pathlib
+import shutil
 import signal
 import tempfile
 import uuid
@@ -70,6 +71,13 @@ _EXIT_CONFIG_ERROR = 2
 #: rails refuse it at start.
 _TEMPERATURE_PROVIDERS = frozenset({"openai"})
 
+#: Endpoint kinds that are nare rails of the same name.
+_NATIVE_RAILS = frozenset({"anthropic", "openai"})
+
+#: nare's openai rail refuses to start without OPENAI_API_KEY, and a keyless
+#: gateway (Ollama, a local vLLM) ignores whatever it is sent.
+_KEYLESS_GATEWAY_KEY = "unused"
+
 #: nare's built-in tool names, mapped to the names the 148 activity-feed summary knows.
 _SUMMARY_TOOL_NAMES = {
     "bash": "Bash",
@@ -111,7 +119,11 @@ class NareBackend:
         self._saw_result = False
         self._tuning: dict[str, str | int | float | None] = {}
         self._max_tool_calls: int | None = None
+        self._tool_calls_used = 0
         self._tokens_seen = 0
+        self._tokens_before_resume = 0
+        self._endpoint_kind = ""
+        self._endpoint_base_url = ""
         self._prompt_seq = 0
 
     # ------------------------------------------------------------------
@@ -136,18 +148,25 @@ class NareBackend:
         )
         self._cwd = str(stand.path)
         self._env = env
+        self._endpoint_kind = str(getattr(score, "endpoint_kind", "") or "").strip().lower()
+        self._endpoint_base_url = str(getattr(score, "base_url", "") or "").strip()
+        if self._base_url() and not env.get("OPENAI_API_KEY"):
+            env["OPENAI_API_KEY"] = _KEYLESS_GATEWAY_KEY
         self._tuning = {
             "model": model, "effort": effort,
             "temperature": temperature, "max_tokens": max_tokens,
         }
         self._max_tool_calls = getattr(score, "max_tool_calls", None)
+        self._tool_calls_used = 0
         # 223: a restart after a format failure reuses this instance. It gets a
         # new session file, and get_status() must not return the previous run.
+        self._remove_run_dir()
         self._run_dir = pathlib.Path(tempfile.mkdtemp(prefix="nare-"))
         self._session_path = self._run_dir / f"session-{uuid.uuid4().hex}.json"
         self._status = BackendStatus(state="working")
         self._saw_result = False
         self._tokens_seen = 0
+        self._tokens_before_resume = 0
         task_text = _build_task_prompt(score, stand_path=pathlib.Path(stand.path))
         cmd = self._build_command(task_text, resume=False)
         if score.persona_instructions:
@@ -190,6 +209,8 @@ class NareBackend:
         # its end-of-stream handling against the reset state below.
         await self._cancel_reader()
         await self._terminate()
+        # A resumed process reports its own usage; keep what came before it.
+        self._tokens_before_resume = self._tokens_seen
         cmd = self._build_command(feedback, resume=True)
         transcript.emit("user", text=feedback)
         self._saw_result = False
@@ -198,10 +219,18 @@ class NareBackend:
         log.info("nare.resumed_for_feedback")
 
     async def stop(self) -> None:
-        """Cancel the reader and stop the process group."""
+        """Cancel the reader, stop the process group and remove the run's files."""
         await self._cancel_reader()
         await self._terminate()
+        self._remove_run_dir()
         log.info("nare.stopped")
+
+    def _remove_run_dir(self) -> None:
+        """The persona, every prompt (whole PR diffs) and the session file. A
+        long-lived performer would otherwise keep one directory per job."""
+        if self._run_dir is not None:
+            shutil.rmtree(self._run_dir, ignore_errors=True)
+            self._run_dir = None
 
     async def _cancel_reader(self) -> None:
         if self._reader_task is None or self._reader_task.done():
@@ -223,13 +252,21 @@ class NareBackend:
         path.write_text(text, encoding="utf-8")
         return path
 
+    def _base_url(self) -> str:
+        """The proxy's loopback when it set one (NARE_BASE_URL, proxy/launch.py),
+        else the role's self-hosted endpoint."""
+        return self._env.get("NARE_BASE_URL", "").strip() or self._endpoint_base_url
+
     def _provider(self) -> str | None:
-        provider = self._env.get("NARE_PROVIDER", "").strip()
-        if provider:
-            return provider
-        # A base URL means an OpenAI-compatible gateway: the dual-model proxy,
-        # LiteLLM, vLLM or Ollama. nare's own default rail is anthropic.
-        return "openai" if self._env.get("NARE_BASE_URL", "").strip() else None
+        """The rail. A base URL is always an OpenAI-compatible gateway (the
+        dual-model proxy, LiteLLM, vLLM, Ollama), so it wins even over a native
+        anthropic endpoint the proxy fronts. Then the endpoint's own kind, then
+        an operator's NARE_PROVIDER, then nare's default (anthropic)."""
+        if self._base_url():
+            return "openai"
+        if self._endpoint_kind in _NATIVE_RAILS:
+            return self._endpoint_kind
+        return self._env.get("NARE_PROVIDER", "").strip() or None
 
     def _build_command(self, prompt: str, *, resume: bool) -> list[str]:
         """The argv for one invocation. A resume repeats the run flags, since a
@@ -246,7 +283,7 @@ class NareBackend:
         provider = self._provider()
         if provider:
             cmd += ["--provider", provider]
-        base_url = self._env.get("NARE_BASE_URL", "").strip()
+        base_url = self._base_url()
         if base_url:
             cmd += ["--base-url", base_url]
         tuning = self._tuning
@@ -266,7 +303,12 @@ class NareBackend:
         if effort:
             cmd += ["--effort", str(effort)]
         if self._max_tool_calls is not None:
-            cmd += ["--max-tool-calls", str(self._max_tool_calls)]
+            # nare counts the cap per process, so a resume gets what is left.
+            remaining = self._max_tool_calls - self._tool_calls_used
+            if remaining > 0:
+                cmd += ["--max-tool-calls", str(remaining)]
+            else:
+                cmd += ["--tools", "none"]
         return cmd
 
     async def _spawn(self, cmd: list[str]) -> None:
@@ -305,7 +347,8 @@ class NareBackend:
         try:
             await asyncio.wait_for(self._proc.wait(), timeout=5.0)
         except TimeoutError:
-            pass
+            # stdout closed but the process lives on: it cannot report anything now.
+            await self._terminate()
         if not self._saw_result:
             self._handle_exit(self._proc.returncode or 0)
             self._record_outcome(None)
@@ -430,6 +473,7 @@ class NareBackend:
             etype = BackendEventType.output
         tool_result = _tool_result(detail)
         if etype == BackendEventType.tool_use:
+            self._tool_calls_used += 1
             tool = str(event.get("text", "")) or "tool"
             self._event_buffer.append(BackendEvent(
                 type=etype, text=text, detail=tool, call_id=call_id, tool=tool,
@@ -462,7 +506,8 @@ class NareBackend:
         stop_reason = result.get("stop_reason")
         usage = result.get("usage")
         error = result.get("error")
-        tokens = _usage_tokens(usage)
+        run_tokens = _usage_tokens(usage)
+        tokens = (self._tokens_before_resume + run_tokens) if run_tokens else (self._tokens_seen or None)
         if status == "done":
             self._status = BackendStatus(
                 state="done",
@@ -502,6 +547,14 @@ class NareBackend:
         if self._status.state != "working":
             return
         tail = " | ".join(list(self._log_buffer)[-10:])
+        if returncode == 0:
+            # nare writes a result line for every run that started, so a clean
+            # exit without one is a crash; waiting on it would hang the card.
+            reason = "nare exited without a result line"
+            self._status = BackendStatus(
+                state="error", error_reason=f"{reason}: {tail}" if tail else reason,
+            )
+            return
         if returncode == _EXIT_CONFIG_ERROR:
             # Never started: say why, from nare's stderr, and do not retry.
             log.error("nare.config_error", stderr_tail=tail)
