@@ -286,30 +286,36 @@ class NareBackend:
         base_url = self._base_url()
         if base_url:
             cmd += ["--base-url", base_url]
+        cmd += self._tuning_flags(provider)
+        cmd += self._tool_cap_flags()
+        return cmd
+
+    def _tuning_flags(self, provider: str | None) -> list[str]:
         tuning = self._tuning
+        flags: list[str] = []
         model = tuning.get("model")
-        effort = tuning.get("effort")
-        temperature = tuning.get("temperature")
-        max_tokens = tuning.get("max_tokens")
         if model:
-            cmd += ["--model", str(model)]
+            flags += ["--model", str(model)]
+        temperature = tuning.get("temperature")
         if temperature is not None:
             if provider in _TEMPERATURE_PROVIDERS:
-                cmd += ["--temperature", str(temperature)]
+                flags += ["--temperature", str(temperature)]
             else:
                 log.info("nare.temperature_dropped", provider=provider or "anthropic")
+        max_tokens = tuning.get("max_tokens")
         if max_tokens is not None:
-            cmd += ["--max-tokens", str(max_tokens)]
+            flags += ["--max-tokens", str(max_tokens)]
+        effort = tuning.get("effort")
         if effort:
-            cmd += ["--effort", str(effort)]
-        if self._max_tool_calls is not None:
-            # nare counts the cap per process, so a resume gets what is left.
-            remaining = self._max_tool_calls - self._tool_calls_used
-            if remaining > 0:
-                cmd += ["--max-tool-calls", str(remaining)]
-            else:
-                cmd += ["--tools", "none"]
-        return cmd
+            flags += ["--effort", str(effort)]
+        return flags
+
+    def _tool_cap_flags(self) -> list[str]:
+        """nare counts --max-tool-calls per process, so a resume gets what is left."""
+        if self._max_tool_calls is None:
+            return []
+        remaining = self._max_tool_calls - self._tool_calls_used
+        return ["--max-tool-calls", str(remaining)] if remaining > 0 else ["--tools", "none"]
 
     async def _spawn(self, cmd: list[str]) -> None:
         self._proc = await asyncio.create_subprocess_exec(
