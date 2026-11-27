@@ -2801,7 +2801,6 @@ async def _phase_token_limit(
     card = ctx.card
     card_id = ctx.card_id
     config = ctx.config
-    github = ctx.github
     issue_id = ctx.issue_id
     marker = ctx.marker
     reason = ctx.reason
@@ -2809,7 +2808,6 @@ async def _phase_token_limit(
     status = ctx.status
     # --- Token-cap exhaustion (055) ---
     if marker == "token_limit":
-        from coordinare.services.attempt_telemetry import close_attempt
         close_attempt(state, "timeout", "system", "blocked")
         reason = str(status.get("reason", ""))
         from coordinare.graph.nodes.dispatch_performer import _persona_role_for_stage
@@ -2838,11 +2836,13 @@ async def _phase_token_limit(
             max_tokens=current_max,
             reason=reason,
         )
-        if github is not None:
+        # 396: the notice is a work item write, so it goes through the board.
+        board_provider = ctx.board_provider
+        if board_provider is not None:
             try:
                 issue_id = card.get("issue_id") or card.get("content_id")
                 if issue_id:
-                    await github.add_comment(
+                    await board_provider.add_card_comment(
                         str(issue_id),
                         f"**Performer blocked — output token limit reached**\n\n{advice}",
                     )
