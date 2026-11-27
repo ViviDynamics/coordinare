@@ -460,4 +460,94 @@ class TestRunCell:
         assert row["raw_file"] == "cells/qa__nare-ephemeral.raw.jsonl"
         assert (tmp_path / row["raw_file"]).read_text().count("\n") == 1
         assert (tmp_path / row["log_file"]).is_file()
-        assert ["docker", "rm", "-f"] == docker_calls[-1][:3]
+        assert docker_calls[-1][:3] == ["docker", "rm", "-f"]
+
+
+
+# --------------------------------------------------------------------------
+# Review round 1.
+# --------------------------------------------------------------------------
+class TestReviewRound1:
+    def test_failed_clone_never_carries_the_token(self, monkeypatch, tmp_path):
+        def run(argv, **kw):
+            raise subprocess.CalledProcessError(128, argv, stderr=b"fatal: auth")
+
+        monkeypatch.setattr(persona_bench.subprocess, "run", run)
+        with pytest.raises(RuntimeError) as err:
+            persona_bench.clone_snapshot(REPO_URL, "ghs_SECRET", tmp_path / "r")
+        assert "ghs_SECRET" not in str(err.value)
+        assert err.value.__cause__ is None
+
+    def test_clone_puts_the_token_in_env_not_argv(self, monkeypatch, tmp_path):
+        seen = []
+
+        class P:
+            stdout = "abc\0"
+
+        def run(argv, **kw):
+            seen.append((argv, kw.get("env") or {}))
+            return P()
+
+        monkeypatch.setattr(persona_bench.subprocess, "run", run)
+        persona_bench.clone_snapshot(REPO_URL, "ghs_SECRET", tmp_path / "r")
+        clone_argv, clone_env = seen[0]
+        assert "ghs_SECRET" not in " ".join(clone_argv)
+        assert any("ghs_SECRET" not in v and k.startswith("GIT_CONFIG") for k, v in clone_env.items())
+
+    def test_paths_with_spaces_survive_the_inventory(self, snapshot):
+        repo, _commit, _paths = snapshot
+        (repo / "docs").mkdir()
+        (repo / "docs" / "Getting Started.md").write_text("x")
+        env = {"GIT_AUTHOR_NAME": "b", "GIT_AUTHOR_EMAIL": "b@example.invalid",
+               "GIT_COMMITTER_NAME": "b", "GIT_COMMITTER_EMAIL": "b@example.invalid", "PATH": "/usr/bin:/bin"}
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True, env=env)
+        subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "y"], check=True, env=env)
+        _c, paths = persona_bench.clone_snapshot(str(repo), "", repo.parent / "clone")
+        assert "docs/Getting Started.md" in paths
+
+    def test_pre_080_gateway_endpoint_keeps_the_master_key(self):
+        ctx = persona_bench.build_card_context(
+            _task("reviewer"), backend="claude_code", repo_url=REPO_URL, branch="b", model="m")
+        payload = persona_bench.build_job_payload(
+            ctx, gh_token="t", dotenv={"LITELLM_MASTER_KEY": "sk-master", "ANTHROPIC_API_KEY": "sk-vendor"})
+        assert payload["secrets"]["ANTHROPIC_AUTH_TOKEN"] == "sk-master"
+        assert "ANTHROPIC_API_KEY" not in payload["secrets"]
+        codex = persona_bench.build_job_payload(
+            {**ctx, "backend": "codex"}, gh_token="t",
+            dotenv={"LITELLM_MASTER_KEY": "sk-master", "OPENAI_API_KEY": "sk-vendor"})
+        assert codex["secrets"]["OPENAI_API_KEY"] == "sk-master"
+
+    def test_a_routed_mode_keeps_the_production_secrets(self):
+        ctx = persona_bench.build_card_context(
+            _task("reviewer"), backend="codex", repo_url=REPO_URL, branch="b", model="m",
+            model_block={"base_url": "https://gw.example/v1", "auth_token_env": "GW_KEY"})
+        payload = persona_bench.build_job_payload(
+            ctx, gh_token="t", dotenv={"LITELLM_MASTER_KEY": "sk-master", "GW_KEY": "sk-gw"})
+        assert payload["secrets"]["OPENAI_API_KEY"] == "sk-gw"
+
+    def test_role_tuning_and_workflow_env_ride_the_context(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "github_org: o\nhuman_reviewers: [a]\ngithub_auth: pat\ngithub_token: ghp_x\n"
+            "endpoints:\n  - {name: gw, kind: litellm, base_url: 'https://gw.example', auth_env: GW_KEY}\n"
+            "model_endpoints:\n  - {name: m1, endpoint: gw, model: m-1}\n"
+            "modes:\n  - {name: solo, strategy: single, tool: m1}\n"
+            "performers:\n  default: {backend: nare, mode: solo}\n"
+            "  qa: {backend: nare, mode: solo, effort: high, workflow: qa, workflow_env: {QA_X: '1'}}\n")
+        out = persona_bench.resolve_role_dispatch(str(cfg), "qa")
+        assert out["workflow"] == "qa"
+        assert out["workflow_env"] == {"QA_X": "1"}
+        assert out["tuning"].get("effort") == "high"
+        ctx = persona_bench.build_card_context(
+            _task("qa"), backend="nare", repo_url=REPO_URL, branch="b", model=out["model"],
+            model_block=out["model_block"], workflow=out["workflow"],
+            workflow_env=out["workflow_env"], tuning=out["tuning"])
+        assert ctx["workflow_env"] == {"QA_X": "1"}
+        assert ctx["effort"] == "high"
+        assert ctx["endpoint_kind"] == "litellm"
+
+    def test_a_bad_advocate_repo_is_a_harness_failure(self):
+        with pytest.raises(persona_bench.BenchSetupError):
+            persona_bench.prepare_cell(
+                _task("advocate"), backend="nare", repo_url="git@example.com:o/r.git", gh_token="t",
+                dispatch={"model": "m"}, persona=None, prs={}, dotenv={}, judge_cfg=None, config_path=None)

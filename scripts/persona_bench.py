@@ -595,27 +595,36 @@ def resolve_role_dispatch(config_path: str, role: str,
     391: ``model_block`` is everything ``resolve_performer_dispatch_model`` returns
     (``endpoint_kind``, ``base_url``, ``auth_token_env``, ``api_key_env``,
     ``reasoning_policy``), which production spreads into the card context and the
-    nare adapter reads to pick its rail."""
+    nare adapter reads to pick its rail. ``workflow_env`` and ``tuning`` (effort,
+    thinking, temperature) are what ``_apply_role_tuning`` adds."""
     model = ""
     orchestration = None
     model_block: dict = {}
     workflow = ""
+    workflow_env: dict = {}
+    tuning: dict = {}
     try:
         from coordinare.config import ProjectConfiguration
+        from coordinare.env_placeholders import operator_workflow_env
+        from coordinare.services.performer_tuning import translate_tuning
         pc = ProjectConfiguration.from_yaml(config_path)
         model_block = dict(pc.resolve_performer_dispatch_model(role) or {})
         model = model_block.get("model", "") or ""
         orchestration = pc.resolve_performer_orchestration(role)
         rc = pc.performers.resolved_role(role)
-        workflow = str(getattr(rc, "workflow", "") or "") if rc is not None else ""
+        if rc is not None:
+            workflow = str(getattr(rc, "workflow", "") or "")
+            if getattr(rc, "workflow_env", None):
+                workflow_env = operator_workflow_env(rc)
+            tuning = dict(translate_tuning(rc))
     except Exception:
         pass
     if not model and cfg is not None:
         rc = (cfg.get("performers", {}) or {}).get(role)
         if isinstance(rc, dict) and rc.get("model"):
             model = str(rc["model"])
-    return {"model": model, "orchestration": orchestration,
-            "model_block": model_block, "workflow": workflow}
+    return {"model": model, "orchestration": orchestration, "model_block": model_block,
+            "workflow": workflow, "workflow_env": workflow_env, "tuning": tuning}
 
 
 def _prod_persona(role: str, config_path: str | None) -> str | None:
@@ -648,29 +657,35 @@ TRANSCRIPT_MAX_BYTES = 8 * 1024 * 1024
 def build_card_context(task: RoleTask, *, backend: str, repo_url: str, branch: str,
                        model: str, model_block: dict | None = None,
                        orchestration: dict | None = None, workflow: str = "",
+                       workflow_env: dict | None = None, tuning: dict | None = None,
                        pr_url: str | None = None, persona: str | None = None,
                        extra: dict | None = None) -> dict:
     """The card context a lifecycle dispatch hands the transport (391).
 
-    Same keys ``dispatch_performer`` sets: ``id``, ``role``, ``backend``,
-    ``persona_instructions``, the card text, the role's model block spread in,
-    ``orchestration`` for non-single strategies, ``workflow`` when the role runs
-    one, and ``pr_url`` for PR roles. ``extra`` carries the PR context
-    (``pr_card_context``)."""
+    The keys ``dispatch_performer`` sets for a github.com card: ``id``, ``role``,
+    ``backend``, ``persona_instructions``, the card text, ``workflow`` and
+    ``workflow_env`` when the role runs one, the role's model block spread in,
+    ``orchestration`` for non-single strategies, the role tuning, and ``pr_url``
+    for PR roles. ``extra`` carries the PR context (``pr_card_context``). Not
+    set: the GitHub Enterprise URLs, board state, disputes and other card
+    history a first dispatch has none of."""
     context: dict = {
         "id": f"bench-{task.label}", "role": task.role, "backend": backend,
         "persona_instructions": persona or task.persona,
         "repo_url": repo_url, "branch": branch,
         "title": task.title, "description": task.description,
         "acceptance_criteria": task.acceptance,
-        **(model_block or {}),
     }
+    if workflow:
+        context["workflow"] = workflow
+    if workflow_env:
+        context["workflow_env"] = dict(workflow_env)
+    context.update(model_block or {})
     if model:
         context["model"] = model
     if orchestration is not None:
         context["orchestration"] = orchestration
-    if workflow:
-        context["workflow"] = workflow
+    context.update(tuning or {})
     if pr_url:
         context["pr_url"] = pr_url
     context.update(extra or {})
@@ -712,11 +727,34 @@ def build_job_payload(card_context: dict, *, gh_token: str, dotenv: dict | None 
                              github_token=gh_token)
     with _daemon_env(dotenv or {}):
         payload = _build(card_context, info)
+        master = (os.environ.get("LITELLM_MASTER_KEY") or "").strip()
     wire = payload.model_dump(mode="json", exclude={"secrets"})
     wire["secrets"] = {k: v.get_secret_value() for k, v in payload.secrets.items()}
+    _legacy_gateway_key(wire, card_context, master)
     if transcript_max_bytes is not None:
         wire["transcript_max_bytes"] = transcript_max_bytes
     return wire
+
+
+def _legacy_gateway_key(wire: dict, card_context: dict, master: str) -> None:
+    """Keep the pre-391 bench's gateway key for an endpoint with no routed mode.
+
+    A pre-080 bench config points codex or claude_code at the gateway through
+    the endpoint's container env and has no mode for the builder to route by,
+    so the builder would send the vendor keys from ``.env``, which the
+    performer prefers over the container env. As the bench always did, the
+    gateway's master key goes in their place. A routed mode is left alone."""
+    backend = str(card_context.get("backend") or "").replace("-", "_")
+    routed = any(card_context.get(k) for k in ("base_url", "auth_token_env", "api_key_env"))
+    if routed or not master or backend not in ("codex", "claude_code"):
+        return
+    secrets = wire["secrets"]
+    if backend == "codex":
+        secrets["OPENAI_API_KEY"] = master
+    else:
+        secrets.pop("ANTHROPIC_API_KEY", None)
+        secrets["ANTHROPIC_AUTH_TOKEN"] = master
+    wire.setdefault("metadata", {})["environment_secret_names"] = sorted(secrets)
 
 
 # ---------------------------------------------------------------------------
@@ -786,21 +824,35 @@ BOOTSTRAP_SYMPHONY = "conductor-bench"
 BOOTSTRAP_CACHE_PATH = f"/devenv/{BOOTSTRAP_SYMPHONY}"
 
 
-def _authed_clone_url(repo_url: str, token: str) -> str:
+def _git_auth_env(repo_url: str, token: str) -> dict[str, str]:
+    """The process env with the token as a git http header, never in argv."""
+    import base64
+
+    env = dict(os.environ)
     if token and repo_url.startswith("https://"):
-        return repo_url.replace("https://", f"https://x-access-token:{token}@", 1)
-    return repo_url
+        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        env.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraHeader",
+                    "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}"})
+    return env
 
 
 def clone_snapshot(repo_url: str, token: str, dest: Path) -> tuple[str, list[str]]:
-    """Shallow-clone the default branch; return ``(commit, tracked paths)``."""
-    subprocess.run(["git", "clone", "-q", "--depth", "1", _authed_clone_url(repo_url, token), str(dest)],
-                   check=True, capture_output=True, timeout=120)
-    commit = subprocess.run(["git", "-C", str(dest), "rev-parse", "HEAD"], check=True,
-                            capture_output=True, text=True).stdout.strip()
-    paths = subprocess.run(["git", "-C", str(dest), "ls-tree", "-r", "--name-only", "HEAD"], check=True,
-                           capture_output=True, text=True).stdout.split()
-    return commit, paths
+    """Shallow-clone the default branch; return ``(commit, tracked paths)``.
+
+    The token rides the env, and a failure is reported without the command, so
+    nothing secret reaches the results."""
+    try:
+        subprocess.run(["git", "clone", "-q", "--depth", "1", repo_url, str(dest)],
+                       check=True, capture_output=True, timeout=120, env=_git_auth_env(repo_url, token))
+        commit = subprocess.run(["git", "-C", str(dest), "rev-parse", "HEAD"], check=True,
+                                capture_output=True, text=True).stdout.strip()
+        listing = subprocess.run(["git", "-C", str(dest), "ls-tree", "-r", "-z", "--name-only", "HEAD"],
+                                 check=True, capture_output=True, text=True).stdout
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"git failed to read the fixture snapshot (exit {exc.returncode})") from None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("git timed out reading the fixture snapshot") from None
+    return commit, [p for p in listing.split("\0") if p]
 
 
 def discovery_chat(config_path: str | None, dotenv: dict, judge_cfg: dict | None):
@@ -1089,6 +1141,8 @@ def prepare_cell(task: RoleTask, *, backend: str, repo_url: str, gh_token: str,
     model_block = dict(dispatch.get("model_block") or {})
     orchestration = dispatch.get("orchestration")
     workflow = str(dispatch.get("workflow") or "")
+    workflow_env = dict(dispatch.get("workflow_env") or {})
+    tuning = dict(dispatch.get("tuning") or {})
     if task.dispatch == "bootstrap":
         chat = discovery_chat(config_path, dotenv, judge_cfg)
         if chat is None:
@@ -1104,10 +1158,19 @@ def prepare_cell(task: RoleTask, *, backend: str, repo_url: str, gh_token: str,
                     orchestration=orchestration, workflow=workflow)
             except Exception as exc:
                 raise BenchSetupError(f"environment discovery did not accept: {exc}"[:240]) from exc
+        # The daemon's bootstrap dispatch adds the role's effort and temperature,
+        # and its workflow env when the role runs a workflow.
+        context.update({k: tuning[k] for k in ("effort", "temperature") if tuning.get(k) is not None})
+        if workflow:
+            context["workflow_env"] = workflow_env
         return PreparedCell(context)
     if task.dispatch == "intake":
-        context = advocate_card_context(repo_url=repo_url, backend=backend, persona=persona,
-                                        model_block={**model_block, "model": model}, config_path=config_path)
+        try:
+            context = advocate_card_context(repo_url=repo_url, backend=backend, persona=persona,
+                                            model_block={**model_block, "model": model},
+                                            config_path=config_path)
+        except Exception as exc:
+            raise BenchSetupError(f"advocate dispatch could not be built: {exc}"[:240]) from exc
         if orchestration is not None:
             context["orchestration"] = orchestration
         try:
@@ -1159,7 +1222,7 @@ def prepare_cell(task: RoleTask, *, backend: str, repo_url: str, gh_token: str,
     context = build_card_context(
         task, backend=backend, repo_url=repo_url, branch=branch, model=model,
         model_block=model_block, orchestration=orchestration, workflow=workflow,
-        pr_url=pr_url, persona=persona, extra=extra)
+        workflow_env=workflow_env, tuning=tuning, pr_url=pr_url, persona=persona, extra=extra)
     return PreparedCell(context, cleanups=cleanups)
 
 

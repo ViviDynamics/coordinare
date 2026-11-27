@@ -55,6 +55,10 @@ class TestReportedFailures:
     def test_not_a_list_is_nothing(self):
         assert _qa_reported_failures("KeyError") == []
 
+    @pytest.mark.parametrize("placeholder", ["None", "n/a", "N/A", "none.", "No failures", "nothing", "-", "[]"])
+    def test_a_placeholder_for_no_failures_is_not_a_defect(self, placeholder):
+        assert _qa_reported_failures([placeholder]) == []
+
 
 class TestExecutionEvidence:
     @pytest.mark.parametrize("entry", [
@@ -63,6 +67,8 @@ class TestExecutionEvidence:
         {"command": "pytest -q", "exitCode": 1},
         {"command": "pytest -q", "exit_status": "1"},
         {"command": "pytest -q", "return_code": 1},
+        {"command": "", "cmd": "pytest -q", "exit_code": 1},
+        {"command": "pytest -q", "exit_code": "", "returncode": 1},
     ])
     def test_common_key_spellings_are_evidence(self, entry):
         checks = _qa_execution_evidence({"executed_checks": [entry]})
@@ -70,10 +76,16 @@ class TestExecutionEvidence:
         assert checks[0]["command"] == "pytest -q"
         assert checks[0]["exit_code"] == 1
 
+    @pytest.mark.parametrize(("value", "expected"), [
+        (0.0, 0), ("0 (passed)", "0 (passed)"), ("exit 0", "exit 0"), (2, 2), ("3", 3),
+    ])
+    def test_exit_code_shapes_accepted_before_still_count(self, value, expected):
+        checks = _qa_execution_evidence({"executed_checks": [{"command": "pytest -q", "exit_code": value}]})
+        assert [c["exit_code"] for c in checks] == [expected]
+
     @pytest.mark.parametrize("entry", [
         {"command": "pytest -q"},
         {"command": "pytest -q", "exit_code": None},
-        {"command": "pytest -q", "exit_code": "failed"},
         {"command": "", "exit_code": 0},
         "pytest -q",
     ])

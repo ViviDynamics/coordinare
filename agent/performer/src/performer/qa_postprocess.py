@@ -1258,21 +1258,32 @@ _CHECK_EXIT_KEYS = ("exit_code", "exitCode", "returncode", "return_code", "exit_
 
 
 def _first_present(entry: dict, keys: tuple[str, ...]) -> object:
+    """The first value under *keys* that is neither missing nor empty."""
     for key in keys:
-        if entry.get(key) is not None:
-            return entry[key]
+        value = entry.get(key)
+        if value is not None and not (isinstance(value, str) and not value.strip()):
+            return value
     return None
 
 
-def _exit_code(value: object) -> int | None:
-    """An integer exit code, or None when there is none to record."""
-    if isinstance(value, bool):
+def _exit_code(value: object) -> object:
+    """The recorded exit code, as an int where it reads as one; None when absent.
+
+    Any recorded value counts, as before 391; only an empty one does not.
+    """
+    if value is None:
         return None
-    if isinstance(value, int):
-        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
     if isinstance(value, str) and value.strip().lstrip("-").isdigit():
         return int(value.strip())
-    return None
+    return value
+
+
+#: Strings a model writes in ``failures`` to mean there are none.
+_NO_FAILURE_PLACEHOLDERS = frozenset({
+    "none", "n/a", "na", "no failures", "no failure", "nothing", "-", "[]", "null",
+})
 
 
 def _qa_reported_failures(raw: object) -> list[dict]:
@@ -1290,6 +1301,8 @@ def _qa_reported_failures(raw: object) -> list[dict]:
             kept.append(entry)
         elif isinstance(entry, str) and entry.strip():
             text = entry.strip()
+            if text.lower().rstrip(".") in _NO_FAILURE_PLACEHOLDERS:
+                continue
             kept.append({"criterion": "QA reported failure", "actual": text, "message": text})
     return kept
 
