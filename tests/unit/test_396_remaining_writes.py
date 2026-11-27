@@ -278,3 +278,145 @@ def test_the_dispatch_payload_says_coordinare_posts_work_item_comments() -> None
     context, _ = _base_card_context({}, {"id": "PAY-7"}, "PAY-7", "qa")
 
     assert context["work_item_comments_by_coordinare"] is True
+
+
+# --- blocker state from the listing ---------------------------------------------------------------
+
+
+class _Listing:
+    """A GitHub Projects service whose listing names an off-board blocker in a body."""
+
+    def __init__(
+        self, states: dict[int, str] | None = None, *, raises: bool = False,
+        body: str = "Depends on #999. Depends on #51. Depends on #50",
+    ) -> None:
+        self.asked: list[tuple[str, int]] = []
+        self._states = states or {}
+        self._raises = raises
+        self._body = body
+
+    async def poll_board(self) -> dict[str, Any]:
+        return {
+            "snapshot": {"TODO": ["ITEM_X", "ITEM_Y"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []},
+            "titles": {"ITEM_X": "Some feature", "ITEM_Y": "Other"},
+            "descriptions": {"ITEM_X": self._body, "ITEM_Y": ""},
+            "issue_numbers": {"ITEM_X": 50, "ITEM_Y": 51},
+            "issue_urls": {},
+            "content_node_ids": {},
+        }
+
+    async def check_issue_state(self, repo: str, issue_number: int) -> str:
+        self.asked.append((repo, issue_number))
+        if self._raises:
+            raise RuntimeError("network")
+        return self._states.get(issue_number, "open")
+
+
+class TestBlockerStateFromTheListing:
+    @pytest.mark.asyncio
+    async def test_github_projects_lists_the_state_of_an_off_board_blocker(self) -> None:
+        from coordinare.services.work_items import CLOSED, work_items_of
+
+        github = _Listing({999: "closed"})
+        board = await GitHubProjectsBoardProvider(github, repo="o/r").poll_board()
+
+        # Only the off-board blocker is read: #51 is on the board and #50 is the item itself.
+        assert github.asked == [("o/r", 999)]
+        blockers = {b.ref: b.state for b in work_items_of(board)["ITEM_X"].blockers}
+        assert blockers["#999"] == CLOSED
+
+    @pytest.mark.asyncio
+    async def test_the_repository_defaults_to_the_service_s_own(self) -> None:
+        github = _Listing({999: "closed"})
+        github.org, github.project_name = "acme", "web"  # type: ignore[attr-defined]
+
+        await GitHubProjectsBoardProvider(github).poll_board()
+
+        assert github.asked == [("acme/web", 999)]
+
+    @pytest.mark.asyncio
+    async def test_with_no_repository_nothing_is_read(self) -> None:
+        github = _Listing({999: "closed"})
+        await GitHubProjectsBoardProvider(github).poll_board()
+        assert github.asked == []
+
+    @pytest.mark.asyncio
+    async def test_a_read_that_raises_is_a_transient_failure_not_a_failed_poll(self) -> None:
+        from coordinare.services.work_items import UNAVAILABLE, work_items_of
+
+        board = await GitHubProjectsBoardProvider(_Listing(raises=True), repo="o/r").poll_board()
+
+        blockers = {b.ref: b.state for b in work_items_of(board)["ITEM_X"].blockers}
+        assert blockers["#999"] == UNAVAILABLE
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("github_state", "expected"),
+        [("closed", "satisfied"), ("open", "unresolvable"), ("not_found", "unresolvable"),
+         ("api_error", "pending"), ("auth_error", "pending")],
+    )
+    async def test_the_graph_reads_the_listed_state_as_the_github_check_did(
+        self, github_state: str, expected: str,
+    ) -> None:
+        from coordinare.services.dependency import build_graph, resolve_off_board_dependencies
+
+        board = await GitHubProjectsBoardProvider(_Listing({999: github_state}), repo="o/r").poll_board()
+        graph = build_graph(board, repo="o/r")
+        github = _Listing({999: "closed"})  # what a second read would say; it must not happen
+        await resolve_off_board_dependencies(graph, github, "o/r")
+
+        dep = next(d for d in graph.dependencies if d.blocker_issue_number == 999)
+        assert dep.status == expected
+        assert github.asked == []
+
+    @pytest.mark.asyncio
+    async def test_a_comment_blocker_the_listing_knows_takes_the_listed_state(self) -> None:
+        from coordinare.models.dependency import CardDependency, DependencySource, DependencyStatus
+        from coordinare.services.dependency import _index, build_graph, resolve_off_board_dependencies
+
+        board = await GitHubProjectsBoardProvider(_Listing({999: "closed"}), repo="o/r").poll_board()
+        graph = build_graph(board, repo="o/r")
+        _index(graph, CardDependency(
+            dependent_item_id="ITEM_Y", blocker_issue_number=999,
+            source=DependencySource.COMMENT, status=DependencyStatus.UNRESOLVABLE,
+        ))
+        github = _Listing({999: "open"})
+        await resolve_off_board_dependencies(graph, github, "o/r")
+
+        assert all(d.status == DependencyStatus.SATISFIED for d in graph.by_blocker[999])
+        assert github.asked == []
+
+    @pytest.mark.asyncio
+    async def test_check_board_takes_the_blocker_state_from_the_provider(self) -> None:
+        from types import SimpleNamespace
+
+        from coordinare.graph.nodes.check_board import check_board
+        from coordinare.graph.state import initial_state
+
+        listing = _Listing({999: "closed"}, body="Depends on #999")
+        code_host = _Listing({999: "open"}, body="Depends on #999")
+        state = initial_state()
+        state["github_service"] = code_host
+        state["board_provider"] = GitHubProjectsBoardProvider(listing, repo="TestOrg/test-repo")
+        state["config"] = SimpleNamespace(
+            github_org="TestOrg", project_name="test-repo",
+            max_concurrent_cards=1, priority=SimpleNamespace(field_name=""),
+        )
+
+        result = await check_board(state)
+
+        assert listing.asked == [("TestOrg/test-repo", 999)]
+        assert code_host.asked == []
+        assert result["phase"] == "dispatching"
+        assert result["current_card"]["id"] == "ITEM_X"
+
+    def test_a_derived_board_reads_blockers_in_the_configured_repository(self) -> None:
+        from types import SimpleNamespace
+
+        from coordinare.services.board_provider import board_of
+
+        state = {"github_service": _Listing(), "config": SimpleNamespace(github_org="TestOrg", project_name="r")}
+        board = board_of(state)
+
+        assert isinstance(board, GitHubProjectsBoardProvider)
+        assert board.repo == "TestOrg/r"

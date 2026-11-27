@@ -47,6 +47,7 @@ from typing import Any, Protocol, runtime_checkable
 import structlog
 
 from coordinare.services.card_identity import CardIdentityMap
+from coordinare.services.work_items import unlisted_text_blockers
 
 logger = structlog.get_logger(__name__)
 
@@ -164,8 +165,22 @@ class GitHubProjectsBoardProvider:
     will not have issues, and the translation costs one line each.
     """
 
-    def __init__(self, github: Any) -> None:
+    def __init__(self, github: Any, repo: str = "") -> None:
         self._github = github
+        self._repo = repo
+
+    @property
+    def repo(self) -> str:
+        """The ``owner/name`` the board's ``#N`` references live in (396).
+
+        Given, or else the service's own (``GitHubService`` carries the
+        symphony's org and repository). Empty when neither knows it, and then
+        no blocker state is read.
+        """
+        if self._repo:
+            return self._repo
+        org, name = getattr(self._github, "org", ""), getattr(self._github, "project_name", "")
+        return f"{org}/{name}" if isinstance(org, str) and isinstance(name, str) and org and name else ""
 
     @property
     def github(self) -> Any:
@@ -181,7 +196,29 @@ class GitHubProjectsBoardProvider:
 
     async def poll_board(self) -> dict[str, Any]:
         board: dict[str, Any] = await self._github.poll_board()
-        return board
+        states = await self._blocker_states(board)
+        return {**board, "blocker_states": states} if states else board
+
+    async def _blocker_states(self, board: dict[str, Any]) -> dict[int, str]:
+        """The state of each off-board issue a body names as a blocker (396).
+
+        The listing carries blocker state, so the dependency check reads it from
+        there rather than asking GitHub itself. The same call it made
+        (``check_issue_state``), one per issue. A read that raises is reported as
+        GitHub's own transient answer, so one bad issue cannot fail the poll.
+        """
+        check = getattr(self._github, "check_issue_state", None)
+        repo = self.repo
+        if not callable(check) or not repo:
+            return {}
+        states: dict[int, str] = {}
+        for number in unlisted_text_blockers(board):
+            try:
+                states[number] = str(await check(repo, number))
+            except Exception as exc:
+                logger.warning("board.blocker_state_failed", issue_number=number, error=str(exc))
+                states[number] = "api_error"
+        return states
 
     async def move_card(self, card_id: str, status: str) -> MoveOutcome:
         # GitHub Projects has no workflow rules, so a move that reaches the API
@@ -274,7 +311,13 @@ def board_of(state: Any, service: Any = None) -> BoardProvider | None:
     github = service if service is not None else state.get("github_service")
     if github is None:
         return None
-    return GitHubProjectsBoardProvider(github)
+    return GitHubProjectsBoardProvider(github, repo=_configured_repo(state.get("config")))
+
+
+def _configured_repo(config: Any) -> str:
+    """``owner/name`` from the symphony's config, as the dependency check builds it."""
+    org, name = getattr(config, "github_org", ""), getattr(config, "project_name", "")
+    return f"{org}/{name}" if isinstance(org, str) and isinstance(name, str) and org and name else ""
 
 
 async def move_card_or_warn(
