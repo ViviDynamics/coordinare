@@ -452,3 +452,33 @@ class TestBlockerStateFromTheListing:
 
         assert isinstance(board, GitHubProjectsBoardProvider)
         assert board.repo == "TestOrg/r"
+
+
+def test_coordinare_s_wire_model_keeps_the_comment() -> None:
+    """The subprocess transport reads the performer's reply into ProtocolResponse."""
+    from coordinare.protocol import ProtocolResponse
+
+    reply = ProtocolResponse.model_validate({"status": "qa_passed", "work_item_comment": "## QA Evidence"})
+
+    assert reply.model_dump()["work_item_comment"] == "## QA Evidence"
+
+
+@pytest.mark.asyncio
+async def test_a_blocker_on_a_card_in_an_unmapped_column_is_read_as_off_board() -> None:
+    """Its card is not listed under any status, so the board cannot say whether it is done."""
+    from coordinare.services.dependency import build_graph
+    from coordinare.services.work_items import CLOSED, work_items_of
+
+    listing = await _Listing(body="Depends on #51").poll_board()
+    listing["snapshot"] = {"TODO": ["ITEM_X"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []}
+
+    class _Unmapped(_Listing):
+        async def poll_board(self) -> dict[str, Any]:
+            return listing
+
+    unmapped = _Unmapped({51: "closed"}, body="Depends on #51")
+    board = await GitHubProjectsBoardProvider(unmapped, repo="o/r").poll_board()
+
+    assert unmapped.asked == [("o/r", 51)]
+    assert {b.ref: b.state for b in work_items_of(board)["ITEM_X"].blockers}["#51"] == CLOSED
+    assert build_graph(board, repo="o/r").by_dependent["ITEM_X"][0].status == "satisfied"

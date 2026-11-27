@@ -254,8 +254,11 @@ def unlisted_text_blockers(board: dict[str, Any], status: str = "TODO") -> list[
     the board.
     """
     issue_numbers = _mapping(board, "issue_numbers")
-    listed = {n for n in issue_numbers.values() if isinstance(n, int) and n > 0}
-    in_status = {item_id for item_id, column in card_status_of(board).items() if column == status}
+    columns = card_status_of(board)
+    # An item in a column coordinare has no name for is not on the board for this
+    # purpose: nothing says whether it is done, so its state is read like any other.
+    listed = {n for item_id, n in issue_numbers.items() if isinstance(n, int) and n > 0 and item_id in columns}
+    in_status = {item_id for item_id, column in columns.items() if column == status}
     result: dict[int, None] = {}
     for item_id, body in _mapping(board, "descriptions").items():
         if item_id not in in_status:
