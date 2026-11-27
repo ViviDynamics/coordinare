@@ -73,6 +73,22 @@ _USAGE_KIND: dict[str, str] = {"endpoints": "model_server", "model_endpoints": "
 _FIELD_LABELS: dict[str, str] = {
     "max_feedback_cycles": "Max revision rounds per PR (max_feedback_cycles)",
     "max_cards_in_review": "Max cards waiting on review (max_cards_in_review)",
+    # 365: the field decides who can approve a merge, so its label says that.
+    "human_reviewers": "Who can approve merges (human_reviewers)",
+    "trusted_bot_reviewers": "Bots whose reviews are acted on (trusted_bot_reviewers)",
+}
+
+# 365: help for fields whose rule is not in their name. The model's own description is
+# used for every other field.
+_FIELD_HELP: dict[str, str] = {
+    "human_reviewers": (
+        "Only these GitHub logins can approve a merge, in every symphony. An approval from "
+        "any other login shows on the work item and does not merge."
+    ),
+    "trusted_bot_reviewers": (
+        "Bot logins whose review comments are passed to the agent as feedback. A bot never "
+        "approves a merge."
+    ),
 }
 
 
@@ -418,7 +434,7 @@ def setting_from_field(
     return ConfigSetting(
         key=dotted,
         label=_FIELD_LABELS.get(key, key),
-        help=field_info.description,
+        help=_FIELD_HELP.get(key, field_info.description),
         type=setting_type,
         current_value=display,
         default=default,

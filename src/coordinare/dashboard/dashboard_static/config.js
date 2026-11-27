@@ -74,6 +74,9 @@ var _cfgTab = null;   // active config section id (tab)
 function cfgTabId(secId)   { return 'cfg-tab-' + secId; }
 function cfgPanelId(secId) { return 'cfg-panel-' + secId; }
 var CFG_HINT = 'font-size:11px;color:var(--color-text-muted);margin-top:2px';
+// 365: list fields that hold GitHub logins. Their input reads commas, spaces and new lines as
+// separators and shows the list it reads as, so the format is never a guess.
+var CFG_LOGIN_FIELDS = ['human_reviewers', 'trusted_bot_reviewers'];
 var CFG_INPUT = 'width:100%;box-sizing:border-box;background:var(--color-bg-base);border:1px solid var(--color-border);'
   + 'border-radius:4px;color:var(--color-text-primary);font-family:var(--font-mono,monospace);font-size:12px;padding:5px 7px';
 var _cfgHash = null;      // optimistic-concurrency baseline (content_hashes.config_yaml)
@@ -184,6 +187,57 @@ function cfgRefSelect(s, refSpec, base) {
     + html + '</select>';
 }
 
+// 365: a GitHub login is letters, digits and single hyphens, neither first nor last, up to 39
+// characters. A bot account carries a "[bot]" suffix. Anything else cannot be a login, and an
+// approval could never match it, so it is flagged rather than saved quietly.
+function cfgParseLogins(text) {
+  // entries: everything read, in order, each login once. logins: the valid ones.
+  var out = {entries: [], logins: [], invalid: [], duplicates: []};
+  var seen = {};
+  String(text || '').split(/[\s,]+/).forEach(function(entry) {
+    if (!entry) return;
+    var key = entry.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(seen, key)) {
+      if (out.duplicates.indexOf(key) < 0) out.duplicates.push(key);
+      return;
+    }
+    seen[key] = true;
+    out.entries.push(entry);
+    if (/^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}(?:\[bot\])?$/.test(entry)) out.logins.push(entry);
+    else out.invalid.push(entry);
+  });
+  return out;
+}
+
+// 365: what a logins field reads as, under the input: each login, and what is not a login.
+function cfgLoginsPreviewHtml(parsed) {
+  var n = parsed.logins.length;
+  var chips = parsed.logins.map(function(login) {
+    return '<span class="cfg-login-chip">' + esc(login) + '</span>';
+  }).join('');
+  var head = n ? 'Reads as ' + n + (n === 1 ? ' login: ' : ' logins: ') : 'No logins.';
+  var bad = parsed.invalid.length
+    ? '<div class="cfg-logins-invalid">Not a GitHub login: ' + esc(parsed.invalid.join(', '))
+      + '. A login is letters, digits and single hyphens, up to 39 characters, with no @.</div>'
+    : '';
+  var repeated = parsed.duplicates.length
+    ? '<div>Listed more than once, kept once: ' + esc(parsed.duplicates.join(', ')) + '.</div>'
+    : '';
+  return '<div>' + head + chips + '</div>' + bad + repeated;
+}
+
+// 365: the field errors a save refuses on: any logins field with an entry that is not a login.
+function cfgLoginsErrors(container) {
+  var errs = [];
+  container.querySelectorAll('[data-list="logins"]').forEach(function(el) {
+    var parsed = cfgParseLogins(el.value);
+    if (!parsed.invalid.length) return;
+    errs.push({key: el.getAttribute('data-field'),
+      message: 'Not a GitHub login: ' + parsed.invalid.join(', ') + '. Fix or remove it, then save.'});
+  });
+  return errs;
+}
+
 // Build one editable control for a setting. data-orig carries the JSON of the
 // loaded value so change detection can skip unchanged fields (a masked, unchanged
 // secret therefore never round-trips — the server treats the mask as a no-op too).
@@ -220,6 +274,13 @@ function cfgInput(s) {
   }
   if (s.type === 'list') {
     var lv = Array.isArray(s.current_value) ? s.current_value.join(', ') : '';
+    if (CFG_LOGIN_FIELDS.indexOf(field) >= 0) {
+      return '<input type="text" ' + base + ' data-list="logins" value="' + esc(lv) + '" placeholder="alice, bob"'
+        + ' spellcheck="false" autocomplete="off" style="' + CFG_INPUT + '">'
+        + '<div style="' + CFG_HINT + '">GitHub logins, separated by commas or spaces. Case does not matter.</div>'
+        + '<div class="cfg-logins-preview" data-logins-preview aria-live="polite">'
+        + cfgLoginsPreviewHtml(cfgParseLogins(lv)) + '</div>';
+    }
     return '<input type="text" ' + base + ' value="' + esc(lv) + '" placeholder="comma, separated" style="' + CFG_INPUT + '">';
   }
   if (s.type === 'text') {
@@ -251,6 +312,8 @@ function cfgCoerce(el) {
   if (el.getAttribute('data-ref') && v === '') return null;
   if (t === 'int') return v.trim() === '' ? null : parseInt(v, 10);
   if (t === 'float') return v.trim() === '' ? null : parseFloat(v);
+  // 365: a logins field reads every entry it shows, flagged ones too, so a refusal can name them.
+  if (t === 'list' && el.getAttribute('data-list') === 'logins') return cfgParseLogins(v).entries;
   if (t === 'list') return v.split(',').map(function(x) { return x.trim(); }).filter(function(x) { return x.length; });
   return v;
 }
@@ -804,7 +867,11 @@ function cfgHandleSave(status, body, container, statusEl, store, newHash) {
     } else {
       // Reload for the server's own values after a moment, unless the reader has typed
       // something new in the meantime: the check is made when the timer fires.
-      setTimeout(function() { if (!cfgHasUnsaved()) loadConfigPage(); }, 1000);
+      // 365: the reload draws the section again, so it takes the save's message with it when the
+      // message is still showing. Before, the message vanished one second after it appeared.
+      setTimeout(function() {
+        if (!cfgHasUnsaved()) loadConfigPage(cfgSavedNotice(container, statusEl));
+      }, 1000);
     }
     return true;
   }
@@ -818,6 +885,26 @@ function cfgHandleSave(status, body, container, statusEl, store, newHash) {
   var general = cfgApplyErrors(container, errs).map(function(e) { return e.message; }).join('; ');
   cfgFlash(statusEl, general || body.message || body.error || ('Error ' + status), 'red');
   return false;
+}
+
+// 365: the save message a section is showing, to put back after the page is drawn again. Only a
+// save's own result is carried; anything shown since (a later edit's status) is not.
+function cfgSavedNotice(container, statusEl) {
+  var text = statusEl ? String(statusEl.textContent || '') : '';
+  if (!container || text.indexOf('Saved') !== 0) return null;
+  return {scope: container.getAttribute('data-scope') || '', text: text, color: statusEl.style ? statusEl.style.color : ''};
+}
+
+// 365: show a carried save message in the redrawn section with the same scope.
+function cfgRestoreNotice(root, notice) {
+  if (!root || !notice || !notice.scope) return;
+  var boxes = root.querySelectorAll('[data-scope]');
+  for (var i = 0; i < boxes.length; i++) {
+    if (boxes[i].getAttribute('data-scope') !== notice.scope) continue;
+    var el = boxes[i].querySelector('[data-status]');
+    if (el) { el.textContent = notice.text; el.style.color = notice.color; }
+    return;
+  }
 }
 
 // 221: a symphony's answer. The review, the lock, the conflict and the reapply are the Settings ones;
@@ -925,6 +1012,13 @@ function cfgSaveSection(btn, sectionId) {
   cfgClearErrors(container);
   var entries = cfgEntries(container).filter(cfgChanged);
   if (!entries.length) { cfgFlash(statusEl, 'No changes to save', 'muted'); return; }
+  // 365: an entry that cannot be a GitHub login is refused here, before the review, with its field.
+  var loginErrs = cfgLoginsErrors(container);
+  if (loginErrs.length) {
+    cfgApplyErrors(container, loginErrs);
+    cfgFlash(statusEl, 'Not saved: a logins field has an entry that is not a GitHub login.', 'red');
+    return;
+  }
   // 143 review: the snapshot is taken now, and it is what the review shows and what is sent.
   var changes = cfgCollectChanges(container);
   var pending = cfgPendingFor(container, entries);
@@ -1495,6 +1589,11 @@ function cfgWireControls(root, dispatch) {
   // Typing into a secret takes back a clear that was asked for, so the typed value is what is sent.
   root.addEventListener('input', function(event) {
     var t = event.target;
+    // 365: a logins field shows the list it reads as while it is typed.
+    if (t && t.getAttribute && t.getAttribute('data-list') === 'logins' && t.parentNode) {
+      var preview = t.parentNode.querySelector('[data-logins-preview]');
+      if (preview) preview.innerHTML = cfgLoginsPreviewHtml(cfgParseLogins(t.value));
+    }
     if (t && t.getAttribute && t.getAttribute('data-clear') === 'true') {
       t.removeAttribute('data-clear');
       t.placeholder = 'leave masked to keep current';
@@ -1661,7 +1760,8 @@ function cfgSnapshotPersonaEdits() {
   return edits;
 }
 
-async function loadConfigPage() {
+// 365: notice is a save message to show again once the page is drawn (cfgSavedNotice).
+async function loadConfigPage(notice) {
   var drafts = _cfgShown ? cfgSnapshotPersonaEdits() : [];
   if (_cfgShown) cfgRememberSymphony();
   else _cfgSymphonyDrafts = {};
@@ -1713,6 +1813,7 @@ async function loadConfigPage() {
   }).join('');
   el.innerHTML = header + cfgSeedBanner(data.config_seed) + cfgTabBar(sections, active) + panels;
   _cfgShown = true;
+  cfgRestoreNotice(el, notice);
   cfgWireControls(el, cfgRunAction);
   var personas = el.querySelector('[data-persona-context]');
   personaMount(personas, function(field) {
