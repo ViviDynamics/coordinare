@@ -113,8 +113,14 @@ _UNSAFE_IN_REF = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def safe_reference(key: str) -> str:
-    """*key* as a token safe in a branch name and a path (397): ``PAY-1`` stays ``PAY-1``."""
-    return _UNSAFE_IN_REF.sub("-", key).strip("-.")
+    """*key* as one path segment (397): ``PAY-1`` stays ``PAY-1``.
+
+    Also valid as one segment of a git ref: no ``..`` and no ``.lock`` ending.
+    Not injective (``A B-1`` and ``A-B-1`` meet), so a provider whose keys can
+    differ only in punctuation should supply its own reference.
+    """
+    token = _UNSAFE_IN_REF.sub("-", key).replace("..", "-").strip("-.")
+    return token.removesuffix(".lock")
 
 
 def card_status_of(board: Any) -> dict[str, str]:

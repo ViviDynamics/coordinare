@@ -146,6 +146,9 @@ def build_intake(score, workspace: Path) -> Intake:
         cards_dir = package_root / "docs" / "cards"
         if issue and cards_dir.is_dir():
             candidates.extend(sorted(cards_dir.glob(f"{issue}-*/assessment.md")))
+        work_item_ref = getattr(score, "work_item_ref", "")
+        if not issue and work_item_ref and cards_dir.is_dir():  # 397
+            candidates.extend(sorted(cards_dir.glob(f"{work_item_ref}-*/assessment.md")))
         for cand in candidates:
             if cand.is_file():
                 assessment = _read_capped(cand)

@@ -70,6 +70,13 @@ class InMemoryWorkItem:
     history: list[tuple[str, str, str]] = field(default_factory=list)
 
 
+def _pr_line(key: str, url: str) -> str:
+    """The line a pull request body carries for an item (397): a link when the URL is one."""
+    if url.startswith(("https://", "http://")) and not any(c in url for c in " ()"):
+        return f"Work item: [{key.replace(']', '')}]({url})"
+    return f"Work item: {key} ({url})"
+
+
 class InMemoryBoardProvider:
     """A ``BoardProvider`` whose tracker lives in this object."""
 
@@ -186,7 +193,7 @@ class InMemoryBoardProvider:
             blockers=tuple(blockers),
             # 397: no issue number here, so the code host names the item by key.
             reference=safe_reference(item.id),
-            pr_line=f"Work item: [{item.id}]({item.url})",
+            pr_line=_pr_line(item.id, item.url),
         )
 
     async def move_card(self, card_id: str, status: str) -> MoveOutcome:

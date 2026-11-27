@@ -128,6 +128,8 @@ def _card_docs_dir(card: dict[str, Any]) -> str | None:
     issue_num = card.get("issue_number")
     if issue_num:
         return f"docs/cards/{issue_num}-{slug}"
+    if card.get("work_item_ref"):  # 397: as the performer's _doc_folder does
+        return f"docs/cards/{card['work_item_ref']}-{slug}"
     return f"docs/cards/{slug}"
 
 
@@ -1009,6 +1011,10 @@ def _refresh_current_card_metadata(
                     active_card["issue_url"] = fresh_fields["issue_url"]
                 if fresh_fields["issue_id"]:
                     active_card["issue_id"] = fresh_fields["issue_id"]
+                # 397: a restored card regains the reference its snapshot lacks.
+                for ref_key in ("work_item_ref", "work_item_pr_line"):
+                    if fresh_fields.get(ref_key):
+                        active_card[ref_key] = fresh_fields[ref_key]
 
 
 async def _reconcile_stale_checkboard_sessions(
