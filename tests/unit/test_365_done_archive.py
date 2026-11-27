@@ -334,6 +334,29 @@ async def test_the_real_poll_reports_the_status_change_time(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
+async def test_a_done_read_from_another_field_carries_no_status_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review: Status says In Progress, set long ago; a later field says Done. No Done age is claimed."""
+    service = GitHubService.__new__(GitHubService)
+    service.project_id = "PVT_test"
+    service.field_cache = {"status_field_id": "status"}
+    page = {"node": {"items": {
+        "nodes": [{"id": "PVTI_x", "fieldValues": {"nodes": [
+            {"name": "In Progress", "updatedAt": "2026-10-01T00:00:00Z", "field": {"id": "status"}},
+            {"name": "Done", "updatedAt": "2026-11-26T00:00:00Z", "field": {"id": "PVTSSF_review"}},
+        ]}, "content": {"id": "I_1", "number": 1, "title": "t", "body": "b", "state": "CLOSED"}}],
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+    }}}
+
+    async def execute(self: Any, query: str, variables: Any = None) -> Any:
+        return page
+
+    monkeypatch.setattr(GitHubService, "_ensure_initialized", lambda self: None)
+    monkeypatch.setattr(GitHubService, "_guarded_execute", execute)
+    board = await service.poll_board()
+    assert board["status_updated_at"] == {}
+
+
+@pytest.mark.asyncio
 async def test_a_time_not_known_to_be_the_status_fields_is_not_used(monkeypatch: pytest.MonkeyPatch) -> None:
     service = GitHubService.__new__(GitHubService)
     service.project_id = "PVT_test"

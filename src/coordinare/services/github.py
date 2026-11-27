@@ -263,14 +263,14 @@ query GetIssueDetails($issueId: ID!) {
 }
 """
 
-# 365: archive a project item. Archived items leave the board's item list, and can be
-# restored from the project's archive on GitHub.
 def _is_field(field_value: dict[str, Any], field_id: str) -> bool:
     """365: whether a project field value belongs to the field *field_id*."""
     field = field_value.get("field")
     return bool(field_id) and isinstance(field, dict) and field.get("id") == field_id
 
 
+# 365: archive a project item. Archived items leave the board's item list, and can be
+# restored from the project's archive on GitHub.
 ARCHIVE_PROJECT_ITEM_MUTATION = """
 mutation ArchiveProjectItem($projectId: ID!, $itemId: ID!) {
   archiveProjectV2Item(input: {projectId: $projectId, itemId: $itemId}) {
@@ -1234,6 +1234,7 @@ class GitHubService(CardIdentityMap):
 
             status_name = ""  # unknown until we read the field
             status_set_at = ""
+            status_says = ""
             field_values = item.get("fieldValues", {}).get("nodes", [])
             if isinstance(field_values, list):
                 for field_value in field_values:
@@ -1244,10 +1245,14 @@ class GitHubService(CardIdentityMap):
                     if mapped:
                         status_name = mapped
                         # 365: every single-select field is listed here, and another one can
-                        # have a "Done" option too. Only the Status field's own time counts.
+                        # have a "Done" option too. The time is the Status field's own, and it
+                        # counts only while the column read agrees with what Status says.
                         if _is_field(field_value, status_field_id):
                             updated = field_value.get("updatedAt")
                             status_set_at = updated if isinstance(updated, str) else ""
+                            status_says = mapped
+                        elif mapped != status_says:
+                            status_set_at = ""
             if status_name and status_set_at:
                 status_updated_at[item_id] = status_set_at
 
