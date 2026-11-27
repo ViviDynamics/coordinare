@@ -27,6 +27,7 @@ through GitHub's REST API, so it needs no checkout.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import shutil
@@ -46,7 +47,15 @@ from coordinare.services.stage_contract import (
     StageRequest,
     StageVerdict,
 )
-from coordinare.services.stage_jobs import RunState, StageJobLaunch, StageJobs, UnavailableStageJobs
+from coordinare.services.stage_jobs import (
+    NEVER_STARTED,
+    PROXY_ENV,
+    RunState,
+    StageJobLaunch,
+    StageJobs,
+    UnavailableStageJobs,
+    never_started,
+)
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
 
@@ -179,8 +188,11 @@ class QAreProvider:
             runner._write_atomic(job_dir / runner.REQUEST_FILE, json.dumps(spec, indent=2))
             await self._launch(request_id, job_dir, token)
         except BaseException:
-            # Nothing ran: take the directory away, so the next dispatch starts this
-            # request id afresh instead of finding a job that never existed.
+            # Nothing is recorded as running: stop a container that may have started, then
+            # take the directory away, so the next dispatch starts this request id afresh
+            # instead of finding a job that never existed.
+            with contextlib.suppress(Exception):
+                await self._jobs.stop(job_dir)
             _remove_tree(job_dir)
             raise
         logger.info("qare.job_started", job=request_id, repository=request.repository, head_sha=request.head_sha)
@@ -209,7 +221,7 @@ class QAreProvider:
             # In a container of the image the runs use, with only the names QAre may read.
             try:
                 code, out, err = await self._jobs.probe(
-                    [*self._config.command, "--version"], env_names=self._config.env_passthrough,
+                    [*self._config.command, "--version"], env_names=self._env_names(),
                     within=_VERSION_TIMEOUT_SECONDS,
                 )
             except TransportError as exc:
@@ -279,22 +291,19 @@ class QAreProvider:
         }
         return token, spec
 
+    def _env_names(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys((*PROXY_ENV, *self._config.env_passthrough)))
+
     async def _launch(self, ref: str, job_dir: Path, token: str) -> None:
         """Start the job's performer container and record that it was started.
 
         The token goes to the container only (a private env file), never to disk here.
-        If the start fails the container is removed before the caller removes the job
-        directory, so a late run cannot start there.
         """
         launch = StageJobLaunch(
             kind=runner.KIND, ref=ref, provider=self.name, job_dir=job_dir, token=token,
-            env_names=tuple(self._config.env_passthrough),
+            env_names=self._env_names(),
         )
-        try:
-            handle = await self._jobs.start(launch)
-        except BaseException:
-            await self._jobs.stop(job_dir)
-            raise
+        handle = await self._jobs.start(launch)
         runner._write_atomic(job_dir / runner.LAUNCH_FILE, json.dumps({"job": handle, "started_at": time.time()}))
 
     async def _read(self, ref: str) -> StageJob:
@@ -315,8 +324,9 @@ class QAreProvider:
         status = _load_json(job_dir / runner.STATUS_FILE)
         if status is not None:
             return job_from_status(ref, status, job_dir)
+        why = NEVER_STARTED if never_started(job_dir) else "its performer stopped"
         return StageJob(ref=ref, state=JobState.RETRYABLE, detail="ended",
-                        reason="the QAre run ended without saying how (its performer stopped)")
+                        reason=f"the QAre run ended without saying how ({why})")
 
     async def _running(self, job_dir: Path) -> bool:
         if _load_json(job_dir / runner.LAUNCH_FILE) is None:

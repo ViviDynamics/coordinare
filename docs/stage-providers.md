@@ -170,7 +170,7 @@ built-in QA posts its own. Coordinare's own host never clones or fetches.
 stage_providers:
   qare:
     kind: qare
-    version: "2026.11.42"            # the exact release `qare --version` must print
+    version: "2026.11.44"            # the exact release `qare --version` must print
     command: ["qare"]                # how to start it in the performer (default), as an argument list
     # image: ghcr.io/vividynamics/coordinare-performer-full:<tag>  # default: the qa performer's image
     profile: .qa                     # the QA profile's directory in the repository (default)
@@ -315,6 +315,11 @@ directory.
   named in `env_passthrough` or `pass_env` (and the proxy variables) are passed by name.
 - **Isolation** is the role's performer's: the endpoint's `egress_allowlist` and
   `extra_hosts` apply to the stage job as to the role's other work.
+- **Values must work from the container.** A passed variable keeps its value, and the
+  container is on Docker's bridge network: a model endpoint on `localhost` or `127.0.0.1`
+  names the container itself. Point such variables at an address the container reaches
+  (for example `host.docker.internal`, with an `extra_hosts` entry on Linux), as for any
+  performer.
 - **Mounts.** The run directory is mounted at the path it has on coordinare's side. When
   coordinare itself runs in a container that talks to the host's Docker, keep `work_dir`
   and `runs_dir` at the same path on the Docker host, as for env caches.

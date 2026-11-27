@@ -30,6 +30,7 @@ imported, because Progettare runs as a CLI and is not installed in coordinare.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -51,7 +52,15 @@ from coordinare.services.stage_contract import (
     WorkItemRequest,
     work_item_digest,
 )
-from coordinare.services.stage_jobs import RunState, StageJobLaunch, StageJobs, UnavailableStageJobs
+from coordinare.services.stage_jobs import (
+    NEVER_STARTED,
+    PROXY_ENV,
+    RunState,
+    StageJobLaunch,
+    StageJobs,
+    UnavailableStageJobs,
+    never_started,
+)
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
 
@@ -67,10 +76,6 @@ logger = structlog.get_logger(__name__)
 ARTIFACT_VERSION = 1
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$")
 _READERS = ("implementer", "qa", "documenter")
-#: Variables the run's container takes from the daemon's environment, when it has them:
-#: git, gh and the model calls go out the way the daemon's own requests do. Anything else
-#: is named in pass_env.
-_PROXY_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy")
 #: A version check starts a container, which may first pull the image.
 _VERSION_TIMEOUT_SECONDS = 180
 #: Tools a run needs in the performer beside the CLI.
@@ -171,7 +176,7 @@ class ProgettareProvider:
         return token
 
     def _env_names(self) -> tuple[str, ...]:
-        return tuple(dict.fromkeys((*_PROXY_ENV, *self._config.pass_env)))
+        return tuple(dict.fromkeys((*PROXY_ENV, *self._config.pass_env)))
 
     async def _check_version(self) -> None:
         """Checked before every run, so an image change under a running daemon is noticed.
@@ -251,7 +256,8 @@ class ProgettareProvider:
             await self._jobs.start(launch)
         except BaseException:
             # Nothing ran: the next dispatch finds no request and starts it afresh.
-            await self._jobs.stop(directory)
+            with contextlib.suppress(Exception):
+                await self._jobs.stop(directory)
             (directory / runner.REQUEST_FILE).unlink(missing_ok=True)
             raise
         logger.info("progettare.run_started", provider=self.name, request=ref, issue=request.ref)
@@ -294,9 +300,14 @@ class ProgettareProvider:
         run_dir = _run_dir(directory / runner.RUNS_DIR)
         if run_dir is None:
             log = "" if detail else _log_tail(directory / runner.LOG_FILE)
-            why = detail or (f"the runner's log ends: {log}" if log else (
-                "the run stopped before it recorded anything (was its performer stopped?)"
-            ))
+            if detail:
+                why = detail
+            elif never_started(directory):
+                why = NEVER_STARTED
+            elif log.endswith("started"):
+                why = "the run stopped before it recorded anything (was its performer stopped?)"
+            else:
+                why = f"the runner's log ends: {log}"
             return _retry(ref, phase or "interrupted", f"progettare recorded no run: {why}")
         try:
             manifest = _artifact(run_dir / "run.json", "run")

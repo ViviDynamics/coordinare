@@ -69,6 +69,10 @@ elif args[:2] == ["container", "inspect"]:
         sys.stderr.write("Error: No such container: x\n")
         sys.exit(1)
     print(state["inspect"])
+elif args[:2] == ["rm", "-f"]:
+    state["taken"] = False
+    state["inspect"] = "missing"
+    json.dump(state, open(os.environ["FAKE_DOCKER_STATE"], "w"))
 elif args[:1] == ["run"]:
     print(state.get("version", ""))
 '''
@@ -279,10 +283,69 @@ async def test_a_docker_that_cannot_answer_is_retried_not_read_as_over(tmp_path:
 
 @pytest.mark.asyncio
 async def test_a_job_started_twice_is_the_same_container(tmp_path: Path, docker: dict[str, Any]) -> None:
-    docker["set"](taken=True)
+    docker["set"](taken=True, inspect="running")
     jobs = DockerStageJobs(IMAGE, docker=docker["bin"])
     launch = StageJobLaunch(kind="qare", ref="coordinare.qa.x.1", provider="qare", job_dir=tmp_path)
     assert await jobs.start(launch) == job_name(tmp_path)
+    assert [c["args"][0] for c in docker["calls"]()] == ["run", "container"]
+
+
+@pytest.mark.asyncio
+async def test_an_ended_container_of_the_same_name_is_replaced(tmp_path: Path, docker: dict[str, Any]) -> None:
+    docker["set"](taken=True, inspect="exited")
+    jobs = DockerStageJobs(IMAGE, docker=docker["bin"])
+    launch = StageJobLaunch(kind="qare", ref="coordinare.qa.x.1", provider="qare", job_dir=tmp_path)
+    assert await jobs.start(launch) == job_name(tmp_path)
+    assert [c["args"][0] for c in docker["calls"]()] == ["run", "container", "rm", "run"]
+
+
+@pytest.mark.asyncio
+async def test_a_docker_that_hangs_is_a_retryable_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from coordinare.transport.base import TransportError
+
+    monkeypatch.setattr(stage_jobs, "_DOCKER_TIMEOUT_SECONDS", 0.2)
+    slow = tmp_path / "slow-docker"
+    slow.write_text("#!/bin/sh\nsleep 5\n")
+    slow.chmod(0o755)
+    jobs = DockerStageJobs(IMAGE, docker=str(slow))
+    with pytest.raises(TransportError, match="did not answer"):
+        await jobs.state(tmp_path)
+    await jobs.stop(tmp_path)  # best effort, never raises
+
+
+def test_a_job_that_logged_nothing_never_started(tmp_path: Path) -> None:
+    assert stage_jobs.never_started(tmp_path)
+    (tmp_path / "runner.log").write_text("")
+    assert stage_jobs.never_started(tmp_path)
+    (tmp_path / "runner.log").write_text("stage job qare started\n")
+    assert not stage_jobs.never_started(tmp_path)
+
+
+def test_the_token_never_stays_in_the_jobs_initial_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The entry starts itself again without the token, and reads it from a pipe."""
+    from performer.stage_jobs import __main__ as entry
+
+    started: dict[str, Any] = {}
+
+    def execve(path: str, argv: list[str], env: dict[str, str]) -> None:
+        started.update(path=path, argv=argv, env=env)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(entry.os, "execve", execve)
+    monkeypatch.setattr(entry.sys, "argv", ["stage_jobs", "qare", str(tmp_path)])
+    monkeypatch.setenv(CREDENTIAL_ENV, TOKEN)
+    with pytest.raises(SystemExit):
+        entry.main()
+    assert CREDENTIAL_ENV not in started["env"]
+    assert TOKEN not in json.dumps(started)
+    assert started["argv"][1:] == ["-m", "performer.stage_jobs", "qare", str(tmp_path)]
+    # The process started again finds the token on the descriptor, once.
+    monkeypatch.delenv(CREDENTIAL_ENV, raising=False)
+    monkeypatch.setenv(entry.TOKEN_FD_ENV, started["env"][entry.TOKEN_FD_ENV])
+    assert entry._handed_over_token() == TOKEN
+    assert entry.TOKEN_FD_ENV not in os.environ
 
 
 @pytest.mark.asyncio

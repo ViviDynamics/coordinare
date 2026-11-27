@@ -374,7 +374,7 @@ modes:
 #   # coordinare's host, and coordinare posts the evidence itself.
 #   qare:
 #     kind: qare
-#     version: "2026.11.42"               # the exact release `qare --version` must print
+#     version: "2026.11.44"               # the exact release `qare --version` must print
 #     # command: ["qare"]                 # how to start it in the performer, as an argument list
 #     # image: ghcr.io/vividynamics/coordinare-performer-full:<tag>  # default: the qa performer's image
 #     # profile: .qa                      # the QA profile's directory in each repository

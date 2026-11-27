@@ -88,7 +88,7 @@ async def _plan(spec: dict[str, Any], directory: Path, checkout: Path, env: dict
         try:
             code = await asyncio.wait_for(process.wait(), timeout)
         except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(process.pid, signal.SIGKILL)
             await process.wait()
             return {

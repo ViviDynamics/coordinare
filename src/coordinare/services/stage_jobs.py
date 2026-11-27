@@ -49,6 +49,9 @@ PROVIDER_LABEL = "coordinare.stage_provider"
 CREDENTIAL_ENV = "COORDINARE_STAGE_GITHUB_TOKEN"
 #: The performer module a stage job runs.
 STAGE_JOB_MODULE = "performer.stage_jobs"
+#: Variables every stage job takes from coordinare's environment by name, when it has them:
+#: git, gh, GitHub's API and the model calls go out the way the daemon's own requests do.
+PROXY_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy")
 _NAME_PREFIX = "coordinare-stage-"
 _DOCKER_TIMEOUT_SECONDS = 60.0
 _TAIL = 500
@@ -117,6 +120,22 @@ def job_name(job_dir: Path) -> str:
 
 #: The file in the job directory that keeps the job's own output (its container is removed).
 JOB_LOG = "runner.log"
+#: Why a job that ended without a word most likely never ran.
+NEVER_STARTED = (
+    "its performer exited before the stage job started, so nothing was logged; check that the "
+    "image runs `python -m performer.stage_jobs` and that its entry point can start (an egress "
+    "allowlist needs iptables and NET_ADMIN), for example with `docker run --rm <image> true`"
+)
+
+
+def never_started(job_dir: Path) -> bool:
+    """Whether the job left no output at all: the container ended before its command ran."""
+    try:
+        return (job_dir / JOB_LOG).stat().st_size == 0
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
 
 
 def job_command(kind: str, job_dir: Path) -> list[str]:
@@ -127,7 +146,11 @@ def job_command(kind: str, job_dir: Path) -> list[str]:
 
 
 class DockerStageJobs:
-    """Stage jobs as detached ``docker run --rm`` containers of the performer image."""
+    """Stage jobs as detached ``docker run --rm`` containers of the performer image.
+
+    Every Docker call that does not answer in time is a TransportError, so the caller
+    retries it rather than mistaking it for a verdict.
+    """
 
     def __init__(
         self,
@@ -170,18 +193,22 @@ class DockerStageJobs:
             if env_file is not None:
                 args += ["--env-file", str(env_file)]
             args += [self.image, *job_command(launch.kind, launch.job_dir)]
-            code, out, err = await self._run(args)
+            code, out, err = await self._call(args)
+            if code != 0 and "already in use" in err:
+                if await self.state(launch.job_dir) is RunState.RUNNING:
+                    # Started before (a restart, a race): the job is that container.
+                    return name
+                # A container of an earlier attempt that has ended but is not gone yet.
+                await self._call(["rm", "-f", name])
+                code, out, err = await self._call(args)
         if code == 0:
             logger.info("stage_job.started", kind=launch.kind, job=launch.ref, container=name, image=self.image)
-            return name
-        if "already in use" in err:
-            # Started before (a restart, a race): the job is that container, not a new one.
             return name
         msg = f"could not start the {launch.kind} stage job {launch.ref} (docker exit {code}): {_tail(err or out)}"
         raise TransportError(msg)
 
     async def state(self, job_dir: Path) -> RunState:
-        code, out, err = await self._run(
+        code, out, err = await self._call(
             ["container", "inspect", "--format", "{{.State.Status}}", job_name(job_dir)],
         )
         if code == 0:
@@ -193,7 +220,7 @@ class DockerStageJobs:
 
     async def stop(self, job_dir: Path) -> None:
         with contextlib.suppress(TransportError):
-            await self._run(["rm", "-f", job_name(job_dir)])
+            await self._call(["rm", "-f", job_name(job_dir)])
 
     async def probe(
         self, argv: Sequence[str], *, env_names: Sequence[str] = (), env: dict[str, str] | None = None,
@@ -221,6 +248,14 @@ class DockerStageJobs:
     async def _remove(self, name: str) -> None:
         with contextlib.suppress(TransportError, TimeoutError):
             await self._run(["rm", "-f", name])
+
+    async def _call(self, args: list[str]) -> tuple[int, str, str]:
+        """``_run``, with a Docker that does not answer in time as a retryable error."""
+        try:
+            return await self._run(args, within=_DOCKER_TIMEOUT_SECONDS)
+        except TimeoutError as exc:
+            msg = f"docker {args[0]} did not answer within {_DOCKER_TIMEOUT_SECONDS:.0f} seconds"
+            raise TransportError(msg) from exc
 
     async def _run(self, args: list[str], *, within: float = _DOCKER_TIMEOUT_SECONDS) -> tuple[int, str, str]:
         try:

@@ -73,7 +73,7 @@ class LocalStageJobs:
     async def stop(self, job_dir: Path) -> None:
         process = self.containers.get(job_name(job_dir))
         if process is not None and process.poll() is None:
-            with contextlib.suppress(ProcessLookupError):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(process.pid, signal.SIGKILL)
             process.wait()
 
@@ -92,7 +92,7 @@ class LocalStageJobs:
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=within)
         except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(proc.pid, signal.SIGKILL)
             await proc.wait()
             return None, "", ""
@@ -103,6 +103,6 @@ class LocalStageJobs:
     def stop_all(self) -> None:
         for process in self.containers.values():
             if process.poll() is None:
-                with contextlib.suppress(ProcessLookupError):
+                with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
