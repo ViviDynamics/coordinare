@@ -172,7 +172,11 @@ def test_init_accepts_nare_with_a_key(monkeypatch) -> None:
 
 
 def test_preflight_tells_how_to_install_a_missing_nare(tmp_path, monkeypatch) -> None:
-    """The fix is the one command nare publishes (ViviDynamics/nare#323)."""
+    """The fix is coordinare's installer, which installs the pinned nare (#384).
+
+    nare's own latest installer could install a release whose contract the
+    adapter does not speak, so the hint never points there.
+    """
     from coordinare import launch_preflight
 
     config = _config(tmp_path, monkeypatch, {"implementer": {}})
@@ -180,4 +184,6 @@ def test_preflight_tells_how_to_install_a_missing_nare(tmp_path, monkeypatch) ->
     monkeypatch.setattr(launch_preflight.shutil, "which", lambda _name: None)
     results = launch_preflight._local_harnesses(config)
     [missing] = [r for r in results if r.name == "harness nare"]
-    assert "releases/latest/download/install.sh | sh" in (missing.fix or "")
+    fix = missing.fix or ""
+    assert "ViviDynamics/coordinare/releases/latest/download/install.sh | sh" in fix
+    assert "ViviDynamics/nare/releases" not in fix

@@ -8,7 +8,8 @@ coordinare service stop
 ```
 
 Rerun the installer to replace Coordinare and its bundled performer with the
-latest release. Configuration and state are preserved.
+latest release, and nare with the release that version pins. Configuration and
+state are preserved.
 
 ```sh
 curl -fsSL https://github.com/ViviDynamics/coordinare/releases/latest/download/install.sh | sh

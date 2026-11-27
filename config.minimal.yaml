@@ -1,6 +1,6 @@
 # Start here. Full reference: config.example.yaml
 # Export COORDINARE_GITHUB_TOKEN and ANTHROPIC_API_KEY before launching.
-# Install nare and the performer; see README Quick Start.
+# The installer sets up coordinare, the performer and nare; see README Quick Start.
 preset: solo
 harness: nare
 github_org: your-org

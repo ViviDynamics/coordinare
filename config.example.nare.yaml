@@ -10,8 +10,8 @@
 #   - One `nare run` process per card (one per resume turn), speaking nare's
 #     machine contract 3 over JSONL. The task and persona travel by file.
 #   - The performer base image installs a pinned nare release, so containerized
-#     performers need nothing extra. For local (solo) runs, install nare with:
-#       curl -fsSL https://github.com/ViviDynamics/nare/releases/latest/download/install.sh | sh
+#     performers need nothing extra. For local (solo) runs, the coordinare
+#     installer (install.sh) installs the same pinned release.
 #   - The role's endpoint picks nare's rail: an `anthropic` endpoint uses the
 #     anthropic rail and ANTHROPIC_API_KEY; an `openai` endpoint uses the openai
 #     rail and OPENAI_API_KEY; a self-hosted endpoint (litellm, vllm, ollama)
