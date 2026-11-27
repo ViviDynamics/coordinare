@@ -91,3 +91,102 @@ class TestNotWork:
         assert outcome.moved
         assert card in board["snapshot"].get("DONE", [])
         assert card not in board["snapshot"].get("TODO", [])
+
+
+# --- the assessor's decline -----------------------------------------------------------------------
+
+
+class _Board:
+    """A provider that is not GitHub: every write it receives is recorded here."""
+
+    def __init__(self) -> None:
+        self.comments: list[tuple[str, str]] = []
+        self.moves: list[tuple[str, str]] = []
+
+    async def poll_board(self) -> dict[str, Any]:
+        return {"snapshot": {}}
+
+    async def move_card(self, card_id: str, status: str) -> MoveOutcome:
+        self.moves.append((card_id, status))
+        return MoveOutcome.ok()
+
+    async def get_card(self, card_id: str) -> dict[str, Any]:
+        return {}
+
+    async def add_card_comment(self, card_id: str, body: str) -> dict[str, Any]:
+        self.comments.append((card_id, body))
+        return {}
+
+    async def get_card_comments(self, card_id: str, since_id: Any = None) -> list[dict[str, Any]]:
+        return []
+
+
+def _decline_state() -> dict[str, Any]:
+    return {
+        "config": None, "active_card_id": "PAY-7", "current_card": "PAY-7",
+        "active_sessions": {"PAY-7": {"performer_stage": "assessing"}},
+        "lifecycle_sequence": ["implementing", "assessing"],
+    }
+
+
+_REPORT = {"report": {"assessment": {"expected_behavior": "the premise is wrong"}}}
+
+
+class TestTheDecline:
+    @pytest.mark.asyncio
+    async def test_not_work_reaches_the_configured_board_and_not_github(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from coordinare.graph.nodes.monitor_performer import _apply_assessor_decline
+
+        board, github = _Board(), AsyncMock()
+        card = {"id": "PAY-7", "issue_id": "PAY-7"}
+        out = await _apply_assessor_decline(
+            _decline_state(), card, "PAY-7", "assessment_not_work", _REPORT, board, github,
+        )
+
+        assert [c for c, _ in board.comments] == ["PAY-7"]
+        assert "**Assessor verdict: not work**" in board.comments[0][1]
+        assert "the premise is wrong" in board.comments[0][1]
+        assert board.moves == [("PAY-7", NOT_WORK)]
+        github.add_comment.assert_not_called()
+        github.close_issue.assert_not_called()
+        assert out["phase"] == "idle"
+
+    @pytest.mark.asyncio
+    async def test_needs_split_reaches_the_configured_board_and_not_github(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from coordinare.graph.nodes.monitor_performer import _apply_assessor_decline
+
+        board, github = _Board(), AsyncMock()
+        await _apply_assessor_decline(
+            _decline_state(), {"id": "PAY-7"}, "PAY-7", "assessment_needs_split", _REPORT, board, github,
+        )
+
+        assert "**Assessor verdict: needs split**" in board.comments[0][1]
+        assert board.moves == [("PAY-7", "BACKLOG")]
+        github.add_comment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_github_projects_receives_the_same_comment_text_as_before(self) -> None:
+        from coordinare.graph.nodes.monitor_performer import _apply_assessor_decline
+
+        github = _GitHub()
+        await _apply_assessor_decline(
+            _decline_state(), {"id": "PVTI_1", "issue_id": "I_node1"}, "PVTI_1", "assessment_not_work",
+            _REPORT, GitHubProjectsBoardProvider(github), github,
+        )
+
+        from coordinare.graph.attribution import coordinare_attribution
+
+        header = coordinare_attribution(None, None)
+        expected = (
+            f"{header}\n\n**Assessor verdict: not work**\n\nthe premise is wrong\n\n"
+            "Closing this issue without building it. Correct the premise and reopen, or split the work."
+        )
+        assert github.calls == [
+            ("add_comment", "I_node1", expected),
+            ("close_issue", "I_node1"),
+            ("move_card", "PVTI_1", "DONE"),
+        ]

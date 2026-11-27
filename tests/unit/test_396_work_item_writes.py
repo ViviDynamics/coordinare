@@ -41,10 +41,6 @@ ALLOWED: dict[str, str] = {
     "src/coordinare/graph/nodes/notify.py::_emit_persona_scope_rollup::add_comment": _PR_COMMENT,
     "src/coordinare/graph/nodes/monitor/repair.py::_post_repair_comment::add_comment": _PR_COMMENT,
     "src/coordinare/services/orphan_pr.py::close_superseded_prs::add_comment": _PR_COMMENT,
-    # tests/unit/test_410_decline_outcomes.py asserts the decline comment and the
-    # close land on the GitHub service passed in, beside a separate board.
-    "src/coordinare/graph/nodes/monitor/ui.py::_apply_assessor_decline::add_comment": _PINNED,
-    "src/coordinare/graph/nodes/monitor/ui.py::_apply_assessor_decline::close_issue": _PINNED,
     # agent/performer/tests/unit/test_main.py asserts the QA performer posts the
     # evidence comment on the issue itself.
     "agent/performer/src/performer/qa_postprocess.py::finalize_qa::post_issue_comment": _PINNED,
