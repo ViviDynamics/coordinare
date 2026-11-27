@@ -26,7 +26,7 @@ from tests.unit.fake_scrutare import LOGIN
 
 _HEAD = "a" * 40
 _SCRUTARE = {
-    "kind": "scrutare", "url": "http://scrutare.scrutare.svc.cluster.local",
+    "kind": "scrutare", "url": "http://scrutare:8080",
     "token_env": "SCRUTARE_API_TOKEN", "installation": 169458182, "review_login": LOGIN,
 }
 
@@ -45,7 +45,7 @@ def _config(*, reviewer: dict[str, Any] | None = None, providers: dict[str, Any]
     return ProjectConfiguration(**base)
 
 
-async def _no_pr(repository: str, node: str) -> PullRequestSnapshot:  # pragma: no cover - not read here
+async def _no_pr(repository: str, node: str) -> PullRequestSnapshot:
     return PullRequestSnapshot(head_sha=_HEAD)
 
 
@@ -160,7 +160,7 @@ async def test_a_symphony_that_opts_out_never_reaches_the_global_provider() -> N
         "performer_stage": "reviewing", "card_id": "CARD_1",
         "performer_services": state["performer_services"],
     }
-    result = await _acquire_via_slot_manager(state, ctx)  # type: ignore[arg-type]
+    result = await _acquire_via_slot_manager(state, ctx)
     assert result is not None
     assert result["phase"] == "blocked"
     assert "no performer serves it" in result["open_questions"][0]
@@ -206,7 +206,7 @@ async def test_dispatch_acquires_the_provider_for_an_opted_in_symphony() -> None
         "performer_stage": "reviewing", "card_id": "CARD_1",
         "performer_services": state["performer_services"],
     }
-    assert await _acquire_via_slot_manager(state, ctx) is None  # type: ignore[arg-type]
+    assert await _acquire_via_slot_manager(state, ctx) is None
     assert ctx["service"] is service
     assert ctx["slot_manager"] is None  # nothing to release on an error path
 
@@ -218,7 +218,7 @@ async def test_dispatch_keeps_the_performer_when_nothing_opts_in() -> None:
         "performer_stage": "reviewing", "card_id": "CARD_1",
         "performer_services": state["performer_services"],
     }
-    assert await _acquire_via_slot_manager(state, ctx) is None  # type: ignore[arg-type]
+    assert await _acquire_via_slot_manager(state, ctx) is None
     assert ctx["service"] is performer
 
 
@@ -229,7 +229,7 @@ async def test_dispatch_blocks_a_card_whose_provider_is_missing() -> None:
         "performer_stage": "reviewing", "card_id": "CARD_1",
         "performer_services": state["performer_services"],
     }
-    result = await _acquire_via_slot_manager(state, ctx)  # type: ignore[arg-type]
+    result = await _acquire_via_slot_manager(state, ctx)
     assert result is not None
     assert result["phase"] == "blocked"
     assert "scrutare" in result["open_questions"][0]
@@ -267,12 +267,12 @@ def _monitor_state(reviews: list[dict[str, Any]], decision: str) -> dict[str, An
 
 
 async def test_a_scrutare_approval_never_merges() -> None:
-    result = await monitor_pr(_monitor_state([_scrutare_review("APPROVED")], "APPROVED"))  # type: ignore[arg-type]
+    result = await monitor_pr(_monitor_state([_scrutare_review("APPROVED")], "APPROVED"))
     assert result["phase"] == "monitoring_pr"
 
 
 async def test_a_scrutare_change_request_is_not_routed_a_second_time() -> None:
-    result = await monitor_pr(_monitor_state([_scrutare_review("CHANGES_REQUESTED")], "CHANGES_REQUESTED"))  # type: ignore[arg-type]
+    result = await monitor_pr(_monitor_state([_scrutare_review("CHANGES_REQUESTED")], "CHANGES_REQUESTED"))
     assert result["phase"] == "monitoring_pr"
     assert not result.get("pending_reviews")
 
@@ -281,7 +281,7 @@ async def test_the_graphql_form_of_the_bot_login_is_recognised() -> None:
     review = {**_scrutare_review("APPROVED"), "author_login": LOGIN.removesuffix("[bot]")}
     state = _monitor_state([review], "APPROVED")
     state["human_reviewers"] = ["alice", LOGIN.removesuffix("[bot]")]
-    result = await monitor_pr(state)  # type: ignore[arg-type]
+    result = await monitor_pr(state)
     assert result["phase"] == "monitoring_pr"
 
 
@@ -295,7 +295,7 @@ async def test_a_human_approval_beside_scrutare_still_merges() -> None:
     human = {"id": "RVW_H", "author_login": "alice", "state": "APPROVED", "commit_oid": _HEAD,
              "submitted_at": "2026-11-27T11:00:00Z", "comments": []}
     state = _monitor_state([_scrutare_review("CHANGES_REQUESTED"), human], "APPROVED")
-    result = await monitor_pr(state)  # type: ignore[arg-type]
+    result = await monitor_pr(state)
     assert result["phase"] == "merging"
 
 

@@ -364,7 +364,7 @@ modes:
 # stage_providers:
 #   scrutare:
 #     kind: scrutare
-#     url: http://scrutare.scrutare.svc.cluster.local   # the cluster Service, not the webhook route
+#     url: http://scrutare:8080   # the cluster Service, not the webhook route
 #     token_env: SCRUTARE_API_TOKEN       # NAME of the env var holding the performer API token
 #     installation: 12345678              # the GitHub App installation id for the repositories
 #     review_login: "vivi-scrutare[bot]"  # the login its reviews are posted under

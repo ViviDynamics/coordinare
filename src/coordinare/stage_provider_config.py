@@ -52,7 +52,7 @@ class ScrutareProviderConfig(BaseModel):
     def _validate_url(cls, value: str) -> str:
         parts = urlsplit(value.strip())
         if parts.scheme not in ("http", "https") or not parts.hostname:
-            msg = "url must be an http(s) URL with a host, for example http://scrutare.scrutare.svc.cluster.local"
+            msg = "url must be an http(s) URL with a host, for example http://scrutare:8080"
             raise ValueError(msg)
         if parts.username or parts.password or parts.query or parts.fragment:
             msg = "url must not carry credentials, a query or a fragment; the token comes from token_env"
@@ -94,7 +94,7 @@ def provider_role_errors(
     role_providers: dict[str, str],
     human_reviewers: list[str],
 ) -> list[str]:
-    """Every reason the catalog and the roles that reference it do not fit together."""
+    """Every reason the catalog and the roles that reference it do not agree."""
     errors: list[str] = []
     for name in providers:
         try:

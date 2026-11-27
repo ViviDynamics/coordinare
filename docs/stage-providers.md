@@ -46,7 +46,7 @@ The adapter enforces these rules for every provider:
 stage_providers:
   scrutare:
     kind: scrutare
-    url: http://scrutare.scrutare.svc.cluster.local   # reachable from coordinare
+    url: http://scrutare:8080   # reachable from coordinare
     token_env: SCRUTARE_API_TOKEN       # NAME of the env var holding the token
     installation: 12345678              # GitHub App installation id
     review_login: "vivi-scrutare[bot]"  # the login Scrutare's reviews are posted under

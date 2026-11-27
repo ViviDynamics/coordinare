@@ -57,7 +57,7 @@ async def test_doctor_fails_an_unusable_provider_and_names_the_fix(
 
 
 async def test_doctor_ignores_a_provider_no_role_uses(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def never(self: ScrutareProvider) -> tuple[bool, str]:  # pragma: no cover - must not run
+    async def never(self: ScrutareProvider) -> tuple[bool, str]:
         raise AssertionError
 
     monkeypatch.setattr(ScrutareProvider, "health", never)

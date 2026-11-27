@@ -340,10 +340,10 @@ async def test_attempts_are_bounded() -> None:
         async def submit(self, request: StageRequest, request_id: str) -> StageJob:
             return StageJob(ref=request_id, state=JobState.RETRYABLE, reason="nothing sent")
 
-        async def poll(self, ref: str) -> StageJob:  # pragma: no cover - not reached
+        async def poll(self, ref: str) -> StageJob:
             raise AssertionError
 
-        async def health(self) -> tuple[bool, str]:  # pragma: no cover - not reached
+        async def health(self) -> tuple[bool, str]:
             return True, ""
 
     service = ExternalStageService(AlwaysSpent(), stage="reviewing", pr_reader=FakeGitHub().read)
@@ -353,7 +353,7 @@ async def test_attempts_are_bounded() -> None:
 
 def test_only_contracted_stages_can_be_served() -> None:
     with pytest.raises(ValueError, match="no stage provider contract"):
-        ExternalStageService(object(), stage="implementing", pr_reader=FakeGitHub().read)  # type: ignore[arg-type]
+        ExternalStageService(object(), stage="implementing", pr_reader=FakeGitHub().read)
 
 
 async def test_relay_feedback_is_refused_plainly(fake: FakeScrutare, github: FakeGitHub) -> None:
@@ -395,7 +395,7 @@ async def test_monitor_routes_scrutare_findings_to_the_implementer(fake: FakeScr
         "author_login": LOGIN, "commit_oid": HEAD, "body": "Two problems.",
         "comments": [{"body": "Off by one.", "path": "src/a.py", "line": 12}],
     }]
-    result = await monitor_performer(_monitored_state(service, accepted["session_id"]))  # type: ignore[arg-type]
+    result = await monitor_performer(_monitored_state(service, accepted["session_id"]))
     assert result["performer_stage"] == "implementing"
     assert result["phase"] == "dispatching"
     bodies = " ".join(str(item.get("body")) for item in result["relay_feedback"])
@@ -410,7 +410,7 @@ async def test_monitor_records_scrutare_approval_against_the_reviewed_head(fake:
     service = _service(fake, github)
     accepted = await service.dispatch_card(dict(CARD))
     fake.post(_job_of(accepted["session_id"]), verdict="approve", head=HEAD)
-    result = await monitor_performer(_monitored_state(service, accepted["session_id"]))  # type: ignore[arg-type]
+    result = await monitor_performer(_monitored_state(service, accepted["session_id"]))
     verdict = result["stage_verdicts"]["reviewing"]
     assert verdict["head_sha"] == HEAD
     assert verdict["verdict"] == "approved"
@@ -433,7 +433,7 @@ async def test_monitor_treats_a_refused_or_failed_review_as_a_system_error(
         fake.finish(job, "failed", {"delivery": "not_sent"})
     else:
         fake.up = False
-    result = await monitor_performer(_monitored_state(service, accepted["session_id"]))  # type: ignore[arg-type]
+    result = await monitor_performer(_monitored_state(service, accepted["session_id"]))
     assert result["phase"] == "system_error"
     assert "reviewing" not in (result.get("stage_verdicts") or {})
 
@@ -444,7 +444,7 @@ async def test_monitor_keeps_waiting_while_the_job_runs(fake: FakeScrutare, gith
     service = _service(fake, github)
     accepted = await service.dispatch_card(dict(CARD))
     fake.finish(_job_of(accepted["session_id"]), "running", None)
-    result = await monitor_performer(_monitored_state(service, accepted["session_id"]))  # type: ignore[arg-type]
+    result = await monitor_performer(_monitored_state(service, accepted["session_id"]))
     assert result["phase"] == "monitoring_performer"
 
 
@@ -475,7 +475,7 @@ async def test_startup_reconciliation_keeps_a_provider_session_for_polling(
             },
         },
     }
-    report = await run_startup_reconciliation(state, NoDocker())  # type: ignore[arg-type]
+    report = await run_startup_reconciliation(state, NoDocker())
     assert report.decisions["PVTI_card1"] in (
         ReconciliationDecision.DEFERRED, ReconciliationDecision.SKIPPED_PERSISTENT,
     )
