@@ -103,10 +103,15 @@ symphonies:
 - The time in Done is GitHub's own time for the item's last status change. Where GitHub gives
   none, it is the time Coordinare first saw the item in Done, which is kept in the state
   snapshot across restarts.
-- Only items in Done are archived. An item moved out of Done starts again when it returns.
+- Only items in Done whose issue is closed are archived, so an archived item still counts as
+  done for a work item that depends on it. An item moved to another column starts again when
+  it returns to Done.
+- Only items this Coordinare owns are archived: with `assignee_filter` or `include_unassigned`
+  set, someone else's item stays where it is.
 - Archiving runs during the symphony's board check, at most 20 items per check. Each archive is
-  logged as `board.done_item_archived` (a failure as `board.done_item_archive_failed`, retried
-  on a later check).
+  logged as `board.done_item_archived`. A failure is logged as `board.done_item_archive_failed`,
+  ends that check's pass (so a token without project write access costs one call a check),
+  and is retried on a later check.
 - Archived items leave the board and can be restored from the project's archive on GitHub.
 - The dashboard's Done lane states the policy.
 

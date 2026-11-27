@@ -55,18 +55,26 @@ class _FakeGitHub:
         self.archived.append(item_id)
 
 
-def _board(done: list[str], times: dict[str, str], todo: list[str] | None = None) -> dict[str, Any]:
+def _board(done: list[str], times: dict[str, str], todo: list[str] | None = None,
+           open_issues: tuple[str, ...] = (), assignees: dict[str, list[str]] | None = None) -> dict[str, Any]:
+    items = [*done, *(todo or [])]
     return {
         "snapshot": {"BACKLOG": [], "TODO": list(todo or []), "BLOCKED": [], "IN_PROGRESS": [], "IN_REVIEW": [],
                      "DONE": list(done)},
-        "issue_numbers": {item: index + 1 for index, item in enumerate([*done, *(todo or [])])},
+        "issue_numbers": {item: index + 1 for index, item in enumerate(items)},
+        "issue_states": {item: "OPEN" if item in open_issues else "CLOSED" for item in items},
+        "item_assignees": assignees or {item: [] for item in items},
         "status_updated_at": dict(times),
     }
 
 
-def _provider(github: Any, days: int = 14, clock: dict[str, str] | None = None) -> GitHubProjectsBoardProvider:
+def _provider(github: Any, days: int = 14, clock: dict[str, str] | None = None,
+              ownership: Any = None) -> GitHubProjectsBoardProvider:
     state: dict[str, Any] = {} if clock is None else {bp.DONE_FIRST_SEEN_KEY: clock}
-    provider = GitHubProjectsBoardProvider(github, archive_done_after_days=days, provider_state=state, now=lambda: NOW)
+    provider = GitHubProjectsBoardProvider(
+        github, archive_done_after_days=days, provider_state=state, ownership=ownership,
+    )
+    provider._now = lambda: NOW
     if clock is not None:
         # The provider keeps working on the very dict the test holds.
         assert provider.provider_state[bp.DONE_FIRST_SEEN_KEY] is clock
@@ -181,6 +189,69 @@ async def test_a_service_that_cannot_archive_is_left_alone() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_item_whose_issue_is_still_open_is_kept() -> None:
+    """Review: archived, it leaves the board, and an off-board dependency on an open issue never clears."""
+    github = _FakeGitHub(_board(["PVTI_open"], {"PVTI_open": _ago(30)}, open_issues=("PVTI_open",)))
+    await _provider(github).poll_board()
+    assert github.archived == []
+
+
+@pytest.mark.asyncio
+async def test_only_items_this_coordinare_owns_are_archived() -> None:
+    """Review: on a shared board, someone else's Done item is not ours to archive."""
+    from coordinare.services.card_ownership import OwnershipPolicy
+
+    board = _board(["PVTI_mine", "PVTI_theirs", "PVTI_nobody"],
+                   {item: _ago(30) for item in ("PVTI_mine", "PVTI_theirs", "PVTI_nobody")},
+                   assignees={"PVTI_mine": ["bot"], "PVTI_theirs": ["alice"], "PVTI_nobody": []})
+    github = _FakeGitHub(board)
+    await _provider(github, ownership=OwnershipPolicy(login="bot")).poll_board()
+    assert github.archived == ["PVTI_mine"]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_archive_stops_the_pass_for_this_poll() -> None:
+    """Review: a refused mutation (no write scope) costs one call a poll, not one per overdue item."""
+    done = [f"PVTI_{n}" for n in range(5)]
+    github = _FakeGitHub(_board(done, {item: _ago(30) for item in done}), fail=True)
+    calls: list[str] = []
+    original = github.archive_project_item
+
+    async def counting(item_id: str) -> None:
+        calls.append(item_id)
+        await original(item_id)
+
+    github.archive_project_item = counting  # type: ignore[method-assign]
+    await _provider(github).poll_board()
+    assert calls == ["PVTI_0"]
+
+
+@pytest.mark.asyncio
+async def test_a_partial_or_malformed_read_keeps_the_record() -> None:
+    """Review: an item missing from one read (a truncated board) has not left Done; only another column says so."""
+    clock = {"PVTI_gone_from_read": _ago(10), "PVTI_moved": _ago(10)}
+    github = _FakeGitHub(_board([], {}, todo=["PVTI_moved"]))
+    await _provider(github, clock=clock).poll_board()
+    assert clock == {"PVTI_gone_from_read": _ago(10)}
+    broken = _FakeGitHub({"snapshot": {"TODO": []}})
+    await _provider(broken, clock=clock).poll_board()
+    assert clock == {"PVTI_gone_from_read": _ago(10)}
+
+
+@pytest.mark.asyncio
+async def test_a_board_with_nothing_to_record_leaves_the_state_empty() -> None:
+    """Review: an idle daemon must not write a snapshot because an empty record appeared."""
+    state: dict[str, Any] = {}
+    github = _FakeGitHub(_board([], {}))
+    await _provider(github, clock=None).poll_board()
+    assert state == {}
+    state = {}
+    provider = GitHubProjectsBoardProvider(github, archive_done_after_days=14, provider_state=state)
+    await provider.poll_board()
+    assert state == {}
+
+
+@pytest.mark.asyncio
 async def test_one_poll_archives_a_bounded_number() -> None:
     done = [f"PVTI_{n}" for n in range(bp.MAX_ARCHIVES_PER_POLL + 5)]
     github = _FakeGitHub(_board(done, {item: _ago(30) for item in done}))
@@ -228,6 +299,7 @@ def test_a_builder_that_takes_no_state_is_still_built() -> None:
 
 def test_the_poll_reads_when_the_status_last_changed_and_the_mutation_archives() -> None:
     assert "updatedAt" in POLL_BOARD_QUERY
+    assert "\n              state\n" in POLL_BOARD_QUERY  # the issue's own state, beside its number
     assert "archiveProjectV2Item" in ARCHIVE_PROJECT_ITEM_MUTATION
 
 
@@ -239,9 +311,9 @@ async def test_the_real_poll_reports_the_status_change_time(monkeypatch: pytest.
     page = {"node": {"items": {
         "nodes": [
             {"id": "PVTI_d", "fieldValues": {"nodes": [{"name": "Done", "updatedAt": "2026-11-01T00:00:00Z"}]},
-             "content": {"id": "I_1", "number": 1, "title": "t", "body": "b"}},
+             "content": {"id": "I_1", "number": 1, "title": "t", "body": "b", "state": "CLOSED"}},
             {"id": "PVTI_t", "fieldValues": {"nodes": [{"name": "Todo"}]},
-             "content": {"id": "I_2", "number": 2, "title": "t", "body": "b"}},
+             "content": {"id": "I_2", "number": 2, "title": "t", "body": "b", "state": "OPEN"}},
         ],
         "pageInfo": {"hasNextPage": False, "endCursor": None},
     }}}
@@ -253,6 +325,7 @@ async def test_the_real_poll_reports_the_status_change_time(monkeypatch: pytest.
     monkeypatch.setattr(GitHubService, "_guarded_execute", execute)
     board = await service.poll_board()
     assert board["status_updated_at"] == {"PVTI_d": "2026-11-01T00:00:00Z"}
+    assert board["issue_states"] == {"PVTI_d": "CLOSED", "PVTI_t": "OPEN"}
 
 
 @pytest.mark.asyncio
@@ -316,6 +389,7 @@ def test_the_symphony_cycle_board_is_the_one_given_state() -> None:
 
     source = inspect.getsource(daemon_module)
     assert source.count("provider_state=_provider_state_for(self._state, symphony_name)") == 1
+    assert source.count("ownership=ownership_policy(") == 1
     # The startup and restore boards are built without it, so they never archive.
     assert source.count("build_board_provider(None, github=prev_github)") == 1
 
@@ -344,8 +418,21 @@ def test_a_new_record_moves_the_save_signature_so_it_is_written() -> None:
     before = daemon._lifecycle_signature()
     from coordinare.daemon import _provider_state_for
 
+    _provider_state_for(daemon._state, "alpha")
+    assert daemon._lifecycle_signature() == before, "an empty state is not a change"
     _provider_state_for(daemon._state, "alpha")[bp.DONE_FIRST_SEEN_KEY] = {"PVTI_x": NOW.isoformat()}
     assert daemon._lifecycle_signature() != before
+
+
+def test_restore_fills_the_dicts_a_provider_already_holds() -> None:
+    from coordinare.daemon import _provider_state_for
+
+    daemon = _daemon()
+    held = _provider_state_for(daemon._state, "alpha")
+    state = {"alpha": {bp.DONE_FIRST_SEEN_KEY: {"PVTI_x": NOW.isoformat()}}}
+    daemon._restore_from_snapshot(WorkflowSnapshot(phase="idle", snapshot_at=NOW, work_item_provider_state=state))
+    assert _provider_state_for(daemon._state, "alpha") is held
+    assert held == state["alpha"]
 
 
 # --- the board says so ------------------------------------------------------------------------
@@ -359,6 +446,8 @@ def test_the_board_reads_each_symphonys_archive_days() -> None:
     assert symphony_done_archive_days(SimpleNamespace(work_items=None)) == 14
     assert symphony_done_archive_days(SimpleNamespace(work_items=WorkItemsConfig(archive_done_after_days=0))) == 0
     assert symphony_done_archive_days(SimpleNamespace(work_items=SimpleNamespace(provider="jira"))) is None
+    # Review: a disabled symphony is not polled, so nothing of it is archived.
+    assert symphony_done_archive_days(SimpleNamespace(work_items=None, enabled=False)) is None
 
 
 def test_the_dashboard_snapshot_carries_the_days() -> None:

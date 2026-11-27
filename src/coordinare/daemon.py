@@ -76,6 +76,7 @@ from coordinare.services.bootstrap_status import (
     symphony_view,
 )
 from coordinare.services.card_lifecycle import CardLifecycleLog
+from coordinare.services.card_ownership import ownership_policy
 from coordinare.services.closed_pr import is_closed_pr_block
 from coordinare.services.conductor_calls import SHUTDOWN_DRAIN_SECONDS, ConductorCallLog
 from coordinare.services.dependency import build_graph as _build_dep_graph
@@ -298,10 +299,10 @@ def _provider_state_signature(value: Any) -> str:
 
 
 def _persistable_provider_state(value: Any) -> dict[str, dict[str, Any]]:
-    """365: a copy fit for the snapshot. Anything that is not a dict of dicts is left out."""
+    """365: a copy fit for the snapshot. Empty state, and anything not a dict of dicts, is left out."""
     if not isinstance(value, dict):
         return {}
-    return {str(name): dict(inner) for name, inner in value.items() if isinstance(inner, dict)}
+    return {str(name): dict(inner) for name, inner in value.items() if isinstance(inner, dict) and inner}
 
 
 def _reviewer_logins(cfg: Any) -> tuple[Any, Any]:
@@ -2938,9 +2939,10 @@ class CoordinareDaemon:
         if isinstance(lifecycle := self._state.get("card_lifecycle"), CardLifecycleLog):
             lifecycle.load(snapshot.card_lifecycle)
         # 365: loaded in place, so a provider built before the restore keeps the same dicts.
-        _provider_state_root(self._state).update(
-            {name: dict(value) for name, value in snapshot.work_item_provider_state.items()},
-        )
+        for name, value in snapshot.work_item_provider_state.items():
+            own = _provider_state_for(self._state, name)
+            own.clear()
+            own.update(value)
         if snapshot.active_card_id:
             _set_current_card(
                 self._state,
@@ -3702,6 +3704,7 @@ class CoordinareDaemon:
                 # 365: the cycle's board is the one that keeps the tracker tidy (GitHub Projects
                 # archives finished items), with state that outlives the cycle and the daemon.
                 provider_state=_provider_state_for(self._state, symphony_name),
+                ownership=ownership_policy(_effective_cfg or self._state.get("config")),
             )
             if _sym_github is not None else None
         )

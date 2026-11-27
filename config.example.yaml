@@ -1222,7 +1222,8 @@ symphonies:
     #   provider: github_projects     # default, and the only provider today
     #   archive_done_after_days: 14   # default 14. The GitHub project archives a work item
     #                                 # once it has been in Done this many days (GitHub's own
-    #                                 # time for the status change). 0 turns archiving off;
+    #                                 # time for the status change) and its issue is closed.
+    #                                 # Only items this coordinare owns. 0 turns archiving off;
     #                                 # range 0-3650. Archived items can be restored on GitHub.
     # overrides:
     #   max_concurrent_cards: 2       # range 1–20

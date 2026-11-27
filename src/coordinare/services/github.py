@@ -152,6 +152,8 @@ query PollBoard($projectId: ID!, $after: String) {
             ... on Issue {
               id
               number
+              # 365: an item is archived only once its issue is closed.
+              state
               title
               body
               url
@@ -1204,8 +1206,10 @@ class GitHubService(CardIdentityMap):
         # with priority OPEN → MERGED → CLOSED so a card with an in-flight PR
         # surfaces the live PR rather than a stale closed one.
         pr_urls: dict[str, str] = {}
-        # 365: item ID -> when GitHub last set its status (ISO 8601), where GitHub says.
+        # 365: item ID -> when GitHub last set its status (ISO 8601), where GitHub says,
+        # and item ID -> its issue's state (OPEN or CLOSED).
         status_updated_at: dict[str, str] = {}
+        issue_states: dict[str, str] = {}
 
         for item in items:
             if not isinstance(item, dict):
@@ -1237,6 +1241,9 @@ class GitHubService(CardIdentityMap):
                 descriptions[item_id] = str(content.get("body", ""))
                 number = content.get("number", 0)
                 issue_numbers[item_id] = int(number) if isinstance(number, int) else 0
+                issue_state = content.get("state")
+                if isinstance(issue_state, str) and issue_state:
+                    issue_states[item_id] = issue_state.upper()
                 content_node_id = str(content.get("id", "")).strip()
                 if content_node_id:
                     content_node_ids[item_id] = content_node_id
@@ -1329,6 +1336,7 @@ class GitHubService(CardIdentityMap):
             "pr_urls": pr_urls,
             "native_blockers": native_blockers,
             "status_updated_at": status_updated_at,
+            "issue_states": issue_states,
         }
 
     async def get_issue_details(self, issue_id: str) -> dict[str, Any]:
