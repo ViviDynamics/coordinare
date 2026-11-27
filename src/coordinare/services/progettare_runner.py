@@ -45,10 +45,19 @@ def _tail(text: str | bytes | None) -> str:
     return (text or "").strip()[-_TAIL:]
 
 
-def _progettare_env() -> dict[str, str]:
-    """Progettare's environment: the runner's, without coordinare's own Python, so a
-    Python-based CLI in its own environment never imports coordinare's packages."""
-    return {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV")}
+_PYTHON_ENV = ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT")
+
+
+def without_coordinare_python(env: dict[str, str]) -> dict[str, str]:
+    """``env`` without coordinare's own Python: its import path, its virtualenv, and that
+    virtualenv's ``bin`` on PATH. A Python-based CLI in its own environment (Progettare)
+    then never imports coordinare's packages or resolves ``python3`` to its interpreter."""
+    venv = env.get("VIRTUAL_ENV", "").rstrip("/")
+    cleaned = {k: v for k, v in env.items() if k not in _PYTHON_ENV}
+    if venv and "PATH" in cleaned:
+        bins = {f"{venv}/bin", str(Path(sys.executable).parent)}
+        cleaned["PATH"] = os.pathsep.join(p for p in cleaned["PATH"].split(os.pathsep) if p.rstrip("/") not in bins)
+    return cleaned
 
 
 def _git_env(host: str) -> dict[str, str]:
@@ -105,7 +114,7 @@ async def _plan(spec: dict[str, Any], directory: Path, checkout: Path, lock_fd: 
                 spec["command"], "blueprint", "--issue", spec["issue"], "--repo", str(checkout),
                 "--config", str(config), "--runs-dir", str(runs),
                 stdin=asyncio.subprocess.DEVNULL, stdout=out, stderr=err, cwd=directory,
-                pass_fds=(lock_fd,), start_new_session=True, env=_progettare_env(),
+                pass_fds=(lock_fd,), start_new_session=True, env=without_coordinare_python(dict(os.environ)),
             )
         except OSError as exc:
             return {"phase": "progettare", "exit_code": None, "detail": f"{type(exc).__name__}: {exc}"}

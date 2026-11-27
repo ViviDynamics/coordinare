@@ -282,18 +282,16 @@ async def test_an_operator_restart_plans_again(planner: FakePlanner, issues: Fak
 
 
 @pytest.mark.asyncio
-async def test_feedback_routed_back_to_the_planner_plans_again_once_per_batch(
+async def test_feedback_routed_back_to_the_planner_is_not_forwarded_and_the_plan_stands(
     planner: FakePlanner, issues: FakeIssues,
 ) -> None:
     service = _service(planner, issues)
     session = (await service.dispatch_card(dict(CARD)))["session_id"]
     planner.finish(_ref(session), _passed(_pin()))
-    bounced = {**CARD, "relay_feedback": [{"body": "SQL injection in export.py", "author_login": "security"}]}
-    again = await service.dispatch_card(bounced)
-    # Never the plan that drew the feedback: a new request, at its first attempt.
-    assert _ref(again["session_id"]) != _ref(session)
-    assert _ref(again["session_id"]).endswith(".1")
-    # The same batch replayed (a retry, a restart) finds that run, never a third.
-    assert (await service.dispatch_card(dict(bounced)))["session_id"] == again["session_id"]
-    other = {**CARD, "relay_feedback": [{"body": "and the import too", "author_login": "security"}]}
-    assert (await service.dispatch_card(other))["session_id"] != again["session_id"]
+    bounced = {**CARD, "relay_feedback": [{"problem": "SQL injection in export.py", "routing": "architect"}]}
+    # Progettare cannot read it; the input did not change, so no second plan is made.
+    assert (await service.dispatch_card(bounced))["session_id"] == session
+    assert {rid for rid, _ in planner.submitted} == {_ref(session)}
+    # An edited issue does plan again.
+    issues.body = BODY + "- [ ] parameterise the export query\n"
+    assert (await service.dispatch_card(bounced))["session_id"] != session

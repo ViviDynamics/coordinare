@@ -84,8 +84,6 @@ _ISSUE_URL = re.compile(
 )
 #: The fields of a recorded clarification that carry what a person said.
 _CLARIFICATION_CONTENT = ("questions", "answer", "comment_id", "body")
-#: The fields of a routed-back feedback item that say what it asks for.
-_FEEDBACK_CONTENT = ("body", "path", "line", "kind")
 #: Planning a work item that is not a GitHub issue needs Progettare to take it as data.
 WORK_ITEM_AS_DATA_ISSUE = "ViviDynamics/progettare#68"
 
@@ -278,15 +276,14 @@ def work_item_digest(title: str, body: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def work_item_pin(digest: str, clarifications: Any, feedback: Any = None) -> str:
-    """The pin of a planning request: the issue text, the answers recorded so far, and
-    any feedback routed back to the planner.
+def work_item_pin(digest: str, clarifications: Any) -> str:
+    """The pin of a planning request: the issue text and the answers recorded so far.
 
-    A planner reads the issue, not coordinare's feedback, so feedback routed back to the
-    architect (security's findings, an observer's correction) cannot steer it. Pinning
-    it still matters: the stage plans again once for each batch instead of handing back
-    the plan that drew it, and a replay of the same batch (a retry, a restart) finds that
-    run instead of starting another. Coordinare's bounce budget bounds the loop.
+    Feedback routed back to the architect is not pinned. The planner reads the issue,
+    not coordinare's feedback, so the feedback is logged as not forwarded (as for any
+    provider) and the plan of the unchanged input stands; coordinare's feedback-cycle
+    budget bounds the loop. Editing the issue, answering on the card or an operator
+    restart plans again.
     """
     # What a clarification says, in either shape coordinare records: a blocked card's
     # answer (questions, answer) or a routed comment (comment_id, body). Bookkeeping
@@ -296,13 +293,7 @@ def work_item_pin(digest: str, clarifications: Any, feedback: Any = None) -> str
         for c in (clarifications if isinstance(clarifications, list) else [])
         if isinstance(c, dict)
     ]
-    routed = [
-        {key: f.get(key) for key in _FEEDBACK_CONTENT if f.get(key) not in (None, "", [])}
-        for f in (feedback if isinstance(feedback, list) else [])
-        if isinstance(f, dict)
-    ]
-    pinned: list[Any] = [digest, answers, routed] if routed else [digest, answers]
-    payload = json.dumps(pinned, sort_keys=True, separators=(",", ":"), default=str)
+    payload = json.dumps([digest, answers], sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode()).hexdigest()[:40]
 
 
@@ -717,11 +708,7 @@ class WorkItemStageService(ExternalStageService):
             number=number,
             node_id=node,
             host=host,
-            pin=work_item_pin(
-                work_item_digest(snapshot.title, snapshot.body),
-                card_context.get("clarifications"),
-                card_context.get("relay_feedback"),
-            ),
+            pin=work_item_pin(work_item_digest(snapshot.title, snapshot.body), card_context.get("clarifications")),
         )
 
     async def _item(self, repository: str, node: str) -> WorkItemSnapshot:

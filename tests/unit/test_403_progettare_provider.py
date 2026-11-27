@@ -35,7 +35,7 @@ TITLE = "Export widgets as CSV"
 BODY = "## Acceptance\n- [ ] a CSV download exists\n"
 PASS_ENV = [
     "FAKE_PROGETTARE_MODE", "FAKE_PROGETTARE_SLEEP", "FAKE_PROGETTARE_TITLE", "FAKE_PROGETTARE_BODY",
-    "FAKE_PROGETTARE_ARTIFACT_VERSION", "FAKE_PROGETTARE_DOCUMENTER", "OPENAI_API_KEY",
+    "FAKE_PROGETTARE_ARTIFACT_VERSION", "FAKE_PROGETTARE_DOCUMENTER", "FAKE_PROGETTARE_VERSION", "OPENAI_API_KEY",
 ]
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the runner relies on POSIX flock")
 
@@ -77,7 +77,7 @@ def environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FAKE_PROGETTARE_SLEEP", "30")
     monkeypatch.setenv("FAKE_PROGETTARE_ARTIFACT_VERSION", "1")
     monkeypatch.setenv("FAKE_PROGETTARE_DOCUMENTER", "1")
-    monkeypatch.delenv("FAKE_PROGETTARE_VERSION", raising=False)
+    monkeypatch.setenv("FAKE_PROGETTARE_VERSION", "2026.11.3")
 
 
 def _config(tmp_path: Path, cli: Path, **kw: Any) -> ProgettareProviderConfig:
@@ -449,8 +449,7 @@ async def test_a_runner_that_died_says_why_from_its_log(tmp_path: Path, command:
     (directory / "runner.log").write_text("ModuleNotFoundError: No module named 'coordinare'\n")
     job = await _provider(tmp_path, command, origin).poll(ref)
     assert job.state is JobState.RETRYABLE
-    assert "ModuleNotFoundError" in job.reason
-    assert "restarted" in job.reason
+    assert "the runner's log ends: ModuleNotFoundError" in job.reason
 
 
 @pytest.mark.asyncio
@@ -489,7 +488,7 @@ async def test_a_version_that_cannot_be_read_in_time_is_retryable(
     with pytest.raises(TransportError, match="could not read"):
         await provider.submit(_request(), _request().request_id(1))
     missing = _provider(tmp_path, tmp_path / "bin" / "absent", origin)
-    with pytest.raises(PerformerAuthError, match="is it installed"):
+    with pytest.raises(PerformerAuthError, match="could not be started"):
         await missing.submit(_request(), _request().request_id(1))
 
 
@@ -504,3 +503,16 @@ async def test_progettare_does_not_inherit_coordinares_python(
     assert (await _settled(provider, ref)).state is JobState.DONE
     (invocation,) = _invocations(tmp_path, ref)
     assert "VIRTUAL_ENV" not in invocation["env"]
+
+
+def test_coordinares_virtualenv_is_taken_off_the_path() -> None:
+    from coordinare.services.progettare_runner import without_coordinare_python
+
+    env = {"PATH": "/opt/coordinare/.venv/bin:/usr/local/bin:/usr/bin", "VIRTUAL_ENV": "/opt/coordinare/.venv",
+           "PYTHONPATH": "/opt/coordinare/src", "HOME": "/home/c"}
+    cleaned = without_coordinare_python(env)
+    assert cleaned["PATH"].split(":")[-2:] == ["/usr/local/bin", "/usr/bin"]
+    assert "/opt/coordinare/.venv/bin" not in cleaned["PATH"]
+    assert "VIRTUAL_ENV" not in cleaned
+    assert "PYTHONPATH" not in cleaned
+    assert cleaned["HOME"] == "/home/c"

@@ -234,3 +234,10 @@ def test_403_a_topic_that_cannot_be_placed_is_reported_and_the_index_is_never_sh
     assert "docs/topic-readme.md" in paths
     assert not any(p.lower() == "docs/readme.md" and p != "docs/README.md" for p in paths)
     assert "topic without a place: !!!" in refused
+
+
+def test_403_topic_slugs_keep_combining_marks_and_one_form():
+    from performer.workflows.documenter.plan import _slug
+
+    assert _slug("हिन्दी गाइड") == "हिन्दी-गाइड"
+    assert _slug("Cafe\u0301 menu") == _slug("Caf\u00e9 menu") == "caf\u00e9-menu"

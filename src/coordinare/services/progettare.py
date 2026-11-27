@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from coordinare.services.progettare_runner import write_json
+from coordinare.services.progettare_runner import without_coordinare_python, write_json
 from coordinare.services.stage_contract import (
     JobState,
     StageJob,
@@ -180,7 +180,8 @@ class ProgettareProvider:
         if found != self._config.version:
             msg = (
                 f"stage provider {self.name!r}: {self._config.command} --version reports "
-                f"{found or 'nothing (is it installed?)'}, but version {self._config.version} is pinned; install "
+                f"{found or 'nothing (it could not be started; is it installed?)'}, but version "
+                f"{self._config.version} is pinned; install "
                 "the pinned release or change stage_providers."
                 f"{self.name}.version"
             )
@@ -190,21 +191,25 @@ class ProgettareProvider:
         """What ``<command> --version`` prints; empty when it cannot be run, None when it
         did not answer in time."""
         try:
+            # The environment the run gets, so the check sees what the run will see.
             process = await asyncio.create_subprocess_exec(
                 self._config.command, "--version",
                 stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE, env=without_coordinare_python(self._child_env(None, "github.com")),
             )
         except OSError:
             return ""
         try:
-            out, _ = await asyncio.wait_for(process.communicate(), _VERSION_TIMEOUT_SECONDS)
+            out, err = await asyncio.wait_for(process.communicate(), _VERSION_TIMEOUT_SECONDS)
         except TimeoutError:
             process.kill()
             await process.wait()
             return None
         lines = out.decode("utf-8", "replace").strip().splitlines()
-        return lines[-1].strip() if lines else ""
+        if lines:
+            return lines[-1].strip()
+        why = err.decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
+        return f"nothing (exit {process.returncode}{': ' + why[0][:200] if why[0] else ''})"
 
     async def _start(self, request: WorkItemRequest, ref: str, token: str) -> StageJob:
         directory = self._directory(ref)
@@ -253,9 +258,10 @@ class ProgettareProvider:
         logger.info("progettare.run_started", provider=self.name, request=ref, issue=request.ref)
         return StageJob(ref=ref, state=JobState.PENDING, detail="started")
 
-    def _child_env(self, token: str, host: str) -> dict[str, str]:
+    def _child_env(self, token: str | None, host: str) -> dict[str, str]:
         env = {k: os.environ[k] for k in (*_BASE_ENV, *self._config.pass_env) if k in os.environ}
-        env["GH_TOKEN"] = token
+        if token is not None:
+            env["GH_TOKEN"] = token
         if host != "github.com":
             env["GH_HOST"] = host
         return env
@@ -297,9 +303,10 @@ class ProgettareProvider:
             return _retry(ref, phase, f"{phase} failed: {detail}" if phase == "clone" else detail)
         run_dir = _run_dir(directory / "runs")
         if run_dir is None:
-            why = detail or "the run stopped before it recorded anything (was the host restarted?)"
-            if not detail and (log := _log_tail(directory / "runner.log")):
-                why = f"{why}; the runner's log ends: {log}"
+            log = "" if detail else _log_tail(directory / "runner.log")
+            why = detail or (f"the runner's log ends: {log}" if log else (
+                "the run stopped before it recorded anything (was the host restarted?)"
+            ))
             return _retry(ref, phase or "interrupted", f"progettare recorded no run: {why}")
         try:
             manifest = _artifact(run_dir / "run.json", "run")
@@ -470,9 +477,13 @@ def _strings(value: Any, what: str) -> list[str]:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    # An OSError (a missing file included) propagates: reading again may succeed, so the
-    # caller retries. Only content that is not a JSON object is refused.
-    text = path.read_text(encoding="utf-8", errors="replace")
+    # Another OSError (a missing file included) propagates: reading again may succeed, so
+    # the caller retries. A file that is not readable text, or not a JSON object, is refused.
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (IsADirectoryError, PermissionError, UnicodeDecodeError) as exc:
+        msg = f"{path.name} cannot be read: {exc}"
+        raise ContractError(msg) from exc
     try:
         record = json.loads(text)
     except ValueError as exc:

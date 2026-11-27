@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
 from performer.workflows.documenter.docsroot import DOCS_ROOT_DEFAULT, needs_documentation
@@ -60,15 +61,23 @@ def _plannable_brief_location(location: str, docs_root: str) -> bool:
     return location.startswith(f"{docs_root.rstrip('/')}/")
 
 
-#: Page names a topic must never take: the docs root's own index and navigation pages.
-_RESERVED_PAGES = frozenset({"readme", "index", "home", "sidebar", "_sidebar", "footer", "_footer"})
+#: Page names a topic must never take: the docs root's own index pages.
+_RESERVED_PAGES = frozenset({"readme", "index", "home"})
+
+
+def _slug(text: str) -> str:
+    """Letters, digits and combining marks of any script, NFC-normalised; the rest is '-'."""
+    out = []
+    for char in unicodedata.normalize("NFC", text.lower()):
+        out.append(char if unicodedata.category(char)[0] in ("L", "N", "M") else "-")
+    return re.sub(r"-+", "-", "".join(out)).strip("-")[:60].strip("-")
 
 
 def _placed_by_topic(entry: dict[str, Any], docs_root: str) -> str:
     """403: where a brief entry that names no location is written: a page under the
     resolved docs root, named by its topic. A planner that names topics only (Progettare)
     would otherwise have every topic dropped. Empty when the topic gives no name."""
-    slug = re.sub(r"[\W_]+", "-", str(entry.get("topic") or "").lower()).strip("-")[:60].strip("-")
+    slug = _slug(str(entry.get("topic") or ""))
     if not slug:
         return ""
     if slug in _RESERVED_PAGES:
@@ -87,7 +96,7 @@ def _collect_brief_entries(
     for entry in brief_docs:
         location = entry.get("location", "") or _placed_by_topic(entry, docs_root)
         if not location:
-            topic = str(entry.get("topic") or "").strip()
+            topic = str(entry.get("topic") or "").strip()[:80]
             if topic and f"topic without a place: {topic}" not in refused:
                 refused.append(f"topic without a place: {topic}")
             continue
