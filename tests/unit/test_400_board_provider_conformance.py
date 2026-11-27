@@ -8,8 +8,8 @@ cursor is honoured, or what a person moving a card mid-run does to coordinare.
 Every test here takes a ``harness`` and runs once per provider in ``PROVIDERS``.
 Adding a provider means writing its harness and adding it to that list; no test
 below is rewritten. A behaviour a provider cannot have is declared on its harness
-(GitHub Projects cannot refuse a move) and skipped with that reason, never
-special-cased inside a test.
+(GitHub Projects cannot refuse a move), and that case runs only for the providers
+that can. No test special-cases a provider.
 
 The GitHub Projects run goes through the bench's ``FakeGitHubService`` and the
 real ``GitHubProjectsBoardProvider`` adapter, so the code under test is the code
@@ -88,8 +88,8 @@ class GitHubProjectsHarness:
     """GitHub Projects: the production adapter over the bench's fake service."""
 
     name = "github_projects"
+    #: GitHub Projects has no workflow rules, so it never refuses a move.
     can_refuse_moves = False
-    refusal_skip_reason = "GitHub Projects has no workflow rules, so it never refuses a move"
 
     def __init__(self, tmp_path: Path) -> None:
         bare = tmp_path / "bare.git"
@@ -122,9 +122,6 @@ class GitHubProjectsHarness:
         issue = self.fake._cards[card_id]["content_node_id"]
         return [e["body"] for e in self.fake.events if e["kind"] == "add_comment" and e["subject_id"] == issue]
 
-    def refuse(self, card_id: str, status: str) -> None:  # pragma: no cover - capability is False
-        raise NotImplementedError
-
     def code_host(self) -> Any:
         return self.fake
 
@@ -134,7 +131,6 @@ class InMemoryHarness:
 
     name = "in_memory"
     can_refuse_moves = True
-    refusal_skip_reason = ""
 
     def __init__(self, tmp_path: Path) -> None:
         self.provider = InMemoryBoardProvider(project_key="PAY")
@@ -171,6 +167,12 @@ PROVIDERS = [GitHubProjectsHarness, InMemoryHarness]
 
 @pytest.fixture(params=PROVIDERS, ids=lambda h: h.name)
 def harness(request: pytest.FixtureRequest, tmp_path: Path) -> Any:
+    return request.param(tmp_path)
+
+
+@pytest.fixture(params=[h for h in PROVIDERS if h.can_refuse_moves], ids=lambda h: h.name)
+def refusing_harness(request: pytest.FixtureRequest, tmp_path: Path) -> Any:
+    """Providers whose tracker can refuse a move. Declared on the harness, not tested for."""
     return request.param(tmp_path)
 
 
@@ -267,9 +269,10 @@ class TestMoves:
         assert _column_of(await harness.provider.poll_board(), card) == ["IN_PROGRESS"]
 
     @pytest.mark.asyncio
-    async def test_a_move_the_tracker_refuses_is_an_outcome_and_the_item_stays(self, harness: Any) -> None:
-        if not harness.can_refuse_moves:
-            pytest.skip(harness.refusal_skip_reason)
+    async def test_a_move_the_tracker_refuses_is_an_outcome_and_the_item_stays(
+        self, refusing_harness: Any,
+    ) -> None:
+        harness = refusing_harness
         card = harness.seed("One", "IN_REVIEW")
         await harness.provider.poll_board()
         harness.refuse(card, "DONE")
