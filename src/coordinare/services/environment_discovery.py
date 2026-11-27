@@ -31,6 +31,25 @@ class EnvironmentDiscoveryError(RuntimeError):
     """Discovery cannot establish an accepted, evidence-bound environment."""
 
 
+class _MalformedReplyError(EnvironmentDiscoveryError):
+    """A reply that is not one JSON object, which the phase may answer with a correction (427)."""
+
+
+class _DuplicateKeyError(ValueError):
+    """An ambiguous JSON object; never corrected, since which value the model meant is unknown."""
+
+
+# 427: how many malformed replies in a row the phase answers with a correction before it ends,
+# and how much of a rejected reply goes back to the model with it (the whole of a near-limit
+# reply, resent on every later call, could overflow the context window).
+_MALFORMED_CORRECTIONS = 1
+_MALFORMED_ECHO_CHARS = 2048
+_MALFORMED_CORRECTION = (
+    "reply rejected and not acted on: it must be exactly one JSON object and nothing else "
+    "(no code fences, prose or second object); send that reply again"
+)
+
+
 @dataclass(frozen=True)
 class DiscoveryLimits:
     """Per-phase admission limits; exhaustion never yields partial acceptance."""
@@ -67,7 +86,7 @@ def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     for key, value in pairs:
         if key in result:
             message = "duplicate JSON key"
-            raise ValueError(message)
+            raise _DuplicateKeyError(message)
         result[key] = value
     return result
 
@@ -80,10 +99,13 @@ def _decode_reply(raw: str, name: str, limits: DiscoveryLimits) -> dict[str, Any
     if not isinstance(raw, str) or len(raw.encode("utf-8")) > limits.max_output_bytes:
         message = f"{name} output limit exceeded"
         raise EnvironmentDiscoveryError(message)
+    message = f"{name} returned malformed JSON"
     try:
         reply = json.loads(raw, object_pairs_hook=_object)
+    except json.JSONDecodeError as exc:
+        raise _MalformedReplyError(message) from exc
     except (ValueError, RecursionError) as exc:
-        message = f"{name} returned malformed JSON"
+        # Duplicate keys and values Python refuses (an over-long integer) are not a stray fence.
         raise EnvironmentDiscoveryError(message) from exc
     if not isinstance(reply, dict):
         message = f"{name} returned an invalid envelope"
@@ -167,9 +189,20 @@ async def _phase(
 ) -> tuple[dict[str, Any], dict[str, str]]:
     try:
         async with asyncio.timeout(inspection.limits.phase_timeout_seconds):
+            malformed = 0
             for _ in range(inspection.limits.max_model_calls):
                 raw = await _model_reply(chat, messages, inspection.name)
-                reply = _decode_reply(raw, inspection.name, inspection.limits)
+                try:
+                    reply = _decode_reply(raw, inspection.name, inspection.limits)
+                except _MalformedReplyError as exc:
+                    # 427: the strict decoder stays strict; the model gets one more turn.
+                    malformed += 1
+                    if malformed > _MALFORMED_CORRECTIONS:
+                        raise EnvironmentDiscoveryError(str(exc)) from exc
+                    messages.append({"role": "assistant", "content": raw[:_MALFORMED_ECHO_CHARS]})
+                    messages.append({"role": "user", "content": _json({"error": _MALFORMED_CORRECTION})})
+                    continue
+                malformed = 0
                 final = "manifest" if inspection.name == "discovery" else "assessment"
                 if set(reply) == {final} and isinstance(reply[final], dict):
                     return reply[final], inspection.inputs
