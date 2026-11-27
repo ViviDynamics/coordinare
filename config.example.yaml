@@ -353,6 +353,23 @@ modes:
   - {name: single-gpt54-mini, strategy: single, tool: gpt54-mini}
   - {name: single-gpt55,      strategy: single, tool: gpt55}
 
+# --- 402: stage providers (optional) ---
+# An outside service can fill a lifecycle stage instead of a performer. Declare it here
+# and opt a role in with `performers.<role>.provider`. Nothing changes until a role names
+# one. Scrutare can fill the reviewer role: coordinare submits each pull request head to
+# Scrutare's performer API, polls the job, and uses Scrutare's verdict as the reviewing
+# stage's verdict. Scrutare runs its own harness, so the reviewer's backend, mode and
+# workflow have no effect while it is opted in. See docs/stage-providers.md.
+#
+# stage_providers:
+#   scrutare:
+#     kind: scrutare
+#     url: http://scrutare.scrutare.svc.cluster.local   # the cluster Service, not the webhook route
+#     token_env: SCRUTARE_API_TOKEN       # NAME of the env var holding the performer API token
+#     installation: 12345678              # the GitHub App installation id for the repositories
+#     review_login: "vivi-scrutare[bot]"  # the login its reviews are posted under
+#     # request_timeout_seconds: 30
+
 performers:
   default:
     backend: nare                   # inherited by all roles below unless overridden (the default)
@@ -421,6 +438,9 @@ performers:
   reviewer:
     effort: high
     temperature: 0.0
+    # 402: let Scrutare review instead of a performer (declare it in stage_providers above).
+    # Opt in per symphony instead with symphonies[].overrides.performers.
+    # provider: scrutare
     # 169: run the review as a workflow: the injected diff parsed into changed
     # files, a read-only survey under the spec-165 allow-list, one schema-guarded
     # findings call, a gate that drops findings whose anchor does not verify
