@@ -1,0 +1,513 @@
+"""Issue #396, second slice: the last work item writes, and blocker state from the listing.
+
+The assessor's "not work" verdict, the QA evidence comment and the state of an
+off-board blocker each went to GitHub directly. Each now goes through the work
+item provider; on GitHub Projects the adapter makes the same GitHub call.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+import pytest
+
+from coordinare.services.board_provider import (
+    NOT_WORK,
+    BoardProvider,
+    GitHubProjectsBoardProvider,
+    MoveOutcome,
+)
+from coordinare.services.card_identity import CardIdentityMap
+from tests.unit.test_400_board_provider_conformance import PROVIDERS
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+class _GitHub(CardIdentityMap):
+    """Records the GitHub calls the adapter makes, as the real service would receive them."""
+
+    def __init__(self, fail_close: bool = False) -> None:
+        self.calls: list[tuple[str, ...]] = []
+        self._fail_close = fail_close
+        self._remember_content_ids({"PVTI_1": "I_node1"})
+
+    async def close_issue(self, issue_id: str) -> dict[str, Any]:
+        self.calls.append(("close_issue", issue_id))
+        if self._fail_close:
+            raise RuntimeError("graphql down")
+        return {"closed": True}
+
+    async def move_card(self, item_id: str, status: str) -> None:
+        self.calls.append(("move_card", item_id, status))
+
+    async def add_comment(self, subject_id: str, body: str) -> dict[str, Any]:
+        self.calls.append(("add_comment", subject_id, body))
+        return {}
+
+
+# --- "not work" on the seam ----------------------------------------------------------------------
+
+
+class TestNotWork:
+    def test_it_is_a_move_target_and_not_a_sixth_operation(self) -> None:
+        assert NOT_WORK == "NOT_WORK"
+        assert not hasattr(BoardProvider, "close_card")
+        assert not hasattr(BoardProvider, "mark_not_work")
+
+    @pytest.mark.asyncio
+    async def test_github_projects_closes_the_issue_and_moves_the_item_to_done(self) -> None:
+        github = _GitHub()
+        outcome = await GitHubProjectsBoardProvider(github).move_card("PVTI_1", NOT_WORK)
+
+        assert outcome == MoveOutcome.ok()
+        assert github.calls == [("close_issue", "I_node1"), ("move_card", "PVTI_1", "DONE")]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_close_still_moves_the_item_out_of_todo(self) -> None:
+        """As before: the next poll would admit a card left in To Do again."""
+        github = _GitHub(fail_close=True)
+        await GitHubProjectsBoardProvider(github).move_card("PVTI_1", NOT_WORK)
+
+        assert github.calls == [("close_issue", "I_node1"), ("move_card", "PVTI_1", "DONE")]
+
+    @pytest.mark.asyncio
+    async def test_any_other_move_is_forwarded_unchanged(self) -> None:
+        github = _GitHub()
+        await GitHubProjectsBoardProvider(github).move_card("PVTI_1", "BACKLOG")
+
+        assert github.calls == [("move_card", "PVTI_1", "BACKLOG")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("harness_type", PROVIDERS, ids=lambda h: h.name)
+    async def test_every_provider_lists_a_not_work_item_as_done(self, harness_type: Any, tmp_path: Path) -> None:
+        harness = harness_type(tmp_path)
+        card = harness.seed("Not a real problem", "TODO")
+        await harness.provider.poll_board()
+
+        outcome = await harness.provider.move_card(card, NOT_WORK)
+        board = await harness.provider.poll_board()
+
+        assert outcome.moved
+        assert card in board["snapshot"].get("DONE", [])
+        assert card not in board["snapshot"].get("TODO", [])
+
+
+# --- the assessor's decline -----------------------------------------------------------------------
+
+
+class _Board:
+    """A provider that is not GitHub: every write it receives is recorded here."""
+
+    def __init__(self) -> None:
+        self.comments: list[tuple[str, str]] = []
+        self.moves: list[tuple[str, str]] = []
+
+    async def poll_board(self) -> dict[str, Any]:
+        return {"snapshot": {}}
+
+    async def move_card(self, card_id: str, status: str) -> MoveOutcome:
+        self.moves.append((card_id, status))
+        return MoveOutcome.ok()
+
+    async def get_card(self, card_id: str) -> dict[str, Any]:
+        return {}
+
+    async def add_card_comment(self, card_id: str, body: str) -> dict[str, Any]:
+        self.comments.append((card_id, body))
+        return {}
+
+    async def get_card_comments(self, card_id: str, since_id: Any = None) -> list[dict[str, Any]]:
+        return []
+
+
+def _decline_state() -> dict[str, Any]:
+    return {
+        "config": None, "active_card_id": "PAY-7", "current_card": "PAY-7",
+        "active_sessions": {"PAY-7": {"performer_stage": "assessing"}},
+        "lifecycle_sequence": ["implementing", "assessing"],
+    }
+
+
+_REPORT = {"report": {"assessment": {"expected_behavior": "the premise is wrong"}}}
+
+
+class TestTheDecline:
+    @pytest.mark.asyncio
+    async def test_not_work_reaches_the_configured_board_and_not_github(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from coordinare.graph.nodes.monitor_performer import _apply_assessor_decline
+
+        board, github = _Board(), AsyncMock()
+        card = {"id": "PAY-7", "issue_id": "PAY-7"}
+        out = await _apply_assessor_decline(
+            _decline_state(), card, "PAY-7", "assessment_not_work", _REPORT, board, github,
+        )
+
+        assert [c for c, _ in board.comments] == ["PAY-7"]
+        assert "**Assessor verdict: not work**" in board.comments[0][1]
+        assert "the premise is wrong" in board.comments[0][1]
+        assert board.moves == [("PAY-7", NOT_WORK)]
+        github.add_comment.assert_not_called()
+        github.close_issue.assert_not_called()
+        assert out["phase"] == "idle"
+
+    @pytest.mark.asyncio
+    async def test_needs_split_reaches_the_configured_board_and_not_github(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from coordinare.graph.nodes.monitor_performer import _apply_assessor_decline
+
+        board, github = _Board(), AsyncMock()
+        await _apply_assessor_decline(
+            _decline_state(), {"id": "PAY-7"}, "PAY-7", "assessment_needs_split", _REPORT, board, github,
+        )
+
+        assert "**Assessor verdict: needs split**" in board.comments[0][1]
+        assert board.moves == [("PAY-7", "BACKLOG")]
+        github.add_comment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_github_projects_receives_the_same_comment_text_as_before(self) -> None:
+        from coordinare.graph.nodes.monitor_performer import _apply_assessor_decline
+
+        github = _GitHub()
+        await _apply_assessor_decline(
+            _decline_state(), {"id": "PVTI_1", "issue_id": "I_node1"}, "PVTI_1", "assessment_not_work",
+            _REPORT, GitHubProjectsBoardProvider(github), github,
+        )
+
+        from coordinare.graph.attribution import coordinare_attribution
+
+        header = coordinare_attribution(None, None)
+        expected = (
+            f"{header}\n\n**Assessor verdict: not work**\n\nthe premise is wrong\n\n"
+            "Closing this issue without building it. Correct the premise and reopen, or split the work."
+        )
+        assert github.calls == [
+            ("add_comment", "I_node1", expected),
+            ("close_issue", "I_node1"),
+            ("move_card", "PVTI_1", "DONE"),
+        ]
+
+
+# --- the QA evidence comment ----------------------------------------------------------------------
+
+
+class _DownBoard(_Board):
+    async def add_card_comment(self, card_id: str, body: str) -> dict[str, Any]:
+        raise RuntimeError("tracker down")
+
+
+def _qa_state(response: dict[str, Any], github: Any = None) -> dict[str, Any]:
+    from tests.unit.graph.nodes.test_monitor_performer import _make_state, _Performer
+
+    return _make_state(
+        service=_Performer(response), stage="qa", sequence=["implementing", "qa", "documenting"],
+        card={"id": "PAY-7", "issue_id": "PAY-7", "status": "IN_REVIEW", "pr_url": "https://github.com/o/r/pull/3"},
+        github=github,
+    )
+
+
+class TestTheQaEvidenceComment:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["qa_passed", "qa_failed", "qa_env_blocked", "blocked"])
+    async def test_coordinare_posts_it_on_the_configured_board(self, status: str) -> None:
+        from unittest.mock import AsyncMock
+
+        from coordinare.graph.nodes.monitor_performer import monitor_performer
+
+        github, board = AsyncMock(), _Board()
+        state = _qa_state(
+            {"status": status, "session_id": "s1", "work_item_comment": "## QA Evidence\n\nPASSED",
+             "report": {"criteria_checked": 1}, "questions": ["QA: 1 failure"]},
+            github,
+        )
+        state["board_provider"] = board
+
+        await monitor_performer(state)
+
+        assert board.comments == [("PAY-7", "## QA Evidence\n\nPASSED")]
+        github.add_comment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_status_without_the_comment_posts_nothing(self) -> None:
+        """An older performer posted it itself, so coordinare must not post it again."""
+        from unittest.mock import AsyncMock
+
+        from coordinare.graph.nodes.monitor_performer import monitor_performer
+
+        board = _Board()
+        state = _qa_state({"status": "qa_passed", "session_id": "s1", "report": {"criteria_checked": 1}}, AsyncMock())
+        state["board_provider"] = board
+
+        await monitor_performer(state)
+
+        assert board.comments == []
+
+    @pytest.mark.asyncio
+    async def test_github_projects_puts_it_on_the_issue(self) -> None:
+        from coordinare.graph.nodes.monitor_performer import monitor_performer
+
+        github = _GitHub()
+        state = _qa_state({"status": "qa_passed", "session_id": "s1", "work_item_comment": "## QA Evidence"}, github)
+        state["current_card"] = {**state["current_card"], "id": "PVTI_1", "issue_id": "I_node1"}
+        state["board_provider"] = GitHubProjectsBoardProvider(github)
+
+        await monitor_performer(state)
+
+        assert ("add_comment", "I_node1", "## QA Evidence") in github.calls
+        assert [c for c in github.calls if c[0] == "add_comment"] == [("add_comment", "I_node1", "## QA Evidence")]
+
+    @pytest.mark.asyncio
+    async def test_a_board_failure_does_not_stop_the_verdict(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from coordinare.graph.nodes.monitor_performer import monitor_performer
+
+        board = _DownBoard()
+        state = _qa_state({"status": "qa_failed", "session_id": "s1", "work_item_comment": "## QA Evidence",
+                           "failures": [{"criterion": "c", "expected": "e", "actual": "a"}]}, AsyncMock())
+        state["board_provider"] = board
+
+        result = await monitor_performer(state)
+
+        assert result["phase"] != "system_error"
+
+
+def test_the_dispatch_payload_says_coordinare_posts_work_item_comments() -> None:
+    from coordinare.graph.nodes.dispatch_performer import _base_card_context
+
+    context, _ = _base_card_context({}, {"id": "PAY-7"}, "PAY-7", "qa")
+
+    assert context["work_item_comments_by_coordinare"] is True
+
+
+# --- blocker state from the listing ---------------------------------------------------------------
+
+
+class _Listing:
+    """A GitHub Projects service whose listing names an off-board blocker in a body."""
+
+    def __init__(
+        self, states: dict[int, str] | None = None, *, raises: bool = False,
+        body: str = "Depends on #999. Depends on #51. Depends on #50",
+        repo: tuple[str, str] | None = None, x_done: bool = False,
+    ) -> None:
+        self.asked: list[tuple[str, int]] = []
+        self._states = states or {}
+        self._raises = raises
+        self._body = body
+        self._x_done = x_done
+        if repo is not None:
+            self.org, self.project_name = repo
+
+    async def poll_board(self) -> dict[str, Any]:
+        return {
+            "snapshot": (
+                {"TODO": ["ITEM_Y"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": ["ITEM_X"]} if self._x_done
+                else {"TODO": ["ITEM_X", "ITEM_Y"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []}
+            ),
+            "titles": {"ITEM_X": "Some feature", "ITEM_Y": "Other"},
+            "descriptions": {"ITEM_X": self._body, "ITEM_Y": ""},
+            "issue_numbers": {"ITEM_X": 50, "ITEM_Y": 51},
+            "issue_urls": {},
+            "content_node_ids": {},
+        }
+
+    async def check_issue_state(self, repo: str, issue_number: int) -> str:
+        self.asked.append((repo, issue_number))
+        if self._raises:
+            raise RuntimeError("network")
+        return self._states.get(issue_number, "open")
+
+
+class TestBlockerStateFromTheListing:
+    @pytest.mark.asyncio
+    async def test_github_projects_lists_the_state_of_an_off_board_blocker(self) -> None:
+        from coordinare.services.work_items import CLOSED, work_items_of
+
+        github = _Listing({999: "closed"})
+        board = await GitHubProjectsBoardProvider(github, repo="o/r").poll_board()
+
+        # Only the off-board blocker is read: #51 is on the board and #50 is the item itself.
+        assert github.asked == [("o/r", 999)]
+        blockers = {b.ref: b.state for b in work_items_of(board)["ITEM_X"].blockers}
+        assert blockers["#999"] == CLOSED
+
+    @pytest.mark.asyncio
+    async def test_only_blockers_of_cards_in_todo_are_read(self) -> None:
+        """The dependency filter acts on To Do cards only; reading more costs REST calls every poll."""
+        github = _Listing({999: "closed"}, x_done=True)
+
+        await GitHubProjectsBoardProvider(github, repo="o/r").poll_board()
+
+        assert github.asked == []
+
+    @pytest.mark.asyncio
+    async def test_the_service_s_own_repository_wins_over_the_configured_one(self) -> None:
+        """A symphony's service may be handed in beside another symphony's config."""
+        github = _Listing({999: "closed"}, repo=("acme", "web"))
+
+        await GitHubProjectsBoardProvider(github, repo="other/repo").poll_board()
+
+        assert github.asked == [("acme/web", 999)]
+
+    @pytest.mark.asyncio
+    async def test_the_repository_defaults_to_the_service_s_own(self) -> None:
+        github = _Listing({999: "closed"}, repo=("acme", "web"))
+
+        await GitHubProjectsBoardProvider(github).poll_board()
+
+        assert github.asked == [("acme/web", 999)]
+
+    @pytest.mark.asyncio
+    async def test_with_no_repository_nothing_is_read(self) -> None:
+        github = _Listing({999: "closed"})
+        await GitHubProjectsBoardProvider(github).poll_board()
+        assert github.asked == []
+
+    @pytest.mark.asyncio
+    async def test_a_read_that_raises_is_a_transient_failure_not_a_failed_poll(self) -> None:
+        from coordinare.services.work_items import UNAVAILABLE, work_items_of
+
+        board = await GitHubProjectsBoardProvider(_Listing(raises=True), repo="o/r").poll_board()
+
+        blockers = {b.ref: b.state for b in work_items_of(board)["ITEM_X"].blockers}
+        assert blockers["#999"] == UNAVAILABLE
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("github_state", "expected"),
+        [("closed", "satisfied"), ("open", "unresolvable"), ("not_found", "unresolvable"),
+         ("api_error", "pending"), ("auth_error", "pending")],
+    )
+    async def test_the_graph_reads_the_listed_state_as_the_github_check_did(
+        self, github_state: str, expected: str,
+    ) -> None:
+        from coordinare.services.dependency import build_graph, resolve_off_board_dependencies
+
+        board = await GitHubProjectsBoardProvider(_Listing({999: github_state}), repo="o/r").poll_board()
+        graph = build_graph(board, repo="o/r")
+        github = _Listing({999: "closed"})  # what a second read would say; it must not happen
+        await resolve_off_board_dependencies(graph, github, "o/r")
+
+        dep = next(d for d in graph.dependencies if d.blocker_issue_number == 999)
+        assert dep.status == expected
+        assert github.asked == []
+
+    @pytest.mark.asyncio
+    async def test_a_comment_blocker_the_listing_knows_takes_the_listed_state(self) -> None:
+        from coordinare.models.dependency import CardDependency, DependencySource, DependencyStatus
+        from coordinare.services.dependency import (
+            _index,
+            build_graph,
+            resolve_off_board_dependencies,
+        )
+
+        board = await GitHubProjectsBoardProvider(_Listing({999: "closed"}), repo="o/r").poll_board()
+        graph = build_graph(board, repo="o/r")
+        _index(graph, CardDependency(
+            dependent_item_id="ITEM_Y", blocker_issue_number=999,
+            source=DependencySource.COMMENT, status=DependencyStatus.UNRESOLVABLE,
+        ))
+        github = _Listing({999: "open"})
+        await resolve_off_board_dependencies(graph, github, "o/r")
+
+        assert all(d.status == DependencyStatus.SATISFIED for d in graph.by_blocker[999])
+        assert github.asked == []
+
+    @pytest.mark.asyncio
+    async def test_check_board_takes_the_blocker_state_from_the_provider(self) -> None:
+        from types import SimpleNamespace
+
+        from coordinare.graph.nodes.check_board import check_board
+        from coordinare.graph.state import initial_state
+
+        listing = _Listing({999: "closed"}, body="Depends on #999")
+        code_host = _Listing({999: "open"}, body="Depends on #999")
+        state = initial_state()
+        state["github_service"] = code_host
+        state["board_provider"] = GitHubProjectsBoardProvider(listing, repo="TestOrg/test-repo")
+        state["config"] = SimpleNamespace(
+            github_org="TestOrg", project_name="test-repo",
+            max_concurrent_cards=1, priority=SimpleNamespace(field_name=""),
+        )
+
+        result = await check_board(state)
+
+        assert listing.asked == [("TestOrg/test-repo", 999)]
+        assert code_host.asked == []
+        assert result["phase"] == "dispatching"
+        assert result["current_card"]["id"] == "ITEM_X"
+
+    def test_a_derived_board_reads_blockers_in_the_configured_repository(self) -> None:
+        from types import SimpleNamespace
+
+        from coordinare.services.board_provider import board_of
+
+        state = {"github_service": _Listing(), "config": SimpleNamespace(github_org="TestOrg", project_name="r")}
+        board = board_of(state)
+
+        assert isinstance(board, GitHubProjectsBoardProvider)
+        assert board.repo == "TestOrg/r"
+
+
+def test_coordinare_s_wire_model_keeps_the_comment() -> None:
+    """The subprocess transport reads the performer's reply into ProtocolResponse."""
+    from coordinare.protocol import ProtocolResponse
+
+    reply = ProtocolResponse.model_validate({"status": "qa_passed", "work_item_comment": "## QA Evidence"})
+
+    assert reply.model_dump()["work_item_comment"] == "## QA Evidence"
+
+
+@pytest.mark.asyncio
+async def test_a_blocker_on_a_card_in_an_unmapped_column_is_read_as_off_board() -> None:
+    """Its card is not listed under any status, so the board cannot say whether it is done."""
+    from coordinare.services.dependency import build_graph, resolve_off_board_dependencies
+    from coordinare.services.work_items import CLOSED, work_items_of
+
+    listing = await _Listing(body="Depends on #51").poll_board()
+    listing["snapshot"] = {"TODO": ["ITEM_X"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []}
+
+    class _Unmapped(_Listing):
+        async def poll_board(self) -> dict[str, Any]:
+            return listing
+
+    unmapped = _Unmapped({51: "closed"}, body="Depends on #51")
+    board = await GitHubProjectsBoardProvider(unmapped, repo="o/r").poll_board()
+
+    assert unmapped.asked == [("o/r", 51)]
+    assert {b.ref: b.state for b in work_items_of(board)["ITEM_X"].blockers}["#51"] == CLOSED
+    graph = build_graph(board, repo="o/r")
+    second = _Listing({51: "open"})
+    await resolve_off_board_dependencies(graph, second, "o/r")
+    assert graph.by_dependent["ITEM_X"][0].status == "satisfied"
+    assert second.asked == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_of_an_unmapped_blocker_does_not_make_a_cycle() -> None:
+    """As before: the off-board state applies after cycle detection, not before."""
+    from coordinare.services.dependency import build_graph, resolve_off_board_dependencies
+
+    class _Pair(_Listing):
+        async def poll_board(self) -> dict[str, Any]:
+            return {
+                "snapshot": {"TODO": ["ITEM_B"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []},
+                "descriptions": {"ITEM_A": "Depends on #2", "ITEM_B": "Depends on #1"},
+                "issue_numbers": {"ITEM_A": 1, "ITEM_B": 2},
+            }
+
+    listing = _Pair({1: "api_error"})
+    board = await GitHubProjectsBoardProvider(listing, repo="o/r").poll_board()
+    graph = build_graph(board, repo="o/r")
+    second = _Listing({1: "closed"})
+    await resolve_off_board_dependencies(graph, second, "o/r")
+
+    assert graph.cycles == []
+    assert [d.status for d in graph.by_dependent["ITEM_B"]] == ["pending"]
+    assert listing.asked == [("o/r", 1)]
+    assert second.asked == []

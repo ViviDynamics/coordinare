@@ -26,6 +26,8 @@ from coordinare.models.dependency import (
 from coordinare.services.work_items import (
     CLOSED,
     OPEN,
+    UNAVAILABLE,
+    UNKNOWN,
     WorkItem,
     card_status_of,
     parse_text_blockers,
@@ -104,6 +106,20 @@ def _resolve_status(
     return DependencyStatus.PENDING
 
 
+def _listed_status(state: str) -> DependencyStatus:
+    """An off-board blocker's dependency status from its state (396).
+
+    The same reading the off-board GitHub check has always made: closed is
+    satisfied, a read that failed this time waits for the next cycle, and an
+    open or missing issue is unresolvable.
+    """
+    if state == CLOSED:
+        return DependencyStatus.SATISFIED
+    if state == UNAVAILABLE:
+        return DependencyStatus.PENDING
+    return DependencyStatus.UNRESOLVABLE
+
+
 def build_graph(
     board: dict[str, Any],
     *,
@@ -149,11 +165,20 @@ def build_graph(
             # Filter self-references
             if blocker_num == own_issue:
                 continue
+            status = _resolve_status(blocker_num, issue_to_column)
+            if status == DependencyStatus.UNRESOLVABLE and blocker.state != UNKNOWN:
+                # 396: off the board, and the listing read its state. An item in a
+                # column coordinare has no name for keeps UNRESOLVABLE through cycle
+                # detection, as it always has; resolve_off_board_dependencies applies
+                # the listed state to it afterwards.
+                graph.blocker_states[blocker_num] = blocker.state
+                if blocker_num not in issue_to_item:
+                    status = _listed_status(blocker.state)
             _index(graph, CardDependency(
                 dependent_item_id=item_id,
                 blocker_issue_number=blocker_num,
                 source=DependencySource.EXPLICIT,
-                status=_resolve_status(blocker_num, issue_to_column),
+                status=status,
             ))
 
     _add_native_edges(graph, items, self_issue_numbers, repo)
@@ -534,24 +559,26 @@ async def resolve_off_board_dependencies(
     on a flaky API minute — the card stays filtered for this cycle and gets
     re-checked next cycle.  Permanent unknowns (``open``, ``not_found``)
     keep UNRESOLVABLE.
+
+    396: an issue whose state the work item listing already carries
+    (``graph.blocker_states``) is never asked about again; its listed state
+    applies, including to an edge a comment declared. GitHub is asked only
+    about blockers the listing does not name.
     """
-    if github is None or not repo:
-        return
-    check = getattr(github, "check_issue_state", None)
-    if check is None:
-        return
     # Collect unique off-board issue numbers to avoid duplicate API calls.
     off_board: set[int] = set()
     for dep in graph.dependencies:
         # 395: only a GitHub issue can be checked on GitHub.
         if dep.status == DependencyStatus.UNRESOLVABLE and dep.blocker_issue_number > 0:
             off_board.add(dep.blocker_issue_number)
-    if not off_board:
-        return
-    # Check each off-board issue (one REST call per unique issue number).
+    listed = {num: _listed_status(graph.blocker_states[num]) for num in off_board if num in graph.blocker_states}
+    resolved: dict[int, DependencyStatus] = {
+        num: status for num, status in listed.items() if status != DependencyStatus.UNRESOLVABLE
+    }
+    check: Any = getattr(github, "check_issue_state", None) if github is not None and repo else None
+    # Check each off-board issue the listing does not carry (one REST call per unique issue number).
     transient = {"auth_error", "api_error", "transient"}
-    resolved: dict[int, DependencyStatus] = {}
-    for num in off_board:
+    for num in off_board - set(listed) if callable(check) else ():
         state = await check(repo, num)
         if state == "closed":
             resolved[num] = DependencyStatus.SATISFIED

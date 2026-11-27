@@ -9,7 +9,7 @@ import structlog
 
 from coordinare.graph.attribution import coordinare_attribution
 from coordinare.graph.state import _retire_active_session
-from coordinare.services.board_provider import move_card_or_warn
+from coordinare.services.board_provider import NOT_WORK, board_of, move_card_or_warn
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -80,15 +80,18 @@ async def _apply_assessor_decline(
 ) -> CoordinareState:
     """Board outcome for an assessor verdict that declines the card (410).
 
-    not_work: comment the reasoning, close the issue AND move the project item
-    to DONE (closing the issue alone leaves the project column in TODO, where
-    the next poll would admit the card again), then retire the run.
+    not_work: comment the reasoning and move the card to ``NOT_WORK``, then
+    retire the run. On GitHub Projects that closes the issue AND moves the
+    project item to DONE (closing the issue alone leaves the project column in
+    TODO, where the next poll would admit the card again).
     needs_split: comment the proposed split, move the card back to BACKLOG,
     retire the run. The board comment is the durable record of the decision;
     the in-state assessment rides only the current daemon run. Both outcomes
-    are best-effort on the board side: a missing GitHub service or node id
-    logs and continues, because the run's retirement must not depend on a
-    mutation succeeding.
+    are best-effort on the board side: a missing board logs and continues,
+    because the run's retirement must not depend on a mutation succeeding.
+
+    396: both writes go to the work item provider. *github* is the board's
+    fallback when no provider is given, as ``board_of`` derives one.
     """
     raw_report = status.get("report")
     report = raw_report if isinstance(raw_report, dict) else {}
@@ -109,8 +112,8 @@ async def _apply_assessor_decline(
         reason_length=len(reason),
     )
 
-    issue_id = str(card.get("issue_id") or "")
-    if github is not None and hasattr(github, "add_comment") and issue_id:
+    board = board_provider if board_provider is not None else board_of({}, github)
+    if board is not None:
         try:
             header = coordinare_attribution(state.get("config"), None)
             if verdict == "not_work":
@@ -124,26 +127,19 @@ async def _apply_assessor_decline(
                     "The card moved back to the backlog. Split it into independent issues and bring them back one at a time."
                 )
 
-            await github.add_comment(issue_id, body)
+            await board.add_card_comment(card_id, body)
         except Exception as exc:
             logger.warning("monitor_performer.assessment_decline_comment_failed", card_id=card_id, error=str(exc))
 
-    if verdict == "not_work" and github is not None and hasattr(github, "close_issue") and issue_id:
+    if board is not None and verdict == "not_work":
         try:
-            await github.close_issue(issue_id)
+            await move_card_or_warn(board, card_id, NOT_WORK)
         except Exception as exc:
-            logger.warning("monitor_performer.assessment_close_failed", card_id=card_id, error=str(exc))
-        # Closing the issue does not move the project item: without this the
-        # next poll still sees the card in TODO and admits it again.
-        if board_provider is not None:
-            try:
-                await move_card_or_warn(board_provider, card_id, "DONE")
-            except Exception as exc:
-                logger.warning("monitor_performer.assessment_done_move_failed", card_id=card_id, error=str(exc))
+            logger.warning("monitor_performer.assessment_done_move_failed", card_id=card_id, error=str(exc))
 
-    if board_provider is not None and verdict == "needs_split":
+    if board is not None and verdict == "needs_split":
         try:
-            await move_card_or_warn(board_provider, card_id, "BACKLOG")
+            await move_card_or_warn(board, card_id, "BACKLOG")
         except Exception as exc:
             logger.warning("monitor_performer.assessment_backlog_move_failed", card_id=card_id, error=str(exc))
 

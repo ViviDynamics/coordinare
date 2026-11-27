@@ -682,7 +682,12 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
         log.warning("qa.evidence_comment_skipped_missing_pr_url", pr_url=perf.pr_url)
 
     issue_number = perf.score.issue_number
-    if issue_number > 0:
+    # 396: coordinare posts the work item comment through its provider.
+    coordinare_posts = perf.score.work_item_comments_by_coordinare
+    work_item_comment = (
+        qa_comment if coordinare_posts and (issue_number > 0 or perf.score.work_item_ref) else None
+    )
+    if issue_number > 0 and not coordinare_posts:
         owner, repo = perf.score.owner_repo
         token = perf.score.effective_github_token
         try:
@@ -730,6 +735,7 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
                     "environment-blocked: pass claim with zero execution evidence"
                 ),
                 report=perf.qa_report,
+                work_item_comment=work_item_comment,
             )
         if env_limited:
             log.warning(
@@ -743,6 +749,7 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
             status="qa_passed",
             session_id=perf.session_id,
             report=perf.qa_report,
+            work_item_comment=work_item_comment,
         )
 
     # Real code defects exist → changes_requested / block (as before).
@@ -757,6 +764,7 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
             status="blocked",
             session_id=perf.session_id,
             questions=[summary],
+            work_item_comment=work_item_comment,
         )
     perf.qa_failures = [f for f in defect_failures if isinstance(f, dict)]
     perf.state = "qa_failed"
@@ -766,6 +774,7 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
         session_id=perf.session_id,
         failures=perf.qa_failures,
         report=_fail_report,
+        work_item_comment=work_item_comment,
     )
 
 

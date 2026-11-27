@@ -11,7 +11,8 @@ import pytest
 
 from coordinare.graph.nodes.dispatch_performer import _card_labels
 from coordinare.graph.nodes.monitor_performer import _apply_assessor_decline
-from coordinare.services.board_provider import MoveOutcome
+from coordinare.services.board_provider import GitHubProjectsBoardProvider
+from coordinare.services.card_identity import CardIdentityMap
 
 
 def _state() -> dict:
@@ -47,11 +48,14 @@ def _status() -> dict:
     }
 
 
-class _FakeGitHub:
+class _FakeGitHub(CardIdentityMap):
     def __init__(self, fail_close: bool = False):
         self.comments: list[str] = []
         self.closed: list[str] = []
+        self.moved: list[tuple[str, str]] = []
         self._fail_close = fail_close
+        # 396: what a board poll records, so the adapter reaches the card's issue.
+        self._remember_content_ids({"CARD-1": "node-1"})
 
     async def add_comment(self, issue_id: str, body: str) -> None:
         self.comments.append(body)
@@ -61,28 +65,22 @@ class _FakeGitHub:
             raise RuntimeError("graphql down")
         self.closed.append(issue_id)
 
-
-class _FakeBoard:
-    def __init__(self):
-        self.moved: list[tuple[str, str]] = []
-
-    async def move_card(self, card_id: str, column: str) -> MoveOutcome:
+    async def move_card(self, card_id: str, column: str) -> None:
         self.moved.append((card_id, column))
-        return MoveOutcome.ok()
 
 
 @pytest.mark.asyncio
 async def test_not_work_comments_and_closes():
     state = _state()
     gh = _FakeGitHub()
-    board = _FakeBoard()
+    board = GitHubProjectsBoardProvider(gh)
     out = await _apply_assessor_decline(
         state, _card(), "CARD-1", "assessment_not_work", _status(), board, gh,
     )
     assert len(gh.comments) == 1
     assert "not work" in gh.comments[0]
     assert gh.closed == ["node-1"], "not_work closes the issue"
-    assert board.moved == [("CARD-1", "DONE")], "the project item leaves TODO or the next poll re-admits the card"
+    assert gh.moved == [("CARD-1", "DONE")], "the project item leaves TODO or the next poll re-admits the card"
     assert out["phase"] == "idle"
     assert out["agent_dispatch"] == {}
     assert out["active_card_id"] is None
@@ -93,14 +91,14 @@ async def test_not_work_comments_and_closes():
 async def test_needs_split_moves_backlog_and_does_not_close():
     state = _state()
     gh = _FakeGitHub()
-    board = _FakeBoard()
+    board = GitHubProjectsBoardProvider(gh)
     out = await _apply_assessor_decline(
         state, _card(), "CARD-1", "assessment_needs_split", _status(), board, gh,
     )
     assert len(gh.comments) == 1
     assert "split" in gh.comments[0].lower()
     assert gh.closed == [], "needs_split keeps the issue open"
-    assert board.moved == [("CARD-1", "BACKLOG")]
+    assert gh.moved == [("CARD-1", "BACKLOG")]
     assert out["phase"] == "idle"
 
 

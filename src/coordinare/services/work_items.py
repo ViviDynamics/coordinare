@@ -34,6 +34,20 @@ _DEP_PATTERN = re.compile(r"(?:depends\s+on|blocked\s+by|after|requires)\s+#(\d+
 
 #: Blocker states a provider may report.
 OPEN, CLOSED, UNKNOWN = "open", "closed", "unknown"
+#: 396: the tracker says no such item exists, or could not be read this time.
+MISSING, UNAVAILABLE = "missing", "unavailable"
+
+#: GitHub's answers for an issue's state (``GitHubService.check_issue_state``),
+#: as blocker states. Anything else is unknown.
+_GITHUB_ISSUE_STATES = {
+    "closed": CLOSED, "open": OPEN, "not_found": MISSING,
+    "auth_error": UNAVAILABLE, "api_error": UNAVAILABLE, "transient": UNAVAILABLE,
+}
+
+
+def blocker_state_from_github(raw: object) -> str:
+    """A GitHub issue state answer as a blocker state (396)."""
+    return _GITHUB_ISSUE_STATES.get(str(raw), UNKNOWN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,8 +70,10 @@ class Blocker:
     ``ref`` is the provider's own name for it (``#12``, ``acme/other#2``,
     ``PAY-3``). ``item_id`` is the blocking item's id when the provider knows
     it is on this board. ``state`` is what the provider knows of it when it is
-    not: ``open``, ``closed`` or ``unknown``. ``native`` is true for the
-    tracker's own relation and false for text syntax in the body.
+    not: ``open``, ``closed`` or ``unknown``, and since 396 ``missing`` (no
+    such item) or ``unavailable`` (it could not be read this time). ``native``
+    is true for the tracker's own relation and false for text syntax in the
+    body.
     """
 
     ref: str
@@ -166,6 +182,8 @@ def _from_github_listing(board: dict[str, Any]) -> dict[str, WorkItem]:
     labels = _mapping(board, "item_labels")
     assignees = _mapping(board, "item_assignees")
     native = _mapping(board, "native_blockers")
+    # 396: the state of each off-board issue the text syntax names, read while listing.
+    text_states = {str(k): v for k, v in _mapping(board, "blocker_states").items()}
     status = card_status_of(board)
 
     # Every id any part of the listing names. The descriptions come first: the
@@ -188,7 +206,10 @@ def _from_github_listing(board: dict[str, Any]) -> dict[str, WorkItem]:
         node_id = str(content_node_ids.get(item_id, "") or "")
         body = str(descriptions.get(item_id, ""))
         blockers: list[Blocker] = [
-            Blocker(ref=f"#{n}", item_id=number_to_item.get(n, ""), issue=IssueLink(number=n))
+            Blocker(
+                ref=f"#{n}", item_id=number_to_item.get(n, ""), issue=IssueLink(number=n),
+                state=blocker_state_from_github(text_states[str(n)]) if str(n) in text_states else UNKNOWN,
+            )
             for n in parse_text_blockers(body)
         ]
         for raw in native.get(item_id, []) if isinstance(native.get(item_id), list) else []:
@@ -221,6 +242,32 @@ def _from_github_listing(board: dict[str, Any]) -> dict[str, WorkItem]:
             issue=IssueLink(number=number, node_id=node_id) if (number or node_id) else None,
         )
     return result
+
+
+def unlisted_text_blockers(board: dict[str, Any], status: str = "TODO") -> list[int]:
+    """Issue numbers the GitHub text syntax names that no listed item has (396).
+
+    Only in the bodies of items listed under *status*: To Do is where the
+    dependency filter acts, so reading more would spend a REST call per poll
+    for nothing. In the order the bodies name them, each once, never an item's
+    own number. These are the blockers whose state the listing cannot see on
+    the board.
+    """
+    issue_numbers = _mapping(board, "issue_numbers")
+    columns = card_status_of(board)
+    # An item in a column coordinare has no name for is not on the board for this
+    # purpose: nothing says whether it is done, so its state is read like any other.
+    listed = {n for item_id, n in issue_numbers.items() if isinstance(n, int) and n > 0 and item_id in columns}
+    in_status = {item_id for item_id, column in columns.items() if column == status}
+    result: dict[int, None] = {}
+    for item_id, body in _mapping(board, "descriptions").items():
+        if item_id not in in_status:
+            continue
+        own = issue_numbers.get(item_id, 0)
+        for number in parse_text_blockers(str(body)):
+            if number != own and number not in listed:
+                result.setdefault(number, None)
+    return list(result)
 
 
 def board_metadata(board: Any) -> dict[str, dict[str, Any]]:

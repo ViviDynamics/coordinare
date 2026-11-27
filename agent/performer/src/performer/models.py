@@ -373,6 +373,11 @@ class Score(BaseModel):
     # the pull request body carries in place of "Closes #N".
     work_item_ref: str = ""
     work_item_pr_line: str = ""
+    # 396: coordinare posts the QA evidence comment on the work item through its
+    # provider. Set by a coordinare that does; the performer then returns the
+    # comment on its response instead of posting it. Absent (an older
+    # coordinare), the performer posts it itself as before.
+    work_item_comments_by_coordinare: bool = False
     latest_main_sha: str = ""  # 054: used by QA to verify branch freshness
     env_cache_path: str = ""  # 060: container path of mounted env-cache; sourced via activate.sh
     # 234: the daemon-frozen env-cache steps. Declared here or extra="ignore" drops them in transit.

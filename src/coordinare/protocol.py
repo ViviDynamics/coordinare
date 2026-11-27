@@ -101,6 +101,10 @@ class ProtocolResponse(BaseModel):
     findings: list[dict] = Field(default_factory=list)  # 022: security findings
     failures: list[dict] = Field(default_factory=list)  # 023: QA failures
     report: dict | None = None  # 023: QA pass report
+    # 396: the QA evidence comment the performer hands over for coordinare to post
+    # on the work item. Must be kept in sync with performer.protocol.PerformerResponse,
+    # or this model drops it on the subprocess transport.
+    work_item_comment: str | None = None
     files_modified: list[str] = Field(default_factory=list)  # 024: doc files committed
     events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list
     metrics: dict | None = None  # PerformerMetrics (pid, memory_bytes, cpu_percent, …)

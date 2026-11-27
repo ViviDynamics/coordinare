@@ -47,8 +47,17 @@ from typing import Any, Protocol, runtime_checkable
 import structlog
 
 from coordinare.services.card_identity import CardIdentityMap
+from coordinare.services.work_items import unlisted_text_blockers
 
 logger = structlog.get_logger(__name__)
+
+#: A move target, not a column (#396): the item is not work and leaves the board's
+#: queue for good. It is a state rather than a sixth operation so the protocol
+#: keeps the surface specs 149 and 153 pinned. A provider lands it wherever its
+#: tracker records "will not do": GitHub Projects closes the issue and moves the
+#: item to DONE, and a tracker with no such state lists it under DONE. Never a
+#: listing's status, so no listing reports it.
+NOT_WORK = "NOT_WORK"
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,8 +165,23 @@ class GitHubProjectsBoardProvider:
     will not have issues, and the translation costs one line each.
     """
 
-    def __init__(self, github: Any) -> None:
+    def __init__(self, github: Any, repo: str = "") -> None:
         self._github = github
+        self._repo = repo
+
+    @property
+    def repo(self) -> str:
+        """The ``owner/name`` the board's ``#N`` references live in (396).
+
+        The service's own (``GitHubService`` carries its symphony's org and
+        repository), or else the one given, for a service that does not say.
+        The service wins because a caller may hand in one symphony's service
+        beside another's config. Empty when neither knows it, and then no
+        blocker state is read.
+        """
+        org, name = getattr(self._github, "org", ""), getattr(self._github, "project_name", "")
+        own = f"{org}/{name}" if isinstance(org, str) and isinstance(name, str) and org and name else ""
+        return own or self._repo
 
     @property
     def github(self) -> Any:
@@ -173,14 +197,52 @@ class GitHubProjectsBoardProvider:
 
     async def poll_board(self) -> dict[str, Any]:
         board: dict[str, Any] = await self._github.poll_board()
-        return board
+        states = await self._blocker_states(board)
+        return {**board, "blocker_states": states} if states else board
+
+    async def _blocker_states(self, board: dict[str, Any]) -> dict[int, str]:
+        """The state of each off-board issue a body names as a blocker (396).
+
+        The listing carries blocker state, so the dependency check reads it from
+        there rather than asking GitHub itself. The same call it made
+        (``check_issue_state``), one per issue. A read that raises is reported as
+        GitHub's own transient answer, so one bad issue cannot fail the poll.
+        """
+        check = getattr(self._github, "check_issue_state", None)
+        repo = self.repo
+        if not callable(check) or not repo:
+            return {}
+        states: dict[int, str] = {}
+        for number in unlisted_text_blockers(board):
+            try:
+                states[number] = str(await check(repo, number))
+            except Exception as exc:
+                logger.warning("board.blocker_state_failed", issue_number=number, error=str(exc))
+                states[number] = "api_error"
+        return states
 
     async def move_card(self, card_id: str, status: str) -> MoveOutcome:
         # GitHub Projects has no workflow rules, so a move that reaches the API
         # succeeds. Anything else raises, and raising is right: that is a fault,
         # not the board declining.
+        if status == NOT_WORK:
+            await self._close_issue(card_id)
+            # Closing the issue does not move the project item: without this the
+            # next poll still sees the card in TODO and admits it again.
+            status = "DONE"
         await self._github.move_card(card_id, status)
         return MoveOutcome.ok()
+
+    async def _close_issue(self, card_id: str) -> None:
+        """Close the card's issue, as the assessor's decline always has (410).
+
+        A failed close is logged and the item still moves to DONE, so the card
+        leaves the queue either way.
+        """
+        try:
+            await self._github.close_issue(self._issue_id(card_id))
+        except Exception as exc:
+            logger.warning("board.not_work_close_failed", card_id=card_id, error=str(exc))
 
     async def get_card(self, card_id: str) -> dict[str, Any]:
         card: dict[str, Any] = await self._github.get_issue_details(self._issue_id(card_id))
@@ -250,7 +312,13 @@ def board_of(state: Any, service: Any = None) -> BoardProvider | None:
     github = service if service is not None else state.get("github_service")
     if github is None:
         return None
-    return GitHubProjectsBoardProvider(github)
+    return GitHubProjectsBoardProvider(github, repo=_configured_repo(state.get("config")))
+
+
+def _configured_repo(config: Any) -> str:
+    """``owner/name`` from the symphony's config, as the dependency check builds it."""
+    org, name = getattr(config, "github_org", ""), getattr(config, "project_name", "")
+    return f"{org}/{name}" if isinstance(org, str) and isinstance(name, str) and org and name else ""
 
 
 async def move_card_or_warn(

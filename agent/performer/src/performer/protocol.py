@@ -137,6 +137,10 @@ class PerformerResponse(BaseModel):
     findings: list[dict] = Field(default_factory=list)  # 022: security findings [{severity, category, ...}]
     failures: list[dict] = Field(default_factory=list)  # 023: QA failures [{criterion, expected, actual, test}]
     report: dict | None = None  # 023: QA pass report {criteria_checked, criteria_passed, new_tests_added}
+    # 396: the QA evidence comment for the work item, for coordinare to post through
+    # its work item provider. Only on the first terminal QA status, so it is posted
+    # once; None when the score did not ask for it.
+    work_item_comment: str | None = None
     files_modified: list[str] = Field(default_factory=list)  # 024: doc files committed by tech writer
     metrics: PerformerMetrics | None = None
     events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list

@@ -76,3 +76,7 @@ class DependencyGraph:
     issue_to_column: dict[int, str] = field(default_factory=dict)
     # Detected cycles (each is a list of item_ids forming a cycle)
     cycles: list[list[str]] = field(default_factory=list)
+    # 396: issue number -> blocker state the listing reported for an off-board
+    # issue (``services.work_items`` states). The dependency check reads these
+    # rather than asking GitHub again.
+    blocker_states: dict[int, str] = field(default_factory=dict)
