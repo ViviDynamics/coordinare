@@ -1,6 +1,8 @@
 """Plan building for documenter workflow (spec 171)."""
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Any
 
 from performer.workflows.documenter.docsroot import DOCS_ROOT_DEFAULT, needs_documentation
@@ -59,6 +61,31 @@ def _plannable_brief_location(location: str, docs_root: str) -> bool:
     return location.startswith(f"{docs_root.rstrip('/')}/")
 
 
+#: Page names a topic must never take: the docs root's own index pages.
+_RESERVED_PAGES = frozenset({"readme", "index", "home"})
+
+
+def _slug(text: str) -> str:
+    """Letters, digits and combining marks of any script, NFC-normalised; the rest is '-'."""
+    kept = "".join(
+        char if unicodedata.category(char)[0] in ("L", "N", "M") else "-"
+        for char in unicodedata.normalize("NFC", text.lower())
+    )
+    return re.sub(r"-+", "-", kept).strip("-")[:60].strip("-")
+
+
+def _placed_by_topic(entry: dict[str, Any], docs_root: str) -> str:
+    """403: where a brief entry that names no location is written: a page under the
+    resolved docs root, named by its topic. A planner that names topics only (Progettare)
+    would otherwise have every topic dropped. Empty when the topic gives no name."""
+    slug = _slug(str(entry.get("topic") or ""))
+    if not slug:
+        return ""
+    if slug in _RESERVED_PAGES:
+        slug = f"topic-{slug}"
+    return f"{docs_root.rstrip('/')}/{slug}.md"
+
+
 def _collect_brief_entries(
     brief_docs: list[dict[str, Any]],
     inventory: list[WikiPage],
@@ -68,8 +95,11 @@ def _collect_brief_entries(
     """Group brief entries by location, merging say texts and modules."""
     brief_by_location = {}
     for entry in brief_docs:
-        location = entry.get("location", "")
+        location = entry.get("location", "") or _placed_by_topic(entry, docs_root)
         if not location:
+            topic = str(entry.get("topic") or "").strip()[:80]
+            if topic and f"topic without a place: {topic}" not in refused:
+                refused.append(f"topic without a place: {topic}")
             continue
 
         if not _plannable_brief_location(location, docs_root):

@@ -380,6 +380,22 @@ modes:
 #     # env_passthrough: [OPENAI_API_KEY] # NAMES of variables QAre's nare may read
 #     # timeout_seconds: 3600
 #     # retain_days: 14                 # finished runs' evidence and logs; checkouts go at once
+#
+# 403: Progettare can fill the architect role. Coordinare runs its released CLI at the
+# pinned version on the coordinare host, one run per request, and turns the run's briefs
+# into the blueprint the implementer, QA and documenter read. GitHub issues only until
+# ViviDynamics/progettare#68. Progettare pins its own harness and models
+# (progettare.yaml), so the architect's backend, mode and workflow have no effect.
+#
+#   progettare:
+#     kind: progettare
+#     version: "2026.11.2"                # `progettare --version` must print exactly this
+#     runs_dir: /var/lib/coordinare/progettare-runs   # durable across coordinare restarts
+#     gh_token_env: GITHUB_TOKEN          # NAME of the env var with a token that reads issues and clones
+#     pass_env: [OPENAI_API_KEY]          # NAMES of the model credentials progettare.yaml needs
+#     # command: progettare               # a name on PATH or an absolute path
+#     # config_path: /etc/coordinare/progettare.yaml   # default: the repository's own progettare.yaml
+#     # timeout_seconds: 3600
 
 performers:
   default:
@@ -416,6 +432,9 @@ performers:
     # no plan.md/tasks.md is written. Default off: remove the line to restore
     # the prose path exactly. See specs/165-architect-blueprint-workflow/quickstart.md.
     # workflow: architect
+    # 403: let Progettare plan instead of a performer (declare it in stage_providers above).
+    # Opt in per symphony instead with symphonies[].overrides.performers.
+    # provider: progettare
     # workflow_env:
     #   ARCHITECT_SURVEY_MAX_COMMANDS: 12       # read-only commands the survey may run
     #   ARCHITECT_SURVEY_MAX_OUTPUT_CHARS: 4000 # per-command output cap

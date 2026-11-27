@@ -210,3 +210,34 @@ def test_175_existing_brief_page_is_read_and_merged():
     selected = [plan for plan in plans if plan.path == page.path]
     assert len(selected) == 1
     assert selected[0].exists is True
+
+
+def test_403_a_topic_without_a_location_is_placed_under_the_docs_root():
+    """A brief from a planner that names topics only (Progettare) is planned, not dropped."""
+    brief_docs = [{"topic": "The CSV export, in the user guide", "location": "", "say": "the CSV export in the user guide"}]
+    plans, _deferred, refused = select_pages(brief_docs, [], [], 8, "docs")
+    assert "docs/the-csv-export-in-the-user-guide.md" in [p.path for p in plans]
+    assert refused == []
+    plans, _deferred, _refused = select_pages([{"topic": "", "location": "", "say": "x"}], [], [], 8, "docs")
+    assert all(p.source != "brief" for p in plans)
+
+
+def test_403_a_topic_that_cannot_be_placed_is_reported_and_the_index_is_never_shadowed():
+    brief_docs = [
+        {"topic": "CSV エクスポート", "location": "", "say": "x"},
+        {"topic": "README", "location": "", "say": "y"},
+        {"topic": "!!!", "location": "", "say": "z"},
+    ]
+    plans, _deferred, refused = select_pages(brief_docs, [], [], 8, "docs")
+    paths = [p.path for p in plans]
+    assert "docs/csv-エクスポート.md" in paths
+    assert "docs/topic-readme.md" in paths
+    assert not any(p.lower() == "docs/readme.md" and p != "docs/README.md" for p in paths)
+    assert "topic without a place: !!!" in refused
+
+
+def test_403_topic_slugs_keep_combining_marks_and_one_form():
+    from performer.workflows.documenter.plan import _slug
+
+    assert _slug("हिन्दी गाइड") == "हिन्दी-गाइड"
+    assert _slug("Cafe\u0301 menu") == _slug("Caf\u00e9 menu") == "caf\u00e9-menu"

@@ -2561,6 +2561,24 @@ class WorkItemsConfig(BaseModel):
         return v
 
 
+def _refuse_moved_progettare_host(effective: ProjectConfiguration, global_config: ProjectConfiguration) -> None:
+    """403: a Progettare architect clones from the global git host, where its service runs.
+
+    Provider services are built once from the global config, so a symphony that moves
+    git_base_url would have every issue refused as being on another host.
+    """
+    if effective.git_base_url == global_config.git_base_url:
+        return
+    architect = effective.performers.resolved_role("architect")
+    name = getattr(architect, "provider", None) if architect is not None else None
+    if name and getattr(effective.stage_providers.get(name), "kind", None) == "progettare":
+        msg = (
+            "a symphony whose architect uses a progettare provider cannot override git_base_url: "
+            "Progettare clones from the global git_base_url"
+        )
+        raise ValueError(msg)
+
+
 class SymphonyConfig(BaseModel):
     """A named project orchestration configuration."""
 
@@ -2656,7 +2674,9 @@ class SymphonyConfig(BaseModel):
         base_dict["github_project_number"] = self.github_project_number
         if not base_dict.get("project_name"):
             base_dict["project_name"] = self.name
-        return ProjectConfiguration(**base_dict)
+        effective = ProjectConfiguration(**base_dict)
+        _refuse_moved_progettare_host(effective, global_config)
+        return effective
 
     def effective_personas(self, global_personas: PersonasConfig) -> PersonasConfig:
         """Replace nonempty instruction text per role, inheriting all other persona fields."""

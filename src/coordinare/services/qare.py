@@ -49,12 +49,14 @@ from coordinare.services.stage_contract import (
     StageVerdict,
 )
 from coordinare.transport.base import TransportError
+from coordinare.transport.http_transport import PerformerAuthError
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     import httpx
 
+    from coordinare.services.stage_contract import AnyStageRequest
     from coordinare.stage_provider_config import QAreProviderConfig
 
 logger = structlog.get_logger(__name__)
@@ -154,7 +156,10 @@ class QAreProvider:
             raise TransportError(msg)
         return self._work_dir / ref
 
-    async def submit(self, request: StageRequest, request_id: str) -> StageJob:
+    async def submit(self, request: AnyStageRequest, request_id: str) -> StageJob:
+        if not isinstance(request, StageRequest):  # 403: a work item is not QAre's to verify
+            msg = "QAre verifies pull requests, not work items"
+            raise PerformerAuthError(msg)  # a wiring mistake: blocks, never retried
         job_dir = self.job_dir(request_id)
         await asyncio.to_thread(prune_finished, self._work_dir, self._config.retain_days, keep=request_id)
         try:
