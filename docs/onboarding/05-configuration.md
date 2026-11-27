@@ -118,6 +118,15 @@ role  →  performers.<role>.backend          (which harness)
 `config.py`'s dispatch resolver walks this chain to produce the concrete
 `{model, base_url, api_key_env, auth_token_env}` for the container.
 
+### Stage providers (402)
+
+A role can name a **stage provider** instead of running a performer:
+`performers.<role>.provider: <name>`, where `<name>` is an entry of the root
+`stage_providers` catalog. Today Scrutare can fill the reviewer role. The provider runs its
+own harness, so `backend`, `mode` and `workflow` have no effect on that role. A symphony opts
+in through `overrides.performers`; a config that names no provider is unchanged. Setup,
+verdict mapping and failure handling: [stage providers](../stage-providers.md).
+
 ## `routing.yaml` — the shim/routing table
 
 Independent of the role resolution above: it keys on `(backend, model)` and decides whether a

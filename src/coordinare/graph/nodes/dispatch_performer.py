@@ -44,6 +44,7 @@ from coordinare.services.persona_service import get_effective_instructions, load
 from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.run_header import PERSONA_LANGUAGE_SUFFIX, build_run_inputs_bounded
 from coordinare.services.security_floor import SCAN_VERSION
+from coordinare.services.stage_providers import claim_stage_provider, refuse_provider_default
 from coordinare.services.test_env_loader import TestEnvFileError
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
@@ -1371,7 +1372,9 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # --- Workspace setup (011) ---
     workspace_manager = state.get("workspace_manager")
     workspace_info = None
-    if workspace_manager is not None:
+    # 402: a stage provider works from GitHub: no clone, no env cache, no mounts.
+    external_stage = getattr(service, "external_stage", False) is True
+    if workspace_manager is not None and not external_stage:
         workspace_info, terminal = await _setup_workspace(
             state, ctx["card"], ctx["card_id"], ctx["performer_stage"],
             workspace_manager, ctx["board_provider"], _release_slot_on_error,
@@ -1396,7 +1399,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # 428: LAST in the tuning sequence — a retuned knob is the final word on
     # its payload key, over both the role tuning and the persona tier.
     _apply_observer_retune_overrides(state, card_context)
-    _extra_volumes, terminal = await _prepare_env_dispatch(
+    _extra_volumes, terminal = (None, None) if external_stage else await _prepare_env_dispatch(
         state, service, ctx["card_id"], ctx["performer_stage"], card_context,
         _release_slot_on_error,
     )
@@ -1686,6 +1689,11 @@ async def _acquire_via_slot_manager(state: CoordinareState, ctx: dict[str, Any])
     # service instance, or None if at capacity (card retries next cycle).
     slot_manager = state.get("slot_manager")
     service: AgentServiceProtocol | None = None
+    # 402: a role a stage provider fills (Scrutare for reviewer) dispatches to it, and
+    # takes no performer slot. The symphony's effective config decides.
+    handled, terminal = await claim_stage_provider(state, ctx)
+    if handled:
+        return terminal
     if slot_manager is not None and hasattr(slot_manager, "acquire"):
         service = slot_manager.acquire(
             performer_stage, card_id, config=state.get("config"),
@@ -1727,6 +1735,11 @@ async def _acquire_via_slot_manager(state: CoordinareState, ctx: dict[str, Any])
     # (backward compatibility with pre-019 configurations).
     if service is None and not performer_services:
         service = state.get("agent_service")
+
+    # 402: a symphony that names no provider is never sent to the global one.
+    refused = await refuse_provider_default(state, ctx, service, slot_manager)
+    if refused is not None:
+        return refused
 
     if service is None:
         # No service configured for this stage -- skip to the next role.

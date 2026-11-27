@@ -65,6 +65,8 @@ from coordinare.services.review_staleness import (
     StalenessConfig,
     classify_review_staleness,
 )
+from coordinare.services.stage_providers import provider_review_logins
+from coordinare.stage_provider_config import normalize_login
 
 logger = structlog.get_logger(__name__)
 
@@ -787,11 +789,17 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         cutoff = cutoff.replace(tzinfo=UTC)
 
     processed_ids: set[str] = state.get("processed_review_ids") or set()
+    # 402: a stage provider's review (Scrutare's) is that stage's own output. It already
+    # reached the card through the stage, so it is never outside feedback here, and it is
+    # never an approval, whatever list its login is on.
+    provider_logins = provider_review_logins(state.get("config"))
 
     filtered: list[dict[str, object]] = []
     for review in reviews:
         review_id = str(review.get("id", ""))
         login = str(review.get("author_login", ""))
+        if normalize_login(login) in provider_logins:
+            continue
         reviewer_type = classify_reviewer(
             login,
             human_reviewers if isinstance(human_reviewers, list) else [],

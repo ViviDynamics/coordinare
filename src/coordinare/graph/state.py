@@ -516,6 +516,8 @@ class CoordinareState(TypedDict, total=False):
     snapshot_save_fn: Any
     # Performer service registry, keyed by performer id — same reason as above.
     performer_services_by_id: dict[str, Any]
+    # 402: GitHub services by lower-case owner, read by stage providers for PR heads.
+    stage_provider_github: dict[str, Any]
     # 141: AttemptLog singleton.  Typed Any so LangGraph's runtime annotation
     # resolver never imports attempt_log at graph-build time.
     attempt_log: Any

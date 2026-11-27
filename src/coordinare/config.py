@@ -24,6 +24,7 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
+from coordinare.lifecycle import ROLE_TO_STAGE
 from coordinare.models.notification import ChannelType, EventType
 from coordinare.models.performer_endpoint import (
     PerformerEndpointConfig,
@@ -35,6 +36,7 @@ from coordinare.services.observer import OBSERVER_TRIGGERS
 from coordinare.services.otlp_settings import ObservabilityConfig
 from coordinare.services.retune import EFFORT_RANK, RETUNE_KNOBS
 from coordinare.services.run_transcript import _within
+from coordinare.stage_provider_config import StageProviderConfig, provider_role_errors
 from coordinare.user_config import expand_environment_values, load_config_environment
 
 logger = structlog.get_logger(__name__)
@@ -689,6 +691,18 @@ class PerformerRoleConfig(BaseModel):
     # for a project infer_app_start_command does not recognise -- previously
     # this override existed only as an env var nothing in production set.
     workflow_env: dict[str, str] = Field(default_factory=dict)
+    # 402: a stage provider from the root ``stage_providers`` catalog fills this role
+    # instead of a performer (Scrutare for reviewer). None (default) runs a performer.
+    # The provider runs its own harness, so ``backend``/``mode``/``workflow`` have no
+    # effect on a provider-backed role.
+    provider: str | None = Field(
+        default=None,
+        description=(
+            "A stage provider from stage_providers that fills this role instead of a "
+            "performer (Scrutare for reviewer). It runs its own harness, so backend, mode, "
+            "workflow and tuning have no effect while it is set."
+        ),
+    )
     # 080: model selection moved to the root-level catalogs. A role references a
     # `mode` (modes → model_endpoints → endpoints); inline `model`/`base_url`/
     # `api_key_env`/`auth_token_env` are removed (hard cut, see validator below).
@@ -1429,6 +1443,15 @@ class ProjectConfiguration(BaseSettings):
     endpoints: list[Endpoint] = Field(default_factory=list)
     model_endpoints: list[ModelEndpoint] = Field(default_factory=list)
     modes: list[Mode] = Field(default_factory=list)
+    # 402: outside services that can fill a stage (referenced by performers.<role>.provider)
+    stage_providers: dict[str, StageProviderConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Outside services that can fill a stage, chosen per role with "
+            "performers.<role>.provider. A provider runs its own harness, so a role it "
+            "fills ignores its backend, mode and workflow. Read from the global config only."
+        ),
+    )
     priority: PriorityConfig = Field(default_factory=PriorityConfig)
     # 050 — Only dispatch cards assigned to this GitHub login. None = no filter.
     assignee_filter: str | None = Field(default=None)
@@ -1749,6 +1772,19 @@ class ProjectConfiguration(BaseSettings):
                 raise ValueError(
                     f"performers.{role_name} references unknown mode '{role.mode}'",
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_stage_providers(self) -> ProjectConfiguration:
+        """402: every role's provider exists, fits the role, and is never a human reviewer."""
+        roles = {
+            role: resolved.provider
+            for role in ROLE_TO_STAGE
+            if (resolved := self.performers.resolved_role(role)) is not None and resolved.provider
+        }
+        errors = provider_role_errors(self.stage_providers, roles, self.human_reviewers)
+        if errors:
+            raise ValueError("; ".join(errors))
         return self
 
     @model_validator(mode="after")
@@ -2570,6 +2606,13 @@ class SymphonyConfig(BaseModel):
             unknown = set(self.overrides) - valid_fields
             if unknown:
                 msg = f"Unknown override keys: {sorted(unknown)}"
+                raise ValueError(msg)
+            if "stage_providers" in self.overrides:
+                # 402: provider services are started once, from the global catalog.
+                msg = (
+                    "stage_providers is read from the global config only; declare providers "
+                    "there and opt a role in with overrides.performers.<role>.provider"
+                )
                 raise ValueError(msg)
             base_dict.update(self.overrides)
         if self.personas:

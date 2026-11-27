@@ -31,7 +31,7 @@ from coordinare.network_probe import error_status, probe_http
 
 __all__ = [
     "PROBE_TIMEOUT_SECONDS", "CheckResult", "DoctorReport", "Status", "check_dashboard_binding",
-    "check_endpoints", "check_kubernetes_egress_enforcement", "check_models", "run_checks",
+    "check_endpoints", "check_kubernetes_egress_enforcement", "check_models", "check_stage_providers", "run_checks",
 ]
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -447,3 +447,42 @@ def check_kubernetes_egress_enforcement(config: ProjectConfiguration) -> list[Ch
             ),
         ),
     ]
+
+
+async def check_stage_providers(config: ProjectConfiguration) -> list[CheckResult]:
+    """402: each stage provider a role uses answers, and accepts its token."""
+    from coordinare.lifecycle import ROLE_TO_STAGE
+    from coordinare.services.scrutare import ScrutareProvider
+    from coordinare.services.stage_providers import role_provider
+    from coordinare.transport.base import TransportError
+
+    used = {
+        name: role
+        for role, stage in ROLE_TO_STAGE.items()
+        if (name := role_provider(config, stage)) is not None
+    }
+    results: list[CheckResult] = []
+    for name, role in sorted(used.items()):
+        provider_config = config.stage_providers.get(name)
+        if provider_config is None:
+            continue  # config validation already names the missing entry
+        # A setup gate answers quickly: the probe timeout, not the review request timeout.
+        provider = ScrutareProvider(name, provider_config.model_copy(update={
+            "request_timeout_seconds": min(provider_config.request_timeout_seconds, PROBE_TIMEOUT_SECONDS),
+        }))
+        label = f"stage provider '{name}' ({provider_config.kind}, {role})"
+        try:
+            ok, detail = await provider.health()
+        except TransportError as exc:  # unreachable, or the token is not set
+            ok, detail = False, str(exc)
+        results.append(CheckResult(
+            name=label,
+            status=Status.OK if ok else Status.FAIL,
+            detail=f"{provider_config.url}: {detail}",
+            fix=None if ok else (
+                f"Start {provider_config.kind} or correct stage_providers.{name}.url (it must be "
+                "reachable from coordinare), and set "
+                f"{provider_config.token_env} to its performer API token."
+            ),
+        ))
+    return results

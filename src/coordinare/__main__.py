@@ -893,6 +893,26 @@ def _resolve_stage_max_concurrency(
     return getattr(rc, "max_concurrency", 1)
 
 
+def _build_stage_provider_services(
+    config: ProjectConfiguration,
+    github_by_owner: dict[str, Any],
+    default_github: Any,
+) -> dict[str, Any]:
+    """402: one service per stage provider and stage, reading PRs with the owner's GitHub."""
+    from coordinare.services.stage_providers import build_stage_provider_services, github_pr_reader
+
+    def _github_for(owner: str) -> Any:
+        return github_by_owner.get(owner.lower(), default_github)
+
+    return build_stage_provider_services(config, github_pr_reader(_github_for))
+
+
+def _role_provider(config: ProjectConfiguration, stage: str) -> str | None:
+    from coordinare.services.stage_providers import role_provider
+
+    return role_provider(config, stage)
+
+
 def _compose_performer_pools(
     *,
     config: ProjectConfiguration,
@@ -1326,6 +1346,15 @@ async def _bootstrap_services(
         bootstrap_services_by_id=bootstrap_services_by_id,
     )
 
+    # 402: stage providers (Scrutare for reviewer) are registered by performer id, and
+    # are a stage's default only where the global config opts in and no performer serves
+    # that stage. Each dispatch routes by the symphony's effective config.
+    stage_provider_github: dict[str, Any] = {str(config.github_org or "").lower(): github}
+    for _svc in _build_stage_provider_services(config, stage_provider_github, github).values():
+        performer_services_by_id[_svc.performer_id] = _svc
+        if _role_provider(config, _svc.stage) == _svc.provider_name:
+            performer_services.setdefault(_svc.stage, _svc)
+
     # Register all pools once after subprocess + HTTP services are merged.
     from coordinare.services.slot_manager import SlotManager
 
@@ -1403,6 +1432,8 @@ async def _bootstrap_services(
         "workspace_manager": workspace_manager,
         "performer_services": performer_services,
         "performer_services_by_id": performer_services_by_id,
+        # 402: GitHub services by lower-case owner, for stage providers' head checks.
+        "stage_provider_github": stage_provider_github,
         "lifecycle_sequence": lifecycle_sequence,
         "performer_stage": lifecycle_sequence[0] if lifecycle_sequence else "implementing",
         "role_timeouts": role_timeouts,
@@ -1507,6 +1538,10 @@ async def _initialize_symphonies(
             finally:
                 clear_symphony()
             _sym_github_services[_sym.name] = _sym_svc
+            # 402: a stage provider reads this symphony's pull requests with its auth.
+            _sp_github = daemon.state.get("stage_provider_github")
+            if isinstance(_sp_github, dict) and _eff.github_org:
+                _sp_github[str(_eff.github_org).lower()] = _sym_svc
         daemon.state["symphony_github_services"] = _sym_github_services
 
         # Create per-symphony WorkspaceManager instances so each symphony

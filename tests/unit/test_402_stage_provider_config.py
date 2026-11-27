@@ -1,0 +1,403 @@
+"""402: stage provider config, routing by the effective config, and the review identity."""
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from pydantic import ValidationError
+
+from coordinare.config import (
+    PerformerRoleConfig,
+    PerformersConfig,
+    ProjectConfiguration,
+    SymphonyConfig,
+)
+from coordinare.graph.nodes.dispatch_performer import _acquire_via_slot_manager
+from coordinare.graph.nodes.monitor_pr import monitor_pr
+from coordinare.graph.state import initial_state
+from coordinare.services.stage_contract import ExternalStageService, PullRequestSnapshot
+from coordinare.services.stage_providers import (
+    build_stage_provider_services,
+    provider_review_logins,
+    role_provider,
+    stage_provider_for,
+)
+from tests.unit.fake_scrutare import LOGIN
+
+_HEAD = "a" * 40
+_SCRUTARE = {
+    "kind": "scrutare", "url": "http://scrutare:8080",
+    "token_env": "SCRUTARE_API_TOKEN", "installation": 169458182, "review_login": LOGIN,
+}
+
+
+def _config(*, reviewer: dict[str, Any] | None = None, providers: dict[str, Any] | None = None, **kw: Any) -> ProjectConfiguration:
+    performers = PerformersConfig(
+        implementer=PerformerRoleConfig(),
+        reviewer=PerformerRoleConfig(**(reviewer or {})),
+    )
+    base: dict[str, Any] = {
+        "project_name": "widgets", "github_org": "acme", "github_project_number": 1,
+        "github_token": "token", "human_reviewers": ["alice"], "performers": performers,
+        "stage_providers": providers if providers is not None else {"scrutare": dict(_SCRUTARE)},
+    }
+    base.update(kw)
+    return ProjectConfiguration(**base)
+
+
+async def _no_pr(repository: str, node: str) -> PullRequestSnapshot:
+    return PullRequestSnapshot(head_sha=_HEAD)
+
+
+# -- config ------------------------------------------------------------------------------
+
+
+def test_the_default_names_no_provider() -> None:
+    config = _config(providers={})
+    assert config.stage_providers == {}
+    assert role_provider(config, "reviewing") is None
+
+
+def test_a_reviewer_can_opt_in_to_scrutare() -> None:
+    config = _config(reviewer={"provider": "scrutare"})
+    assert role_provider(config, "reviewing") == "scrutare"
+    assert config.stage_providers["scrutare"].installation == 169458182
+    assert provider_review_logins(config) == {"vivi-scrutare"}
+
+
+def test_an_unknown_provider_is_named() -> None:
+    with pytest.raises(ValidationError, match="names 'scrutar', which is not in stage_providers"):
+        _config(reviewer={"provider": "scrutar"})
+
+
+def test_scrutare_cannot_fill_another_role() -> None:
+    performers = PerformersConfig(
+        implementer=PerformerRoleConfig(provider="scrutare"), reviewer=PerformerRoleConfig(),
+    )
+    with pytest.raises(ValidationError, match="a scrutare provider can fill reviewer, not implementer"):
+        _config(performers=performers)
+
+
+def test_a_token_pasted_where_its_variable_name_belongs_is_refused_without_echoing_it() -> None:
+    secret = "ghs_s3cr3t-token-value"
+    with pytest.raises(ValidationError) as caught:
+        _config(providers={"scrutare": {**_SCRUTARE, "token_env": secret}})
+    assert "token_env must be the NAME of an environment variable" in str(caught.value)
+    assert secret not in str(caught.value)
+
+
+@pytest.mark.parametrize("url", [
+    "scrutare.local", "ftp://scrutare.local", "http://user:pw@scrutare.local", "http://scrutare.local/?token=x",
+])
+def test_a_bad_url_is_refused(url: str) -> None:
+    with pytest.raises(ValidationError, match="url must"):
+        _config(providers={"scrutare": {**_SCRUTARE, "url": url}})
+
+
+def test_unknown_provider_fields_and_kinds_are_refused() -> None:
+    with pytest.raises(ValidationError):
+        _config(providers={"scrutare": {**_SCRUTARE, "token": "x"}})
+    with pytest.raises(ValidationError):
+        _config(providers={"scrutare": {**_SCRUTARE, "kind": "other"}})
+
+
+@pytest.mark.parametrize("human", [LOGIN.upper(), LOGIN.removesuffix("[bot]")])
+def test_a_provider_login_can_never_be_a_human_reviewer(human: str) -> None:
+    with pytest.raises(ValidationError, match="must never count as a human approval"):
+        _config(human_reviewers=["alice", human])
+
+
+@pytest.mark.parametrize("login", [None, "", "   "])
+def test_a_provider_needs_its_review_login(login: str | None) -> None:
+    provider = {k: v for k, v in _SCRUTARE.items() if k != "review_login"}
+    if login is not None:
+        provider["review_login"] = login
+    with pytest.raises(ValidationError, match="review_login"):
+        _config(providers={"scrutare": provider})
+
+
+def test_a_provider_name_must_be_a_plain_key() -> None:
+    with pytest.raises(ValidationError, match="lower-case letters"):
+        _config(providers={"Scrutare Prod": dict(_SCRUTARE)})
+
+
+def test_a_symphony_opts_in_through_its_overrides_and_the_default_is_unchanged() -> None:
+    base = _config()
+    assert role_provider(base, "reviewing") is None
+    symphony = SymphonyConfig(
+        name="widgets", github_project_number=2,
+        overrides={"performers": {"implementer": {}, "reviewer": {"provider": "scrutare"}}},
+    )
+    assert role_provider(symphony.effective_config(base), "reviewing") == "scrutare"
+    assert role_provider(base, "reviewing") is None
+
+
+# -- services and routing ------------------------------------------------------------------
+
+
+def test_one_service_per_provider_and_stage() -> None:
+    services = build_stage_provider_services(_config(), _no_pr)
+    assert list(services) == ["stage-provider:scrutare:reviewing"]
+    service = services["stage-provider:scrutare:reviewing"]
+    assert service.stage == "reviewing"
+    assert service.provider_name == "scrutare"
+
+
+def _route_state(config: ProjectConfiguration, performer: object | None) -> tuple[dict[str, Any], ExternalStageService]:
+    service = build_stage_provider_services(config, _no_pr)["stage-provider:scrutare:reviewing"]
+    state: dict[str, Any] = {
+        "config": config,
+        "performer_services": {"reviewing": performer} if performer is not None else {"reviewing": service},
+        "performer_services_by_id": {service.performer_id: service},
+    }
+    return state, service
+
+
+def test_routing_follows_the_effective_config() -> None:
+    performer = object()
+    state, service = _route_state(_config(reviewer={"provider": "scrutare"}), performer)
+    assert stage_provider_for(state, "reviewing") == (service, None)
+    state["config"] = _config()
+    assert stage_provider_for(state, "reviewing") == (None, None)
+    # Other stages are never routed.
+    assert stage_provider_for(state, "implementing") == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_symphony_that_opts_out_never_reaches_the_global_provider() -> None:
+    state, _ = _route_state(_config(reviewer={"provider": "scrutare"}), None)
+    state["config"] = _config()
+    ctx: dict[str, Any] = {
+        "performer_stage": "reviewing", "card_id": "CARD_1",
+        "performer_services": state["performer_services"],
+    }
+    result = await _acquire_via_slot_manager(state, ctx)
+    assert result is not None
+    assert result["phase"] == "blocked"
+    assert "no performer serves it" in result["open_questions"][0]
+    assert "service" not in ctx
+
+
+def test_a_provider_without_a_running_service_blocks_with_the_reason() -> None:
+    config = _config(reviewer={"provider": "scrutare"})
+    state = {"config": config, "performer_services_by_id": {}}
+    routed, reason = stage_provider_for(state, "reviewing")
+    assert routed is None
+    assert reason is not None
+    assert "declare it there" in reason
+
+
+def test_a_symphony_cannot_override_the_provider_catalog() -> None:
+    symphony = SymphonyConfig(
+        name="widgets", github_project_number=2,
+        overrides={"stage_providers": {"scrutare": {**_SCRUTARE, "installation": 1}}},
+    )
+    with pytest.raises(ValueError, match="read from the global config only"):
+        symphony.effective_config(_config())
+
+
+class _FullSlots:
+    """A slot manager with no free performer slot, which a provider dispatch must not need."""
+
+    def __init__(self) -> None:
+        self.pools: dict[str, Any] = {}
+
+    def acquire(self, stage: str, card_id: str, config: Any = None) -> None:
+        raise AssertionError("a provider-backed stage takes no performer slot")
+
+    def is_at_capacity(self, stage: str) -> bool:
+        return True
+
+
+@pytest.mark.asyncio
+async def test_dispatch_acquires_the_provider_for_an_opted_in_symphony() -> None:
+    performer = object()
+    state, service = _route_state(_config(reviewer={"provider": "scrutare"}), performer)
+    state["slot_manager"] = _FullSlots()
+    ctx: dict[str, Any] = {
+        "performer_stage": "reviewing", "card_id": "CARD_1",
+        "performer_services": state["performer_services"],
+    }
+    assert await _acquire_via_slot_manager(state, ctx) is None
+    assert ctx["service"] is service
+    assert ctx["slot_manager"] is None  # nothing to release on an error path
+
+
+@pytest.mark.asyncio
+async def test_dispatch_keeps_the_performer_when_nothing_opts_in() -> None:
+    performer = object()
+    state, _ = _route_state(_config(), performer)
+    ctx: dict[str, Any] = {
+        "performer_stage": "reviewing", "card_id": "CARD_1",
+        "performer_services": state["performer_services"],
+    }
+    assert await _acquire_via_slot_manager(state, ctx) is None
+    assert ctx["service"] is performer
+
+
+@pytest.mark.asyncio
+async def test_dispatch_blocks_a_card_whose_provider_is_missing() -> None:
+    config = _config(reviewer={"provider": "scrutare"})
+    state: dict[str, Any] = {"config": config, "performer_services": {"reviewing": object()}, "performer_services_by_id": {}}
+    ctx: dict[str, Any] = {
+        "performer_stage": "reviewing", "card_id": "CARD_1",
+        "performer_services": state["performer_services"],
+    }
+    result = await _acquire_via_slot_manager(state, ctx)
+    assert result is not None
+    assert result["phase"] == "blocked"
+    assert "scrutare" in result["open_questions"][0]
+
+
+# -- monitor_pr: the provider's review is the stage's own output -------------------------------
+
+
+class _GitHub:
+    def __init__(self, reviews: list[dict[str, Any]], decision: str) -> None:
+        self._ctx = {"reviews": reviews, "review_threads": [], "head_oid": _HEAD,
+                     "review_decision": decision, "state": "OPEN"}
+
+    async def get_pr_review_context(self, pr_id: str) -> dict[str, Any]:
+        return self._ctx
+
+
+def _scrutare_review(state: str) -> dict[str, Any]:
+    return {"id": "RVW_S", "author_login": LOGIN, "state": state, "commit_oid": _HEAD,
+            "submitted_at": "2026-11-27T10:00:00Z", "body": "Scrutare says so",
+            "comments": [{"body": "Off by one.", "path": "a.py", "line": 1}]}
+
+
+def _monitor_state(reviews: list[dict[str, Any]], decision: str) -> dict[str, Any]:
+    state = initial_state()
+    state["config"] = _config(reviewer={"provider": "scrutare"})
+    state["current_card"] = {"pr_node_id": "PR_1", "id": "CARD_402", "title": "t", "pr_url": ""}
+    # Even an operator who lists the App's login as trusted, or as a human, does not make
+    # its review outside feedback or a human approval.
+    state["human_reviewers"] = ["alice", LOGIN]
+    state["trusted_bot_reviewers"] = [LOGIN]
+    state["github_service"] = _GitHub(reviews, decision)
+    state["phase"] = "monitoring_pr"
+    return state
+
+
+@pytest.mark.asyncio
+async def test_a_scrutare_approval_never_merges() -> None:
+    result = await monitor_pr(_monitor_state([_scrutare_review("APPROVED")], "APPROVED"))
+    assert result["phase"] == "monitoring_pr"
+
+
+@pytest.mark.asyncio
+async def test_a_scrutare_change_request_is_not_routed_a_second_time() -> None:
+    result = await monitor_pr(_monitor_state([_scrutare_review("CHANGES_REQUESTED")], "CHANGES_REQUESTED"))
+    assert result["phase"] == "monitoring_pr"
+    assert not result.get("pending_reviews")
+
+
+@pytest.mark.asyncio
+async def test_the_graphql_form_of_the_bot_login_is_recognised() -> None:
+    review = {**_scrutare_review("APPROVED"), "author_login": LOGIN.removesuffix("[bot]")}
+    state = _monitor_state([review], "APPROVED")
+    state["human_reviewers"] = ["alice", LOGIN.removesuffix("[bot]")]
+    result = await monitor_pr(state)
+    assert result["phase"] == "monitoring_pr"
+
+
+def test_only_providers_a_role_uses_are_skipped() -> None:
+    """A symphony on its performer reviewer treats Scrutare's webhook reviews like any bot's."""
+    assert provider_review_logins(_config()) == set()
+    assert provider_review_logins(_config(reviewer={"provider": "scrutare"})) == {"vivi-scrutare"}
+
+
+@pytest.mark.asyncio
+async def test_a_human_approval_beside_scrutare_still_merges() -> None:
+    human = {"id": "RVW_H", "author_login": "alice", "state": "APPROVED", "commit_oid": _HEAD,
+             "submitted_at": "2026-11-27T11:00:00Z", "comments": []}
+    state = _monitor_state([_scrutare_review("CHANGES_REQUESTED"), human], "APPROVED")
+    result = await monitor_pr(state)
+    assert result["phase"] == "merging"
+
+
+@pytest.mark.asyncio
+async def test_an_operator_restart_lets_the_provider_start_a_fresh_attempt() -> None:
+    state, service = _route_state(_config(reviewer={"provider": "scrutare"}), object())
+    ctx: dict[str, Any] = {
+        "performer_stage": "reviewing", "card_id": "CARD_1",
+        "performer_services": state["performer_services"],
+    }
+    await _acquire_via_slot_manager(state, ctx)
+    assert "CARD_1" not in service._fresh
+    state["pending_override"] = {"action": "restart", "applied": True, "target_stage": "reviewing"}
+    await _acquire_via_slot_manager(state, ctx)
+    assert "CARD_1" in service._fresh
+    # A permission from a dispatch that never reached the provider does not linger once
+    # the override is gone (cancelled, or reset).
+    state["pending_override"] = None
+    await _acquire_via_slot_manager(state, ctx)
+    assert "CARD_1" not in service._fresh
+
+
+@pytest.mark.asyncio
+async def test_a_provider_dispatch_needs_no_workspace_or_env_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dispatch body skips the clone and env-cache gates and submits straight away."""
+    from unittest.mock import AsyncMock
+
+    from coordinare.graph.nodes import dispatch_performer as dp
+
+    config = _config(reviewer={"provider": "scrutare"})
+    state, service = _route_state(config, object())
+    full = initial_state()
+    full.update(state)
+    full.update(
+        performer_stage="reviewing",
+        current_card={"id": "CARD_1", "pr_url": "https://github.com/acme/widgets/pull/7",
+                      "pr_node_id": "PR_7", "status": "IN_PROGRESS", "title": "t"},
+        github_service=AsyncMock(),
+        workspace_manager=AsyncMock(),
+        env_cache={"widgets": object()},
+        current_symphony="widgets",
+    )
+
+    async def no_gates(state: Any, ctx: dict[str, Any]) -> None:
+        handled, terminal = await dp.claim_stage_provider(state, ctx)
+        assert handled
+        assert terminal is None
+
+    async def healthy(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def never(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a provider dispatch must not prepare a workspace or env cache")
+
+    async def dispatched(state: Any, ctx: dict[str, Any], volumes: Any, release: Any) -> Any:
+        state["dispatched_to"] = ctx["service"]
+        state["volumes"] = volumes
+        return state
+
+    monkeypatch.setattr(dp, "_run_dispatch_gates", no_gates)
+    monkeypatch.setattr(dp, "_check_service_health", healthy)
+    monkeypatch.setattr(dp, "_setup_workspace", never)
+    monkeypatch.setattr(dp, "_prepare_env_dispatch", never)
+    monkeypatch.setattr(dp, "_inject_pr_context", healthy)
+    monkeypatch.setattr(dp, "_execute_dispatch", dispatched)
+    result = await dp._dispatch_performer_body(full)
+    assert result["dispatched_to"] is service
+    assert result["volumes"] is None
+
+
+def test_the_provider_catalog_is_not_a_field_of_the_global_settings_form() -> None:
+    """The dashboard saves the global section's scalar fields back; a catalog is not one.
+
+    Rendered there, the page sent ``stage_providers`` back as a scalar and every save of
+    the global section failed with 422.
+    """
+    from coordinare.config import CoordinareConfiguration
+    from coordinare.config_descriptors import build_snapshot, scalar_field_names
+
+    assert "stage_providers" not in scalar_field_names("global")
+    config = CoordinareConfiguration(
+        global_config=_config(reviewer={"provider": "scrutare"}),
+        symphonies=[SymphonyConfig(name="widgets", github_project_number=1)],
+    )
+    snapshot = build_snapshot(config).model_dump()
+    (section,) = [s for s in snapshot["sections"] if s["id"] == "global"]
+    assert all(setting["key"] != "global.stage_providers" for setting in section["settings"])

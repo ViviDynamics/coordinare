@@ -19,7 +19,7 @@ from gql.transport.exceptions import TransportConnectionFailed
 
 from coordinare.auth import build_auth
 from coordinare.dashboard.app import check_port_available
-from coordinare.doctor import CheckResult, DoctorReport, Status, run_checks
+from coordinare.doctor import CheckResult, DoctorReport, Status, check_stage_providers, run_checks
 from coordinare.lifecycle import CANONICAL_ORDER
 from coordinare.network_probe import (
     PROBE_ATTEMPTS,
@@ -666,6 +666,7 @@ async def run_preflight(
         strict = explicit or effective.preset is not None
         results = (await asyncio.to_thread(run_checks, probes)).results
         results.extend(await check_github(effective, explicit=explicit))
+        results.extend(await check_stage_providers(effective))
         results.extend(await check_harnesses(
             effective,
             probe_containers=probe_containers and (explicit or (
