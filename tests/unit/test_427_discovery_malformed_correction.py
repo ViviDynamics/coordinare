@@ -99,7 +99,7 @@ async def test_one_malformed_review_reply_is_answered_with_a_correction():
 @pytest.mark.asyncio
 async def test_two_consecutive_malformed_replies_end_discovery():
     chat = Replies(FENCED, FENCED, READ, MANIFEST)
-    with pytest.raises(EnvironmentDiscoveryError, match="^discovery returned malformed JSON$"):
+    with pytest.raises(EnvironmentDiscoveryError, match=r"^discovery returned malformed JSON$"):
         await discover(chat)
     assert len(chat.calls) == 2
 
@@ -107,7 +107,7 @@ async def test_two_consecutive_malformed_replies_end_discovery():
 @pytest.mark.asyncio
 async def test_two_consecutive_malformed_review_replies_end_review():
     chat = Replies(READ, MANIFEST, FENCED, FENCED, ASSESSMENT)
-    with pytest.raises(EnvironmentDiscoveryError, match="^review returned malformed JSON$"):
+    with pytest.raises(EnvironmentDiscoveryError, match=r"^review returned malformed JSON$"):
         await discover(chat)
 
 
@@ -127,7 +127,7 @@ async def test_corrections_count_toward_the_model_call_limit():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("reply", "error"), [
-    ('{"tool":"list_files","tool":"list_files"}', "^discovery returned malformed JSON$"),
+    ('{"tool":"list_files","tool":"list_files"}', r"^discovery returned malformed JSON$"),
     ('["tool"]', "invalid envelope"),
     ('{"tool":"execute","argv":["touch","bad"]}', "unsupported tool"),
 ])
