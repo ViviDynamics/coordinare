@@ -323,14 +323,15 @@ def _work_item_provider_lines(config_file_path: Path | None) -> list[str]:
     if config_file_path is None:
         return []
     try:
-        raw = _load_raw_yaml(config_file_path)
+        # As startup does: drop a notification channel validation tolerates.
+        raw, _ = sanitize_notifications(_load_raw_yaml(config_file_path))
         root = CoordinareConfiguration(
             **(coerce_multi_symphony_raw(raw) if is_multi_symphony_config(raw) else wrap_legacy_config(raw)),
         )
     except Exception:
-        # Validation already passed on the resolved config; a file this cannot
-        # rebuild (one completed by environment variables) just shows no line.
-        return []
+        # Validation already passed on the resolved config. A file that cannot be
+        # rebuilt on its own (one completed by environment variables) says so.
+        return ["  Work items: provider not shown (the file alone does not build a configuration)"]
     return [f"  Work items: {s.name} uses {s.work_item_provider}" for s in root.symphonies]
 
 

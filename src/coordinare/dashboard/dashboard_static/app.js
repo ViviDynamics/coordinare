@@ -524,7 +524,7 @@ async function loadSymphonyDetail(name, el) {
   }
   var st = data.state || {};
   // 394: the provider a symphony reads its work items from.
-  var workItemsProvider = (data.work_items && data.work_items.provider) || 'github_projects';
+  var workItemsProvider = data.work_item_provider || 'github_projects';
   var workItemsLabel = workItemsProvider === 'github_projects' ? 'GitHub Projects' : esc(workItemsProvider);
   var statusRows = [
     ['GitHub project', data.github_project_number != null ? '#' + data.github_project_number : 'None'],

@@ -3648,6 +3648,15 @@ class CoordinareDaemon:
         _sym_github_services = self._state.get("symphony_github_services") or {}
         _prev_github = self._state.get("github_service")
         _sym_github = _sym_github_services.get(symphony_name)
+        # 394: built before any key is swapped, so a provider that fails to build
+        # leaves the shared state as it was rather than half switched.
+        _sym_board: Any = (
+            build_board_provider(
+                getattr((self._state.get("symphony_configs") or {}).get(symphony_name), "work_items", None),
+                github=_sym_github,
+            )
+            if _sym_github is not None else None
+        )
         _sym_workspace_managers = self._state.get("symphony_workspace_managers") or {}
         _prev_workspace_manager = self._state.get("workspace_manager")
         _sym_workspace_manager = _sym_workspace_managers.get(symphony_name)
@@ -3683,13 +3692,10 @@ class CoordinareDaemon:
             # 149: the board follows the symphony's service. Leaving it behind
             # would have a multi-symphony run reading one board and writing
             # another — silently, since both are GitHub today.
-            # 394: built from the symphony's work_items block, through the one
-            # factory, and the board found here is what the restore puts back.
-            _sym_cfg = (self._state.get("symphony_configs") or {}).get(symphony_name)
+            # 394: the symphony's own board, from its work_items block through the
+            # one factory. The board found here is what the restore puts back.
             self._swapped_board_provider: tuple[Any] | None = (self._state.get("board_provider"),)
-            self._state["board_provider"] = build_board_provider(
-                getattr(_sym_cfg, "work_items", None), github=_sym_github,
-            )
+            self._state["board_provider"] = _sym_board
         if _sym_workspace_manager is not None:
             self._state["workspace_manager"] = _sym_workspace_manager
         return (

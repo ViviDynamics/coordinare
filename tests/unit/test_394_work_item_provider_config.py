@@ -1,4 +1,4 @@
-"""Issue #394 — the work item provider is chosen in config, GitHub Projects by default.
+"""Issue #394: the work item provider is chosen in config, GitHub Projects by default.
 
 Until now ``GitHubProjectsBoardProvider`` was constructed directly, once in
 ``__main__.py`` and twice in ``daemon.py``, so a second provider had no way in.
@@ -202,8 +202,30 @@ class TestTheDashboardAndMcp:
         listed = client.get("/api/symphonies").json()["symphonies"][0]
         detail = client.get("/api/symphonies/demo").json()
 
-        assert listed["work_items"] == {"provider": "github_projects"}
+        assert listed["work_item_provider"] == "github_projects"
+        assert detail["work_item_provider"] == "github_projects"
+        # The block itself is reported as configured: none. A client that writes the
+        # detail back must not add a block the operator never wrote.
+        assert listed["work_items"] is None
+        assert detail["work_items"] is None
+
+    def test_a_configured_block_is_reported_as_written(self, tmp_path: Path) -> None:
+        client, _, _ = _client(tmp_path, _with_work_items({"provider": "github_projects"}))
+
+        detail = client.get("/api/symphonies/demo").json()
+
         assert detail["work_items"] == {"provider": "github_projects"}
+        assert detail["work_item_provider"] == "github_projects"
+
+    def test_writing_the_detail_back_adds_no_block(self, tmp_path: Path) -> None:
+        client, _, path = _client(tmp_path, _RAW)
+        detail = client.get("/api/symphonies/demo")
+        spec = {k: detail.json()[k] for k in ("enabled", "overrides", "personas", "work_items")}
+
+        resp = client.put("/api/symphonies/demo", json=spec, headers={"If-Match": detail.headers["ETag"]})
+
+        assert resp.status_code == 200, resp.text
+        assert "work_items" not in yaml.safe_load(path.read_text())["symphonies"][0]
 
     def test_an_update_keeps_the_block_it_was_not_sent(self, tmp_path: Path) -> None:
         raw = _with_work_items({"provider": "github_projects"})
@@ -246,7 +268,7 @@ class TestTheDashboardAndMcp:
         body = client.post("/api/symphonies/demo/validate").json()
 
         assert body["valid"] is True
-        assert body["work_items"] == {"provider": "github_projects"}
+        assert body["work_item_provider"] == "github_projects"
 
     def test_the_mcp_upsert_tool_describes_the_block(self) -> None:
         """What an agent reads before writing a symphony names the block."""
@@ -262,4 +284,5 @@ def test_the_symphony_detail_page_shows_the_provider_after_the_refreshed_rows() 
     last_error = source.index("['Last error', st.last_error")
     work_items = source.index("['Work items', workItemsLabel]")
     assert last_error < work_items
+    assert "var workItemsProvider = data.work_item_provider || 'github_projects';" in source
     assert "workItemsProvider === 'github_projects' ? 'GitHub Projects'" in source

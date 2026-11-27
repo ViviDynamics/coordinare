@@ -57,12 +57,20 @@ def _persist_symphony_configs(sym_configs: dict[str, Any], config_path: Path | N
     loaded["symphonies"] = symphony_documents(sym_configs, loaded)
     atomic_write_yaml(config_path, loaded)
 
-def _work_items_view(cfg: Any) -> dict[str, str]:
-    """The provider a symphony reads (#394), the default when it names none."""
+def _work_items_view(cfg: Any) -> dict[str, Any]:
+    """A symphony's work item provider (#394), for a response.
+
+    ``work_items`` is the block as configured, ``None`` when the symphony has
+    none, so a client that writes a read back adds nothing the operator never
+    wrote. ``work_item_provider`` is the provider it actually reads.
+    """
     from coordinare.services.work_item_providers import DEFAULT_WORK_ITEM_PROVIDER
 
     work_items = getattr(cfg, "work_items", None)
-    return {"provider": getattr(work_items, "provider", None) or DEFAULT_WORK_ITEM_PROVIDER}
+    return {
+        "work_items": work_items.model_dump() if work_items is not None else None,
+        "work_item_provider": getattr(work_items, "provider", None) or DEFAULT_WORK_ITEM_PROVIDER,
+    }
 
 
 def _register_get_symphonies(app: FastAPI, ctx: DashboardContext) -> None:
@@ -86,7 +94,7 @@ def _register_get_symphonies(app: FastAPI, ctx: DashboardContext) -> None:
                     "name": name,
                     "priority": i,
                     "github_project_number": getattr(cfg, "github_project_number", None),
-                    "work_items": _work_items_view(cfg),
+                    **_work_items_view(cfg),
                     "env_bootstrap_performer_id": getattr(cfg, "env_bootstrap_performer_id", None),
                     "bootstrap_in_flight": bool(getattr(_ec, "bootstrap_in_flight", False)) if _ec else False,
                     "cache_dir_ready": bool(getattr(_ec, "cache_dir_ready", False)) if _ec else False,
@@ -162,7 +170,7 @@ def _register_get_symphony(app: FastAPI, ctx: DashboardContext) -> None:
             return JSONResponse({
                 "name": name,
                 "github_project_number": getattr(cfg, "github_project_number", None),
-                "work_items": _work_items_view(cfg),
+                **_work_items_view(cfg),
                 "enabled": getattr(cfg, "enabled", True),
                 "overrides": _mask_secret_overrides(getattr(cfg, "overrides", None) or {}),
                 "secret_overrides": _secret_override_fields(daemon, getattr(cfg, "overrides", None) or {}),
@@ -411,7 +419,7 @@ def _register_validate_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                 return JSONResponse({
                     "valid": True,
                     "symphony": name,
-                    "work_items": _work_items_view(candidate),
+                    **_work_items_view(candidate),
                     "effective_config": {
                         "github_org": effective.github_org,
                         "github_project_number": effective.github_project_number,

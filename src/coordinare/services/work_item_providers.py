@@ -15,12 +15,13 @@ Config accepts exactly the names registered here.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from coordinare.services.board_provider import BoardProvider, GitHubProjectsBoardProvider
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from coordinare.config import WorkItemsConfig
 
 #: The provider a symphony with no ``work_items`` block uses.

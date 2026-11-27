@@ -2588,7 +2588,7 @@ class SymphonyConfig(BaseModel):
     # 092 — Symphony test-environment injection (opt-in; None = agent-discovery fallback).
     test_env: TestEnvConfig | None = None
 
-    # 394 — Where the work items come from (opt-in; None = GitHub Projects).
+    # 394: where the work items come from (opt-in; None means GitHub Projects).
     work_items: WorkItemsConfig | None = None
 
     @property
