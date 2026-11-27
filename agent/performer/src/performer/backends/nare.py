@@ -129,6 +129,7 @@ class NareBackend:
         self._tokens_before_resume = 0
         self._endpoint_kind = ""
         self._endpoint_base_url = ""
+        self._added_roots: list[str] = []
         self._prompt_seq = 0
 
     # ------------------------------------------------------------------
@@ -167,6 +168,11 @@ class NareBackend:
         }
         self._max_tool_calls = getattr(score, "max_tool_calls", None)
         self._tool_calls_used = 0
+        # Only env_bootstrap writes the cache; consumers read it through activate.sh.
+        self._added_roots = (
+            _cache_roots(getattr(score, "env_cache_path", "") or "")
+            if score.role == "env_bootstrap" else []
+        )
         # 223: a restart after a format failure reuses this instance. It gets a
         # new session file, and get_status() must not return the previous run.
         self._remove_run_dir()
@@ -289,6 +295,8 @@ class NareBackend:
         else:
             cmd += ["--session", str(self._session_path)]
         cmd += ["--prompt-file", str(prompt_file), "--root", self._cwd]
+        for root in self._added_roots:
+            cmd += ["--add-root", root]
         provider = self._provider()
         if provider:
             cmd += ["--provider", provider]
@@ -676,6 +684,22 @@ def _feedback_sections(score: Score) -> list[str]:
                 )
     parts += relay_feedback_prompt_section(score.relay_feedback)
     return parts
+
+
+def _cache_roots(env_cache_path: str) -> list[str]:
+    """382: the directory env_bootstrap builds its toolchain into sits beside the
+    checkout, outside ``--root``. It becomes an added root (nare 2026.11.111, #319),
+    as claude_code passes it to ``--add-dir``. Only the cache itself: its parent
+    holds every symphony's cache. The env-cache lifecycle creates and mounts it
+    before dispatch, and nare refuses an added root that is not a directory, so a
+    missing cache adds nothing rather than widening to the parent."""
+    path = env_cache_path.strip()
+    if not path:
+        return []
+    if not pathlib.Path(path).is_dir():
+        log.warning("nare.cache_missing", path=path)
+        return []
+    return [path]
 
 
 def _tool_result(detail: object) -> dict[str, Any] | None:

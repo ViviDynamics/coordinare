@@ -14,7 +14,7 @@
 #   agent_transport: "subprocess"
 #
 # Environment variables (set in .env or export before running):
-#   AGENT_BACKEND   AI backend to use (default: opencode)
+#   AGENT_BACKEND   AI backend to use (default: nare)
 #   AGENT_TIMEOUT   Max seconds per session (default: 1800)
 #   GITHUB_TOKEN    GitHub token for creating pull requests
 set -euo pipefail

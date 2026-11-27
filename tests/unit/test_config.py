@@ -566,7 +566,7 @@ class TestPerformerRoleConfig:
 
     def test_defaults(self) -> None:
         cfg = PerformerRoleConfig()
-        assert cfg.backend == "opencode"
+        assert cfg.backend == "nare"  # 382: the default harness
         assert cfg.transport is None  # None = falls back to global config default
         assert cfg.image is None
         assert cfg.executable is None

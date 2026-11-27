@@ -182,7 +182,7 @@ def _describe_role(role: str, config: ProjectConfiguration) -> str:
     role_config = getattr(config.performers, role, None)
     if role_config is None:
         return f"{role} (default transport)"
-    backend = role_config.backend or "opencode"
+    backend = role_config.backend or "nare"
     # 080: model resolves through the role's mode (modes → model_endpoints).
     model = config.resolve_performer_dispatch_model(role).get("model", "default")
     transport = role_config.transport or config.agent_transport

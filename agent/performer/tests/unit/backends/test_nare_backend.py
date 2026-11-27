@@ -356,3 +356,52 @@ def test_the_failure_tail_never_carries_a_secret_value(monkeypatch) -> None:
     reason = backend.get_status().error_reason or ""
     assert "sk-live-abcdefghijklmnop" not in reason
     assert "upstream said" in reason
+
+async def test_env_bootstrap_file_tools_reach_the_cache(tmp_path, monkeypatch) -> None:
+    """#382: env_bootstrap builds the toolchain into a cache outside the checkout;
+    nare's file tools reach it through --add-root (nare 2026.11.111), as
+    claude_code's do through --add-dir."""
+    recorded = _capture_exec(monkeypatch)
+    cache_parent = tmp_path / "devenv"
+    cache_parent.mkdir()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    cache = cache_parent / "demo-1"
+    cache.mkdir()
+    (cache_parent / "other-2").mkdir()
+    await NareBackend().start(_stand(workspace), _score(role="env_bootstrap", env_cache_path=str(cache)))
+    cmd = recorded[0]
+    # Copilot on #388: the cache itself, never its parent, which holds every
+    # symphony's cache.
+    assert _flag(cmd, "--add-root") == str(cache)
+    assert cmd.count("--add-root") == 1
+
+
+@pytest.mark.asyncio
+async def test_no_cache_means_no_added_root(tmp_path, monkeypatch) -> None:
+    recorded = _capture_exec(monkeypatch)
+    await NareBackend().start(_stand(tmp_path), _score())
+    assert "--add-root" not in recorded[0]
+
+
+@pytest.mark.asyncio
+async def test_a_missing_cache_is_not_added(tmp_path, monkeypatch) -> None:
+    """nare refuses an added root that is not a directory (exit 2); the cache is
+    created and mounted before dispatch, so a missing one is not widened to its parent."""
+    recorded = _capture_exec(monkeypatch)
+    (tmp_path / "devenv").mkdir()
+    await NareBackend().start(
+        _stand(tmp_path), _score(role="env_bootstrap", env_cache_path=str(tmp_path / "devenv" / "c")),
+    )
+    assert "--add-root" not in recorded[0]
+
+
+@pytest.mark.asyncio
+async def test_a_consumer_role_gets_no_writable_cache_root(tmp_path, monkeypatch) -> None:
+    """Only env_bootstrap writes the cache; a consumer's added root would reach
+    every symphony's cache under the same parent in local mode."""
+    recorded = _capture_exec(monkeypatch)
+    cache_parent = tmp_path / "devenv"
+    cache_parent.mkdir()
+    await NareBackend().start(_stand(tmp_path), _score(role="implementer", env_cache_path=str(cache_parent / "c")))
+    assert "--add-root" not in recorded[0]

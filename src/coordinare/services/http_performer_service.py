@@ -2261,11 +2261,20 @@ class HTTPPerformerService:
         # Honor per-role auth_token_env (proxy-only mode) the same way the regular
         # claude_code path does: when set, inject ANTHROPIC_AUTH_TOKEN and SKIP
         # ANTHROPIC_API_KEY so the proxy receives only the Bearer token.
-        bootstrap_backend = str(card_context.get("backend") or "").replace("-", "_")
+        bootstrap_backend = str(card_context.get("backend") or "nare").replace("-", "_")
         role_base_url = card_context.get("base_url")
         role_api_key_env = card_context.get("api_key_env")
         role_auth_token_env = card_context.get("auth_token_env")
-        if bootstrap_backend == "claude_code":
+        if bootstrap_backend == "nare":
+            # Service inference in the bootstrap performer reads the vendor keys
+            # whatever rail nare rides (main._run_service_inference), so they
+            # stay as before; the endpoint's own key then wins for nare.
+            for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+                val = os.environ.get(key, "")
+                if val:
+                    secrets[key] = val
+            _inject_nare_secrets(secrets, card_context)
+        elif bootstrap_backend == "claude_code":
             _inject_claude_code_secrets(
                 secrets, role_base_url, role_api_key_env, role_auth_token_env,
             )
@@ -2333,7 +2342,7 @@ class HTTPPerformerService:
                 "job_id": str(uuid.uuid4()),
                 "card_id": f"env_bootstrap:{card_context.get('symphony_name', '')}",
                 "role": "env_bootstrap",
-                "backend": str(card_context.get("backend", "") or "claude_code"),
+                "backend": str(card_context.get("backend", "") or "nare"),
                 "persona": persona,
                 "repo_url": repo_url,
                 "branch": branch,
