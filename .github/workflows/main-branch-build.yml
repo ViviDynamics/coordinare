@@ -471,6 +471,9 @@ jobs:
           normalized=$(printf '%s\n' "$RELEASE_VERSION" | awk -F. '{for (i=1; i<=NF; i++) printf "%s%d", (i==1 ? "" : "."), $i; print ""}')
           test "$("$HOME/.local/bin/coordinare" --version)" = "coordinare $normalized"
           test -x "$HOME/.local/bin/performer"
+          nare_version=$(sed -n 's/^    nare_version=//p' "$assets/install.sh")
+          test -n "$nare_version"
+          test "$("$HOME/.local/bin/nare" --version)" = "$nare_version"
           mkdir "$HOME/.coordinare"
           printf 'keep\n' > "$HOME/.coordinare/config.yaml"
           sh "$assets/install.sh" --yes --no-init --version "$RELEASE_VERSION"
@@ -480,6 +483,7 @@ jobs:
           sh "$assets/install.sh" --uninstall
           test -f "$HOME/.coordinare/config.yaml"
           test ! -e "$HOME/.local/bin/coordinare"
+          test ! -e "$HOME/.local/bin/nare"
 
   publish-artifacts:
     if: needs.create-release.outputs.published != 'true'

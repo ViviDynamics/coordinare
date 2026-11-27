@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "install.sh"
+DOCKERFILE = ROOT / "agent/performer/Dockerfile.base"
 VERSION = "2026.10.84"
 NEXT_VERSION = "2026.10.85"
 LEGACY_TAG = "2026.09.01.3"
@@ -33,26 +35,69 @@ set -eu
 printf '%s\n' "$@" >> "$HOME/uv.calls"
 case "$1 $2" in
     'tool install')
+        version=
+        nare=
         for arg do
             case "$arg" in
                 */coordinare-*-py3-none-any.whl)
                     version=${arg##*/coordinare-}
                     version=${version%-py3-none-any.whl}
                     ;;
+                */nare-*-py3-none-any.whl)
+                    nare=${arg##*/nare-}
+                    nare=${nare%-py3-none-any.whl}
+                    ;;
             esac
         done
+        if [ -n "$nare" ]; then
+            rm -rf "$UV_TOOL_DIR/nare"
+            mkdir -p "$UV_TOOL_BIN_DIR" "$UV_TOOL_DIR/nare"
+            printf '#!/bin/sh\nprintf "%s\\n"\n' "$nare" > "$UV_TOOL_BIN_DIR/nare"
+            chmod +x "$UV_TOOL_BIN_DIR/nare"
+            exit 0
+        fi
         mkdir -p "$UV_TOOL_BIN_DIR" "$UV_TOOL_DIR/coordinare"
         printf '#!/bin/sh\nprintf "coordinare %s\\n"\n' "$version" > "$UV_TOOL_BIN_DIR/coordinare"
         printf '#!/bin/sh\nexit 0\n' > "$UV_TOOL_BIN_DIR/performer"
         chmod +x "$UV_TOOL_BIN_DIR/coordinare" "$UV_TOOL_BIN_DIR/performer"
         ;;
     'tool uninstall')
-        rm -f "$UV_TOOL_BIN_DIR/coordinare" "$UV_TOOL_BIN_DIR/performer"
-        rm -rf "$UV_TOOL_DIR/coordinare"
+        case "$3" in
+            nare)
+                rm -f "$UV_TOOL_BIN_DIR/nare"
+                rm -rf "$UV_TOOL_DIR/nare"
+                ;;
+            *)
+                rm -f "$UV_TOOL_BIN_DIR/coordinare" "$UV_TOOL_BIN_DIR/performer"
+                rm -rf "$UV_TOOL_DIR/coordinare"
+                ;;
+        esac
         ;;
     *) exit 1 ;;
 esac
 """
+
+
+def _pin(text: str, name: str) -> str:
+    match = re.search(rf"^{name}=([0-9a-f]{{64}}|[0-9.]+)$", text, re.MULTILINE)
+    assert match, f"missing pin {name}"
+    return match.group(1)
+
+
+def image_nare_pin() -> tuple[str, str]:
+    """The nare release the performer image installs (#360)."""
+    text = DOCKERFILE.read_text()
+    return _pin(text, "ARG NARE_VERSION"), _pin(text, "ARG NARE_SHA256")
+
+
+def installer_nare_pin() -> tuple[str, str]:
+    """The nare release install.sh installs for local runs (#384)."""
+    text = SCRIPT.read_text()
+    return _pin(text, "    nare_version"), _pin(text, "    nare_sha256")
+
+
+NARE_VERSION = installer_nare_pin()[0]
+NARE_WHEEL = f"nare-{NARE_VERSION}-py3-none-any.whl"
 
 
 @dataclass
@@ -61,14 +106,16 @@ class Release:
     home: Path
     directory: Path
     env: dict[str, str]
+    script: Path
+    nare: Path
 
     def run(
         self, *args: str, shell: str = "sh", piped: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        command = [shell, "-s", "--", *args] if piped else [shell, str(SCRIPT), *args]
+        command = [shell, "-s", "--", *args] if piped else [shell, str(self.script), *args]
         return subprocess.run(
             command,
-            input=SCRIPT.read_text() if piped else "",
+            input=self.script.read_text() if piped else "",
             env=self.env,
             cwd=self.root,
             capture_output=True,
@@ -94,6 +141,20 @@ def write_release(directory: Path, version: str = VERSION) -> None:
     (directory / "SHA256SUMS").write_text("".join(manifest))
 
 
+def pin_installer_to(wheel: Path, script: Path) -> None:
+    """Copy install.sh with its nare digest pinned to a local test wheel.
+
+    The installer has no switch that relaxes its pin, so offline tests change
+    the digest in a copy; the real script's pin is tied to the image below.
+    """
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    text, count = re.subn(
+        r"^    nare_sha256=[0-9a-f]{64}$", f"    nare_sha256={digest}", SCRIPT.read_text(), flags=re.MULTILINE,
+    )
+    assert count == 1
+    script.write_text(text)
+
+
 @pytest.fixture
 def release(tmp_path: Path) -> Release:
     home = tmp_path / "home with spaces"
@@ -106,17 +167,23 @@ def release(tmp_path: Path) -> Release:
     latest = tmp_path / "releases/latest"
     latest.mkdir()
     (latest / "download").symlink_to(directory, target_is_directory=True)
+    nare = tmp_path / "nare releases/download" / NARE_VERSION / NARE_WHEEL
+    nare.parent.mkdir(parents=True)
+    nare.write_bytes(f"wheel for nare {NARE_VERSION}".encode())
+    script = tmp_path / "install.sh"
+    pin_installer_to(nare, script)
     env = {
         "HOME": str(home),
         "PATH": f"{binaries}:{os.defpath}",
         "COORDINARE_RELEASE_ROOT": (tmp_path / "releases").as_uri(),
+        "COORDINARE_NARE_RELEASE_ROOT": (tmp_path / "nare releases").as_uri(),
         "COORDINARE_YES": "1",
         "COORDINARE_NO_INIT": "1",
     }
     temporary = tmp_path / "temporary downloads"
     temporary.mkdir()
     env["TMPDIR"] = str(temporary)
-    return Release(tmp_path, home, directory, env)
+    return Release(tmp_path, home, directory, env, script, nare)
 
 
 @pytest.mark.parametrize("shell", ["sh", "dash", "bash"])
@@ -163,13 +230,13 @@ def test_corruption_aborts_before_any_uv_call(release: Release, corruption: str)
     assert not list(Path(release.env["TMPDIR"]).iterdir())
 
 
-@pytest.mark.parametrize("asset", ["SHA256SUMS", f"performer-{VERSION}-py3-none-any.whl"])
+@pytest.mark.parametrize("asset", ["SHA256SUMS", f"performer-{VERSION}-py3-none-any.whl", NARE_WHEEL])
 def test_missing_download_keeps_an_existing_install(release: Release, asset: str) -> None:
     assert release.run().returncode == 0
     calls = release.calls()
     installed = release.home / ".local/bin/coordinare"
     original = installed.read_bytes()
-    (release.directory / asset).unlink()
+    (release.nare if asset == NARE_WHEEL else release.directory / asset).unlink()
     result = release.run()
     assert result.returncode != 0
     assert "Download failed" in result.stderr
@@ -349,6 +416,24 @@ def write_real_wheels(directory: Path) -> None:
     (directory / "SHA256SUMS").write_text("".join(manifest))
 
 
+def write_real_nare_wheel(path: Path) -> None:
+    """A minimal nare wheel whose command prints its version, as nare's does."""
+    distribution = f"nare-{NARE_VERSION}.dist-info"
+    with zipfile.ZipFile(path, "w") as wheel:
+        wheel.writestr(
+            distribution + "/METADATA",
+            f"Metadata-Version: 2.3\nName: nare\nVersion: {NARE_VERSION}\nRequires-Python: >=3.12\n"
+            "Provides-Extra: bedrock\n",
+        )
+        wheel.writestr(
+            distribution + "/WHEEL",
+            "Wheel-Version: 1.0\nGenerator: installer-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        wheel.writestr(distribution + "/RECORD", "")
+        wheel.writestr(distribution + "/entry_points.txt", "[console_scripts]\nnare = nare_stub:main\n")
+        wheel.writestr("nare_stub.py", f'def main():\n    print("{NARE_VERSION}")\n')
+
+
 def test_real_uv_installs_verified_shared_wheels_and_both_commands(release: Release) -> None:
     uv = shutil.which("uv")
     assert uv is not None, "The repository test environment requires uv."
@@ -359,13 +444,20 @@ def test_real_uv_installs_verified_shared_wheels_and_both_commands(release: Rele
     release.env["UV_OFFLINE"] = "1"
     release.env["UV_NO_INDEX"] = "1"
     write_real_wheels(release.directory)
+    write_real_nare_wheel(release.nare)
+    pin_installer_to(release.nare, release.script)
     result = release.run("--yes")
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"Installed coordinare {VERSION}" in result.stdout
     assert (release.home / ".local/bin/performer").is_file()
+    nare = release.home / ".local/bin/nare"
+    assert subprocess.run([nare, "--version"], capture_output=True, text=True, check=True).stdout.strip() == NARE_VERSION
     assert release.run("--yes").returncode == 0
+    assert nare.is_file()
     assert release.run("--uninstall").returncode == 0
     assert not (release.home / ".local/bin/performer").exists()
+    assert not nare.exists()
+    assert not (release.home / ".local/share/uv/tools/nare").exists()
 
 
 @pytest.mark.parametrize(
@@ -426,6 +518,77 @@ def test_real_installer_smoke_gates_release_publication() -> None:
     assert "install.sh" in commands
     assert "--version" in commands
     assert "performer" in commands
+    assert '.local/bin/nare" --version' in commands
+    assert 'test ! -e "$HOME/.local/bin/nare"' in commands
+
+
+def test_installer_pins_the_nare_release_the_performer_image_pins() -> None:
+    """One nare for local and containerized runs: bump both pins together."""
+    assert installer_nare_pin() == image_nare_pin()
+
+
+def test_install_puts_the_pinned_nare_on_path(release: Release) -> None:
+    result = release.run()
+    assert result.returncode == 0, result.stderr
+    nare = release.home / ".local/bin/nare"
+    assert subprocess.run([nare, "--version"], capture_output=True, text=True, check=True).stdout.strip() == NARE_VERSION
+    assert f"Verified {NARE_WHEEL}" in result.stdout
+    assert f"Installed nare {NARE_VERSION}" in result.stdout
+    assert "nare[bedrock] @ file://" in release.calls()
+    assert not list(Path(release.env["TMPDIR"]).iterdir())
+
+
+@pytest.mark.parametrize("piped", [False, True])
+def test_nare_checksum_mismatch_installs_nothing(release: Release, piped: bool) -> None:
+    release.nare.write_bytes(b"tampered nare wheel")
+    result = release.run(piped=piped)
+    assert result.returncode != 0
+    assert f"Checksum mismatch for {NARE_WHEEL}. Nothing was installed." in result.stderr
+    assert not release.calls()
+    assert not (release.home / ".local/bin/coordinare").exists()
+    assert not (release.home / ".local/bin/nare").exists()
+    assert not list(Path(release.env["TMPDIR"]).iterdir())
+
+
+def test_the_real_installer_refuses_a_wheel_that_is_not_the_pinned_one(release: Release) -> None:
+    """No switch relaxes the pin: the shipped script rejects local test bytes."""
+    release.script = SCRIPT
+    result = release.run()
+    assert result.returncode != 0
+    assert f"Checksum mismatch for {NARE_WHEEL}" in result.stderr
+    assert not release.calls()
+
+
+@pytest.mark.parametrize("root", ["http://example.com/nare", "ftp://example.com/nare", "relative/path"])
+def test_nare_release_root_must_be_https_or_a_local_file(release: Release, root: str) -> None:
+    release.env["COORDINARE_NARE_RELEASE_ROOT"] = root
+    result = release.run()
+    assert result.returncode != 0
+    assert "COORDINARE_NARE_RELEASE_ROOT" in result.stderr
+    assert not release.calls()
+
+
+def test_uninstall_removes_the_nare_it_installed(release: Release) -> None:
+    assert release.run().returncode == 0
+    result = release.run("--uninstall")
+    assert result.returncode == 0, result.stderr
+    assert "tool\nuninstall\nnare\n" in release.calls()
+    assert not (release.home / ".local/bin/nare").exists()
+    assert not (release.home / ".local/share/uv/tools/nare").exists()
+    assert "Removed nare" in result.stdout
+    assert release.run("--uninstall").returncode == 0
+
+
+def test_uninstall_keeps_a_nare_this_installer_did_not_install(release: Release) -> None:
+    assert release.run().returncode == 0
+    tool = release.home / ".local/share/uv/tools/nare"
+    shutil.rmtree(tool)
+    tool.mkdir()
+    result = release.run("--uninstall")
+    assert result.returncode == 0, result.stderr
+    assert "tool\nuninstall\nnare\n" not in release.calls()
+    assert tool.is_dir()
+    assert "Kept nare" in result.stdout
 
 
 @pytest.fixture(params=["sha256sum", "shasum"])

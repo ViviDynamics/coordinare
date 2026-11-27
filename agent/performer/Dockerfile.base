@@ -55,7 +55,9 @@ RUN python -m pip install --no-cache-dir --no-deps \
 # the venv has no pip of its own, and the verified system pip installs into it.
 # The adapter (performer/backends/nare.py) speaks the contract this release
 # speaks. tests/contract/test_nare_real_binary.py installs the same wheel and
-# requirements, so bump NARE_VERSION, NARE_SHA256 and the requirements together.
+# requirements, so bump NARE_VERSION, NARE_SHA256 and the requirements together,
+# along with nare_version and nare_sha256 in install.sh, which installs the same
+# release for local runs (#384; tests/unit/test_194_installer.py checks they match).
 ARG NARE_VERSION=2026.11.121
 ARG NARE_SHA256=1e03d84fb1690a9588aca11b543a47379be3f185119c6775b882a14d1aece8ad
 COPY agent/performer/nare-requirements.txt /tmp/nare-requirements.txt
