@@ -198,7 +198,11 @@ class GitHubProjectsBoardProvider:
         issue node id a caller already holds) passes through unchanged.
         """
         if isinstance(self._github, CardIdentityMap):
-            return self._github.content_id_for_card(card_id)
+            resolved = self._github.content_id_for_card(card_id)
+            # A stand-in for the service (a spec'd mock) answers with a non-string;
+            # the id the caller holds is then the best there is.
+            if isinstance(resolved, str) and resolved:
+                return resolved
         return card_id
 
     async def get_card_comments(
