@@ -367,9 +367,14 @@ async def test_env_bootstrap_file_tools_reach_the_cache(tmp_path, monkeypatch) -
     workspace = tmp_path / "ws"
     workspace.mkdir()
     cache = cache_parent / "demo-1"
+    cache.mkdir()
+    (cache_parent / "other-2").mkdir()
     await NareBackend().start(_stand(workspace), _score(role="env_bootstrap", env_cache_path=str(cache)))
     cmd = recorded[0]
-    assert _flag(cmd, "--add-root") == str(cache_parent)
+    # Copilot on #388: the cache itself, never its parent, which holds every
+    # symphony's cache.
+    assert _flag(cmd, "--add-root") == str(cache)
+    assert cmd.count("--add-root") == 1
 
 
 @pytest.mark.asyncio
@@ -380,10 +385,14 @@ async def test_no_cache_means_no_added_root(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_missing_cache_parent_is_not_added(tmp_path, monkeypatch) -> None:
-    """nare refuses an added root that is not a directory (exit 2)."""
+async def test_a_missing_cache_is_not_added(tmp_path, monkeypatch) -> None:
+    """nare refuses an added root that is not a directory (exit 2); the cache is
+    created and mounted before dispatch, so a missing one is not widened to its parent."""
     recorded = _capture_exec(monkeypatch)
-    await NareBackend().start(_stand(tmp_path), _score(env_cache_path=str(tmp_path / "nope" / "c")))
+    (tmp_path / "devenv").mkdir()
+    await NareBackend().start(
+        _stand(tmp_path), _score(role="env_bootstrap", env_cache_path=str(tmp_path / "devenv" / "c")),
+    )
     assert "--add-root" not in recorded[0]
 
 

@@ -17,9 +17,14 @@ flaky agentic tool loop.
   `tech_writer` **persona** (`DEFAULT_INSTRUCTIONS` in
   `src/coordinare/services/persona_service.py`). It ships enabled by default —
   there is nothing to toggle in the operator-local `config.yaml`.
-- **Backend/model**: whatever self-hosted backend already serves `tech_writer`
-  (default `hermes` → `local/gpt-oss:120b` via the LiteLLM gateway). **Cloud
-  models must not be used for this role.**
+- **Backend/model**: whatever backend and mode `performers.tech_writer` names.
+  With no backend named it runs nare, the default harness (#382), and the model
+  comes from the role's `mode`. **Cloud models must not be used for this role**,
+  so point `tech_writer` at a self-hosted mode, for example
+  `{backend: nare, mode: <a mode on a litellm endpoint>}` for
+  `local/gpt-oss:120b` through the LiteLLM gateway. A config with no
+  `tech_writer` role at all leaves the side run on nare's default rail, which
+  is a cloud provider; configure the role to keep it local.
 - **Output contract (unchanged)**: the documenter returns the standard
   `{"files":[{"path": "...", "content": "..."}]}` JSON; `main.py`'s documenting
   path commits those files and reports `status="docs_committed"`. No agentic

@@ -688,17 +688,18 @@ def _feedback_sections(score: Score) -> list[str]:
 
 def _cache_roots(env_cache_path: str) -> list[str]:
     """382: the directory env_bootstrap builds its toolchain into sits beside the
-    checkout, outside ``--root``. Its parent becomes an added root (nare
-    2026.11.111, #319), as claude_code passes it to ``--add-dir``, so the cache
-    itself can be created. nare refuses an added root that is not a directory."""
+    checkout, outside ``--root``. It becomes an added root (nare 2026.11.111, #319),
+    as claude_code passes it to ``--add-dir``. Only the cache itself: its parent
+    holds every symphony's cache. The env-cache lifecycle creates and mounts it
+    before dispatch, and nare refuses an added root that is not a directory, so a
+    missing cache adds nothing rather than widening to the parent."""
     path = env_cache_path.strip()
     if not path:
         return []
-    parent = pathlib.Path(path).parent
-    if not parent.is_dir():
-        log.warning("nare.cache_parent_missing", path=str(parent))
+    if not pathlib.Path(path).is_dir():
+        log.warning("nare.cache_missing", path=path)
         return []
-    return [str(parent)]
+    return [path]
 
 
 def _tool_result(detail: object) -> dict[str, Any] | None:

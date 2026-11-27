@@ -204,7 +204,7 @@ async def test_a_large_review_diff_runs(scripted, tmp_path) -> None:
 async def test_an_env_bootstrap_run_writes_into_its_cache(scripted, tmp_path) -> None:
     """--add-root lets the write tool reach the cache beside the checkout."""
     cache_parent = tmp_path / "devenv"
-    cache_parent.mkdir()
+    (cache_parent / "demo-1").mkdir(parents=True)
     target = cache_parent / "demo-1" / "bin" / "tool"
     scripted(
         {"tool_calls": [{"name": "write", "id": "c1", "args": {"path": str(target), "content": "#!/bin/sh\n"}}]},
