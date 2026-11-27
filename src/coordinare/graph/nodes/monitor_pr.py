@@ -873,16 +873,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         and r.get("state") == "APPROVED"
         and (id(r) in withdrawn or (not _approval_is_current(r, cutoff, _pr_head_oid) and id(r) not in carried))
     ]
-    # #364: current approvals from logins not in human_reviewers. They never merge, but the
-    # wait names them so the card and the log say why an approved PR is not merging.
-    unlisted_approvers = sorted({
-        str(r.get("author_login") or "").strip()
-        for r in effective
-        if r.get("author_type") != ReviewerType.HUMAN.value
-        and r.get("state") == "APPROVED"
-        and id(r) not in withdrawn
-        and _approval_is_current(r, cutoff, _pr_head_oid)
-    } - {""})
+    unlisted_approvers = _unlisted_approvers(reviews, cutoff, _pr_head_oid, _review_decision)
     _decision_card = str(card.get("id", ""))
     _observed: dict[str, object] = {
         "review_decision": _review_decision or "unknown",
@@ -930,10 +921,11 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         if not merge_ready:
             # #364: an earlier merge attempt on this head failed and is backing off. Said
             # in the log, so an approved PR that is not merging never waits in silence.
-            _log_merge_decision(
-                _decision_card, "waiting", "merge_retry_backoff",
-                retry_in_seconds=round(retry_in, 1), **_observed,
-            )
+            # The countdown has its own line: in the decision it would change the repeat
+            # signature on every poll and the #100 wedge warning would never fire.
+            logger.info("monitor_pr.merge_retry_backoff", card_id=_decision_card,
+                        retry_in_seconds=round(retry_in, 1))
+            _log_merge_decision(_decision_card, "waiting", "merge_retry_backoff", **_observed)
             state["phase"] = "monitoring_pr"
             return state
         # 090 L1 (US1) — refuse to advance to merge while a REQUIRED check on
@@ -1032,9 +1024,6 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             # The approval was given on a commit that is no longer the head.
             _wait_reason = "approval_predates_head"
             _observed["approved_commit"] = str(stale_approvals[-1].get("commit_oid") or "")[:7] or "unknown"
-        elif unlisted_approvers:
-            _wait_reason = UNLISTED_APPROVER_REASON
-            _observed["unlisted_approvers"] = unlisted_approvers
         elif await _pr_waits_on_external_review(
             github,
             PrFacts(_review_decision, _merge_state, _author_login, _checks_state),
@@ -1044,6 +1033,9 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             # from inside the loop. Said plainly, so the card does not read as generic waiting.
             _wait_reason = "external_review_required"
             _observed["merge_state_status"] = _merge_state
+        elif unlisted_approvers:
+            _wait_reason = UNLISTED_APPROVER_REASON
+            _observed["unlisted_approvers"] = unlisted_approvers
         else:
             _wait_reason = "no_human_approval"
         _log_merge_decision(_decision_card, "waiting", _wait_reason, **_observed)
@@ -1061,6 +1053,31 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         if _wait_reason == UNLISTED_APPROVER_REASON:
             state["review_wait_detail"] = _unlisted_approver_detail(unlisted_approvers)
     return state
+
+
+def _unlisted_approvers(
+    reviews: list[dict[str, object]], cutoff: datetime | None, head_oid: str, review_decision: str,
+) -> list[str]:
+    """#364: logins outside human_reviewers whose approval of the head GitHub still holds.
+
+    These approvals never merge: the allow-list decides who can approve. They are named so
+    an approved PR that is not merging says why. Each reviewer's latest *verdict* counts, as
+    GitHub counts it, so a later plain comment does not hide an approval. Bots are left out,
+    because a bot cannot approve a merge by design, and so is a PR whose review state GitHub
+    itself still blocks, where listing the login would not let it merge.
+    """
+    if review_decision.upper() in {"REVIEW_REQUIRED", "CHANGES_REQUESTED"}:
+        return []
+    verdicts = [r for r in reviews if str(r.get("state", "")) in _VERDICT_STATES]
+    return sorted({
+        login
+        for r in _latest_reviews_per_author(verdicts)
+        if r.get("state") == "APPROVED"
+        and r.get("author_type") == ReviewerType.BOT.value
+        and (login := str(r.get("author_login") or "").strip())
+        and not login.lower().endswith("[bot]")
+        and _approval_is_current(r, cutoff, head_oid)
+    })
 
 
 def _unlisted_approver_detail(logins: list[str]) -> str:

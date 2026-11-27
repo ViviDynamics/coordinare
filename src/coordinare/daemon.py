@@ -267,6 +267,10 @@ def _apply_reviewer_logins(state: Any, cfg: Any) -> None:
         state["trusted_bot_reviewers"] = list(bots)
 
 
+def _reviewer_logins(cfg: Any) -> tuple[Any, Any]:
+    return getattr(cfg, "human_reviewers", None), getattr(cfg, "trusted_bot_reviewers", None)
+
+
 def _coerce_counter(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
@@ -2676,6 +2680,8 @@ class CoordinareDaemon:
         self._dashboard_store = dashboard_store
         self._main_task: asyncio.Task[None] | None = None
         self._config_reload_trigger: asyncio.Event = asyncio.Event()
+        # #364: the reviewer lists a symphony's override replaced for its cycle, put back after.
+        self._swapped_reviewers: tuple[Any, Any] | None = None
         # 060: References to in-flight bootstrap poll tasks (prevents GC).
         self._bootstrap_poll_tasks: set[asyncio.Task[None]] = set()
         # 124 (US2): manual wiki-init requests from the dashboard button, drained
@@ -3654,7 +3660,13 @@ class CoordinareDaemon:
         self._state["todo_capacity"] = sym_state.todo_capacity if sym_state is not None else None
         if _effective_cfg is not None and _effective_cfg is not _prev_config:
             self._state["config"] = _effective_cfg
-            _apply_reviewer_logins(self._state, _effective_cfg)
+            # #364: a symphony that overrides a reviewer list uses its own for this cycle.
+            # Without an override the state's lists are left as they are.
+            if _reviewer_logins(_effective_cfg) != _reviewer_logins(_prev_config):
+                self._swapped_reviewers = (
+                    self._state.get("human_reviewers"), self._state.get("trusted_bot_reviewers"),
+                )
+                _apply_reviewer_logins(self._state, _effective_cfg)
         if _sym_github is not None:
             self._state["github_service"] = _sym_github
             # 149: the board follows the symphony's service. Leaving it behind
@@ -3696,7 +3708,10 @@ class CoordinareDaemon:
         self._state["todo_waits"] = prev_todo_waits or {}
         self._state["todo_capacity"] = prev_todo_capacity
         self._state["config"] = prev_config
-        _apply_reviewer_logins(self._state, prev_config)
+        swapped_reviewers = getattr(self, "_swapped_reviewers", None)
+        if swapped_reviewers is not None:
+            self._swapped_reviewers = None
+            self._state["human_reviewers"], self._state["trusted_bot_reviewers"] = swapped_reviewers
         if sym_github is not None:
             self._state["github_service"] = prev_github
             self._state["board_provider"] = GitHubProjectsBoardProvider(prev_github)

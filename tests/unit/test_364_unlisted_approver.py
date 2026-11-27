@@ -201,4 +201,68 @@ async def test_a_merge_held_by_an_earlier_github_error_says_so() -> None:
     assert result["phase"] == "monitoring_pr"
     decision = _decision(logs)
     assert decision["outcome"] == "waiting" and decision["reason"] == "merge_retry_backoff"
-    assert decision["approvals"] == 1 and decision["retry_in_seconds"] > 0
+    assert decision["approvals"] == 1
+    # The countdown is logged on its own line: in the decision it would change the repeat
+    # signature on every poll, and the #100 wedge warning would never fire.
+    assert "retry_in_seconds" not in decision
+    (backoff,) = [e for e in logs if e["event"] == "monitor_pr.merge_retry_backoff"]
+    assert backoff["retry_in_seconds"] > 0
+
+
+@pytest.mark.asyncio
+async def test_a_later_comment_does_not_hide_an_unlisted_approval() -> None:
+    """GitHub still counts the approval after its author comments, so the card must name it."""
+    reviews = [_review("alex"), _review("alex", "COMMENTED", at="2026-10-23T11:00:00Z")]
+    state = _state(reviews)
+    with structlog.testing.capture_logs() as logs:
+        result = await monitor_pr(state)
+    assert _decision(logs)["reason"] == UNLISTED_APPROVER_REASON
+    assert "alex" in result["review_wait_detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["REVIEW_REQUIRED", "CHANGES_REQUESTED"])
+async def test_an_unlisted_approval_github_does_not_count_is_not_offered_as_the_fix(decision: str) -> None:
+    """Adding the login to human_reviewers would not merge a PR GitHub still blocks."""
+    state = _state([_review("alex")], decision=decision)
+    with structlog.testing.capture_logs() as logs:
+        result = await monitor_pr(state)
+    assert _decision(logs)["reason"] != UNLISTED_APPROVER_REASON
+    assert result["review_wait_detail"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("login", ["coderabbitai[bot]", "helper-bot"])
+async def test_a_bot_approval_is_never_offered_a_place_in_human_reviewers(login: str) -> None:
+    """Bots cannot approve a merge by design; the card must not suggest listing one as a human."""
+    state = _state([_review(login)])
+    state["trusted_bot_reviewers"] = ["helper-bot"]
+    with structlog.testing.capture_logs() as logs:
+        result = await monitor_pr(state)
+    assert _decision(logs)["reason"] == "no_human_approval"
+    assert result["review_wait_detail"] is None
+
+
+def test_a_reviewer_list_set_outside_the_config_survives_a_cycle_without_an_override() -> None:
+    """The bench runner sets its approver in the state, not the config. No override, no change."""
+    global_cfg = ProjectConfiguration(project_name="Demo", github_org="acme", github_project_number=1,
+                                      github_token="token", human_reviewers=["reviewer1"])
+    sym = SymphonyConfig(name="sym-0", github_project_number=100)
+    daemon = _make_daemon()
+    daemon._state["config"] = global_cfg
+    daemon._state["human_reviewers"] = ["bob"]
+    daemon._state["trusted_bot_reviewers"] = []
+
+    swapped = daemon._swap_symphony_state_in("sym-0", None, {}, sym.effective_config(global_cfg))
+    assert daemon._state["human_reviewers"] == ["bob"]
+    daemon._restore_symphony_swaps("sym-0", *swapped)
+    assert daemon._state["human_reviewers"] == ["bob"]
+
+
+def test_the_symphony_stats_now_table_reads_the_same_card_reason() -> None:
+    """The stats 'Why it is waiting' column showed the raw reason code instead of the login."""
+    from coordinare.dashboard import _DASHBOARD_JS_SOURCES
+
+    source = _DASHBOARD_JS_SOURCES["symphony_stats"]
+    assert "review_wait_reason: session.review_wait_reason" in source
+    assert "review_wait_detail: session.review_wait_detail" in source
