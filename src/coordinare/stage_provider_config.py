@@ -16,15 +16,19 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-#: Roles each provider kind can fill. #403 (Progettare, architect) and #404 (QAre, qa)
-#: add their kinds here; the stage contract itself is shared.
+#: Roles each provider kind can fill; the stage contract itself is shared.
 PROVIDER_ROLES: dict[str, frozenset[str]] = {
     "scrutare": frozenset({"reviewer"}),
+    # 404: QAre fills the QA stage.
+    "qare": frozenset({"qa"}),
+    # 403: Progettare fills the architecting stage.
     "progettare": frozenset({"architect"}),
 }
 
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PROVIDER_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+
+
 #: A released version, as ``progettare --version`` prints it (``2026.11.3``, ``1.2.0``).
 _RELEASE = re.compile(r"^\d+(\.\d+){1,3}([.+-][0-9A-Za-z.]+)?$")
 
@@ -93,6 +97,80 @@ class ScrutareProviderConfig(BaseModel):
             msg = "review_login must name the GitHub login Scrutare posts its reviews under"
             raise ValueError(msg)
         return value
+
+
+_QARE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+_-]*$")
+
+
+class QAreProviderConfig(BaseModel):
+    """404: QAre for the QA stage, run as its CLI (``qare plan``, ``qare run``).
+
+    QAre has no service to call: coordinare runs the pinned CLI on its own host against a
+    checkout of the pull request, with QAre's posting turned off, and posts the evidence
+    itself. QAre needs no token from coordinare; the model settings its nare reads reach
+    it only through ``env_passthrough``, by variable name.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    kind: Literal["qare"]
+    #: The exact version ``qare --version`` must print. QAre's interfaces can change
+    #: between releases, so a run on any other version is refused.
+    version: str
+    #: The command that starts QAre, as an argument list (``["qare"]``, or a path).
+    command: list[str] = Field(default_factory=lambda: ["qare"])
+    #: The QA profile's directory in the repository under test.
+    profile: str = ".qa"
+    #: Where runs keep their checkout and evidence. Defaults to a directory beside the
+    #: state file, so a restarted daemon finds its runs again.
+    work_dir: str | None = None
+    #: NAMES of environment variables QAre (and the nare it runs) may read, for example
+    #: its model endpoint and key. Nothing else from coordinare's environment reaches it.
+    env_passthrough: list[str] = Field(default_factory=list)
+    #: How long one run (checkout, plan and run) may take before it is stopped.
+    timeout_seconds: int = Field(default=3600, gt=0, le=86400)
+    #: Days a finished run's directory (its evidence and logs) is kept. Its checkouts are
+    #: removed as soon as it ends; the evidence is on ``qa-assets`` by then.
+    retain_days: int = Field(default=14, ge=1, le=3650)
+
+    @field_validator("version")
+    @classmethod
+    def _validate_version(cls, value: str) -> str:
+        value = (value or "").strip()
+        if not _QARE_VERSION.match(value):
+            msg = "version must be the exact QAre release to run, for example 2026.11.42"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("command")
+    @classmethod
+    def _validate_command(cls, value: list[str]) -> list[str]:
+        if not value or any(not str(part).strip() for part in value):
+            msg = "command must be a non-empty list of arguments, for example [\"qare\"]"
+            raise ValueError(msg)
+        return [str(part) for part in value]
+
+    @field_validator("profile")
+    @classmethod
+    def _validate_profile(cls, value: str) -> str:
+        raw = (value or "").strip()
+        path = PurePosixPath(raw)
+        if not raw or not path.parts or path.is_absolute() or ".." in path.parts or "\\" in raw:
+            msg = "profile must be a relative path inside the repository, for example .qa"
+            raise ValueError(msg)
+        return str(path)
+
+    @field_validator("env_passthrough")
+    @classmethod
+    def _validate_env_passthrough(cls, value: list[str]) -> list[str]:
+        for name in value:
+            if not _ENV_NAME.match(name or ""):
+                msg = (
+                    "env_passthrough lists environment variable NAMES (for example "
+                    "OPENAI_API_KEY), never their values"
+                )
+                raise ValueError(msg)
+        return list(dict.fromkeys(value))
 
 
 class ProgettareProviderConfig(BaseModel):
@@ -171,7 +249,7 @@ class ProgettareProviderConfig(BaseModel):
 
 #: One entry of the ``stage_providers`` catalog, chosen by its ``kind``.
 StageProviderConfig = Annotated[
-    ScrutareProviderConfig | ProgettareProviderConfig, Field(discriminator="kind"),
+    ScrutareProviderConfig | QAreProviderConfig | ProgettareProviderConfig, Field(discriminator="kind"),
 ]
 
 
@@ -218,10 +296,10 @@ def provider_role_errors(
             )
     humans = {normalize_login(login) for login in human_reviewers}
     for name, provider in sorted(providers.items()):
-        login = getattr(provider, "review_login", None)
-        if login and normalize_login(login) in humans:
+        review_login = getattr(provider, "review_login", None)
+        if review_login and normalize_login(review_login) in humans:
             errors.append(
-                f"stage_providers.{name}.review_login {login!r} is also listed in "
+                f"stage_providers.{name}.review_login {review_login!r} is also listed in "
                 "human_reviewers; a provider's approval must never count as a human approval",
             )
     return errors

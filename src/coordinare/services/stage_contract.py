@@ -7,10 +7,12 @@ example Scrutare for reviewing (#402), Progettare for architecting (#403) or QAr
 (#404). The contract is the same for all of them:
 
 - input: the repository, the pull request and the head SHA it should judge
-  (:class:`StageRequest`), or, for a stage that plans (#403), the work item and a pin
-  over the text the planner reads (:class:`WorkItemRequest`);
+  (:class:`StageRequest`), plus for QA (#404) the base, the work item and its
+  acceptance criteria with stable ids; or, for a stage that plans (#403), the work item
+  and a pin over the text the planner reads (:class:`WorkItemRequest`);
 - output: a verdict, the findings, the head or pin that was actually judged and a
-  reference to the record (:class:`StageOutcome`), plus the blueprint for a plan.
+  reference to the record (:class:`StageOutcome`), plus for QA the outcome of every
+  criterion with its evidence, and for a plan the blueprint.
 
 :class:`ExternalStageService` adapts any :class:`StageProvider` to the performer-service
 protocol the dispatch and monitor nodes already speak (``dispatch_card``,
@@ -32,6 +34,11 @@ Rules the adapter enforces for every provider:
   never applied to an input it did not see.
 - Provider failures and unreachability are retryable system errors (a
   :class:`~coordinare.transport.base.TransportError`), never a pass.
+- A QA pass counts only when every criterion it was asked about is proven (the spec
+  120 evidence floor); anything less holds the card for a person.
+- A provider that leaves posting to coordinare (QAre runs with ``post: none``) is asked
+  to publish its record once the head check passes, so evidence is only ever posted for
+  the head the pull request is still at.
 """
 from __future__ import annotations
 
@@ -40,7 +47,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
@@ -61,6 +68,13 @@ STAGE_MARKERS: dict[str, dict[str, str]] = {
     "reviewing": {
         "pass": "approved",
         "changes_requested": "changes_requested",
+        "needs_human": "blocked",
+    },
+    # 404: QAre. A failure goes back to the implementer like the built-in QA's; blocked,
+    # refused and waived hold the card for a person, never a pass.
+    "qa": {
+        "pass": "qa_passed",
+        "changes_requested": "qa_failed",
         "needs_human": "blocked",
     },
     # 403: a planner passes with a blueprint held as data; it never requests changes.
@@ -94,6 +108,15 @@ class StageVerdict(StrEnum):
     NEEDS_HUMAN = "needs_human"
 
 
+class StageCriterion(BaseModel):
+    """404: one acceptance criterion of the work item, with an id stable across heads."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(pattern=r"^[A-Za-z0-9._-]{1,64}$")
+    text: str = Field(min_length=1)
+
+
 class StageRequest(BaseModel):
     """What a stage provider is asked to judge."""
 
@@ -105,6 +128,13 @@ class StageRequest(BaseModel):
     pr_number: int = Field(gt=0)
     pr_node_id: str = Field(min_length=1)
     head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    # 404: what a QA provider also needs. Empty for a stage that does not use them; none
+    # of them is part of the request id, which stays card, stage, head and attempt.
+    base_sha: str = Field(default="", pattern=r"^([0-9a-f]{40})?$")
+    base_ref: str = ""
+    issue_number: int = Field(default=0, ge=0)
+    issue_node_id: str = ""
+    criteria: tuple[StageCriterion, ...] = ()
 
     def request_id(self, attempt: int) -> str:
         """The idempotency key of one attempt at this card, stage and head.
@@ -183,6 +213,17 @@ class Finding(BaseModel):
     line: int | None = None
 
 
+class CriterionOutcome(BaseModel):
+    """404: how one criterion came out, and the evidence it came out on."""
+
+    id: str
+    text: str = ""
+    outcome: Literal["proven", "failed", "unverified"]
+    reason: str = ""
+    #: Evidence references: links once published, else paths in the provider's record.
+    evidence: list[str] = Field(default_factory=list)
+
+
 class StageOutcome(BaseModel):
     """What a stage provider decided, about which head, and where its record is."""
 
@@ -193,6 +234,10 @@ class StageOutcome(BaseModel):
     record_ref: str = ""
     #: The identity the provider wrote its record under (a GitHub login), when it did.
     author_login: str = ""
+    #: 404: the outcome of every criterion a QA provider was asked about.
+    criteria: list[CriterionOutcome] = Field(default_factory=list)
+    #: 404: the provider's own verdict word (``passed``, ``refused`` ...), for the record.
+    provider_verdict: str = ""
     #: 403: a planner's blueprint, in the spec-165 shape the readers' briefs are cut from.
     blueprint: dict[str, Any] | None = None
     #: 403: what a planner that blocked needs a person to answer.
@@ -244,6 +289,9 @@ class PullRequestSnapshot(BaseModel):
 
     head_sha: str
     reviews: list[dict[str, Any]] = Field(default_factory=list)
+    #: 404: the base branch and the commit it points at, for a provider that compares.
+    base_sha: str = ""
+    base_ref: str = ""
 
 
 #: Reads a pull request's current head and reviews: ``(repository, pr_node_id)``.
@@ -312,6 +360,38 @@ def parse_pr_url(pr_url: str) -> tuple[str, int] | None:
     if match is None:
         return None
     return f"{match['owner']}/{match['repo']}", int(match["number"])
+
+
+def criteria_from_card(card_context: dict[str, Any]) -> tuple[StageCriterion, ...]:
+    """404: the work item's acceptance criteria, each with an id stable across heads.
+
+    The architect's verification brief is authoritative when it has criteria (165), as it
+    is for the built-in QA; otherwise the card's own acceptance criteria. The id is a hash
+    of the text, so the same criterion keeps its id on every head and a reordered list
+    does not swap the evidence of two criteria.
+    """
+    texts: list[str] = []
+    brief = card_context.get("verification_brief")
+    items = brief.get("criteria") if isinstance(brief, dict) else None
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            surface = str(item.get("surface", "")).strip()
+            action = str(item.get("action", "")).strip()
+            expected = str(item.get("expected", "")).strip()
+            parts = (f"{surface}:" if surface else "", action, f"-> {expected}" if expected else "")
+            text = " ".join(part for part in parts if part)
+            if text:
+                texts.append(text)
+    if not texts:
+        raw = card_context.get("acceptance_criteria")
+        texts = [str(t).strip() for t in raw if str(t).strip()] if isinstance(raw, list) else []
+    criteria: dict[str, StageCriterion] = {}
+    for text in texts:
+        digest = hashlib.sha256(" ".join(text.split()).encode()).hexdigest()[:12]
+        criteria.setdefault(digest, StageCriterion(id=f"ac-{digest}", text=text))
+    return tuple(criteria.values())
 
 
 def stage_provider_id(name: str, stage: str) -> str:
@@ -478,6 +558,12 @@ class ExternalStageService:
             raise TransportError(msg)
         repository, number = target
         snapshot = await self._snapshot(repository, node)
+        base_sha = snapshot.base_sha if _SHA.match(snapshot.base_sha or "") else ""
+        if self._stage == "qa" and not base_sha:
+            # QA compares the head with its base; a run without the base would quietly
+            # check one side only. Retry until GitHub says what the base is.
+            msg = f"GitHub returned no usable base for {repository}#{number}; QA needs it to compare"
+            raise TransportError(msg)
         return StageRequest(
             card_id=card_id,
             stage=self._stage,
@@ -485,6 +571,11 @@ class ExternalStageService:
             pr_number=number,
             pr_node_id=node,
             head_sha=snapshot.head_sha,
+            base_sha=base_sha,
+            base_ref=snapshot.base_ref,
+            issue_number=_as_int(card_context.get("issue_number")),
+            issue_node_id=str(card_context.get("issue_id") or ""),
+            criteria=criteria_from_card(card_context),
         )
 
     async def _snapshot(self, repository: str, node: str) -> PullRequestSnapshot:
@@ -553,6 +644,9 @@ class ExternalStageService:
             )
             raise TransportError(msg)
         outcome = _with_posted_review(outcome, snapshot.reviews)
+        if self._stage == "qa":
+            outcome = _qa_evidence_floor(outcome)
+        outcome = await self._publish(ref, outcome)
         marker = STAGE_MARKERS[self._stage][str(outcome.verdict)]
         record = {
             "provider": self._provider.name,
@@ -563,6 +657,9 @@ class ExternalStageService:
             "author_login": outcome.author_login,
             "findings": [f.model_dump() for f in outcome.findings],
         }
+        if self._stage == "qa":
+            record["provider_verdict"] = outcome.provider_verdict
+            record["criteria"] = [c.model_dump() for c in outcome.criteria]
         logger.info(
             "stage_provider.outcome",
             provider=self._provider.name,
@@ -574,11 +671,16 @@ class ExternalStageService:
         )
         if outcome.verdict is StageVerdict.NEEDS_HUMAN:
             where = f" ({outcome.record_ref})" if outcome.record_ref else ""
-            escalated = self._blocked(
-                session_id,
+            why = (
                 f"{self._provider.name} escalated head {outcome.reviewed_head[:12]} to a human "
-                f"reviewer{where}",
+                f"reviewer{where}"
             )
+            if self._stage == "qa":
+                why = (
+                    f"{self._provider.name} held head {outcome.reviewed_head[:12]} for a person: "
+                    f"{outcome.summary or outcome.provider_verdict or 'no pass'}{where}"
+                )
+            escalated = self._blocked(session_id, why)
             escalated["report"] = {"stage_record": record}
             return escalated
         reply: dict[str, Any] = {
@@ -590,7 +692,9 @@ class ExternalStageService:
             # The provider posted its own record on the pull request this turn.
             "bot_pr_comment_delta": 1 if outcome.record_ref else 0,
         }
-        if outcome.verdict is StageVerdict.CHANGES_REQUESTED:
+        if self._stage == "qa":
+            _shape_qa_reply(reply, outcome)
+        elif outcome.verdict is StageVerdict.CHANGES_REQUESTED:
             reply["comments"] = [
                 {
                     "body": f.body,
@@ -602,6 +706,24 @@ class ExternalStageService:
             ]
             reply["body"] = outcome.summary
         return reply
+
+    async def _publish(self, ref: str, outcome: StageOutcome) -> StageOutcome:
+        """Have a provider that leaves posting to coordinare post its record now.
+
+        Called only after the head check, so a record is never posted for a head the pull
+        request has moved past. A provider without ``publish`` posts its own (Scrutare).
+        """
+        publish = getattr(self._provider, "publish", None)
+        if not callable(publish):
+            return outcome
+        try:
+            published = await publish(ref, outcome)
+        except TransportError:
+            raise
+        except Exception as exc:
+            msg = f"{self._provider.name} could not publish job {ref}: {type(exc).__name__}: {exc}"
+            raise TransportError(msg) from exc
+        return published if isinstance(published, StageOutcome) else outcome
 
     def _blocked(self, session_id: str, reason: str) -> dict[str, Any]:
         return {
@@ -659,6 +781,55 @@ def _with_posted_review(outcome: StageOutcome, reviews: list[dict[str, Any]]) ->
 
 def _line(value: Any) -> int | None:
     return value if isinstance(value, int) and value > 0 else None
+
+
+def _as_int(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(number, 0)
+
+
+def _qa_evidence_floor(outcome: StageOutcome) -> StageOutcome:
+    """A QA pass counts only when it names criteria and every one of them is proven."""
+    if outcome.verdict is not StageVerdict.PASSED:
+        return outcome
+    unproven = [c.id for c in outcome.criteria if c.outcome != "proven"]
+    if outcome.criteria and not unproven:
+        return outcome
+    why = (
+        f"the pass is not backed by evidence for every criterion ({', '.join(unproven)} not proven)"
+        if unproven
+        else "the pass names no criterion, so nothing was proven"
+    )
+    logger.warning("stage_provider.qa_evidence_floor", reason=why, reviewed_head=outcome.reviewed_head)
+    return outcome.model_copy(update={"verdict": StageVerdict.NEEDS_HUMAN, "summary": why})
+
+
+def _shape_qa_reply(reply: dict[str, Any], outcome: StageOutcome) -> None:
+    """The QA report keys the monitor already reads: the 120 counts, and the failures."""
+    report = reply["report"]
+    report["passed"] = outcome.verdict is StageVerdict.PASSED
+    report["criteria_checked"] = len(outcome.criteria)
+    report["criteria_passed"] = sum(1 for c in outcome.criteria if c.outcome == "proven")
+    report["visual_validation_required"] = False
+    if outcome.verdict is not StageVerdict.CHANGES_REQUESTED:
+        return
+    failures = [
+        {
+            "criterion": c.text or c.id,
+            "expected": "the criterion is proven",
+            "actual": c.reason or f"{c.outcome}; see the evidence",
+            "evidence": list(c.evidence),
+            "test": c.id,
+        }
+        for c in outcome.criteria
+        if c.outcome != "proven"
+    ]
+    reply["failures"] = failures
+    report["failures"] = failures
+    reply["body"] = outcome.summary
 
 
 

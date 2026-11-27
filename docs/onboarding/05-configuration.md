@@ -122,9 +122,9 @@ role  →  performers.<role>.backend          (which harness)
 
 A role can name a **stage provider** instead of running a performer:
 `performers.<role>.provider: <name>`, where `<name>` is an entry of the root
-`stage_providers` catalog. Today Scrutare can fill the reviewer role and Progettare the
-architect role. The provider runs its
-own harness, so `backend`, `mode` and `workflow` have no effect on that role. A symphony opts
+`stage_providers` catalog. Today Scrutare can fill the reviewer role, QAre the qa role and
+Progettare the architect role. The provider runs its own harness, so `backend`, `mode` and
+`workflow` have no effect on that role. A symphony opts
 in through `overrides.performers`; a config that names no provider is unchanged. Setup,
 verdict mapping and failure handling: [stage providers](../stage-providers.md).
 

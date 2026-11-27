@@ -483,13 +483,19 @@ def _is_scalar_field(field_info: FieldInfo) -> bool:
 
 
 def _is_model_type(annotation: Any) -> bool:
-    """A model, or (403) a discriminated union of models such as the provider catalog's."""
+    """True for a model, or (404) a union of models such as a discriminated catalog entry."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return True
     if typing.get_origin(annotation) is typing.Annotated:
-        annotation = typing.get_args(annotation)[0]
-    if typing.get_origin(annotation) in (Union, types.UnionType):
-        members = typing.get_args(annotation)
-        return bool(members) and all(_is_model_type(m) for m in members)
-    return isinstance(annotation, type) and issubclass(annotation, BaseModel)
+        return _is_model_type(typing.get_args(annotation)[0])
+    members = typing.get_args(annotation) if _is_union(annotation) else ()
+    return bool(members) and all(_is_model_type(member) for member in members)
+
+
+def _is_union(annotation: Any) -> bool:
+    import types
+
+    return typing.get_origin(annotation) in (typing.Union, types.UnionType)
 
 
 #: What ``PUT /api/config/global`` will actually accept. Narrower than the section's

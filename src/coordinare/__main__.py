@@ -81,7 +81,6 @@ from coordinare.observability import HEALTH, bind_symphony, clear_symphony
 from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryConfig
 from coordinare.service_cli import add_service_parser, run_service
 from coordinare.services.agent_service import AgentService
-from coordinare.services.board_provider import GitHubProjectsBoardProvider
 from coordinare.services.bootstrap_runs import load_bootstrap_history
 from coordinare.services.card_lifecycle import CardLifecycleLog, live_card_ids
 from coordinare.services.conductor_calls import ConductorCallLog
@@ -115,6 +114,7 @@ from coordinare.services.run_transcript import (
     make_collector,
     resolve_transcripts_root,
 )
+from coordinare.services.work_item_providers import build_board_provider
 from coordinare.setup_reports import check, doctor_checks, report, validation_checks
 from coordinare.start_checks import (
     load_unexpanded_config,
@@ -315,6 +315,26 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
     _cmd_config_validate_text(args)
 
 
+def _work_item_provider_lines(config_file_path: Path | None) -> list[str]:
+    """One line per symphony naming the work item provider it reads (#394)."""
+    from coordinare.config import CoordinareConfiguration
+    from coordinare.config_validation import wrap_legacy_config
+
+    if config_file_path is None:
+        return []
+    try:
+        # As startup does: drop a notification channel validation tolerates.
+        raw, _ = sanitize_notifications(_load_raw_yaml(config_file_path))
+        root = CoordinareConfiguration(
+            **(coerce_multi_symphony_raw(raw) if is_multi_symphony_config(raw) else wrap_legacy_config(raw)),
+        )
+    except Exception:
+        # Validation already passed on the resolved config. A file that cannot be
+        # rebuilt on its own (one completed by environment variables) says so.
+        return ["  Work items: provider not shown (the file alone does not build a configuration)"]
+    return [f"  Work items: {s.name} uses {s.work_item_provider}" for s in root.symphonies]
+
+
 def _cmd_config_validate_text(args: argparse.Namespace) -> None:
     """Render the existing human-readable validation output."""
     explicit_path: Path | None = getattr(args, "config", None)
@@ -338,6 +358,8 @@ def _cmd_config_validate_text(args: argparse.Namespace) -> None:
             )
         else:
             print(f"  Fields resolved: {env_count} from environment variables")
+        for line in _work_item_provider_lines(result.config_file_path):
+            print(line)
 
         if result.warnings:
             header = (
@@ -901,6 +923,7 @@ def _build_stage_provider_services(
     """402: one service per stage provider and stage, reading PRs (and, 403, issues) with the owner's GitHub."""
     from coordinare.services.stage_providers import (
         build_stage_provider_services,
+        github_access,
         github_pr_reader,
         github_work_item_reader,
     )
@@ -910,6 +933,7 @@ def _build_stage_provider_services(
 
     return build_stage_provider_services(
         config, github_pr_reader(_github_for), github_work_item_reader(_github_for),
+        github=github_access(_github_for),
     )
 
 
@@ -1415,7 +1439,9 @@ async def _bootstrap_services(
         # 149: the board seam. Both are present because they answer different
         # questions — where the work is tracked, and where the code lives. A Jira
         # board would replace only the first.
-        "board_provider": GitHubProjectsBoardProvider(github),
+        # 394: through the one factory. The startup board is GitHub Projects;
+        # each symphony's own block applies in the daemon's per-symphony swap.
+        "board_provider": build_board_provider(None, github=github),
         "agent_service": resilient_agent,
         "conducting_backend": conducting_backend,
         "notification_service": notification_service,
