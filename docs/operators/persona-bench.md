@@ -77,7 +77,10 @@ conducting:
 `conducting` is the model for environment discovery and review, as in
 production. Without an `openai_api` conducting block the bench falls back to
 `--judge-model` on the inference gateway; with neither, the env_bootstrap cell
-is FAIL_HARNESS.
+is FAIL_HARNESS. Either way discovery gets the output budget production gives
+it, `conducting.discovery_max_tokens` (64000 tokens by default), not
+`conducting.max_tokens`; the judge fallback reads `discovery_max_tokens` from
+the conducting block when there is one.
 
 `.env` at the repository root supplies `LITELLM_MASTER_KEY`,
 `COORDINARE_INFERENCE_BASE_URL` (the judge, and the advocate workflow's

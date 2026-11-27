@@ -5,24 +5,34 @@ import asyncio
 import contextlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
 from coordinare.services.conductor_calls import (
     NULL_CALL_LOG,
+    TRUNCATED_FINISH_REASONS,
     ConductorCallLog,
+    ModelOutputTruncatedError,
     ModelReply,
     ModelRequest,
+    ModelRequestFailedError,
     split_messages,
 )
+from coordinare.services.environment_discovery import DiscoveryLimits, discovery_output_tokens
 
 if TYPE_CHECKING:
-    from coordinare.config import ProjectConfiguration
+    from collections.abc import Awaitable, Callable
+
+    from coordinare.config import ConductingConfig, ProjectConfiguration
     from coordinare.services.claude import ClaudeService
 
 log = structlog.get_logger(__name__)
+
+#: The output budget of environment discovery and review when ``conducting.discovery_max_tokens``
+#: is unset: sized for the largest reply discovery admits (416).
+DISCOVERY_OUTPUT_TOKENS = discovery_output_tokens(DiscoveryLimits())
 
 def _build_assess_prompt(card: dict[str, Any]) -> str:
     """Build a context-aware assessment prompt from card data.
@@ -222,6 +232,33 @@ def _openai_usage(data: Any) -> dict[str, int] | None:
     return {"input_tokens": max(prompt - read, 0), "output_tokens": output, "cache_read": read, "cache_write": 0}
 
 
+async def _marked_unusable(pending: Awaitable[ModelReply], max_tokens: int) -> ModelReply:
+    """The reply, with ``error`` set when it holds no usable whole text (416)."""
+    reply = await pending
+    problem = _unusable(reply, max_tokens)
+    return replace(reply, error=problem) if problem is not None else reply
+
+
+def _unusable(reply: ModelReply, max_tokens: int) -> str | None:
+    """Why a reply holds no usable whole text, or None (416). A send error stays as it is."""
+    if reply.error is not None:
+        return reply.error
+    if reply.finish_reason in TRUNCATED_FINISH_REASONS:
+        return f"finish_reason {reply.finish_reason}: output truncated at {max_tokens} tokens"
+    if reply.finish_reason == "content_filter":
+        return "finish_reason content_filter"
+    if not reply.text.strip():
+        return "empty reply"
+    return None
+
+
+def _http_error_name(exc: Exception) -> str:
+    """How a failed send is recorded: ``http_<status>`` for a refused request (416), else the error's type."""
+    response = getattr(exc, "response", None) if type(exc).__name__ == "HTTPStatusError" else None
+    status = getattr(response, "status_code", None)
+    return f"http_{status}" if isinstance(status, int) else type(exc).__name__
+
+
 @runtime_checkable
 class ConductingBackend(Protocol):
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]: ...
@@ -292,6 +329,16 @@ class OpenAiApiBackend:
 
     async def _chat(self, messages: list[dict[str, str]], json_mode: bool) -> str:
         """The reply text of one chat call ('' on any failure), recorded on the open call (131)."""
+        return (await self._reply(messages, json_mode)).text
+
+    async def _reply(
+        self, messages: list[dict[str, str]], json_mode: bool, *, whole: bool = False,
+    ) -> ModelReply:
+        """One chat call, recorded on the open call (131).
+
+        ``whole``: a reply with no usable whole text (cut off, filtered, empty) comes back with
+        ``error`` set, so the call record says it failed and keeps the text and usage (416).
+        """
         system, user = split_messages(messages)
         request = ModelRequest(
             model=self._model,
@@ -300,8 +347,11 @@ class OpenAiApiBackend:
             prompt=user,
             parameters=self._request_parameters(json_mode),
         )
-        reply = await self.calls.invoke(request, lambda: self._post_chat(messages, json_mode))
-        return reply.text
+        if whole:
+            return await self.calls.invoke(
+                request, lambda: _marked_unusable(self._post_chat(messages, json_mode), self._max_tokens),
+            )
+        return await self.calls.invoke(request, lambda: self._post_chat(messages, json_mode))
 
     def _request_parameters(self, json_mode: bool) -> dict[str, Any]:
         parameters: dict[str, Any] = {"max_tokens": self._max_tokens, "json_mode": json_mode}
@@ -375,27 +425,45 @@ class OpenAiApiBackend:
             except httpx.HTTPError as exc:
                 # Non-retryable (e.g. 4xx after raise_for_status).
                 log.error("openai_api_http_error", error=str(exc))
-                return ModelReply(error=type(exc).__name__)
+                return ModelReply(error=_http_error_name(exc))
 
         if data is None:
             log.error("openai_api_http_error", error=last_error or "retries_exhausted")
             return ModelReply(error=last_error or "retries_exhausted")
         try:
-            text = str(data["choices"][0]["message"]["content"] or "")
+            choice = data["choices"][0]
+            text = str(choice["message"]["content"] or "")
         except (KeyError, IndexError, TypeError):
             log.warning("openai_api_unexpected_response", keys=list(data.keys()) if isinstance(data, dict) else None)
             return ModelReply(error="unexpected response")
         model = data.get("model") if isinstance(data, dict) else None
+        finish_reason = choice.get("finish_reason") if isinstance(choice, dict) else None
         return ModelReply(
             text=text,
             model=model if isinstance(model, str) else None,
             usage=_openai_usage(data),
+            finish_reason=finish_reason if isinstance(finish_reason, str) else None,
         )
 
     async def chat_json(self, messages: list[dict[str, str]]) -> str:
         """Public JSON-mode chat for ad-hoc coordinare prompts (e.g. 077 env
         manifest README pass). Returns the assistant text ('' on any failure)."""
         return await self._chat(messages, json_mode=True)
+
+    async def chat_json_checked(self, messages: list[dict[str, str]]) -> str:
+        """JSON-mode chat for a caller that needs the whole reply, such as environment discovery (416).
+
+        Raises ``ModelOutputTruncatedError`` when the output budget cut the reply off, and
+        ``ModelRequestFailedError`` when the request returned no usable reply (an error, a
+        content filter, empty text), so none of them is read as malformed JSON.
+        """
+        reply = await self._reply(messages, json_mode=True, whole=True)
+        # A cut-off reply also carries an error (for its call record), so this check comes first.
+        if reply.finish_reason in TRUNCATED_FINISH_REASONS:
+            raise ModelOutputTruncatedError(self._max_tokens)
+        if reply.error is not None:
+            raise ModelRequestFailedError(reply.error, max_tokens=self._max_tokens)
+        return reply.text
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
         prompt = _build_assess_prompt(card)
@@ -732,3 +800,27 @@ def build_model_endpoint_backend(
         calls=calls,
         endpoint_name=name,
     )
+
+
+def discovery_chat(
+    cc: ConductingConfig, *, api_key: str | None, calls: ConductorCallLog | None = None,
+) -> Callable[[list[dict[str, str]]], Awaitable[str]] | None:
+    """The JSON chat environment discovery and coverage review use, built from ``conducting`` (416).
+
+    Only the ``openai_api`` backend has the JSON-chat seam; any other backend gives None, which
+    holds discovery. The output budget is ``conducting.discovery_max_tokens`` when set, else one
+    sized for the largest reply discovery admits, never the short-prompt ``max_tokens``: a reply
+    cut off at that default was reported as malformed JSON. The other conducting prompts keep
+    ``max_tokens``.
+    """
+    if cc.backend != "openai_api":
+        return None
+    return OpenAiApiBackend(
+        api_key=api_key,
+        model=cc.model or "gpt-4o-mini",
+        max_tokens=cc.discovery_max_tokens or DISCOVERY_OUTPUT_TOKENS,
+        temperature=cc.temperature,
+        base_url=cc.base_url,
+        effort=cc.effort,
+        calls=calls,
+    ).chat_json_checked

@@ -910,6 +910,12 @@ requirement_change_policy: "warn"   # "ignore" | "warn" | "re-dispatch"
 # anthropic_api / claude_cli (extended thinking is not enabled here).
 # Defaults to "low" — the conducting brain runs short one-shot prompts where
 # extra reasoning budget is mostly waste.
+#
+# ``discovery_max_tokens:`` is the output budget of environment discovery and
+# review (openai_api only), whose one JSON reply can reach 256 KiB. It defaults
+# to 64000 tokens; ``max_tokens`` does not limit it. Set it lower for a model
+# whose output cap is below that (gpt-4o-mini: 16384), or whose context window
+# cannot hold discovery's reads plus the budget.
 conducting:
   backend: "anthropic_api"
   model: "claude-sonnet-4-20250514"
