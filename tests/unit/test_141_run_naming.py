@@ -29,7 +29,7 @@ def test_run_is_the_one_name_for_an_agent_working_on_a_stage() -> None:
     run = vocabulary.CONCEPTS["run"]
     assert run.label == "Run"
     assert run.plural == "Runs"
-    assert "one agent working on one stage of one card" in run.description.lower()
+    assert "one agent working on one stage of one work item" in run.description.lower()  # 401
 
 
 def test_the_short_id_format_is_in_the_glossary() -> None:

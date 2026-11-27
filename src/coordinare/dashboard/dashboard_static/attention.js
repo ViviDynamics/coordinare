@@ -64,7 +64,7 @@ function attentionCauseText(code) {
 
 function attentionDetail(text, unclaimed) {
   if (!unclaimed) return text;
-  var note = "not on any symphony's GitHub Project";
+  var note = "not a work item of any symphony";
   return text ? text + ' · ' + note : note;
 }
 
@@ -146,7 +146,7 @@ function attentionCountText(n) {
 function attentionSignature(items) {
   return (items || []).map(function(it) {
     var since = it.kind === 'subsystem_down' ? '' : (it.since || '');
-    // 139: an item's "not on any symphony's GitHub Project" label comes and goes with the scope.
+    // 139: an item's "not a work item of any symphony" label comes and goes with the scope.
     return it.kind + '|' + it.key + '|' + since + (it.unclaimed ? '|unclaimed' : '');
   }).sort().join('\n');
 }

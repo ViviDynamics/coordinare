@@ -92,7 +92,7 @@ function renderState(s) {
   // conductor's internal state are the tooltip.
   var phaseEl = document.getElementById('phase');
   var phaseDescriptions = {
-    'idle':             'Waiting for a card to enter the TODO column on the GitHub Project.',
+    'idle':             'Waiting for a work item to reach To Do.',
     'running':          'Running a check.',
     'blocked':          'Needs human: the card is stopped until a person acts. Review the Open Questions below.',
     'dispatching':      'Assessing and dispatching card to the performer agent.',
@@ -158,7 +158,7 @@ function renderState(s) {
       // 395: a blocker without a GitHub issue is named by its reference.
       var label = d.blocker_ref || ('#' + d.issue_number);
       if (d.title) label += ': ' + esc(d.title);
-      var col = d.column || 'not on the GitHub Project';
+      var col = d.column || 'not a listed work item';
       var link = d.issue_url && /^https?:\/\//i.test(d.issue_url)
         ? '<a href="' + esc(d.issue_url) + '" target="_blank" rel="noopener">' + esc(label) + '</a>'
         : esc(label);

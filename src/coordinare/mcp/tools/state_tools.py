@@ -85,7 +85,7 @@ TOOLS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="get_state",
         domain="state",
-        description="Read the dashboard state snapshot, including each symphony's GitHub Project and cards (same payload as the SSE stream).",
+        description="Read the dashboard state snapshot, including each symphony's work items (same payload as the SSE stream).",
         input_model=_NoParams,
         annotations=_READ_ONLY,
         rest_calls=(("GET", "/api/state"),),

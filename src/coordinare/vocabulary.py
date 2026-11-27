@@ -43,16 +43,16 @@ def _terms(*rows: tuple[str, str, str, str]) -> dict[str, Term]:
 #: words (#138). These are the conductor's loop states, not a card's stage;
 #: the dashboard shows them as a status and keeps the code in a tooltip.
 PHASES: dict[str, Term] = _terms(
-    ("idle", "Idle", "Idle", "The conductor has nothing to do for this card until the next check."),
-    ("dispatching", "Starting an agent", "Starting an agent", "The conductor is starting an agent for the card's next stage."),
+    ("idle", "Idle", "Idle", "The conductor has nothing to do for this work item until the next check."),
+    ("dispatching", "Starting an agent", "Starting an agent", "The conductor is starting an agent for the work item's next stage."),
     ("monitoring_agent", "Watching an agent", "Watching an agent", "The conductor is watching a running agent."),
     ("monitoring_performer", "Watching an agent", "Watching an agent", "The conductor is watching a running agent."),
-    ("monitoring_pr", "Waiting on review", "Waiting on review", "The card's pull request is waiting on checks or a human review."),
-    ("merging", "Merging", "Merging", "The conductor is merging the card's pull request."),
+    ("monitoring_pr", "Waiting on review", "Waiting on review", "The work item's pull request is waiting on checks or a human review."),
+    ("merging", "Merging", "Merging", "The conductor is merging the work item's pull request."),
     ("relay_feedback", "Sending feedback", "Sending feedback", "The conductor is passing review feedback back to an agent."),
-    ("blocked", "Needs human", "Needs human", "The card is stopped until a person acts, and says why when the conductor knows."),
-    ("recovery", "Recovering", "Recovering", "The conductor is recovering this card after a failed check."),
-    ("system_error", "Error, will retry", "Errors, will retry", "The conductor hit an error on this card and will retry within its budget."),
+    ("blocked", "Needs human", "Needs human", "The work item is stopped until a person acts, and says why when the conductor knows."),
+    ("recovery", "Recovering", "Recovering", "The conductor is recovering this work item after a failed check."),
+    ("system_error", "Error, will retry", "Errors, will retry", "The conductor hit an error on this work item and will retry within its budget."),
     ("active", "Active", "Active", "A run whose exact state is not known yet."),
 )
 
@@ -60,12 +60,12 @@ PHASES: dict[str, Term] = _terms(
 #: stage codes (the values of ``lifecycle.ROLE_TO_STAGE``).
 STAGES: dict[str, Term] = _terms(
     ("advocate", "Respond", "Respond", "Responding to a new issue before any work is planned."),
-    ("assessing", "Assess", "Assess", "Deciding whether the card is ready to be worked."),
+    ("assessing", "Assess", "Assess", "Deciding whether the work item is ready to be worked."),
     ("architecting", "Plan", "Plan", "Planning the change."),
     ("implementing", "Implement", "Implement", "Writing the change and opening the pull request."),
     ("reviewing", "Review", "Review", "Reviewing the pull request."),
     ("security", "Security", "Security", "Checking the change for security problems."),
-    ("qa", "QA", "QA", "Testing the change against the card's acceptance criteria."),
+    ("qa", "QA", "QA", "Testing the change against the work item's acceptance criteria."),
     ("documenting", "Docs", "Docs", "Updating the documentation for the change."),
     ("closing_review", "Close", "Close", "Confirming earlier review feedback was addressed."),
     ("env_bootstrap", "Environment setup", "Environment setup", "Building the cached development environment performers start from."),
@@ -76,17 +76,17 @@ STAGES: dict[str, Term] = _terms(
 #: configured for). Each agent has exactly one display name.
 AGENTS: dict[str, Term] = _terms(
     ("advocate", "Issue responder", "Issue responders", "Responds to new issues."),
-    ("assessor", "Assessor", "Assessors", "Decides whether a card is ready to be worked."),
+    ("assessor", "Assessor", "Assessors", "Decides whether a work item is ready to be worked."),
     ("architect", "Architect", "Architects", "Plans the change."),
     ("implementer", "Implementer", "Implementers", "Writes the change and opens the pull request."),
     ("reviewer", "Reviewer", "Reviewers", "Reviews the pull request."),
     ("security", "Security reviewer", "Security reviewers", "Checks the change for security problems."),
-    ("qa", "QA", "QA", "Tests the change against the card's acceptance criteria."),
+    ("qa", "QA", "QA", "Tests the change against the work item's acceptance criteria."),
     ("tech_writer", "Documenter", "Documenters", "Updates the documentation for the change."),
     ("closer", "Closer", "Closers", "Confirms earlier review feedback was addressed."),
-    ("curator", "Intake (issue triage)", "Intake (issue triage)", "Triages incoming issues. Works outside the card pipeline."),
+    ("curator", "Intake (issue triage)", "Intake (issue triage)", "Triages incoming issues. Works outside the work item pipeline."),
     ("env_bootstrap", "Environment builder", "Environment builders", "Builds the cached development environment performers start from."),
-    ("diagnostic", "Diagnostic", "Diagnostics", "Runs a free-form probe outside the card pipeline."),
+    ("diagnostic", "Diagnostic", "Diagnostics", "Runs a free-form probe outside the work item pipeline."),
 )
 
 #: Which agent does each stage (#137). The dashboard shows them as a pair,
@@ -104,20 +104,20 @@ OUTCOMES: dict[str, Term] = _terms(
 #: The nouns the dashboard is built from. These have no internal code of
 #: their own; they are what the Glossary page explains.
 CONCEPTS: dict[str, Term] = _terms(
-    ("symphony", "Symphony", "Symphonies", "One GitHub Project and the repository coordinare works it against. The dashboard's symphony switcher filters every panel to one symphony or to all of them."),
-    ("github_project", "GitHub Project", "GitHub Projects", "The GitHub Project a symphony takes its cards from. The dashboard shows its number as #N."),
+    ("symphony", "Symphony", "Symphonies", "One source of work items and the repository coordinare works them against. The dashboard's symphony switcher filters every panel to one symphony or to all of them."),
+    ("github_project", "GitHub Project", "GitHub Projects", "On the GitHub Projects provider, the GitHub Project a symphony takes its work items from. The dashboard shows its number as #N."),
     ("repository", "Repository", "Repositories", "The GitHub repository a symphony's pull requests are opened in. The dashboard shows it as owner/repo."),
-    ("cards", "Cards", "Cards", "The cards of a symphony's GitHub Project, in the columns To Do, Blocked, In Progress and In Review."),
-    ("stage", "Stage", "Stages", "A step in a card's pipeline, such as implementing or reviewing."),
+    ("cards", "Cards", "Cards", "The work items of a symphony, one card each, in the states To Do, Blocked, In Progress and In Review. On GitHub Projects they are the cards of the Project."),
+    ("stage", "Stage", "Stages", "A step in a work item's pipeline, such as implementing or reviewing."),
     ("agent", "Agent", "Agents", "The persona that does the work of a stage, such as the implementer."),
-    ("run", "Run", "Runs", "One agent working on one stage of one card, from dispatch to result."),
+    ("run", "Run", "Runs", "One agent working on one stage of one work item, from dispatch to result."),
     ("run_id", "Run id", "Run ids", "How a run is named on screen: run and the first six characters of its id, such as run 299a83. Hover it for the full id, or use its Copy button."),
-    ("run_detail", "Run detail", "Run details", "The view of one run: its live events, stderr, process metrics and steps. Reached from the Performers page, the Active performers tile or a card's View run link."),
+    ("run_detail", "Run detail", "Run details", "The view of one run: its live events, stderr, process metrics and steps. Reached from the Performers page, the Active performers tile or a work item's View run link."),
     ("container", "Container", "Containers", "The Docker container a run's agent runs in. The run detail's technical section shows it; no other view does."),
-    ("check", "Check", "Checks", "One pass of the conductor over the GitHub Project to see what needs doing."),
+    ("check", "Check", "Checks", "One pass of the conductor over a symphony's work items to see what needs doing."),
     ("revision_round", "Revision round", "Revision rounds", "One loop of review feedback going back to the implementer on a pull request."),
     ("progress_check", "Progress check", "Progress checks", "An automatic judgement of whether a running agent is still making progress."),
-    ("needs_human", "Needs human", "Needs human", "A card stopped until a person acts. Its question or reason is listed in the needs-attention banner on the Dashboard."),
+    ("needs_human", "Needs human", "Needs human", "A work item stopped until a person acts. Its question or reason is listed in the needs-attention banner on the Dashboard."),
     ("settings", "Settings", "Settings", "Where coordinare's configuration is edited, in one tab per kind of setting. Each setting has exactly one editor."),
     ("model_server", "Model server", "Model servers", "Where model calls go: a self-hosted server at a base URL, or a vendor API. Models name one of these."),
     ("model", "Model", "Models", "A model name served by one model server. Modes choose their models from this list."),
@@ -129,8 +129,8 @@ CONCEPTS: dict[str, Term] = _terms(
 #: Keys are the cause codes ``services/block_cause.py`` names. The chip reads
 #: "Needs human: <label>"; a card with no known cause shows the bare kind.
 BLOCK_CAUSES: dict[str, Term] = _terms(
-    ("closed_pr", "the pull request was closed without merging", "the pull request was closed without merging", "The card's pull request was closed by someone other than coordinare, so the card is parked."),
-    ("env_blocked", "the environment needs repair", "the environment needs repair", "The card's checks could not run because of the environment, not the code, so the environment has to be fixed first."),
+    ("closed_pr", "the pull request was closed without merging", "the pull request was closed without merging", "The work item's pull request was closed by someone other than coordinare, so the work item is parked."),
+    ("env_blocked", "the environment needs repair", "the environment needs repair", "The work item's checks could not run because of the environment, not the code, so the environment has to be fixed first."),
     ("output_truncated", "the model ran out of output room", "the model ran out of output room", "The model's answer was cut off before it finished."),
     ("format_exhausted", "retries exhausted on a format failure", "retries exhausted on a format failure", "The performer's output could not be read after every retry."),
     ("system_error", "the performer reported an error", "the performer reported an error", "The performer failed and the conductor has stopped retrying."),
@@ -139,10 +139,10 @@ BLOCK_CAUSES: dict[str, Term] = _terms(
 #: Why a card is not progressing, shown on To Do and Blocked cards (#149).
 #: Keys are the wait kinds the dashboard names, not the conductor's wire reasons.
 WAITS: dict[str, Term] = _terms(
-    ("queued", "Queued", "Queued", "Every card slot is in use, so the card waits for a free one."),
-    ("waiting_on", "Waiting on", "Waiting on", "The card depends on another card that is not done yet."),
-    ("needs_human", "Needs human", "Needs human", "The conductor needs a person to answer or decide before the card goes on."),
-    ("filtered", "Filtered out", "Filtered out", "The card is not coordinare's to work, because of who it is assigned to."),
+    ("queued", "Queued", "Queued", "Every work item slot is in use, so the work item waits for a free one."),
+    ("waiting_on", "Waiting on", "Waiting on", "The work item depends on another work item that is not done yet."),
+    ("needs_human", "Needs human", "Needs human", "The conductor needs a person to answer or decide before the work item goes on."),
+    ("filtered", "Filtered out", "Filtered out", "The work item is not coordinare's to work, because of who it is assigned to."),
 )
 
 GROUPS: dict[str, dict[str, Term]] = {
