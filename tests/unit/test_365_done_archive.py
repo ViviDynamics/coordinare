@@ -98,7 +98,7 @@ def test_zero_turns_archiving_off_and_is_accepted() -> None:
 @pytest.mark.parametrize("value", [-1, 3651, "soon", 1.5])
 def test_a_value_out_of_range_or_not_a_whole_number_is_refused(value: object) -> None:
     with pytest.raises(ValidationError):
-        WorkItemsConfig(archive_done_after_days=value)  # type: ignore[arg-type]
+        WorkItemsConfig(archive_done_after_days=value)
 
 
 # --- the sweep --------------------------------------------------------------------------------
@@ -221,7 +221,7 @@ async def test_a_failing_archive_stops_the_pass_for_this_poll() -> None:
         calls.append(item_id)
         await original(item_id)
 
-    github.archive_project_item = counting  # type: ignore[method-assign]
+    github.archive_project_item = counting
     await _provider(github).poll_board()
     assert calls == ["PVTI_0"]
 
@@ -287,7 +287,7 @@ def test_a_builder_that_takes_no_state_is_still_built() -> None:
     built = object()
     original = dict(wip.WORK_ITEM_PROVIDERS)
     try:
-        wip.WORK_ITEM_PROVIDERS["github_projects"] = lambda _block, _github: built  # type: ignore[assignment]
+        wip.WORK_ITEM_PROVIDERS["github_projects"] = lambda _block, _github: built
         assert build_board_provider(None, github=object(), provider_state={}) is built
     finally:
         wip.WORK_ITEM_PROVIDERS.clear()

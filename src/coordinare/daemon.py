@@ -299,7 +299,7 @@ def _provider_state_signature(value: Any) -> str:
 
 
 def _persistable_provider_state(value: Any) -> dict[str, dict[str, Any]]:
-    """365: a copy fit for the snapshot. Empty state, and anything not a dict of dicts, is left out."""
+    """365: the copy the snapshot keeps. Empty state, and anything not a dict of dicts, is left out."""
     if not isinstance(value, dict):
         return {}
     return {str(name): dict(inner) for name, inner in value.items() if isinstance(inner, dict) and inner}
