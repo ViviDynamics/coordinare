@@ -466,7 +466,7 @@ def test_coordinare_s_wire_model_keeps_the_comment() -> None:
 @pytest.mark.asyncio
 async def test_a_blocker_on_a_card_in_an_unmapped_column_is_read_as_off_board() -> None:
     """Its card is not listed under any status, so the board cannot say whether it is done."""
-    from coordinare.services.dependency import build_graph
+    from coordinare.services.dependency import build_graph, resolve_off_board_dependencies
     from coordinare.services.work_items import CLOSED, work_items_of
 
     listing = await _Listing(body="Depends on #51").poll_board()
@@ -481,4 +481,33 @@ async def test_a_blocker_on_a_card_in_an_unmapped_column_is_read_as_off_board() 
 
     assert unmapped.asked == [("o/r", 51)]
     assert {b.ref: b.state for b in work_items_of(board)["ITEM_X"].blockers}["#51"] == CLOSED
-    assert build_graph(board, repo="o/r").by_dependent["ITEM_X"][0].status == "satisfied"
+    graph = build_graph(board, repo="o/r")
+    second = _Listing({51: "open"})
+    await resolve_off_board_dependencies(graph, second, "o/r")
+    assert graph.by_dependent["ITEM_X"][0].status == "satisfied"
+    assert second.asked == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_of_an_unmapped_blocker_does_not_make_a_cycle() -> None:
+    """As before: the off-board state applies after cycle detection, not before."""
+    from coordinare.services.dependency import build_graph, resolve_off_board_dependencies
+
+    class _Pair(_Listing):
+        async def poll_board(self) -> dict[str, Any]:
+            return {
+                "snapshot": {"TODO": ["ITEM_B"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []},
+                "descriptions": {"ITEM_A": "Depends on #2", "ITEM_B": "Depends on #1"},
+                "issue_numbers": {"ITEM_A": 1, "ITEM_B": 2},
+            }
+
+    listing = _Pair({1: "api_error"})
+    board = await GitHubProjectsBoardProvider(listing, repo="o/r").poll_board()
+    graph = build_graph(board, repo="o/r")
+    second = _Listing({1: "closed"})
+    await resolve_off_board_dependencies(graph, second, "o/r")
+
+    assert graph.cycles == []
+    assert [d.status for d in graph.by_dependent["ITEM_B"]] == ["pending"]
+    assert listing.asked == [("o/r", 1)]
+    assert second.asked == []

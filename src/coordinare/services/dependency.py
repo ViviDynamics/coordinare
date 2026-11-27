@@ -167,9 +167,13 @@ def build_graph(
                 continue
             status = _resolve_status(blocker_num, issue_to_column)
             if status == DependencyStatus.UNRESOLVABLE and blocker.state != UNKNOWN:
-                # 396: off the board, and the listing read its state.
+                # 396: off the board, and the listing read its state. An item in a
+                # column coordinare has no name for keeps UNRESOLVABLE through cycle
+                # detection, as it always has; resolve_off_board_dependencies applies
+                # the listed state to it afterwards.
                 graph.blocker_states[blocker_num] = blocker.state
-                status = _listed_status(blocker.state)
+                if blocker_num not in issue_to_item:
+                    status = _listed_status(blocker.state)
             _index(graph, CardDependency(
                 dependent_item_id=item_id,
                 blocker_issue_number=blocker_num,
