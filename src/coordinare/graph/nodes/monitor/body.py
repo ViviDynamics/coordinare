@@ -2808,7 +2808,6 @@ async def _phase_token_limit(
     status = ctx.status
     # --- Token-cap exhaustion (055) ---
     if marker == "token_limit":
-        from coordinare.services.attempt_telemetry import close_attempt
         close_attempt(state, "timeout", "system", "blocked")
         reason = str(status.get("reason", ""))
         from coordinare.graph.nodes.dispatch_performer import _persona_role_for_stage
