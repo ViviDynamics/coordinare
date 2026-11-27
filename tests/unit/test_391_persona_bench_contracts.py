@@ -348,8 +348,8 @@ class TestAdvocate:
         fixture = {"answerable": 1, "unanswerable": 2}
         ok, mk, _ = persona_bench.grade_advocate(_ctx("advocate_complete", parsed("replied", "escalated"), fixture))
         assert ok and mk == ["answered_documented_question", "escalated_undocumented_question"]
-        ok, mk, _ = persona_bench.grade_advocate(_ctx("advocate_complete", parsed("replied", "replied"), fixture))
-        assert not ok and "ANSWERED_WITHOUT_DOCS" in mk
+        ok, mk, detail = persona_bench.grade_advocate(_ctx("advocate_complete", parsed("replied", "replied"), fixture))
+        assert ok and mk == [] and "ANSWERED_WITHOUT_DOCS" in detail
         assert persona_bench.grade_advocate(_ctx("env_blocked", {}, fixture))[0] is False
 
     def test_gateway_env_for_the_workflow_only(self):
@@ -595,6 +595,20 @@ class TestCopilotRound:
             _ctx("advocate_complete", parsed, {"answerable": 1, "unanswerable": 2}))
         assert persona_bench.categorize("succeeded", "", ok, mk, None)[0] == "FAIL_MODEL"
 
+    def test_the_judge_still_decides_an_unexpected_but_sensible_outcome(self):
+        parsed = {"status": "advocate_complete", "report": {"advocate": {"outcomes": [
+            {"number": 1, "action": "replied"}, {"number": 2, "action": "redirected"}]}}}
+        ok, mk, _ = persona_bench.grade_advocate(
+            _ctx("advocate_complete", parsed, {"answerable": 1, "unanswerable": 2}))
+        assert persona_bench.categorize("succeeded", "", ok, mk, True)[0] == "PASS"
+
+    def test_a_wrong_pair_with_a_harness_word_is_still_a_model_miss(self):
+        parsed = {"status": "advocate_complete", "report": {"advocate": {"outcomes": [
+            {"number": 1, "action": "escalated"}, {"number": 2, "action": "escalated"}]}}}
+        ok, mk, _ = persona_bench.grade_advocate(
+            _ctx("advocate_complete", parsed, {"answerable": 1, "unanswerable": 2}))
+        assert persona_bench.categorize("succeeded", "support is unreachable", ok, mk, None)[0] == "FAIL_MODEL"
+
     def test_escalating_the_documented_issue_is_not_a_pass(self):
         parsed = {"status": "advocate_complete", "report": {"advocate": {"outcomes": [
             {"number": 1, "action": "escalated"}, {"number": 2, "action": "escalated"}]}}}
@@ -603,14 +617,33 @@ class TestCopilotRound:
         assert persona_bench.categorize("succeeded", "", ok, mk, None)[0] == "FAIL_MODEL"
 
     def test_discovery_chat_reads_conducting_placeholders_from_dotenv(self, tmp_path, monkeypatch):
+        import coordinare.services.conducting as conducting
+
         monkeypatch.delenv("BENCH_GW_URL", raising=False)
+        seen = {}
+
+        class FakeBackend:
+            def __init__(self, **kw):
+                seen.update(kw)
+
+            async def chat_json(self, messages):
+                return "{}"
+
+        monkeypatch.setattr(conducting, "OpenAiApiBackend", FakeBackend)
         cfg = tmp_path / "config.yaml"
         cfg.write_text(
             "github_org: o\nhuman_reviewers: [a]\ngithub_auth: pat\ngithub_token: ghp_x\n"
             "conducting: {backend: openai_api, base_url: '${BENCH_GW_URL}', model: m, api_key_env: GW_KEY}\n")
         chat = persona_bench.discovery_chat(str(cfg), {"BENCH_GW_URL": "https://gw.example/v1", "GW_KEY": "k"}, None)
         assert chat is not None
-        assert chat.__self__._base_url == "https://gw.example/v1"
+        assert seen["base_url"] == "https://gw.example/v1"
+        assert seen["api_key"] == "k"
+
+    def test_a_config_that_fails_to_load_says_so(self, tmp_path, capsys):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("not: [valid\n")
+        assert persona_bench.discovery_chat(str(cfg), {}, None) is None
+        assert "could not load" in capsys.readouterr().out
 
     def test_advocate_config_reads_placeholders_from_dotenv(self, tmp_path, monkeypatch):
         monkeypatch.delenv("BENCH_SUPPORT_URL", raising=False)

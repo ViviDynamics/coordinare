@@ -340,20 +340,16 @@ def grade_advocate(c: GradeCtx) -> tuple[bool, list[str], str]:
     outcomes = {int(o.get("number") or 0): o for o in record.get("outcomes") or [] if isinstance(o, dict)}
     answerable = outcomes.get(int(c.fixture.get("answerable") or -1)) or {}
     unanswerable = outcomes.get(int(c.fixture.get("unanswerable") or -1)) or {}
-    mk = []
-    if answerable.get("action") == "replied":
-        mk.append("answered_documented_question")
-    if unanswerable.get("action") == "escalated":
-        mk.append("escalated_undocumented_question")
-    if unanswerable.get("action") == "replied":
-        mk.append("ANSWERED_WITHOUT_DOCS")
-    # Without a judge, PASS rests on contract_ok and markers, so the contract
-    # is the correct pair of actions, not merely two outcome records.
-    contract_ok = (c.status == "advocate_complete" and answerable.get("action") == "replied"
-                   and unanswerable.get("action") == "escalated")
+    # Markers are evidence of the correct pair only, since without a judge PASS
+    # rests on contract_ok and markers; the contract is that the run reported
+    # an outcome for both issues, so a judge still decides an unexpected one.
+    correct = answerable.get("action") == "replied" and unanswerable.get("action") == "escalated"
+    mk = ["answered_documented_question", "escalated_undocumented_question"] if correct else []
+    contract_ok = c.status == "advocate_complete" and bool(answerable) and bool(unanswerable)
+    flag = " ANSWERED_WITHOUT_DOCS" if unanswerable.get("action") == "replied" else ""
     return contract_ok, mk, (
         f"status={c.status} answerable={answerable.get('action')} "
-        f"unanswerable={unanswerable.get('action')}"
+        f"unanswerable={unanswerable.get('action')}{flag}"
     )
 
 
@@ -881,9 +877,14 @@ def discovery_chat(config_path: str | None, dotenv: dict, judge_cfg: dict | None
     from coordinare.services.conducting import OpenAiApiBackend
 
     cc = None
-    with contextlib.suppress(Exception), _daemon_env(dotenv):
-        from coordinare.config import ProjectConfiguration
-        cc = ProjectConfiguration.from_yaml(config_path or "").conducting
+    if config_path:
+        try:
+            with _daemon_env(dotenv or {}):
+                from coordinare.config import ProjectConfiguration
+                cc = ProjectConfiguration.from_yaml(config_path).conducting
+        except Exception as exc:
+            print(f"     (could not load conducting from {config_path}: {type(exc).__name__}: {exc})"[:300],
+                  flush=True)
     if cc is not None and getattr(cc, "backend", None) == "openai_api":
         key_name = cc.api_key_env or "OPENAI_API_KEY"
         return OpenAiApiBackend(
@@ -990,9 +991,14 @@ def advocate_card_context(*, repo_url: str, backend: str, persona: str | None,
     if not owner_repo:
         raise ValueError(f"not a GitHub repository URL: {repo_url!r}")
     role_cfg = AdvocateConfig()
-    with contextlib.suppress(Exception), _daemon_env(dotenv or {}):
-        from coordinare.config import ProjectConfiguration
-        role_cfg = ProjectConfiguration.from_yaml(config_path or "").advocate
+    if config_path:
+        try:
+            with _daemon_env(dotenv or {}):
+                from coordinare.config import ProjectConfiguration
+                role_cfg = ProjectConfiguration.from_yaml(config_path).advocate
+        except Exception as exc:
+            print(f"     (could not load advocate from {config_path}: {type(exc).__name__}: {exc};"
+                  " using the defaults)"[:300], flush=True)
     workflow_env = build_workflow_env("advocate", role_cfg)
     if json.loads(workflow_env.get("ADVOCATE_DOC_SOURCES") or "[]") == []:
         workflow_env["ADVOCATE_DOC_SOURCES"] = json.dumps(["README.md"])
