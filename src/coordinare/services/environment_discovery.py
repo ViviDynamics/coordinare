@@ -15,11 +15,16 @@ from typing import Any, NotRequired, TypedDict, Unpack
 from coordinare_service_inference.environment.models import CoverageAssessment, EnvironmentManifest
 from pydantic import ValidationError
 
+from coordinare.services.conductor_calls import ModelOutputTruncatedError, ModelRequestFailedError
 from coordinare.services.kubernetes_verifier import check_project_files
 
 Fetch = Callable[[str], Awaitable[str | None]]
 ChatJson = Callable[[list[dict[str, str]]], Awaitable[str]]
 _ASCII_CONTROL_BOUND = 32
+# 416: JSON runs about four bytes a token, and 64000 output tokens is the cap the widest
+# range of current models accepts (a larger max_tokens is refused outright by some).
+_OUTPUT_BYTES_PER_TOKEN = 4
+_OUTPUT_TOKEN_CAP = 64_000
 
 
 class EnvironmentDiscoveryError(RuntimeError):
@@ -42,6 +47,11 @@ class DiscoveryLimits:
         if any(value <= 0 for value in self.__dict__.values()):
             message = "discovery limits must be positive"
             raise ValueError(message)
+
+
+def discovery_output_tokens(limits: DiscoveryLimits) -> int:
+    """The output token budget a reply of ``limits.max_output_bytes`` needs, within the model cap (416)."""
+    return min(-(-limits.max_output_bytes // _OUTPUT_BYTES_PER_TOKEN), _OUTPUT_TOKEN_CAP)
 
 
 def _valid_path(path: Any) -> bool:
@@ -132,13 +142,28 @@ class _Inspection:
         raise EnvironmentDiscoveryError(message)
 
 
+async def _model_reply(chat: ChatJson, messages: list[dict[str, str]], name: str) -> str:
+    """One model reply. A cut-off or failed request is said as such, never as malformed JSON (416)."""
+    try:
+        return await chat(messages)
+    except ModelOutputTruncatedError as exc:
+        message = (
+            f"{name} output was truncated at {exc.max_tokens} tokens; "
+            "raise conducting.discovery_max_tokens if the model allows more"
+        )
+        raise EnvironmentDiscoveryError(message) from exc
+    except ModelRequestFailedError as exc:
+        message = f"{name} model request failed: {exc.error}"
+        raise EnvironmentDiscoveryError(message) from exc
+
+
 async def _phase(
     *, inspection: _Inspection, messages: list[dict[str, str]], chat: ChatJson,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     try:
         async with asyncio.timeout(inspection.limits.phase_timeout_seconds):
             for _ in range(inspection.limits.max_model_calls):
-                raw = await chat(messages)
+                raw = await _model_reply(chat, messages, inspection.name)
                 reply = _decode_reply(raw, inspection.name, inspection.limits)
                 final = "manifest" if inspection.name == "discovery" else "assessment"
                 if set(reply) == {final} and isinstance(reply[final], dict):

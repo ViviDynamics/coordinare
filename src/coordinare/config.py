@@ -436,6 +436,10 @@ class ConductingConfig(BaseModel):
     backend: ConductingBackendName = "anthropic_api"
     model: str | None = None
     max_tokens: int = Field(default=4096, ge=1, le=200_000)
+    # 416: the output budget of environment discovery and coverage review, whose one JSON
+    # reply can reach 256 KiB. None sizes it from that limit (64000 tokens); set it lower for
+    # a model whose output cap is smaller. max_tokens stays the budget of every other prompt.
+    discovery_max_tokens: int | None = Field(default=None, ge=1, le=200_000)
     temperature: float | None = None
     # Reasoning effort — applied to opencode (--effort), codex (model_reasoning_effort),
     # and openai (reasoning_effort).  No-op for anthropic_api / claude_cli where

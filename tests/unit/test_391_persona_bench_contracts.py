@@ -626,7 +626,7 @@ class TestCopilotRound:
             def __init__(self, **kw):
                 seen.update(kw)
 
-            async def chat_json(self, messages):
+            async def chat_json_checked(self, messages):
                 return "{}"
 
         monkeypatch.setattr(conducting, "OpenAiApiBackend", FakeBackend)
@@ -638,6 +638,16 @@ class TestCopilotRound:
         assert chat is not None
         assert seen["base_url"] == "https://gw.example/v1"
         assert seen["api_key"] == "k"
+        # 416: discovery's own budget, not the 4096 conducting default.
+        assert seen["max_tokens"] == 64_000
+
+    def test_the_judge_fallback_gets_the_discovery_budget(self):
+        chat = persona_bench.discovery_chat(
+            None, {}, {"api_key": "k", "model": "judge", "base_url": "https://gw.example/v1"})
+        backend = chat.__self__
+        assert backend._max_tokens == 64_000
+        assert backend._model == "judge"
+        assert backend._effort is None
 
     def test_a_config_that_fails_to_load_says_so(self, tmp_path, capsys):
         cfg = tmp_path / "config.yaml"

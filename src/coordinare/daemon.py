@@ -4105,22 +4105,14 @@ class CoordinareDaemon:
         cc = getattr(cfg, "conducting", None) if cfg is not None else None
         if cc is None:
             return None  # config not ready yet — don't memoize a premature None
-        chat = None
-        if getattr(cc, "backend", None) == "openai_api":
-            import os
+        import os
 
-            from coordinare.services.conducting import OpenAiApiBackend
+        from coordinare.services.conducting import discovery_chat
 
-            backend = OpenAiApiBackend(
-                api_key=os.getenv(cc.api_key_env or "OPENAI_API_KEY"),
-                model=cc.model or "gpt-4o-mini",
-                max_tokens=cc.max_tokens,
-                temperature=cc.temperature,
-                base_url=cc.base_url,
-                effort=cc.effort,
-                calls=self._state.get("conductor_calls"),
-            )
-            chat = backend.chat_json
+        # 416: discovery's own output budget, not the short-prompt conducting max_tokens.
+        chat = discovery_chat(
+            cc, api_key=os.getenv(cc.api_key_env or "OPENAI_API_KEY"), calls=self._state.get("conductor_calls"),
+        )
         self._manifest_llm_chat = chat
         return chat
 

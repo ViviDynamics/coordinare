@@ -12,14 +12,19 @@ import structlog
 
 from coordinare.services.conductor_calls import (
     NULL_CALL_LOG,
+    TRUNCATED_FINISH_REASONS,
     ConductorCallLog,
+    ModelOutputTruncatedError,
     ModelReply,
     ModelRequest,
+    ModelRequestFailedError,
     split_messages,
 )
 
 if TYPE_CHECKING:
-    from coordinare.config import ProjectConfiguration
+    from collections.abc import Awaitable, Callable
+
+    from coordinare.config import ConductingConfig, ProjectConfiguration
     from coordinare.services.claude import ClaudeService
 
 log = structlog.get_logger(__name__)
@@ -292,6 +297,10 @@ class OpenAiApiBackend:
 
     async def _chat(self, messages: list[dict[str, str]], json_mode: bool) -> str:
         """The reply text of one chat call ('' on any failure), recorded on the open call (131)."""
+        return (await self._reply(messages, json_mode)).text
+
+    async def _reply(self, messages: list[dict[str, str]], json_mode: bool) -> ModelReply:
+        """One chat call, recorded on the open call (131)."""
         system, user = split_messages(messages)
         request = ModelRequest(
             model=self._model,
@@ -300,8 +309,7 @@ class OpenAiApiBackend:
             prompt=user,
             parameters=self._request_parameters(json_mode),
         )
-        reply = await self.calls.invoke(request, lambda: self._post_chat(messages, json_mode))
-        return reply.text
+        return await self.calls.invoke(request, lambda: self._post_chat(messages, json_mode))
 
     def _request_parameters(self, json_mode: bool) -> dict[str, Any]:
         parameters: dict[str, Any] = {"max_tokens": self._max_tokens, "json_mode": json_mode}
@@ -381,21 +389,38 @@ class OpenAiApiBackend:
             log.error("openai_api_http_error", error=last_error or "retries_exhausted")
             return ModelReply(error=last_error or "retries_exhausted")
         try:
-            text = str(data["choices"][0]["message"]["content"] or "")
+            choice = data["choices"][0]
+            text = str(choice["message"]["content"] or "")
         except (KeyError, IndexError, TypeError):
             log.warning("openai_api_unexpected_response", keys=list(data.keys()) if isinstance(data, dict) else None)
             return ModelReply(error="unexpected response")
         model = data.get("model") if isinstance(data, dict) else None
+        finish_reason = choice.get("finish_reason") if isinstance(choice, dict) else None
         return ModelReply(
             text=text,
             model=model if isinstance(model, str) else None,
             usage=_openai_usage(data),
+            finish_reason=finish_reason if isinstance(finish_reason, str) else None,
         )
 
     async def chat_json(self, messages: list[dict[str, str]]) -> str:
         """Public JSON-mode chat for ad-hoc coordinare prompts (e.g. 077 env
         manifest README pass). Returns the assistant text ('' on any failure)."""
         return await self._chat(messages, json_mode=True)
+
+    async def chat_json_checked(self, messages: list[dict[str, str]]) -> str:
+        """JSON-mode chat for a caller that needs the whole reply, such as environment discovery (416).
+
+        Raises ``ModelOutputTruncatedError`` when the output budget cut the reply off, and
+        ``ModelRequestFailedError`` when the request returned no reply, so neither is read as
+        malformed JSON.
+        """
+        reply = await self._reply(messages, json_mode=True)
+        if reply.finish_reason in TRUNCATED_FINISH_REASONS:
+            raise ModelOutputTruncatedError(self._max_tokens)
+        if reply.error is not None:
+            raise ModelRequestFailedError(reply.error)
+        return reply.text
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
         prompt = _build_assess_prompt(card)
@@ -732,3 +757,30 @@ def build_model_endpoint_backend(
         calls=calls,
         endpoint_name=name,
     )
+
+
+def discovery_chat(
+    cc: ConductingConfig, *, api_key: str | None, calls: ConductorCallLog | None = None,
+) -> Callable[[list[dict[str, str]]], Awaitable[str]] | None:
+    """The JSON chat environment discovery and coverage review use, built from ``conducting`` (416).
+
+    Only the ``openai_api`` backend has the JSON-chat seam; any other backend gives None, which
+    holds discovery. The output budget is ``conducting.discovery_max_tokens`` when set, else one
+    sized for the largest reply discovery admits, never the short-prompt ``max_tokens``: a reply
+    cut off at that default was reported as malformed JSON. The other conducting prompts keep
+    ``max_tokens``.
+    """
+    if cc.backend != "openai_api":
+        return None
+    from coordinare.services.environment_discovery import DiscoveryLimits, discovery_output_tokens
+
+    budget = cc.discovery_max_tokens or discovery_output_tokens(DiscoveryLimits())
+    return OpenAiApiBackend(
+        api_key=api_key,
+        model=cc.model or "gpt-4o-mini",
+        max_tokens=budget,
+        temperature=cc.temperature,
+        base_url=cc.base_url,
+        effort=cc.effort,
+        calls=calls,
+    ).chat_json_checked

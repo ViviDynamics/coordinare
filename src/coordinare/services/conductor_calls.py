@@ -102,6 +102,8 @@ class ModelReply:
 
     ``error`` and ``timed_out`` describe a failed call that returned rather than raised. ``note``
     is the reason a caller may show when there is no text (the CLI backends' rationale).
+    ``finish_reason`` is why the model stopped, as the backend reported it (None when it reports
+    none); ``length`` or ``max_tokens`` means the output budget cut the reply off (416).
     """
 
     text: str = ""
@@ -111,6 +113,28 @@ class ModelReply:
     error: str | None = None
     timed_out: bool = False
     note: str = ""
+    finish_reason: str | None = None
+
+
+#: The finish reasons that mean the output budget cut the reply off: ``length`` from an
+#: OpenAI-compatible endpoint, ``max_tokens`` from one that passes Anthropic's stop reason on (416).
+TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+
+class ModelOutputTruncatedError(RuntimeError):
+    """A reply that the output budget cut off, raised by callers that need the whole reply (416)."""
+
+    def __init__(self, max_tokens: int) -> None:
+        self.max_tokens = max_tokens
+        super().__init__(f"model output was truncated at {max_tokens} tokens")
+
+
+class ModelRequestFailedError(RuntimeError):
+    """A model request that returned no reply, raised by callers that must not read it as text (416)."""
+
+    def __init__(self, error: str) -> None:
+        self.error = error
+        super().__init__(error)
 
 
 @dataclass
