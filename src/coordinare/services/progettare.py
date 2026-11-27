@@ -30,6 +30,7 @@ imported, because Progettare runs as a CLI and is not installed in coordinare.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -78,6 +79,9 @@ _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$")
 _READERS = ("implementer", "qa", "documenter")
 #: A version check starts a container, which may first pull the image.
 _VERSION_TIMEOUT_SECONDS = 180
+#: Past the clone and the run's own timeout, how long a run without a result still counts
+#: as running.
+_OVERDUE_GRACE_SECONDS = 600 + 300
 #: Tools a run needs in the performer beside the CLI.
 _TOOLS = ("git", "gh")
 _INTAKE_HINT = (
@@ -260,6 +264,9 @@ class ProgettareProvider:
             # poll asks Docker about it and the directory is never reused for a new start.
             if await released(self._jobs, directory):
                 (directory / runner.REQUEST_FILE).unlink(missing_ok=True)
+            else:
+                with contextlib.suppress(OSError):
+                    (directory / runner.UNCONFIRMED_FILE).write_text("the start could not be confirmed\n")
             raise
         logger.info("progettare.run_started", provider=self.name, request=ref, issue=request.ref)
         return StageJob(ref=ref, state=JobState.PENDING, detail="started")
@@ -287,7 +294,11 @@ class ProgettareProvider:
         # Not reported yet: in flight while its container runs. A Docker that cannot answer
         # is a TransportError, retried, never read as the run being over.
         if not (directory / runner.RESULT_FILE).exists() and await self._jobs.state(directory) is RunState.RUNNING:
-            return StageJob(ref=ref, state=JobState.PENDING, detail="running")
+            if not _overdue(request, self._config.timeout_seconds):
+                return StageJob(ref=ref, state=JobState.PENDING, detail="running")
+            # The job stops itself at its timeout; this bounds one that never reports.
+            await self._jobs.stop(directory)
+            return _retry(ref, "overdue", "the Progettare run passed its timeout without saying how it ended")
         return self._ended(ref, directory, request)
 
     def _ended(self, ref: str, directory: Path, request: dict[str, Any]) -> StageJob:
@@ -303,6 +314,8 @@ class ProgettareProvider:
             log = "" if detail else _log_tail(directory / runner.LOG_FILE)
             if detail:
                 why = detail
+            elif (directory / runner.UNCONFIRMED_FILE).exists():
+                why = "its start could not be confirmed, and its performer is gone"
             elif never_started(directory):
                 why = NEVER_STARTED
             elif log.endswith("started"):
@@ -387,6 +400,18 @@ class ProgettareProvider:
         except OSError as exc:
             return f"runs_dir {runs} cannot be created: {exc.strerror or exc}"
         return None if os.access(runs, os.W_OK) else f"runs_dir {runs} is not writable"
+
+
+def _overdue(request: dict[str, Any], timeout_seconds: int) -> bool:
+    created = request.get("created_at")
+    try:
+        started = datetime.fromisoformat(str(created))
+    except ValueError:
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    limit = float(request.get("timeout_seconds") or timeout_seconds) + _OVERDUE_GRACE_SECONDS
+    return (datetime.now(UTC) - started).total_seconds() > limit
 
 
 def _version_of(code: int | None, out: str, err: str) -> str | None:

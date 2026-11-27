@@ -184,9 +184,11 @@ class QAreProvider:
         except OSError as exc:
             msg = f"QAre work_dir {self._work_dir} is not writable: {exc}"
             raise TransportError(msg) from exc
+        launching = False
         try:
             token, spec = await self._spec(request, request_id)
             runner._write_atomic(job_dir / runner.REQUEST_FILE, json.dumps(spec, indent=2))
+            launching = True
             await self._launch(request_id, job_dir, token)
         except BaseException:
             # Stop a container that may have started. Once it is confirmed gone, take the
@@ -194,9 +196,9 @@ class QAreProvider:
             # finding a job that never existed. If it is not, keep the attempt as it is
             # (recorded as launched): the next poll asks Docker about it, and a container
             # that did start goes on with its own request, never a new one.
-            if await released(self._jobs, job_dir):
+            if not launching or await released(self._jobs, job_dir):
                 _remove_tree(job_dir)
-            elif (job_dir / runner.REQUEST_FILE).exists():
+            else:
                 with contextlib.suppress(OSError):
                     runner._write_atomic(job_dir / runner.LAUNCH_FILE, json.dumps({"unconfirmed": True}))
             raise
@@ -329,7 +331,12 @@ class QAreProvider:
         status = _load_json(job_dir / runner.STATUS_FILE)
         if status is not None:
             return job_from_status(ref, status, job_dir)
-        why = NEVER_STARTED if never_started(job_dir) else "its performer stopped"
+        if (_load_json(job_dir / runner.LAUNCH_FILE) or {}).get("unconfirmed"):
+            why = "its start could not be confirmed, and its performer is gone"
+        elif never_started(job_dir):
+            why = NEVER_STARTED
+        else:
+            why = "its performer stopped"
         return StageJob(ref=ref, state=JobState.RETRYABLE, detail="ended",
                         reason=f"the QAre run ended without saying how ({why})")
 

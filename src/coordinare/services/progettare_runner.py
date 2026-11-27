@@ -32,8 +32,10 @@ LOG_FILE = "runner.log"
 CONFIG_FILE = "progettare-config.yaml"
 #: The stage job kind (``python -m performer.stage_jobs progettare``).
 KIND = "progettare"
+#: Marks a request whose start failed while its container could not be confirmed gone.
+UNCONFIRMED_FILE = "start-unconfirmed"
 #: Files of an earlier attempt in the same directory, removed before a run starts.
-STALE_FILES = (RESULT_FILE, "stdout.txt", "stderr.txt", LOG_FILE, CONFIG_FILE)
+STALE_FILES = (RESULT_FILE, "stdout.txt", "stderr.txt", LOG_FILE, CONFIG_FILE, UNCONFIRMED_FILE)
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:

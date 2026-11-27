@@ -565,3 +565,58 @@ async def test_a_progettare_start_keeps_its_request_until_the_container_is_gone(
     with pytest.raises(TransportError):
         await provider.submit(request, request.request_id(1))
     assert (tmp_path / "runs" / request.request_id(1) / progettare_runner.REQUEST_FILE).exists() is kept
+
+
+@pytest.mark.asyncio
+async def test_a_qare_failure_before_any_start_leaves_no_job(tmp_path: Path) -> None:
+    from coordinare.transport.base import TransportError
+
+    async def no_token(repository: str) -> str:
+        raise RuntimeError("no installation")
+
+    jobs = _StartFailsButRuns(None)  # Docker cannot answer either
+    provider = QAreProvider("qare", QAreProviderConfig(kind="qare", version="2026.11.44"), work_dir=tmp_path / "qare",
+                            github=GitHubAccess(no_token, lambda r: "https://api.github.com"), jobs=jobs)
+    request = _qa_request()
+    with pytest.raises(TransportError, match="GitHub token"):
+        await provider.submit(request, request.request_id(1))
+    assert not (tmp_path / "qare" / request.request_id(1)).exists()
+    assert jobs.stopped == []
+
+
+@pytest.mark.asyncio
+async def test_a_kept_attempt_whose_container_is_gone_says_its_start_was_unconfirmed(tmp_path: Path) -> None:
+    jobs = _StartFailsButRuns(None)
+    provider = QAreProvider("qare", QAreProviderConfig(kind="qare", version="2026.11.44"),
+                            work_dir=tmp_path / "qare", github=_github(), jobs=jobs)
+    request = _qa_request()
+    from coordinare.transport.base import TransportError
+
+    with pytest.raises(TransportError):
+        await provider.submit(request, request.request_id(1))
+    jobs.after = RunState.GONE
+    job = await provider.poll(request.request_id(1))
+    assert job.state is JobState.RETRYABLE
+    assert "could not be confirmed" in job.reason
+
+
+@pytest.mark.asyncio
+async def test_a_progettare_run_past_its_timeout_is_stopped_not_waited_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs = _StartFailsButRuns(RunState.RUNNING)
+    jobs.started = True
+    config = ProgettareProviderConfig(
+        kind="progettare", version="2026.11.2", runs_dir=str(tmp_path / "runs"), gh_token_env="PROGETTARE_423_TOKEN",
+        timeout_seconds=60,
+    )
+    request = _work_item()
+    directory = tmp_path / "runs" / request.request_id(1)
+    directory.mkdir(parents=True)
+    (directory / "request.json").write_text(json.dumps({
+        "pin": request.pin, "timeout_seconds": 60, "created_at": "2026-01-01T00:00:00+00:00",
+    }))
+    job = await ProgettareProvider("progettare", config, jobs=jobs).poll(request.request_id(1))
+    assert job.state is JobState.RETRYABLE
+    assert "passed its timeout" in job.reason
+    assert jobs.stopped == [directory]
