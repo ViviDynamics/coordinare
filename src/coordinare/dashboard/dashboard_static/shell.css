@@ -213,6 +213,11 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .tl-dot.tl-ran { background: var(--color-accent-yellow); }
 .tl-dot.tl-current { background: var(--color-accent-blue); box-shadow: 0 0 0 2px var(--color-bg-surface), 0 0 0 3px var(--color-accent-blue); }
 .tl-dot.tl-skipped, .tl-dot.tl-not_recorded { opacity: 0.4; }
+/* 365: the words beside the dots: the current stage and its place in the pipeline. */
+.tl-strip { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; min-width: 0; max-width: 100%; }
+.tl-dots-caption { font-size: 11px; color: var(--color-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* An active-run tile names its stage in its header, and its track row must stay one line. */
+.ap-tile .tl-dots-caption { display: none; }
 /* 150: the History page's run table, filters, checks and pager. */
 .history-filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; margin-bottom: 12px; font-size: 12px; }
 .history-filters label { display: flex; flex-direction: column; gap: 2px; color: var(--color-text-muted); }
@@ -436,3 +441,13 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 #dependency-blockers-card.scope-note-only h3 { display: inline; margin: 0 var(--space-3) 0 0; font-size: 13px; }
 #dependency-blockers-card.scope-note-only ul { display: inline; margin: 0; padding: 0; }
 #dependency-blockers-card.scope-note-only li { display: inline; list-style: none; padding: 0; }
+/* 365: a logins field shows the list it reads as, one chip per login, and flags what is not a login. */
+.cfg-logins-preview { font-size: 11px; color: var(--color-text-muted); margin-top: 4px; line-height: 1.9; }
+.cfg-login-chip { display: inline-block; font-family: var(--font-mono, monospace); color: var(--color-text-primary); background: var(--color-bg-elevated); border: 1px solid var(--color-border); border-radius: 10px; padding: 0 7px; margin: 0 4px 0 0; line-height: 1.6; }
+.cfg-logins-invalid { color: var(--color-accent-red); }
+/* 365: the Activity page's switch between its two views, drawn like the Settings tabs. */
+.activity-switch { display: flex; gap: 2px; border-bottom: 1px solid var(--color-border); margin-bottom: 12px; }
+.activity-switch a { padding: 6px 12px; font-size: 13px; color: var(--color-text-muted); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.activity-switch a:hover { color: var(--color-text-primary); }
+.activity-switch a[aria-current="page"] { color: var(--color-accent-blue); border-bottom-color: var(--color-accent-blue); }
+.activity-summary { margin: -4px 0 12px; font-size: 12px; color: var(--color-text-muted); }

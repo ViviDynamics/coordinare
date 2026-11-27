@@ -148,7 +148,7 @@ function historyRunRowHtml(row) {
   // address to name (the conductor's own checks) opens History with the card filter and header scope.
   var cardPath = cardPageAddressOk(row.symphony, row.card)
     ? cardPathFor(row.symphony, row.card)
-    : '/history' + historySearchFor('?symphony=' + encodeURIComponent(row.attributed_symphony || row.symphony || ''), {
+    : '/activity/history' + historySearchFor('?symphony=' + encodeURIComponent(row.attributed_symphony || row.symphony || ''), {
       card: row.card, stage: '', outcome: '', since: '', until: '',
     });
   return '<tr>' +

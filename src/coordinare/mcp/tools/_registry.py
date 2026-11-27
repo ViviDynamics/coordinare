@@ -53,8 +53,11 @@ DEFERRED_PAGE_PATHS = (
     "/runs/{run}",  # 133: the transcript viewer, by run id.
     "/runs/{symphony}/{card}/{run}",  # 133: the transcript viewer, by address.
     "/personas",
-    "/history",
-    "/logs",
+    "/activity",  # 365: History and Logs, as the two views of one page.
+    "/activity/history",
+    "/activity/logs",
+    "/history",  # 365: redirects to /activity/history.
+    "/logs",  # 365: redirects to /activity/logs.
     "/glossary",
     "/symphonies",
     "/symphonies/{name}",

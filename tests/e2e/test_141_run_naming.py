@@ -162,7 +162,7 @@ def test_the_card_detail_names_the_run_and_its_full_log_by_the_short_id(
     expect(link).to_have_attribute("href", f"/api/runs/{_RUN}/log")
 
 
-@pytest.mark.parametrize("path", ["/", "/performers", "/performers/implementing", "/history", "/glossary"])
+@pytest.mark.parametrize("path", ["/", "/performers", "/performers/implementing", "/activity/history", "/activity/logs", "/glossary"])
 @pytest.mark.e2e
 def test_no_page_shows_a_session_or_attempt_label(
     page: Page, live_server_url: str, store: DashboardStore, path: str,

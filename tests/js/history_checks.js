@@ -49,7 +49,7 @@ globalThis.history = { state: null, replaceState(state, title, url) {
   const address = new URL(url, "http://dashboard.test");
   Object.assign(globalThis.location, { pathname: address.pathname, search: address.search, hash: address.hash });
 } };
-globalThis.location = { pathname: "/history", search: "", hash: "" };
+globalThis.location = { pathname: "/activity/history", search: "", hash: "" };
 const stored = {};
 globalThis.window = { localStorage: { getItem: key => stored[key] || "",
   setItem(key, value) { stored[key] = value; } } };
@@ -274,11 +274,11 @@ location.search = "?h.symphony=" + encodeURIComponent(encodedName);
 check("legacy scope translation preserves encoded symphony names", currentSymphonyChoice(_lastState), encodedName);
 _lastState.symphonies.pop();
 
-location.pathname = "/logs";
+location.pathname = "/activity/logs";
 location.search = "?h.symphony=alpha";
 migrateHistorySymphony();
 check("other pages do not translate History bookmarks", location.search, "?h.symphony=alpha");
-location.pathname = "/history";
+location.pathname = "/activity/history";
 location.search = "";
 location.hash = "";
 
@@ -335,10 +335,10 @@ has("the card page link is marked for the in-app router", historyRunRowHtml(row(
 lacks("the card link no longer filters History", historyRunRowHtml(row()), "h.card=PVTI_1");
 has("an implausible card id keeps the History filter", historyRunRowHtml(row({ card: "a b" })), "h.card=a");
 const historyLink = historyRunRowHtml(row({ card: "a b", symphony: "beta-sym", attributed_symphony: "beta-sym" }));
-has("in-app History links select the header symphony", historyLink, '/history?symphony=beta-sym&amp;h.card=a%20b');
+has("in-app History links select the header symphony", historyLink, '/activity/history?symphony=beta-sym&amp;h.card=a%20b');
 lacks("in-app History links never use the legacy scope", historyLink, "h.symphony");
 has("a conductor History link uses its attributed symphony",
-  historyRunRowHtml(row({ symphony: "_conductor", attributed_symphony: "alpha" })), '/history?symphony=alpha&amp;h.card=PVTI_1');
+  historyRunRowHtml(row({ symphony: "_conductor", attributed_symphony: "alpha" })), '/activity/history?symphony=alpha&amp;h.card=PVTI_1');
 lacks("an implausible card id gets no card page link", historyRunRowHtml(row({ card: "a b" })), "/cards/");
 // 233: the unattributed folder is not a symphony's card page, so its card keeps the History filter.
 has("an unattributed row keeps the History filter", historyRunRowHtml(row({ symphony: "unattributed" })), "h.card=PVTI_1");

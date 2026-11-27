@@ -298,7 +298,7 @@ def test_the_cycle_log_is_on_the_history_page_and_not_the_dashboard(
     ]))
     expect(page.locator("#recent-cycles-card")).to_have_count(0)
 
-    page.locator("#navbar a[href='/history']").click()
+    page.locator("#navbar a[href='/activity']").click()
     expect(page.locator("#history-page")).to_be_visible(timeout=_WAIT_NAV)
     panel = page.locator("#history-cycles-panel")
     panel.locator(":scope > summary").click()
@@ -453,7 +453,7 @@ def test_only_the_state_label_is_a_live_region_not_the_ticking_countdown(
 def test_metrics_and_recent_checks_summaries_carry_a_heading(page: Page, live_server_url: str, store: DashboardStore) -> None:
     _show_the_layout(page, live_server_url, store)
     expect(page.locator("#metrics-card > summary h2")).to_have_text("Metrics")
-    page.locator("#navbar a[href='/history']").click()
+    page.locator("#navbar a[href='/activity']").click()
     expect(page.locator("#history-cycles-panel > summary h2")).to_have_text("Recent checks (this daemon run)")
 
 

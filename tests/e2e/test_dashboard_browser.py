@@ -7,7 +7,7 @@ Skipped in the standard pytest run (requires Playwright browser binaries).
 Each test is marked @pytest.mark.e2e; the default addopts excludes that marker.
 
 049/053 additions: navbar, multi-page routing (pushState), active-performer tiles,
-/performers drilldown, /personas page, /history live rendering.
+/performers drilldown, /personas page, /activity/history live rendering.
 """
 from __future__ import annotations
 
@@ -147,7 +147,7 @@ def test_page_loads_with_navbar(page: Page, live_server_url: str) -> None:
     """Dashboard page must load and show the navbar with 4 links."""
     page.goto(live_server_url)
     expect(page.locator("#navbar")).to_be_visible(timeout=_WAIT_SSE)
-    for text in ("Dashboard", "Performers", "Personas", "History"):
+    for text in ("Dashboard", "Performers", "Personas", "Activity"):
         expect(page.locator(f"#navbar a:has-text('{text}')")).to_have_count(1)
 
 
@@ -332,7 +332,7 @@ def test_cycle_history_table_renders(
     )
 
     # 154: the cycle log is the History page's Recent checks panel, collapsed until opened.
-    page.locator("#navbar a[href='/history']").click()
+    page.locator("#navbar a[href='/activity']").click()
     page.locator("#history-cycles-panel > summary").click()
     expect(page.locator("#history-cycles table")).to_be_visible(timeout=_WAIT_LIVE)
     expect(page.locator("#history-cycles")).to_contain_text("success", timeout=_WAIT_LIVE)
@@ -494,9 +494,9 @@ def test_navigate_to_history_shows_the_listing_state(page: Page, live_server_url
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
-    page.locator("#navbar a[href='/history']").click()
+    page.locator("#navbar a[href='/activity']").click()
 
-    expect(page).to_have_url(f"{live_server_url}/history", timeout=_WAIT_NAV)
+    expect(page).to_have_url(f"{live_server_url}/activity/history", timeout=_WAIT_NAV)
     expect(page.locator("#history-page")).to_be_visible(timeout=_WAIT_NAV)
     expect(page.locator("#history-page")).to_contain_text(
         "transcripts are not configured on this daemon", timeout=_WAIT_NAV,
@@ -507,8 +507,8 @@ def test_navigate_to_history_shows_the_listing_state(page: Page, live_server_url
 def test_history_page_does_not_render_the_dashboards_cycle_rows(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    """#150: /history lists runs from the server. The snapshot's cycle rows stay on the Dashboard."""
-    page.goto(f"{live_server_url}/history")
+    """#150: /activity/history lists runs from the server. The snapshot's cycle rows stay on the Dashboard."""
+    page.goto(f"{live_server_url}/activity/history")
     expect(page.locator("#history-page")).to_be_visible(timeout=_WAIT_NAV)
     expect(page.locator("#history-page-section")).to_contain_text(
         "transcripts are not configured on this daemon", timeout=_WAIT_NAV,
@@ -1395,7 +1395,7 @@ def test_history_page_shows_cycle_list(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """#150: History lists card runs from the server. The snapshot's cycles are its Recent checks panel (154)."""
-    page.goto(f"{live_server_url}/history")
+    page.goto(f"{live_server_url}/activity/history")
     expect(page.locator("#history-page")).to_be_visible(timeout=_WAIT_NAV)
 
     store.broadcaster.broadcast(
@@ -2037,7 +2037,7 @@ def test_no_horizontal_scrollbar_at_768px_performers(page: Page, live_server_url
 def test_no_horizontal_scrollbar_at_768px_history(page: Page, live_server_url: str) -> None:
     """History page must not overflow horizontally at 768px viewport width."""
     page.set_viewport_size({"width": 768, "height": 1024})
-    page.goto(f"{live_server_url}/history")
+    page.goto(f"{live_server_url}/activity/history")
     page.wait_for_timeout(_WAIT_SSE)
     overflow = page.evaluate("document.documentElement.scrollWidth > window.innerWidth")
     assert not overflow, "Horizontal scrollbar detected on History at 768px"
@@ -2236,7 +2236,7 @@ def test_recent_checks_panel_collapses_identical_rows(
     ]
     store.broadcaster.broadcast(_full_snapshot(cycle_history=history))
     # 154: the cycle log is the History page's Recent checks panel.
-    page.locator("#navbar a[href='/history']").click()
+    page.locator("#navbar a[href='/activity']").click()
     page.locator("#history-cycles-panel > summary").click()
     rows = page.locator("#history-cycles tbody tr")
     expect(rows).to_have_count(1, timeout=_WAIT_LIVE)

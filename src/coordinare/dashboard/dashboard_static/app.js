@@ -376,6 +376,17 @@ function showPage(pageId) {
     var el = document.getElementById(id);
     if (el) el.style.display = id === pageId ? '' : 'none';
   });
+  // 365: History and Logs are the two views of Activity. Their switch shows with either,
+  // and marks the one shown.
+  var activity = pageId === 'history-page' || pageId === 'logs-page';
+  var activitySwitch = document.getElementById('activity-switch');
+  if (activitySwitch) activitySwitch.style.display = activity ? '' : 'none';
+  ['history', 'logs'].forEach(function(view) {
+    var link = document.getElementById('activity-switch-' + view);
+    if (!link) return;
+    if (activity && pageId === view + '-page') link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  });
 }
 
 function setActiveNav(path) {
@@ -391,7 +402,7 @@ function setActiveNav(path) {
 
 function updateNavActive(path) {
   setActiveNav(path);
-  var titles = {'/':'Dashboard | Coordinare','/performers':'Performers | Coordinare','/personas':'Personas | Coordinare','/logs':'Logs | Coordinare','/history':'History | Coordinare','/glossary':'Glossary | Coordinare','/symphonies':'Symphonies | Coordinare','/config':'Settings | Coordinare'};
+  var titles = {'/':'Dashboard | Coordinare','/performers':'Performers | Coordinare','/personas':'Personas | Coordinare','/activity/logs':'Logs | Activity | Coordinare','/activity/history':'History | Activity | Coordinare','/glossary':'Glossary | Coordinare','/symphonies':'Symphonies | Coordinare','/config':'Settings | Coordinare'};
   var activeLink = document.querySelector('.nav-link.nav-active');
   // 153: the label, not the link's text: a needs-attention badge sits in the link.
   var activeLabel = activeLink ? activeLink.querySelector('.nav-link-label') || activeLink : null;
@@ -693,6 +704,21 @@ function symSpecFileChip(file) {
     + '&times;</button></span>';
 }
 
+// 365: who can approve this symphony's merges. The list is a Settings field shared by every
+// symphony; a symphony that sets its own in config.yaml shows it here.
+function symApproverNoteHtml(data) {
+  var ov = (data && data.overrides) || {};
+  var own = Array.isArray(ov.human_reviewers) && ov.human_reviewers.length;
+  var rule = own
+    ? 'This symphony sets its own list of who can approve merges: ' + esc(ov.human_reviewers.join(', '))
+      + '. Only those logins can approve its merges.'
+    : 'Only the logins in Who can approve merges can approve a merge.';
+  return '<p class="sym-approver-note" data-approver-note style="font-size:12px;color:var(--color-text-muted);margin:0 0 10px">'
+    + rule + ' An approval from any other login shows on the work item and does not merge.'
+    + ' <a href="/config#global" onclick="navigate(event,this.getAttribute(\'href\'))">'
+    + (own ? 'See the shared list' : 'Change who can approve') + '</a></p>';
+}
+
 // 221: the Configuration card. Every control it shows is a data-field the shared functions read.
 function symFormHtml(name, data, catalog) {
   var ov = data.overrides || {};
@@ -710,6 +736,7 @@ function symFormHtml(name, data, catalog) {
     + '<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--color-text-primary);cursor:pointer">'
     + '<input id="sym-enabled" type="checkbox" data-field="enabled" data-type="bool" data-label="Enabled"' + enabledChecked + '> Enabled</label>'
     + '</div>'
+    + symApproverNoteHtml(data)
     + overrideRows
     + secretRows
     + '<div style="margin-top:4px;border-top:1px solid var(--color-bg-elevated);padding-top:12px">'
@@ -891,7 +918,13 @@ function pushRoute(url) {
 }
 // 143: the Global Config page is the General tab of Settings. Its old address
 // moves there, keeping the query string.
+// 365: History and Logs became the two views of Activity; /activity opens History.
 function redirectRetiredPages() {
+  var moved = {'/history': '/activity/history', '/logs': '/activity/logs', '/activity': '/activity/history'};
+  if (Object.prototype.hasOwnProperty.call(moved, location.pathname)) {
+    history.replaceState({seq: _navSeq}, '', moved[location.pathname] + location.search + location.hash);
+    return;
+  }
   if (location.pathname !== '/admin/config') return;
   // 143 second review: the redirected entry keeps a sequence number, so a later Back can return to it exactly.
   history.replaceState({seq: _navSeq}, '', '/config' + location.search + '#global');
@@ -914,10 +947,10 @@ function router() {
   } else if (path === '/personas') {
     showPage('personas-page');
     loadPersonasPage();
-  } else if (path === '/logs') {
+  } else if (path === '/activity/logs') {
     showPage('logs-page');
     renderLogsPage(currentScopedState(), true);
-  } else if (path === '/history') {
+  } else if (path === '/activity/history') {
     showPage('history-page');
     var historyNow = currentScopedState();
     if (historyNow) renderHistoryPage(historyNow);
@@ -1484,8 +1517,8 @@ function connectEventStream() {
       var path = location.pathname;
       if (isPerformersPath(path)) renderPerformersPage(scoped);
       else if (path === '/personas') personaStatsRefresh(false);
-      else if (path === '/history') renderHistoryPage(scoped);
-      else if (path === '/logs') renderLogsPage(currentScopedState());
+      else if (path === '/activity/history') renderHistoryPage(scoped);
+      else if (path === '/activity/logs') renderLogsPage(currentScopedState());
       else if (isBootstrapRunPath(path)) bootstrapPageRefresh();
       else if (path === '/symphonies' || path.startsWith('/symphonies/')) renderSymphoniesPage(_lastState);
       else if (isCardPath(path)) cardPageRefresh();
@@ -1545,7 +1578,8 @@ function symSummaryHtml(name, data) {
   var href = '/config#symphonies/' + encodeURIComponent(name);
   return '<section class="card" data-sym-summary-view><h3>Settings</h3><dl>' + rows.map(function(row) {
     return '<dt>' + esc(row[0]) + '</dt><dd>' + esc(row[1]) + '</dd>';
-  }).join('') + '</dl><p><a href="' + esc(href) + '" onclick="navigate(event,this.getAttribute(\'href\'))">Edit settings</a></p>'
+  }).join('') + '</dl>' + symApproverNoteHtml(data)
+    + '<p><a href="' + esc(href) + '" onclick="navigate(event,this.getAttribute(\'href\'))">Edit settings</a></p>'
     + '<div data-sym-persona-summary>Loading personas...</div></section>';
 }
 

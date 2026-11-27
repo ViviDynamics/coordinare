@@ -79,7 +79,7 @@ def test_persona_panel_is_read_only_accessible_and_fits_mobile(
     expect(panel).to_contain_text("worker")
     expect(panel.locator('a[href="/runs/alpha/card/run183"]')).to_have_count(1)
     expect(panel.locator('a[href="/runs/alpha/card/live183"]')).to_have_count(1)
-    expect(panel.locator('a[href="/history?symphony=alpha&h.agent=reviewer"]')).to_have_count(1)
+    expect(panel.locator('a[href="/activity/history?symphony=alpha&h.agent=reviewer"]')).to_have_count(1)
     expect(panel.locator('svg[role="img"]')).to_have_count(3)
     assert all(chart.get_attribute("aria-label") for chart in panel.locator('svg[role="img"]').all())
     assert page.locator("#personas-page textarea").count() == 0

@@ -18,7 +18,7 @@ from tests.e2e.test_139_symphony_switcher import _open, _snapshot, _symphony
 from tests.e2e.test_dashboard_browser import _WAIT_LIVE
 
 _WIDTHS = (1280, 1440, 1920)
-_PAGES = ("/", "/performers", "/history", "/symphonies", "/config")
+_PAGES = ("/", "/performers", "/activity/history", "/activity/logs", "/symphonies", "/config")
 _NAME = "conductor-e2e-sample"
 _OTHER = "placeholder"
 _VIEWPORT_HEIGHT = 900

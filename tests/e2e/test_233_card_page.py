@@ -182,7 +182,7 @@ def card_url(store: DashboardStore, card_daemon: Any) -> Generator[str, None, No
 
 
 def _history_row_link(page: Page, store: DashboardStore, base: str, card: str) -> Any:
-    _connected(page, base + "/history")
+    _connected(page, base + "/activity/history")
     store.broadcaster.broadcast(_snapshot())
     expect(page.locator("#history-page-section form.history-filters")).to_be_visible(timeout=WAIT_PAGE)
     link = page.locator(f"#history-page-section a[data-history-card='/cards/{ALPHA}/{card}']").first
@@ -265,7 +265,7 @@ def test_back_and_forward_move_between_the_history_table_and_the_card_page(
     expect(page).to_have_url(f"{card_url}/cards/{ALPHA}/{CARD}", timeout=WAIT_PAGE)
     expect(page.locator("#card-page-section .tl-tracker")).to_be_attached(timeout=WAIT_PAGE)
     page.go_back()
-    expect(page).to_have_url(f"{card_url}/history", timeout=WAIT_PAGE)
+    expect(page).to_have_url(f"{card_url}/activity/history", timeout=WAIT_PAGE)
     expect(page.locator("#history-page")).to_be_visible(timeout=WAIT_PAGE)
     expect(page.locator("#card-page")).to_be_hidden()
     page.go_forward()

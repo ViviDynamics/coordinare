@@ -202,15 +202,39 @@ function timelineNotesHtml(tl) {
 }
 
 // The board card's compact strip: one dot per stage, the current one ringed.
+// 365: a caption beside the dots says in words where the current stage sits in the pipeline and
+// which it is ("Stage 3 of 8: Implement"), so a reader does not need the tooltips. The dots are one image whose name lists every
+// stage with its status.
 function timelineDotsHtml(strip) {
   if (!strip || !Array.isArray(strip.statuses)) return '';
+  var names = [];
+  // The caption counts the stages that run: a stage the lifecycle leaves out comes back skipped.
+  var counted = {total: 0, position: 0, done: 0};
   var dots = strip.statuses.map(function(item) {
     var label = vocabularyKindLabel('stage_labels', item.stage);
-    var current = item.stage === strip.current ? ' tl-dot-current' : '';
+    var isCurrent = !!strip.current && item.stage === strip.current;
+    if (item.status !== 'skipped') {
+      counted.total += 1;
+      if (isCurrent) counted.position = counted.total;
+      if (item.status === 'done' || item.status === 'ran') counted.done += 1;
+    }
+    names.push(label + ': ' + timelineStatusText(item.status) + (isCurrent ? ' (current)' : ''));
+    var current = isCurrent ? ' tl-dot-current' : '';
     return '<span class="tl-dot tl-' + esc(item.status) + current + '" title="' +
       esc(label + ': ' + timelineStatusText(item.status)) + '"></span>';
   }).join('');
-  return '<span class="tl-dots" title="Pipeline stages">' + dots + '</span>';
+  return '<span class="tl-strip"><span class="tl-dots" role="img" aria-label="' + esc('Stages: ' + names.join('; ')) + '">' +
+    dots + '</span><span class="tl-dots-caption">' + esc(timelineStripCaption(strip, counted)) + '</span></span>';
+}
+
+// 365: the words beside the dots. The current stage and its place, else how many stages are done.
+function timelineStripCaption(strip, counted) {
+  if (counted.position > 0) {
+    // The place comes first, so a narrow card that cuts the line keeps it.
+    return 'Stage ' + counted.position + ' of ' + counted.total + ': ' + vocabularyKindLabel('stage_labels', strip.current);
+  }
+  if (counted.total > 0 && counted.done === counted.total) return 'All ' + counted.total + ' stages done';
+  return counted.done + ' of ' + counted.total + ' stages done';
 }
 
 // The strip of one card, from the snapshot's card_pipeline (any symphony), or null.

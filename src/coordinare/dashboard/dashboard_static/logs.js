@@ -151,11 +151,11 @@ function logsAction(action) {
 
 // Debounce commit bursts, retaining one catchup when a commit arrives during a read.
 function logsChanged() {
-  if (location.pathname !== '/logs' || !_logsPage.live || _logsPage.scope === null) return;
+  if (location.pathname !== '/activity/logs' || !_logsPage.live || _logsPage.scope === null) return;
   if (_logsPage.timer !== null) clearTimeout(_logsPage.timer);
   _logsPage.timer = setTimeout(function() {
     _logsPage.timer = null;
-    if (location.pathname !== '/logs' || !_logsPage.live || _logsPage.scope === null) return;
+    if (location.pathname !== '/activity/logs' || !_logsPage.live || _logsPage.scope === null) return;
     if (_logsPage.busy) { _logsPage.dirty = true; return; }
     logsFirstPage();
   }, LOGS_LIVE_DEBOUNCE_MS);
