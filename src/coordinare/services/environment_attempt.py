@@ -208,7 +208,7 @@ class AttemptBudget:
     # spent seven, held the attempt.
     agent_evidence_phase_errors: dict[str, int] = field(default_factory=dict, repr=False)
     # Per native agent session (its phase key), the schema corrections it was charged this generation.
-    session_schema_repairs: dict[str, int] = field(default_factory=dict, repr=False)
+    agent_phase_schema_repairs: dict[str, int] = field(default_factory=dict, repr=False)
     agent_checkpoints: dict[str, CheckpointReference] = field(default_factory=dict, repr=False)
     agent_phase_calls: dict[str, int] = field(default_factory=dict, repr=False)
     # Per author (discovery, its global part, each check group): the source files, by digest, it read in full in an
@@ -275,13 +275,13 @@ class AttemptBudget:
         the generation's max_schema_repairs as before."""
         if session is None:
             return max(0, self.max_schema_repairs - self.schema_repairs)
-        own = self.max_schema_repairs - self.session_schema_repairs.get(session, 0)
+        own = self.max_schema_repairs - self.agent_phase_schema_repairs.get(session, 0)
         return max(0, min(own, SCHEMA_BACKSTOP_FACTOR * self.max_schema_repairs - self.schema_repairs))
 
     def charge_schema(self, session: str | None = None) -> None:
         self.schema_repairs += 1
         if session is not None:
-            self.session_schema_repairs[session] = self.session_schema_repairs.get(session, 0) + 1
+            self.agent_phase_schema_repairs[session] = self.agent_phase_schema_repairs.get(session, 0) + 1
 
     def reserve_repair(self, kind: RepairKind, *, session: str | None = None) -> None:
         self.check()
@@ -368,7 +368,7 @@ class AttemptBudget:
                 "agent_retries": self.agent_retries,
                 "invalid_evidence_calls": self.agent_evidence_errors,
                 "shard_agents": self.shard_agents, "shard_schema_repairs": self.shard_schema_repairs,
-                "max_session_schema_repairs": max(self.session_schema_repairs.values(), default=0),
+                "max_phase_schema_repairs": max(self.agent_phase_schema_repairs.values(), default=0),
                 "validation_codes": list(self.validation_codes),
                 "call_stats": {phase: dict(stats) for phase, stats in self.call_stats.items()},
                 "scope_reused_from": self.scope_reused_from}

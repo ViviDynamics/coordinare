@@ -81,7 +81,7 @@ def test_each_native_session_has_its_own_schema_allowance_within_a_backstop():
         budget.reserve_repair('schema', session='author')
     assert budget.schema_repairs == SCHEMA_BACKSTOP_FACTOR * 4
     assert budget.schema_repairs_left('third') == 0
-    assert budget.summary()['max_session_schema_repairs'] == 4
+    assert budget.summary()['max_phase_schema_repairs'] == 4
     # Without a session (the JSON transport) the generation total is the limit, as before.
     legacy = AttemptBudget(max_calls=99, max_reads=99, max_coverage_revisions=1, max_schema_repairs=2)
     legacy.reserve_repair('schema')
@@ -93,7 +93,7 @@ def test_each_native_session_has_its_own_schema_allowance_within_a_backstop():
 def test_the_journal_keeps_each_sessions_corrections():
     from coordinare.services.environment_repair import RepairJournal
     fields = RepairJournal.model_fields
-    assert 'session_schema_repairs' in fields
+    assert 'agent_phase_schema_repairs' in fields
     assert fields['schema_repairs'].metadata[-1].le == SCHEMA_BACKSTOP_FACTOR * 16
 
 

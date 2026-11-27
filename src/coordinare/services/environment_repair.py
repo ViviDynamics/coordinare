@@ -243,7 +243,7 @@ class RepairJournal(BaseModel):
     reads: int = Field(default=0, ge=0)
     verification_reads: int = Field(default=0, ge=0)
     schema_repairs: int = Field(default=0, ge=0, le=SCHEMA_BACKSTOP_FACTOR * REPAIR_LIMITS["schema"])
-    session_schema_repairs: dict[str, NonNegativeInt] = Field(default_factory=dict)
+    agent_phase_schema_repairs: dict[str, NonNegativeInt] = Field(default_factory=dict)
     coverage_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["coverage"])
     scope_revisions: int = Field(default=0, ge=0, le=REPAIR_LIMITS["scope"])
     execution_repairs: int = Field(default=0, ge=0, le=REPAIR_LIMITS["execution"])
@@ -616,8 +616,8 @@ def _save_agent_accounting(journal: RepairJournal, budget: AttemptBudget) -> Non
     journal.agent_evidence_error_receipts |= budget.agent_evidence_error_receipts
     journal.agent_evidence_phase_errors = {key: max(journal.agent_evidence_phase_errors.get(key, 0), value)
                                            for key, value in budget.agent_evidence_phase_errors.items()}
-    journal.session_schema_repairs = {key: max(journal.session_schema_repairs.get(key, 0), value)
-                                      for key, value in budget.session_schema_repairs.items()}
+    journal.agent_phase_schema_repairs = {key: max(journal.agent_phase_schema_repairs.get(key, 0), value)
+                                      for key, value in budget.agent_phase_schema_repairs.items()}
     journal.trial_runs = max(journal.trial_runs, budget.trial_runs)
     journal.shard_schema_repairs = max(journal.shard_schema_repairs, budget.shard_schema_repairs)
     journal.agent_checkpoints = {key: value.model_copy(deep=True) for key, value in budget.agent_checkpoints.items()}
@@ -677,7 +677,7 @@ def _budget(journal: RepairJournal, now: float) -> AttemptBudget:
         if getattr(journal, name) > limit:
             _refuse(f"environment {name} limit exceeded after configuration change", code=HOLD_CODES[kind])
     budget.schema_repairs = journal.schema_repairs
-    budget.session_schema_repairs = dict(journal.session_schema_repairs)
+    budget.agent_phase_schema_repairs = dict(journal.agent_phase_schema_repairs)
     budget.coverage_revisions = journal.coverage_revisions
     budget.scope_revisions = journal.scope_revisions
     budget.execution_repairs = journal.execution_repairs
@@ -1428,7 +1428,7 @@ def prepare_repair(cache: EnvCacheState, *, now: float | None = None) -> tuple[E
     # Maintainer ruling (2026-10-29): each execution repair gets its own schema-correction budget. Construction's review
     # rounds used six of e2e-11's eight, leaving its repair two.
     journal.schema_repairs = 0
-    journal.session_schema_repairs = {}
+    journal.agent_phase_schema_repairs = {}
     # Maintainer ruling (2026-11-23): coverage revisions too. nare-native-031 held on attempt_coverage_limit in its
     # sixth generation: the first manifest's review used four of the attempt's eight, and five repairs the rest.
     journal.coverage_revisions = 0
