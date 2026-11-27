@@ -493,8 +493,6 @@ def _is_model_type(annotation: Any) -> bool:
 
 
 def _is_union(annotation: Any) -> bool:
-    import types
-
     return typing.get_origin(annotation) in (typing.Union, types.UnionType)
 
 

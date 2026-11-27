@@ -28,6 +28,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import signal
 import sys
 import time
@@ -593,6 +594,4 @@ def _shrink(job_dir: Path) -> bool:
 
 
 def _remove_tree(path: Path) -> None:
-    import shutil
-
     shutil.rmtree(path, ignore_errors=True)
