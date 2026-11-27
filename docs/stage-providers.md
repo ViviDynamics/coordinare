@@ -20,7 +20,8 @@ Every provider fills the same contract (`src/coordinare/services/stage_contract.
 | Output | a verdict (`pass`, `changes_requested` or `needs_human`), the findings, the head that was actually judged, and a reference to the record |
 
 A stage that plans (architecting) takes a work item instead: the issue, pinned to the text
-the planner reads (its title and body, and the clarifications coordinare recorded). Its
+the planner reads (its title and body, and the clarifications coordinare recorded) and any
+feedback routed back to it. Its
 output is a blueprint, and the verdict belongs to the issue text it was planned from. See
 [Progettare for the architecting stage](#progettare-for-the-architecting-stage).
 
@@ -244,9 +245,11 @@ recorded are compared with the issue's current ones, and a plan of text that cha
 is refused and the current text planned.
 
 Feedback routed back to the architect, such as security findings or an observer's
-correction, cannot reach Progettare, and the issue text has not changed, so planning again
-would hand back the same plan. The card blocks instead, saying so. Answer on the card, edit
-the issue, or restart the architecting stage.
+correction, cannot reach Progettare: it reads the issue, not coordinare's feedback. The
+feedback is part of the pin all the same, so the stage plans again once for each batch
+instead of handing back the plan that drew it, and a replay of the same batch (a retry, a
+restart) finds that run. If the new plan draws the same findings, coordinare's bounce budget
+blocks the card. To steer the plan, put what it must address in the issue.
 
 ### Answering a blocked run
 

@@ -45,6 +45,12 @@ def _tail(text: str | bytes | None) -> str:
     return (text or "").strip()[-_TAIL:]
 
 
+def _progettare_env() -> dict[str, str]:
+    """Progettare's environment: the runner's, without coordinare's own Python, so a
+    Python-based CLI in its own environment never imports coordinare's packages."""
+    return {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV")}
+
+
 def _git_env(host: str) -> dict[str, str]:
     """The environment git clones with: the token as an extra header, no prompts."""
     env = dict(os.environ)
@@ -99,7 +105,7 @@ async def _plan(spec: dict[str, Any], directory: Path, checkout: Path, lock_fd: 
                 spec["command"], "blueprint", "--issue", spec["issue"], "--repo", str(checkout),
                 "--config", str(config), "--runs-dir", str(runs),
                 stdin=asyncio.subprocess.DEVNULL, stdout=out, stderr=err, cwd=directory,
-                pass_fds=(lock_fd,), start_new_session=True,
+                pass_fds=(lock_fd,), start_new_session=True, env=_progettare_env(),
             )
         except OSError as exc:
             return {"phase": "progettare", "exit_code": None, "detail": f"{type(exc).__name__}: {exc}"}

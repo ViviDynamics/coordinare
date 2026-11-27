@@ -60,12 +60,20 @@ def _plannable_brief_location(location: str, docs_root: str) -> bool:
     return location.startswith(f"{docs_root.rstrip('/')}/")
 
 
+#: Page names a topic must never take: the docs root's own index and navigation pages.
+_RESERVED_PAGES = frozenset({"readme", "index", "home", "sidebar", "_sidebar", "footer", "_footer"})
+
+
 def _placed_by_topic(entry: dict[str, Any], docs_root: str) -> str:
     """403: where a brief entry that names no location is written: a page under the
     resolved docs root, named by its topic. A planner that names topics only (Progettare)
-    would otherwise have every topic dropped. No topic, no page."""
-    slug = re.sub(r"[^a-z0-9]+", "-", str(entry.get("topic") or "").lower()).strip("-")[:60].strip("-")
-    return f"{docs_root.rstrip('/')}/{slug}.md" if slug else ""
+    would otherwise have every topic dropped. Empty when the topic gives no name."""
+    slug = re.sub(r"[\W_]+", "-", str(entry.get("topic") or "").lower()).strip("-")[:60].strip("-")
+    if not slug:
+        return ""
+    if slug in _RESERVED_PAGES:
+        slug = f"topic-{slug}"
+    return f"{docs_root.rstrip('/')}/{slug}.md"
 
 
 def _collect_brief_entries(
@@ -79,6 +87,9 @@ def _collect_brief_entries(
     for entry in brief_docs:
         location = entry.get("location", "") or _placed_by_topic(entry, docs_root)
         if not location:
+            topic = str(entry.get("topic") or "").strip()
+            if topic and f"topic without a place: {topic}" not in refused:
+                refused.append(f"topic without a place: {topic}")
             continue
 
         if not _plannable_brief_location(location, docs_root):

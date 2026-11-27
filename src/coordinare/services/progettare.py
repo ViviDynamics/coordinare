@@ -168,19 +168,27 @@ class ProgettareProvider:
         return token
 
     async def _check_version(self) -> None:
-        """Checked before every run, so an upgrade under a running daemon is noticed."""
+        """Checked before every run, so an upgrade under a running daemon is noticed.
+
+        A version that differs from the pin, or a CLI that is not there, is a configuration
+        error and blocks. A CLI that does not answer in time is retried.
+        """
         found = await self._installed_version()
+        if found is None:
+            msg = f"stage provider {self.name!r}: could not read the version of {self._config.command} in time"
+            raise TransportError(msg)
         if found != self._config.version:
             msg = (
                 f"stage provider {self.name!r}: {self._config.command} --version reports "
-                f"{found or 'nothing'}, but version {self._config.version} is pinned; install "
+                f"{found or 'nothing (is it installed?)'}, but version {self._config.version} is pinned; install "
                 "the pinned release or change stage_providers."
                 f"{self.name}.version"
             )
             raise PerformerAuthError(msg)
 
-    async def _installed_version(self) -> str:
-        """What ``<command> --version`` prints, or empty when it cannot be run."""
+    async def _installed_version(self) -> str | None:
+        """What ``<command> --version`` prints; empty when it cannot be run, None when it
+        did not answer in time."""
         try:
             process = await asyncio.create_subprocess_exec(
                 self._config.command, "--version",
@@ -194,7 +202,7 @@ class ProgettareProvider:
         except TimeoutError:
             process.kill()
             await process.wait()
-            return ""
+            return None
         lines = out.decode("utf-8", "replace").strip().splitlines()
         return lines[-1].strip() if lines else ""
 
@@ -229,7 +237,7 @@ class ProgettareProvider:
                 "created_at": datetime.now(UTC).isoformat(),
             })
             try:
-                with (directory / "runner.log").open("ab") as log:
+                with (directory / "runner.log").open("wb") as log:
                     child = await asyncio.create_subprocess_exec(
                         self._python, "-m", "coordinare.services.progettare_runner", str(directory), str(fd),
                         stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=log, cwd=directory,
@@ -289,9 +297,9 @@ class ProgettareProvider:
             return _retry(ref, phase, f"{phase} failed: {detail}" if phase == "clone" else detail)
         run_dir = _run_dir(directory / "runs")
         if run_dir is None:
-            why = detail or _log_tail(directory / "runner.log") or (
-                "the run stopped before it recorded anything (was the host restarted?)"
-            )
+            why = detail or "the run stopped before it recorded anything (was the host restarted?)"
+            if not detail and (log := _log_tail(directory / "runner.log")):
+                why = f"{why}; the runner's log ends: {log}"
             return _retry(ref, phase or "interrupted", f"progettare recorded no run: {why}")
         try:
             manifest = _artifact(run_dir / "run.json", "run")
@@ -342,9 +350,11 @@ class ProgettareProvider:
 
     # -- health ---------------------------------------------------------------------
 
-    def _version_problem(self, executable: str, found: str) -> str | None:
+    def _version_problem(self, executable: str, found: str | None) -> str | None:
         if found == self._config.version:
             return None
+        if found is None:
+            return f"{executable} --version did not answer within {_VERSION_TIMEOUT_SECONDS}s"
         return f"{executable} --version reports {found or 'nothing'}, but {self._config.version} is pinned"
 
     def _environment_problem(self) -> str | None:
@@ -460,11 +470,12 @@ def _strings(value: Any, what: str) -> list[str]:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
+    # An OSError (a missing file included) propagates: reading again may succeed, so the
+    # caller retries. Only content that is not a JSON object is refused.
+    text = path.read_text(encoding="utf-8", errors="replace")
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        raise
-    except (OSError, ValueError) as exc:
+        record = json.loads(text)
+    except ValueError as exc:
         msg = f"{path.name} cannot be read: {exc}"
         raise ContractError(msg) from exc
     if not isinstance(record, dict):

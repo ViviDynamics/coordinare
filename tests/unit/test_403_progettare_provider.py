@@ -450,6 +450,7 @@ async def test_a_runner_that_died_says_why_from_its_log(tmp_path: Path, command:
     job = await _provider(tmp_path, command, origin).poll(ref)
     assert job.state is JobState.RETRYABLE
     assert "ModuleNotFoundError" in job.reason
+    assert "restarted" in job.reason
 
 
 @pytest.mark.asyncio
@@ -472,3 +473,34 @@ def test_the_run_gets_the_proxy_and_import_path_it_needs(
     assert env["HTTPS_PROXY"] == "http://proxy.internal:3128"
     assert env["PYTHONPATH"] == "/opt/coordinare/src"
     assert "NOT_FOR_PROGETTARE" not in env
+
+
+@pytest.mark.asyncio
+async def test_a_version_that_cannot_be_read_in_time_is_retryable(
+    tmp_path: Path, command: Path, origin: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import coordinare.services.progettare as progettare
+
+    monkeypatch.setattr(progettare, "_VERSION_TIMEOUT_SECONDS", 0.2)
+    slow = tmp_path / "bin" / "slow-progettare"
+    slow.write_text("#!/bin/sh\nsleep 5\n")
+    slow.chmod(0o755)
+    provider = _provider(tmp_path, slow, origin)
+    with pytest.raises(TransportError, match="could not read"):
+        await provider.submit(_request(), _request().request_id(1))
+    missing = _provider(tmp_path, tmp_path / "bin" / "absent", origin)
+    with pytest.raises(PerformerAuthError, match="is it installed"):
+        await missing.submit(_request(), _request().request_id(1))
+
+
+@pytest.mark.asyncio
+async def test_progettare_does_not_inherit_coordinares_python(
+    tmp_path: Path, command: Path, origin: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VIRTUAL_ENV", "/opt/coordinare/.venv")
+    provider = _provider(tmp_path, command, origin)
+    ref = _request().request_id(1)
+    await provider.submit(_request(), ref)
+    assert (await _settled(provider, ref)).state is JobState.DONE
+    (invocation,) = _invocations(tmp_path, ref)
+    assert "VIRTUAL_ENV" not in invocation["env"]

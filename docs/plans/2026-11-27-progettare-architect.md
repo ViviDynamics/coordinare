@@ -39,7 +39,9 @@ Out:
 ## Assumptions
 - The CLI posts nothing to GitHub and commits nothing, so no failed attempt can have
   delivered anything: every failure is safe to retry under the next attempt.
-- The pin is the issue's title and body plus the clarifications coordinare recorded.
+- The pin is the issue's title and body, the clarifications coordinare recorded, and any
+  feedback routed back to the architect (which Progettare cannot read, but which must not
+  hand back the plan that drew it).
   An edited body or a new answer is a new request, so it starts a new run; a restart
   with neither finds the same run. Progettare reads acceptance criteria from the body,
   so an intake question is answered by editing the body.

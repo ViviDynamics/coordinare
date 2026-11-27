@@ -84,6 +84,8 @@ _ISSUE_URL = re.compile(
 )
 #: The fields of a recorded clarification that carry what a person said.
 _CLARIFICATION_CONTENT = ("questions", "answer", "comment_id", "body")
+#: The fields of a routed-back feedback item that say what it asks for.
+_FEEDBACK_CONTENT = ("body", "path", "line", "kind")
 #: Planning a work item that is not a GitHub issue needs Progettare to take it as data.
 WORK_ITEM_AS_DATA_ISSUE = "ViviDynamics/progettare#68"
 
@@ -276,8 +278,16 @@ def work_item_digest(title: str, body: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def work_item_pin(digest: str, clarifications: Any) -> str:
-    """The pin of a planning request: the issue text and the answers recorded so far."""
+def work_item_pin(digest: str, clarifications: Any, feedback: Any = None) -> str:
+    """The pin of a planning request: the issue text, the answers recorded so far, and
+    any feedback routed back to the planner.
+
+    A planner reads the issue, not coordinare's feedback, so feedback routed back to the
+    architect (security's findings, an observer's correction) cannot steer it. Pinning
+    it still matters: the stage plans again once for each batch instead of handing back
+    the plan that drew it, and a replay of the same batch (a retry, a restart) finds that
+    run instead of starting another. Coordinare's bounce budget bounds the loop.
+    """
     # What a clarification says, in either shape coordinare records: a blocked card's
     # answer (questions, answer) or a routed comment (comment_id, body). Bookkeeping
     # fields stay out, so they cannot make a restart look like a new request.
@@ -286,7 +296,13 @@ def work_item_pin(digest: str, clarifications: Any) -> str:
         for c in (clarifications if isinstance(clarifications, list) else [])
         if isinstance(c, dict)
     ]
-    payload = json.dumps([digest, answers], sort_keys=True, separators=(",", ":"), default=str)
+    routed = [
+        {key: f.get(key) for key in _FEEDBACK_CONTENT if f.get(key) not in (None, "", [])}
+        for f in (feedback if isinstance(feedback, list) else [])
+        if isinstance(f, dict)
+    ]
+    pinned: list[Any] = [digest, answers, routed] if routed else [digest, answers]
+    payload = json.dumps(pinned, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode()).hexdigest()[:40]
 
 
@@ -675,30 +691,6 @@ class WorkItemStageService(ExternalStageService):
             "reason": f"{self._provider.name} takes no relayed feedback; it plans each request afresh",
         }
 
-    async def dispatch_card(
-        self,
-        card_context: dict[str, Any],
-        workspace_info: Any = None,
-        **ignored: Any,
-    ) -> dict[str, Any]:
-        """Refuse feedback routed back to the planner, unless an operator restarted the stage.
-
-        Findings sent back to the architect (security's, an observer's correction) cannot
-        reach the planner, and the pin does not move, so a plain dispatch would hand back
-        the plan that drew them. A person decides: answer on the card, edit the issue, or
-        restart the stage to plan again.
-        """
-        queued = card_context.get("relay_feedback")
-        card_id = str(card_context.get("id") or "").strip()
-        if isinstance(queued, list) and queued and card_id not in self._fresh:
-            msg = (
-                f"{self._provider.name} takes no feedback, and {len(queued)} item(s) were routed "
-                "back to the architect. Answer on the card, edit the issue, or restart the "
-                "architecting stage to plan again"
-            )
-            raise PerformerAuthError(msg)
-        return await super().dispatch_card(card_context, workspace_info, **ignored)
-
     async def _request_for(self, card_context: dict[str, Any]) -> WorkItemRequest:
         card_id = str(card_context.get("id") or "").strip()
         issue_url = str(card_context.get("issue_url") or "").strip()
@@ -725,7 +717,11 @@ class WorkItemStageService(ExternalStageService):
             number=number,
             node_id=node,
             host=host,
-            pin=work_item_pin(work_item_digest(snapshot.title, snapshot.body), card_context.get("clarifications")),
+            pin=work_item_pin(
+                work_item_digest(snapshot.title, snapshot.body),
+                card_context.get("clarifications"),
+                card_context.get("relay_feedback"),
+            ),
         )
 
     async def _item(self, repository: str, node: str) -> WorkItemSnapshot:

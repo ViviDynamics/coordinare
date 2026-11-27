@@ -282,17 +282,18 @@ async def test_an_operator_restart_plans_again(planner: FakePlanner, issues: Fak
 
 
 @pytest.mark.asyncio
-async def test_feedback_routed_back_to_the_planner_blocks_instead_of_replaying_the_plan(
+async def test_feedback_routed_back_to_the_planner_plans_again_once_per_batch(
     planner: FakePlanner, issues: FakeIssues,
 ) -> None:
     service = _service(planner, issues)
     session = (await service.dispatch_card(dict(CARD)))["session_id"]
     planner.finish(_ref(session), _passed(_pin()))
     bounced = {**CARD, "relay_feedback": [{"body": "SQL injection in export.py", "author_login": "security"}]}
-    with pytest.raises(PerformerAuthError, match="takes no feedback"):
-        await service.dispatch_card(bounced)
-    assert len(planner.submitted) == 1
-    # An operator restart plans again, and the feedback cannot ride along.
-    service.set_fresh_attempt("PVTI_card1", allowed=True)
-    fresh = await service.dispatch_card(bounced)
-    assert _ref(fresh["session_id"]) == _request().request_id(2)
+    again = await service.dispatch_card(bounced)
+    # Never the plan that drew the feedback: a new request, at its first attempt.
+    assert _ref(again["session_id"]) != _ref(session)
+    assert _ref(again["session_id"]).endswith(".1")
+    # The same batch replayed (a retry, a restart) finds that run, never a third.
+    assert (await service.dispatch_card(dict(bounced)))["session_id"] == again["session_id"]
+    other = {**CARD, "relay_feedback": [{"body": "and the import too", "author_login": "security"}]}
+    assert (await service.dispatch_card(other))["session_id"] != again["session_id"]

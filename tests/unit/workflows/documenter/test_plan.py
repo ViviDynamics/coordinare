@@ -220,3 +220,17 @@ def test_403_a_topic_without_a_location_is_placed_under_the_docs_root():
     assert refused == []
     plans, _deferred, _refused = select_pages([{"topic": "", "location": "", "say": "x"}], [], [], 8, "docs")
     assert all(p.source != "brief" for p in plans)
+
+
+def test_403_a_topic_that_cannot_be_placed_is_reported_and_the_index_is_never_shadowed():
+    brief_docs = [
+        {"topic": "CSV エクスポート", "location": "", "say": "x"},
+        {"topic": "README", "location": "", "say": "y"},
+        {"topic": "!!!", "location": "", "say": "z"},
+    ]
+    plans, _deferred, refused = select_pages(brief_docs, [], [], 8, "docs")
+    paths = [p.path for p in plans]
+    assert "docs/csv-エクスポート.md" in paths
+    assert "docs/topic-readme.md" in paths
+    assert not any(p.lower() == "docs/readme.md" and p != "docs/README.md" for p in paths)
+    assert "topic without a place: !!!" in refused
