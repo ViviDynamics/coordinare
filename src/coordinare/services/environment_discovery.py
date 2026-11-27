@@ -289,6 +289,22 @@ RUNTIME_BIND_MOUNTS = (
     'guest, and no image layer can make a bind-mounted path writable. Keep what a container bind-mounts under one of '
     'those roots, and leave TMPDIR as the daemon sets it so the project\'s own temporary directories land there.'
 )
+# nare-native-044: every command was bash -lc; /etc/profile reset PATH, docker lost the runtime's ssh helper, and the
+# repair wrote "Host * / StrictHostKeyChecking no" into HOME's ssh config instead.
+LOGIN_SHELL_RULE = (
+    'Run shell commands with bash -c, never a login shell (bash -l, bash -lc, sh -l): commands get PATH from the '
+    'daemon (activation.path and the runtime\'s helpers), and a login shell re-reads /etc/profile, which may reset it.'
+)
+RUNTIME_DOCKER_CONNECTION = (
+    'The runtime\'s Docker connection (DOCKER_HOST over ssh, whose helper on PATH holds the guest\'s host key and the '
+    'client key) belongs to the daemon. Never write ssh configuration or keys, or disable host-key checking. A docker '
+    'error such as "Host key verification failed" or "Permission denied (publickey)" means the command lost the daemon\'s '
+    'PATH or environment (for example through a login shell); repair that command.'
+)
+SSH_WEAKENING_REVIEW = (
+    'Reject a command that disables ssh host-key checking (StrictHostKeyChecking no, UserKnownHostsFile /dev/null) or '
+    'writes ssh configuration or keys: the runtime owns its Docker connection.'
+)
 # nare-native-043: reviewers held findings open for want of recorded results of checks the candidate had just added.
 UNRUN_CHECKS_REVIEW = (
     'A check or service this candidate adds or changes has not run: execution follows acceptance. Judge it by its '
@@ -315,7 +331,7 @@ EXECUTABLE_REVIEW_CRITERIA = (
     'Compare every prior rejected manifest and execution result in untrusted_execution_history with this candidate. '
     'Its failure_output shows why each failed command failed; global_part.install shows this candidate\'s install commands. '
     'A failed step resubmitted unchanged, with nothing it depends on changed, does not repair that failure. '
-    f'{UNRUN_CHECKS_REVIEW} '
+    f'{UNRUN_CHECKS_REVIEW} {SSH_WEAKENING_REVIEW} '
     'fixed_ids lists commands an earlier execution ran: no repair may change them (only a longer timeout). A finding '
     'about one must ask for what can change: installation, activation (for example its env or PATH), or another '
     'service or check, and never for that command\'s own text. '
@@ -1583,7 +1599,8 @@ async def _discover_attempt(
                 "inventory_digest": hashlib.sha256(_json(inventory).encode()).hexdigest(),
                 "execution_capabilities": capabilities.model_dump(), "capabilities_digest": capabilities.digest(),
                 "platform_roles": platform_roles(capabilities),
-                **({"runtime_bind_mounts": RUNTIME_BIND_MOUNTS} if capabilities.runtime is not None else {}),
+                **({"runtime_bind_mounts": RUNTIME_BIND_MOUNTS, "runtime_docker_connection": RUNTIME_DOCKER_CONNECTION}
+                   if capabilities.runtime is not None else {}),
                 "execution_rules": "{cache} persists across jobs and is read-only in clean verification; "
                 "{repo} is disposable pinned source, {scratch} is fresh writable storage. "
                 "They may have different absolute paths in installer, verifier and consumer. "
@@ -1599,6 +1616,7 @@ async def _discover_attempt(
                 "Use {repo}/{cache}/{scratch} roots literally; ${NAME} references runtime env, not roots. "
                 "The lowercase shell variables ${repo}, ${cache} and ${scratch} are not automatically defined. "
                 "argv executes a program without a shell. Shell builtins require explicit bash -c. "
+                f"{LOGIN_SHELL_RULE} "
                 "Commands run in separate processes: source/cd/export do not persist. "
                 "Required checks must verify installed state without installer-only prerequisites. "
                 "Clean verification has no network. A check consumes an artifact that installation persisted (an image, tool, package "

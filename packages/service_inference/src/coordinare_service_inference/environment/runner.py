@@ -50,6 +50,10 @@ GENERATED_NAMES_ENV = "COORDINARE_ENV_GENERATED_NAMES"
 # Carrier images create it world-writable and sticky; probes mount a tmpfs there. Where it is absent, as on a
 # developer host, the inherited TMPDIR stays.
 COMMAND_TMPDIR = "/var/tmp/coordinare"
+# The directories the daemon puts in front of PATH, for the carrier's /etc/profile.d hook
+# (environment_carrier.LOGIN_PATH_HOOK): nare-native-044 ran every command as bash -lc, whose /etc/profile reset PATH,
+# so docker lost the runtime's ssh helper ("Host key verification failed") and checks lost activation.path.
+LOGIN_PATH_ENV = "COORDINARE_ENV_PATH"
 # The activation result a failed required install leaves: not_run, its output led by this and naming the installs.
 ACTIVATION_CONSEQUENCE = "declared activation path not created; "
 
@@ -370,9 +374,13 @@ def manifest_environment(
     env["PATH"] = os.pathsep.join(dict.fromkeys(
         path for path in [*paths, *env.get("PATH", "").split(os.pathsep)] if path
     ))
-    if runtime_env is not None:
-        prefix = runtime_env.get("PATH", "").split(os.pathsep)[0]
+    prefix = runtime_env.get("PATH", "").split(os.pathsep)[0] if runtime_env is not None else ""
+    if prefix:
         env["PATH"] = os.pathsep.join(dict.fromkeys(part for part in [prefix, *env["PATH"].split(os.pathsep)] if part))
+    if leading := [part for part in dict.fromkeys([prefix, *paths]) if part]:
+        env[LOGIN_PATH_ENV] = os.pathsep.join(leading)
+    else:
+        env.pop(LOGIN_PATH_ENV, None)
     return env
 
 

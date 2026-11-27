@@ -21,7 +21,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from coordinare_service_inference.environment.runner import COMMAND_TMPDIR
+from coordinare_service_inference.environment.runner import COMMAND_TMPDIR, LOGIN_PATH_ENV
 
 # The coordinare daemon's own unprivileged uid (deploy/helm runAsUser), so a daemon-created directory on a Linux host
 # is already owned by the carrier. Each carrier image defines this user, because ssh and ssh-keygen (the private
@@ -43,10 +43,15 @@ USER_NAMESPACE_RULE: dict[str, Any] = {
     'comment': 'coordinare: unprivileged user namespaces for sandbox tools such as bubblewrap; the kernel still '
                'requires capabilities inside the new namespace'}
 
+# A login shell (bash -lc) re-reads /etc/profile, which resets PATH; this hook, sourced from /etc/profile.d after that,
+# puts back what the daemon placed in front (runner.LOGIN_PATH_ENV). nare-native-044's every command was bash -lc.
+LOGIN_PATH_HOOK = '/etc/profile.d/coordinare-env-path.sh'
+_HOOK_LINE = f'if [ -n "${{{LOGIN_PATH_ENV}:-}}" ]; then PATH="${{{LOGIN_PATH_ENV}}}:${{PATH}}"; export PATH; fi'
 CARRIER_IMAGE_USER_STEP = (
     f'getent passwd {CARRIER_UID} >/dev/null || {{ groupadd -g {CARRIER_UID} {CARRIER_ACCOUNT} && '
     f'useradd -u {CARRIER_UID} -g {CARRIER_UID} -M -d {CARRIER_HOME} -s /bin/bash {CARRIER_ACCOUNT}; }}; '
-    f'install -d -m 1777 {COMMAND_TMPDIR}')
+    f'install -d -m 1777 {COMMAND_TMPDIR}; '
+    f"mkdir -p /etc/profile.d && printf '%s\\n' '{_HOOK_LINE}' > {LOGIN_PATH_HOOK}")
 
 
 def carrier_seccomp_profile() -> dict[str, Any]:

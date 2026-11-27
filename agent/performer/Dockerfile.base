@@ -99,7 +99,8 @@ COPY agent/performer/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 # The unprivileged account environment carriers run every manifest command as
 # (src/coordinare/services/environment_carrier.py); ssh needs its passwd entry. Manifest
-# and probe commands use /var/tmp/coordinare as TMPDIR (runner.COMMAND_TMPDIR).
-RUN getent passwd 10001 >/dev/null || { groupadd -g 10001 coordinare && useradd -u 10001 -g 10001 -M -d /tmp/home -s /bin/bash coordinare; }; install -d -m 1777 /var/tmp/coordinare
+# and probe commands use /var/tmp/coordinare as TMPDIR (runner.COMMAND_TMPDIR). A login shell
+# keeps the daemon's PATH through the /etc/profile.d hook (environment_carrier.LOGIN_PATH_HOOK).
+RUN getent passwd 10001 >/dev/null || { groupadd -g 10001 coordinare && useradd -u 10001 -g 10001 -M -d /tmp/home -s /bin/bash coordinare; }; install -d -m 1777 /var/tmp/coordinare; mkdir -p /etc/profile.d && printf '%s\n' 'if [ -n "${COORDINARE_ENV_PATH:-}" ]; then PATH="${COORDINARE_ENV_PATH}:${PATH}"; export PATH; fi' > /etc/profile.d/coordinare-env-path.sh
 ENV PATH="/root/.local/bin:${PATH}"
 ENTRYPOINT ["/entrypoint.sh"]

@@ -57,6 +57,6 @@ def test_every_carrier_image_creates_it() -> None:
 
     from coordinare.services.environment_carrier import CARRIER_IMAGE_USER_STEP
 
-    assert CARRIER_IMAGE_USER_STEP.endswith(f'install -d -m 1777 {COMMAND_TMPDIR}')
+    assert f'install -d -m 1777 {COMMAND_TMPDIR};' in CARRIER_IMAGE_USER_STEP
     assert 'RUN ' + CARRIER_IMAGE_USER_STEP in (ROOT / 'agent/performer/Dockerfile.base').read_text()
     assert not COMMAND_TMPDIR.startswith('/tmp')
