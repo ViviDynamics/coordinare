@@ -72,6 +72,11 @@ _REF = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 #: How long a job directory may exist without a launch record before it counts as dead.
 _LAUNCH_GRACE_SECONDS = 120.0
+#: How long the runner's launcher may take to fork the run off.
+_LAUNCH_TIMEOUT_SECONDS = 60.0
+#: Past its timeout_seconds, how long a run without a status still counts as running.
+_OVERDUE_GRACE_SECONDS = 300.0
+_VERSION_TIMEOUT_SECONDS = 30.0
 
 
 class GitHubAccess:
@@ -121,13 +126,12 @@ class QAreProvider:
     ) -> None:
         self.name = name
         self._config = config
-        self._work_dir = work_dir
+        # Absolute: the runner works from the job directory, and a relative path would
+        # name a different place there.
+        self._work_dir = work_dir.expanduser().resolve()
         self._github = github
-        #: How to start the runner; tests run it in-process instead.
+        #: How to start the runner.
         self._runner_argv = runner_argv or [sys.executable, "-m", "coordinare.services.qare_runner"]
-        #: Runner processes this daemon started, so a finished one is reaped, not left a
-        #: zombie that looks alive. A runner from before a restart is not our child.
-        self._children: dict[str, asyncio.subprocess.Process] = {}
 
     @property
     def config(self) -> QAreProviderConfig:
@@ -186,13 +190,17 @@ class QAreProvider:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *self._config.command, "--version",
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
-        except (FileNotFoundError, PermissionError) as exc:
+        except OSError as exc:
             return False, f"{self._config.command[0]} could not be started: {exc.strerror or exc}"
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=_VERSION_TIMEOUT_SECONDS)
         except TimeoutError:
-            return False, "qare --version did not answer within 30 seconds"
+            proc.kill()
+            await proc.wait()
+            return False, f"qare --version did not answer within {_VERSION_TIMEOUT_SECONDS:.0f} seconds"
         installed = out.decode(errors="replace").strip()
         if proc.returncode != 0 or installed != self._config.version:
             shown = installed or err.decode(errors="replace").strip()[:200]
@@ -256,24 +264,23 @@ class QAreProvider:
         return token, spec
 
     async def _launch(self, ref: str, job_dir: Path, token: str) -> None:
+        """Start the runner, which forks the run off and exits once it has recorded its pid."""
         env = dict(os.environ)
         env[runner.CREDENTIAL_ENV] = token
         try:
             with (job_dir / runner.LOG_FILE).open("ab") as log:
-                # A session of its own, so the run outlives a daemon restart; asyncio's
-                # child watcher reaps it when it ends while this daemon still runs.
-                proc = await asyncio.create_subprocess_exec(
-                    *self._runner_argv, str(job_dir),
+                launcher = await asyncio.create_subprocess_exec(
+                    *self._runner_argv, "--detach", str(job_dir),
                     stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=log, env=env,
                     start_new_session=True, close_fds=True,
                 )
-        except OSError as exc:
-            msg = f"could not start the QAre runner: {exc}"
+                code = await asyncio.wait_for(launcher.wait(), timeout=_LAUNCH_TIMEOUT_SECONDS)
+        except (OSError, TimeoutError) as exc:
+            msg = f"could not start the QAre runner for {ref}: {type(exc).__name__}: {exc}"
             raise TransportError(msg) from exc
-        self._children[ref] = proc
-        runner._write_atomic(
-            job_dir / runner.LAUNCH_FILE, json.dumps({"pid": proc.pid, "started_at": time.time()}),
-        )
+        if code != 0 or _load_json(job_dir / runner.LAUNCH_FILE) is None:
+            msg = f"the QAre runner for {ref} did not start (exit {code}); see {job_dir / runner.LOG_FILE}"
+            raise TransportError(msg)
 
     def _read(self, ref: str) -> StageJob:
         job_dir = self.job_dir(ref)
@@ -281,25 +288,35 @@ class QAreProvider:
             return StageJob(ref=ref, state=JobState.RETRYABLE, detail="missing",
                             reason="the job's directory is gone, so nothing of it remains")
         status = _load_json(job_dir / runner.STATUS_FILE)
-        if status is None:
-            if self._running(ref, job_dir):
-                return StageJob(ref=ref, state=JobState.PENDING, detail="running")
-            return StageJob(ref=ref, state=JobState.RETRYABLE, detail="ended",
-                            reason="the QAre run ended without saying how (the runner stopped)")
-        self._children.pop(ref, None)
-        return job_from_status(ref, status, job_dir)
+        if status is not None:
+            return job_from_status(ref, status, job_dir)
+        if self._overdue(job_dir):
+            return StageJob(ref=ref, state=JobState.RETRYABLE, detail="overdue",
+                            reason="the QAre run passed its timeout without saying how it ended")
+        if self._running(job_dir):
+            return StageJob(ref=ref, state=JobState.PENDING, detail="running")
+        return StageJob(ref=ref, state=JobState.RETRYABLE, detail="ended",
+                        reason="the QAre run ended without saying how (the runner stopped)")
 
-    def _running(self, ref: str, job_dir: Path) -> bool:
-        child = self._children.get(ref)
-        if child is not None:
-            return child.returncode is None
+    def _running(self, job_dir: Path) -> bool:
         launch = _load_json(job_dir / runner.LAUNCH_FILE)
         if launch is None:
-            # Launched this instant, or the daemon stopped between the two writes.
+            # Being launched now, or the daemon stopped before the runner started.
             age = time.time() - job_dir.stat().st_mtime
             return age < _LAUNCH_GRACE_SECONDS
         pid = launch.get("pid")
         return isinstance(pid, int) and _alive(pid, job_dir)
+
+    def _overdue(self, job_dir: Path) -> bool:
+        """Past the run's own timeout with no status: whatever holds its pid is not the run.
+
+        Bounds a run whose pid was reused (a host restart) where the process cannot be told
+        apart by its command line.
+        """
+        spec = _load_json(job_dir / runner.REQUEST_FILE) or {}
+        created = spec.get("created_at")
+        limit = float(spec.get("timeout_seconds") or self._config.timeout_seconds) + _OVERDUE_GRACE_SECONDS
+        return isinstance(created, (int, float)) and time.time() - created > limit
 
 
 class _NoOutcomeError(Exception):

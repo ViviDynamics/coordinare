@@ -193,6 +193,33 @@ performers:
 - QAre pins its own harness, so the qa role's `backend`, `mode`, `workflow` and tuning have
   no effect while it is opted in.
 
+### Running QAre in its own container
+
+QAre runs the pull request's code: its checks, and the app it boots. A host install runs
+those where coordinare runs. To keep them off that host, run QAre from its published image at
+the same pinned release. The runner hands QAre absolute paths under `work_dir`, so mount
+`work_dir` at the same path, run as a user that can write it, and forward the variables QAre
+needs with `-e`:
+
+```yaml
+stage_providers:
+  qare:
+    kind: qare
+    version: "2026.11.42"
+    work_dir: /var/lib/coordinare/qare
+    command: [docker, run, --rm, --user, "1000:1000",
+              -v, "/var/lib/coordinare/qare:/var/lib/coordinare/qare",
+              -e, OPENAI_API_KEY,
+              "ghcr.io/vividynamics/qare-web:2026.11.42"]
+    env_passthrough: [OPENAI_API_KEY]
+```
+
+The image's entry point is `qare`, so the runner's `--version`, `plan` and `run` reach it
+unchanged. A profile that boots an app needs a container runtime inside that container too;
+how much of the host to hand it (for example its Docker socket) is the operator's trust
+decision, as it is for coordinare's own containers (`docs/security/threat-model.md`). The
+checkout itself (step 2 below) is made by the runner, not by QAre.
+
 Opt one symphony in with `overrides.performers`, as for Scrutare.
 
 ### What a run does

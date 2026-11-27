@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -287,18 +290,50 @@ async def test_a_runner_that_died_without_a_status_is_retried(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_a_running_runner_is_pending(tmp_path: Path) -> None:
+async def test_a_running_runner_is_pending_until_it_stops(tmp_path: Path) -> None:
+    provider = QAreProvider("qare", _config(), work_dir=tmp_path)
+    job = tmp_path / "coordinare.qa.abc.1"
+    request_spec(job, web_base="file:///x", base="a" * 40, head=HEAD, created_at=time.time())
+    # A process standing in for the detached run, with its job directory on its command line.
+    run = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", str(job)])
+    try:
+        (job / runner.LAUNCH_FILE).write_text(json.dumps({"pid": run.pid}))
+        assert (await provider.poll(job.name)).state is JobState.PENDING
+    finally:
+        run.kill()
+        run.wait()
+    assert (await provider.poll(job.name)).state is JobState.RETRYABLE
+
+
+@pytest.mark.asyncio
+async def test_a_run_past_its_timeout_is_not_waited_on_forever(tmp_path: Path) -> None:
+    provider = QAreProvider("qare", _config(), work_dir=tmp_path)
+    job = tmp_path / "coordinare.qa.abc.1"
+    request_spec(job, web_base="file:///x", base="a" * 40, head=HEAD, created_at=time.time() - 10_000,
+                 timeout_seconds=60)
+    # Even a live pid (here this test's own) is not the run once its timeout is long past.
+    (job / runner.LAUNCH_FILE).write_text(json.dumps({"pid": os.getpid()}))
+    stage_job = await provider.poll(job.name)
+    assert stage_job.state is JobState.RETRYABLE
+    assert "timeout" in stage_job.reason
+
+
+@pytest.mark.asyncio
+async def test_a_runner_that_does_not_start_leaves_no_job(tmp_path: Path) -> None:
     provider = QAreProvider(
         "qare", _config(), work_dir=tmp_path, github=_access("http://127.0.0.1:9"),
-        runner_argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+        runner_argv=[sys.executable, "-c", "raise SystemExit(3)"],
     )
-    job = await provider.submit(_request("a" * 40, HEAD), "coordinare.qa.abc.1")
-    try:
-        assert (await provider.poll(job.ref)).state is JobState.PENDING
-    finally:
-        provider._children[job.ref].kill()
-        await provider._children[job.ref].wait()
-    assert (await provider.poll(job.ref)).state is JobState.RETRYABLE
+    with pytest.raises(TransportError, match="did not start"):
+        await provider.submit(_request("a" * 40, HEAD), "coordinare.qa.abc.1")
+    assert not (tmp_path / "coordinare.qa.abc.1").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_relative_work_dir_is_made_absolute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    provider = QAreProvider("qare", _config(), work_dir=Path("stage-providers/qare"))
+    assert provider.work_dir == tmp_path.resolve() / "stage-providers" / "qare"
 
 
 @pytest.mark.asyncio
@@ -338,5 +373,15 @@ async def test_health_requires_the_pinned_version(tmp_path: Path, monkeypatch: p
 @pytest.mark.asyncio
 async def test_health_names_a_missing_qare(tmp_path: Path) -> None:
     ok, detail = await QAreProvider("qare", _config(command=["/no/such/qare"]), work_dir=tmp_path).health()
+    assert not ok
+    assert "could not be started" in detail
+
+
+@pytest.mark.asyncio
+async def test_health_names_a_qare_that_cannot_be_executed(tmp_path: Path) -> None:
+    script = tmp_path / "qare.sh"
+    script.write_text("echo no shebang\n")
+    script.chmod(0o644)
+    ok, detail = await QAreProvider("qare", _config(command=[str(script)]), work_dir=tmp_path).health()
     assert not ok
     assert "could not be started" in detail

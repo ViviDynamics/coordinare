@@ -279,7 +279,7 @@ def _safe_relative(ref: str) -> str | None:
     if not ref or ref.startswith(("http://", "https://")):
         return None
     path = PurePosixPath(ref.replace("\\", "/"))
-    if path.is_absolute() or ".." in path.parts or ref.startswith("//") or ":" in path.parts[0]:
+    if not path.parts or path.is_absolute() or ".." in path.parts or ref.startswith("//") or ":" in path.parts[0]:
         return None
     return str(path)
 

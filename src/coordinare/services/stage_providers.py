@@ -75,9 +75,9 @@ def build_provider(
 def qare_work_dir(name: str, provider_config: QAreProviderConfig, config: Any) -> Path:
     """404: where a QAre provider keeps its runs. Beside the state file unless configured."""
     if provider_config.work_dir:
-        return Path(provider_config.work_dir).expanduser()
+        return Path(provider_config.work_dir).expanduser().resolve()
     state_file = Path(str(getattr(config, "state_file_path", "") or "coordinare.state.json")).expanduser()
-    return state_file.parent / "stage-providers" / name
+    return state_file.resolve().parent / "stage-providers" / name
 
 
 def role_provider(config: Any, stage: str) -> str | None:

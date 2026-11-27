@@ -521,9 +521,10 @@ async def _check_qare_profile(
 ) -> CheckResult:
     """The configured repository has QAre's profile on its default branch."""
     label = f"stage provider '{name}' QA profile"
-    repository = f"{config.github_org}/{config.project_name}" if config.project_name else ""
+    name = str(getattr(config, "github_repo", "") or config.project_name or "")
+    repository = f"{config.github_org}/{name}" if name else ""
     if not repository:
-        return CheckResult(label, Status.WARN, "project_name is not set, so no repository to check.",
+        return CheckResult(label, Status.WARN, "github_repo is not set, so no repository to check.",
                            f"Make sure each repository QA runs on has a {provider_config.profile}/ profile.")
     try:
         from coordinare.auth import build_auth
@@ -542,7 +543,11 @@ async def _check_qare_profile(
             })
     except httpx.HTTPError as exc:
         return CheckResult(label, Status.WARN, f"GitHub unreachable ({type(exc).__name__}).", None)
-    if response.status_code == HTTPStatus.OK and isinstance(response.json(), list):
+    try:
+        listing = response.json()
+    except ValueError:
+        listing = None
+    if response.status_code == HTTPStatus.OK and isinstance(listing, list):
         return CheckResult(label, Status.OK, f"{repository} has {provider_config.profile}/", None)
     if response.status_code == HTTPStatus.NOT_FOUND:
         return CheckResult(

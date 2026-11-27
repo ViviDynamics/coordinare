@@ -186,3 +186,12 @@ def test_a_symlink_in_the_evidence_is_not_uploaded(tmp_path: Path) -> None:
     files, skipped = qare_publish.collect_files(job, outcome)
     assert "evidence/checks/ac-1/1/link.txt" in skipped
     assert "evidence/checks/ac-1/1/link.txt" not in files
+
+
+@pytest.mark.parametrize("ref", [".", "./", "", "C:/x", "//host/share/x"])
+def test_odd_evidence_paths_are_left_out_not_fatal(tmp_path: Path, ref: str) -> None:
+    job, _spec, outcome = _job(tmp_path)
+    outcome.criteria[0].evidence.append(ref)
+    files, _skipped = qare_publish.collect_files(job, outcome)
+    assert "evidence/." not in files
+    assert all(name.startswith(("evidence/checks/", "result.json", "plan.json")) for name in files)

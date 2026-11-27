@@ -139,3 +139,43 @@ def test_main_takes_the_token_out_of_the_environment(tmp_path: Path, monkeypatch
     monkeypatch.setattr(runner, "run_job", fake_run)
     assert runner.main([str(tmp_path)]) == 0
     assert seen == {"token": TOKEN, "left": False}
+
+
+def test_a_pr_whose_base_is_its_head_runs_one_sided(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    web, _base, head = make_remote(tmp_path, profile_on_head=True)
+    path = scenario(tmp_path)
+    monkeypatch.setenv("FAKE_QARE_SCENARIO", str(path))
+    job = tmp_path / "jobs" / "coordinare.qa.abc.1"
+    request_spec(job, web_base=web, base=head, head=head)
+    status = runner.run_job(job, token=TOKEN)
+    assert status["outcome"] == runner.RAN, status
+    run_argv = calls(path)[-1]["argv"]
+    assert "--base-repo" not in run_argv
+    assert not (job / "base").exists()
+
+
+def test_a_diff_github_refuses_comes_from_the_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def too_large(request: dict, *, base: str, head: str, token: str, deadline: float) -> str:
+        raise runner._StopError({"outcome": runner.ERROR, "step": "diff", "reason": "GitHub compare answered 406"})
+
+    web, base, head = make_remote(tmp_path)
+    monkeypatch.setattr(runner, "_change_diff", too_large)
+    monkeypatch.setenv("FAKE_QARE_SCENARIO", str(scenario(tmp_path)))
+    job = tmp_path / "jobs" / "coordinare.qa.abc.1"
+    request_spec(job, web_base=web, base=base, head=head)
+    status = runner.run_job(job, token=TOKEN)
+    assert status["outcome"] == runner.RAN, status
+    diff = (job / runner.DIFF_FILE).read_text()
+    assert "-v1" in diff
+    assert "+v2" in diff
+    assert "406" in (job / runner.LOG_FILE).read_text()
+
+
+def test_a_relative_job_dir_works(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    web, base, head = make_remote(tmp_path)
+    monkeypatch.setenv("FAKE_QARE_SCENARIO", str(scenario(tmp_path)))
+    request_spec(tmp_path / "jobs" / "coordinare.qa.abc.1", web_base=web, base=base, head=head)
+    monkeypatch.chdir(tmp_path)
+    status = runner.run_job(Path("jobs/coordinare.qa.abc.1"), token=TOKEN)
+    assert status["outcome"] == runner.RAN, status
+    assert (tmp_path / "jobs" / "coordinare.qa.abc.1" / "repo" / "app.txt").exists()

@@ -63,24 +63,49 @@ _BASE_ENV = (
     "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
 )
 _TAIL = 1500
+#: The most of a locally computed diff handed to the planner.
+_MAX_DIFF_CHARS = 2_000_000
 #: Arguments of a command the log shows; the rest are paths it does not need.
 _SHOWN_ARGS = 3
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = sys.argv[1:] if argv is None else argv
+    args = list(sys.argv[1:] if argv is None else argv)
+    detach = bool(args) and args[0] == "--detach"
+    if detach:
+        args = args[1:]
     if len(args) != 1:
-        sys.stderr.write("usage: python -m coordinare.services.qare_runner <job dir>\n")
+        sys.stderr.write("usage: python -m coordinare.services.qare_runner [--detach] <job dir>\n")
         return 2
     token = os.environ.pop(CREDENTIAL_ENV, "")
-    run_job(Path(args[0]), token=token)
+    job_dir = Path(args[0]).resolve()
+    if detach and _detached(job_dir):
+        return 0  # the launcher: the run carries on in the detached child
+    run_job(job_dir, token=token)
     return 0
+
+
+def _detached(job_dir: Path) -> bool:
+    """Fork the run off in a session of its own; True in the launcher, which then exits.
+
+    The launcher's parent (the daemon) sees it exit at once, so nothing that owns the
+    launcher (an asyncio transport, a process group) can stop the run, and the run is
+    re-parented and reaped by the system. The launcher records the run's pid before it
+    exits, so the daemon knows the run started.
+    """
+    pid = os.fork()
+    if pid:
+        _write_atomic(job_dir / LAUNCH_FILE, json.dumps({"pid": pid, "started_at": time.time()}))
+        return True
+    os.setsid()
+    return False
 
 
 def run_job(job_dir: Path, *, token: str = "", env: dict[str, str] | None = None) -> dict[str, Any]:
     """Run the job in ``job_dir`` to its end and write ``status.json``. Returns the status."""
     source = dict(os.environ if env is None else env)
     source.pop(CREDENTIAL_ENV, None)
+    job_dir = job_dir.resolve()
     started = time.monotonic()
     try:
         request = json.loads((job_dir / REQUEST_FILE).read_text())
@@ -119,6 +144,8 @@ class _Run:
         self.base = str(request.get("base_sha") or "")
         self.repo = job_dir / "repo"
         self.base_dir = job_dir / "base"
+        #: Whether there is a base revision of its own to check (and so a base checkout).
+        self.two_sided = bool(self.base) and self.base != self.head
 
     async def run(self) -> dict[str, Any]:
         await self._check_version()
@@ -131,7 +158,7 @@ class _Run:
                 "reason": "the work item states no acceptance criteria, so QAre has nothing to prove",
             })
         _write_atomic(self.job_dir / CRITERIA_FILE, json.dumps(criteria, indent=2))
-        _write_atomic(self.job_dir / DIFF_FILE, await asyncio.to_thread(self._diff))
+        _write_atomic(self.job_dir / DIFF_FILE, await self._diff())
         code, _out, err = await self._call([
             *self.command, "plan", "--criteria", str(self.job_dir / CRITERIA_FILE),
             "--diff", str(self.job_dir / DIFF_FILE), "--profile", str(profile),
@@ -142,7 +169,7 @@ class _Run:
         run = [*self.command, "run", "--plan", str(self.job_dir / PLAN_FILE), "--id", self.request["request_id"],
                "--repo", str(self.repo), "--base", self.base or self.head, "--head", self.head,
                "--profile", str(profile), "--evidence", str(self.job_dir / EVIDENCE_DIR)]
-        if self.base:
+        if self.two_sided:
             run += ["--base-repo", str(self.base_dir)]
         code, _out, err = await self._call(run, cwd=self.repo, env=self.qare_env, step="run")
         if code is None:
@@ -175,7 +202,7 @@ class _Run:
                 "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {basic}",
             })
         url = f"{web}/{self.request['repository']}.git"
-        two_sided = bool(self.base) and self.base != self.head
+        two_sided = self.two_sided
         repo = str(self.repo)
         steps = [
             ["git", "init", "-q", repo],
@@ -191,7 +218,7 @@ class _Run:
 
     def _profile(self) -> Path:
         name = self.request.get("profile") or ".qa"
-        for side in ((self.base_dir,) if self.base and self.base != self.head else ()) + (self.repo,):
+        for side in ((self.base_dir,) if self.two_sided else ()) + (self.repo,):
             if (side / name).is_dir():
                 return side / name
         raise _StopError({
@@ -202,8 +229,29 @@ class _Run:
             ),
         })
 
-    def _diff(self) -> str:
-        return _change_diff(self.request, base=self.base, head=self.head, token=self.token, deadline=self.deadline)
+    async def _diff(self) -> str:
+        """The change for the planner: GitHub's compare, else the two checked-out trees.
+
+        GitHub refuses a compare diff past its size limits; the planner still gets one,
+        from the trees both fetched (a shallow checkout has no merge base, so it is the
+        two tips compared, and the run says so in its log).
+        """
+        if not self.two_sided:
+            return ""
+        try:
+            return await asyncio.to_thread(
+                _change_diff, self.request, base=self.base, head=self.head, token=self.token,
+                deadline=self.deadline,
+            )
+        except _StopError as refused:
+            code, out, err = await self._call(
+                ["git", "-C", str(self.repo), "diff", "--no-color", self.base, self.head],
+                cwd=self.job_dir, env={k: self.env[k] for k in _BASE_ENV if k in self.env},
+                step=f"diff (fallback: {refused.status.get('reason')})",
+            )
+            if code != 0:
+                raise _StopError({"outcome": ERROR, "step": "diff", "reason": _tail(err) or "git diff failed"}) from refused
+            return out[:_MAX_DIFF_CHARS]
 
     async def _call(self, argv: list[str], *, cwd: Path, env: dict[str, str], step: str) -> tuple[int | None, str, str]:
         """Run one command. ``None`` as the code when it could not be started."""
