@@ -299,14 +299,20 @@ def _work_item(board: dict[str, Any], item: str) -> WorkItem:
     return work_items_of(board).get(item) or WorkItem(id=item)
 
 
-def _issue_fields(work_item: WorkItem) -> dict[str, Any]:
-    """The code-host fields a card dict carries: the GitHub issue behind the item, if any.
+def _issue_fields(board: dict[str, Any], work_item: WorkItem) -> dict[str, Any]:
+    """The fields a card dict uses to address its work item.
 
-    Empty for an item with no GitHub issue; #397 names those items by reference.
+    ``issue_id`` is what reads and comments on the item go to. On GitHub
+    Projects that is the issue node id, as before (empty for a card without
+    one). An item from a provider that lists typed records and has no GitHub
+    issue is addressed by its own id, which that provider accepts. #397 names
+    such items on the code host.
     """
     issue = work_item.issue
+    typed = isinstance(board.get("items"), dict) if isinstance(board, dict) else False
+    own_id = work_item.id if typed else ""
     return {
-        "issue_id": issue.node_id if issue is not None else "",
+        "issue_id": issue.node_id if issue is not None else own_id,
         "issue_number": issue.number if issue is not None else 0,
         "issue_url": work_item.url,
     }
@@ -353,7 +359,7 @@ def _build_card_dict(item: str, board: dict[str, Any], status: str) -> dict[str,
     description = work_item.body
     return {
         "id": item,
-        **_issue_fields(work_item),
+        **_issue_fields(board, work_item),
         "title": work_item.title,
         "description": description,
         "acceptance_criteria": parse_acceptance_criteria(description),
@@ -985,7 +991,7 @@ def _refresh_current_card_metadata(
             titles, descriptions = _text_maps(board)
             fresh = _work_item(board, active_id)
             if active_id in titles or fresh.issue is not None:
-                fresh_fields = _issue_fields(fresh)
+                fresh_fields = _issue_fields(board, fresh)
                 refreshed_description = str(descriptions.get(active_id, active_card.get("description", "")))
                 active_card["title"] = str(titles.get(active_id, active_card.get("title", "")))
                 active_card["description"] = refreshed_description
@@ -1470,7 +1476,7 @@ async def _collect_blocked_clarification(
     )
     last_notified = sess_last if sess_last is not None else state.get("last_blocked_notified_at")
     # A caller may still pass the card id -> issue node id map it holds.
-    issue_node_id = str((issue_ids or {}).get(item, "")) or _issue_fields(_work_item(board, item))["issue_id"]
+    issue_node_id = str((issue_ids or {}).get(item, "")) or _issue_fields(board, _work_item(board, item))["issue_id"]
     if last_notified is not None and isinstance(last_notified, datetime):
         try:
             details = await board_provider.get_card(issue_node_id or item)
@@ -1586,7 +1592,7 @@ async def _handle_blocked_cards(
             description = blocked_item.body
             blocked_card_dict = {
                 "id": item,
-                **_issue_fields(blocked_item),
+                **_issue_fields(board, blocked_item),
                 "title": blocked_item.title,
                 "description": description,
                 "acceptance_criteria": parse_acceptance_criteria(description),

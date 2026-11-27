@@ -233,7 +233,8 @@ async def test_check_board_builds_the_card_from_the_record() -> None:
     assert current["title"] == "Add a health endpoint"
     assert current["description"] == "We need /health."
     assert current["issue_number"] == 0
-    assert current["issue_id"] == ""
+    # Reads and comments address the item by its own id on a provider without issues.
+    assert current["issue_id"] == card
     assert current["issue_url"] == f"memory://work-items/{card}"
     assert result["_board_item_labels"] == {card: ["docs"]}
 
@@ -279,3 +280,23 @@ def test_an_unknown_field_adds_no_item() -> None:
     with pytest.raises(TypeError, match="label"):
         board.add_item("x", label=("bug",))
     assert board.add_item("y") == "PAY-1"
+
+
+@pytest.mark.asyncio
+async def test_assessment_reads_the_item_through_the_provider() -> None:
+    """Copilot on #417: an empty issue id sent the assessor's read to get_card("")."""
+    from unittest.mock import AsyncMock
+
+    from coordinare.graph.nodes.check_board import check_board
+
+    board = InMemoryBoardProvider(project_key="PAY")
+    card = board.add_item("Add a health endpoint", body="We need /health.")
+    result = await check_board(
+        {"board_provider": board, "github_service": AsyncMock(), "advocate_handled_label": "h",
+         "advocate_escalation_label": "e", "advocate_history": set()},
+    )
+
+    details = await board.get_card(result["current_card"]["issue_id"])
+
+    assert details["id"] == card
+    assert details["body"] == "We need /health."
