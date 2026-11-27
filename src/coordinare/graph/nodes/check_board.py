@@ -311,11 +311,18 @@ def _issue_fields(board: dict[str, Any], work_item: WorkItem) -> dict[str, Any]:
     issue = work_item.issue
     typed = isinstance(board.get("items"), dict) if isinstance(board, dict) else False
     own_id = work_item.id if typed else ""
-    return {
+    fields: dict[str, Any] = {
         "issue_id": issue.node_id if issue is not None else own_id,
         "issue_number": issue.number if issue is not None else 0,
         "issue_url": work_item.url,
     }
+    # 397: an item with no GitHub issue is named on the code host by the
+    # reference its provider gives. A GitHub card carries neither key, so its
+    # dispatch payload is unchanged.
+    if issue is None and typed:
+        fields["work_item_ref"] = work_item.reference
+        fields["work_item_pr_line"] = work_item.pr_line
+    return fields
 
 
 def _text_maps(board: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:

@@ -85,6 +85,11 @@ class WorkItem:
     blockers: tuple[Blocker, ...] = ()
     #: The pull request the tracker links to the item, when it knows one.
     pr_url: str = ""
+    #: 397: how the code host names the item. ``reference`` is a short token safe
+    #: in a branch name and a path; ``pr_line`` is the line a pull request body
+    #: carries for it. GitHub Projects: the issue number and ``Closes #N``.
+    reference: str = ""
+    pr_line: str = ""
     #: GitHub only: the issue behind the item. See the module docstring.
     issue: IssueLink | None = None
 
@@ -102,6 +107,14 @@ def work_items_of(board: Any) -> dict[str, WorkItem]:
     if isinstance(items, dict):
         return {str(k): v for k, v in items.items() if isinstance(v, WorkItem)}
     return _from_github_listing(board)
+
+
+_UNSAFE_IN_REF = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def safe_reference(key: str) -> str:
+    """*key* as a token safe in a branch name and a path (397): ``PAY-1`` stays ``PAY-1``."""
+    return _UNSAFE_IN_REF.sub("-", key).strip("-.")
 
 
 def card_status_of(board: Any) -> dict[str, str]:
@@ -195,6 +208,8 @@ def _from_github_listing(board: dict[str, Any]) -> dict[str, WorkItem]:
             labels=tuple(str(label) for label in labels.get(item_id, []) or []),
             blockers=tuple(blockers),
             pr_url=str(pr_urls.get(item_id, "") or ""),
+            reference=str(number) if number else "",
+            pr_line=f"Closes #{number}" if number else "",
             issue=IssueLink(number=number, node_id=node_id) if (number or node_id) else None,
         )
     return result

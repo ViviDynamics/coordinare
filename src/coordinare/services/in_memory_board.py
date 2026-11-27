@@ -31,7 +31,7 @@ from typing import Any
 import structlog
 
 from coordinare.services.board_provider import MoveOutcome
-from coordinare.services.work_items import OPEN, UNKNOWN, Blocker, WorkItem
+from coordinare.services.work_items import OPEN, UNKNOWN, Blocker, WorkItem, safe_reference
 
 logger = structlog.get_logger(__name__)
 
@@ -184,6 +184,9 @@ class InMemoryBoardProvider:
             owners=item.owners,
             labels=item.labels,
             blockers=tuple(blockers),
+            # 397: no issue number here, so the code host names the item by key.
+            reference=safe_reference(item.id),
+            pr_line=f"Work item: [{item.id}]({item.url})",
         )
 
     async def move_card(self, card_id: str, status: str) -> MoveOutcome:

@@ -369,6 +369,10 @@ class Score(BaseModel):
     architecture_plan_path: str = ""  # path to architect's plan on branch
     issue_number: int = 0  # GitHub issue number for PR linkage
     issue_url: str = ""  # GitHub issue URL for PR body reference
+    # 397: a work item with no GitHub issue. A token safe in a path, and the line
+    # the pull request body carries in place of "Closes #N".
+    work_item_ref: str = ""
+    work_item_pr_line: str = ""
     latest_main_sha: str = ""  # 054: used by QA to verify branch freshness
     env_cache_path: str = ""  # 060: container path of mounted env-cache; sourced via activate.sh
     # 234: the daemon-frozen env-cache steps. Declared here or extra="ignore" drops them in transit.

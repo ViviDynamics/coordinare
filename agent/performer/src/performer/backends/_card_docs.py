@@ -38,6 +38,9 @@ def card_doc_folder(score: Score) -> str | None:
     issue_num = getattr(score, "issue_number", None)
     if issue_num:
         return f"docs/cards/{issue_num}-{title_slug}"
+    work_item_ref = getattr(score, "work_item_ref", "")
+    if work_item_ref:  # 397: a work item with no GitHub issue
+        return f"docs/cards/{work_item_ref}-{title_slug}"
     return f"docs/cards/{title_slug}"
 
 
