@@ -393,10 +393,11 @@ def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
         fix = f"Install and authenticate {binary}, ensure it is on PATH, or correct performers.default.backend (harness for a preset)."
         if harness == "nare":
             fix = (
-                "Rerun the coordinare installer, which installs the nare release this "
-                "version pins: curl -fsSL "
+                "Rerun the coordinare installer, which installs the nare release each "
+                "coordinare release pins: curl -fsSL "
                 "https://github.com/ViviDynamics/coordinare/releases/latest/download/install.sh | sh "
-                "(or name another backend in performers.default.backend)."
+                "(add -s -- --version <your release> to stay on it), or name another "
+                "backend in performers.default.backend."
             )
         if cli_executable is None:
             results.append(

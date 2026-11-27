@@ -11,9 +11,9 @@ main() (
     nare_version=2026.11.121
     nare_sha256=1e03d84fb1690a9588aca11b543a47379be3f185119c6775b882a14d1aece8ad
     nare_wheel=nare-$nare_version-py3-none-any.whl
-    # Written into nare's tool environment once this installer has installed it,
-    # so uninstall removes only a nare it installed. Reinstalling nare any other
-    # way replaces the environment, and with it the marker.
+    # Holds the version this installer installed, inside nare's tool environment,
+    # so uninstall removes only a nare it installed and that nobody changed since.
+    # Reinstalling nare another way replaces the environment, and the marker.
     nare_marker='installed-by-coordinare'
     boolean() {
         case "$1" in
@@ -156,12 +156,18 @@ main() (
         else
             printf 'coordinare is already uninstalled from %s.\n' "$UV_TOOL_DIR"
         fi
+        nare_owned=
         if [ -f "$UV_TOOL_DIR/nare/$nare_marker" ]; then
+            nare_owned=$(cat "$UV_TOOL_DIR/nare/$nare_marker")
+            nare_current=$("$UV_TOOL_BIN_DIR/nare" --version 2>/dev/null || true)
+            [ -n "$nare_owned" ] && [ "$nare_current" = "$nare_owned" ] || nare_owned=
+        fi
+        if [ -n "$nare_owned" ]; then
             [ -n "$uv_command" ] || fail 'uv is missing. Install uv from https://astral.sh/uv/install.sh, then rerun --uninstall.'
             "$uv_command" tool uninstall nare || fail 'uv could not uninstall nare.'
             printf 'Removed nare from %s.\n' "$UV_TOOL_DIR/nare"
         elif [ -d "$UV_TOOL_DIR/nare" ]; then
-            printf 'Kept nare in %s: this installer did not install it.\n' "$UV_TOOL_DIR/nare"
+            printf 'Kept nare in %s: this installer did not install it, or it changed since.\n' "$UV_TOOL_DIR/nare"
         fi
         if [ "$purge" = 1 ]; then
             rm -rf "$HOME/.coordinare"
@@ -288,14 +294,35 @@ main() (
     printf 'Installed %s. Commands: %s/coordinare and %s/performer.\n' "$installed" "$UV_TOOL_BIN_DIR" "$UV_TOOL_BIN_DIR"
     # The bedrock extra matches the performer image, which installs nare's
     # dependencies with it (agent/performer/nare-requirements.txt).
+    # A nare installed another way is replaced, since the performer speaks only
+    # the pinned release's contract, but it stays theirs: no marker, so
+    # uninstall keeps it.
+    nare_partial="$installed is installed, but nare is not. Rerun this installer."
+    nare_owned=1
+    if [ -d "$UV_TOOL_DIR/nare" ] && [ ! -f "$UV_TOOL_DIR/nare/$nare_marker" ]; then
+        nare_owned=0
+        printf 'Replaced the nare already in %s with nare %s, which this release pins. Uninstall keeps it.\n' \
+            "$UV_TOOL_DIR/nare" "$nare_version"
+    fi
     printf 'Installing nare %s, the default agent harness, into %s.\n' "$nare_version" "$UV_TOOL_DIR/nare"
     "$uv_command" tool install --force --python 3.12 \
         "nare[bedrock] @ file://$file_root/$nare_wheel" \
-        || fail 'uv could not install nare. Resolve the uv error above and rerun.'
-    nare_installed=$("$UV_TOOL_BIN_DIR/nare" --version) || fail 'Installed nare failed its version check.'
-    [ "$nare_installed" = "$nare_version" ] || fail 'Installed nare does not match the pinned release.'
-    : > "$UV_TOOL_DIR/nare/$nare_marker" || fail 'Could not record that this installer installed nare.'
+        || fail "uv could not install nare; the uv error is above. $nare_partial"
+    nare_installed=$("$UV_TOOL_BIN_DIR/nare" --version || true)
+    if [ "$nare_installed" != "$nare_version" ]; then
+        [ "$nare_owned" = 0 ] || "$uv_command" tool uninstall nare >/dev/null 2>&1 || true
+        fail "Installed nare does not match the pinned release $nare_version. $nare_partial"
+    fi
+    if [ "$nare_owned" = 1 ]; then
+        printf '%s\n' "$nare_version" > "$UV_TOOL_DIR/nare/$nare_marker" \
+            || fail 'Could not record that this installer installed nare.'
+    fi
     printf 'Installed nare %s. Command: %s/nare.\n' "$nare_installed" "$UV_TOOL_BIN_DIR"
+    nare_found=$(command -v nare || true)
+    if [ -n "$nare_found" ] && [ "$nare_found" != "$UV_TOOL_BIN_DIR/nare" ]; then
+        printf 'WARNING: %s comes first on PATH, so local runs use it, not nare %s. Remove it or put %s first.\n' \
+            "$nare_found" "$nare_version" "$UV_TOOL_BIN_DIR" >&2
+    fi
     printf 'Preserved existing configuration and state.\n'
     if [ "$(command -v coordinare || true)" != "$UV_TOOL_BIN_DIR/coordinare" ]; then
         printf '%s\n' 'For this shell and your shell profile, add:' "export PATH=\"\$HOME/.local/bin:\$PATH\""

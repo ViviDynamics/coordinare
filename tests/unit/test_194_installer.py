@@ -52,7 +52,7 @@ case "$1 $2" in
         if [ -n "$nare" ]; then
             rm -rf "$UV_TOOL_DIR/nare"
             mkdir -p "$UV_TOOL_BIN_DIR" "$UV_TOOL_DIR/nare"
-            printf '#!/bin/sh\nprintf "%s\\n"\n' "$nare" > "$UV_TOOL_BIN_DIR/nare"
+            printf '#!/bin/sh\nprintf "%s\\n"\n' "${FAKE_NARE_REPORTS:-$nare}" > "$UV_TOOL_BIN_DIR/nare"
             chmod +x "$UV_TOOL_BIN_DIR/nare"
             exit 0
         fi
@@ -589,6 +589,55 @@ def test_uninstall_keeps_a_nare_this_installer_did_not_install(release: Release)
     assert "tool\nuninstall\nnare\n" not in release.calls()
     assert tool.is_dir()
     assert "Kept nare" in result.stdout
+
+
+def test_a_nare_installed_another_way_is_pinned_but_kept_on_uninstall(release: Release) -> None:
+    """The pin replaces an existing nare, but never claims it as the installer's own."""
+    tool = release.home / ".local/share/uv/tools/nare"
+    tool.mkdir(parents=True)
+    (tool / "theirs").write_text("installed by hand")
+    result = release.run()
+    assert result.returncode == 0, result.stderr
+    assert "Replaced the nare already in" in result.stdout
+    nare = release.home / ".local/bin/nare"
+    assert subprocess.run([nare, "--version"], capture_output=True, text=True, check=True).stdout.strip() == NARE_VERSION
+    assert release.run().returncode == 0
+    result = release.run("--uninstall")
+    assert result.returncode == 0, result.stderr
+    assert "tool\nuninstall\nnare\n" not in release.calls()
+    assert nare.exists()
+    assert "Kept nare" in result.stdout
+
+
+def test_uninstall_keeps_a_nare_upgraded_since_this_installer_installed_it(release: Release) -> None:
+    assert release.run().returncode == 0
+    (release.home / ".local/bin/nare").write_text('#!/bin/sh\nprintf "2099.1.1\\n"\n')
+    result = release.run("--uninstall")
+    assert result.returncode == 0, result.stderr
+    assert "tool\nuninstall\nnare\n" not in release.calls()
+    assert "Kept nare" in result.stdout
+
+
+def test_a_nare_that_fails_its_version_check_is_removed_again(release: Release) -> None:
+    release.env["FAKE_NARE_REPORTS"] = "2099.1.1"
+    result = release.run()
+    assert result.returncode != 0
+    assert "does not match the pinned release" in result.stderr
+    assert f"coordinare {VERSION} is installed, but nare is not" in result.stderr
+    assert "tool\nuninstall\nnare\n" in release.calls()
+    assert not (release.home / ".local/share/uv/tools/nare").exists()
+    assert not (release.home / ".local/bin/nare").exists()
+
+
+def test_a_nare_earlier_on_path_is_reported(release: Release) -> None:
+    shadow = release.root / "shadow bin"
+    shadow.mkdir()
+    (shadow / "nare").write_text('#!/bin/sh\nprintf "2026.1.1\\n"\n')
+    (shadow / "nare").chmod(EXECUTABLE_MODE)
+    release.env["PATH"] = f"{shadow}:{release.env['PATH']}"
+    result = release.run()
+    assert result.returncode == 0, result.stderr
+    assert f"{shadow}/nare comes first on PATH" in result.stderr
 
 
 @pytest.fixture(params=["sha256sum", "shasum"])

@@ -187,3 +187,4 @@ def test_preflight_tells_how_to_install_a_missing_nare(tmp_path, monkeypatch) ->
     fix = missing.fix or ""
     assert "ViviDynamics/coordinare/releases/latest/download/install.sh | sh" in fix
     assert "ViviDynamics/nare/releases" not in fix
+    assert "--version" in fix
