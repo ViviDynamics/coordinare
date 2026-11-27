@@ -44,6 +44,10 @@ MAX_PHASE_SECONDS = 4 * 3600
 # Maintainer ruling 2026-11-19 (issue 376, nare-native-021): up to sixteen schema corrections an attempt; 021 passed every
 # install and check, then held when its eighth correction ran out with over a thousand calls and three hours left.
 REPAIR_LIMITS = {"schema": 16, "coverage": 8, "scope": 8, "execution": 8}
+# A native agent session's schema corrections are its own allowance (max_schema_repairs each); the generation's total
+# is held to this multiple of it. nare-native-045: reviewers' format slips and one full-repair author's eleven
+# one-at-a-time corrections shared sixteen, and the attempt held with 1,489 calls and 3.9 hours left.
+SCHEMA_BACKSTOP_FACTOR = 2
 MAX_PROBE_BATCHES = 2
 # Each execution repair relocates its cache and brings one more probe batch (see reserve_probe_batch).
 PROBE_BATCH_CEILING = MAX_PROBE_BATCHES + REPAIR_LIMITS["execution"]
@@ -66,6 +70,8 @@ class EnvironmentDiscoveryError(RuntimeError):
         self.global_owned = global_owned
         # Daemon-composed text safe to journal as the hold's error_detail (never model or command output).
         self.detail = detail
+        # Further correctable errors in the same refused reply, returned with this one in a single correction.
+        self.extra_feedback: list[dict[str, Any]] = []
 
 
 CALL_STAT_KEYS = ('calls', 'seconds', 'input_tokens', 'output_tokens', 'cached_tokens', 'length_stops', 'repetition_stops')
@@ -201,6 +207,8 @@ class AttemptBudget:
     # session's own: a fresh divided scope ran 35 sessions, and the merge reviewer's one slip, after shard agents had
     # spent seven, held the attempt.
     agent_evidence_phase_errors: dict[str, int] = field(default_factory=dict, repr=False)
+    # Per native agent session (its phase key), the schema corrections it was charged this generation.
+    session_schema_repairs: dict[str, int] = field(default_factory=dict, repr=False)
     agent_checkpoints: dict[str, CheckpointReference] = field(default_factory=dict, repr=False)
     agent_phase_calls: dict[str, int] = field(default_factory=dict, repr=False)
     # Per author (discovery, its global part, each check group): the source files, by digest, it read in full in an
@@ -262,14 +270,29 @@ class AttemptBudget:
         """Aggregate diagnostics only; authorization uses category-specific counters."""
         return self.schema_repairs + self.coverage_revisions + self.scope_revisions + self.execution_repairs
 
-    def reserve_repair(self, kind: RepairKind) -> None:
+    def schema_repairs_left(self, session: str | None = None) -> int:
+        """Corrections left: a native session's own allowance within the generation backstop, or, without a session,
+        the generation's max_schema_repairs as before."""
+        if session is None:
+            return max(0, self.max_schema_repairs - self.schema_repairs)
+        own = self.max_schema_repairs - self.session_schema_repairs.get(session, 0)
+        return max(0, min(own, SCHEMA_BACKSTOP_FACTOR * self.max_schema_repairs - self.schema_repairs))
+
+    def charge_schema(self, session: str | None = None) -> None:
+        self.schema_repairs += 1
+        if session is not None:
+            self.session_schema_repairs[session] = self.session_schema_repairs.get(session, 0) + 1
+
+    def reserve_repair(self, kind: RepairKind, *, session: str | None = None) -> None:
         self.check()
         counter = REPAIR_COUNTERS[kind]
-        if getattr(self, counter) >= getattr(self, "max_" + counter):
+        exhausted = (self.schema_repairs_left(session) <= 0 if kind == "schema"
+                     else getattr(self, counter) >= getattr(self, "max_" + counter))
+        if exhausted:
             message = f"environment discovery {kind} repair limit exceeded"
             raise EnvironmentDiscoveryError(message, code=HOLD_CODES[kind])
         if kind == "schema":
-            self.schema_repairs += 1
+            self.charge_schema(session)
         elif kind == "coverage":
             self.coverage_revisions += 1
         elif kind == "scope":
@@ -345,6 +368,7 @@ class AttemptBudget:
                 "agent_retries": self.agent_retries,
                 "invalid_evidence_calls": self.agent_evidence_errors,
                 "shard_agents": self.shard_agents, "shard_schema_repairs": self.shard_schema_repairs,
+                "max_session_schema_repairs": max(self.session_schema_repairs.values(), default=0),
                 "validation_codes": list(self.validation_codes),
                 "call_stats": {phase: dict(stats) for phase, stats in self.call_stats.items()},
                 "scope_reused_from": self.scope_reused_from}

@@ -315,6 +315,18 @@ UNRUN_CHECKS_REVIEW = (
 )
 
 
+RESTORED_RECORDS_REVIEW = (
+    'daemon_restored_records, when present, are records outside the repair\'s closure that its author changed and the '
+    'daemon put back exactly as they were: the author could not change them. Judge them as they stand, and never read '
+    'a finding about one as unanswered for that reason alone.'
+)
+
+
+def restored_records(plan: DeltaPlan | None) -> dict[str, Any]:
+    """The review packet's restored records, present only once a delta author's change to a frozen record was undone."""
+    return {'daemon_restored_records': sorted(plan.restored)} if plan is not None and plan.restored else {}
+
+
 def trial_observations(budget: AttemptBudget) -> dict[str, Any]:
     """The review packet's trial results, present only once a repair has run one."""
     return {'untrusted_trial_observations': budget.trial_observations} if budget.trial_observations else {}
@@ -331,7 +343,7 @@ EXECUTABLE_REVIEW_CRITERIA = (
     'Compare every prior rejected manifest and execution result in untrusted_execution_history with this candidate. '
     'Its failure_output shows why each failed command failed; global_part.install shows this candidate\'s install commands. '
     'A failed step resubmitted unchanged, with nothing it depends on changed, does not repair that failure. '
-    f'{UNRUN_CHECKS_REVIEW} {SSH_WEAKENING_REVIEW} '
+    f'{UNRUN_CHECKS_REVIEW} {SSH_WEAKENING_REVIEW} {RESTORED_RECORDS_REVIEW} '
     'fixed_ids lists commands an earlier execution ran: no repair may change them (only a longer timeout). A finding '
     'about one must ask for what can change: installation, activation (for example its env or PATH), or another '
     'service or check, and never for that command\'s own text. '
@@ -674,6 +686,9 @@ PROBE_TOOL_DESCRIPTION = (
     'are not there. TMPDIR is the same container-local directory manifest commands get.')
 
 
+# The declaration refusals _declaration_feedback turns into a correction rather than a hold.
+CORRECTABLE_DECLARATION_CODES = frozenset({*REPAIR_CORRECTABLE, "obligation_removed", "review_citations_invalid",
+                                           "review_findings_invalid", "finding_response_ids_invalid"})
 OBLIGATION_RESTORE = (' Restore each named record, check or mapping exactly as it was, and change only what the '
                       'feedback asks for; every required obligation of the earlier manifest stays.')
 
@@ -685,7 +700,8 @@ def _declaration_feedback(exc: EnvironmentDiscoveryError, inspection: _Inspectio
     if exc.code == "obligation_removed":
         # Dettmore e2e-84 (a repair) and e2e-89 (first discovery): a correction dropped an obligation, and this refusal
         # held the attempt. Its message names exactly what to restore; the candidate is never accepted without it.
-        return [{"location": [], "code": exc.code, "guidance": str(exc) + OBLIGATION_RESTORE}]
+        return [{"location": [], "code": exc.code, "guidance": str(exc) + OBLIGATION_RESTORE},
+                *exc.extra_feedback]
     if exc.code not in {"review_citations_invalid", "review_findings_invalid", "finding_response_ids_invalid"}:
         raise exc
     if exc.code == 'finding_response_ids_invalid':
@@ -992,6 +1008,14 @@ def _safe_id(identifier: str) -> str:
     return identifier if SAFE_ID.fullmatch(identifier) else '(unnamed)'
 
 
+def raise_obligations(problems: Sequence[tuple[str, bool]]) -> None:
+    """One obligation_removed refusal naming every problem; global_owned when any is the global author's."""
+    if problems:
+        message = "; ".join(dict.fromkeys(text for text, _owned in problems))
+        raise EnvironmentDiscoveryError(message, code="obligation_removed",
+                                        global_owned=any(owned for _text, owned in problems))
+
+
 @dataclass
 class _ObligationLedger:
     """Retain the obligations of admitted candidates; a refused reply adds none (Dettmore e2e-94)."""
@@ -1016,25 +1040,28 @@ class _ObligationLedger:
             result[command.id] = command
         return result
 
-    def _check(self, old: Command, new: Command | None) -> None:
+    def _check(self, old: Command, new: Command | None, problems: list[tuple[str, bool]]) -> None:
         demoted = old.required and new is not None and not new.required and new.id not in self.retirable
         if new is not None and (new.id != old.id or new.scope != old.scope or demoted):
-            message = "required obligation scope or status changed during schema correction"
-            raise EnvironmentDiscoveryError(message, code="obligation_removed")
+            problems.append((f"required obligation scope or status changed during schema correction: {_safe_id(old.id)}",
+                             False))
 
     def record(self, data: dict[str, Any]) -> None:
+        """Every lost obligation in one refusal. nare-native-045's full-repair author was told one per correction (a
+        requirement's lost links, then the next requirement's) and spent seven of its corrections that way."""
+        problems: list[tuple[str, bool]] = []
         installation = self._commands(data.get("install"))
         # Every missing install at once: nare-native-015's repair author was told one at a time, restored that one and
         # dropped another, and spent all eight schema corrections on four installs.
         if removed := [key for key in self.install if key not in installation]:
-            message = f"required installation obligation removed: {', '.join(_safe_id(key) for key in removed)}"
-            raise EnvironmentDiscoveryError(message, code="obligation_removed")
+            problems.append((f"required installation obligation removed: {', '.join(_safe_id(key) for key in removed)}",
+                             False))
         for key, previous in self.install.items():
-            self._check(previous, installation.get(key))
+            self._check(previous, installation.get(key), problems)
         self.install.update({key: item for key, item in installation.items() if item.required})
         checks = self._commands(data.get("checks"))
         for key, previous in self.checks.items():
-            self._check(previous, checks.get(key))
+            self._check(previous, checks.get(key), problems)
         self.checks.update({key: item for key, item in checks.items() if item.required})
         for entry in data.get("requirements", []) if isinstance(data.get("requirements"), list) else []:
             try:
@@ -1045,10 +1072,11 @@ class _ObligationLedger:
                 previous = self.coverage.get(requirement.id, set())
                 if missing := previous - set(requirement.checks) - self.retirable:
                     # Named, so the author can restore exactly these (e2e-13 was told only that coverage changed).
-                    message = (f"required obligation coverage changed during schema correction: requirement "
-                               f"{_safe_id(requirement.id)} must keep checks {', '.join(sorted(map(_safe_id, missing)))}")
                     # Requirements are the global author's: a named group check must not send it to that group.
-                    raise EnvironmentDiscoveryError(message, code="obligation_removed", global_owned=True)
+                    problems.append((f"required obligation coverage changed during schema correction: requirement "
+                                     f"{_safe_id(requirement.id)} must keep checks {', '.join(sorted(map(_safe_id, missing)))}",
+                                     True))
+                    continue
                 self.coverage[requirement.id] = set(requirement.checks)
         for service in data.get("services", []) if isinstance(data.get("services"), list) else []:
             if not isinstance(service, dict) or not isinstance(service.get("id"), str):
@@ -1057,12 +1085,13 @@ class _ObligationLedger:
             phases = {phase: self._commands([service.get(phase)]) for phase in ("init", "start", "health", "stop")}
             current = {phase: next(iter(commands.values())) for phase, commands in phases.items() if commands}
             for phase, previous in self.lifecycle.get(service_id, {}).items():
-                self._check(previous, current.get(phase))
+                self._check(previous, current.get(phase), problems)
                 if phase not in current and service.get(phase) is None:
-                    message = f"required lifecycle obligation removed during schema correction: {_safe_id(service_id)} {phase}"
-                    raise EnvironmentDiscoveryError(message, code="obligation_removed")
+                    problems.append((f"required lifecycle obligation removed during schema correction: "
+                                     f"{_safe_id(service_id)} {phase}", False))
             if service.get("required", True) is True:
                 self.lifecycle.setdefault(service_id, {}).update(current)
+        raise_obligations(problems)
 
 
 
@@ -1107,6 +1136,25 @@ def _carrier_rules(manifest: EnvironmentManifest | EnvironmentManifestProposal,
             'credentials': [credential.name for credential in manifest.local_credentials]}
 
 
+def strip_install_dependencies(data: dict[str, Any]) -> list[str]:
+    """Drop install ids from every check's and service command's depends_on; return the commands changed.
+
+    Checks and services run in a clean consumer after every install, so depending on an install is never needed, and
+    removing it is the only correction (clean_dependency_install_only). nare-native-045's author added them twice, and
+    the second refusal was its seventeenth correction."""
+    installs = {item["id"] for item in data.get("install") or [] if isinstance(item, dict) and isinstance(item.get("id"), str)}
+    commands = [item for item in data.get("checks") or [] if isinstance(item, dict)]
+    commands += [service[phase] for service in data.get("services") or [] if isinstance(service, dict)
+                 for phase in ("init", "start", "health", "stop") if isinstance(service.get(phase), dict)]
+    changed: list[str] = []
+    for command in commands:
+        depends = command.get("depends_on")
+        if installs and isinstance(depends, list) and any(item in installs for item in depends):
+            command["depends_on"] = [item for item in depends if item not in installs]
+            changed.append(str(command.get("id")))
+    return changed
+
+
 @dataclass
 class _CandidateValidator:
     discovery: _Inspection
@@ -1127,7 +1175,13 @@ class _CandidateValidator:
         # An id that reuses a scope criterion id can never be admitted, so it never becomes a retained obligation:
         # the author must be able to rename it.
         lockable = _without_criterion_ids(data, self.construction)
-        self.obligation_ledger.record(lockable)
+        problems: list[tuple[str, bool]] = []
+        try:
+            self.obligation_ledger.record(lockable)
+        except EnvironmentDiscoveryError as exc:
+            if exc.code != "obligation_removed":
+                raise
+            problems.append((str(exc), exc.global_owned))
         for group, previous in self.required_ids.items():
             entries = lockable.get(group, [])
             current = {item["id"] for item in entries if isinstance(item, dict) and isinstance(item.get("id"), str)
@@ -1136,9 +1190,10 @@ class _CandidateValidator:
             kept = {item["id"] for item in entries if isinstance(item, dict) and item.get("id") in self.budget.retirable_checks
                     } if group == "checks" and isinstance(entries, list) else set()
             if not previous <= current | kept:
-                message = f"required obligation removed during repair: {', '.join(sorted(previous - current - kept))}"
-                raise EnvironmentDiscoveryError(message, code="obligation_removed")
+                problems.append((f"required obligation removed during repair: {', '.join(sorted(previous - current - kept))}",
+                                 False))
             previous.update(current)
+        raise_obligations(problems)
 
     def __call__(self, data: dict[str, Any]) -> EnvironmentManifest:
         # Dettmore e2e-94: a refused correction added a pgvector-postgres service, the lock then required it in every
@@ -1158,7 +1213,33 @@ class _CandidateValidator:
             raise
 
     def _admit(self, data: dict[str, Any]) -> EnvironmentManifest:
-        self.lock(data)
+        if strip_install_dependencies(data):
+            self.budget.validation_codes.append("install_dependency_stripped")
+        try:
+            self.lock(data)
+        except EnvironmentDiscoveryError as exc:
+            if exc.code != "obligation_removed":
+                raise
+            # nare-native-045: the same reply also broke unrelated rules, each refused only after the obligations were
+            # restored. The rest of admission still runs, and its correctable errors join this refusal.
+            exc.extra_feedback = self._further_feedback(data)
+            raise
+        return self._validated(data)
+
+    def _further_feedback(self, data: dict[str, Any]) -> list[dict[str, Any]]:
+        try:
+            self._validated(copy.deepcopy(data))
+        except ValidationError as exc:
+            return _validation_feedback(exc)
+        except EnvironmentDiscoveryError as exc:
+            if exc.code in CORRECTABLE_DECLARATION_CODES:
+                return _declaration_feedback(exc, self.discovery, self.budget)
+        except ValueError:
+            # A refusal that is not a correction (a project-file bound) surfaces once the obligations are restored.
+            return []
+        return []
+
+    def _validated(self, data: dict[str, Any]) -> EnvironmentManifest:
         manifest = self.construction.admit(data, self.discovery.inputs)
         try:
             validate_static_rules(manifest.install, manifest.activation, self.construction.capabilities.platform,
@@ -1342,6 +1423,7 @@ async def _initial_repair(
             **_attempt_history(budget),
             **({"fixed_ids": fixed} if (fixed := sorted(fixed_command_ids(budget.executed_manifests))) else {}),
             **({"retirable_check_ids": retirable} if (retirable := sorted(budget.retirable_checks)) else {}),
+            **repair_obligations(previous, budget),
             "repair_instruction": "mandatory_evidence indexes every previous manifest input, verified and bound by the daemon; read the files you need. Preserve required IDs, scope and every existing requirement-to-check link. "
                 + ("fixed_ids lists the commands an earlier execution fixed: keep each exactly as previous_manifest shows it. " if fixed else "") +
                 "A required check or service command that executed is fixed (fixed_ids): preserve its argv, cwd, env, dependencies, scope and required status. A required check that never ran may be corrected, never dropped or weakened. "
@@ -1353,6 +1435,28 @@ async def _initial_repair(
         if previous is not None else set() for group in ("requirements", "install", "checks", "services")}
 
     return [previous] if previous is not None else [], required_ids
+
+
+INSTALL_FAILURES_ONLY = (
+    "Only install records failed in the last execution (install_failures_only), so its checks never ran: change those "
+    "installs and, if needed, activation; keep every requirement, check and criterion mapping exactly as "
+    "previous_manifest shows them."
+)
+
+
+def repair_obligations(previous: EnvironmentManifest, budget: AttemptBudget) -> dict[str, Any]:
+    """What a full repair must keep, listed as a coverage revision lists it. nare-native-045's full repair rewrote the
+    manifest from scratch, dropping four install ids, eight requirements and three requirement links, and each loss
+    cost one correction."""
+    required = {group: sorted(item.id for item in getattr(previous, group) if item.required)
+                for group in ("requirements", "install", "checks", "services")}
+    latest = set(budget.execution_attempt_history[-1].get("failed_ids") or []) if budget.execution_attempt_history else set()
+    installs_only = bool(latest) and latest <= {command.id for command in previous.install}
+    return {"required_ids": required,
+            "required_coverage": {requirement.id: sorted(requirement.checks) for requirement in previous.requirements},
+            "criterion_checks": {key: sorted(value) for key, value in previous.criterion_checks.items()},
+            **({"install_failures_only": sorted(latest), "install_failures_note": INSTALL_FAILURES_ONLY}
+               if installs_only else {})}
 
 
 def _attempt_history(budget: AttemptBudget) -> dict[str, Any]:
@@ -1856,6 +1960,22 @@ WIDENED_CLOSURE = (" widened_closure_records are records the open findings name 
                    "closure, so correct them here as the findings ask.")
 
 
+def finding_records(manifest: EnvironmentManifest | None, named: Collection[str]) -> set[str]:
+    """The records findings name, with a named requirement or criterion standing for the checks that cover it.
+    nare-native-045: F0002 named the guard requirements, not c-guards, so c-guards stayed frozen; the revision's rewrite
+    of it was put back and the review, seeing it unchanged, rejected the delta."""
+    records = set(named)
+    if manifest is None:
+        return records
+    for requirement in manifest.requirements:
+        if requirement.id in named:
+            records.update(requirement.checks)
+    for criterion, checks in manifest.criterion_checks.items():
+        if criterion in named:
+            records.update(checks)
+    return records
+
+
 def _widen_delta(attempt: _Attempt, build: DividedConstruction | None, ledger: FindingLedger) -> list[str]:
     """Records an open finding names that the failed execution never ran (consequences, not executed) join the closure.
 
@@ -1865,7 +1985,8 @@ def _widen_delta(attempt: _Attempt, build: DividedConstruction | None, ledger: F
     plan = cast("DeltaPlan", attempt.delta)
     named = {identifier for record in ledger.records if record.id in ledger.open_ids()
              for identifier in record.proposal.affected_ids}
-    extra = sorted((named & set(plan.triage.consequences)) - plan.closure - plan.fixed)
+    extra = sorted((finding_records(getattr(plan, "base", None), named) & set(plan.triage.consequences))
+                   - plan.closure - plan.fixed)
     if not extra:
         return []
     triage = plan.triage.model_copy(update={
@@ -1971,7 +2092,7 @@ async def _review(attempt: _Attempt, build: DividedConstruction | None,
             "mandatory_evidence": mandatory_evidence, "probe_evidence": budget.probe_reports,
             "declared_services": attempt.options.declared_services,
             "untrusted_execution_history": budget.execution_review_evidence,
-            **trial_observations(budget),
+            **trial_observations(budget), **restored_records(getattr(attempt, "delta", None)),
             "fixed_ids": sorted(fixed_command_ids(budget.executed_manifests)),
             "retirable_check_ids": sorted(budget.retirable_checks),
             "finding_ledger": cast("FindingLedger", budget.finding_ledger).model_dump(mode='json'),
@@ -2536,6 +2657,7 @@ async def _divided_review(build: DividedConstruction, attempt: _Attempt, manifes
                   else SOURCE_TOOLS + REVIEW_PART_PREAMBLE + EXECUTABLE_REVIEW_INSTRUCTIONS)
         shared = {**base, 'manifest_digest': manifest.digest(), 'global_part': summary, 'probe_evidence': budget.probe_reports,
                   'untrusted_execution_history': budget.execution_review_evidence, **trial_observations(budget),
+                  **restored_records(getattr(attempt, "delta", None)),
                   'fixed_ids': sorted(fixed_command_ids(budget.executed_manifests)),
                   'retirable_check_ids': sorted(budget.retirable_checks)}
         own: dict[str, Any] = {'part': part_manifest_view(manifest, group, groups=groups), 'mandatory_evidence': index, 'assigned_findings': mine,

@@ -62,7 +62,23 @@ async def run(chat, **kwargs):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["reference", "install_dependency"])
+async def test_an_install_dependency_is_dropped_by_the_daemon_without_a_correction():
+    """nare-native-045: removing the install id from a check's depends_on is the only correction, so the daemon makes it."""
+    valid = candidate()
+    valid["install"] = [{"id": "install-dev", "argv": ["true"]}]
+    invalid = copy.deepcopy(valid)
+    invalid["checks"][0]["depends_on"] = ["install-dev"]
+    replies = Replies([{"tool": "read_file", "path": PATH}, {"manifest": invalid},
+        {"tool": "read_file", "path": PATH}, assessment(valid)])
+    events = []
+    manifest, review = await run(replies, diagnostics=events.append)
+    assert review.manifest_digest == manifest.digest()
+    assert manifest.checks[0].depends_on == []
+    assert events[-1]["repairs"] == 0 and "install_dependency_stripped" in events[-1]["validation_codes"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["reference"])
 async def test_invalid_refs_then_valid_revision_fresh_review(kind):
     valid = candidate()
     invalid = copy.deepcopy(valid)

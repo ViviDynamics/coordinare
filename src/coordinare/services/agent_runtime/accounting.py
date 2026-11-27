@@ -107,7 +107,7 @@ class BudgetBridge:
 
     async def correction(self) -> None:
         try:
-            self.budget.reserve_repair('schema')
+            self.budget.reserve_repair('schema', session=self.phase_key or self.phase)
             await self.persist()
             self.budget.check()
         except EnvironmentDiscoveryError as exc:

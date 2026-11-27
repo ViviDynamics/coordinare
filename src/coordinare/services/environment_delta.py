@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from coordinare_service_inference.environment.models import Command, content_key
@@ -50,7 +50,7 @@ DELTA_FALLBACK = frozenset({"attempt_schema_limit", "repair_delta_rejected", "ex
                             "execution_command_changed", "criterion_mapping_invalid", "inherited_mapping_missing"})
 # Proposal fields a manifest's standing review depends on; provenance and cache-only facts never change a judgment.
 STANDING_EXCLUDED = frozenset({"manifest_digest", "probe_evidence", "untrusted_execution_history",
-                               "untrusted_trial_observations", "fixed_ids",
+                               "untrusted_trial_observations", "daemon_restored_records", "fixed_ids",
                                "execution_capabilities", "capabilities_digest"})
 _PROPOSAL_FIELDS = ("runtime_endpoints", "criterion_checks", "requirements", "install", "checks", "activation", "services",
                     "empty_reason", "local_credentials")
@@ -183,6 +183,9 @@ class DeltaPlan:
     fixed: frozenset[str] = frozenset()
     # Checks that failed in an execution and never passed (budget.retirable_checks): one may be retired and replaced.
     retirable: frozenset[str] = frozenset()
+    # Frozen records an author changed or dropped that restore_frozen put back, for review to see (nare-native-045: a
+    # revision's rewrite of c-guards, outside the closure, was undone silently and review read it as unanswered).
+    restored: set[str] = field(default_factory=set, compare=False, hash=False)
 
     @property
     def closure(self) -> frozenset[str]:
@@ -234,6 +237,8 @@ class DeltaPlan:
                 continue
             items = [originals.get(item.get('id'), item) if isinstance(item, dict) else item for item in candidate.get(key) or []]
             present = {item.get('id') for item in items if isinstance(item, dict)}
+            submitted = {item.get('id'): item for item in candidate.get(key) or [] if isinstance(item, dict)}
+            self.restored.update(identifier for identifier, record in originals.items() if submitted.get(identifier) != record)
             restored[key] = [*items, *(record for identifier, record in originals.items() if identifier not in present)]
         return self.retire_edited(base, restored)
 

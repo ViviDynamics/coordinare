@@ -256,10 +256,11 @@ async def test_overfull_field_patch_reports_limits_and_can_replace_common_array(
     ]
     valid["requirements"][0]["checks"] = [check["id"] for check in valid["checks"]]
     invalid = copy.deepcopy(valid)
+    # Each check's argv is empty, which only the author can correct (an install id in depends_on the daemon now drops).
     for check in invalid["checks"]:
-        check["depends_on"] = ["install-dev"]
+        check["argv"] = []
     overfull = {"tool": "repair_proposal", "changes": [
-        {"path": ["manifest", "checks", index, "depends_on"], "value_json": "[]"}
+        {"path": ["manifest", "checks", index, "argv"], "value_json": '["zog", "--version"]'}
         for index in range(22)
     ]}
     correction = {"manifest": valid} if complete_declaration else {

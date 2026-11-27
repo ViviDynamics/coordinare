@@ -141,7 +141,7 @@ class NareRuntime:
                 max_turns=max(1, request.budget.max_calls - request.budget.calls),
                 max_corrections=request.shard_corrections if request.shard_corrections is not None else
                     max(1, execution.session.schema_corrections
-                        + request.budget.max_schema_repairs - request.budget.schema_repairs
+                        + request.budget.schema_repairs_left(execution.correction_key)
                         + len(request.prerequisites - execution.prerequisite_reminders)),
                 max_cutoffs=execution.cutoffs_remaining(),
                 retry=self._retry, compaction='elide', compaction_trigger=0.6, compaction_target=0.4, **diagnostics)
@@ -340,7 +340,7 @@ class _Execution:
             self.prerequisite_reminders.add(issues[0].code)
         if (issues and self.request.shard_corrections is None
                 and not self.free_reminder
-                and self.request.budget.schema_repairs >= self.request.budget.max_schema_repairs):
+                and self.request.budget.schema_repairs_left(self.correction_key) <= 0):
             self.hold_code = 'attempt_schema_limit'
             refuse_agent('Domain correction allowance exhausted.', code='attempt_schema_limit')
         return [asdict(issue) for issue in issues]
@@ -356,9 +356,9 @@ class _Execution:
         elif not reconcile:
             await self.bridge.correction()
             return
-        elif budget.schema_repairs < budget.max_schema_repairs:
+        elif budget.schema_repairs_left(self.correction_key) > 0:
             # Completed correction, not new inference: account even on expiry.
-            budget.schema_repairs += 1
+            budget.charge_schema(self.correction_key)
         else:
             self.status, self.hold_code = 'held', 'attempt_schema_limit'
         await self.bridge.persist()
@@ -367,8 +367,12 @@ class _Execution:
         """Native cutoff limits are invocation-local; restored counters are not."""
         if self.request.shard_corrections is not None:
             return max(0, self.request.shard_corrections - self.session.schema_corrections - self.session.cutoffs)
-        budget = self.request.budget
-        return max(0, budget.max_schema_repairs - budget.schema_repairs)
+        return self.request.budget.schema_repairs_left(self.correction_key)
+
+    @property
+    def correction_key(self) -> str:
+        """This session's key for its own schema-correction allowance, as its evidence allowance uses."""
+        return self.bridge.phase_key or self.bridge.phase
 
     def _charge_shard_correction(self, *, reconcile: bool) -> None:
         # Native counters include this completed correction already. Both kinds
@@ -392,8 +396,8 @@ class _Execution:
         elif not reconcile:
             await self.bridge.correction()
             return
-        elif budget.schema_repairs < budget.max_schema_repairs:
-            budget.schema_repairs += 1
+        elif budget.schema_repairs_left(self.correction_key) > 0:
+            budget.charge_schema(self.correction_key)
         else:
             self.status, self.hold_code = 'held', 'attempt_schema_limit'
         await self.bridge.persist()

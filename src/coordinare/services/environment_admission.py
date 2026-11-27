@@ -452,7 +452,10 @@ class CorrectionContext:
 def _repair(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *,
             context: CorrectionContext | None = None) -> None:
     explain_rejection(messages, raw, errors, budget, context=context)
-    budget.reserve_repair("schema")
+    # In a native attempt each agent session has its own allowance within the generation backstop; the daemon's own
+    # corrections (merge rounds and the like) get one per envelope. The JSON transport keeps the generation total.
+    envelope = (context or CorrectionContext(budget.expected_envelope)).envelope
+    budget.reserve_repair("schema", session=f"daemon:{envelope}" if budget.agent_context is not None else None)
 
 
 def explain_rejection(messages: list[dict[str, str]], raw: str, errors: list[dict[str, Any]], budget: AttemptBudget, *,
