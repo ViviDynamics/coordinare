@@ -423,15 +423,57 @@ async def test_health_gives_qare_only_the_run_environment(tmp_path: Path, monkey
     assert "FAKE_QARE_SCENARIO" in call["env"]
 
 
-def test_finished_runs_are_pruned_after_their_retention(tmp_path: Path) -> None:
-    old, fresh, running = (tmp_path / name for name in ("coordinare.qa.old.1", "coordinare.qa.new.1", "coordinare.qa.run.1"))
-    for job in (old, fresh, running):
-        job.mkdir()
-    for job in (old, fresh):
-        (job / runner.STATUS_FILE).write_text("{}")
+def test_old_runs_shrink_to_their_record_and_are_still_found(tmp_path: Path) -> None:
     stale = time.time() - 30 * 86400
-    os.utime(old / runner.STATUS_FILE, (stale, stale))
-    os.utime(running, (stale, stale))
-    assert prune_finished(tmp_path, 14) == [old.name]
-    assert fresh.exists()
-    assert running.exists()
+
+    def run(name: str, *, status: dict | None, published: bool = False, old: bool = True) -> Path:
+        job = tmp_path / name
+        request_spec(job, web_base="file:///x", base="a" * 40, head=HEAD, request_id=name)
+        (job / "repo").mkdir()
+        (job / "evidence" / "checks").mkdir(parents=True)
+        (job / "evidence" / "checks" / "out.txt").write_text("x")
+        (job / "evidence" / "result.json").write_text(_result(job={"id": name}))
+        (job / runner.LOG_FILE).write_text("log")
+        if status is not None:
+            (job / runner.STATUS_FILE).write_text(json.dumps(status))
+        if published:
+            (job / "published.json").write_text(json.dumps({"pr_comment_url": "u"}))
+        if old:
+            os.utime(job, (stale, stale))
+        return job
+
+    done = run("coordinare.qa.done.1", status={"outcome": "ran", "exit_code": 0}, published=True)
+    unposted = run("coordinare.qa.unposted.1", status={"outcome": "ran", "exit_code": 0})
+    fresh = run("coordinare.qa.fresh.1", status={"outcome": "ran", "exit_code": 0}, published=True, old=False)
+    dead = run("coordinare.qa.dead.1", status=None)
+    assert prune_finished(tmp_path, 14) == [done.name]
+    # The finished, posted run keeps what finds it again; its evidence files and log go.
+    assert sorted(p.name for p in done.iterdir()) == ["evidence", "published.json", "request.json", "status.json"]
+    assert [p.name for p in (done / "evidence").iterdir()] == ["result.json"]
+    stage_job = job_from_status(done.name, json.loads((done / runner.STATUS_FILE).read_text()), done)
+    assert stage_job.state is JobState.DONE
+    # A result never posted, and a recent run, are left whole.
+    assert (unposted / "evidence" / "checks" / "out.txt").exists()
+    assert (fresh / runner.LOG_FILE).exists()
+    # A run that died without a status loses its checkouts only.
+    assert not (dead / "repo").exists()
+    assert (dead / "evidence" / "checks" / "out.txt").exists()
+
+
+def test_a_failure_may_carry_a_reason_and_no_evidence() -> None:
+    document = json.loads(_result("failed", {CRITERIA[0]["id"]: "failed"}))
+    document["criteria"][0]["evidence"] = []
+    document["criteria"][0]["reason"] = "the endpoint answered 500"
+    outcome, problem = parse_result(json.dumps(document), SPEC, exit_code=1)
+    assert outcome is not None, problem
+    assert outcome.verdict is StageVerdict.CHANGES_REQUESTED
+
+
+def test_qare_text_is_redacted_before_anyone_reads_it() -> None:
+    secret = "ghp_" + "Q" * 36
+    document = json.loads(_result("failed", {CRITERIA[0]["id"]: "failed"}))
+    document["criteria"][0]["reason"] = f"login failed with {secret}"
+    outcome, _ = parse_result(json.dumps(document), SPEC, exit_code=1)
+    assert outcome is not None
+    assert secret not in outcome.criteria[0].reason
+    assert secret not in outcome.summary

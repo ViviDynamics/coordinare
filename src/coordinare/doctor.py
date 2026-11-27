@@ -521,8 +521,8 @@ async def _check_qare_profile(
 ) -> CheckResult:
     """The configured repository has QAre's profile on its default branch."""
     label = f"stage provider '{name}' QA profile"
-    name = str(getattr(config, "github_repo", "") or config.project_name or "")
-    repository = f"{config.github_org}/{name}" if name else ""
+    repo_name = str(getattr(config, "github_repo", "") or config.project_name or "")
+    repository = f"{config.github_org}/{repo_name}" if repo_name else ""
     if not repository:
         return CheckResult(label, Status.WARN, "github_repo is not set, so no repository to check.",
                            f"Make sure each repository QA runs on has a {provider_config.profile}/ profile.")

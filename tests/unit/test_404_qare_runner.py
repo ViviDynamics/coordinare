@@ -160,7 +160,8 @@ def test_a_pr_whose_base_is_its_head_runs_one_sided(tmp_path: Path, monkeypatch:
 
 def test_a_diff_github_refuses_comes_from_the_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def too_large(request: dict, *, base: str, head: str, token: str, deadline: float) -> str:
-        raise runner._StopError({"outcome": runner.ERROR, "step": "diff", "reason": "GitHub compare answered 406"})
+        raise runner._StopError({"outcome": runner.ERROR, "step": "diff", "http_status": 406,
+                                 "reason": "GitHub compare answered 406"})
 
     web, base, head = make_remote(tmp_path)
     monkeypatch.setattr(runner, "_change_diff", too_large)
@@ -214,3 +215,35 @@ def test_a_timeout_stops_what_the_command_started(tmp_path: Path) -> None:
     else:
         os.kill(child, 9)
         raise AssertionError("the command's child outlived the timeout")
+
+
+def test_a_compare_that_fails_otherwise_is_retried_not_replaced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def down(request: dict, *, base: str, head: str, token: str, deadline: float) -> str:
+        raise runner._StopError({"outcome": runner.ERROR, "step": "diff", "http_status": 502,
+                                 "reason": "GitHub compare answered 502"})
+
+    web, base, head = make_remote(tmp_path)
+    monkeypatch.setattr(runner, "_change_diff", down)
+    monkeypatch.setenv("FAKE_QARE_SCENARIO", str(scenario(tmp_path)))
+    job = tmp_path / "jobs" / "coordinare.qa.abc.1"
+    request_spec(job, web_base=web, base=base, head=head)
+    status = runner.run_job(job, token=TOKEN)
+    assert status["outcome"] == runner.ERROR
+    assert status["step"] == "diff"
+
+
+def test_the_name_placeholder_names_the_step(tmp_path: Path) -> None:
+    import asyncio
+    import os
+    import time as _time
+
+    job = tmp_path / "jobs" / "coordinare.qa.abc.1"
+    request_spec(job, web_base="file:///x", base="a" * 40, head="b" * 40)
+    run = runner._Run(job, json.loads((job / "request.json").read_text()), token="", env=dict(os.environ),
+                      started=_time.monotonic())
+    code, out, _err = asyncio.run(run._call(
+        [sys.executable, "-c", "import sys; print(sys.argv[1])", "--name={name}"], cwd=job, env=dict(os.environ), step="plan",
+    ))
+    assert code == 0
+    assert out.strip().startswith("--name=coordinare-qare-")
+    assert out.strip().endswith("-plan")

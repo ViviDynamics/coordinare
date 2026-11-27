@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hashlib
 import json
 import os
 import shutil
@@ -68,6 +69,10 @@ _BASE_ENV = (
 _TAIL = 1500
 #: The most of a locally computed diff handed to the planner.
 _MAX_DIFF_CHARS = 2_000_000
+#: GitHub's answers for a compare diff past its size limits. Any other failure is retried.
+_DIFF_TOO_LARGE = frozenset({HTTPStatus.NOT_ACCEPTABLE, HTTPStatus.UNPROCESSABLE_ENTITY})
+#: In ``command``, replaced by a name for the step, so a container can be removed on timeout.
+NAME_PLACEHOLDER = "{name}"
 #: Arguments of a command the log shows; the rest are paths it does not need.
 _SHOWN_ARGS = 3
 
@@ -81,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("usage: python -m coordinare.services.qare_runner [--detach] <job dir>\n")
         return 2
     token = os.environ.pop(CREDENTIAL_ENV, "")
-    job_dir = Path(args[0]).resolve()
+    job_dir = Path(args[0]).expanduser().absolute()
     if detach and _detached(job_dir):
         return 0  # the launcher: the run carries on in the detached child
     run_job(job_dir, token=token)
@@ -89,16 +94,18 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _detached(job_dir: Path) -> bool:
-    """Fork the run off in a session of its own; True in the launcher, which then exits.
+    """Fork the run into a session of its own; True in the launcher once the run has ended.
 
-    The launcher's parent (the daemon) sees it exit at once, so nothing that owns the
-    launcher (an asyncio transport, a process group) can stop the run, and the run is
-    re-parented and reaped by the system. The launcher records the run's pid before it
-    exits, so the daemon knows the run started.
+    The launcher records the run's pid, then waits for the run and reaps it, so a finished
+    run never lingers as a zombie, even where the daemon is the container's PID 1 and reaps
+    only its own children. The run is in another session, so stopping the launcher (a daemon
+    shutting down) does not stop the run.
     """
     pid = os.fork()
     if pid:
         _write_atomic(job_dir / LAUNCH_FILE, json.dumps({"pid": pid, "started_at": time.time()}))
+        with contextlib.suppress(ChildProcessError, InterruptedError):
+            os.waitpid(pid, 0)
         return True
     os.setsid()
     return False
@@ -108,7 +115,7 @@ def run_job(job_dir: Path, *, token: str = "", env: dict[str, str] | None = None
     """Run the job in ``job_dir`` to its end and write ``status.json``. Returns the status."""
     source = dict(os.environ if env is None else env)
     source.pop(CREDENTIAL_ENV, None)
-    job_dir = job_dir.resolve()
+    job_dir = job_dir.expanduser().absolute()
     started = time.monotonic()
     try:
         request = json.loads((job_dir / REQUEST_FILE).read_text())
@@ -254,6 +261,8 @@ class _Run:
                 deadline=self.deadline,
             )
         except _StopError as refused:
+            if refused.status.get("http_status") not in _DIFF_TOO_LARGE:
+                raise
             code, out, err = await self._call(
                 ["git", "-C", str(self.repo), "diff", "--no-color", self.base, self.head],
                 cwd=self.job_dir, env={k: self.env[k] for k in _BASE_ENV if k in self.env},
@@ -261,10 +270,15 @@ class _Run:
             )
             if code != 0:
                 raise _StopError({"outcome": ERROR, "step": "diff", "reason": _tail(err) or "git diff failed"}) from refused
-            return out[:_MAX_DIFF_CHARS]
+            if len(out) > _MAX_DIFF_CHARS:
+                out = out[: out.rfind("\n", 0, _MAX_DIFF_CHARS) + 1]
+            return out
 
     async def _call(self, argv: list[str], *, cwd: Path, env: dict[str, str], step: str) -> tuple[int | None, str, str]:
         """Run one command. ``None`` as the code when it could not be started."""
+        name = f"coordinare-qare-{hashlib.sha256(str(self.job_dir).encode()).hexdigest()[:12]}-{step.split()[0]}"
+        named = any(NAME_PLACEHOLDER in part for part in argv)
+        argv = [part.replace(NAME_PLACEHOLDER, name) for part in argv]
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise _StopError({"outcome": TIMEOUT, "step": step, "reason": "the run took longer than timeout_seconds"})
@@ -283,11 +297,23 @@ class _Run:
         except TimeoutError as exc:
             _kill_group(proc.pid)
             await proc.wait()
+            if named:
+                # Killing the docker client leaves its container running; remove it.
+                await self._remove_container(name, env)
             _append(self.log, f"{step} (timed out)", argv, "")
             raise _StopError({"outcome": TIMEOUT, "step": step, "reason": "the run took longer than timeout_seconds"}) from exc
         out, err = out_b.decode(errors="replace"), err_b.decode(errors="replace")
         _append(self.log, f"{step} -> {proc.returncode}", argv, f"{_tail(out)}\n{_tail(err)}")
         return proc.returncode, out, err
+
+
+    async def _remove_container(self, name: str, env: dict[str, str]) -> None:
+        with contextlib.suppress(OSError, TimeoutError):
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "rm", "-f", name, env=env, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=60)
 
 
 def _change_diff(request: dict[str, Any], *, base: str, head: str, token: str, deadline: float) -> str:
@@ -303,7 +329,10 @@ def _change_diff(request: dict[str, Any], *, base: str, head: str, token: str, d
     except httpx.HTTPError as exc:
         raise _StopError({"outcome": ERROR, "step": "diff", "reason": f"GitHub compare: {type(exc).__name__}"}) from exc
     if response.status_code != HTTPStatus.OK:
-        raise _StopError({"outcome": ERROR, "step": "diff", "reason": f"GitHub compare answered {response.status_code}"})
+        raise _StopError({
+            "outcome": ERROR, "step": "diff", "http_status": response.status_code,
+            "reason": f"GitHub compare answered {response.status_code}",
+        })
     return response.text
 
 

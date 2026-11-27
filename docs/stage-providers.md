@@ -208,7 +208,7 @@ stage_providers:
     kind: qare
     version: "2026.11.42"
     work_dir: /var/lib/coordinare/qare
-    command: [docker, run, --rm, --user, "1000:1000",
+    command: [docker, run, --rm, --name, "{name}", --user, "1000:1000",
               -v, "/var/lib/coordinare/qare:/var/lib/coordinare/qare",
               -e, OPENAI_API_KEY,
               "ghcr.io/vividynamics/qare-web:2026.11.42"]
@@ -216,7 +216,10 @@ stage_providers:
 ```
 
 The image's entry point is `qare`, so the runner's `--version`, `plan` and `run` reach it
-unchanged. A profile that boots an app needs a container runtime inside that container too;
+unchanged. `{name}` is replaced with a name for each step. Stopping the `docker` client on a
+timeout does not stop its container, so when the command names one, the runner also removes
+it (`docker rm -f <name>`). Mount `work_dir` at the path written in the config: the runner
+passes that path as is, without resolving symbolic links. A profile that boots an app needs a container runtime inside that container too;
 how much of the host to hand it (for example its Docker socket) is the operator's trust
 decision, as it is for coordinare's own containers (`docs/security/threat-model.md`). The
 checkout itself (step 2 below) is made by the runner, not by QAre.
@@ -226,8 +229,9 @@ Opt one symphony in with `overrides.performers`, as for Scrutare.
 ### What a run does
 
 Each run has a directory of its own under `work_dir`, named by its request id (card, stage,
-head and attempt). A detached process (`python -m coordinare.services.qare_runner`) does the
-work, so a daemon restart finds the run still going or finished:
+head and attempt). A process in a session of its own (`python -m
+coordinare.services.qare_runner`) does the work, so a daemon restart finds the run still
+going or finished; a small launcher process stays its parent and reaps it when it ends:
 
 1. `qare --version` must print the pinned version.
 2. The head and base are fetched into the run's directory with coordinare's GitHub token,
@@ -241,10 +245,14 @@ work, so a daemon restart finds the run still going or finished:
 5. `qare run --plan` runs the checks against both sides and writes
    `evidence/result.json`. Its `schemaVersion` is checked before anything else is read.
 
-A step that runs past `timeout_seconds` is stopped with everything it started (each command
-runs in a process group of its own). When a run ends its checkouts are removed, and a
-finished run's directory, with its evidence and logs, is removed `retain_days` after it
-ended. A run still going is never removed. QA needs the pull request's base: while GitHub
+A step that runs past `timeout_seconds` is stopped with every process it started (each
+command runs in a process group of its own), and a container the step named with `{name}` is
+removed. When a run ends its checkouts are removed, and a
+finished run is shrunk to its record `retain_days` after it ended: its request, status,
+`result.json` and publish record stay, so a later dispatch at the same head still finds the
+attempt and never posts its evidence twice; the evidence files, plan and log go (they are on
+`qa-assets`). A result that was never published is kept whole. A run still going is never
+touched. QA needs the pull request's base: while GitHub
 gives none, the dispatch is retried rather than run against the head alone.
 
 ### Verdicts
@@ -276,7 +284,7 @@ directory records what is done. A publish GitHub refuses is a retryable system e
 
 | Run ends | What coordinare does |
 | --- | --- |
-| QAre cannot start, the checkout or the plan fails, the run times out, the runner stops without a status | retryable system error; the retry runs the next attempt |
+| QAre cannot start, the checkout or the plan fails, GitHub's compare fails for a reason other than size, the run times out, the runner stops without a status | retryable system error; the retry runs the next attempt |
 | exit 4 (no verdict), or no `result.json` | retryable system error |
 | another version installed than `version` | the card is held: install the pinned release or change the pin |
 | an unknown `schemaVersion` or verdict, an exit code that contradicts the verdict, the result of another job | the card is held: the result is outside QAre's contract |

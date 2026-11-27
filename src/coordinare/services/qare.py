@@ -24,9 +24,11 @@ adapter has checked the head, never by QAre.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
+import signal
 import sys
 import time
 from pathlib import Path
@@ -34,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.lib.redaction import redact_secrets
 from coordinare.services import qare_publish
 from coordinare.services import qare_runner as runner
 from coordinare.services.stage_contract import (
@@ -127,9 +130,11 @@ class QAreProvider:
     ) -> None:
         self.name = name
         self._config = config
-        # Absolute: the runner works from the job directory, and a relative path would
-        # name a different place there.
-        self._work_dir = work_dir.expanduser().resolve()
+        # Absolute (not resolved, so it is the path the operator mounts): the runner works
+        # from the job directory, where a relative path would name a different place.
+        self._work_dir = work_dir.expanduser().absolute()
+        #: Launchers still running, each the parent of one run (it reaps the run).
+        self._launchers: dict[str, asyncio.subprocess.Process] = {}
         self._github = github
         #: How to start the runner.
         self._runner_argv = runner_argv or [sys.executable, "-m", "coordinare.services.qare_runner"]
@@ -268,7 +273,12 @@ class QAreProvider:
         return token, spec
 
     async def _launch(self, ref: str, job_dir: Path, token: str) -> None:
-        """Start the runner, which forks the run off and exits once it has recorded its pid."""
+        """Start the runner's launcher and wait until it has recorded the run's pid.
+
+        The launcher stays the run's parent and reaps it; it is kept referenced here until it
+        ends, so nothing stops it early. If it does not record a pid in time it is stopped
+        before the caller removes the job directory, so a late run cannot start there.
+        """
         env = dict(os.environ)
         env[runner.CREDENTIAL_ENV] = token
         try:
@@ -278,13 +288,24 @@ class QAreProvider:
                     stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=log, env=env,
                     start_new_session=True, close_fds=True,
                 )
-                code = await asyncio.wait_for(launcher.wait(), timeout=_LAUNCH_TIMEOUT_SECONDS)
-        except (OSError, TimeoutError) as exc:
-            msg = f"could not start the QAre runner for {ref}: {type(exc).__name__}: {exc}"
+        except OSError as exc:
+            msg = f"could not start the QAre runner for {ref}: {exc}"
             raise TransportError(msg) from exc
-        if code != 0 or _load_json(job_dir / runner.LAUNCH_FILE) is None:
-            msg = f"the QAre runner for {ref} did not start (exit {code}); see {job_dir / runner.LOG_FILE}"
-            raise TransportError(msg)
+        deadline = time.monotonic() + _LAUNCH_TIMEOUT_SECONDS
+        while _load_json(job_dir / runner.LAUNCH_FILE) is None:
+            if launcher.returncode is not None or time.monotonic() > deadline:
+                if launcher.returncode is None:
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.killpg(launcher.pid, signal.SIGKILL)
+                    await launcher.wait()
+                msg = (
+                    f"the QAre runner for {ref} did not start (exit {launcher.returncode}); "
+                    f"see {job_dir / runner.LOG_FILE}"
+                )
+                raise TransportError(msg)
+            await asyncio.sleep(0.05)
+        self._launchers = {k: p for k, p in self._launchers.items() if p.returncode is None}
+        self._launchers[ref] = launcher
 
     def _read(self, ref: str) -> StageJob:
         job_dir = self.job_dir(ref)
@@ -423,7 +444,7 @@ def _parse(text: str, spec: dict[str, Any], exit_code: Any) -> StageOutcome:
     return StageOutcome(
         verdict=_VERDICTS[verdict_word],
         reviewed_head=head,
-        summary=_summary(verdict_word, criteria, document),
+        summary=redact_secrets(_summary(verdict_word, criteria, document)),
         criteria=criteria,
         provider_verdict=verdict_word,
     )
@@ -449,16 +470,19 @@ def _criteria(raw: Any, asked: list[dict[str, Any]]) -> list[CriterionOutcome]:
                 reason="QAre reported nothing for this criterion",
             ))
             continue
-        evidence = entry.get("evidence", [])
+        evidence = entry.get("evidence") or []
         if not isinstance(evidence, list) or not all(isinstance(p, str) and p for p in evidence):
             msg = f"criterion {entry['id']!r} has evidence that is not a list of paths"
             raise _OutsideContractError(msg)
-        if entry["outcome"] in ("proven", "failed") and not evidence:
-            msg = f"criterion {entry['id']!r} is {entry['outcome']} with no evidence"
+        if entry["outcome"] == "proven" and not evidence:
+            # A criterion is proven only by evidence; a failure may have only a reason.
+            msg = f"criterion {entry['id']!r} is proven with no evidence"
             raise _OutsideContractError(msg)
         criteria.append(CriterionOutcome(
             id=entry["id"], text=str(item.get("text") or ""), outcome=entry["outcome"],
-            reason=str(entry.get("reason") or ""), evidence=list(evidence),
+            # Redacted here, once, so every reader (comments, the implementer's brief,
+            # a held card's reason) gets the same safe text.
+            reason=redact_secrets(str(entry.get("reason") or "")), evidence=list(evidence),
         ))
     return criteria
 
@@ -511,28 +535,61 @@ def _alive(pid: int, job_dir: Path) -> bool:
     return True
 
 
-def prune_finished(work_dir: Path, retain_days: int, *, keep: str = "") -> list[str]:
-    """Remove runs that ended more than ``retain_days`` ago. Returns what was removed.
+#: What a pruned run keeps: enough for a later dispatch at the same head to find it, read
+#: its verdict again and see that its evidence was already posted.
+_KEPT_WHEN_PRUNED = frozenset({
+    runner.REQUEST_FILE, runner.STATUS_FILE, runner.LAUNCH_FILE, qare_publish.PUBLISHED_FILE,
+})
 
-    Only a run with a status (it ended) is ever removed, so a run still going, and the
-    restart that finds it, are never affected. Its evidence is on ``qa-assets`` by then.
+
+def prune_finished(work_dir: Path, retain_days: int, *, keep: str = "") -> list[str]:
+    """Shrink runs older than ``retain_days`` to their record. Returns the runs shrunk.
+
+    A finished run keeps its request, status, result and publish record, so the attempt is
+    still found (and never posted twice); its evidence files, plan, diff and log go, since
+    the evidence is on ``qa-assets``. A run whose result was never published keeps all of
+    it. A run that died without a status loses only its checkouts. A run still going is
+    never touched: nothing is pruned younger than ``retain_days``.
     """
-    removed: list[str] = []
+    pruned: list[str] = []
     if not work_dir.is_dir():
-        return removed
+        return pruned
     cutoff = time.time() - retain_days * 86400
     for job_dir in work_dir.iterdir():
-        status = job_dir / runner.STATUS_FILE
         try:
-            if job_dir.name == keep or not status.is_file() or status.stat().st_mtime > cutoff:
+            if job_dir.name == keep or not job_dir.is_dir() or job_dir.stat().st_mtime > cutoff:
                 continue
+            status = _load_json(job_dir / runner.STATUS_FILE)
+            if status is None:
+                for name in ("base", "repo"):
+                    _remove_tree(job_dir / name)
+                continue
+            published = (job_dir / qare_publish.PUBLISHED_FILE).exists()
+            if status.get("outcome") == runner.RAN and not published:
+                continue
+            if _shrink(job_dir):
+                pruned.append(job_dir.name)
         except OSError:
             continue
-        _remove_tree(job_dir)
-        removed.append(job_dir.name)
-    if removed:
-        logger.info("qare.runs_pruned", count=len(removed), retain_days=retain_days)
-    return removed
+    if pruned:
+        logger.info("qare.runs_pruned", count=len(pruned), retain_days=retain_days)
+    return pruned
+
+
+def _shrink(job_dir: Path) -> bool:
+    changed = False
+    for entry in job_dir.iterdir():
+        if entry.name in _KEPT_WHEN_PRUNED:
+            continue
+        if entry.name == runner.EVIDENCE_DIR and entry.is_dir():
+            for item in entry.iterdir():
+                if item.name != "result.json":
+                    _remove_tree(item) if item.is_dir() else item.unlink(missing_ok=True)
+                    changed = True
+            continue
+        _remove_tree(entry) if entry.is_dir() else entry.unlink(missing_ok=True)
+        changed = True
+    return changed
 
 
 def _remove_tree(path: Path) -> None:
