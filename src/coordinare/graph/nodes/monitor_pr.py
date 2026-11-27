@@ -65,6 +65,7 @@ from coordinare.services.review_staleness import (
     StalenessConfig,
     classify_review_staleness,
 )
+from coordinare.services.stage_contract import normalize_login
 from coordinare.services.stage_providers import provider_review_logins
 
 logger = structlog.get_logger(__name__)
@@ -793,7 +794,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
     for review in reviews:
         review_id = str(review.get("id", ""))
         login = str(review.get("author_login", ""))
-        if login.strip().lower() in provider_logins:
+        if normalize_login(login) in provider_logins:
             continue
         reviewer_type = classify_reviewer(
             login,

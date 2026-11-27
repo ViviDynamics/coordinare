@@ -18,6 +18,7 @@ from coordinare.services.stage_contract import (
     ExternalStageService,
     PullRequestReader,
     PullRequestSnapshot,
+    normalize_login,
     stage_provider_id,
 )
 from coordinare.stage_provider_config import PROVIDER_ROLES
@@ -61,26 +62,17 @@ def role_provider(config: Any, stage: str) -> str | None:
     return provider or None
 
 
-def route_stage_service(
-    state: Any, stage: str, service: Any,
-) -> tuple[Any, str | None]:
-    """The service a dispatch of ``stage`` should use, and a reason when there is none.
+def stage_provider_for(state: Any, stage: str) -> tuple[ExternalStageService | None, str | None]:
+    """The provider service the effective config names for ``stage``.
 
-    A stage whose effective role names a provider goes to that provider's service. A
-    stage that names none never goes to one, even when a provider's service is the
-    stage default (a symphony opted out while the global config opted in).
+    ``(None, None)`` when the stage runs on a performer; ``(None, reason)`` when it names
+    a provider whose service was never started. Called before a performer slot is taken:
+    a provider-backed stage holds no performer slot while the provider works.
     """
-    config = state.get("config")
-    name = role_provider(config, stage)
-    by_id = state.get("performer_services_by_id") or {}
+    name = role_provider(state.get("config"), stage)
     if name is None:
-        if isinstance(service, ExternalStageService):
-            # The provider is the stage default only when no performer serves the stage.
-            return None, (
-                f"the {stage} stage names no provider for this symphony, and no performer "
-                f"serves it; the global default is stage provider {service.provider_name!r}"
-            )
-        return service, None
+        return None, None
+    by_id = state.get("performer_services_by_id") or {}
     target = by_id.get(stage_provider_id(name, stage))
     if not isinstance(target, ExternalStageService):
         return None, (
@@ -91,13 +83,56 @@ def route_stage_service(
     return target, None
 
 
+async def claim_stage_provider(
+    state: CoordinareState, ctx: dict[str, Any],
+) -> tuple[bool, CoordinareState | None]:
+    """Route a dispatch to the stage's provider, before any performer slot is taken.
+
+    ``(False, None)``: the stage runs on a performer, carry on. ``(True, None)``: the
+    provider is ``ctx["service"]``. ``(True, state)``: the card is blocked with the reason.
+    """
+    provider, unroutable = stage_provider_for(state, str(ctx.get("performer_stage") or ""))
+    if unroutable is not None:
+        return True, await block_unroutable_stage(state, ctx, unroutable)
+    if provider is None:
+        return False, None
+    state["slot_queued_since"] = None
+    ctx["service"] = provider
+    ctx["slot_manager"] = None  # no slot was taken, so none is released on an error path
+    return True, None
+
+
+async def refuse_provider_default(
+    state: CoordinareState, ctx: dict[str, Any], service: Any, slot_manager: Any,
+) -> CoordinareState | None:
+    """Block a stage that names no provider but resolved to one; None when it did not.
+
+    A provider is a stage's default only when no performer serves the stage. A symphony
+    that names no provider must not be sent to it.
+    """
+    if not isinstance(service, ExternalStageService):
+        return None
+    stage = str(ctx.get("performer_stage") or "")
+    if slot_manager is not None and hasattr(slot_manager, "release"):
+        slot_manager.release(stage, str(ctx.get("card_id") or ""))
+    return await block_unroutable_stage(state, ctx, (
+        f"the {stage} stage names no provider for this symphony, and no performer "
+        f"serves it; the global default is stage provider {service.provider_name!r}"
+    ))
+
+
 def provider_review_logins(config: Any) -> set[str]:
-    """Lower-cased GitHub logins the configured providers post their reviews under."""
+    """Normalised logins of the providers this config's roles use, for monitor_pr to skip.
+
+    Only providers a role names here: a symphony that keeps its performer reviewer still
+    treats the same service's webhook reviews like any other bot's.
+    """
     providers = getattr(config, "stage_providers", None) or {}
+    used = {role_provider(config, stage) for stage in _STAGE_TO_ROLE}
     return {
-        p.review_login.strip().lower()
-        for p in providers.values()
-        if getattr(p, "review_login", None)
+        normalize_login(p.review_login)
+        for name, p in providers.items()
+        if name in used and getattr(p, "review_login", None)
     }
 
 

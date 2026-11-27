@@ -100,10 +100,16 @@ class ScrutareProvider:
         if live.status_code != HTTPStatus.OK:
             return False, f"GET /healthz answered {live.status_code}"
         probe = await self._send("GET", f"/api/jobs/{_PROBE_JOB}")
-        if probe.status_code in (401, 403):
+        if probe.status_code in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
             return False, f"Scrutare refused the token in {self._config.token_env} ({probe.status_code})"
-        if probe.status_code not in (200, 404):
-            return False, f"authenticated read answered {probe.status_code}"
+        # Scrutare checks the token before it looks the job up, so its own "job not
+        # found" proves the token. Any other 404 is a route that is not Scrutare's API
+        # (for example the public webhook route, which does not serve /api/jobs).
+        if probe.status_code != HTTPStatus.NOT_FOUND or _error_text(probe) != "job not found":
+            return False, (
+                f"GET /api/jobs answered {probe.status_code} ({_error_text(probe)}), not Scrutare's "
+                "performer API; url must reach the App service that serves /api/jobs"
+            )
         return True, "reachable, token accepted"
 
     # -- internals -----------------------------------------------------------------

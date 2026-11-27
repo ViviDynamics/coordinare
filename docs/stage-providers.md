@@ -34,8 +34,9 @@ The adapter enforces these rules for every provider:
   that ended without delivering anything is a retryable system error: the card is retried on
   the daemon's usual schedule and blocks with the reason once that budget is spent. A job
   that ended without delivering anything is retried under the next attempt's request id.
-- **A possible delivery is never resubmitted.** A job that may already have posted its
-  record blocks the card with the reason, for a person to check.
+- **A possible delivery is never resubmitted automatically.** A job that may already have
+  posted its record blocks the card with the reason, for a person to check. When that person
+  sends the card back to the stage, the next attempt starts a fresh job for the same head.
 
 ## Scrutare for the reviewing stage
 
@@ -65,7 +66,8 @@ performers:
 - `installation` must be the installation Scrutare's `SCRUTARE_APP_INSTALLATIONS` lists for
   the repository, or Scrutare refuses the request.
 - `review_login` tells coordinare which reviews are Scrutare's. It cannot also be listed in
-  `human_reviewers`.
+  `human_reviewers`. Either form of an App's login (`vivi-scrutare[bot]` or `vivi-scrutare`)
+  matches.
 
 To opt in one symphony only, leave the global reviewer alone and override it:
 
@@ -81,7 +83,9 @@ symphonies:
 ```
 
 `overrides.performers` replaces the global `performers` block for that symphony, so list
-every role the symphony runs. The `stage_providers` catalog is read from the global config.
+every role the symphony runs. The `stage_providers` catalog is read from the global config
+only; a symphony that overrides it is refused at load. A provider-backed stage takes no
+performer slot while the provider works.
 
 Scrutare runs its own harness, model and configuration (`scrutare.yaml` on the reviewed
 repository's default branch), so the reviewer's `backend`, `mode`, `workflow` and tuning
@@ -91,7 +95,7 @@ every job fails before it starts.
 ### Check
 
 `coordinare doctor` checks every provider a role uses: `GET /healthz` must answer, and an
-authenticated read must accept the token. The same check runs in the startup preflight.
+authenticated read of `/api/jobs` must reach Scrutare's performer API and accept the token. The same check runs in the startup preflight.
 `coordinare config validate` checks the configuration itself: the provider exists, it can
 fill the role, the token is referenced by name, and the review login is not a human reviewer.
 
@@ -101,11 +105,17 @@ fill the role, the token is referenced by name, and the review login is not a hu
 | --- | --- |
 | `approve` | the reviewing stage passes; the verdict is recorded against the reviewed head |
 | `changes_requested` | the review's body and inline comments go to the implementer through the existing feedback loop; the next head is reviewed again |
-| `escalated` | the card blocks for a person, with a link to Scrutare's review |
+| `escalated` | the card blocks for a person, with a link to Scrutare's review; sending the card back to review starts a fresh Scrutare review |
 
-Scrutare's GitHub review is the reviewing stage's own output. `monitor_pr` never routes it a
-second time as outside feedback, and never counts it as an approval, even if its login is on
-`trusted_bot_reviewers` or `human_reviewers`. Only a human approval merges.
+Scrutare's GitHub review is the reviewing stage's own output. In a symphony whose reviewer
+uses Scrutare, `monitor_pr` never routes it a second time as outside feedback, and never
+counts it as an approval, even if its login is on `trusted_bot_reviewers` or
+`human_reviewers`. Only a human approval merges. A symphony that keeps its performer
+reviewer treats Scrutare's reviews like any other bot's.
+
+Feedback queued for the reviewing stage (for example a correction for the reviewer) is not
+forwarded: Scrutare judges each head afresh. Coordinare logs
+`stage_provider.feedback_not_forwarded` when that happens.
 
 ### Failures
 

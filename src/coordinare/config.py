@@ -1436,7 +1436,7 @@ class ProjectConfiguration(BaseSettings):
     endpoints: list[Endpoint] = Field(default_factory=list)
     model_endpoints: list[ModelEndpoint] = Field(default_factory=list)
     modes: list[Mode] = Field(default_factory=list)
-    # 402 — outside services that can fill a stage (referenced by performers.<role>.provider)
+    # 402: outside services that can fill a stage (referenced by performers.<role>.provider)
     stage_providers: dict[str, StageProviderConfig] = Field(default_factory=dict)
     priority: PriorityConfig = Field(default_factory=PriorityConfig)
     # 050 — Only dispatch cards assigned to this GitHub login. None = no filter.
@@ -2592,6 +2592,13 @@ class SymphonyConfig(BaseModel):
             unknown = set(self.overrides) - valid_fields
             if unknown:
                 msg = f"Unknown override keys: {sorted(unknown)}"
+                raise ValueError(msg)
+            if "stage_providers" in self.overrides:
+                # 402: provider services are started once, from the global catalog.
+                msg = (
+                    "stage_providers is read from the global config only; declare providers "
+                    "there and opt a role in with overrides.performers.<role>.provider"
+                )
                 raise ValueError(msg)
             base_dict.update(self.overrides)
         if self.personas:

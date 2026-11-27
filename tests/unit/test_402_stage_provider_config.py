@@ -20,7 +20,7 @@ from coordinare.services.stage_providers import (
     build_stage_provider_services,
     provider_review_logins,
     role_provider,
-    route_stage_service,
+    stage_provider_for,
 )
 from tests.unit.fake_scrutare import LOGIN
 
@@ -62,7 +62,7 @@ def test_a_reviewer_can_opt_in_to_scrutare() -> None:
     config = _config(reviewer={"provider": "scrutare"})
     assert role_provider(config, "reviewing") == "scrutare"
     assert config.stage_providers["scrutare"].installation == 169458182
-    assert provider_review_logins(config) == {LOGIN}
+    assert provider_review_logins(config) == {"vivi-scrutare"}
 
 
 def test_an_unknown_provider_is_named() -> None:
@@ -146,40 +146,69 @@ def _route_state(config: ProjectConfiguration, performer: object | None) -> tupl
 def test_routing_follows_the_effective_config() -> None:
     performer = object()
     state, service = _route_state(_config(reviewer={"provider": "scrutare"}), performer)
-    assert route_stage_service(state, "reviewing", performer) == (service, None)
+    assert stage_provider_for(state, "reviewing") == (service, None)
     state["config"] = _config()
-    assert route_stage_service(state, "reviewing", performer) == (performer, None)
+    assert stage_provider_for(state, "reviewing") == (None, None)
     # Other stages are never routed.
-    assert route_stage_service(state, "implementing", performer) == (performer, None)
+    assert stage_provider_for(state, "implementing") == (None, None)
 
 
-def test_a_symphony_that_opts_out_never_reaches_the_global_provider() -> None:
-    state, service = _route_state(_config(reviewer={"provider": "scrutare"}), None)
+async def test_a_symphony_that_opts_out_never_reaches_the_global_provider() -> None:
+    state, _ = _route_state(_config(reviewer={"provider": "scrutare"}), None)
     state["config"] = _config()
-    routed, reason = route_stage_service(state, "reviewing", service)
-    assert routed is None
-    assert reason is not None
-    assert "no performer serves it" in reason
+    ctx: dict[str, Any] = {
+        "performer_stage": "reviewing", "card_id": "CARD_1",
+        "performer_services": state["performer_services"],
+    }
+    result = await _acquire_via_slot_manager(state, ctx)  # type: ignore[arg-type]
+    assert result is not None
+    assert result["phase"] == "blocked"
+    assert "no performer serves it" in result["open_questions"][0]
+    assert "service" not in ctx
 
 
 def test_a_provider_without_a_running_service_blocks_with_the_reason() -> None:
     config = _config(reviewer={"provider": "scrutare"})
     state = {"config": config, "performer_services_by_id": {}}
-    routed, reason = route_stage_service(state, "reviewing", object())
+    routed, reason = stage_provider_for(state, "reviewing")
     assert routed is None
     assert reason is not None
     assert "declare it there" in reason
 
 
+def test_a_symphony_cannot_override_the_provider_catalog() -> None:
+    symphony = SymphonyConfig(
+        name="widgets", github_project_number=2,
+        overrides={"stage_providers": {"scrutare": {**_SCRUTARE, "installation": 1}}},
+    )
+    with pytest.raises(ValueError, match="read from the global config only"):
+        symphony.effective_config(_config())
+
+
+class _FullSlots:
+    """A slot manager with no free performer slot, which a provider dispatch must not need."""
+
+    def __init__(self) -> None:
+        self.pools: dict[str, Any] = {}
+
+    def acquire(self, stage: str, card_id: str, config: Any = None) -> None:
+        raise AssertionError("a provider-backed stage takes no performer slot")
+
+    def is_at_capacity(self, stage: str) -> bool:
+        return True
+
+
 async def test_dispatch_acquires_the_provider_for_an_opted_in_symphony() -> None:
     performer = object()
     state, service = _route_state(_config(reviewer={"provider": "scrutare"}), performer)
+    state["slot_manager"] = _FullSlots()
     ctx: dict[str, Any] = {
         "performer_stage": "reviewing", "card_id": "CARD_1",
         "performer_services": state["performer_services"],
     }
     assert await _acquire_via_slot_manager(state, ctx) is None  # type: ignore[arg-type]
     assert ctx["service"] is service
+    assert ctx["slot_manager"] is None  # nothing to release on an error path
 
 
 async def test_dispatch_keeps_the_performer_when_nothing_opts_in() -> None:
@@ -246,6 +275,20 @@ async def test_a_scrutare_change_request_is_not_routed_a_second_time() -> None:
     result = await monitor_pr(_monitor_state([_scrutare_review("CHANGES_REQUESTED")], "CHANGES_REQUESTED"))  # type: ignore[arg-type]
     assert result["phase"] == "monitoring_pr"
     assert not result.get("pending_reviews")
+
+
+async def test_the_graphql_form_of_the_bot_login_is_recognised() -> None:
+    review = {**_scrutare_review("APPROVED"), "author_login": LOGIN.removesuffix("[bot]")}
+    state = _monitor_state([review], "APPROVED")
+    state["human_reviewers"] = ["alice", LOGIN.removesuffix("[bot]")]
+    result = await monitor_pr(state)  # type: ignore[arg-type]
+    assert result["phase"] == "monitoring_pr"
+
+
+def test_only_providers_a_role_uses_are_skipped() -> None:
+    """A symphony on its performer reviewer treats Scrutare's webhook reviews like any bot's."""
+    assert provider_review_logins(_config()) == set()
+    assert provider_review_logins(_config(reviewer={"provider": "scrutare"})) == {"vivi-scrutare"}
 
 
 async def test_a_human_approval_beside_scrutare_still_merges() -> None:

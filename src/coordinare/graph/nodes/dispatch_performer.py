@@ -44,7 +44,7 @@ from coordinare.services.persona_service import get_effective_instructions, load
 from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.run_header import PERSONA_LANGUAGE_SUFFIX, build_run_inputs_bounded
 from coordinare.services.security_floor import SCAN_VERSION
-from coordinare.services.stage_providers import block_unroutable_stage, route_stage_service
+from coordinare.services.stage_providers import claim_stage_provider, refuse_provider_default
 from coordinare.services.test_env_loader import TestEnvFileError
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
@@ -1687,6 +1687,11 @@ async def _acquire_via_slot_manager(state: CoordinareState, ctx: dict[str, Any])
     # service instance, or None if at capacity (card retries next cycle).
     slot_manager = state.get("slot_manager")
     service: AgentServiceProtocol | None = None
+    # 402: a role a stage provider fills (Scrutare for reviewer) dispatches to it, and
+    # takes no performer slot. The symphony's effective config decides.
+    handled, terminal = await claim_stage_provider(state, ctx)
+    if handled:
+        return terminal
     if slot_manager is not None and hasattr(slot_manager, "acquire"):
         service = slot_manager.acquire(
             performer_stage, card_id, config=state.get("config"),
@@ -1729,13 +1734,10 @@ async def _acquire_via_slot_manager(state: CoordinareState, ctx: dict[str, Any])
     if service is None and not performer_services:
         service = state.get("agent_service")
 
-    # 402: a role a stage provider fills (Scrutare for reviewer) dispatches to it. The
-    # symphony's effective config decides, so a config that names none is unchanged.
-    service, unroutable = route_stage_service(state, performer_stage, service)
-    if unroutable is not None:
-        if slot_manager is not None and hasattr(slot_manager, "release"):
-            slot_manager.release(performer_stage, card_id)
-        return await block_unroutable_stage(state, ctx, unroutable)
+    # 402: a symphony that names no provider is never sent to the global one.
+    refused = await refuse_provider_default(state, ctx, service, slot_manager)
+    if refused is not None:
+        return refused
 
     if service is None:
         # No service configured for this stage -- skip to the next role.

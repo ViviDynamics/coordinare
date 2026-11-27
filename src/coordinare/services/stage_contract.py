@@ -23,8 +23,9 @@ Rules the adapter enforces for every provider:
   so a repeated submission (a restart, a re-dispatch) finds the same job instead of
   starting a second one.
 - An attempt that ended without delivering anything is retried under the next attempt
-  number. An attempt whose delivery is confirmed or uncertain is never resubmitted; the
-  card blocks with the reason.
+  number. An attempt whose delivery is confirmed or uncertain is never resubmitted
+  automatically; the card blocks with the reason, and only a person sending the card back
+  to the stage starts the next attempt.
 - An outcome whose judged head is not the pull request's current head is refused as a
   retryable error, so a verdict is never applied to a head it did not see.
 - Provider failures and unreachability are retryable system errors (a
@@ -175,6 +176,15 @@ def parse_pr_url(pr_url: str) -> tuple[str, int] | None:
     return f"{match['owner']}/{match['repo']}", int(match["number"])
 
 
+def normalize_login(login: str) -> str:
+    """A GitHub login as both APIs can be compared on.
+
+    REST names an App's bot ``slug[bot]``; GraphQL's ``author.login`` names it ``slug``.
+    """
+    value = (login or "").strip().lower()
+    return value.removesuffix("[bot]")
+
+
 def stage_provider_id(name: str, stage: str) -> str:
     """The performer id a provider's service for one stage is registered under."""
     return f"stage-provider:{name}:{stage}"
@@ -222,6 +232,17 @@ class ExternalStageService:
         """Submit the card's pull request at its current head, or find the job already there."""
         del workspace_info  # a provider works from GitHub, not from a checkout
         request = await self._request_for(card_context)
+        queued = card_context.get("relay_feedback")
+        if isinstance(queued, list) and queued:
+            # A provider judges each head afresh and takes no relayed feedback. Say so,
+            # rather than let the queued items look delivered.
+            logger.warning(
+                "stage_provider.feedback_not_forwarded",
+                provider=self._provider.name,
+                stage=self._stage,
+                card_id=request.card_id,
+                items=len(queued),
+            )
         job = await self._submit(request)
         logger.info(
             "stage_provider.dispatched",
@@ -327,10 +348,16 @@ class ExternalStageService:
         return snapshot
 
     async def _submit(self, request: StageRequest) -> StageJob:
-        """Find the live job for this head, walking past attempts that delivered nothing."""
+        """Find the live job for this head, walking past attempts that are finished with.
+
+        An attempt is finished with when it delivered nothing (retry it), or when it ended
+        in a block for a person (an escalation, or a delivery that may have happened). A
+        blocked card is only dispatched again after a person unblocks it, so reaching one
+        here means that person asked for a fresh review of the same head.
+        """
         for attempt in range(1, MAX_ATTEMPTS + 1):
             job = await self._provider.submit(request, request.request_id(attempt))
-            if job.state is not JobState.RETRYABLE:
+            if not _finished_with(job):
                 return job
             logger.info(
                 "stage_provider.attempt_spent",
@@ -338,11 +365,12 @@ class ExternalStageService:
                 stage=self._stage,
                 attempt=attempt,
                 job=job.ref,
+                job_state=str(job.state),
                 reason=job.reason or job.detail,
             )
         msg = (
             f"{self._provider.name}: {MAX_ATTEMPTS} attempts at head {request.head_sha[:12]} "
-            "ended without a result"
+            "are spent"
         )
         raise TransportError(msg)
 
@@ -426,6 +454,16 @@ class ExternalStageService:
         }
 
 
+def _finished_with(job: StageJob) -> bool:
+    if job.state in (JobState.RETRYABLE, JobState.NEEDS_HUMAN):
+        return True
+    return (
+        job.state is JobState.DONE
+        and job.outcome is not None
+        and job.outcome.verdict is StageVerdict.NEEDS_HUMAN
+    )
+
+
 def _session_id(ref: str, request: StageRequest) -> str:
     return f"{ref}@{request.repository}#{request.pr_number}@{request.pr_node_id}"
 
@@ -439,11 +477,11 @@ def _with_posted_review(outcome: StageOutcome, reviews: list[dict[str, Any]]) ->
     """
     if outcome.findings or not outcome.author_login:
         return outcome
-    login = outcome.author_login.strip().lower()
+    login = normalize_login(outcome.author_login)
     mine = [
         r for r in reviews
         if isinstance(r, dict)
-        and str(r.get("author_login", "")).strip().lower() == login
+        and normalize_login(str(r.get("author_login", ""))) == login
         and str(r.get("commit_oid", "")) in ("", outcome.reviewed_head)
     ]
     if not mine:

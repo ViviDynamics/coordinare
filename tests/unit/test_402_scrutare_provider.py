@@ -115,6 +115,20 @@ async def test_health_reports_reachable_and_token_accepted(fake: FakeScrutare) -
     assert ok, detail
 
 
+async def test_health_refuses_a_404_that_is_not_scrutares(fake: FakeScrutare) -> None:
+    import httpx
+
+    def ingress(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/healthz":
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(404, text="not found")
+
+    provider = ScrutareProvider("scrutare", _config(), transport=httpx.MockTransport(ingress))
+    ok, detail = await provider.health()
+    assert not ok
+    assert "not Scrutare's performer API" in detail
+
+
 async def test_health_names_a_refused_token(fake: FakeScrutare) -> None:
     fake.token = "something-else"
     ok, detail = await _provider(fake).health()

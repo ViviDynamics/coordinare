@@ -204,10 +204,51 @@ async def test_a_job_that_may_have_posted_blocks_instead_of_resubmitting(fake: F
     status = await service.check_status(accepted["session_id"])
     assert status["status"] == "blocked"
     assert "posting.json" in status["questions"][0]
-    # A re-dispatch finds the same job and does not start another review.
-    again = await service.dispatch_card(dict(CARD))
-    assert _job_of(again["session_id"]) == _job_of(accepted["session_id"])
+    # Polling again never resubmits: the block stands until a person acts.
+    assert (await service.check_status(accepted["session_id"]))["status"] == "blocked"
     assert fake.created == 1
+
+
+@pytest.mark.parametrize("ending", ["uncertain", "confirmed", "escalated"])
+async def test_a_person_sending_a_blocked_card_back_gets_a_fresh_review(
+    fake: FakeScrutare, github: FakeGitHub, ending: str,
+) -> None:
+    """A blocked card is dispatched again only after a person unblocks it."""
+    service = _service(fake, github)
+    accepted = await service.dispatch_card(dict(CARD))
+    job = _job_of(accepted["session_id"])
+    if ending == "escalated":
+        fake.post(job, verdict="escalated", head=HEAD)
+    else:
+        fake.finish(job, "failed", {"delivery": ending})
+    assert (await service.check_status(accepted["session_id"]))["status"] == "blocked"
+    again = await service.dispatch_card(dict(CARD))
+    assert _job_of(again["session_id"]) != job
+    assert fake.by_request[_request().request_id(2)] == _job_of(again["session_id"])
+    assert fake.created == 2
+
+
+async def test_findings_match_the_graphql_form_of_the_bot_login(fake: FakeScrutare, github: FakeGitHub) -> None:
+    """REST names the bot ``slug[bot]``; GraphQL's author.login is ``slug``."""
+    service = _service(fake, github)
+    accepted = await service.dispatch_card(dict(CARD))
+    fake.post(_job_of(accepted["session_id"]), verdict="changes_requested", head=HEAD)
+    github.reviews = [{
+        "author_login": LOGIN.removesuffix("[bot]"), "commit_oid": HEAD, "body": "b",
+        "comments": [{"body": "Off by one.", "path": "a.py", "line": 3}],
+    }]
+    status = await service.check_status(accepted["session_id"])
+    assert [c["body"] for c in status["comments"]] == ["Off by one."]
+
+
+async def test_feedback_queued_for_a_provider_is_reported_not_silently_dropped(
+    fake: FakeScrutare, github: FakeGitHub,
+) -> None:
+    from structlog.testing import capture_logs
+
+    with capture_logs() as logs:
+        await _service(fake, github).dispatch_card({**CARD, "relay_feedback": [{"body": "look again"}]})
+    assert any(e["event"] == "stage_provider.feedback_not_forwarded" and e["items"] == 1 for e in logs)
 
 
 async def test_scrutare_unreachable_is_a_retryable_error_at_dispatch_and_poll(
