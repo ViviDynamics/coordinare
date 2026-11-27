@@ -17,7 +17,7 @@ assert(html.indexOf('<img') === -1);
 assert(html.indexOf('&lt;img') !== -1);
 assert(html.indexOf('<script>') === -1);
 assert(html.indexOf('FIRST_CARD.md') !== -1);
-assert(html.indexOf('Try a first card') !== -1);
+assert(html.indexOf('Try a first work item') !== -1);
 assert.strictEqual(context.SNAPSHOT_FIELD_SCOPE.idle_reason, 'derived');
 var state = {
   idle_reason: 'alpha reason', active_sessions: [],
@@ -29,7 +29,7 @@ console.log('First launch client checks passed');
 ['BLOCKED', 'TODO', 'IN_REVIEW', 'DONE', 'BACKLOG'].forEach(function(status) {
   var counts = {};
   counts[status] = 1;
-  assert(!context.activeRunsIdleHtml({board_summary: counts}).includes('Try a first card'));
+  assert(!context.activeRunsIdleHtml({board_summary: counts}).includes('Try a first work item'));
 });
-assert(!context.activeRunsIdleHtml({}).includes('Try a first card'));
-assert(context.activeRunsIdleHtml({board_summary: {TODO: 0, BLOCKED: 0}}).includes('Try a first card'));
+assert(!context.activeRunsIdleHtml({}).includes('Try a first work item'));
+assert(context.activeRunsIdleHtml({board_summary: {TODO: 0, BLOCKED: 0}}).includes('Try a first work item'));

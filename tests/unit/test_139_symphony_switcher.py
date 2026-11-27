@@ -36,7 +36,7 @@ _STATIC_TEXT = _DASHBOARD_HTML + "".join(_DASHBOARD_JS_SOURCES.values())
 
 def test_the_glossary_names_the_terms_the_switcher_uses() -> None:
     assert {"symphony", "github_project", "repository", "cards"} <= set(vocabulary.CONCEPTS)
-    assert vocabulary.CONCEPTS["cards"].label == "Cards"
+    assert vocabulary.CONCEPTS["cards"].label == "Work items"
     assert vocabulary.CONCEPTS["github_project"].label == "GitHub Project"
     assert vocabulary.CONCEPTS["repository"].label == "Repository"
 
@@ -142,9 +142,9 @@ def test_no_swimlane_tab_markup_or_style_remains_anywhere() -> None:
 
 def test_the_panel_is_called_cards_and_keeps_its_id() -> None:
     # 154: the heading carries the board's counts beside its name (cards-summary).
-    assert '<h2>Cards <span id="cards-summary"' in _DASHBOARD_HTML
+    assert '<h2>Work items <span id="cards-summary"' in _DASHBOARD_HTML
     assert 'id="swimlane-section"' in _DASHBOARD_HTML  # ids stay: tests and the MCP tools depend on them
-    assert "&#8592; Cards</button>" in _DASHBOARD_HTML
+    assert "&#8592; Work items</button>" in _DASHBOARD_HTML
 
 
 @pytest.mark.parametrize("phrase", [

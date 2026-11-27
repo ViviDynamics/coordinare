@@ -73,7 +73,7 @@ def test_the_condition_is_still_shown_on_a_paused_and_on_a_failed_symphony(
     ]
     _open_with(page, live_server_url, store, rows)
 
-    expect(_cell(page, "paused-sym", _STATUS)).to_contain_text("1 card is paused on the board.")
+    expect(_cell(page, "paused-sym", _STATUS)).to_contain_text("1 work item is paused.")
     expect(_cell(page, "paused-sym", _STATUS)).to_contain_text(_EXTERNAL)
     expect(_cell(page, "failed-sym", _STATUS)).to_contain_text("Last check failed: GitHub 401 Bad credentials")
     expect(_cell(page, "failed-sym", _STATUS)).to_contain_text(_EXTERNAL)

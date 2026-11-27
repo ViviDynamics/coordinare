@@ -1380,7 +1380,7 @@ def test_skip_role_no_active_card() -> None:
     res = client.post("/api/skip-role")
 
     assert res.status_code == 400
-    assert "No active card" in res.json()["error"]
+    assert "No active work item" in res.json()["error"]
 
 
 def test_restart_from_valid_role() -> None:

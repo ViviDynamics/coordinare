@@ -191,7 +191,7 @@ def test_each_status_shows_its_reason(
     expect(_cell(page, "alpha-sym", _STATUS)).to_contain_text("Active")
     expect(_cell(page, "alpha-sym", _STATUS)).to_contain_text("Checked every 30 seconds.")
     expect(_cell(page, "beta-sym", _STATUS)).to_contain_text("Paused")
-    expect(_cell(page, "beta-sym", _STATUS)).to_contain_text("1 card is paused on the board.")
+    expect(_cell(page, "beta-sym", _STATUS)).to_contain_text("1 work item is paused.")
     expect(_cell(page, "gamma-sym", _STATUS)).to_contain_text("Disabled")
     expect(_cell(page, "gamma-sym", _STATUS)).to_contain_text("enabled: false in the config")
     expect(_cell(page, "delta-sym", _STATUS)).to_contain_text("Error")

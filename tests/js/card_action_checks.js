@@ -60,12 +60,12 @@ check("cancel refused for a card that is not the active one",
 has("and it says nothing was cancelled",
   cardActionOutcome("cancel", 409, { status: "not_active_card" }).text, "Nothing was cancelled");
 check("a pending control conflict shows the server's reason",
-  cardActionOutcome("skip", 409, { error: "A control is already pending for this card" }).text,
-  "A control is already pending for this card");
+  cardActionOutcome("skip", 409, { error: "A control is already pending for this work item" }).text,
+  "A control is already pending for this work item");
 check("a refusal shows the server's reason",
   cardActionOutcome("restart", 400, { error: "Role 'x' not in lifecycle" }).text, "Role 'x' not in lifecycle");
-check("cancelled", cardActionOutcome("cancel", 200, { status: "cancelled" }).text, "Card cancelled.");
-check("nothing to cancel", cardActionOutcome("cancel", 200, { status: "no_active_card" }).text, "There was no active card to cancel.");
+check("cancelled", cardActionOutcome("cancel", 200, { status: "cancelled" }).text, "Work item cancelled.");
+check("nothing to cancel", cardActionOutcome("cancel", 200, { status: "no_active_card" }).text, "There was no active work item to cancel.");
 check("queued controls say when they apply",
   cardActionOutcome("skip", 200, { status: "override_queued" }).text, "Queued. It takes effect on the next check.");
 check("a missing body does not throw", cardActionOutcome("skip", 500, undefined).text, "The request was refused.");
@@ -80,7 +80,7 @@ check("the menu and each of its three buttons carry the card id", menu.split('da
 // --- 168: a card Cancel cannot act on (held by another symphony) ----------------
 var heldMenu = cardActionsHtml({ card_id: NODE, phase: "monitoring_performer", cancel_available: false }, state);
 has("a card cancel cannot act on gets no cancel button", heldMenu, 'data-card-action="cancel"', false);
-has("and the menu says why cancel is missing", heldMenu, "Cancel is offered only for the card the conductor is working on right now", true);
+has("and the menu says why cancel is missing", heldMenu, "Cancel is offered only for the work item the conductor is working on right now", true);
 has("skip is still offered for it", heldMenu, 'data-card-action="skip"');
 has("restart is still offered for it", heldMenu, 'data-card-action="restart"');
 check("its card id appears on the menu and its two buttons", heldMenu.split('data-card-id="' + NODE + '"').length - 1, 3);
@@ -90,7 +90,7 @@ check("the flag is read only when it is exactly true",
   [cardCancelOffered({ cancel_available: true }), cardCancelOffered({ cancel_available: "true" }), cardCancelOffered(undefined)],
   [true, false, false]);
 has("restart lists the lifecycle stages by display name", menu, '<option value="implementing">Implement</option>');
-has("the menu has an accessible name", menu, 'aria-label="Card actions"');
+has("the menu has an accessible name", menu, 'aria-label="Work item actions"');
 has("the menu has a live status region", menu, 'role="status"');
 check("no menu for a card that is not running",
   [cardActionsHtml({ card_id: NODE, phase: "monitoring_pr" }, state), cardActionsHtml({ card_id: NODE, phase: "blocked" }, state)], ["", ""]);
@@ -105,12 +105,12 @@ has("card ids are escaped in the markup",
 // The page replaces the menu's DOM on every state update. The result and the
 // open state are kept per card and the markup is rebuilt from them.
 var T0 = 1000000;
-setCardActionResult(NODE, "Card cancelled.", null, T0);
+setCardActionResult(NODE, "Work item cancelled.", null, T0);
 var rerendered = cardActionsHtml({ card_id: NODE, phase: "monitoring_performer" }, state, T0 + 5000);
-has("a re-render after the action still shows its result", rerendered, ">Card cancelled.</div>");
+has("a re-render after the action still shows its result", rerendered, ">Work item cancelled.</div>");
 has("and keeps the menu open so it can be read", rerendered, '<details class="card-actions" data-card-id="' + NODE + '" open>');
 var expired = cardActionsHtml({ card_id: NODE, phase: "monitoring_performer" }, state, T0 + CARD_ACTION_RESULT_MS + 1);
-has("the result clears after a minute", expired, "Card cancelled.", false);
+has("the result clears after a minute", expired, "Work item cancelled.", false);
 has("and the menu closes again", expired, " open>", false);
 setCardActionResult(NODE, "A check is in progress. Try again in a moment.", { kind: "restart", stage: "reviewing" }, T0);
 var retryHtml = cardActionMsgHtml(NODE, T0 + 1);

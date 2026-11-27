@@ -1497,12 +1497,13 @@ class ProjectConfiguration(BaseSettings):
     max_concurrent_cards: int = Field(
         default=1, ge=1, le=20,
         description=(
-            "How many cards may hold a pipeline slot at once. A card holds its slot while it has "
-            "work under way. Its documenter side run shares that slot, or takes a free one when the "
-            "card is parked on review. A side run waits while no slot is free, and also while its own "
-            "card's performer is live; it starts once that has finished. A waiting side run is shown on "
-            "the card. Env bootstrap, the advocate and curator intake, and wiki-init run outside this "
-            "budget: each is a card-less container gated by an in-flight marker, so at most one run of "
+            "How many work items may hold a pipeline slot at once. A work item holds its slot while it "
+            "has work under way. Its documenter side run shares that slot, or takes a free one when the "
+            "work item is parked on review. A side run waits while no slot is free, and also while its own "
+            "work item's performer is live; it starts once that has finished. A waiting side run is shown "
+            "on the work item. Env bootstrap, the advocate and curator intake, and wiki-init run outside "
+            "this budget: each is a container with no work item, gated by an in-flight marker, so at "
+            "most one run of "
             "each kind is in flight per symphony, per daemon process (a restart clears the marker). "
             "Architect and assessor intake run inside it, as lifecycle stages."
         ),
@@ -1512,14 +1513,14 @@ class ProjectConfiguration(BaseSettings):
     # reached no new card is admitted until a review lands. null removes the cap.
     max_cards_in_review: int | None = Field(
         default=3, ge=1, le=50,
-        description="How many cards may wait on PR review at once before new cards stop being started.",
+        description="How many work items may wait on PR review at once before new work items stop being started.",
     )
     # 186: a card may hold its slot in monitoring_pr while waiting on CI checks or
     # on the daemon, but only this long. After that it is treated as waiting on a
     # human: it releases the slot and counts toward max_cards_in_review.
     review_slot_hold_seconds: int = Field(
         default=900, ge=60,
-        description="How long a card may hold its slot while waiting on checks or the daemon before it is treated as waiting on a human.",
+        description="How long a work item may hold its slot while waiting on checks or the daemon before it is treated as waiting on a human.",
     )
 
     # 073 (drive-by) — Hold all regular card dispatch while env_bootstrap is

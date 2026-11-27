@@ -1,7 +1,7 @@
 // 271: persistent incident history. The server owns filtering, redaction and paging.
 var LOGS_PAGE_LIMIT = 50;
 var LOGS_FILTERS = ['start', 'end', 'symphony', 'card_id', 'run_id', 'stage', 'source', 'kind', 'level', 'text'];
-var LOGS_LABELS = {start: 'From', end: 'To', symphony: 'Symphony', card_id: 'Card', run_id: 'Run',
+var LOGS_LABELS = {start: 'From', end: 'To', symphony: 'Symphony', card_id: 'Work item', run_id: 'Run',
   stage: 'Stage', source: 'Source', kind: 'Kind', level: 'Level', text: 'Search'};
 var LOGS_JSON_INDENT = 2;
 var LOGS_MAX_SAFE_INTEGER = 9007199254740991;
@@ -66,7 +66,7 @@ function logsPaint(body) {
   });
   var rows = body.events || [];
   target.innerHTML = (rows.length ? '<div class="history-table-wrap"><table class="history-table">' +
-    '<thead><tr><th>Time</th><th>Level</th><th>Source</th><th>Symphony</th><th>Card</th><th>Kind</th><th>Message</th></tr></thead>' +
+    '<thead><tr><th>Time</th><th>Level</th><th>Source</th><th>Symphony</th><th>Work item</th><th>Kind</th><th>Message</th></tr></thead>' +
     '<tbody id="logs-rows">' + rows.map(function(row) {
       return logsRowHtml(row, expanded[String(row.id)]);
     }).join('') + '</tbody></table></div>' : '<p>No events match these filters.</p>') +

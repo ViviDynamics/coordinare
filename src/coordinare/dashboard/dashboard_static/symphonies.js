@@ -624,7 +624,7 @@ function symphonyStatus(sym) {
     else reason = sym.error_count + ' checks failed in a row; the error was not recorded.';
   } else if (typeof sym.cards_paused === 'number' && sym.cards_paused > 0) {
     label = 'Paused';
-    reason = sym.cards_paused + (sym.cards_paused === 1 ? ' card is' : ' cards are') + ' paused on the board.';
+    reason = sym.cards_paused + (sym.cards_paused === 1 ? ' work item is' : ' work items are') + ' paused.';
   } else {
     label = 'Active';
     if (reviewWarns) reason = String(review.message);
@@ -785,10 +785,10 @@ function symphonyTableRowHtml(sym, choice) {
     + '<td style="color:var(--color-text-muted)">' + (symphonyRepoHtml(sym) || 'No repository') + '</td>'
     + '<td>' + esc(env.label) + '<div class="muted" style="font-size:11px">' + (hidden ? hiddenHtml : esc(env.reason)) + '</div>' +
     (hidden ? '' : symphonyBootstrapHtml(sym.env_bootstrap, sym.name)) + bootBtn + '</td>'
-    + '<td data-stats-measure="active" data-stats-definition="Cards with live performer work now.">' + (hidden ? hiddenHtml : 'Loading') + '</td>'
-    + '<td data-stats-measure="queued" data-stats-definition="Cards waiting for a performer slot now.">' + (hidden ? hiddenHtml : 'Loading') + '</td>'
+    + '<td data-stats-measure="active" data-stats-definition="Work items with live performer work now.">' + (hidden ? hiddenHtml : 'Loading') + '</td>'
+    + '<td data-stats-measure="queued" data-stats-definition="Work items waiting for a performer slot now.">' + (hidden ? hiddenHtml : 'Loading') + '</td>'
     + '<td data-stats-measure="spend" data-stats-definition="Cost of runs starting in the rolling 7d window.">' + (hidden ? hiddenHtml : 'Loading') + '</td>'
-    + '<td data-stats-measure="completed" data-stats-definition="Card merges in the rolling 7d window.">' + (hidden ? hiddenHtml : 'Loading') + '</td>'
+    + '<td data-stats-measure="completed" data-stats-definition="Work item merges in the rolling 7d window.">' + (hidden ? hiddenHtml : 'Loading') + '</td>'
     + '<td>' + esc(symphonyCountText(sym.cycle_count)) + '</td>'
     + '<td>' + esc(symphonyCountText(sym.error_count)) + '</td>'
     // The unchecked note can carry the last error, so under a scope it is hidden with the rest.

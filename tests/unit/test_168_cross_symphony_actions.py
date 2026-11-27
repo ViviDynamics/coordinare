@@ -181,10 +181,10 @@ def test_skip_and_restart_on_an_unknown_card_are_a_clean_400() -> None:
     skip = client.post("/api/skip-role", params={"card_id": "PVTI_NOPE"})
     restart = client.post("/api/restart-from/assessor", params={"card_id": "PVTI_NOPE"})
     assert skip.status_code == 400 and skip.json() == {
-        "error": "No eligible active card for this target",
+        "error": "No eligible active work item for this target",
     }
     assert restart.status_code == 400 and restart.json() == {
-        "error": "No eligible active card for this target",
+        "error": "No eligible active work item for this target",
     }
 
 

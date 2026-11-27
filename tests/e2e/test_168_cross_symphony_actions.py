@@ -68,7 +68,7 @@ def test_a_card_another_symphony_holds_has_no_cancel_and_says_why(
 
     tile = _open_menu(page, _HELD)
     menu = tile.locator(".card-actions-menu")
-    expect(menu.get_by_role("button", name="Cancel card")).to_have_count(0)
+    expect(menu.get_by_role("button", name="Cancel work item")).to_have_count(0)
     expect(menu).to_contain_text(_NOTE, timeout=_WAIT_LIVE)
     expect(menu.get_by_role("button", name="Skip current stage")).to_be_visible()
     expect(menu.get_by_role("button", name="Restart from stage")).to_be_visible()
@@ -86,7 +86,7 @@ def test_the_card_this_symphony_works_on_still_offers_cancel(
 
     tile = _open_menu(page, _ACTIVE)
     menu = tile.locator(".card-actions-menu")
-    expect(menu.get_by_role("button", name="Cancel card")).to_be_visible()
+    expect(menu.get_by_role("button", name="Cancel work item")).to_be_visible()
     expect(menu).not_to_contain_text(_NOTE)
 
 
@@ -176,7 +176,7 @@ def test_an_unknown_card_refusal_is_shown_as_a_plain_message(
         lambda route: route.fulfill(
             status=400,
             content_type="application/json",
-            body=json.dumps({"error": "No eligible active card for this target"}),
+            body=json.dumps({"error": "No eligible active work item for this target"}),
         ),
     )
     page.on("dialog", lambda dialog: dialog.accept())
@@ -184,7 +184,7 @@ def test_an_unknown_card_refusal_is_shown_as_a_plain_message(
     tile = _open_menu(page, _HELD)
     tile.locator(".card-actions-menu").get_by_role("button", name="Skip current stage").click()
     expect(tile.locator(".card-action-msg")).to_have_text(
-        "No eligible active card for this target",
+        "No eligible active work item for this target",
         timeout=_WAIT_LIVE,
     )
 
@@ -203,6 +203,6 @@ def test_declining_cancel_on_the_own_card_sends_nothing(
     page.on("dialog", lambda dialog: dialog.dismiss())
 
     tile = _open_menu(page, _ACTIVE)
-    tile.get_by_role("button", name="Cancel card").click()
+    tile.get_by_role("button", name="Cancel work item").click()
     expect(tile.locator(".card-action-msg")).to_have_text("")
     assert called == []

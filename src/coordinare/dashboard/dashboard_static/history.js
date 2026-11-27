@@ -171,7 +171,7 @@ function historyRunRowHtml(row) {
 function historyTableHtml(runs) {
   if (!runs.length) return '<p class="empty-state">No runs match these filters.</p>';
   return '<div class="history-table-wrap"><table class="history-table"><thead><tr>' +
-    '<th scope="col">Time</th><th scope="col">Symphony</th><th scope="col">Card</th>' +
+    '<th scope="col">Time</th><th scope="col">Symphony</th><th scope="col">Work item</th>' +
     '<th scope="col">Stage</th><th scope="col">Duration</th>' +
     '<th scope="col">Tokens</th><th scope="col">Cost</th><th scope="col">Outcome</th>' +
     '<th scope="col">PR</th><th scope="col">Transcript</th>' +
@@ -202,7 +202,7 @@ function historyFormHtml(filters) {
     return '<option value="' + esc(pair[0]) + '"' + selected + '>' + esc(pair[1]) + '</option>';
   });
   return '<form class="history-filters" data-history-form>' +
-    '<label>Card <input type="text" name="card" value="' + esc(filters.card) + '"></label>' +
+    '<label>Work item <input type="text" name="card" value="' + esc(filters.card) + '"></label>' +
     '<label>Stage <input type="text" name="stage" value="' + esc(filters.stage) + '"></label>' +
     '<label>Agent <input type="text" name="agent" value="' + esc(filters.agent || '') + '"></label>' +
     '<label>Outcome <select name="outcome">' + outcomes.join('') + '</select></label>' +

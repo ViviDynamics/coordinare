@@ -37,7 +37,7 @@ function personaStatsTiles(body) {
   var tiles = [
     ['Runs', 'runs', 'count', totals.runs, 'Recorded runs started in this cohort.'],
     ['Success rate', 'success_rate', 'rate', totals.success_rate, 'Passing verdicts divided by pass or fail verdicts; no verdict means not recorded.'],
-    ['First pass rate', 'first_pass_rate', 'rate', totals.first_pass_rate, 'Resolved card and stage pairs that passed on their first and only recorded run.'],
+    ['First pass rate', 'first_pass_rate', 'rate', totals.first_pass_rate, 'Resolved work item and stage pairs that passed on their first and only recorded run.'],
     ['Median duration', 'duration_seconds', 'duration', duration.median, 'Median recorded run duration.'],
     ['p90 duration', 'duration_seconds', 'duration', duration.p90, '90th percentile recorded run duration.'],
     ['Tokens', 'tokens', 'tokens', (totals.tokens || {}).total, 'Recorded input, output, cache read and cache write tokens.'],
@@ -95,7 +95,7 @@ function personaStatsActivity(body) {
 function personaStatsRecent(body, role, scope) {
   var path = '/activity/history?symphony=' + encodeURIComponent(scope) + '&h.agent=' + encodeURIComponent(role);
   return '<h3>Recent runs</h3><p><a href="' + esc(path) + '" data-persona-link>History for this agent</a></p>' +
-    ((body.recent_runs || []).length ? '<div class="persona-table-scroll" tabindex="0" role="region" aria-label="Statistics table"><table><thead><tr><th>Started</th><th>Card</th><th>Symphony</th><th>Outcome</th><th>Duration</th><th>Cost</th></tr></thead><tbody>' + body.recent_runs.map(function(row) {
+    ((body.recent_runs || []).length ? '<div class="persona-table-scroll" tabindex="0" role="region" aria-label="Statistics table"><table><thead><tr><th>Started</th><th>Work item</th><th>Symphony</th><th>Outcome</th><th>Duration</th><th>Cost</th></tr></thead><tbody>' + body.recent_runs.map(function(row) {
       return '<tr><td>' + timeHtml(row.started_at) + '</td><td><a href="' + esc(runPathFor(row.symphony, row.card, row.run)) + '" data-persona-link title="Open transcript">' + esc(row.card_title || row.card) + '</a></td><td>' + esc(row.attributed_symphony || row.symphony) + '</td><td>' + esc(PERSONA_OUTCOMES[row.outcome] || 'Not recorded') + '</td><td>' + personaStatValue(body, row, 'duration_seconds', 'duration', row.duration_seconds) + '</td><td>' + personaStatValue(body, row, 'cost', 'cost', (row.cost || {}).usd) + '</td></tr>';
     }).join('') + '</tbody></table></div>' : '<p>No recent runs in this window.</p>');
 }

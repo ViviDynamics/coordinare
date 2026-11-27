@@ -104,7 +104,7 @@ def test_review_shows_old_and_new_then_save_sends_the_reviewed_snapshot(page: Pa
 
     review = page.locator("#sym-config-form [data-review]")
     expect(review).to_be_visible(timeout=_WAIT)
-    expect(review).to_contain_text("Max concurrent cards")
+    expect(review).to_contain_text("Max concurrent work items")
     expect(review).to_contain_text("Was: 2")
     expect(review).to_contain_text("Now: 3")
     assert saved == [], "nothing is sent before the reader confirms the review"

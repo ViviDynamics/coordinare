@@ -93,7 +93,7 @@ def _register_cancel_card(app: FastAPI, ctx: DashboardContext) -> None:
             active_id, active_title = resolve_active_card(daemon.state)
             if card_id is not None and card_id != active_id:
                 return JSONResponse(
-                    {"error": "Cancel works only for the card the conductor is working on right now; this card was not cancelled", "status": "not_active_card"},
+                    {"error": "Cancel works only for the work item the conductor is working on right now; this work item was not cancelled", "status": "not_active_card"},
                     status_code=409,
                 )
             card = daemon.state.get("current_card")
@@ -103,7 +103,7 @@ def _register_cancel_card(app: FastAPI, ctx: DashboardContext) -> None:
             }
             result = await cancel_active_card(daemon.state)
             if result.get("status") == "cancelled":
-                record_operator_action(store, target, "Operator cancelled the card.")
+                record_operator_action(store, target, "Operator cancelled the work item.")
             return JSONResponse(result)
 
 

@@ -51,7 +51,7 @@ BETA_RUN = "run233b1"
 T0 = datetime(2026, 10, 14, 9, 0, 0, tzinfo=UTC)
 WAIT_PAGE = 10_000
 HOSTILE = "%3Cimg%20src%3Dx%20onerror%3Dwindow.__pwned%3D1%3E"
-NOTE_START = "This card belongs to " + BETA + "."
+NOTE_START = "This work item belongs to " + BETA + "."
 
 
 def _at(seconds: float) -> str:
@@ -241,14 +241,14 @@ def test_full_timeline_from_the_live_card_detail_opens_the_card_page(
 def test_an_unknown_card_says_no_timeline_is_recorded(page: Page, card_url: str) -> None:
     page.goto(f"{card_url}/cards/{ALPHA}/{UNKNOWN_CARD}")
     expect(page.locator("#card-page")).to_be_visible(timeout=WAIT_PAGE)
-    expect(page.locator("#card-page-section")).to_contain_text("No timeline recorded for this card", timeout=WAIT_PAGE)
+    expect(page.locator("#card-page-section")).to_contain_text("No timeline recorded for this work item", timeout=WAIT_PAGE)
     expect(page.locator("#card-page-section .tl-tracker")).to_have_count(0)
 
 
 @pytest.mark.e2e
 def test_a_hostile_path_segment_is_shown_as_text_and_runs_nothing(page: Page, card_url: str) -> None:
     page.goto(f"{card_url}/cards/{ALPHA}/{HOSTILE}")
-    expect(page.locator("#card-page-section")).to_contain_text("This is not a card address.", timeout=WAIT_PAGE)
+    expect(page.locator("#card-page-section")).to_contain_text("This is not a work item address.", timeout=WAIT_PAGE)
     expect(page.locator("#card-page-section img")).to_have_count(0)
     assert page.evaluate("typeof window.__pwned") == "undefined"
 

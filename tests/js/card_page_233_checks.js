@@ -75,7 +75,7 @@ check("no choice means no note", cardPageScopeNote("", "alpha-sym"), "");
 check("the same symphony as the choice means no note", cardPageScopeNote("alpha-sym", "alpha-sym"), "");
 check("no symphony means no note", cardPageScopeNote("alpha-sym", ""), "");
 const note = cardPageScopeNote("alpha-sym", "beta-sym");
-has("another symphony's card says so", note, "This card belongs to beta-sym.");
+has("another symphony's card says so", note, "This work item belongs to beta-sym.");
 has("the note names the header's choice", note, "The header shows alpha-sym");
 has("the note says how to see the card", note, "Choose All symphonies or beta-sym");
 lacks("the note has no em dash", note, "\u2014");

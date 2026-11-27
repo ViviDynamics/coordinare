@@ -45,7 +45,7 @@ def test_a_queued_card_says_the_slots_are_full(page: Page, live_server_url: str,
 
     card = page.locator("#swimlane-section .swimlane-card").filter(has_text="Add the export")
     expect(card.locator(".swimlane-wait")).to_have_text(
-        "Queued: 1 of 1 card slots in use", timeout=_WAIT_LIVE,
+        "Queued: 1 of 1 item slots in use", timeout=_WAIT_LIVE,
     )
     expect(card.locator(".swimlane-wait")).to_have_attribute("data-wait", "queued")
 
@@ -68,7 +68,7 @@ def test_the_to_do_header_summarises_capacity_and_the_queue(
 
     header = page.locator("#swimlane-section .swimlane-col-header").first
     expect(header).to_contain_text("To Do", timeout=_WAIT_LIVE)
-    expect(header).to_have_attribute("title", "1 of 1 card slots in use · 3 queued", timeout=_WAIT_LIVE)
+    expect(header).to_have_attribute("title", "1 of 1 item slots in use · 3 queued", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -162,13 +162,13 @@ def test_a_session_held_by_the_review_cap_says_so_and_the_header_counts_it(
     _broadcast(store, board, active_sessions=[_active_session("PVTI_70", "Next up", "assessing", phase="dispatching")])
 
     card = page.locator("#swimlane-section .swimlane-card").filter(has_text="Next up")
-    expect(card.locator(".swimlane-wait")).to_have_text("Queued: 2 cards waiting on review", timeout=_WAIT_LIVE)
+    expect(card.locator(".swimlane-wait")).to_have_text("Queued: 2 work items waiting on review", timeout=_WAIT_LIVE)
     expect(card.locator(".swimlane-wait")).to_have_attribute(
         "title", "max_cards_in_review is 2: 2 waiting on review",
     )
     header = page.locator("#swimlane-section .swimlane-col-header").first
     expect(header).to_have_attribute(
-        "title", "0 of 2 card slots in use · 1 queued · 2 of 2 cards waiting on review", timeout=_WAIT_LIVE,
+        "title", "0 of 2 item slots in use · 1 queued · 2 of 2 work items waiting on review", timeout=_WAIT_LIVE,
     )
 
 
@@ -189,7 +189,7 @@ def test_in_symphony_mode_a_queued_session_card_still_says_why(
                active_sessions=[_active_session("PVTI_71", "Queued in symphony", "implementing", phase="dispatching")])
 
     card = page.locator("#swimlane-section .swimlane-card").filter(has_text="Queued in symphony")
-    expect(card.locator(".swimlane-wait")).to_have_text("Queued: 1 of 1 card slots in use", timeout=_WAIT_LIVE)
+    expect(card.locator(".swimlane-wait")).to_have_text("Queued: 1 of 1 item slots in use", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e

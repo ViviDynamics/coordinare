@@ -104,10 +104,10 @@ function symphonyStatsNowHtml(name, response, health, flow) {
     return symphonyStatsMetric(response, boardColumnLabel(column), symphonyStatsNumber(columns[column]),
       'Work items in state ' + column + ' at the latest check. Current, independent of selected window.');
   }).join('') : '<p class="muted">Not checked yet.</p>';
-  metrics += symphonyStatsMetric(response, 'Cards running', symphonyStatsNumber(health.cards_active), 'Cards with live performer work now.');
-  metrics += symphonyStatsMetric(response, 'Queued', symphonyStatsNumber(health.cards_queued), 'Cards waiting for a performer slot now.');
-  metrics += symphonyStatsMetric(response, 'Parked in review', symphonyStatsNumber(health.cards_parked), 'Cards waiting on human review without live work now.');
-  metrics += symphonyStatsMetric(response, 'Card slots', symphonyStatsNumber(health.slots_in_use) + ' of ' +
+  metrics += symphonyStatsMetric(response, 'Running', symphonyStatsNumber(health.cards_active), 'Work items with live performer work now.');
+  metrics += symphonyStatsMetric(response, 'Queued', symphonyStatsNumber(health.cards_queued), 'Work items waiting for a performer slot now.');
+  metrics += symphonyStatsMetric(response, 'Parked in review', symphonyStatsNumber(health.cards_parked), 'Work items waiting on human review without live work now.');
+  metrics += symphonyStatsMetric(response, 'Work item slots', symphonyStatsNumber(health.slots_in_use) + ' of ' +
     symphonyStatsNumber(health.max_concurrent_cards), 'Pipeline slots currently reserved against max_concurrent_cards.');
   var waiting = [];
   var sessions = st.active_sessions || {};
@@ -126,7 +126,7 @@ function symphonyStatsNowHtml(name, response, health, flow) {
     });
   });
   return '<section class="card sym-stats-section"><h3>Now</h3><div class="sym-stats-grid">' + metrics + '</div>' +
-    symphonyStatsTable(response, ['Card', 'Why it is waiting'], waiting, 'Current cards without live performer work and their recorded waiting reasons.') + '</section>';
+    symphonyStatsTable(response, ['Work item', 'Why it is waiting'], waiting, 'Current work items without live performer work and their recorded waiting reasons.') + '</section>';
 }
 
 function symphonyStatsSpendRows(response) {
@@ -164,9 +164,9 @@ function symphonyStatsHtml(name, response, models) {
   var coverage = response.partial ? '<p class="sym-stats-coverage" role="status">partial: some retained records are unavailable or incomplete. Figures cover recorded observations only.</p>' :
     '<p class="muted">Recorded observations for this window. Older history may have been retained for less time.</p>';
   var throughput = '<section class="card sym-stats-section"><h3>Throughput</h3><div class="sym-stats-grid">' +
-    metric('Cards completed', headline.completed, 'Recorded card merge completions selected by merge time.') +
+    metric('Work items completed', headline.completed, 'Recorded work item merge completions selected by merge time.') +
     metric('PRs merged', symphonyStatsNumber(flow.prs_merged), 'Recorded merge events in the selected window.') + '</div>' +
-    symphonyStatsDaily(response, flow.daily_completed, 'cards_completed', 'Completed cards') + '</section>';
+    symphonyStatsDaily(response, flow.daily_completed, 'cards_completed', 'Completed work items') + '</section>';
   var stageRows = (response.groups || []).map(function(row) {
     return [stageLabel(row.key), esc(symphonyStatsNumber(row.runs)), esc(symphonyStatsPercent(row.success_rate)),
       esc(symphonyStatsPercent(row.first_pass_rate)), esc(symphonyStatsDuration((row.duration_seconds || {}).median))];
@@ -177,18 +177,18 @@ function symphonyStatsHtml(name, response, models) {
     metric('Human review wait', symphonyStatsDuration(flow.human_review_wait_seconds), definitions.human_review_wait_seconds || 'Total recorded human review intervals clipped to the window.') +
     metric('Revision rounds per PR', flow.revision_rounds_per_pr == null ? 'Not recorded' : flow.revision_rounds_per_pr.toFixed(2), definitions.revision_rounds_per_pr || 'Changes requested observations divided by distinct observed PRs.') + '</div>' +
     symphonyStatsTable(response, ['Stage', 'Runs', 'Success rate', 'First pass rate', 'Median duration'], stageRows,
-      'Runs by start time. Success: passing verdict runs / verdict runs. First pass: resolved card and stage pairs passing on their only retained run / resolved pairs. Median: run start to transcript completion. Compare durations and retries to locate bottlenecks.') + '</section>';
+      'Runs by start time. Success: passing verdict runs / verdict runs. First pass: resolved work item and stage pairs passing on their only retained run / resolved pairs. Median: run start to transcript completion. Compare durations and retries to locate bottlenecks.') + '</section>';
   var spend = '<section class="card sym-stats-section"><h3>Spend</h3><div class="sym-stats-grid">' +
     metric('Tokens', partial ? 'partial' : symphonyStatsNumber((totals.tokens || {}).total), 'Input, output and cache tokens for runs starting in this window; incomplete usage is partial.') +
     metric('Cost', headline.spend, definitions.cost || 'Priced usage of runs starting in the window; incomplete or unpriced usage has no complete cost.') +
-    metric('Cost per completed card', partial ? 'partial' : symphonyStatsMoney(flow.cost_per_completed_card_usd), 'Run start cohort cost divided by cards merged in the window. Cohorts can differ; not individual card cost.') + '</div>' +
+    metric('Cost per completed work item', partial ? 'partial' : symphonyStatsMoney(flow.cost_per_completed_card_usd), 'Run start cohort cost divided by work items merged in the window. Cohorts can differ; not individual work item cost.') + '</div>' +
     (partial ? '<p class="muted">Daily cost: partial</p>' : symphonyStatsDaily(response, response.daily, 'cost', 'Cost in USD')) +
     '<h4>By stage</h4>' + symphonyStatsTable(response, ['Stage', 'Tokens', 'Cost'], symphonyStatsSpendRows(response), 'Run start cohort usage split by stage.') +
     '<h4>By model</h4>' + (models ? symphonyStatsTable(models, ['Dispatch model', 'Tokens', 'Cost'], symphonyStatsSpendRows(models),
       'Usage split by dispatch model; actual usage models are priced individually.') : '<p class="muted">Model statistics unavailable. Reload to retry.</p>') + '</section>';
   var errors = (check.recent_errors || []).map(function(row) { return [timeHtml(row.at), esc(row.reason)]; });
   var reliabilityHtml = '<section class="card sym-stats-section"><h3>Reliability</h3><div class="sym-stats-grid">' +
-    metric('Board check success rate', symphonyStatsPercent(check.success_rate) + (check.partial ? ' (partial)' : ''), definitions.reliability || 'Successful observed upstream board polls / observed polls in completed UTC hours. Cache hits, deferred polls and restart-reconcile polls are not counted. Legacy checks were not recorded.') +
+    metric('Check success rate', symphonyStatsPercent(check.success_rate) + (check.partial ? ' (partial)' : ''), definitions.reliability || 'Successful observed upstream board polls / observed polls in completed UTC hours. Cache hits, deferred polls and restart-reconcile polls are not counted. Legacy checks were not recorded.') +
     metric('Board checks observed', symphonyStatsNumber(check.checks) + (check.partial ? ' (partial)' : ''), 'Actual board poll observations retained in this window; recording begins with this release.') +
     metric('Performer system errors', symphonyStatsNumber((totals.outcomes || {}).system_error), 'Runs starting in the window whose latest attributed outcome is system_error.') + '</div>' +
     (check.reason ? '<p role="status">Not recorded: ' + esc(check.reason) + '</p>' : '') +
@@ -207,8 +207,8 @@ function symphonyStatsHtml(name, response, models) {
       symphonyStatsLink('/activity/history?h.symphony=' + encodeURIComponent(name) + '&h.card=' + encodeURIComponent(row.card), 'Runs and transcripts')];
   });
   return header + coverage + symphonyStatsNowHtml(name, response, health, flow) + throughput + flowHtml + spend + reliabilityHtml +
-    '<section class="card sym-stats-section"><h3>Recent runs</h3>' + symphonyStatsTable(response, ['Transcript', 'Card timeline', 'Stage', 'Outcome', 'Started'], runs, 'Last 10 retained runs starting in the selected window, newest first.') +
-    '<h3>Recent completed cards</h3>' + symphonyStatsTable(response, ['Card timeline', 'Merged', 'History'], cards, 'Last 10 recorded card completions in the selected window, newest first.') +
+    '<section class="card sym-stats-section"><h3>Recent runs</h3>' + symphonyStatsTable(response, ['Transcript', 'Work item timeline', 'Stage', 'Outcome', 'Started'], runs, 'Last 10 retained runs starting in the selected window, newest first.') +
+    '<h3>Recent completed work items</h3>' + symphonyStatsTable(response, ['Work item timeline', 'Merged', 'History'], cards, 'Last 10 recorded work item completions in the selected window, newest first.') +
     '<p>' + symphonyStatsLink('/activity/history?h.symphony=' + encodeURIComponent(name), 'History for this symphony') + '</p></section>';
 }
 

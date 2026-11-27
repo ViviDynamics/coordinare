@@ -493,12 +493,12 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 
 <!-- 154: the board and the activity feed sit side by side on a desktop. -->
 <div class="card" id="active-work-card">
-  <div class="cards-head"><h2>Cards <span id="cards-summary" class="cards-summary muted"></span></h2><div id="done-lane-slot"></div></div>
+  <div class="cards-head"><h2>Work items <span id="cards-summary" class="cards-summary muted"></span></h2><div id="done-lane-slot"></div></div>
   <div id="swimlane-section">
-    <span class="empty-state">Waiting for cards&hellip;</span>
+    <span class="empty-state">Waiting for work items&hellip;</span>
   </div>
   <div id="card-detail-view" style="display:none">
-    <button class="perf-back-btn" onclick="closeCardDetail()">&#8592; Cards</button>
+    <button class="perf-back-btn" onclick="closeCardDetail()">&#8592; Work items</button>
     <div id="card-detail-content"></div>
   </div>
 </div>
@@ -507,8 +507,8 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 <div id="activity-feed-card" class="card">
   <h2>Activity</h2>
   <div class="af-controls">
-    <select id="af-filter" onchange="onActivityFilterChange()" aria-label="Filter activity by card">
-      <option value="">All cards</option>
+    <select id="af-filter" onchange="onActivityFilterChange()" aria-label="Filter activity by work item">
+      <option value="">All work items</option>
     </select>
     <div class="af-chips" role="group" aria-label="Show in the activity feed">
       <button type="button" class="af-chip" data-chip="lifecycle" aria-pressed="true" onclick="onActivityChipToggle(this)">Lifecycle</button>
@@ -588,7 +588,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
     <div id="performers-page-list-view">
       <div id="capacity-scope-note" class="muted" style="font-size:12px;margin-bottom:6px"></div>
       <table>
-        <thead><tr><th>Stage · Agent</th><th>Status</th><th>Card</th><th>Busy</th><th></th></tr></thead>
+        <thead><tr><th>Stage · Agent</th><th>Status</th><th>Work item</th><th>Busy</th><th></th></tr></thead>
         <tbody id="performers-page-tbody"><tr><td colspan="5" class="empty-state">Loading...</td></tr></tbody>
       </table>
     </div>

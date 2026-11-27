@@ -51,7 +51,7 @@ function visibleText(html) { return html.replace(/<[^>]*>/g, ""); }
 var ref = cardRefHtml({ card_id: NODE, issue_number: 57, issue_url: "https://github.com/acme/repo/issues/57" });
 has("issue number is shown", visibleText(ref), "#57");
 has("node id is not in the visible text", visibleText(ref), "PVTI_", false);
-has("node id stays available on hover", ref, 'title="Card ' + NODE + '"');
+has("node id stays available on hover", ref, 'title="Work item ' + NODE + '"');
 has("issue number links to the issue", ref, 'href="https://github.com/acme/repo/issues/57"');
 var withPr = cardRefHtml({ card_id: NODE, issue_number: 57, issue_url: "https://github.com/acme/repo/issues/57",
   pr_url: "https://github.com/acme/repo/pull/81" });
@@ -59,12 +59,12 @@ has("PR chip is shown when there is a PR", visibleText(withPr), "PR #81");
 has("PR chip links to the PR", withPr, 'href="https://github.com/acme/repo/pull/81"');
 var bare = cardRefHtml({ card_id: NODE });
 has("no issue number still hides the node id", visibleText(bare), "PVTI_", false);
-check("no issue number falls back to a plain label", visibleText(bare), "Card");
+check("no issue number falls back to a plain label", visibleText(bare), "Work item");
 has("a javascript: issue url is never linked",
   cardRefHtml({ card_id: NODE, issue_number: 1, issue_url: "javascript:alert(1)" }), "href", false);
 has("a javascript: pr url produces no PR chip",
   cardRefHtml({ card_id: NODE, issue_number: 1, pr_url: "javascript:alert(1)" }), "PR", false);
-check("missing session does not throw", visibleText(cardRefHtml(undefined)), "Card");
+check("missing session does not throw", visibleText(cardRefHtml(undefined)), "Work item");
 
 // --- 125: readouts carry their start point -----------------------------------
 var since = "2026-10-13T12:00:00Z";

@@ -78,7 +78,7 @@ async def test_flat_fallback_preserves_new_request_across_graph_copy(path, actio
     await task
     if repeat:
         assert response.status_code == 409
-        assert response.json() == {"error": "A control is already pending for this card"}
+        assert response.json() == {"error": "A control is already pending for this work item"}
         assert accepted == first
         expected_stage = "assessing" if action == "restart" else "reviewing" if action == "skip" else "implementing"
         assert daemon.state["performer_stage"] == expected_stage
@@ -361,7 +361,7 @@ async def test_control_accepted_after_tick_snapshot_survives_and_is_consumed_onc
         response = client.post(path)
         assert response.status_code == (409 if repeat else 200)
         if repeat:
-            assert response.json() == {"error": "A control is already pending for this card"}
+            assert response.json() == {"error": "A control is already pending for this work item"}
         accepted = deepcopy(live["pending_override"])
     finally:
         finish.set()
@@ -606,7 +606,7 @@ async def test_reconciled_compiled_graph_consumes_exact_control_once(path: str, 
             if newer_request:
                 response = client.post(path, params={"card_id": "card-a"})
                 assert response.status_code == 409
-                assert response.json() == {"error": "A control is already pending for this card"}
+                assert response.json() == {"error": "A control is already pending for this work item"}
                 assert live["pending_override"]["control_id"] == first_id
         finally:
             recover.set()
@@ -641,7 +641,7 @@ def test_pending_control_refuses_replacement_without_losing_first(ownership, fir
     first = deepcopy(target["pending_override"])
     response = client.post(second_path)
     assert response.status_code == 409
-    assert response.json() == {"error": "A control is already pending for this card"}
+    assert response.json() == {"error": "A control is already pending for this work item"}
     assert target["pending_override"] == first
 
 

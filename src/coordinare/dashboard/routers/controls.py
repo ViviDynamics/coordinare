@@ -90,22 +90,22 @@ def _control_target(state: dict[str, Any], card_id: str | None) -> dict[str, Any
     if card_id is not None:
         target = sessions.get(card_id)
         if not _eligible_control_session(card_id, target, owners) and (transient is None or target is not transient):
-            return JSONResponse({"error": "No eligible active card for this target"}, status_code=400)
+            return JSONResponse({"error": "No eligible active work item for this target"}, status_code=400)
         return cast("dict[str, Any]", target)
     live = [session for cid, session in sessions.items() if _eligible_control_session(cid, session, owners)]
     if transient is not None:
         live.append(transient)
     if len(live) > 1:
-        return JSONResponse({"error": "Multiple active cards; specify card_id"}, status_code=409)
+        return JSONResponse({"error": "Multiple active work items; specify card_id"}, status_code=409)
     if live:
         return cast("dict[str, Any]", live[0])
-    return JSONResponse({"error": "No active card to override"}, status_code=400)
+    return JSONResponse({"error": "No active work item to override"}, status_code=400)
 
 
 def _queue_override(target: dict[str, Any], override: dict[str, Any]) -> JSONResponse | None:
     queued_control = target.get("pending_override")
     if isinstance(queued_control, dict) and queued_control and not queued_control.get("applied"):
-        return JSONResponse({"error": "A control is already pending for this card"}, status_code=409)
+        return JSONResponse({"error": "A control is already pending for this work item"}, status_code=409)
     # Identical repeated commands are separate human decisions, including in
     # flat state. The receipt distinguishes a fresh request from one consumed.
     override["control_id"] = uuid4().hex

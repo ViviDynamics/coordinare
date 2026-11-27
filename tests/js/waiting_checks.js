@@ -41,32 +41,32 @@ const slotsFull = { in_use: 1, limit: 1 };
 check("a queued To Do card names the slots",
   waitingReason({ id: "PVTI_65", column: "TODO" },
     { todo_waits: { PVTI_65: { reason: "queued", blockers: [] } }, todo_capacity: slotsFull }),
-  { kind: "queued", text: "Queued: 1 of 1 card slots in use", title: waitingReason({ id: "PVTI_65", column: "TODO" },
+  { kind: "queued", text: "Queued: 1 of 1 item slots in use", title: waitingReason({ id: "PVTI_65", column: "TODO" },
     { todo_waits: { PVTI_65: { reason: "queued", blockers: [] } }, todo_capacity: slotsFull }).title });
 has("the queued title says when it is picked up",
   waitingReason({ id: "x", column: "TODO" }, { todo_waits: { x: { reason: "queued" } }, todo_capacity: slotsFull }).title,
   "picked up when a slot frees");
 check("a queued card without a slot count still says what it waits for",
   waitingReason({ id: "x", column: "TODO" }, { todo_waits: { x: { reason: "queued" } } }).text,
-  "Queued: waiting for a free card slot");
+  "Queued: waiting for a free item slot");
 
 // --- the session path (session_skip_reasons is the conductor's own record) ----
 check("a session held for capacity is queued with the slot count the daemon recorded",
   waitingReason({ id: "PVTI_57", column: "TODO", has_session: true },
     { session_skip_reasons: { PVTI_57: { reason: "pipeline_capacity", blockers: [], capacity: { in_use: 2, limit: 2 } } } }).text,
-  "Queued: 2 of 2 card slots in use");
+  "Queued: 2 of 2 item slots in use");
 check("a session held by the review cap says how many wait on review",
   waitingReason({ id: "PVTI_58", column: "TODO", has_session: true },
     { session_skip_reasons: { PVTI_58: { reason: "review_capacity", blockers: [], waiting_on_review: 3, review_limit: 3,
       detail: "max_cards_in_review is 3: 3 waiting on review" } } }).text,
-  "Queued: 3 cards waiting on review");
+  "Queued: 3 work items waiting on review");
 check("the review hold keeps the daemon's detail as its title",
   waitingReason({ id: "PVTI_58", column: "TODO", has_session: true },
     { session_skip_reasons: { PVTI_58: { reason: "review_capacity", blockers: [], waiting_on_review: 3, review_limit: 3,
       detail: "max_cards_in_review is 3: 3 waiting on review" } } }).title,
   "max_cards_in_review is 3: 3 waiting on review");
 check("a single card waiting on review is singular",
-  queuedWaitText("review_capacity", { waiting: 1 }), "Queued: 1 card waiting on review");
+  queuedWaitText("review_capacity", { waiting: 1 }), "Queued: 1 work item waiting on review");
 check("a To Do card with no recorded wait says nothing, even when the review cap is reached",
   waitingReason({ id: "PVTI_59", column: "TODO" },
     { todo_capacity: { in_use: 0, limit: 2, waiting_on_review: 2, review_limit: 2, hold: null } }).kind,
@@ -81,7 +81,7 @@ check("a Blocked card with a session does not take a To Do wait",
     { todo_waits: { PVTI_61: { reason: "waiting_on", blockers: ["#78"] } } }).text,
   "Needs human");
 check("queueLimitLabel and the swimlane read the same words",
-  queuedWaitText("pipeline_capacity", { capacity: { in_use: 1, limit: 1 } }), "Queued: 1 of 1 card slots in use");
+  queuedWaitText("pipeline_capacity", { capacity: { in_use: 1, limit: 1 } }), "Queued: 1 of 1 item slots in use");
 check("an unknown reason has no queued words", queuedWaitText("mystery", {}), null);
 check("a session blocked by dependencies names the blockers",
   waitingReason({ id: "PVTI_9", column: "TODO", has_session: true },
@@ -153,16 +153,16 @@ check("a prototype key is not a wait", waitingReason({ id: "constructor", column
 
 // --- the To Do header -----------------------------------------------------------
 check("the header summarises the slots and the queue",
-  todoHeaderTitle({ in_use: 1, limit: 1 }, 3), "1 of 1 card slots in use · 3 queued");
+  todoHeaderTitle({ in_use: 1, limit: 1 }, 3), "1 of 1 item slots in use · 3 queued");
 check("the header without a queue leaves the queue out",
-  todoHeaderTitle({ in_use: 0, limit: 2 }, 0), "0 of 2 card slots in use");
+  todoHeaderTitle({ in_use: 0, limit: 2 }, 0), "0 of 2 item slots in use");
 check("no capacity means no header tooltip", todoHeaderTitle(null, 3), "");
 check("with a review cap the header says how many wait on review against it",
   todoHeaderTitle({ in_use: 1, limit: 1, waiting_on_review: 2, review_limit: 3 }, 0),
-  "1 of 1 card slots in use · 2 of 3 cards waiting on review");
+  "1 of 1 item slots in use · 2 of 3 work items waiting on review");
 check("without a review cap the header leaves it out",
   todoHeaderTitle({ in_use: 1, limit: 1, waiting_on_review: 2, review_limit: null }, 1),
-  "1 of 1 card slots in use · 1 queued");
+  "1 of 1 item slots in use · 1 queued");
 
 // --- the rendered line ----------------------------------------------------------
 check("a none reason renders no markup", waitingLineHtml({ kind: "none", text: "", title: "" }), "");
