@@ -47,6 +47,6 @@ Out:
 - [ ] 5. Distinct tech_writer labels, `--roles` matches label or performer key.
 - [ ] 6. Transcript saved per cell: test the cursor loop and the file.
 - [ ] 7. Advocate task: payload, grader and fixture-issue lifecycle tests.
-- [ ] 8. QA failures and executed checks: tests for string failures and aliased
+- [x] 8. QA failures and executed checks: tests for string failures and aliased
   check keys, and that the guard still refuses a check with no exit code.
-- [ ] 9. Contract reminder and persona state the exact shapes.
+- [x] 9. Contract reminder and persona state the exact shapes.
