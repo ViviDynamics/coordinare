@@ -5,11 +5,13 @@ from __future__ import annotations
 # A missing tool, abnormal exit, malformed JSON or scan error fails closed.
 # Logs contain only counts and severities, never tool output or source text.
 
+import ast
 import json
 import os
 import re
 import stat
 import subprocess
+import warnings
 from pathlib import Path
 
 import structlog
@@ -48,11 +50,12 @@ _OK_EXIT_CODES = {0, 1}
 _TRUSTED_BINARY_DIRS = (Path("/usr/local/bin"), Path("/usr/bin"))
 _UNTRUSTED_WRITE_BITS = stat.S_IWGRP | stat.S_IWOTH
 _ROOT_UID = 0
-# bandit parses every target as Python and reports any other file as a scan
-# error, so it gets only Python sources (#415). semgrep keeps every target.
+# bandit parses every target as Python and reports a file that does not parse
+# as a scan error, so a doc beside the code held the floor (#415). bandit gets
+# only Python sources; semgrep keeps every target.
 _PYTHON_SUFFIXES = frozenset({".py", ".pyi", ".pyw"})
-_PYTHON_SHEBANG = re.compile(rb"#![^\n]*python")
-_SHEBANG_READ_BYTES = 256
+_PYTHON_SHEBANG = re.compile(rb"#![^\n]*\bpython[0-9.]*(?:\s|$)")
+_UTF8_BOM = b"\xef\xbb\xbf"
 SCANNER_INSTALLATION_HELP = (
     "Install semgrep and bandit system-wide as root-owned executables in "
     "/usr/local/bin or /usr/bin, or use the container transport."
@@ -122,7 +125,11 @@ def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
 
     findings: list[Finding] = []
     findings.extend(_run_semgrep(files, repo_root))
-    findings.extend(_run_bandit(_python_targets(files, repo_root), repo_root))
+    python_files = _python_targets(files, repo_root)
+    if files and not python_files:
+        # Nothing for bandit to read, but a missing bandit still holds the floor.
+        _resolve_binary("bandit")
+    findings.extend(_run_bandit(python_files, repo_root))
 
     # Summary-only logging (FR-011): counts by severity, never raw text.
     severity_counts: dict[str, int] = {}
@@ -138,7 +145,13 @@ def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
 
 
 def _python_targets(files: list[str], repo_root: Path) -> list[str]:
-    """Targets bandit can parse: a Python suffix, or a Python shebang line."""
+    """The targets bandit scans: Python by suffix, shebang or content.
+
+    A Python suffix or shebang always goes to bandit, so a Python file it
+    cannot parse still fails the scan. Any other file goes to bandit only when
+    it parses as Python, which keeps extensionless scripts (``uv run --script``,
+    ``SConstruct``) scanned and leaves out the docs and configs bandit rejects.
+    """
     return [name for name in files if _is_python(repo_root / name)]
 
 
@@ -146,11 +159,19 @@ def _is_python(path: Path) -> bool:
     if path.suffix.lower() in _PYTHON_SUFFIXES:
         return True
     try:
-        with path.open("rb") as handle:
-            head = handle.read(_SHEBANG_READ_BYTES)
+        source = path.read_bytes()
     except OSError:
         return False
-    return _PYTHON_SHEBANG.match(head) is not None
+    if _PYTHON_SHEBANG.match(source.removeprefix(_UTF8_BOM)):
+        return True
+    try:
+        # Parsing never runs the code. Warnings would print source fragments.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return False
+    return True
 
 
 def _trusted_executable(candidate: Path) -> bool:

@@ -10,7 +10,7 @@ import pytest
 
 from performer.models import Score, Stand
 from performer.security_floor import run_security_floor
-from performer.security_scanner import ScanDiagnostic, scan_diff
+from performer.security_scanner import ScanDiagnostic, ScannerSetupError, scan_diff
 
 PARSE_ERROR = "syntax error while parsing AST from file"
 
@@ -23,9 +23,8 @@ def _bandit_result(filename: str) -> dict:
 class FakeScanners:
     """Models the real tools: bandit cannot parse a file that is not Python."""
 
-    def __init__(self, root: Path, *, unparsable: set[str] = frozenset()):
+    def __init__(self, root: Path):
         self.root = root
-        self.unparsable = set(unparsable)
         self.calls: dict[str, list[str]] = {}
 
     def __call__(self, cmd, **kwargs):
@@ -36,18 +35,18 @@ class FakeScanners:
             return SimpleNamespace(stdout='{"results": [], "errors": []}', returncode=0)
         errors, results = [], []
         for name in targets:
-            text = (self.root / name).read_text()
-            if name in self.unparsable or not _parses_as_python(text):
+            source = (self.root / name).read_bytes()
+            if not _parses_as_python(source):
                 errors.append({"filename": name, "reason": PARSE_ERROR})
-            elif "os.system" in text:
+            elif b"os.system" in source:
                 results.append(_bandit_result(name))
         return SimpleNamespace(stdout=json.dumps({"results": results, "errors": errors}),
                                returncode=1 if results else 0)
 
 
-def _parses_as_python(text: str) -> bool:
+def _parses_as_python(source: bytes) -> bool:
     try:
-        compile(text, "<target>", "exec")
+        compile(source, "<target>", "exec")
     except SyntaxError:
         return False
     return True
@@ -94,12 +93,43 @@ def test_other_python_suffixes_go_to_bandit(tmp_path, name):
     assert calls["bandit"] == [name]
 
 
-@pytest.mark.parametrize("shebang", ["#!/usr/bin/env python3", "#!/usr/bin/python"])
-def test_extensionless_python_script_still_goes_to_bandit(tmp_path, shebang):
-    findings, calls = _scan(tmp_path, {"target_0.scanned": f"{shebang}\n{VULNERABLE}",
-                                       "target_1.scanned": "#!/bin/sh\necho hi\n"})
+@pytest.mark.parametrize("head", [
+    "#!/usr/bin/env python3\n",
+    "#!/usr/bin/python\n",
+    "\ufeff#!/usr/bin/env python3\n",
+    "#!/usr/bin/env -S uv run --script\n",
+    "",
+])
+def test_extensionless_python_still_goes_to_bandit(tmp_path, head):
+    findings, calls = _scan(tmp_path, {"target_0.scanned": f"{head}{VULNERABLE}",
+                                       "target_1.scanned": "#!/bin/sh\necho hi | wc -l\n"})
     assert calls["bandit"] == ["target_0.scanned"]
     assert [f["file"] for f in findings] == ["target_0.scanned"]
+
+
+def test_unparsable_file_with_a_python_shebang_still_fails(tmp_path):
+    with pytest.raises(ScanDiagnostic, match="bandit reported scan errors"):
+        _scan(tmp_path, {"target_0.scanned": "#!/usr/bin/env python3\nprint 'py2'\n"})
+
+
+def test_other_interpreters_named_like_python_are_not_bandit_targets(tmp_path):
+    _, calls = _scan(tmp_path, {"target_0.scanned": "#!/usr/bin/env ipython\n%matplotlib inline\n"})
+    assert "bandit" not in calls
+
+
+def test_missing_bandit_still_fails_a_diff_without_python(tmp_path):
+    (tmp_path / "target_0.md").write_text(DOC)
+    fake = FakeScanners(tmp_path)
+
+    def resolve(tool):
+        if tool == "bandit":
+            raise ScannerSetupError("missing", tool="bandit")
+        return f"/usr/bin/{tool}"
+
+    with patch("performer.security_scanner._resolve_binary", side_effect=resolve), \
+            patch("performer.security_scanner.subprocess.run", side_effect=fake), \
+            pytest.raises(ScannerSetupError):
+        scan_diff(["target_0.md"], tmp_path)
 
 
 def test_dash_prefixed_python_target_stays_an_operand(tmp_path):
