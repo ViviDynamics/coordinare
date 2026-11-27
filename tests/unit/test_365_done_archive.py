@@ -310,7 +310,12 @@ async def test_the_real_poll_reports_the_status_change_time(monkeypatch: pytest.
     service.field_cache = {"status_field_id": "status"}
     page = {"node": {"items": {
         "nodes": [
-            {"id": "PVTI_d", "fieldValues": {"nodes": [{"name": "Done", "updatedAt": "2026-11-01T00:00:00Z"}]},
+            # Copilot review: another single-select field with a "Done" option is read after the
+            # Status field. Its time must not stand in for the status change.
+            {"id": "PVTI_d", "fieldValues": {"nodes": [
+                {"name": "Done", "updatedAt": "2026-11-01T00:00:00Z", "field": {"id": "status"}},
+                {"name": "Done", "updatedAt": "2026-11-26T00:00:00Z", "field": {"id": "PVTSSF_review"}},
+            ]},
              "content": {"id": "I_1", "number": 1, "title": "t", "body": "b", "state": "CLOSED"}},
             {"id": "PVTI_t", "fieldValues": {"nodes": [{"name": "Todo"}]},
              "content": {"id": "I_2", "number": 2, "title": "t", "body": "b", "state": "OPEN"}},
@@ -326,6 +331,27 @@ async def test_the_real_poll_reports_the_status_change_time(monkeypatch: pytest.
     board = await service.poll_board()
     assert board["status_updated_at"] == {"PVTI_d": "2026-11-01T00:00:00Z"}
     assert board["issue_states"] == {"PVTI_d": "CLOSED", "PVTI_t": "OPEN"}
+
+
+@pytest.mark.asyncio
+async def test_a_time_not_known_to_be_the_status_fields_is_not_used(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = GitHubService.__new__(GitHubService)
+    service.project_id = "PVT_test"
+    service.field_cache = {"status_field_id": "status"}
+    page = {"node": {"items": {
+        "nodes": [{"id": "PVTI_d", "fieldValues": {"nodes": [{"name": "Done", "updatedAt": "2026-11-01T00:00:00Z"}]},
+                   "content": {"id": "I_1", "number": 1, "title": "t", "body": "b", "state": "CLOSED"}}],
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+    }}}
+
+    async def execute(self: Any, query: str, variables: Any = None) -> Any:
+        return page
+
+    monkeypatch.setattr(GitHubService, "_ensure_initialized", lambda self: None)
+    monkeypatch.setattr(GitHubService, "_guarded_execute", execute)
+    board = await service.poll_board()
+    assert board["snapshot"]["DONE"] == ["PVTI_d"]
+    assert board["status_updated_at"] == {}  # the first-seen record proves the age instead
 
 
 @pytest.mark.asyncio

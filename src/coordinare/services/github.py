@@ -143,8 +143,14 @@ query PollBoard($projectId: ID!, $after: String) {
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue {
                 name
-                # 365: when the value was last set, so a Done item's time in Done is GitHub's own.
+                # 365: when the value was last set, so a Done item's time in Done is GitHub's own,
+                # and which field it belongs to, so only the Status field's time is used.
                 updatedAt
+                field {
+                  ... on ProjectV2SingleSelectField {
+                    id
+                  }
+                }
               }
             }
           }
@@ -259,6 +265,12 @@ query GetIssueDetails($issueId: ID!) {
 
 # 365: archive a project item. Archived items leave the board's item list, and can be
 # restored from the project's archive on GitHub.
+def _is_field(field_value: dict[str, Any], field_id: str) -> bool:
+    """365: whether a project field value belongs to the field *field_id*."""
+    field = field_value.get("field")
+    return bool(field_id) and isinstance(field, dict) and field.get("id") == field_id
+
+
 ARCHIVE_PROJECT_ITEM_MUTATION = """
 mutation ArchiveProjectItem($projectId: ID!, $itemId: ID!) {
   archiveProjectV2Item(input: {projectId: $projectId, itemId: $itemId}) {
@@ -1206,6 +1218,8 @@ class GitHubService(CardIdentityMap):
         # with priority OPEN → MERGED → CLOSED so a card with an in-flight PR
         # surfaces the live PR rather than a stale closed one.
         pr_urls: dict[str, str] = {}
+        status_field_id = str((self.field_cache or {}).get("status_field_id", "")) if isinstance(
+            self.field_cache, dict) else ""
         # 365: item ID -> when GitHub last set its status (ISO 8601), where GitHub says,
         # and item ID -> its issue's state (OPEN or CLOSED).
         status_updated_at: dict[str, str] = {}
@@ -1229,8 +1243,11 @@ class GitHubService(CardIdentityMap):
                     mapped = BOARD_COLUMN_TO_STATUS.get(raw_name)
                     if mapped:
                         status_name = mapped
-                        updated = field_value.get("updatedAt")
-                        status_set_at = updated if isinstance(updated, str) else ""
+                        # 365: every single-select field is listed here, and another one can
+                        # have a "Done" option too. Only the Status field's own time counts.
+                        if _is_field(field_value, status_field_id):
+                            updated = field_value.get("updatedAt")
+                            status_set_at = updated if isinstance(updated, str) else ""
             if status_name and status_set_at:
                 status_updated_at[item_id] = status_set_at
 
