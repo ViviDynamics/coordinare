@@ -34,6 +34,10 @@ def _pr_body(score: Score) -> str:
         owner, repo = score.owner_repo
         parts.append(f"Closes #{score.issue_number}")
         parts.append("")
+    elif score.work_item_pr_line:
+        # 397: a work item with no GitHub issue links to the item instead.
+        parts.append(score.work_item_pr_line)
+        parts.append("")
     if score.description:
         parts.append(score.description)
     if score.acceptance_criteria:

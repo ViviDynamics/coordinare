@@ -1559,6 +1559,8 @@ def _doc_folder(score: Score) -> str:
     issue_num = score.issue_number
     if issue_num:
         return f"docs/cards/{issue_num}-{title_slug}"
+    if score.work_item_ref:  # 397: a work item with no GitHub issue
+        return f"docs/cards/{score.work_item_ref}-{title_slug}"
     return f"docs/cards/{title_slug}"
 
 

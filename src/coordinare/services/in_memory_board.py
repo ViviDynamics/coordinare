@@ -31,7 +31,7 @@ from typing import Any
 import structlog
 
 from coordinare.services.board_provider import MoveOutcome
-from coordinare.services.work_items import OPEN, UNKNOWN, Blocker, WorkItem
+from coordinare.services.work_items import OPEN, UNKNOWN, Blocker, WorkItem, safe_reference
 
 logger = structlog.get_logger(__name__)
 
@@ -68,6 +68,13 @@ class InMemoryWorkItem:
     comments: list[dict[str, Any]] = field(default_factory=list)
     #: Each transition as ``(from native state, to native state, actor)``.
     history: list[tuple[str, str, str]] = field(default_factory=list)
+
+
+def _pr_line(key: str, url: str) -> str:
+    """The line a pull request body carries for an item (397): a link when the URL is one."""
+    if url.startswith(("https://", "http://")) and not any(c in url for c in " ()"):
+        return f"Work item: [{key.replace(']', '')}]({url})"
+    return f"Work item: {key} ({url})"
 
 
 class InMemoryBoardProvider:
@@ -184,6 +191,9 @@ class InMemoryBoardProvider:
             owners=item.owners,
             labels=item.labels,
             blockers=tuple(blockers),
+            # 397: no issue number here, so the code host names the item by key.
+            reference=safe_reference(item.id),
+            pr_line=_pr_line(item.id, item.url),
         )
 
     async def move_card(self, card_id: str, status: str) -> MoveOutcome:

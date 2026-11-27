@@ -128,6 +128,8 @@ def _card_docs_dir(card: dict[str, Any]) -> str | None:
     issue_num = card.get("issue_number")
     if issue_num:
         return f"docs/cards/{issue_num}-{slug}"
+    if card.get("work_item_ref"):  # 397: as the performer's _doc_folder does
+        return f"docs/cards/{card['work_item_ref']}-{slug}"
     return f"docs/cards/{slug}"
 
 
@@ -311,11 +313,18 @@ def _issue_fields(board: dict[str, Any], work_item: WorkItem) -> dict[str, Any]:
     issue = work_item.issue
     typed = isinstance(board.get("items"), dict) if isinstance(board, dict) else False
     own_id = work_item.id if typed else ""
-    return {
+    fields: dict[str, Any] = {
         "issue_id": issue.node_id if issue is not None else own_id,
         "issue_number": issue.number if issue is not None else 0,
         "issue_url": work_item.url,
     }
+    # 397: an item with no GitHub issue is named on the code host by the
+    # reference its provider gives. A GitHub card carries neither key, so its
+    # dispatch payload is unchanged.
+    if issue is None and typed:
+        fields["work_item_ref"] = work_item.reference
+        fields["work_item_pr_line"] = work_item.pr_line
+    return fields
 
 
 def _text_maps(board: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1002,6 +1011,10 @@ def _refresh_current_card_metadata(
                     active_card["issue_url"] = fresh_fields["issue_url"]
                 if fresh_fields["issue_id"]:
                     active_card["issue_id"] = fresh_fields["issue_id"]
+                # 397: a restored card regains the reference its snapshot lacks.
+                for ref_key in ("work_item_ref", "work_item_pr_line"):
+                    if fresh_fields.get(ref_key):
+                        active_card[ref_key] = fresh_fields[ref_key]
 
 
 async def _reconcile_stale_checkboard_sessions(

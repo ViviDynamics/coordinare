@@ -61,6 +61,7 @@ from coordinare.services.pr_conversation_feedback import (
     conversation_pr_number,
     poll_pr_conversation_feedback,
 )
+from coordinare.services.pr_recovery import find_pr_for_card
 from coordinare.services.review_staleness import (
     StalenessConfig,
     classify_review_staleness,
@@ -620,7 +621,8 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             return state
         if issue_node_id:
             try:
-                recovered = await github.find_pr_for_issue(issue_node_id)
+                # 397: by closing reference, or by branch for an item with no issue.
+                recovered = await find_pr_for_card(github, card, issue_node_id)
                 clear_deferred_github_operation(state, "monitor_pr")
             except Exception as exc:
                 if is_transient_github_outage_error(exc):

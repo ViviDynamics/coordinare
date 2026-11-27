@@ -28,6 +28,8 @@ authoritative schema — any field not on `Score` is silently dropped by pydanti
 | `issue_id` | str | no | check_board | issue details lookup |
 | `issue_number` | int | no | check_board | informational |
 | `issue_url` | str | no | check_board | informational |
+| `work_item_ref` | str | no | check_board (items with no GitHub issue) | `docs/cards/{ref}-{slug}` path (397) |
+| `work_item_pr_line` | str | no | check_board (items with no GitHub issue) | pull request body, in place of `Closes #N` (397) |
 
 ### Workspace (set by WorkspaceManager, overlaid by AgentService)
 
