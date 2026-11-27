@@ -310,7 +310,9 @@ main() (
         || fail "uv could not install nare; the uv error is above. $nare_partial"
     nare_installed=$("$UV_TOOL_BIN_DIR/nare" --version || true)
     if [ "$nare_installed" != "$nare_version" ]; then
-        [ "$nare_owned" = 0 ] || "$uv_command" tool uninstall nare >/dev/null 2>&1 || true
+        # Whoever owned the environment before, uv has replaced it by now, so a
+        # replacement that fails its check is removed rather than left behind.
+        "$uv_command" tool uninstall nare >/dev/null 2>&1 || true
         fail "Installed nare does not match the pinned release $nare_version. $nare_partial"
     fi
     if [ "$nare_owned" = 1 ]; then

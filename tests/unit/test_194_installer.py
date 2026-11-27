@@ -629,6 +629,18 @@ def test_a_nare_that_fails_its_version_check_is_removed_again(release: Release) 
     assert not (release.home / ".local/bin/nare").exists()
 
 
+def test_a_replacement_nare_that_fails_its_version_check_is_removed_too(release: Release) -> None:
+    """The operator's nare is already gone by then; a broken replacement must not stay."""
+    tool = release.home / ".local/share/uv/tools/nare"
+    tool.mkdir(parents=True)
+    release.env["FAKE_NARE_REPORTS"] = "2099.1.1"
+    result = release.run()
+    assert result.returncode != 0
+    assert "tool\nuninstall\nnare\n" in release.calls()
+    assert not tool.exists()
+    assert not (release.home / ".local/bin/nare").exists()
+
+
 def test_a_nare_earlier_on_path_is_reported(release: Release) -> None:
     shadow = release.root / "shadow bin"
     shadow.mkdir()
