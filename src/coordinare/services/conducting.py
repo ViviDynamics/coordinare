@@ -232,6 +232,13 @@ def _openai_usage(data: Any) -> dict[str, int] | None:
     return {"input_tokens": max(prompt - read, 0), "output_tokens": output, "cache_read": read, "cache_write": 0}
 
 
+async def _marked_unusable(pending: Awaitable[ModelReply], max_tokens: int) -> ModelReply:
+    """The reply, with ``error`` set when it holds no usable whole text (416)."""
+    reply = await pending
+    problem = _unusable(reply, max_tokens)
+    return replace(reply, error=problem) if problem is not None else reply
+
+
 def _unusable(reply: ModelReply, max_tokens: int) -> str | None:
     """Why a reply holds no usable whole text, or None (416). A send error stays as it is."""
     if reply.error is not None:
@@ -340,13 +347,11 @@ class OpenAiApiBackend:
             prompt=user,
             parameters=self._request_parameters(json_mode),
         )
-
-        async def send() -> ModelReply:
-            reply = await self._post_chat(messages, json_mode)
-            problem = _unusable(reply, self._max_tokens) if whole else None
-            return replace(reply, error=problem) if problem is not None else reply
-
-        return await self.calls.invoke(request, send)
+        if whole:
+            return await self.calls.invoke(
+                request, lambda: _marked_unusable(self._post_chat(messages, json_mode), self._max_tokens),
+            )
+        return await self.calls.invoke(request, lambda: self._post_chat(messages, json_mode))
 
     def _request_parameters(self, json_mode: bool) -> dict[str, Any]:
         parameters: dict[str, Any] = {"max_tokens": self._max_tokens, "json_mode": json_mode}
