@@ -28,10 +28,22 @@ from coordinare.stage_provider_config import QAreProviderConfig
 from coordinare.transport.base import TransportError
 from tests.unit import fake_qare
 from tests.unit.qare_fixtures import CRITERIA, FAKE_QARE, calls, make_remote, request_spec, scenario
+from tests.unit.stage_job_fixtures import LocalStageJobs
 
 TOKEN = "ghs_providertokenvalue00000000000000000"
 HEAD = "b" * 40
 SPEC = {"request_id": "coordinare.qa.abc.1", "head_sha": HEAD, "criteria": CRITERIA}
+
+
+@pytest.fixture(autouse=True)
+def performers(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """423: runs go to performer containers; here one local stand-in for the Docker host,
+    which every provider built without its own runtime uses (so a provider built again is a
+    restarted daemon that finds the same containers)."""
+    jobs = LocalStageJobs()
+    monkeypatch.setattr("coordinare.services.qare.UnavailableStageJobs", lambda reason: jobs)
+    yield jobs
+    jobs.stop_all()
 
 
 def _config(**kw: Any) -> QAreProviderConfig:
@@ -291,14 +303,17 @@ async def test_a_runner_that_died_without_a_status_is_retried(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_a_running_runner_is_pending_until_it_stops(tmp_path: Path) -> None:
+async def test_a_running_runner_is_pending_until_it_stops(tmp_path: Path, performers: LocalStageJobs) -> None:
+    from coordinare.services.stage_jobs import job_name
+
     provider = QAreProvider("qare", _config(), work_dir=tmp_path)
     job = tmp_path / "coordinare.qa.abc.1"
     request_spec(job, web_base="file:///x", base="a" * 40, head=HEAD, created_at=time.time())
-    # A process standing in for the detached run, with its job directory on its command line.
-    run = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", str(job)])
+    # 423: a container standing in for the run, found by its job directory's name.
+    run = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    performers.containers[job_name(job)] = run
     try:
-        (job / runner.LAUNCH_FILE).write_text(json.dumps({"pid": run.pid}))
+        (job / runner.LAUNCH_FILE).write_text(json.dumps({"job": job_name(job)}))
         assert (await provider.poll(job.name)).state is JobState.PENDING
     finally:
         run.kill()
@@ -321,9 +336,12 @@ async def test_a_run_past_its_timeout_is_not_waited_on_forever(tmp_path: Path) -
 
 @pytest.mark.asyncio
 async def test_a_runner_that_does_not_start_leaves_no_job(tmp_path: Path) -> None:
+    from coordinare.services.stage_jobs import UnavailableStageJobs
+
+    # 423: the performer cannot be started (here: no runtime at all).
     provider = QAreProvider(
         "qare", _config(), work_dir=tmp_path, github=_access("http://127.0.0.1:9"),
-        runner_argv=[sys.executable, "-c", "raise SystemExit(3)"],
+        jobs=UnavailableStageJobs("the QAre stage job did not start"),
     )
     with pytest.raises(TransportError, match="did not start"):
         await provider.submit(_request("a" * 40, HEAD), "coordinare.qa.abc.1")

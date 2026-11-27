@@ -496,7 +496,7 @@ async def _check_qare(
     name: str, role: str, provider_config: QAreProviderConfig, config: ProjectConfiguration,
 ) -> list[CheckResult]:
     """404: QAre runs at the pinned version, its work_dir is writable, the repo has a profile."""
-    from coordinare.services.stage_providers import build_provider
+    from coordinare.services.stage_providers import build_provider, provider_fix
 
     label = f"stage provider '{name}' (qare, {role})"
     provider = build_provider(name, provider_config, config)
@@ -505,10 +505,7 @@ async def _check_qare(
         name=label,
         status=Status.OK if ok else Status.FAIL,
         detail=detail,
-        fix=None if ok else (
-            f"Install QAre {provider_config.version} where coordinare runs (its host install or "
-            f"image), or correct stage_providers.{name}.command and .version; make work_dir writable."
-        ),
+        fix=None if ok else provider_fix(name, provider_config),
     )]
     results.append(await _check_qare_profile(name, provider_config, config))
     return results

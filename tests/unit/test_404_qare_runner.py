@@ -1,4 +1,8 @@
-"""404: the detached QAre run: checkout, profile, plan, run, and how it reports its end."""
+"""404/423: the QAre run in its performer: checkout, profile, plan, run, and how it reports its end.
+
+Since #423 the run is ``performer.stage_jobs.qare``, inside an ephemeral performer
+container; here it runs in the test process against a local repository.
+"""
 from __future__ import annotations
 
 import json
@@ -6,8 +10,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from performer.stage_jobs import qare as runner
 
-from coordinare.services import qare_runner as runner
 from tests.unit.qare_fixtures import CRITERIA, calls, make_remote, request_spec, scenario
 
 TOKEN = "ghs_checkouttokenvalue000000000000000000"
@@ -48,9 +52,16 @@ def test_a_run_plans_then_runs_and_records_how_it_ended(tmp_path: Path, monkeypa
     assert run_argv[run_argv.index("--base") + 1] == base
     assert run_argv[run_argv.index("--id") + 1] == job.name
     # The base revision's profile runs, and the base checkout is handed to QAre.
-    assert run_argv[run_argv.index("--profile") + 1] == str(job / "base" / ".qa")
-    assert run_argv[run_argv.index("--base-repo") + 1] == str(job / "base")
-    # The checkouts go once the run ends; the evidence stays.
+    base_repo = Path(run_argv[run_argv.index("--base-repo") + 1])
+    assert run_argv[run_argv.index("--profile") + 1] == str(base_repo / ".qa")
+    assert base_repo.name == "base"
+    # 423: the checkouts are the performer's own, never in the mounted job directory, and
+    # they go once the run ends; the evidence stays.
+    repo = Path(run_argv[run_argv.index("--repo") + 1])
+    assert job not in repo.parents
+    assert job not in base_repo.parents
+    assert not repo.exists()
+    assert not base_repo.exists()
     assert not (job / "repo").exists()
     assert not (job / "base").exists()
     assert (job / "evidence" / "result.json").exists()
@@ -78,7 +89,9 @@ def test_the_head_profile_is_used_when_the_base_has_none(tmp_path: Path, monkeyp
     )
     assert status["outcome"] == runner.RAN
     run_argv = seen[-1]["argv"]
-    assert run_argv[run_argv.index("--profile") + 1] == str(job / "repo" / ".qa")
+    repo = run_argv[run_argv.index("--repo") + 1]
+    assert run_argv[run_argv.index("--profile") + 1] == str(Path(repo) / ".qa")
+    assert job not in Path(repo).parents
 
 
 def test_no_profile_stops_with_how_to_add_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -130,6 +143,8 @@ def test_no_criteria_stops_before_planning(tmp_path: Path, monkeypatch: pytest.M
 
 
 def test_main_takes_the_token_out_of_the_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from performer.stage_jobs.__main__ import main
+
     seen: dict[str, object] = {}
 
     def fake_run(job_dir: Path, *, token: str = "", env: dict | None = None) -> dict:
@@ -141,7 +156,7 @@ def test_main_takes_the_token_out_of_the_environment(tmp_path: Path, monkeypatch
 
     monkeypatch.setenv(runner.CREDENTIAL_ENV, TOKEN)
     monkeypatch.setattr(runner, "run_job", fake_run)
-    assert runner.main([str(tmp_path)]) == 0
+    assert main(["qare", str(tmp_path)]) == 0
     assert seen == {"token": TOKEN, "left": False}
 
 
@@ -230,20 +245,3 @@ def test_a_compare_that_fails_otherwise_is_retried_not_replaced(tmp_path: Path, 
     status = runner.run_job(job, token=TOKEN)
     assert status["outcome"] == runner.ERROR
     assert status["step"] == "diff"
-
-
-def test_the_name_placeholder_names_the_step(tmp_path: Path) -> None:
-    import asyncio
-    import os
-    import time as _time
-
-    job = tmp_path / "jobs" / "coordinare.qa.abc.1"
-    request_spec(job, web_base="file:///x", base="a" * 40, head="b" * 40)
-    run = runner._Run(job, json.loads((job / "request.json").read_text()), token="", env=dict(os.environ),
-                      started=_time.monotonic())
-    code, out, _err = asyncio.run(run._call(
-        [sys.executable, "-c", "import sys; print(sys.argv[1])", "--name={name}"], cwd=job, env=dict(os.environ), step="plan",
-    ))
-    assert code == 0
-    assert out.strip().startswith("--name=coordinare-qare-")
-    assert out.strip().endswith("-plan")

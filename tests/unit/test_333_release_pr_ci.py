@@ -65,6 +65,8 @@ def test_every_release_image_copy_input_triggers_the_release_lane(
     for line in (ROOT / dockerfile).read_text().splitlines():
         if not line.startswith("COPY "):
             continue
+        if "--from=" in line:
+            continue  # 423: copied from another image or build stage, not the build context
         for source in shlex.split(line)[1:-1]:
             # A directory COPY must also watch changes to files below it.
             probe = str(Path(context) / source)

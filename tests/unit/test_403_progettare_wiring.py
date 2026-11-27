@@ -347,13 +347,16 @@ def test_the_clone_goes_to_the_configured_git_host_not_the_cards() -> None:
     request = WorkItemRequest(card_id="C", stage="architecting", repository="acme/widgets", number=1,
                               node_id="I_1", host="ghe.example:8443", pin="a" * 40)
     assert provider._clone_url(request) == "https://ghe.example:8443/acme/widgets.git"
-    env = provider._child_env("t", request.host)
+    # 423: the run's environment is made in its performer, from the request's host.
+    from performer.stage_jobs.progettare import progettare_env
+
+    env = progettare_env({}, {"host": request.host}, "t")
     assert env["GH_HOST"] == "ghe.example:8443"
 
 
 def test_the_token_header_is_scoped_to_the_clone_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    from coordinare.services.progettare_runner import _git_env
+    # 423: the clone is the performer's workspace layer's, in the run's container.
+    from performer.stage_checkout import git_env
 
-    monkeypatch.setenv("GH_TOKEN", "t")
-    env = _git_env("https://ghe.example:8443/acme/widgets.git")
+    env = git_env("https://ghe.example:8443/acme/widgets.git", "t")
     assert env["GIT_CONFIG_KEY_0"] == "http.https://ghe.example:8443/.extraheader"

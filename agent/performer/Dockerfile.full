@@ -1,4 +1,13 @@
 ARG BASE_IMAGE=coordinare-performer:base
+# 423: QAre for the QA stage provider runs in this image (a stage job), never on
+# coordinare's host. Its published core image is the release, pinned by digest; only
+# its /opt/qare tree is copied (the CLI, its compiled workspace and production deps).
+# QAre runs nare from PATH: the base image's pinned nare, which is the release this
+# QAre pins (2026.11.121). Bump QARE_VERSION and the digest together, and keep
+# stage_providers.<name>.version equal to QARE_VERSION.
+ARG QARE_CORE_IMAGE=ghcr.io/vividynamics/qare-core:2026.11.44@sha256:d5bc5d7f56b0b06aa078d1ab938f700094e0f625d2a1bf70a30f510c5561546f
+FROM ${QARE_CORE_IMAGE} AS qare
+
 FROM $BASE_IMAGE
 
 # Build-only: extra tools must preserve the base image's locked runtime.
@@ -40,6 +49,48 @@ RUN npm install -g \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     shellcheck \
     && rm -rf /var/lib/apt/lists/*
+
+# 423: the stage provider CLIs. Coordinare runs QAre (QA) and Progettare (architect) as
+# stage jobs in this image (`python -m performer.stage_jobs`), so its own host never
+# clones. Their versions must equal stage_providers.<name>.version in the config.
+#
+# gh: Progettare reads the issue through it.
+RUN mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/* \
+    && gh --version
+
+# QAre, from the digest-pinned core image above.
+ARG QARE_VERSION=2026.11.44
+COPY --from=qare /opt/qare /opt/qare
+RUN ln -s /opt/qare/bin/qare /usr/local/bin/qare \
+    && test "$(qare --version)" = "${QARE_VERSION}"
+
+# Progettare, as its release installer installs it (a uv tool with its own,
+# release-matched nare), from wheels checked against their SHA-256 (nare's is the one in
+# its release notes). Its own virtualenv: nothing here meets the performer's constraints.
+ARG PROGETTARE_VERSION=2026.11.2
+ARG PROGETTARE_SHA256=6e268fe3a599aaebf458e9170184825e78269f27f596d9064a00b3052b11f2a2
+ARG PROGETTARE_NARE_VERSION=2026.11.113
+ARG PROGETTARE_NARE_SHA256=802ad5c1c952683f809beb9322858e983e583bd9a43ee1721cf57520852d7b71
+RUN set -eu \
+    && base=https://github.com/ViviDynamics \
+    && wheel="progettare-${PROGETTARE_VERSION}-py3-none-any.whl" \
+    && nare_wheel="nare-${PROGETTARE_NARE_VERSION}-py3-none-any.whl" \
+    && curl -fsSL -o "/tmp/${wheel}" "${base}/progettare/releases/download/${PROGETTARE_VERSION}/${wheel}" \
+    && curl -fsSL -o "/tmp/${nare_wheel}" "${base}/nare/releases/download/${PROGETTARE_NARE_VERSION}/${nare_wheel}" \
+    && echo "${PROGETTARE_SHA256}  /tmp/${wheel}" | sha256sum -c - \
+    && echo "${PROGETTARE_NARE_SHA256}  /tmp/${nare_wheel}" | sha256sum -c - \
+    && env -u PIP_CONSTRAINT UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_DOWNLOADS=never \
+       uv tool install --python 3.12 --with "/tmp/${nare_wheel}" "/tmp/${wheel}" \
+    && rm -f "/tmp/${wheel}" "/tmp/${nare_wheel}" \
+    && test "$(progettare --version)" = "${PROGETTARE_VERSION}" \
+    && test "$(/opt/uv-tools/progettare/bin/nare --version)" = "${PROGETTARE_NARE_VERSION}"
 
 # Auto-source mounted env-cache activate.sh in every shell spawned by agent
 # CLI tool calls. Different backends spawn shells differently:

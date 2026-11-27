@@ -159,9 +159,10 @@ or a reviewer `timeout_seconds` is set, set it above Scrutare's job timeout.
 
 ## QAre for the QA stage
 
-QAre is a CLI, not a service. Coordinare runs the pinned QAre on its own host against a
-checkout of the pull request, with QAre's posting turned off, and posts the evidence itself
-where the built-in QA posts its own.
+QAre is a CLI, not a service. Coordinare runs the pinned QAre in an ephemeral performer
+container (a [stage job](#stage-jobs-where-qare-and-progettare-run)) against a checkout the
+performer makes, with QAre's posting turned off, and posts the evidence itself where the
+built-in QA posts its own. Coordinare's own host never clones or fetches.
 
 ### Configure
 
@@ -169,8 +170,9 @@ where the built-in QA posts its own.
 stage_providers:
   qare:
     kind: qare
-    version: "2026.11.42"            # the exact release `qare --version` must print
-    command: ["qare"]                # how to start it (default), as an argument list
+    version: "2026.11.44"            # the exact release `qare --version` must print
+    command: ["qare"]                # how to start it in the performer (default), as an argument list
+    # image: ghcr.io/vividynamics/coordinare-performer-full:<tag>  # default: the qa performer's image
     profile: .qa                     # the QA profile's directory in the repository (default)
     env_passthrough: [OPENAI_API_KEY]  # NAMES of variables QAre's nare may read
     # work_dir: /var/lib/coordinare/qare  # default: stage-providers/<name> beside the state file
@@ -182,15 +184,16 @@ performers:
     provider: qare
 ```
 
-- Install QAre where coordinare runs: the host install from QAre's docs (the `@qare/cli`
-  package at the pinned version with its pinned nare), plus Docker for a profile that boots
-  an app. `version` must match exactly, because QAre's interfaces can change between
-  releases; a run on any other version holds the card.
+- QAre runs in the performer image: `image`, else the image of the performer endpoint that
+  serves `qa`, else the first endpoint's. The full performer image ships QAre (copied from
+  QAre's published core image, pinned by digest, with the base image's nare); its release is
+  `QARE_VERSION` in `agent/performer/Dockerfile.full`. `version` must match exactly, because
+  QAre's interfaces can change between releases; a run on any other version holds the card.
 - QAre needs no token from coordinare. Its nare reads its model endpoint and key from the
-  environment, and only the variables named in `env_passthrough` reach it, along with a
-  short list of basics (`PATH`, `HOME`, the locale, the Docker variables). Coordinare's own
-  secrets never do. A value written where a name belongs is refused at load without being
-  repeated.
+  environment, and only the variables named in `env_passthrough` reach it (the container
+  takes them from coordinare's environment by name), along with a short list of basics
+  (`PATH`, `HOME`, the locale, the proxy variables). Coordinare's own secrets never do. A
+  value written where a name belongs is refused at load without being repeated.
 - The repository needs a QAre profile (`qare init` writes one). The base revision's profile
   is used when it has one, so the profile that runs is one the pull request cannot change,
   as in QAre's own pipeline; a pull request that adds the first profile uses its own. With
@@ -200,48 +203,28 @@ performers:
 - QAre pins its own harness, so the qa role's `backend`, `mode`, `workflow` and tuning have
   no effect while it is opted in.
 
-### Running QAre in its own container
+### Running QAre in the performer
 
-QAre runs the pull request's code: its checks, and the app it boots. A host install runs
-those where coordinare runs. To keep them off that host, run QAre from its published image at
-the same pinned release. The runner hands QAre absolute paths under `work_dir`, so mount
-`work_dir` at the same path, run as a user that can write it, and forward the variables QAre
-needs with `-e`:
-
-```yaml
-stage_providers:
-  qare:
-    kind: qare
-    version: "2026.11.42"
-    work_dir: /var/lib/coordinare/qare
-    command: [docker, run, --rm, --name, "{name}", --user, "1000:1000",
-              -v, "/var/lib/coordinare/qare:/var/lib/coordinare/qare",
-              -e, OPENAI_API_KEY,
-              "ghcr.io/vividynamics/qare-web:2026.11.42"]
-    env_passthrough: [OPENAI_API_KEY]
-```
-
-The image's entry point is `qare`, so the runner's `--version`, `plan` and `run` reach it
-unchanged. `{name}` is replaced with a name for each step. Stopping the `docker` client on a
-timeout does not stop its container, so when the command names one, the runner also removes
-it (`docker rm -f <name>`). Mount `work_dir` at the path written in the config: the runner
-passes that path as is, without resolving symbolic links. A profile that boots an app needs a container runtime inside that container too;
-how much of the host to hand it (for example its Docker socket) is the operator's trust
-decision, as it is for coordinare's own containers (`docs/security/threat-model.md`). The
-checkout itself (step 2 below) is made by the runner, not by QAre.
+The performer container is where the pull request's code runs: QAre's checks, and the app a
+profile boots. The QAre the full performer image ships is QAre's core: command and mail
+checks, the ledger and the judge, with no browser driver and no container runtime of its
+own. A profile whose checks boot an app with Docker, or drive a browser, needs a performer
+image that adds them (set `image`); how much of the host to hand such a container (for
+example its Docker socket) is the operator's trust decision, as it is for coordinare's own
+containers (`docs/security/threat-model.md`).
 
 Opt one symphony in with `overrides.performers`, as for Scrutare.
 
 ### What a run does
 
 Each run has a directory of its own under `work_dir`, named by its request id (card, stage,
-head and attempt). A process in a session of its own (`python -m
-coordinare.services.qare_runner`) does the work, so a daemon restart finds the run still
-going or finished; a small launcher process stays its parent and reaps it when it ends:
+head and attempt), and a performer container of its own (a stage job) that does the work,
+so a daemon restart finds the run still going or finished:
 
 1. `qare --version` must print the pinned version.
-2. The head and base are fetched into the run's directory with coordinare's GitHub token,
-   which is never written to disk and never reaches QAre.
+2. The performer's workspace layer fetches the head and base, by SHA at depth 1, into the
+   container's own filesystem (never the mounted run directory) with coordinare's GitHub
+   token, which is never written to disk and never reaches QAre.
 3. The work item's criteria are written as `{id, text}`. They come from the architect's
    verification brief when it has criteria, else from the issue's acceptance criteria, and
    each id is a hash of its text, so a criterion keeps its id on every head.
@@ -252,8 +235,8 @@ going or finished; a small launcher process stays its parent and reaps it when i
    `evidence/result.json`. Its `schemaVersion` is checked before anything else is read.
 
 A step that runs past `timeout_seconds` is stopped with every process it started (each
-command runs in a process group of its own), and a container the step named with `{name}` is
-removed. When a run ends its checkouts are removed, and a
+command runs in a process group of its own). When a run ends its checkouts go with its
+container, and a
 finished run is shrunk to its record `retain_days` after it ended: its request, status,
 `result.json` and publish record stay, so a later dispatch at the same head still finds the
 attempt and never posts its evidence twice; the evidence files, plan and log go (they are on
@@ -290,7 +273,7 @@ directory records what is done. A publish GitHub refuses is a retryable system e
 
 | Run ends | What coordinare does |
 | --- | --- |
-| QAre cannot start, the checkout or the plan fails, GitHub's compare fails for a reason other than size, the run times out, the runner stops without a status | retryable system error; the retry runs the next attempt |
+| QAre cannot start, the checkout or the plan fails, GitHub's compare fails for a reason other than size, the run times out, its performer stops without a status, the performer cannot be started | retryable system error; the retry runs the next attempt |
 | exit 4 (no verdict), or no `result.json` | retryable system error |
 | another version installed than `version` | the card is held: install the pinned release or change the pin |
 | an unknown `schemaVersion` or verdict, an exit code that contradicts the verdict, the result of another job | the card is held: the result is outside QAre's contract |
@@ -300,15 +283,59 @@ directory records what is done. A publish GitHub refuses is a retryable system e
 ### Check
 
 `coordinare doctor` and the startup preflight check that `qare --version` prints the pinned
-version, that `work_dir` is writable, and that the configured repository (`github_org` and
-`project_name`) has the profile on its default branch.
+version in a container of the performer image, that `work_dir` is writable, and that the
+configured repository (`github_org` and `project_name`) has the profile on its default
+branch. A passed version check stands for five minutes, so a dispatch's health check does
+not start a container every time.
+
+## Stage jobs: where QAre and Progettare run
+
+Specs 107 and 555 say coordinare never clones, fetches, rebases or pushes on its own host,
+with no exceptions (#423). QAre and Progettare are CLIs that read a checkout, so each of
+their runs is a stage job: coordinare starts one container of the performer image per
+request id,
+
+```
+docker run -d --rm --name coordinare-stage-<hash of the run directory> \
+  --label coordinare.stage_job=<request id> -v <run dir>:<run dir> <performer image> \
+  sh -c 'exec python -m performer.stage_jobs <qare|progettare> <run dir> >><run dir>/runner.log 2>&1'
+```
+
+and the performer's workspace layer makes the checkout inside it, in the container's own
+filesystem. Only the request, the status, the evidence and the logs are in the mounted run
+directory.
+
+- **Restarts.** The container is named from its run directory and is not labelled
+  `coordinare.performer.id`, so the startup sweep of orphaned performers leaves it running.
+  A restarted daemon asks Docker about that name while the run has not reported, and reads
+  a finished run from its files; submitting the same request id again finds the job and
+  never starts a second one.
+- **The token** reaches the container through a private `--env-file`, removed as soon as
+  `docker run` returns. It is never an argument and never in the run directory. Variables
+  named in `env_passthrough` or `pass_env` (and the proxy variables) are passed by name.
+- **Isolation** is the role's performer's: the endpoint's `egress_allowlist` and
+  `extra_hosts` apply to the stage job as to the role's other work.
+- **Values must work from the container.** A passed variable keeps its value, and the
+  container is on Docker's bridge network: a model endpoint on `localhost` or `127.0.0.1`
+  names the container itself. Point such variables at an address the container reaches
+  (for example `host.docker.internal`, with an `extra_hosts` entry on Linux), as for any
+  performer.
+- **Mounts.** The run directory is mounted at the path it has on coordinare's side. When
+  coordinare itself runs in a container that talks to the host's Docker, keep `work_dir`
+  and `runs_dir` at the same path on the Docker host, as for env caches.
+- **Ownership.** The container runs as root; when a run ends it gives what it wrote back to
+  the run directory's owner, so coordinare can read, publish and prune it.
+- **Runtime.** Stage jobs need the Docker runtime. Under `agent_transport: kubernetes` the
+  provider reports itself unavailable, and a stage that names it is retried and then
+  blocked with that reason.
 
 ## Progettare for the architecting stage
 
 Progettare plans one GitHub issue: a bounded read-only survey, one blueprint, sizing, and a
 brief for each reader (implementer, QA, documenter). It commits nothing and posts nothing.
-Coordinare runs its released CLI, `progettare blueprint`, at a pinned version, and turns the
-run's briefs into the spec-165 blueprint its readers already take their briefs from.
+Coordinare runs its released CLI, `progettare blueprint`, at a pinned version in an ephemeral
+performer container (a [stage job](#stage-jobs-where-qare-and-progettare-run)), and turns
+the run's briefs into the spec-165 blueprint its readers already take their briefs from.
 
 ### Configure
 
@@ -320,7 +347,8 @@ stage_providers:
     runs_dir: /var/lib/coordinare/progettare-runs  # survives a coordinare restart
     gh_token_env: GITHUB_TOKEN                    # NAME of the env var with a GitHub token
     pass_env: [OPENAI_API_KEY]                    # NAMES of the model credentials it needs
-    # command: progettare                         # a name on PATH or an absolute path
+    # command: progettare                         # a name on the performer's PATH or an absolute path
+    # image: ghcr.io/vividynamics/coordinare-performer-full:<tag>  # default: the architect performer's image
     # config_path: /etc/coordinare/progettare.yaml
     # timeout_seconds: 3600
 
@@ -329,10 +357,12 @@ performers:
     provider: progettare
 ```
 
-- Install Progettare where coordinare runs (its release installer puts the CLI and its own
-  Nare runtime in place), with `git` and `gh` on `PATH`. In a container deployment that
-  means the coordinare image, not the performer image.
-- `command` is a name on `PATH` or an absolute path; a relative path is refused.
+- Progettare runs in the performer image: `image`, else the image of the performer endpoint
+  that serves `architect`, else the first endpoint's. The full performer image ships it as
+  its release installer installs it (a uv tool with its own release-matched Nare), with
+  `git` and `gh`; its release is `PROGETTARE_VERSION` in `agent/performer/Dockerfile.full`.
+- `command` is a name on the performer's `PATH` or an absolute path; a relative path is
+  refused.
 - `version` is the release coordinare speaks to. A run refuses to start under another
   version, and `doctor` says which version is installed.
 - `gh_token_env` names the variable that holds a GitHub token able to read the issue and
@@ -340,38 +370,41 @@ performers:
   environment, never on a command line. A coordinare that signs in as a GitHub App needs a
   token here as well, since the run cannot mint one.
 - `pass_env` names the other variables the run receives, typically the model provider's
-  credential for the models `progettare.yaml` selects. The run gets nothing else from the
-  daemon's environment beyond `PATH`, `HOME` and the locale.
-- `config_path` is the `progettare.yaml` to plan with. Without it, each run uses the one on
-  the planned repository's default branch, and a repository without one blocks the card.
+  credential for the models `progettare.yaml` selects. The container takes them from the
+  daemon's environment by name; it gets nothing else from it beyond the proxy variables.
+- `config_path` is the `progettare.yaml` to plan with, on coordinare's side; it is copied
+  into the request's directory for the run. Without it, each run uses the one on the
+  planned repository's default branch, and a repository without one blocks the card.
 - A symphony opts in through `overrides.performers`, as for Scrutare. Progettare pins its
   own harness and models, so the architect's `backend`, `mode`, `workflow` and tuning have no
   effect while it is set.
 
 ### Check
 
-`coordinare doctor`, and the same check in the startup preflight, confirms the CLI is
-installed at the pinned version, `git` and `gh` are on `PATH`, `gh_token_env` and every
-`pass_env` variable are set, `config_path` exists when given, and `runs_dir` is writable.
+`coordinare doctor`, and the same check in the startup preflight, confirms the performer
+image has the CLI at the pinned version and `git` and `gh` on `PATH` (in one container of
+that image), `gh_token_env` and every `pass_env` variable are set, `config_path` exists when
+given, and `runs_dir` is writable.
 
 ### How a run is found again
 
 Progettare has no job API and takes no request id (ViviDynamics/progettare#69), so
 coordinare names each run itself. Every request gets its own directory under `runs_dir`,
 named by the request id, which is derived from the card, the stage, the pin and the
-attempt. A detached runner clones the default branch there, runs the CLI with that
-directory's `runs/` as `--runs-dir`, and holds a lock on the directory for as long as the
-runner or Progettare lives. Looking a request up reads its directory:
+attempt. A stage job's container, with that directory mounted, clones the default branch
+into its own filesystem, runs the CLI with the directory's `runs/` as `--runs-dir`, and
+ends when the run does. Looking a request up reads its directory:
 
-- the lock is held: the run is in flight, so a restart or a re-dispatch waits for it;
+- no `runner.json` and the container is running: the run is in flight, so a restart or a
+  re-dispatch waits for it;
 - `run.json` says `complete`: the plan;
 - `run.json` says `blocked`: the questions for a person;
 - `run.json` says `failed`, or there is no `run.json` (the clone failed, the run timed out,
-  or the host restarted and killed it): ended without a plan.
+  or its container was stopped): ended without a plan.
 
-A restart of coordinare leaves the runner running, and the next poll finds it by its lock,
-so a restart during planning never produces a second plan. A restart of the host or the
-container kills the run; that attempt ended without a plan and is retried, which still
+A restart of coordinare leaves the container running, and the next poll finds it by its
+name, so a restart during planning never produces a second plan. A restart of the host or
+of Docker stops the run; that attempt ended without a plan and is retried, which still
 leaves one plan.
 
 ### Outcomes
@@ -398,8 +431,8 @@ answers still give that pin. An answer recorded while a run is in flight is not 
 that run (Progettare read the issue's comments when it started); the plan is used, and the
 next dispatch of the architect plans again.
 
-The clone goes to `git_base_url`, the git host coordinare already clones from (github.com
-by default), never to a host a card names. A card whose issue URL is on another host,
+The clone goes to `git_base_url`, the git host coordinare's performers clone from
+(github.com by default), never to a host a card names. A card whose issue URL is on another host,
 port included, blocks instead of being planned, so the token never goes anywhere else.
 
 Feedback routed back to the architect, such as security findings or an observer's

@@ -177,6 +177,10 @@ def test_startup_gives_qare_github_access() -> None:
 
 def _patch_profile_probe(monkeypatch: pytest.MonkeyPatch, status: int) -> list[str]:
     seen: list[str] = []
+    # 423: QAre's version is read in a performer container; a local stand-in here.
+    from tests.unit.stage_job_fixtures import LocalStageJobs
+
+    monkeypatch.setattr("coordinare.services.stage_providers.stage_jobs_for", lambda *a, **k: LocalStageJobs())
 
     class _Auth:
         async def get_token(self) -> str:
