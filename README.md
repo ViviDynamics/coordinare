@@ -73,7 +73,7 @@ Have these ready:
 - One harness. nare (`nare`) is the default; Codex (`codex`), Claude Code
   (`claude`) and OpenCode (`opencode`) also work. For local mode, install git and
   the CLI on PATH. nare installs with
-  `uv tool install "https://github.com/ViviDynamics/nare/releases/download/<version>/nare-<version>-py3-none-any.whl"`
+  `curl -fsSL https://github.com/ViviDynamics/nare/releases/latest/download/install.sh | sh`
   and reads `ANTHROPIC_API_KEY` (or the key of the endpoint you configure). Codex and
   Claude Code can reuse a harness login; OpenCode's native provider requires
   `OPENAI_API_KEY`. You can supply a model API key during setup instead.
