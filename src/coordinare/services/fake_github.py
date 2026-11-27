@@ -210,8 +210,10 @@ class FakeGitHubService(CardIdentityMap):
             "assignees": [],
             "pr_item_id": None,
             "fixture_id": fixture_id,
-            # 400: comments on the card itself, in the GitHub wire shape. A PR's
-            # comments live on the PR; on GitHub both are "issue comments".
+            # 400: a person's comments on the card itself, in the GitHub wire shape,
+            # added only through add_person_comment. A PR's comments live on the PR.
+            # coordinare's own add_comment is still only recorded: the fake has no
+            # identity for coordinare to filter its own comments by.
             "comments": [],
         }
         self._record("seed_card", item_id=item_id, title=title, status=status)
@@ -394,9 +396,10 @@ class FakeGitHubService(CardIdentityMap):
         # GitHubService.get_issue_comments emits; FakeGitHubServer serves the raw
         # GitHub wire shape to the performer from the same list.
         pr = self._pr_by_number(issue_number)
-        # 400: a card's own comments too. Real GitHub gives issues and pull
-        # requests one number sequence; the bench seeds both from 1, so a number
-        # can name a card and a PR at once, and both sets of comments are returned.
+        # 400: a person's comments on the card too. Real GitHub gives issues and
+        # pull requests one number sequence; the bench seeds both from 1, so a
+        # number can name a card and a PR at once, and then both are returned.
+        # The bench never adds a person's comment, so its reads are unchanged.
         card_comments = [
             c for card in self._cards.values() if card["issue_number"] == issue_number
             for c in card.get("comments", [])
@@ -508,12 +511,6 @@ class FakeGitHubService(CardIdentityMap):
 
     async def add_comment(self, subject_id: str, body: str) -> dict[str, Any]:
         self._record("add_comment", subject_id=subject_id, body=body[:200])
-        # 400: a comment on a card's issue is kept, so reading the card's comments
-        # returns it, as on GitHub.
-        for card in self._cards.values():
-            if subject_id in (card["content_node_id"], card["issue_node_id"]):
-                self._append_card_comment(card, "coordinare-bot", body)
-                break
         return {"id": f"IC_{len(self.events)}"}
 
     async def close_issue(self, issue_id: str) -> dict[str, Any]:

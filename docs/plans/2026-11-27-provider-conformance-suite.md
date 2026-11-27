@@ -30,7 +30,7 @@ Out:
   pairing the last poll already fetched, and passes any other id through
   unchanged, so existing callers that pass node ids see no change.
 - The bench fake mirrors the real service where the suite needs it: an unmapped
-  status is left out of the listing, and a comment posted on a card can be read
+  status is left out of the listing, and a person's comment on a card can be read
   back by card.
 - GitHub Projects has no workflow rules, so the refused move case is declared
   as a capability and skipped for it with that reason.
@@ -38,7 +38,7 @@ Out:
   without requiring a GitHub project id. GitHub Projects keeps today's gate.
 
 ## Tasks
-- [ ] 1. Conformance suite with the in-memory provider: listing, moves, refusal,
+- [x] 1. Conformance suite with the in-memory provider: listing, moves, refusal,
   a person's move, comments, repeated writes, restart reconcile.
-- [ ] 2. GitHub Projects in the suite through `FakeGitHubService`.
-- [ ] 3. Bench: one item from To Do to Done through the in-memory provider.
+- [x] 2. GitHub Projects in the suite through `FakeGitHubService`.
+- [x] 3. Bench: one item from To Do to Done through the in-memory provider.

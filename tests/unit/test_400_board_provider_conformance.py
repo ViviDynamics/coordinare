@@ -54,6 +54,11 @@ class RecordingBoard:
         self._inner = inner
         self.moves: list[tuple[str, str]] = []
 
+    @property
+    def github(self) -> Any:
+        """Forwarded, so a wrapped GitHub adapter still reads as one to the daemon."""
+        return getattr(self._inner, "github", None)
+
     async def poll_board(self) -> dict[str, Any]:
         board: dict[str, Any] = await self._inner.poll_board()
         return board
@@ -112,6 +117,11 @@ class GitHubProjectsHarness:
         number = self.fake._cards[card_id]["issue_number"]
         self.fake.add_person_comment(number, author="octo-person", body=body)
 
+    def bodies_coordinare_posted(self, card_id: str) -> list[str]:
+        # GitHub comments on the card's issue, so the write must name the issue.
+        issue = self.fake._cards[card_id]["content_node_id"]
+        return [e["body"] for e in self.fake.events if e["kind"] == "add_comment" and e["subject_id"] == issue]
+
     def refuse(self, card_id: str, status: str) -> None:  # pragma: no cover - capability is False
         raise NotImplementedError
 
@@ -140,6 +150,9 @@ class InMemoryHarness:
 
     def person_comments(self, card_id: str, body: str) -> None:
         self.provider.person_comments(card_id, author="pat", body=body)
+
+    def bodies_coordinare_posted(self, card_id: str) -> list[str]:
+        return [c["body"] for c in self.provider.item(card_id).comments if c["author"] == "coordinare"]
 
     def refuse(self, card_id: str, status: str) -> None:
         self.provider.forbid(from_status=self.provider.status_of(card_id), to_status=status)
@@ -331,18 +344,24 @@ class TestAPersonsMove:
 
 class TestComments:
     @pytest.mark.asyncio
+    async def test_a_comment_posted_by_listed_id_lands_on_the_item(self, harness: Any) -> None:
+        card = harness.seed("One", "TODO")
+        await harness.provider.poll_board()
+
+        await harness.provider.add_card_comment(card, "coordinare picked this up")
+
+        assert harness.bodies_coordinare_posted(card) == ["coordinare picked this up"]
+
+    @pytest.mark.asyncio
     async def test_comments_come_back_oldest_first_in_the_common_shape(self, harness: Any) -> None:
         card = harness.seed("One", "TODO")
         await harness.provider.poll_board()
         harness.person_comments(card, "please also cover the 404 case")
-        await harness.provider.add_card_comment(card, "coordinare picked this up")
+        harness.person_comments(card, "and the 410 case")
 
         comments = await harness.provider.get_card_comments(card)
 
-        assert [c["body"] for c in comments] == [
-            "please also cover the 404 case",
-            "coordinare picked this up",
-        ]
+        assert [c["body"] for c in comments] == ["please also cover the 404 case", "and the 410 case"]
         for c in comments:
             assert {"id", "author", "body", "created_at"} <= set(c)
 
@@ -411,6 +430,21 @@ class TestRestartReconcile:
 
 
 class TestTheInMemoryProviderHasNothingGitHubShaped:
+    @pytest.mark.asyncio
+    async def test_coordinare_reads_its_comments_today(self) -> None:
+        """Its ids are strings coordinare's integer cursor can still hold until #398."""
+        from coordinare.services.issue_comment_service import fetch_new_issue_comments
+
+        provider = InMemoryBoardProvider(project_key="PAY")
+        card = provider.add_item("One")
+        provider.person_comments(card, author="pat", body="first")
+        provider.person_comments(card, author="pat", body="second")
+
+        events = await fetch_new_issue_comments(card, None, provider)
+        assert [e.body for e in events] == ["first", "second"]
+        later = await fetch_new_issue_comments(card, events[0].comment_id, provider)
+        assert [e.body for e in later] == ["second"]
+
     @pytest.mark.asyncio
     async def test_no_issue_numbers_or_node_ids_in_its_listing(self) -> None:
         provider = InMemoryBoardProvider(project_key="PAY")

@@ -373,6 +373,11 @@ async def run_board(
     reads and moves work items through it. Pull requests, CI and the merge stay on
     the GitHub fake. ``None`` keeps the GitHub Projects board.
     """
+    if work_items is not None and not stub:
+        # Real performers read the issue from the fake server, which only knows
+        # the fake's own project. Refused rather than run against cards it lacks.
+        msg = "work_items is supported only with stub=True"
+        raise ValueError(msg)
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix="bench-run-"))

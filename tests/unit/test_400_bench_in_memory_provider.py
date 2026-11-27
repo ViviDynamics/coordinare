@@ -42,6 +42,13 @@ async def test_one_item_goes_from_to_do_to_done_through_the_in_memory_provider(t
 
 
 @pytest.mark.asyncio
+async def test_a_real_run_refuses_an_in_memory_board(tmp_path: Path) -> None:
+    """Real performers read the issue from the fake server, which has no such item."""
+    with pytest.raises(ValueError, match="stub=True"):
+        await run_board([tiny_fixture()], tmp_path / "run", stub=False, work_items=InMemoryBoardProvider())
+
+
+@pytest.mark.asyncio
 async def test_without_a_provider_the_bench_runs_on_github_projects_as_before(tmp_path: Path) -> None:
     artifact = await run_board([tiny_fixture()], tmp_path / "run", stub=True)
 

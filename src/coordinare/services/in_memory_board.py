@@ -12,7 +12,10 @@ It behaves like a tracker, not like a test double:
   canonical statuses, and an item in a state with no mapping is not listed.
 - Its workflow can forbid a transition, which ``move_card`` reports as a refused
   ``MoveOutcome`` and leaves the item where it was.
-- Comment ids, and therefore comment cursors, are strings.
+- Comment ids, and therefore comment cursors, are strings, as a tracker's API
+  returns them. They are decimal strings ("1", "2") for now: coordinare still
+  persists its comment cursor as an integer and reads each id with ``int()``,
+  and #398 makes that cursor opaque. The provider compares cursors as strings.
 - A person can move an item or comment on it at any time, through methods the
   protocol does not have, because coordinare must never be the one doing that.
 
@@ -211,7 +214,7 @@ class InMemoryBoardProvider:
 
     def _append_comment(self, item: InMemoryWorkItem, author: str, body: str) -> str:
         self._next_comment += 1
-        comment_id = f"{item.id}#c{self._next_comment}"
+        comment_id = str(self._next_comment)
         item.comments.append({
             "id": comment_id,
             "author": author,
