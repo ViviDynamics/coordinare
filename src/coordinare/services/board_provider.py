@@ -173,14 +173,15 @@ class GitHubProjectsBoardProvider:
     def repo(self) -> str:
         """The ``owner/name`` the board's ``#N`` references live in (396).
 
-        Given, or else the service's own (``GitHubService`` carries the
-        symphony's org and repository). Empty when neither knows it, and then
-        no blocker state is read.
+        The service's own (``GitHubService`` carries its symphony's org and
+        repository), or else the one given, for a service that does not say.
+        The service wins because a caller may hand in one symphony's service
+        beside another's config. Empty when neither knows it, and then no
+        blocker state is read.
         """
-        if self._repo:
-            return self._repo
         org, name = getattr(self._github, "org", ""), getattr(self._github, "project_name", "")
-        return f"{org}/{name}" if isinstance(org, str) and isinstance(name, str) and org and name else ""
+        own = f"{org}/{name}" if isinstance(org, str) and isinstance(name, str) and org and name else ""
+        return own or self._repo
 
     @property
     def github(self) -> Any:

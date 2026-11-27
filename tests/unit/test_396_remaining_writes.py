@@ -8,6 +8,7 @@ item provider; on GitHub Projects the adapter makes the same GitHub call.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -324,6 +325,28 @@ class TestBlockerStateFromTheListing:
         assert github.asked == [("o/r", 999)]
         blockers = {b.ref: b.state for b in work_items_of(board)["ITEM_X"].blockers}
         assert blockers["#999"] == CLOSED
+
+    @pytest.mark.asyncio
+    async def test_only_blockers_of_cards_in_todo_are_read(self) -> None:
+        """The dependency filter acts on To Do cards only; reading more costs REST calls every poll."""
+        github = _Listing({999: "closed"})
+        listing = await github.poll_board()
+        listing["snapshot"] = {"TODO": ["ITEM_Y"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": ["ITEM_X"]}
+        github.poll_board = AsyncMock(return_value=listing)  # type: ignore[method-assign]
+
+        await GitHubProjectsBoardProvider(github, repo="o/r").poll_board()
+
+        assert github.asked == []
+
+    @pytest.mark.asyncio
+    async def test_the_service_s_own_repository_wins_over_the_configured_one(self) -> None:
+        """A symphony's service may be handed in beside another symphony's config."""
+        github = _Listing({999: "closed"})
+        github.org, github.project_name = "acme", "web"  # type: ignore[attr-defined]
+
+        await GitHubProjectsBoardProvider(github, repo="other/repo").poll_board()
+
+        assert github.asked == [("acme/web", 999)]
 
     @pytest.mark.asyncio
     async def test_the_repository_defaults_to_the_service_s_own(self) -> None:

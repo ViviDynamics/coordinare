@@ -244,16 +244,22 @@ def _from_github_listing(board: dict[str, Any]) -> dict[str, WorkItem]:
     return result
 
 
-def unlisted_text_blockers(board: dict[str, Any]) -> list[int]:
+def unlisted_text_blockers(board: dict[str, Any], status: str = "TODO") -> list[int]:
     """Issue numbers the GitHub text syntax names that no listed item has (396).
 
-    In the order the bodies name them, each once, never an item's own number.
-    These are the blockers whose state the listing cannot see on the board.
+    Only in the bodies of items listed under *status*: To Do is where the
+    dependency filter acts, so reading more would spend a REST call per poll
+    for nothing. In the order the bodies name them, each once, never an item's
+    own number. These are the blockers whose state the listing cannot see on
+    the board.
     """
     issue_numbers = _mapping(board, "issue_numbers")
     listed = {n for n in issue_numbers.values() if isinstance(n, int) and n > 0}
+    in_status = {item_id for item_id, column in card_status_of(board).items() if column == status}
     result: dict[int, None] = {}
     for item_id, body in _mapping(board, "descriptions").items():
+        if item_id not in in_status:
+            continue
         own = issue_numbers.get(item_id, 0)
         for number in parse_text_blockers(str(body)):
             if number != own and number not in listed:
