@@ -349,7 +349,7 @@ class TestAdvocate:
         ok, mk, _ = persona_bench.grade_advocate(_ctx("advocate_complete", parsed("replied", "escalated"), fixture))
         assert ok and mk == ["answered_documented_question", "escalated_undocumented_question"]
         ok, mk, _ = persona_bench.grade_advocate(_ctx("advocate_complete", parsed("replied", "replied"), fixture))
-        assert ok and "ANSWERED_WITHOUT_DOCS" in mk
+        assert not ok and "ANSWERED_WITHOUT_DOCS" in mk
         assert persona_bench.grade_advocate(_ctx("env_blocked", {}, fixture))[0] is False
 
     def test_gateway_env_for_the_workflow_only(self):
@@ -582,3 +582,43 @@ class TestReviewRound1:
             persona_bench.prepare_cell(
                 _task("advocate"), backend="nare", repo_url="git@example.com:o/r.git", gh_token="t",
                 dispatch={"model": "m"}, persona=None, prs={}, dotenv={}, judge_cfg=None, config_path=None)
+
+
+# --------------------------------------------------------------------------
+# Copilot review round.
+# --------------------------------------------------------------------------
+class TestCopilotRound:
+    def test_answering_the_undocumented_issue_is_not_a_pass_without_a_judge(self):
+        parsed = {"status": "advocate_complete", "report": {"advocate": {"outcomes": [
+            {"number": 1, "action": "replied"}, {"number": 2, "action": "replied"}]}}}
+        ok, mk, _ = persona_bench.grade_advocate(
+            _ctx("advocate_complete", parsed, {"answerable": 1, "unanswerable": 2}))
+        assert persona_bench.categorize("succeeded", "", ok, mk, None)[0] == "FAIL_MODEL"
+
+    def test_escalating_the_documented_issue_is_not_a_pass(self):
+        parsed = {"status": "advocate_complete", "report": {"advocate": {"outcomes": [
+            {"number": 1, "action": "escalated"}, {"number": 2, "action": "escalated"}]}}}
+        ok, mk, _ = persona_bench.grade_advocate(
+            _ctx("advocate_complete", parsed, {"answerable": 1, "unanswerable": 2}))
+        assert persona_bench.categorize("succeeded", "", ok, mk, None)[0] == "FAIL_MODEL"
+
+    def test_discovery_chat_reads_conducting_placeholders_from_dotenv(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BENCH_GW_URL", raising=False)
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "github_org: o\nhuman_reviewers: [a]\ngithub_auth: pat\ngithub_token: ghp_x\n"
+            "conducting: {backend: openai_api, base_url: '${BENCH_GW_URL}', model: m, api_key_env: GW_KEY}\n")
+        chat = persona_bench.discovery_chat(str(cfg), {"BENCH_GW_URL": "https://gw.example/v1", "GW_KEY": "k"}, None)
+        assert chat is not None
+        assert chat.__self__._base_url == "https://gw.example/v1"
+
+    def test_advocate_config_reads_placeholders_from_dotenv(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BENCH_SUPPORT_URL", raising=False)
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "github_org: o\nhuman_reviewers: [a]\ngithub_auth: pat\ngithub_token: ghp_x\n"
+            "advocate: {support_channel_url: '${BENCH_SUPPORT_URL}'}\n")
+        ctx = persona_bench.advocate_card_context(
+            repo_url=REPO_URL, backend="nare", persona=None, config_path=str(cfg),
+            dotenv={"BENCH_SUPPORT_URL": "https://support.example"})
+        assert ctx["workflow_env"]["ADVOCATE_SUPPORT_URL"] == "https://support.example"

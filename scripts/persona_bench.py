@@ -347,7 +347,10 @@ def grade_advocate(c: GradeCtx) -> tuple[bool, list[str], str]:
         mk.append("escalated_undocumented_question")
     if unanswerable.get("action") == "replied":
         mk.append("ANSWERED_WITHOUT_DOCS")
-    contract_ok = c.status == "advocate_complete" and bool(answerable) and bool(unanswerable)
+    # Without a judge, PASS rests on contract_ok and markers, so the contract
+    # is the correct pair of actions, not merely two outcome records.
+    contract_ok = (c.status == "advocate_complete" and answerable.get("action") == "replied"
+                   and unanswerable.get("action") == "escalated")
     return contract_ok, mk, (
         f"status={c.status} answerable={answerable.get('action')} "
         f"unanswerable={unanswerable.get('action')}"
@@ -878,7 +881,7 @@ def discovery_chat(config_path: str | None, dotenv: dict, judge_cfg: dict | None
     from coordinare.services.conducting import OpenAiApiBackend
 
     cc = None
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(Exception), _daemon_env(dotenv):
         from coordinare.config import ProjectConfiguration
         cc = ProjectConfiguration.from_yaml(config_path or "").conducting
     if cc is not None and getattr(cc, "backend", None) == "openai_api":
@@ -972,7 +975,8 @@ ADVOCATE_ISSUES = {
 
 
 def advocate_card_context(*, repo_url: str, backend: str, persona: str | None,
-                          model_block: dict | None = None, config_path: str | None = None) -> dict:
+                          model_block: dict | None = None, config_path: str | None = None,
+                          dotenv: dict | None = None) -> dict:
     """``intake_dispatch.build_card_context`` for the advocate (391).
 
     The workflow env comes from the config's ``advocate`` block, as the daemon
@@ -986,7 +990,7 @@ def advocate_card_context(*, repo_url: str, backend: str, persona: str | None,
     if not owner_repo:
         raise ValueError(f"not a GitHub repository URL: {repo_url!r}")
     role_cfg = AdvocateConfig()
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(Exception), _daemon_env(dotenv or {}):
         from coordinare.config import ProjectConfiguration
         role_cfg = ProjectConfiguration.from_yaml(config_path or "").advocate
     workflow_env = build_workflow_env("advocate", role_cfg)
@@ -1182,7 +1186,7 @@ def prepare_cell(task: RoleTask, *, backend: str, repo_url: str, gh_token: str,
         try:
             context = advocate_card_context(repo_url=repo_url, backend=backend, persona=persona,
                                             model_block={**model_block, "model": model},
-                                            config_path=config_path)
+                                            config_path=config_path, dotenv=dotenv)
         except Exception as exc:
             raise BenchSetupError(f"advocate dispatch could not be built: {exc}"[:240]) from exc
         if orchestration is not None:
