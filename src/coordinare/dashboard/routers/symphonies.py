@@ -68,7 +68,7 @@ def _work_items_view(cfg: Any) -> dict[str, Any]:
 
     work_items = getattr(cfg, "work_items", None)
     return {
-        "work_items": work_items.model_dump() if work_items is not None else None,
+        "work_items": work_items.model_dump(exclude_unset=True) if work_items is not None else None,
         "work_item_provider": getattr(work_items, "provider", None) or DEFAULT_WORK_ITEM_PROVIDER,
     }
 

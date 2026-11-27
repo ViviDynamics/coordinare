@@ -39,7 +39,7 @@ _ITEM = {
 
 def test_current_schema_version_is_40() -> None:
     """351 persists the independently accepted environment contract; prior versions load."""
-    assert CURRENT_SCHEMA_VERSION == 40
+    assert CURRENT_SCHEMA_VERSION == 41
 
 
 def test_old_session_loads_with_surfaced_stale_reviews_default() -> None:

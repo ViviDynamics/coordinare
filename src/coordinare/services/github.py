@@ -143,6 +143,14 @@ query PollBoard($projectId: ID!, $after: String) {
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue {
                 name
+                # 365: when the value was last set, so a Done item's time in Done is GitHub's own,
+                # and which field it belongs to, so only the Status field's time is used.
+                updatedAt
+                field {
+                  ... on ProjectV2SingleSelectField {
+                    id
+                  }
+                }
               }
             }
           }
@@ -150,6 +158,8 @@ query PollBoard($projectId: ID!, $after: String) {
             ... on Issue {
               id
               number
+              # 365: an item is archived only once its issue is closed.
+              state
               title
               body
               url
@@ -248,6 +258,24 @@ query GetIssueDetails($issueId: ID!) {
           }
         }
       }
+    }
+  }
+}
+"""
+
+def _is_field(field_value: dict[str, Any], field_id: str) -> bool:
+    """365: whether a project field value belongs to the field *field_id*."""
+    field = field_value.get("field")
+    return bool(field_id) and isinstance(field, dict) and field.get("id") == field_id
+
+
+# 365: archive a project item. Archived items leave the board's item list, and can be
+# restored from the project's archive on GitHub.
+ARCHIVE_PROJECT_ITEM_MUTATION = """
+mutation ArchiveProjectItem($projectId: ID!, $itemId: ID!) {
+  archiveProjectV2Item(input: {projectId: $projectId, itemId: $itemId}) {
+    item {
+      id
     }
   }
 }
@@ -1190,6 +1218,12 @@ class GitHubService(CardIdentityMap):
         # with priority OPEN → MERGED → CLOSED so a card with an in-flight PR
         # surfaces the live PR rather than a stale closed one.
         pr_urls: dict[str, str] = {}
+        status_field_id = str((self.field_cache or {}).get("status_field_id", "")) if isinstance(
+            self.field_cache, dict) else ""
+        # 365: item ID -> when GitHub last set its status (ISO 8601), where GitHub says,
+        # and item ID -> its issue's state (OPEN or CLOSED).
+        status_updated_at: dict[str, str] = {}
+        issue_states: dict[str, str] = {}
 
         for item in items:
             if not isinstance(item, dict):
@@ -1199,6 +1233,8 @@ class GitHubService(CardIdentityMap):
                 continue
 
             status_name = ""  # unknown until we read the field
+            status_set_at = ""
+            status_says = ""
             field_values = item.get("fieldValues", {}).get("nodes", [])
             if isinstance(field_values, list):
                 for field_value in field_values:
@@ -1208,6 +1244,17 @@ class GitHubService(CardIdentityMap):
                     mapped = BOARD_COLUMN_TO_STATUS.get(raw_name)
                     if mapped:
                         status_name = mapped
+                        # 365: every single-select field is listed here, and another one can
+                        # have a "Done" option too. The time is the Status field's own, and it
+                        # counts only while the column read agrees with what Status says.
+                        if _is_field(field_value, status_field_id):
+                            updated = field_value.get("updatedAt")
+                            status_set_at = updated if isinstance(updated, str) else ""
+                            status_says = mapped
+                        elif mapped != status_says:
+                            status_set_at = ""
+            if status_name and status_set_at:
+                status_updated_at[item_id] = status_set_at
 
             item_assignees[item_id] = []  # default empty; overwritten below if content has assignees
             content = item.get("content", {})
@@ -1216,6 +1263,9 @@ class GitHubService(CardIdentityMap):
                 descriptions[item_id] = str(content.get("body", ""))
                 number = content.get("number", 0)
                 issue_numbers[item_id] = int(number) if isinstance(number, int) else 0
+                issue_state = content.get("state")
+                if isinstance(issue_state, str) and issue_state:
+                    issue_states[item_id] = issue_state.upper()
                 content_node_id = str(content.get("id", "")).strip()
                 if content_node_id:
                     content_node_ids[item_id] = content_node_id
@@ -1307,6 +1357,8 @@ class GitHubService(CardIdentityMap):
             "content_node_ids": content_node_ids,
             "pr_urls": pr_urls,
             "native_blockers": native_blockers,
+            "status_updated_at": status_updated_at,
+            "issue_states": issue_states,
         }
 
     async def get_issue_details(self, issue_id: str) -> dict[str, Any]:
@@ -1992,6 +2044,14 @@ class GitHubService(CardIdentityMap):
                 )
         except Exception as exc:
             logger.warning("workspace.stale_branch_delete_failed", branch=branch_name, error=str(exc))
+
+    async def archive_project_item(self, item_id: str) -> None:
+        """365: archive one item of this service's project. Raises when GitHub refuses."""
+        if not self.project_id:
+            await self.initialize()
+        await self._guarded_execute(
+            ARCHIVE_PROJECT_ITEM_MUTATION, {"projectId": self.project_id, "itemId": item_id},
+        )
 
     async def move_card(self, item_id: str, status: str) -> None:
         self._ensure_initialized()

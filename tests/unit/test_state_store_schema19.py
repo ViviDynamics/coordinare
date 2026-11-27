@@ -12,7 +12,7 @@ class TestReviewFindingsSchemaV19:
 
     def test_schema_version_is_40(self):
         """545 advances the snapshot schema to 26; review findings remain supported."""
-        assert CURRENT_SCHEMA_VERSION == 40  # 351: persisted reviewed environment contract
+        assert CURRENT_SCHEMA_VERSION == 41  # 351: persisted reviewed environment contract
 
     def test_review_findings_default_none(self):
         """review_findings defaults to None."""

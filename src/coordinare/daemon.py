@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import json
 import os
 import signal
 import time
@@ -75,6 +76,7 @@ from coordinare.services.bootstrap_status import (
     symphony_view,
 )
 from coordinare.services.card_lifecycle import CardLifecycleLog
+from coordinare.services.card_ownership import ownership_policy
 from coordinare.services.closed_pr import is_closed_pr_block
 from coordinare.services.conductor_calls import SHUTDOWN_DRAIN_SECONDS, ConductorCallLog
 from coordinare.services.dependency import build_graph as _build_dep_graph
@@ -267,6 +269,40 @@ def _apply_reviewer_logins(state: Any, cfg: Any) -> None:
         state["human_reviewers"] = list(humans)
     if isinstance(bots, list):
         state["trusted_bot_reviewers"] = list(bots)
+
+
+def _provider_state_root(state: Any) -> dict[str, dict[str, Any]]:
+    """365: every symphony's work item provider state, held in the shared state and persisted."""
+    root = state.get("work_item_provider_state")
+    if not isinstance(root, dict):
+        root = {}
+        state["work_item_provider_state"] = root
+    return root
+
+
+def _provider_state_for(state: Any, symphony: str) -> dict[str, Any]:
+    """365: one symphony's provider state, the same dict on every cycle so records accumulate."""
+    root = _provider_state_root(state)
+    own = root.get(symphony)
+    if not isinstance(own, dict):
+        own = {}
+        root[symphony] = own
+    return own
+
+
+def _provider_state_signature(value: Any) -> str:
+    """365: a fingerprint of the provider state for the save trigger. Never raises."""
+    try:
+        return json.dumps(_persistable_provider_state(value), sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _persistable_provider_state(value: Any) -> dict[str, dict[str, Any]]:
+    """365: the copy the snapshot keeps. Empty state, and anything not a dict of dicts, is left out."""
+    if not isinstance(value, dict):
+        return {}
+    return {str(name): dict(inner) for name, inner in value.items() if isinstance(inner, dict) and inner}
 
 
 def _reviewer_logins(cfg: Any) -> tuple[Any, Any]:
@@ -2760,6 +2796,8 @@ class CoordinareDaemon:
             str(self._state.get("performer_stage") or ""),
             session_stages,
             _recovery_signature(self._state) if not sessions else (),
+            # 365: a provider's new record (a GitHub item first seen in Done) is saved too.
+            _provider_state_signature(self._state.get("work_item_provider_state")),
         )
 
     async def _flush_snapshot(self) -> None:
@@ -2871,6 +2909,9 @@ class CoordinareDaemon:
                 if isinstance(lifecycle := self._state.get("card_lifecycle"), CardLifecycleLog)
                 else {}
             ),
+            # 365: each symphony's work item provider state, so a provider's records (when a
+            # GitHub item was first seen in Done) survive a restart.
+            work_item_provider_state=_persistable_provider_state(self._state.get("work_item_provider_state")),
         )
 
     def _restore_from_snapshot(self, snapshot: WorkflowSnapshot) -> None:
@@ -2897,6 +2938,11 @@ class CoordinareDaemon:
         # 147: the lifecycle log is loaded in place, so every holder of the log sees it.
         if isinstance(lifecycle := self._state.get("card_lifecycle"), CardLifecycleLog):
             lifecycle.load(snapshot.card_lifecycle)
+        # 365: loaded in place, so a provider built before the restore keeps the same dicts.
+        for name, value in snapshot.work_item_provider_state.items():
+            own = _provider_state_for(self._state, name)
+            own.clear()
+            own.update(value)
         if snapshot.active_card_id:
             _set_current_card(
                 self._state,
@@ -3655,6 +3701,10 @@ class CoordinareDaemon:
             build_board_provider(
                 getattr((self._state.get("symphony_configs") or {}).get(symphony_name), "work_items", None),
                 github=_sym_github,
+                # 365: the cycle's board is the one that keeps the tracker tidy (GitHub Projects
+                # archives finished items), with state that outlives the cycle and the daemon.
+                provider_state=_provider_state_for(self._state, symphony_name),
+                ownership=ownership_policy(_effective_cfg or self._state.get("config")),
             )
             if _sym_github is not None else None
         )

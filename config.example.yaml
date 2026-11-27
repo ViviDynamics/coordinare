@@ -1218,6 +1218,13 @@ symphonies:
     #                                             # must match a performer_endpoints id above
     # env_spec_files: [README.md]     # files whose SHA change triggers a fresh bootstrap;
     #                                 # defaults to [README.md]; relative to repo root
+    # work_items:                     # where this symphony's work items come from
+    #   provider: github_projects     # default, and the only provider today
+    #   archive_done_after_days: 14   # default 14. The GitHub project archives a work item
+    #                                 # once it has been in Done this many days (GitHub's own
+    #                                 # time for the status change) and its issue is closed.
+    #                                 # Only items this coordinare owns. 0 turns archiving off;
+    #                                 # range 0-3650. Archived items can be restored on GitHub.
     # overrides:
     #   max_concurrent_cards: 2       # range 1–20
     #   max_cards_in_review: 3        # range 1-50, null for no cap

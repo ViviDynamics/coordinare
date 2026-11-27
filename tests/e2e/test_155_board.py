@@ -402,3 +402,20 @@ def test_the_cards_header_counts_the_columns_it_draws_not_a_stale_summary(
     )
     expect(page.locator("#swimlane-section .swimlane-col-count").nth(2)).to_have_text("2", timeout=_WAIT_LIVE)
     expect(page.locator("#cards-summary")).to_have_text("Total 7 · Done 2 · Backlog 0", timeout=_WAIT_LIVE)
+
+
+@pytest.mark.e2e
+def test_the_done_lane_says_when_finished_work_items_are_archived(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    """#365: the board says, in words, that Done work items are archived on the project after 14 days."""
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    symphony = _symphony(done=["PVTI_1"], titles={"PVTI_1": "Ship the export"})
+    symphony["done_archive_days"] = 14
+    _broadcast(store, symphonies=[symphony], card_pipeline={_SYMPHONY: {}})
+    lane = page.locator("#done-lane")
+    note = "Work items are archived on the GitHub project after 14 days in Done."
+    expect(lane.locator("summary")).to_have_attribute("title", note, timeout=_WAIT_LIVE)
+    lane.locator("summary").click()
+    expect(lane.locator("[data-done-archive]")).to_have_text(note)

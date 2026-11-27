@@ -49,6 +49,11 @@ def symphony_documents(configs: dict[str, Any], raw: dict[str, Any]) -> list[dic
     result: list[dict[str, Any]] = []
     for name, config in configs.items():
         document = config.model_dump(exclude_none=True)
+        # 365: the work item block is written as the operator set it, so a default (the days
+        # before GitHub Projects archives a Done item) is never frozen into their file.
+        work_items = getattr(config, "work_items", None)
+        if work_items is not None:
+            document["work_items"] = work_items.model_dump(exclude_unset=True)
         previous = stored.get(name, {})
         expanded = yaml.safe_load(expand_config_text(yaml.safe_dump(previous)))
         result.append(_keep_references(document, previous, expanded))

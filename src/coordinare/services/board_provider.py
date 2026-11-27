@@ -42,6 +42,7 @@ has ever heard of an issue number.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
@@ -49,12 +50,61 @@ import structlog
 from coordinare.doctor import CheckResult
 from coordinare.doctor_status import Status
 from coordinare.services.card_identity import CardIdentityMap
+from coordinare.services.card_ownership import OwnershipPolicy, owns_card
 from coordinare.services.work_items import unlisted_text_blockers
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
 logger = structlog.get_logger(__name__)
+
+#: 365: GitHub Projects archives a work item after this many days in Done, unless a
+#: symphony's ``work_items.archive_done_after_days`` says otherwise. 0 turns it off.
+DEFAULT_ARCHIVE_DONE_AFTER_DAYS = 14
+#: The longest wait config accepts, ten years.
+MAX_ARCHIVE_DONE_AFTER_DAYS = 3650
+#: How many items one poll archives at most, so a first run over an old board is spread out.
+MAX_ARCHIVES_PER_POLL = 20
+#: Where the GitHub Projects provider keeps, in its durable provider state, when it first
+#: saw each item in Done: ``{item_id: ISO 8601}``. Used only when GitHub gives no time for
+#: the status change.
+DONE_FIRST_SEEN_KEY = "done_first_seen"
+
+
+def done_archive_days(work_items: Any) -> int:
+    """365: the days in Done after which a symphony's GitHub project archives an item. 0 is off.
+
+    *work_items* is the symphony's ``work_items`` block, or ``None`` when it has none.
+    """
+    days = getattr(work_items, "archive_done_after_days", None)
+    return days if isinstance(days, int) and not isinstance(days, bool) else DEFAULT_ARCHIVE_DONE_AFTER_DAYS
+
+
+def symphony_done_archive_days(symphony: Any) -> int | None:
+    """365: what the board says about archiving a symphony's Done items.
+
+    The days for a symphony on GitHub Projects (0 when it is off), ``None`` for any other
+    provider, which archives nothing.
+    """
+    if getattr(symphony, "enabled", True) is False:
+        return None  # not polled, so nothing of it is archived
+    work_items = getattr(symphony, "work_items", None)
+    provider = getattr(work_items, "provider", "github_projects") if work_items is not None else "github_projects"
+    return done_archive_days(work_items) if provider == "github_projects" else None
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 #: A move target, not a column (#396): the item is not work and leaves the board's
 #: queue for good. It is a state rather than a sixth operation so the protocol
@@ -268,9 +318,26 @@ class GitHubProjectsBoardProvider:
     will not have issues, and the translation costs one line each.
     """
 
-    def __init__(self, github: Any, repo: str = "") -> None:
+    def __init__(
+        self,
+        github: Any,
+        repo: str = "",
+        *,
+        archive_done_after_days: int = 0,
+        provider_state: dict[str, Any] | None = None,
+        ownership: OwnershipPolicy | None = None,
+    ) -> None:
         self._github = github
         self._repo = repo
+        # 365: archiving runs only on the board the daemon builds for a symphony's own cycle,
+        # which is the one handed durable provider state. Every other board (start checks,
+        # restart reconciliation, the fallback in ``board_of``) reads and never archives.
+        self.archive_done_after_days = archive_done_after_days
+        self.provider_state = provider_state
+        # Only items this coordinare owns (its assignee filter, spec 160) are archived.
+        self.ownership = ownership or OwnershipPolicy()
+        # The clock the age of a Done item is measured against; tests set their own.
+        self._now: Callable[[], datetime] = lambda: datetime.now(UTC)
 
     @property
     def repo(self) -> str:
@@ -329,8 +396,78 @@ class GitHubProjectsBoardProvider:
 
     async def poll_board(self) -> dict[str, Any]:
         board: dict[str, Any] = await self._github.poll_board()
+        await self._archive_finished(board)
         states = await self._blocker_states(board)
         return {**board, "blocker_states": states} if states else board
+
+    async def _archive_finished(self, board: dict[str, Any]) -> None:
+        """365: archive the items proven to have been in Done for the configured days.
+
+        GitHub Projects keeps finished items in Done for ever. An item is archived only when
+        it is in Done in this read, its issue is closed (an archived item leaves the board,
+        and a dependency on it then resolves by issue state), and this coordinare owns it.
+        The proof of age is GitHub's own time for the last status change; where GitHub gives
+        none, it is the first time this provider saw the item in Done, kept in the durable
+        provider state. Moving to another column restarts that clock. A failed archive is
+        logged, ends this poll's pass, and is tried again on a later poll; it never fails the
+        read.
+        """
+        days = self.archive_done_after_days
+        memory = self.provider_state
+        archive = getattr(self._github, "archive_project_item", None)
+        snapshot = _mapping(board.get("snapshot"))
+        done = snapshot.get("DONE")
+        if days <= 0 or memory is None or not callable(archive) or not isinstance(done, list):
+            return
+        done_ids = [str(item) for item in done]
+        elsewhere = {
+            str(item) for column, items in snapshot.items()
+            if column != "DONE" and isinstance(items, list) for item in items
+        }
+        github_times = _mapping(board.get("status_updated_at"))
+        issue_states = _mapping(board.get("issue_states"))
+        assignees = _mapping(board.get("item_assignees"))
+        held = memory.get(DONE_FIRST_SEEN_KEY)
+        # The record is changed in place, so whoever holds the state sees it at once.
+        seen: dict[str, Any] = held if isinstance(held, dict) else {}
+        for item in [item for item in seen if item in elsewhere]:
+            del seen[item]
+        now = self._now()
+        attempts = 0
+        for item in done_ids:
+            since = _parse_time(github_times.get(item))
+            source = "github_status_time"
+            if since is None:
+                since = _parse_time(seen.get(item))
+                source = "first_seen_in_done"
+                if since is None:
+                    seen[item] = now.isoformat()
+                    continue
+            if now - since < timedelta(days=days) or str(issue_states.get(item, "")).upper() != "CLOSED":
+                continue
+            if not owns_card(self.ownership, item, assignees) or attempts >= MAX_ARCHIVES_PER_POLL:
+                continue
+            attempts += 1
+            try:
+                await archive(item)
+            except Exception as exc:
+                logger.warning("board.done_item_archive_failed", card_id=item, error=str(exc))
+                break
+            seen.pop(item, None)
+            numbers = _mapping(board.get("issue_numbers"))
+            logger.info(
+                "board.done_item_archived",
+                card_id=item,
+                issue_number=numbers.get(item),
+                days_in_done=round((now - since).total_seconds() / 86400, 1),
+                after_days=days,
+                since_source=source,
+            )
+        # Nothing to keep is no entry, so an idle board never changes what is persisted.
+        if seen:
+            memory[DONE_FIRST_SEEN_KEY] = seen
+        elif DONE_FIRST_SEEN_KEY in memory:
+            del memory[DONE_FIRST_SEEN_KEY]
 
     async def _blocker_states(self, board: dict[str, Any]) -> dict[int, str]:
         """The state of each off-board issue a body names as a blocker (396).

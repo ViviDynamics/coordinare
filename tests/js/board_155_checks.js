@@ -180,6 +180,38 @@ check('the lane says what the count covers, and an empty lane says so', () => {
   assert.ok(html.indexOf('No merges in the last 24 hours.') !== -1);
 });
 
+// --- #365: the lane says when finished work items are archived on the GitHub project --- //
+
+check('one archive policy for every symphony is said once, in days', () => {
+  const note = doneLaneArchiveNote({symphonies: [{name: 'a', done_archive_days: 14}, {name: 'b', done_archive_days: 14}]});
+  assert.strictEqual(note, 'Work items are archived on the GitHub project after 14 days in Done.');
+  assert.strictEqual(doneLaneArchiveNote({symphonies: [{name: 'a', done_archive_days: 1}]}),
+    'Work items are archived on the GitHub project after 1 day in Done.');
+});
+
+check('archiving turned off says so', () => {
+  assert.strictEqual(doneLaneArchiveNote({symphonies: [{name: 'a', done_archive_days: 0}]}),
+    'Done work items are not archived on the GitHub project.');
+});
+
+check('symphonies with different policies are each named', () => {
+  const note = doneLaneArchiveNote({symphonies: [{name: 'a', done_archive_days: 14}, {name: 'b', done_archive_days: 0},
+    {name: 'c', done_archive_days: null}]});
+  assert.strictEqual(note, 'Done work items are archived on the GitHub project: a after 14 days, b never.');
+});
+
+check('a board with no GitHub Projects symphony says nothing about archiving', () => {
+  assert.strictEqual(doneLaneArchiveNote({symphonies: [{name: 'a', done_archive_days: null}]}), '');
+  assert.strictEqual(doneLaneArchiveNote({}), '');
+});
+
+check('the lane shows the archive note in its body and its summary tooltip, escaped', () => {
+  const html = doneLaneHtml([], NOW, 'Archived <b>after</b> 14 days.');
+  assert.ok(html.indexOf('<p class="muted done-lane-note" data-done-archive>Archived &lt;b&gt;after&lt;/b&gt; 14 days.</p>') !== -1);
+  assert.ok(html.indexOf('<summary title="Archived &lt;b&gt;after&lt;/b&gt; 14 days.">') !== -1);
+  assert.ok(doneLaneHtml([], NOW, '').indexOf('data-done-archive') === -1);
+});
+
 check('a card title in the lane is escaped', () => {
   const html = doneLaneHtml([{iid: 'x', label: '<script>alert(1)</script>', mergedAt: iso(HOUR), at: NOW - HOUR}], NOW);
   assert.ok(html.indexOf('<script>') === -1);

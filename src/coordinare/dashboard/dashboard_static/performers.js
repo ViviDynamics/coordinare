@@ -271,11 +271,28 @@ function doneLaneEntries(s, nowMs) {
 // The slot is absent on pages without the board, and then there is nothing to write.
 function setDoneLane(s, nowMs) {
   var slot = document.getElementById('done-lane-slot');
-  if (slot) slot.innerHTML = doneLaneHtml(doneLaneEntries(s, nowMs), nowMs);
+  if (slot) slot.innerHTML = doneLaneHtml(doneLaneEntries(s, nowMs), nowMs, doneLaneArchiveNote(s));
+}
+
+// 365: when the GitHub project archives a finished work item, in words. Each symphony on GitHub
+// Projects carries its days in Done (0: off); any other provider archives nothing and is left out.
+function doneLaneArchiveNote(s) {
+  var syms = (s && Array.isArray(s.symphonies) ? s.symphonies : []).filter(function(sym) {
+    return sym && typeof sym.done_archive_days === 'number';
+  });
+  if (!syms.length) return '';
+  var days = syms.map(function(sym) { return sym.done_archive_days; });
+  var same = days.every(function(d) { return d === days[0]; });
+  if (same && days[0] === 0) return 'Done work items are not archived on the GitHub project.';
+  if (same) return 'Work items are archived on the GitHub project after ' + days[0] + (days[0] === 1 ? ' day' : ' days') + ' in Done.';
+  return 'Done work items are archived on the GitHub project: ' + syms.map(function(sym) {
+    var d = sym.done_archive_days;
+    return String(sym.name || '') + (d === 0 ? ' never' : ' after ' + d + (d === 1 ? ' day' : ' days'));
+  }).join(', ') + '.';
 }
 
 // The Done lane. Collapsed by default: its summary carries the count, and the cards show when opened.
-function doneLaneHtml(entries, nowMs) {
+function doneLaneHtml(entries, nowMs, archiveNote) {
   var rows = entries.map(function(e) {
     // 233: the card's name opens its card page, when the address is one the page can name.
     var name = cardPageAddressOk(e.symphony, e.iid)
@@ -284,10 +301,12 @@ function doneLaneHtml(entries, nowMs) {
     return '<li>' + name + ' <span class="muted">merged ' + esc(fmtAgo(e.mergedAt, nowMs) || 'at an unknown time') + '</span></li>';
   }).join('');
   // Only the summary shows when collapsed. The note and the list sit in the opened body, so the fold holds.
-  return '<details class="done-lane" id="done-lane"><summary>Done (last 24h) ' +
+  // 365: the archive policy is in the body, and in the summary's tooltip so the closed lane says it too.
+  var archive = archiveNote ? '<p class="muted done-lane-note" data-done-archive>' + esc(archiveNote) + '</p>' : '';
+  return '<details class="done-lane" id="done-lane"><summary' + (archiveNote ? ' title="' + esc(archiveNote) + '"' : '') + '>Done (last 24h) ' +
     '<span class="swimlane-col-count">' + entries.length + '</span></summary>' +
     '<div class="done-lane-body">' +
-    '<p class="muted done-lane-note">' + esc(DONE_LANE_NOTE) + '</p>' +
+    '<p class="muted done-lane-note">' + esc(DONE_LANE_NOTE) + '</p>' + archive +
     (entries.length > 0 ? '<ul class="done-lane-list">' + rows + '</ul>' : '<p class="muted">No merges in the last 24 hours.</p>') +
     '</div></details>';
 }

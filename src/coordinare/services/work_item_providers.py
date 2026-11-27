@@ -15,28 +15,42 @@ Config accepts exactly the names registered here.
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING, Any
 
-from coordinare.services.board_provider import BoardProvider, GitHubProjectsBoardProvider
+from coordinare.services.board_provider import (
+    BoardProvider,
+    GitHubProjectsBoardProvider,
+    done_archive_days,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from coordinare.config import WorkItemsConfig
+    from coordinare.services.card_ownership import OwnershipPolicy
 
 #: The provider a symphony with no ``work_items`` block uses.
 DEFAULT_WORK_ITEM_PROVIDER = "github_projects"
 
 
-def _github_projects(_config: WorkItemsConfig | None, github: Any) -> BoardProvider:
+def _github_projects(
+    config: WorkItemsConfig | None, github: Any, provider_state: dict[str, Any] | None = None,
+    ownership: OwnershipPolicy | None = None,
+) -> BoardProvider:
     # The project is the symphony's own ``github_project_number``, which the
-    # GitHub service already carries, so the block needs no fields of its own.
-    return GitHubProjectsBoardProvider(github)
+    # GitHub service already carries. 365: the block's one GitHub setting is how
+    # long a work item stays in Done before the project archives it.
+    return GitHubProjectsBoardProvider(
+        github, archive_done_after_days=done_archive_days(config), provider_state=provider_state,
+        ownership=ownership,
+    )
 
 
 #: Provider name -> builder. The builder receives the block (``None`` when the
-#: symphony has none) and the symphony's GitHub service, the code host.
-WORK_ITEM_PROVIDERS: dict[str, Callable[[WorkItemsConfig | None, Any], BoardProvider]] = {
+#: symphony has none) and the symphony's GitHub service, the code host. A builder
+#: may also take ``provider_state`` (see ``build_board_provider``).
+WORK_ITEM_PROVIDERS: dict[str, Callable[..., BoardProvider]] = {
     DEFAULT_WORK_ITEM_PROVIDER: _github_projects,
 }
 
@@ -44,11 +58,24 @@ WORK_ITEM_PROVIDERS: dict[str, Callable[[WorkItemsConfig | None, Any], BoardProv
 WORK_ITEM_PROVIDER_NAMES: tuple[str, ...] = tuple(WORK_ITEM_PROVIDERS)
 
 
-def build_board_provider(work_items: WorkItemsConfig | None, *, github: Any) -> BoardProvider:
+def build_board_provider(
+    work_items: WorkItemsConfig | None,
+    *,
+    github: Any,
+    provider_state: dict[str, Any] | None = None,
+    ownership: OwnershipPolicy | None = None,
+) -> BoardProvider:
     """Build the board for a symphony's ``work_items`` block (``None``: GitHub Projects).
 
     *github* is the symphony's GitHub service. It is the code host for every
     provider, and the board itself for GitHub Projects.
+
+    *provider_state* (365) is the symphony's durable state for its provider, a dict the
+    daemon persists in its snapshot. Only the board for a symphony's own cycle is given
+    one, and only that board does housekeeping on the tracker (GitHub Projects archives
+    finished items). It goes only to a builder that takes it. *ownership* is the
+    symphony's card ownership policy (spec 160), so that housekeeping touches only the
+    items this coordinare owns; it too goes only to a builder that takes it.
     """
     name = work_items.provider if work_items is not None else DEFAULT_WORK_ITEM_PROVIDER
     builder = WORK_ITEM_PROVIDERS.get(name)
@@ -57,4 +84,10 @@ def build_board_provider(work_items: WorkItemsConfig | None, *, github: Any) -> 
         # for a caller that built a block by hand.
         msg = f"unknown work item provider {name!r}; known: {', '.join(WORK_ITEM_PROVIDER_NAMES)}"
         raise ValueError(msg)
-    return builder(work_items, github)
+    accepts = inspect.signature(builder).parameters
+    options: dict[str, Any] = {}
+    if provider_state is not None and "provider_state" in accepts:
+        options["provider_state"] = provider_state
+    if ownership is not None and "ownership" in accepts:
+        options["ownership"] = ownership
+    return builder(work_items, github, **options)
