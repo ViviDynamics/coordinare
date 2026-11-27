@@ -30,7 +30,6 @@ imported, because Progettare runs as a CLI and is not installed in coordinare.
 """
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import os
@@ -60,6 +59,7 @@ from coordinare.services.stage_jobs import (
     StageJobs,
     UnavailableStageJobs,
     never_started,
+    released,
 )
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
@@ -255,10 +255,11 @@ class ProgettareProvider:
         try:
             await self._jobs.start(launch)
         except BaseException:
-            # Nothing ran: the next dispatch finds no request and starts it afresh.
-            with contextlib.suppress(Exception):
-                await self._jobs.stop(directory)
-            (directory / runner.REQUEST_FILE).unlink(missing_ok=True)
+            # Once its container is confirmed gone, nothing ran: the next dispatch finds no
+            # request and starts it afresh. If it is not, the request stays, so the next
+            # poll asks Docker about it and the directory is never reused for a new start.
+            if await released(self._jobs, directory):
+                (directory / runner.REQUEST_FILE).unlink(missing_ok=True)
             raise
         logger.info("progettare.run_started", provider=self.name, request=ref, issue=request.ref)
         return StageJob(ref=ref, state=JobState.PENDING, detail="started")

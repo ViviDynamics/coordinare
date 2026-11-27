@@ -487,3 +487,81 @@ async def test_without_a_performer_progettare_is_retried_with_the_reason(
     ok, detail = await provider.health()
     assert not ok
     assert detail == "no performer image here"
+
+
+class _StartFailsButRuns:
+    """A start that raised although its container may run (a Docker that timed out)."""
+
+    def __init__(self, after: RunState | None) -> None:
+        self.after = after
+        self.started = False
+        self.stopped: list[Path] = []
+
+    async def start(self, launch: StageJobLaunch) -> str:
+        from coordinare.transport.base import TransportError
+
+        self.started = True
+        raise TransportError("docker run did not answer within 60 seconds")
+
+    async def state(self, job_dir: Path) -> RunState:
+        from coordinare.transport.base import TransportError
+
+        if not self.started:
+            return RunState.GONE  # nothing running before the start
+        if self.after is None:
+            raise TransportError("docker container inspect did not answer")
+        return self.after
+
+    async def stop(self, job_dir: Path) -> None:
+        self.stopped.append(job_dir)
+
+    async def probe(self, argv: Any, **kw: Any) -> tuple[int | None, str, str]:
+        return 0, "2026.11.2\n", ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after", [RunState.RUNNING, None])
+async def test_a_qare_start_that_may_have_run_keeps_its_attempt(tmp_path: Path, after: RunState | None) -> None:
+    from coordinare.transport.base import TransportError
+
+    jobs = _StartFailsButRuns(after)
+    provider = QAreProvider("qare", QAreProviderConfig(kind="qare", version="2026.11.44"),
+                            work_dir=tmp_path / "qare", github=_github(), jobs=jobs)
+    request = _qa_request()
+    with pytest.raises(TransportError):
+        await provider.submit(request, request.request_id(1))
+    job_dir = tmp_path / "qare" / request.request_id(1)
+    assert jobs.stopped == [job_dir]
+    # Kept, recorded as launched: the next poll asks Docker, the directory is never reused.
+    assert (job_dir / qare_runner.REQUEST_FILE).exists()
+    assert (job_dir / qare_runner.LAUNCH_FILE).exists()
+
+
+@pytest.mark.asyncio
+async def test_a_qare_start_whose_container_is_confirmed_gone_leaves_no_job(tmp_path: Path) -> None:
+    from coordinare.transport.base import TransportError
+
+    provider = QAreProvider("qare", QAreProviderConfig(kind="qare", version="2026.11.44"),
+                            work_dir=tmp_path / "qare", github=_github(), jobs=_StartFailsButRuns(RunState.GONE))
+    request = _qa_request()
+    with pytest.raises(TransportError):
+        await provider.submit(request, request.request_id(1))
+    assert not (tmp_path / "qare" / request.request_id(1)).exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("after", "kept"), [(RunState.RUNNING, True), (None, True), (RunState.GONE, False)])
+async def test_a_progettare_start_keeps_its_request_until_the_container_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, after: RunState | None, kept: bool,
+) -> None:
+    from coordinare.transport.base import TransportError
+
+    monkeypatch.setenv("PROGETTARE_423_TOKEN", TOKEN)
+    config = ProgettareProviderConfig(
+        kind="progettare", version="2026.11.2", runs_dir=str(tmp_path / "runs"), gh_token_env="PROGETTARE_423_TOKEN",
+    )
+    provider = ProgettareProvider("progettare", config, jobs=_StartFailsButRuns(after))
+    request = _work_item()
+    with pytest.raises(TransportError):
+        await provider.submit(request, request.request_id(1))
+    assert (tmp_path / "runs" / request.request_id(1) / progettare_runner.REQUEST_FILE).exists() is kept

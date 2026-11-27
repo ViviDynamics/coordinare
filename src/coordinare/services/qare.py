@@ -55,6 +55,7 @@ from coordinare.services.stage_jobs import (
     StageJobs,
     UnavailableStageJobs,
     never_started,
+    released,
 )
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
@@ -188,12 +189,16 @@ class QAreProvider:
             runner._write_atomic(job_dir / runner.REQUEST_FILE, json.dumps(spec, indent=2))
             await self._launch(request_id, job_dir, token)
         except BaseException:
-            # Nothing is recorded as running: stop a container that may have started, then
-            # take the directory away, so the next dispatch starts this request id afresh
-            # instead of finding a job that never existed.
-            with contextlib.suppress(Exception):
-                await self._jobs.stop(job_dir)
-            _remove_tree(job_dir)
+            # Stop a container that may have started. Once it is confirmed gone, take the
+            # directory away, so the next dispatch starts this request id afresh instead of
+            # finding a job that never existed. If it is not, keep the attempt as it is
+            # (recorded as launched): the next poll asks Docker about it, and a container
+            # that did start goes on with its own request, never a new one.
+            if await released(self._jobs, job_dir):
+                _remove_tree(job_dir)
+            elif (job_dir / runner.REQUEST_FILE).exists():
+                with contextlib.suppress(OSError):
+                    runner._write_atomic(job_dir / runner.LAUNCH_FILE, json.dumps({"unconfirmed": True}))
             raise
         logger.info("qare.job_started", job=request_id, repository=request.repository, head_sha=request.head_sha)
         return StageJob(ref=request_id, state=JobState.PENDING, detail="running")

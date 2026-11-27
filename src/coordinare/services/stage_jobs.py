@@ -287,7 +287,7 @@ class UnavailableStageJobs:
 
     async def state(self, job_dir: Path) -> RunState:
         del job_dir
-        raise TransportError(self.reason)
+        return RunState.GONE  # nothing ever runs here
 
     async def stop(self, job_dir: Path) -> None:
         del job_dir
@@ -298,6 +298,21 @@ class UnavailableStageJobs:
     ) -> tuple[int | None, str, str]:
         del argv, env_names, env, within
         raise TransportError(self.reason)
+
+
+async def released(jobs: StageJobs, job_dir: Path) -> bool:
+    """Stop the job's container, if any, and confirm it is gone.
+
+    False when its absence cannot be confirmed (it still runs, or Docker cannot say): the
+    caller must then keep the job's directory as it is, so a container that started after
+    all goes on with its own request and is never handed a new one through the same mount.
+    """
+    with contextlib.suppress(Exception):
+        await jobs.stop(job_dir)
+    try:
+        return await jobs.state(job_dir) is RunState.GONE
+    except Exception:
+        return False
 
 
 def _tail(text: str) -> str:
