@@ -130,6 +130,8 @@ def test_set_exact_override_clear_and_no_edit_save(page: Page, live_server_url: 
     page.once("dialog", lambda dialog: dialog.accept())
     page.locator('[data-persona-panel]:visible [data-sym-revert]').click()
     expect(page.locator('[data-persona-panel]:visible [data-sym-inherited]')).to_contain_text("Global instructions")
+    # #340: Saved described the form before this edit, so the edit clears it.
+    expect(page.locator("#sym-save-msg")).to_have_text("")
     _save_and_await_refresh(page)
     assert "implementer" not in calls[-1]["body"]["personas"]
     expect(page.locator('#sym-config-form [data-sym-summary]')).to_have_text("1 of 3 personas overridden: qa")

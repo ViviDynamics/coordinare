@@ -844,12 +844,13 @@ function cfgHandleSymphonySave(status, body, container, statusEl, newHash) {
     cfgFlash(statusEl, 'Saved', 'green');
     // Give the latest save its full feedback window. An older save's refresh must
     // not replace its Saved message, or reload an editor that replaced this form.
-    // #340: the refresh draws a new form, which takes the message the reader sees
-    // with it. Otherwise Saved would vanish one second after it appeared.
+    // #340: the refresh draws a new form, so it takes Saved with it when Saved is
+    // still showing. Otherwise the message would vanish one second after it appeared.
     clearTimeout(container._cfgReloadTimer);
     container._cfgReloadTimer = setTimeout(function() {
       if (container.isConnected === false || cfgHasUnsaved()) return;
-      cfgReloadSymphony({text: statusEl.textContent, color: statusEl.style ? statusEl.style.color : ''});
+      var saved = statusEl.textContent === 'Saved';
+      cfgReloadSymphony(saved ? {text: 'Saved', color: statusEl.style ? statusEl.style.color : ''} : null);
     }, 1000);
     return true;
   }
@@ -860,6 +861,14 @@ function cfgHandleSymphonySave(status, body, container, statusEl, newHash) {
   _cfgPending = null;
   cfgFlash(statusEl, cfgSymphonyRefusal(status, body), 'red');
   return false;
+}
+
+// #340: a save or delete whose review opens starts from the form as the reader sees it now. An
+// earlier save's refresh would redraw the form under the review and drop its answer, so it is
+// cancelled, and that save's Saved message no longer describes the form.
+function cfgSymphonyActionStarts(form, statusEl) {
+  clearTimeout(form._cfgReloadTimer);
+  if (statusEl && statusEl.textContent === 'Saved') cfgFlash(statusEl, '', 'muted');
 }
 
 // 143 second review: a save that gets no answer in time is reported, and the form unlocks.

@@ -92,6 +92,7 @@ def test_shipped_symphony_persona_node_checks() -> None:
         shipped_function("app", "symValidateAndSave"),
         shipped_function("config", "cfgLoadSymphony"),
         *(shipped_function("config", name) for name in ("cfgRememberSymphony", "cfgSymphonyHasDrafts")),
+        shipped_function("config", "cfgSymphonyActionStarts"),
         *(shipped_function("config", name) for name in ("cfgSecretChanged", "cfgDiffText", "cfgDiffRows")),
         (_ROOT / "tests/js/symphony_181_checks.js").read_text(),
     ])

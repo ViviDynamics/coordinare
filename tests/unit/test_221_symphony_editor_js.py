@@ -42,8 +42,10 @@ def test_the_symphony_form_functions_pass_their_checks_under_node(tmp_path: Path
         _function(helpers, "esc"),
         *(_function(config, name) for name in (
             "cfgDiffText", "cfgDiffRows", "cfgSecretChanged", "cfgSymphonyRefusal",
-            "cfgHandleSymphonySave", "cfgReloadSymphony", "cfgInput",
+            "cfgHandleSymphonySave", "cfgReloadSymphony", "cfgSymphonyActionStarts", "cfgChanged", "cfgInput",
         )),
+        _function(app, "symSave"),
+        _function(app, "symDelete"),
         _function(app, "symSecretRow"),
         _function(app, "symCopy"),
         _function(app, "symRequestBody"),

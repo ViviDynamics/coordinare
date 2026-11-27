@@ -791,6 +791,7 @@ function symSave(btn) {
   if (!changed.length) { cfgFlash(statusEl, 'No changes to save', 'muted'); return; }
   var body = symRequestBody(entries, _symBase);
   var pending = cfgPendingFor(form, changed);
+  cfgSymphonyActionStarts(form, statusEl);
   cfgShowReview(form, cfgDiffRows(changed), function() {
     return symValidateAndSave(name, body, pending, form, statusEl, btn);
   });
@@ -802,6 +803,7 @@ function symDelete(btn) {
   var statusEl = form.querySelector('[data-status]');
   var name = form.getAttribute('data-symphony') || '';
   var rows = [{label: 'Symphony', before: name, after: '(deleted)', secret: false, cleared: false}];
+  cfgSymphonyActionStarts(form, statusEl);
   cfgShowReview(form, rows, function() {
     _cfgPending = null;
     cfgPut('/api/symphonies/' + encodeURIComponent(name),

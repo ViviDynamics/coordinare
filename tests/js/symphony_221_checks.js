@@ -157,6 +157,46 @@ cfgHandleSymphonySave(200, {}, form, status, '"fourth"');
 form.isConnected = false;
 advanceTo(3900);
 check('a replaced form cannot refresh the current editor', reloads === 1);
+
+// #340: only the save's own message is carried. Anything shown since is not the save's outcome.
+form.isConnected = true;
+cfgHandleSymphonySave(200, {}, form, status, '"fifth"');
+status.textContent = 'No changes to save';
+advanceTo(4900);
+check('a later message is not carried as the save result', reloads === 2 && notices[1] === null,
+  JSON.stringify(notices));
+
+// #340: a new save or delete on the form cancels an earlier save's refresh, which would redraw the
+// form under the review and drop its answer, and clears that save's Saved message.
+var reviews = [];
+cfgClearErrors = function() {};
+cfgPendingFor = function() { return {}; };
+cfgShowReview = function(container, rows) { reviews.push(rows); };
+cfgEntries = function() { return [{key: 'enabled', after: false, changed: true}]; };
+_symBase = {overrides: {}, personas: {}};
+var actionForm = {
+  isConnected: true,
+  closest: function() { return actionForm; },
+  querySelector: function(selector) { return selector === '[data-status]' ? actionStatus : null; },
+  getAttribute: function() { return 'demo'; },
+};
+var actionStatus = {textContent: ''};
+var saveButton = {closest: function() { return actionForm; }};
+[['save', symSave], ['delete', symDelete]].forEach(function(action) {
+  cfgHandleSymphonySave(200, {}, actionForm, actionStatus, '"sixth"');
+  var before = reloads;
+  action[1](saveButton);
+  check('opening a ' + action[0] + ' review clears the earlier Saved', actionStatus.textContent === '',
+    actionStatus.textContent);
+  advanceTo(now + 1000);
+  check('opening a ' + action[0] + ' review cancels the earlier refresh', reloads === before);
+});
+cfgEntries = function() { return [{key: 'enabled', after: true, changed: false}]; };
+cfgHandleSymphonySave(200, {}, actionForm, actionStatus, '"seventh"');
+symSave(saveButton);
+advanceTo(now + 1000);
+check('a Save with nothing to save keeps the refresh', reloads === 3 && actionStatus.textContent === 'No changes to save',
+  reloads + ' ' + actionStatus.textContent);
 _cfgSymReload = null;
 
 if (failures.length) throw new Error(failures.join(' | '));
