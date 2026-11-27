@@ -276,7 +276,7 @@ class _Run:
 
     async def _call(self, argv: list[str], *, cwd: Path, env: dict[str, str], step: str) -> tuple[int | None, str, str]:
         """Run one command. ``None`` as the code when it could not be started."""
-        name = f"coordinare-qare-{hashlib.sha256(str(self.job_dir).encode()).hexdigest()[:12]}-{step.split()[0]}"
+        name = f"coordinare-qare-{hashlib.sha256(str(self.job_dir).encode()).hexdigest()[:12]}-{step.split(maxsplit=1)[0]}"
         named = any(NAME_PLACEHOLDER in part for part in argv)
         argv = [part.replace(NAME_PLACEHOLDER, name) for part in argv]
         remaining = self.deadline - time.monotonic()
