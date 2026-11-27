@@ -252,6 +252,12 @@ criteria from the issue body, so a question about them is answered by editing th
 acceptance section; Progettare reads other answers from the issue's comments. An operator
 restart of the architecting stage also starts a new run.
 
+### Timing
+
+A run can take as long as `timeout_seconds` (an hour by default) and reports no progress
+while it works. If the architect's `timeout_seconds` or `dispatcher_dedup.stall_timeout_seconds`
+is set, set it above Progettare's `timeout_seconds`.
+
 ### Work items that are not GitHub issues
 
 Progettare plans GitHub issues only. A card whose work item is not one (no GitHub issue URL)
