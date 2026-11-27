@@ -42,6 +42,7 @@ has ever heard of an issue number.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
@@ -52,9 +53,51 @@ from coordinare.services.card_identity import CardIdentityMap
 from coordinare.services.work_items import unlisted_text_blockers
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
 logger = structlog.get_logger(__name__)
+
+#: 365: GitHub Projects archives a work item after this many days in Done, unless a
+#: symphony's ``work_items.archive_done_after_days`` says otherwise. 0 turns it off.
+DEFAULT_ARCHIVE_DONE_AFTER_DAYS = 14
+#: The longest wait config accepts, ten years.
+MAX_ARCHIVE_DONE_AFTER_DAYS = 3650
+#: How many items one poll archives at most, so a first run over an old board is spread out.
+MAX_ARCHIVES_PER_POLL = 20
+#: Where the GitHub Projects provider keeps, in its durable provider state, when it first
+#: saw each item in Done: ``{item_id: ISO 8601}``. Used only when GitHub gives no time for
+#: the status change.
+DONE_FIRST_SEEN_KEY = "done_first_seen"
+
+
+def done_archive_days(work_items: Any) -> int:
+    """365: the days in Done after which a symphony's GitHub project archives an item. 0 is off.
+
+    *work_items* is the symphony's ``work_items`` block, or ``None`` when it has none.
+    """
+    days = getattr(work_items, "archive_done_after_days", None)
+    return days if isinstance(days, int) and not isinstance(days, bool) else DEFAULT_ARCHIVE_DONE_AFTER_DAYS
+
+
+def symphony_done_archive_days(symphony: Any) -> int | None:
+    """365: what the board says about archiving a symphony's Done items.
+
+    The days for a symphony on GitHub Projects (0 when it is off), ``None`` for any other
+    provider, which archives nothing.
+    """
+    work_items = getattr(symphony, "work_items", None)
+    provider = getattr(work_items, "provider", "github_projects") if work_items is not None else "github_projects"
+    return done_archive_days(work_items) if provider == "github_projects" else None
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 #: A move target, not a column (#396): the item is not work and leaves the board's
 #: queue for good. It is a state rather than a sixth operation so the protocol
@@ -268,9 +311,23 @@ class GitHubProjectsBoardProvider:
     will not have issues, and the translation costs one line each.
     """
 
-    def __init__(self, github: Any, repo: str = "") -> None:
+    def __init__(
+        self,
+        github: Any,
+        repo: str = "",
+        *,
+        archive_done_after_days: int = 0,
+        provider_state: dict[str, Any] | None = None,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
         self._github = github
         self._repo = repo
+        # 365: archiving runs only on the board the daemon builds for a symphony's own cycle,
+        # which is the one handed durable provider state. Every other board (start checks,
+        # restart reconciliation, the fallback in ``board_of``) reads and never archives.
+        self.archive_done_after_days = archive_done_after_days
+        self.provider_state = provider_state
+        self._now = now or (lambda: datetime.now(UTC))
 
     @property
     def repo(self) -> str:
@@ -329,8 +386,63 @@ class GitHubProjectsBoardProvider:
 
     async def poll_board(self) -> dict[str, Any]:
         board: dict[str, Any] = await self._github.poll_board()
+        await self._archive_finished(board)
         states = await self._blocker_states(board)
         return {**board, "blocker_states": states} if states else board
+
+    async def _archive_finished(self, board: dict[str, Any]) -> None:
+        """365: archive the items proven to have been in Done for the configured days.
+
+        GitHub Projects keeps finished items in Done for ever. The proof of age is GitHub's
+        own time for the last status change; where GitHub gives none, it is the first time
+        this provider saw the item in Done, kept in the durable provider state. An item that
+        is not in Done this poll is never archived, and leaving Done restarts its clock. A
+        failed archive is logged and tried again on a later poll; it never fails the read.
+        """
+        days = self.archive_done_after_days
+        state = self.provider_state
+        archive = getattr(self._github, "archive_project_item", None)
+        if days <= 0 or state is None or not callable(archive):
+            return
+        snapshot = board.get("snapshot")
+        done = snapshot.get("DONE") if isinstance(snapshot, dict) else None
+        done_ids = [str(item) for item in done] if isinstance(done, list) else []
+        github_times = board.get("status_updated_at")
+        github_times = github_times if isinstance(github_times, dict) else {}
+        seen = state.get(DONE_FIRST_SEEN_KEY)
+        if not isinstance(seen, dict):
+            seen = state[DONE_FIRST_SEEN_KEY] = {}
+        now = self._now()
+        for item in [item for item in seen if item not in done_ids]:
+            del seen[item]
+        archived = 0
+        for item in done_ids:
+            since = _parse_time(github_times.get(item))
+            source = "github_status_time"
+            if since is None:
+                since = _parse_time(seen.get(item))
+                source = "first_seen_in_done"
+                if since is None:
+                    seen[item] = now.isoformat()
+                    continue
+            if now - since < timedelta(days=days) or archived >= MAX_ARCHIVES_PER_POLL:
+                continue
+            try:
+                await archive(item)
+            except Exception as exc:
+                logger.warning("board.done_item_archive_failed", card_id=item, error=str(exc))
+                continue
+            archived += 1
+            seen.pop(item, None)
+            numbers = board.get("issue_numbers")
+            logger.info(
+                "board.done_item_archived",
+                card_id=item,
+                issue_number=numbers.get(item) if isinstance(numbers, dict) else None,
+                days_in_done=round((now - since).total_seconds() / 86400, 1),
+                after_days=days,
+                since_source=source,
+            )
 
     async def _blocker_states(self, board: dict[str, Any]) -> dict[int, str]:
         """The state of each off-board issue a body names as a blocker (396).

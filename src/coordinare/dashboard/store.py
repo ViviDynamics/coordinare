@@ -30,6 +30,7 @@ from coordinare.lib.clarifications import annotate_clarifications
 from coordinare.lib.redaction import clip_session_error
 from coordinare.services.activity_log import ActivityLog
 from coordinare.services.block_cause import block_cause
+from coordinare.services.board_provider import symphony_done_archive_days
 from coordinare.services.bootstrap_status import symphony_view
 from coordinare.services.config_seed import recovery_health_row
 from coordinare.services.merge_review_gate import merge_review_view
@@ -1347,6 +1348,8 @@ class DashboardStore:
                 "cards_queued": counts["queued"],
                 "cards_paused": counts["paused"],
                 "spend_week": week_spend(token_usage, sym_name),
+                # 365: the Done lane says when this symphony's project archives finished items.
+                "done_archive_days": symphony_done_archive_days(sym_cfg),
                 "ownership_hint": DashboardStore._symphony_hint(effective),
                 "idle_reason": board_idle_explanation(
                     getattr(sym_state, "board_snapshot", None),

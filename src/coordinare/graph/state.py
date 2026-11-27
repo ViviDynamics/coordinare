@@ -524,6 +524,8 @@ class CoordinareState(TypedDict, total=False):
     # 147: the card lifecycle log behind the pipeline timeline (services/card_lifecycle).
     # Typed Any for the same reason as attempt_log; it is persisted with the snapshot.
     card_lifecycle: Any
+    # 365: each symphony's durable work item provider state, persisted with the snapshot.
+    work_item_provider_state: dict[str, dict[str, Any]]
     # 129: the run-transcript collector (None when transcripts are not wired).
     transcript_collector: Any
     # 131: the conductor's own model calls, transcribed through this log.

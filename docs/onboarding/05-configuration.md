@@ -86,6 +86,30 @@ symphonies:
       # gate configs, per-role overrides, etc.
 ```
 
+### Done work items on GitHub Projects
+
+A GitHub project keeps finished items in Done for ever. Coordinare archives a work item on
+the symphony's GitHub project once it has been in Done for `work_items.archive_done_after_days`
+days (default 14). Set it to `0` to turn archiving off:
+
+```yaml
+symphonies:
+  - name: website
+    github_project_number: 2
+    work_items:
+      archive_done_after_days: 30   # 0 turns it off; range 0-3650
+```
+
+- The time in Done is GitHub's own time for the item's last status change. Where GitHub gives
+  none, it is the time Coordinare first saw the item in Done, which is kept in the state
+  snapshot across restarts.
+- Only items in Done are archived. An item moved out of Done starts again when it returns.
+- Archiving runs during the symphony's board check, at most 20 items per check. Each archive is
+  logged as `board.done_item_archived` (a failure as `board.done_item_archive_failed`, retried
+  on a later check).
+- Archived items leave the board and can be restored from the project's archive on GitHub.
+- The dashboard's Done lane states the policy.
+
 ### Required closer transport at startup
 
 An enabled `performers.closer` is lifecycle-critical. If its configured wire-protocol

@@ -36,6 +36,7 @@ from coordinare.services.observer import OBSERVER_TRIGGERS
 from coordinare.services.otlp_settings import ObservabilityConfig
 from coordinare.services.retune import EFFORT_RANK, RETUNE_KNOBS
 from coordinare.services.run_transcript import _within
+from coordinare.services.board_provider import DEFAULT_ARCHIVE_DONE_AFTER_DAYS, MAX_ARCHIVE_DONE_AFTER_DAYS
 from coordinare.services.work_item_providers import (
     DEFAULT_WORK_ITEM_PROVIDER,
     WORK_ITEM_PROVIDER_NAMES,
@@ -2556,6 +2557,11 @@ class WorkItemsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: str = DEFAULT_WORK_ITEM_PROVIDER
+    # 365: GitHub Projects archives a work item after this many days in Done; 0 turns it off.
+    # Archived items leave the project's board and can be restored from its archive on GitHub.
+    archive_done_after_days: int = Field(
+        default=DEFAULT_ARCHIVE_DONE_AFTER_DAYS, ge=0, le=MAX_ARCHIVE_DONE_AFTER_DAYS,
+    )
 
     @field_validator("provider")
     @classmethod

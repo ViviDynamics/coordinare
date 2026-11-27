@@ -30,7 +30,7 @@ _CommentId = int | Annotated[str, StringConstraints(strip_whitespace=False)]
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 40  # 351: persist the independently accepted environment contract
+CURRENT_SCHEMA_VERSION: int = 41  # 365: persist each symphony's work item provider state
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -822,6 +822,10 @@ class WorkflowSnapshot(BaseModel):
     # [event, ...]}}, bounded per symphony and per card (services/card_lifecycle).
     # A malformed entry is dropped when the log loads, never a snapshot failure.
     card_lifecycle: dict[str, dict[str, list[dict[str, Any]]]] = Field(default_factory=dict)
+    # 365 (schema v41+): each symphony's durable work item provider state, {symphony: {...}}.
+    # GitHub Projects keeps when it first saw each item in Done, the fallback proof of age for
+    # archiving. Older snapshots load with {} and the first poll starts the record again.
+    work_item_provider_state: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class StateLoadError(ValueError):

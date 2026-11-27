@@ -32,7 +32,7 @@ def _v35_snapshot(*, env_cache: dict[str, Any] | None = None) -> dict[str, Any]:
 
 def test_the_current_schema_is_v40() -> None:
     # 351 stores accepted contracts and execution reports; v36 migration defaults remain tested below.
-    assert CURRENT_SCHEMA_VERSION == 40
+    assert CURRENT_SCHEMA_VERSION == 41
 
 
 def test_a_v35_snapshot_with_card_lifecycle_loads_under_v36() -> None:
