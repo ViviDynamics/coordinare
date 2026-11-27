@@ -88,7 +88,8 @@ async def test_issues_are_read_with_the_owners_github() -> None:
 
 
 class _FullSlots:
-    pools: dict[str, Any] = {}
+    def __init__(self) -> None:
+        self.pools: dict[str, Any] = {}
 
     def acquire(self, stage: str, card_id: str, config: Any = None) -> None:
         raise AssertionError("a provider-backed stage takes no performer slot")
