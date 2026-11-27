@@ -132,9 +132,10 @@ var form = {isConnected: true};
 var status = {textContent: ''};
 var reloads = 0;
 var unsaved = false;
+var notices = [];
 cfgFlash = function(el, text) { el.textContent = text; };
 cfgHasUnsaved = function() { return unsaved; };
-_cfgSymReload = function() { reloads += 1; status.textContent = ''; };
+_cfgSymReload = function(notice) { reloads += 1; notices.push(notice); status.textContent = ''; };
 cfgHandleSymphonySave(200, {}, form, status, '"first"');
 advanceTo(900);
 cfgHandleSymphonySave(200, {}, form, status, '"second"');
@@ -142,6 +143,10 @@ advanceTo(1000);
 check('an older refresh cannot erase the newer Saved message', reloads === 0 && status.textContent === 'Saved');
 advanceTo(1900);
 check('the latest save still refreshes after its own feedback window', reloads === 1);
+// #340: the refresh draws a new form, so it is handed the message to show there. Without it the
+// Saved message lived for one second and then the redrawn form came up blank.
+check('the refresh keeps the Saved message on the redrawn form', notices.length === 1 && notices[0] && notices[0].text === 'Saved',
+  JSON.stringify(notices));
 
 cfgHandleSymphonySave(200, {}, form, status, '"third"');
 unsaved = true;

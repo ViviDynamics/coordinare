@@ -64,6 +64,20 @@ def _save(page: Page) -> None:
     expect(page.locator("#sym-save-msg")).to_have_text("Saved")
 
 
+def _save_and_await_refresh(page: Page) -> None:
+    """Save, then wait for the form the post-save refresh draws, which must still say Saved.
+
+    #340: one second after a save, the form is drawn again from the server. Before the fix the
+    redrawn form came up with an empty message, so "Saved" lived for one second and an assertion
+    polling on a slow runner could step over it. Marking the current form first makes the wait
+    exact: it ends when a different form element is in the page, however late that happens.
+    """
+    page.evaluate("document.querySelector('#sym-config-form')._before340 = true")
+    _save(page)
+    page.wait_for_function("() => { const f = document.querySelector('#sym-config-form'); return !!f && !f._before340; }")
+    expect(page.locator("#sym-save-msg")).to_have_text("Saved")
+
+
 @pytest.mark.e2e
 @pytest.mark.parametrize("theme", ["light", "dark"])
 def test_summary_inheritance_and_link_to_shared_config_editor(page: Page, live_server_url: str,
@@ -116,7 +130,7 @@ def test_set_exact_override_clear_and_no_edit_save(page: Page, live_server_url: 
     page.once("dialog", lambda dialog: dialog.accept())
     page.locator('[data-persona-panel]:visible [data-sym-revert]').click()
     expect(page.locator('[data-persona-panel]:visible [data-sym-inherited]')).to_contain_text("Global instructions")
-    _save(page)
+    _save_and_await_refresh(page)
     assert "implementer" not in calls[-1]["body"]["personas"]
     expect(page.locator('#sym-config-form [data-sym-summary]')).to_have_text("1 of 3 personas overridden: qa")
 
