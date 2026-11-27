@@ -24,6 +24,19 @@ JSON_ONLY_ROLES = frozenset({
 
 _QA_REMINDERS = (
     "QA contract reminder: include a non-empty `verification_steps` array.",
+    # 391: models that found the bug still lost it, writing failures as strings
+    # and leaving failed commands out of executed_checks. State the shapes.
+    (
+        'Record every command you ran in `executed_checks`, including the ones that failed: '
+        '"executed_checks": [{"command": "<exact command>", "exit_code": <integer>, '
+        '"output": "<short excerpt>"}]. A failing command is evidence too.'
+    ),
+    (
+        'Every defect you found goes in `failures`, one object per defect: '
+        '"failures": [{"criterion": "<acceptance criterion>", "expected": "<expected behaviour>", '
+        '"actual": "<what you observed>", "test": "<command or test that shows it>"}]. '
+        "Set `passed` to false when `failures` is not empty."
+    ),
     "For bug fixes, label steps as verification (not reproduction) unless explicitly asked.",
     "Set `visual_validation_required=true` for UI/UX/visual changes and capture at least one artifact in `visual_evidence` for those tasks.",
     "Include `visual_evidence` entries when screenshots/GIFs/videos/artifacts are available.",

@@ -14,6 +14,10 @@ How-to guides for running coordinare + performer in production.
 
 - [LiteLLM Proxy for the `claude_code` Backend](litellm-proxy.md) — route the `claude_code` performer backend through an operator-supplied LiteLLM proxy (spec 073).
 
+## Benchmarks
+
+- [Persona bench](persona-bench.md): grade every persona on a backend and model against planted fixtures, with payloads built the way production builds them.
+
 ## Deployment topology
 
 - [Containerized Performers](containerized-performers.md) — isolate performer execution from the coordinare host.
