@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from performer.security_scanner import (
+    EXTENSIONLESS_SUFFIX,
     ScanDiagnostic,
     ScannerSetupError,
     scan_diff,
@@ -27,7 +28,7 @@ SCAN_TOOLS = ("semgrep", "bandit")
 _GIT = shutil.which("git") or "/usr/bin/git"
 _GIT_TIMEOUT_SECONDS = 120
 _REGULAR_MODES = {"100644", "100755"}
-_EXPORT_DEFAULT_SUFFIX = ".scanned"
+_EXPORT_DEFAULT_SUFFIX = EXTENSIONLESS_SUFFIX
 
 
 def _fail(reason: str) -> None:

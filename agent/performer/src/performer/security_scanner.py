@@ -5,10 +5,13 @@ from __future__ import annotations
 # A missing tool, abnormal exit, malformed JSON or scan error fails closed.
 # Logs contain only counts and severities, never tool output or source text.
 
+import ast
 import json
 import os
+import re
 import stat
 import subprocess
+import warnings
 from pathlib import Path
 
 import structlog
@@ -47,6 +50,24 @@ _OK_EXIT_CODES = {0, 1}
 _TRUSTED_BINARY_DIRS = (Path("/usr/local/bin"), Path("/usr/bin"))
 _UNTRUSTED_WRITE_BITS = stat.S_IWGRP | stat.S_IWOTH
 _ROOT_UID = 0
+# bandit parses every target as Python and reports a file that does not parse
+# as a scan error, so a doc beside the code held the floor (#415). bandit gets
+# only Python sources; semgrep keeps every target.
+_PYTHON_SUFFIXES = frozenset({".py", ".pyi", ".pyw"})
+# The suffix security_floor gives an exported file whose name has none. Only
+# such files are classified by shebang or content; a file with any other
+# suffix is not Python, even when it parses as Python (.ini, .json).
+EXTENSIONLESS_SUFFIX = ".scanned"
+_EXTENSIONLESS_SUFFIXES = frozenset({"", EXTENSIONLESS_SUFFIX})
+# A Python interpreter's basename: python, python3, python3.14t, pythonw,
+# python3-dbg, pypy3. Not ipython, python-tools, or a directory named python.
+_PYTHON_INTERPRETER = re.compile(rb"(?:python|pypy)[0-9.]*[a-z]?(?:-dbg|-debug)?")
+# Shebang words split on whitespace, quotes, "=" and backslashes, so every env
+# form (-S "python3 -u", --split-string=python3, -P DIR python3) yields its words.
+_SHEBANG_WORD_SEPARATORS = re.compile(rb"[\s\"'=\\]+")
+_UTF8_BOM = b"\xef\xbb\xbf"
+# A larger extensionless file is not parsed here; it goes to bandit (fail closed).
+_CONTENT_CHECK_MAX_BYTES = 1024 * 1024
 SCANNER_INSTALLATION_HELP = (
     "Install semgrep and bandit system-wide as root-owned executables in "
     "/usr/local/bin or /usr/bin, or use the container transport."
@@ -105,7 +126,7 @@ class ScannerSetupError(ScannerError):
 
 
 def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
-    """Run semgrep + bandit over ``changed_files`` under ``repo_root``.
+    """Run semgrep over ``changed_files`` and bandit over their Python files.
 
     Returns a list of normalized findings (the spec-022 schema). Returns ``[]``
     for a clean scan. Raises :class:`ScannerError` on tool-missing / crash /
@@ -116,7 +137,11 @@ def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
 
     findings: list[Finding] = []
     findings.extend(_run_semgrep(files, repo_root))
-    findings.extend(_run_bandit(files, repo_root))
+    python_files = _python_targets(files, repo_root)
+    if files and not python_files:
+        # Nothing for bandit to read, but a missing bandit still holds the floor.
+        _resolve_binary("bandit")
+    findings.extend(_run_bandit(python_files, repo_root))
 
     # Summary-only logging (FR-011): counts by severity, never raw text.
     severity_counts: dict[str, int] = {}
@@ -129,6 +154,60 @@ def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
         severities=severity_counts,
     )
     return findings
+
+
+def _python_targets(files: list[str], repo_root: Path) -> list[str]:
+    """The targets bandit scans.
+
+    A Python suffix always goes to bandit, so a Python file it cannot parse
+    still fails the scan. A file with no suffix goes to bandit when it has a
+    python shebang, when it parses as Python (``uv run --script`` files,
+    ``SConstruct``), or when it is too large to check here. Any other suffix,
+    and any file with a NUL byte, is left to semgrep.
+    """
+    return [name for name in files if _is_python(repo_root / name)]
+
+
+def _is_python(path: Path) -> bool:
+    suffix = path.suffix.lower()
+    if suffix in _PYTHON_SUFFIXES:
+        return True
+    if suffix not in _EXTENSIONLESS_SUFFIXES:
+        return False
+    try:
+        with path.open("rb") as handle:
+            source = handle.read(_CONTENT_CHECK_MAX_BYTES + 1)
+    except OSError:
+        return False
+    if _has_python_shebang(source.removeprefix(_UTF8_BOM)):
+        return True
+    return b"\0" not in source and (
+        len(source) > _CONTENT_CHECK_MAX_BYTES or _parses_as_python(source)
+    )
+
+
+def _has_python_shebang(source: bytes) -> bool:
+    """True when any word of the shebang line names a Python interpreter."""
+    if not source.startswith(b"#!"):
+        return False
+    line = source[2:].split(b"\n", 1)[0]
+    return any(
+        _PYTHON_INTERPRETER.fullmatch(word.rsplit(b"/", 1)[-1])
+        for word in _SHEBANG_WORD_SEPARATORS.split(line) if word
+    )
+
+
+def _parses_as_python(source: bytes) -> bool:
+    try:
+        # Parsing never runs the code. Its warnings would print source fragments.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ast.parse(source)
+    except (SyntaxError, ValueError):
+        return False
+    except (RecursionError, MemoryError):
+        return True  # Too deep or too large to check here: bandit decides.
+    return True
 
 
 def _trusted_executable(candidate: Path) -> bool:
