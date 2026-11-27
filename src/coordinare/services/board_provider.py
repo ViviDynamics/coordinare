@@ -50,6 +50,14 @@ from coordinare.services.card_identity import CardIdentityMap
 
 logger = structlog.get_logger(__name__)
 
+#: A move target, not a column (#396): the item is not work and leaves the board's
+#: queue for good. It is a state rather than a sixth operation so the protocol
+#: keeps the surface specs 149 and 153 pinned. A provider lands it wherever its
+#: tracker records "will not do": GitHub Projects closes the issue and moves the
+#: item to DONE, and a tracker with no such state lists it under DONE. Never a
+#: listing's status, so no listing reports it.
+NOT_WORK = "NOT_WORK"
+
 
 @dataclass(frozen=True, slots=True)
 class MoveOutcome:
@@ -179,8 +187,24 @@ class GitHubProjectsBoardProvider:
         # GitHub Projects has no workflow rules, so a move that reaches the API
         # succeeds. Anything else raises, and raising is right: that is a fault,
         # not the board declining.
+        if status == NOT_WORK:
+            await self._close_issue(card_id)
+            # Closing the issue does not move the project item: without this the
+            # next poll still sees the card in TODO and admits it again.
+            status = "DONE"
         await self._github.move_card(card_id, status)
         return MoveOutcome.ok()
+
+    async def _close_issue(self, card_id: str) -> None:
+        """Close the card's issue, as the assessor's decline always has (410).
+
+        A failed close is logged and the item still moves to DONE, so the card
+        leaves the queue either way.
+        """
+        try:
+            await self._github.close_issue(self._issue_id(card_id))
+        except Exception as exc:
+            logger.warning("board.not_work_close_failed", card_id=card_id, error=str(exc))
 
     async def get_card(self, card_id: str) -> dict[str, Any]:
         card: dict[str, Any] = await self._github.get_issue_details(self._issue_id(card_id))

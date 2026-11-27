@@ -30,7 +30,7 @@ from typing import Any
 
 import structlog
 
-from coordinare.services.board_provider import MoveOutcome
+from coordinare.services.board_provider import NOT_WORK, MoveOutcome
 from coordinare.services.work_items import OPEN, UNKNOWN, Blocker, WorkItem, safe_reference
 
 logger = structlog.get_logger(__name__)
@@ -198,6 +198,9 @@ class InMemoryBoardProvider:
 
     async def move_card(self, card_id: str, status: str) -> MoveOutcome:
         item = self._item(card_id)
+        if status == NOT_WORK:
+            # 396: this tracker has no "will not do" state, so the item is done.
+            status = "DONE"
         current = self._states.get(item.native_state, "")
         if current == status:
             return MoveOutcome.ok()  # already there: nothing to write

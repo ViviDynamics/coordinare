@@ -1,0 +1,93 @@
+"""Issue #396, second slice: the last work item writes, and blocker state from the listing.
+
+The assessor's "not work" verdict, the QA evidence comment and the state of an
+off-board blocker each went to GitHub directly. Each now goes through the work
+item provider; on GitHub Projects the adapter makes the same GitHub call.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+import pytest
+
+from coordinare.services.board_provider import (
+    NOT_WORK,
+    BoardProvider,
+    GitHubProjectsBoardProvider,
+    MoveOutcome,
+)
+from coordinare.services.card_identity import CardIdentityMap
+from tests.unit.test_400_board_provider_conformance import PROVIDERS
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+class _GitHub(CardIdentityMap):
+    """Records the GitHub calls the adapter makes, as the real service would receive them."""
+
+    def __init__(self, fail_close: bool = False) -> None:
+        self.calls: list[tuple[str, ...]] = []
+        self._fail_close = fail_close
+        self._remember_content_ids({"PVTI_1": "I_node1"})
+
+    async def close_issue(self, issue_id: str) -> dict[str, Any]:
+        self.calls.append(("close_issue", issue_id))
+        if self._fail_close:
+            raise RuntimeError("graphql down")
+        return {"closed": True}
+
+    async def move_card(self, item_id: str, status: str) -> None:
+        self.calls.append(("move_card", item_id, status))
+
+    async def add_comment(self, subject_id: str, body: str) -> dict[str, Any]:
+        self.calls.append(("add_comment", subject_id, body))
+        return {}
+
+
+# --- "not work" on the seam ----------------------------------------------------------------------
+
+
+class TestNotWork:
+    def test_it_is_a_move_target_and_not_a_sixth_operation(self) -> None:
+        assert NOT_WORK == "NOT_WORK"
+        assert not hasattr(BoardProvider, "close_card")
+        assert not hasattr(BoardProvider, "mark_not_work")
+
+    @pytest.mark.asyncio
+    async def test_github_projects_closes_the_issue_and_moves_the_item_to_done(self) -> None:
+        github = _GitHub()
+        outcome = await GitHubProjectsBoardProvider(github).move_card("PVTI_1", NOT_WORK)
+
+        assert outcome == MoveOutcome.ok()
+        assert github.calls == [("close_issue", "I_node1"), ("move_card", "PVTI_1", "DONE")]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_close_still_moves_the_item_out_of_todo(self) -> None:
+        """As before: the next poll would admit a card left in To Do again."""
+        github = _GitHub(fail_close=True)
+        await GitHubProjectsBoardProvider(github).move_card("PVTI_1", NOT_WORK)
+
+        assert github.calls == [("close_issue", "I_node1"), ("move_card", "PVTI_1", "DONE")]
+
+    @pytest.mark.asyncio
+    async def test_any_other_move_is_forwarded_unchanged(self) -> None:
+        github = _GitHub()
+        await GitHubProjectsBoardProvider(github).move_card("PVTI_1", "BACKLOG")
+
+        assert github.calls == [("move_card", "PVTI_1", "BACKLOG")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("harness_type", PROVIDERS, ids=lambda h: h.name)
+    async def test_every_provider_lists_a_not_work_item_as_done(self, harness_type: Any, tmp_path: Path) -> None:
+        harness = harness_type(tmp_path)
+        card = harness.seed("Not a real problem", "TODO")
+        await harness.provider.poll_board()
+
+        outcome = await harness.provider.move_card(card, NOT_WORK)
+        board = await harness.provider.poll_board()
+
+        assert outcome.moved
+        assert card in board["snapshot"].get("DONE", [])
+        assert card not in board["snapshot"].get("TODO", [])
