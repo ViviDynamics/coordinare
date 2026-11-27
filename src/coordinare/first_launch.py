@@ -109,7 +109,7 @@ def idle_explanation(counts: dict[str, int], skips: dict[str, Any]) -> str:
         return "Idle: To Do cards are waiting on dependencies, filters or capacity. Open a card for its wait reason."
     if counts.get("IN_REVIEW", 0):
         return "Idle: pull requests are waiting for review or checks."
-    return "Idle: No cards in To Do. Add an issue to the board and set Status to To Do or Ready."
+    return "Idle: No cards in To Do. Add a work item in To Do (on GitHub Projects, add an issue to the Project and set its Status to To Do or Ready)."
 
 
 def board_idle_explanation(

@@ -40,7 +40,7 @@ Work items progress through configurable roles (unconfigured roles are skipped):
 | Role | Stage | What it does | Terminal state |
 |------|-------|-------------|---------------|
 | Advocate | `advocate` | Answers inbound issues from the documentation, escalates the rest | none |
-| Curator | `curator` | Proposes ready issues to the board backlog for a human to promote | none |
+| Curator | `curator` | Proposes ready issues to the Backlog for a human to promote | none |
 | Assessor | `assessing` | Evaluates work item sufficiency, asks clarifying questions | none |
 | Architect | `architecting` | Analyses codebase, commits a technical plan to the branch | `plan_committed` |
 | Implementer | `implementing` | Writes code, opens a PR | `pr_opened` |

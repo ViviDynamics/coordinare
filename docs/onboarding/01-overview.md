@@ -2,8 +2,8 @@
 
 ## What Coordinare is
 
-Coordinare is a **long-running daemon that runs a software team made of AI agents**. You put
-work on a GitHub project board; coordinare picks it up and drives each item all the way to a
+Coordinare is a **long-running daemon that runs a software team made of AI agents**. You add
+a work item (by default, an issue on a GitHub Project); coordinare picks it up and drives each item all the way to a
 merged PR — writing a plan, implementing it, reviewing it, security-scanning it, QA-ing it
 against a real environment, documenting it, and merging it once a human approves.
 
@@ -23,7 +23,7 @@ The naming is deliberate and worth internalizing — it maps cleanly onto the ar
 | Music | Coordinare | Meaning |
 |---|---|---|
 | **Coordinare** | the daemon | one coordinator directing everything |
-| **Symphony** | a project | a complete work being performed (one repo + GitHub Project) |
+| **Symphony** | a project | a complete work being performed (one repo + one source of work items) |
 | **Score** | the dispatch payload | what a performer is told to play (card, persona, context) |
 | **Performer** | an agent instance | one player executing one part |
 | **Harness** | the CLI backend | the *instrument* a performer plays on |
