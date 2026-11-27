@@ -233,7 +233,7 @@ def test_a_board_card_shows_one_dot_per_stage_with_the_current_one_ringed(page: 
     # 365 (c): the current stage is named in visible words beside the dots, with its place.
     caption = card.locator(".tl-dots-caption")
     expect(caption).to_be_visible()
-    expect(caption).to_have_text(re.compile(r"^\w[\w ]*, stage 4 of 8$"))
+    expect(caption).to_have_text(re.compile(r"^Stage 4 of 8: \w[\w ]*$"))
     expect(card.locator(".tl-dots")).to_have_attribute("aria-label", re.compile(r"^Stages: .+\(current\)"))
 
 

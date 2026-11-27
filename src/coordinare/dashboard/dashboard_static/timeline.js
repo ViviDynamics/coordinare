@@ -202,8 +202,8 @@ function timelineNotesHtml(tl) {
 }
 
 // The board card's compact strip: one dot per stage, the current one ringed.
-// 365: a caption beside the dots says in words which stage is current and where it sits in the
-// pipeline, so a reader does not need the tooltips. The dots are one image whose name lists every
+// 365: a caption beside the dots says in words where the current stage sits in the pipeline and
+// which it is ("Stage 3 of 8: Implement"), so a reader does not need the tooltips. The dots are one image whose name lists every
 // stage with its status.
 function timelineDotsHtml(strip) {
   if (!strip || !Array.isArray(strip.statuses)) return '';
@@ -228,7 +228,8 @@ function timelineDotsHtml(strip) {
 function timelineStripCaption(strip, position, done) {
   var total = strip.statuses.length;
   if (position > 0) {
-    return vocabularyKindLabel('stage_labels', strip.current) + ', stage ' + position + ' of ' + total;
+    // The place comes first, so a narrow card that cuts the line keeps it.
+    return 'Stage ' + position + ' of ' + total + ': ' + vocabularyKindLabel('stage_labels', strip.current);
   }
   if (total > 0 && done === total) return 'All ' + total + ' stages done';
   return done + ' of ' + total + ' stages done';

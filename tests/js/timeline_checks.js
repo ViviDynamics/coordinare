@@ -167,7 +167,7 @@ check("one dot per stage", (dots.match(/class="tl-dot /g) || []).length, 8);
 check("the current stage is the one ringed", (dots.match(/tl-dot-current/g) || []).length, 1);
 has("a dot names its stage and status", dots, "Implement: In progress");
 // #365 (c): the strip says in words which stage is current and where it sits, beside the dots.
-has("the caption names the current stage and its place", dots, '<span class="tl-dots-caption">Implement, stage 3 of 8</span>');
+has("the caption names the current stage and its place", dots, '<span class="tl-dots-caption">Stage 3 of 8: Implement</span>');
 has("the strip's accessible name lists every stage with its status", dots,
   'aria-label="Stages: Assess: Done; Plan: Done; Implement: In progress (current); Review: Skipped');
 has("the dots are one image to assistive tech", dots, 'role="img"');

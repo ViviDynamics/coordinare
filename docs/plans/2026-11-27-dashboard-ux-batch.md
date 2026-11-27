@@ -13,7 +13,7 @@ In (first pull request):
   saying what it holds. `/activity` opens History. `/history` and `/logs` redirect, with
   their query string, on the server and in the in-app router.
 - (c) The stage dots on a board card get a visible caption: the current stage's name and
-  its place in the pipeline ("Review, stage 5 of 8"). Each dot keeps its tooltip, and the
+  its place in the pipeline ("Stage 5 of 8: Review"). Each dot keeps its tooltip, and the
   strip's accessible name lists every stage with its status.
 - (d) `human_reviewers` gets the label "Who can approve merges (human_reviewers)" and help
   text that states the rule: only these logins can approve a merge, for every symphony; an
@@ -49,12 +49,12 @@ Out:
 
 ## Tasks
 
-- [ ] 1. Activity routes: server redirects for `/history`, `/logs`, `/activity`
+- [x] 1. Activity routes: server redirects for `/history`, `/logs`, `/activity`
       (unit test on the routes), client router and path checks (node checks), nav and
       switch markup (E2E).
-- [ ] 2. Stage strip caption (timeline node checks, E2E on the board card).
-- [ ] 3. `human_reviewers` label and help (descriptor unit test), symphony form line
+- [x] 2. Stage strip caption (timeline node checks, E2E on the board card).
+- [x] 3. `human_reviewers` label and help (descriptor unit test), symphony form line
       (node check, E2E).
-- [ ] 4. Logins input: parse, flag, preview, refuse on save (node checks, E2E).
-- [ ] 5. Settings "Saved" survives the reload (node check, E2E).
+- [x] 4. Logins input: parse, flag, preview, refuse on save (node checks, E2E).
+- [x] 5. Settings "Saved" survives the reload (node check, E2E).
 - [ ] 6. (b) archive policy, config, provider sweep, board text (second pull request).
