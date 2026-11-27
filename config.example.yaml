@@ -314,7 +314,9 @@ human_reviewers:                    # Required. GitHub logins who can approve PR
 #   advocate    — answers inbound GitHub issues from external users (separate from lifecycle)
 #   curator     — proposes ready issues to the board backlog (separate from lifecycle)
 #
-# Available backends: codex | claude_code | opencode | opencode_compat | junie | hermes
+# Available backends: codex | claude_code | opencode | opencode_compat | junie | hermes | nare
+#   nare             : nare agent harness, in every performer image; anthropic rail by default, the
+#                      role's endpoint kind picks openai or a self-hosted gateway instead
 #   codex            — OpenAI Codex CLI; needs OPENAI_API_KEY in coordinare environment
 #   claude_code      — Anthropic Claude Code CLI; needs ANTHROPIC_API_KEY in coordinare environment
 #   opencode         — OpenCode CLI; reads API keys from ~/.opencode/config.json in the container

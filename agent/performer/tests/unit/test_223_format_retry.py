@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -9,7 +10,7 @@ from structlog.testing import capture_logs
 from performer.backends.base import BackendStatus
 from performer.backends.claude_code import ClaudeCodeBackend
 from performer.backends.codex import CodexBackend
-from performer.backends.driver import DriverBackend
+from performer.backends.nare import NareBackend
 from performer.backends.opencode import OpenCodeAdapter
 from performer.backends.opencode_compat import OpenCodeCompatAdapter
 from performer.main import Performance, _handle_backend_parse_failure
@@ -173,8 +174,8 @@ async def test_claude_retry_does_not_pass_resume_session(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_driver_retry_allocates_new_session_file(tmp_path, monkeypatch):
-    backend = DriverBackend()
+async def test_nare_retry_allocates_new_session_file(tmp_path, monkeypatch):
+    backend = NareBackend()
     old_session = tmp_path / "damaged-session.json"
     backend._session_path = old_session
     backend._status = BackendStatus(state="done", output=HEAD_CUT)
@@ -187,7 +188,8 @@ async def test_driver_retry_allocates_new_session_file(tmp_path, monkeypatch):
     assert "--session" in command
     assert backend._session_path != old_session
     assert command[command.index("--session") + 1] == str(backend._session_path)
-    _assert_prompt(command[-1])
+    prompt_file = command[command.index("--prompt-file") + 1]
+    _assert_prompt(Path(prompt_file).read_text(encoding="utf-8"))
     assert backend.get_status().state == "working"
 
 

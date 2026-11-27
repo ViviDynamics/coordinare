@@ -266,32 +266,45 @@ class _EphemeralJob:
     torn_down: bool = False
 
 
-def _inject_driver_secrets(
-    secrets: dict[str, str],
-    role_auth_token_env: Any,
-    role_api_key_env: Any,
-) -> None:
-    """Inject provider secrets for the driver backend (521/C2).
+#: The OPENAI_API_KEY a keyless self-hosted endpoint gets (nare requires one).
+_KEYLESS_GATEWAY_KEY = "unused"
 
-    argv is world-readable, so driver takes provider config by flags and API
-    keys by env only (ANTHROPIC_API_KEY / OPENAI_API_KEY) — inject whichever
-    keys the daemon has, exactly like the opencode/junie dual-provider family;
-    nothing else. 080 catalog resolution: a self-hosted mode resolves to
-    auth_token_env (proxy bearer) and a native mode to api_key_env; either
-    rides OPENAI_API_KEY — driver speaks Chat Completions with provider openai
-    (§3.5).
+
+def _inject_nare_secrets(secrets: dict[str, str], card_context: dict[str, Any]) -> None:
+    """Provider keys for the nare backend (#360), by env only: argv is world-readable.
+
+    Only keys ride ``secrets``. The rail and base URL are not secret and travel
+    in metadata (``endpoint_kind``, ``base_url``), because every secret value is
+    redacted from transcripts and logs, and a provider name there would erase
+    each mention of it. The adapter picks the rail from those fields.
+
+    - self-hosted (a ``base_url``): its ``auth_env`` bearer as ``OPENAI_API_KEY``,
+      and no vendor key, which the gateway must never see;
+    - native ``anthropic`` or ``openai``: that rail's key, from ``api_key_env``;
+    - no mode: whichever provider keys the daemon holds.
     """
     import os
 
+    auth_token_env = card_context.get("auth_token_env")
+    api_key_env = card_context.get("api_key_env")
+    kind = str(card_context.get("endpoint_kind") or "")
+    if card_context.get("base_url") or auth_token_env:
+        token = os.environ.get(str(auth_token_env), "") if auth_token_env else ""
+        # A keyless gateway still needs a value (nare's openai rail refuses an
+        # empty one), and setting it here replaces any OPENAI_API_KEY the
+        # performer container inherited, which the gateway must never see.
+        secrets["OPENAI_API_KEY"] = token or _KEYLESS_GATEWAY_KEY
+        return
+    if kind in {"anthropic", "openai"}:
+        key_name = "ANTHROPIC_API_KEY" if kind == "anthropic" else "OPENAI_API_KEY"
+        value = os.environ.get(str(api_key_env or key_name), "")
+        if value:
+            secrets[key_name] = value
+        return
     for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
         val = os.environ.get(key, "")
         if val:
             secrets[key] = val
-    endpoint_key_env = role_auth_token_env or role_api_key_env
-    if endpoint_key_env:
-        token = os.environ.get(str(endpoint_key_env), "")
-        if token:
-            secrets["OPENAI_API_KEY"] = token
 
 
 class HTTPPerformerService:
@@ -2067,12 +2080,8 @@ class HTTPPerformerService:
             _proxy_bearer = os.environ.get("LITELLM_MASTER_KEY", "")
             if _proxy_bearer:
                 secrets["COORDINARE_PROXY_AUTH"] = _proxy_bearer
-        elif backend == "driver":
-            # 521/C2: argv is world-readable, so driver takes provider config by
-            # flags and API keys by env only. See _inject_driver_secrets.
-            _inject_driver_secrets(
-                secrets, role_auth_token_env, role_api_key_env,
-            )
+        elif backend == "nare":
+            _inject_nare_secrets(secrets, card_context)
 
         _inject_orchestration_secrets(secrets, card_context.get("orchestration"))
 

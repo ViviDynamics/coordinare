@@ -1,6 +1,6 @@
 FROM coordinare-performer:base
 
-# ARG BACKEND: select exactly one of [claude_code, codex, cursor, junie, opencode]
+# ARG BACKEND: select exactly one of [claude_code, codex, cursor, junie, opencode, nare]
 ARG BACKEND=opencode
 
 # ARG BROWSER: optional toggle for Playwright + Chromium (default: false)
@@ -19,6 +19,8 @@ RUN if [ "$BACKEND" = "claude_code" ]; then \
       printf '#!/bin/sh\n' > /usr/local/bin/junie && chmod +x /usr/local/bin/junie; \
     elif [ "$BACKEND" = "opencode" ]; then \
       printf '#!/bin/sh\n' > /usr/local/bin/opencode && chmod +x /usr/local/bin/opencode; \
+    elif [ "$BACKEND" = "nare" ]; then \
+      nare --version; \
     else \
       echo "Unknown backend: $BACKEND"; exit 1; \
     fi

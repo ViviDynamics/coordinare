@@ -330,6 +330,11 @@ class Score(BaseModel):
     scope_focus: str = ""
     scope_addon: str = ""
     max_tool_calls: int | None = Field(default=None, ge=1, le=500)
+    # 360: the role's resolved endpoint (card_context, via metadata). A harness
+    # with more than one provider rail (nare) picks its rail from these. Not
+    # secrets: they ride metadata so they are never redacted from transcripts.
+    endpoint_kind: str = ""
+    base_url: str = ""
     # 165: reader-specific projections of the architect's blueprint, derived by
     # coordinare at dispatch. Each reader gets only its own slice (data-model.md
     # disjointness rule). Declared here or extra="ignore" drops them in transit.

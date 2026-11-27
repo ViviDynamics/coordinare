@@ -29,7 +29,8 @@ def policy_config(tmp_path, monkeypatch, policy=None, strategy='single'):
 def test_absent_policy_leaves_dispatch_and_single_routing_unchanged(tmp_path, monkeypatch):
     config = policy_config(tmp_path, monkeypatch)
     assert config.resolve_performer_dispatch_model('reviewer') == {
-        'model': 'onprem-a/qwen3-14b', 'base_url': 'http://gateway/v1', 'auth_token_env': 'TEST_KEY',
+        'model': 'onprem-a/qwen3-14b', 'endpoint_kind': 'litellm', 'base_url': 'http://gateway/v1',
+        'auth_token_env': 'TEST_KEY',
     }
     assert config.resolve_performer_orchestration('reviewer') is None
 

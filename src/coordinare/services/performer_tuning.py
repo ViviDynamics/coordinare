@@ -22,7 +22,8 @@ _EFFORT_THINKING_TOKENS: dict[str, int] = {
 }
 
 _ANTHROPIC_BACKENDS = {"claude", "anthropic", "claude_code"}
-_OPENCODE_BACKENDS = {"opencode", "codex"}
+# Backends that take an effort level as-is (nare: --effort low|medium|high, #360).
+_OPENCODE_BACKENDS = {"opencode", "codex", "nare"}
 
 
 def translate_tuning(role_config: PerformerRoleConfig) -> dict[str, Any]:

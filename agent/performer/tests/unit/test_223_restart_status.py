@@ -12,7 +12,7 @@ import pytest
 from performer.backends.base import BackendStatus
 from performer.backends._relay_feedback import relay_feedback_prompt_section
 from performer.backends.claude_code import ClaudeCodeBackend
-from performer.backends.driver import DriverBackend
+from performer.backends.nare import NareBackend
 from performer.backends.junie import JunieBackend
 from performer.models import Score, Stand
 
@@ -30,7 +30,7 @@ def _score() -> Score:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("factory", "launcher"),
-    [(ClaudeCodeBackend, "_launch"), (JunieBackend, "_launch"), (DriverBackend, "_spawn")],
+    [(ClaudeCodeBackend, "_launch"), (JunieBackend, "_launch"), (NareBackend, "_spawn")],
 )
 async def test_start_clears_the_previous_runs_done_status(factory, launcher, tmp_path: Path) -> None:
     backend = factory()

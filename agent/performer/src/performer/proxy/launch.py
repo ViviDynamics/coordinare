@@ -57,8 +57,9 @@ PROVIDER_BASE_URL_ENV: dict[str, str] = {
     # claude_code is pointed via ANTHROPIC_BASE_URL; its own LiteLLM shim is
     # suppressed (see below) so it does not double-proxy.
     "claude_code": "ANTHROPIC_BASE_URL",
-    # #521: the name is fixed by the coordinare↔driver integration contract §3.5.
-    "driver": "DRIVER_BASE_URL",
+    # #360: nare reads NARE_BASE_URL natively, and the adapter then selects
+    # nare's openai rail, which appends /chat/completions to the base.
+    "nare": "NARE_BASE_URL",
 }
 
 # Backends with no provider-base-URL override cannot be proxied (080 constraint).
@@ -85,6 +86,7 @@ VERBATIM_POST_WIRE_PATH: dict[str, str] = {
 # at most one map (100: hermes uses the hermes-agent custom OpenAI provider).
 PROVIDER_BASE_PATH_PREFIX: dict[str, str] = {
     "hermes": "/v1",
+    "nare": "/v1",
 }
 
 

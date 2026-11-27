@@ -126,7 +126,7 @@ def _choose_harness(questions: Questions, secrets: dict[str, str]) -> None:
     init_stage.set("model_endpoint")
     harness = questions.ask("harness", "Harness (installed CLIs preferred)")
     if harness not in HARNESS_DEFAULTS:
-        fail("Choose a supported starter harness: codex, claude_code or opencode.")
+        fail("Choose a supported starter harness: " + ", ".join(HARNESS_DEFAULTS) + ".")
     _kind, credential, model = HARNESS_DEFAULTS[harness]
     questions.answers.setdefault("model", model)
     questions.ask("model", "Model")
