@@ -24,8 +24,12 @@ and only code-host paths read it.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 #: Matches "Depends on #N", "Blocked by #N", "After #N", "Requires #N"
 #: (case-insensitive). The GitHub Projects text syntax for a blocker; the same
@@ -108,6 +112,9 @@ class WorkItem:
     pr_line: str = ""
     #: GitHub only: the issue behind the item. See the module docstring.
     issue: IssueLink | None = None
+    #: 393: the tracker's other fields by name (a priority field, say), as text.
+    #: Read-only, like the tuples above. Empty when the provider reports none.
+    fields: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}), hash=False)
 
 
 def work_items_of(board: Any) -> dict[str, WorkItem]:
@@ -182,6 +189,7 @@ def _from_github_listing(board: dict[str, Any]) -> dict[str, WorkItem]:
     labels = _mapping(board, "item_labels")
     assignees = _mapping(board, "item_assignees")
     native = _mapping(board, "native_blockers")
+    field_values = _mapping(board, "item_field_values")
     # 396: the state of each off-board issue the text syntax names, read while listing.
     text_states = {str(k): v for k, v in _mapping(board, "blocker_states").items()}
     status = card_status_of(board)
@@ -240,8 +248,38 @@ def _from_github_listing(board: dict[str, Any]) -> dict[str, WorkItem]:
             reference=str(number) if number else "",
             pr_line=f"Closes #{number}" if number else "",
             issue=IssueLink(number=number, node_id=node_id) if (number or node_id) else None,
+            fields=field_text(field_values.get(item_id)),
         )
     return result
+
+
+def field_text(raw: Any) -> Mapping[str, str]:
+    """A provider's field values as a read-only name -> text map (393).
+
+    A value the tracker leaves unset (``None``) is left out, as it always read:
+    an item without a value sorts after those with one.
+    """
+    if not isinstance(raw, dict):
+        return MappingProxyType({})
+    return MappingProxyType({str(k): str(v) for k, v in raw.items() if v is not None})
+
+
+def listed_text(board: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Card id -> title and card id -> body, exactly as the listing supplied them.
+
+    Kept as maps, not read off the records, so a caller can tell a field the
+    listing supplied empty (apply it empty) from one it did not supply (leave
+    the card's value alone). Typed records supply both for every item; the
+    GitHub Projects listing supplies what its ``titles`` and ``descriptions``
+    hold. Moved here from ``check_board`` (393) so no graph node reads the
+    GitHub listing's own keys.
+    """
+    if not isinstance(board, dict):
+        return {}, {}
+    if isinstance(board.get("items"), dict):
+        listed = work_items_of(board)
+        return {k: v.title for k, v in listed.items()}, {k: v.body for k, v in listed.items()}
+    return _mapping(board, "titles"), _mapping(board, "descriptions")
 
 
 def unlisted_text_blockers(board: dict[str, Any], status: str = "TODO") -> list[int]:
