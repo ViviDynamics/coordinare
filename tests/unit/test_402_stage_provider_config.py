@@ -317,20 +317,6 @@ async def test_a_human_approval_beside_scrutare_still_merges() -> None:
     assert result["phase"] == "merging"
 
 
-def test_the_dashboard_config_page_says_a_provider_ignores_the_backend() -> None:
-    from coordinare.config import CoordinareConfiguration
-    from coordinare.config_descriptors import build_snapshot
-
-    config = CoordinareConfiguration(
-        global_config=_config(reviewer={"provider": "scrutare"}),
-        symphonies=[SymphonyConfig(name="widgets", github_project_number=1)],
-    )
-    snapshot = build_snapshot(config).model_dump()
-    settings = [s for section in snapshot["sections"] for s in section.get("settings", [])]
-    (setting,) = [s for s in settings if s["key"] == "global.stage_providers"]
-    assert "ignores its backend, mode and workflow" in setting["help"]
-
-
 @pytest.mark.asyncio
 async def test_an_operator_restart_lets_the_provider_start_a_fresh_attempt() -> None:
     state, service = _route_state(_config(reviewer={"provider": "scrutare"}), object())
@@ -396,3 +382,22 @@ async def test_a_provider_dispatch_needs_no_workspace_or_env_cache(monkeypatch: 
     result = await dp._dispatch_performer_body(full)
     assert result["dispatched_to"] is service
     assert result["volumes"] is None
+
+
+def test_the_provider_catalog_is_not_a_field_of_the_global_settings_form() -> None:
+    """The dashboard saves the global section's scalar fields back; a catalog is not one.
+
+    Rendered there, the page sent ``stage_providers`` back as a scalar and every save of
+    the global section failed with 422.
+    """
+    from coordinare.config import CoordinareConfiguration
+    from coordinare.config_descriptors import build_snapshot, scalar_field_names
+
+    assert "stage_providers" not in scalar_field_names("global")
+    config = CoordinareConfiguration(
+        global_config=_config(reviewer={"provider": "scrutare"}),
+        symphonies=[SymphonyConfig(name="widgets", github_project_number=1)],
+    )
+    snapshot = build_snapshot(config).model_dump()
+    (section,) = [s for s in snapshot["sections"] if s["id"] == "global"]
+    assert all(setting["key"] != "global.stage_providers" for setting in section["settings"])

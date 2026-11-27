@@ -474,6 +474,11 @@ def _is_scalar_field(field_info: FieldInfo) -> bool:
         args = typing.get_args(inner)
         if args and isinstance(args[0], type) and issubclass(args[0], BaseModel):
             return False
+    # 402: a mapping of models (the stage_providers catalog) is a catalog too.
+    if typing.get_origin(inner) is dict:
+        value_type = typing.get_args(inner)[-1:] or (None,)
+        if isinstance(value_type[0], type) and issubclass(value_type[0], BaseModel):
+            return False
     return True
 
 
