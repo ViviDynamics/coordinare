@@ -29,6 +29,7 @@ from coordinare.models.dependency import DependencyStatus
 from coordinare.services.card_ownership import owns_card
 from coordinare.services.dependency import build_graph
 from coordinare.services.pipeline_budget import configured_review_limit, parked_in_review
+from coordinare.services.work_items import work_items_of
 
 if TYPE_CHECKING:
     from coordinare.models.dependency import DependencyGraph
@@ -121,7 +122,7 @@ def refresh_todo_waits(
     sessions = state.get("active_sessions") or {}
     review_limit = configured_review_limit(state.get("config"))
     waiting = parked_in_review(sessions)
-    labels = board.get("item_labels", {}) if isinstance(board, dict) else {}
+    labels = {item_id: list(wi.labels) for item_id, wi in work_items_of(board).items()}
     escalation = str(state.get("advocate_escalation_label", "") or "")
     prev = state.get("todo_waits") or {}
     blocked_set = set(blocked)

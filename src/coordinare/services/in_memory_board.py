@@ -31,6 +31,7 @@ from typing import Any
 import structlog
 
 from coordinare.services.board_provider import MoveOutcome
+from coordinare.services.work_items import OPEN, UNKNOWN, Blocker, WorkItem
 
 logger = structlog.get_logger(__name__)
 
@@ -58,6 +59,12 @@ class InMemoryWorkItem:
     body: str
     native_state: str
     url: str
+    labels: tuple[str, ...] = ()
+    owners: tuple[str, ...] = ()
+    #: Keys of the items that block this one; a key not on the board is off it.
+    blocked_by: tuple[str, ...] = ()
+    #: Off-board blockers this tracker knows the state of: key -> open/closed.
+    external_states: dict[str, str] = field(default_factory=dict)
     comments: list[dict[str, Any]] = field(default_factory=list)
     #: Each transition as ``(from native state, to native state, actor)``.
     history: list[tuple[str, str, str]] = field(default_factory=list)
@@ -89,7 +96,17 @@ class InMemoryBoardProvider:
 
     # ---- the tracker's own side: what a person (or a test) does --------------------
 
-    def add_item(self, title: str, *, body: str = "", status: str = "TODO") -> str:
+    def add_item(
+        self,
+        title: str,
+        *,
+        body: str = "",
+        status: str = "TODO",
+        labels: tuple[str, ...] = (),
+        owners: tuple[str, ...] = (),
+        blocked_by: tuple[str, ...] = (),
+        external_states: dict[str, str] | None = None,
+    ) -> str:
         """Create an item in the native state that *status* maps to. Returns its key."""
         self._next_item += 1
         item_id = f"{self._key}-{self._next_item}"
@@ -99,6 +116,10 @@ class InMemoryBoardProvider:
             body=body,
             native_state=self._native_for(status),
             url=f"{self._base_url}/{item_id}",
+            labels=tuple(labels),
+            owners=tuple(owners),
+            blocked_by=tuple(blocked_by),
+            external_states=dict(external_states or {}),
         )
         return item_id
 
@@ -133,6 +154,7 @@ class InMemoryBoardProvider:
         snapshot: dict[str, list[str]] = {status: [] for status in CANONICAL_STATUSES}
         titles: dict[str, str] = {}
         descriptions: dict[str, str] = {}
+        items: dict[str, WorkItem] = {}
         for item_id, item in self._items.items():
             status = self._states.get(item.native_state)
             if status is None:
@@ -140,7 +162,29 @@ class InMemoryBoardProvider:
             snapshot[status].append(item_id)
             titles[item_id] = item.title
             descriptions[item_id] = item.body
-        return {"snapshot": snapshot, "titles": titles, "descriptions": descriptions}
+            items[item_id] = self._record(item, status)
+        # 395: typed records are the listing; titles and descriptions stay for
+        # callers that have not moved to it.
+        return {"snapshot": snapshot, "titles": titles, "descriptions": descriptions, "items": items}
+
+    def _record(self, item: InMemoryWorkItem, status: str) -> WorkItem:
+        blockers = []
+        for key in item.blocked_by:
+            listed = key in self._items and self._states.get(self._items[key].native_state) is not None
+            state = item.external_states.get(key, UNKNOWN if not listed else OPEN)
+            blockers.append(Blocker(ref=key, item_id=key if listed else "", state=state, native=True))
+        return WorkItem(
+            id=item.id,
+            key=item.id,
+            url=item.url,
+            title=item.title,
+            body=item.body,
+            status=status,
+            native_status=item.native_state,
+            owners=item.owners,
+            labels=item.labels,
+            blockers=tuple(blockers),
+        )
 
     async def move_card(self, card_id: str, status: str) -> MoveOutcome:
         item = self._item(card_id)
