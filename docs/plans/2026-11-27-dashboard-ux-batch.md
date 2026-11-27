@@ -30,8 +30,10 @@ In (first pull request):
 
 In (second pull request):
 - (b) Work items in Done for at least `archive_done_after_days` (default 14, `0` turns it
-  off) are archived on the GitHub project, inside the GitHub Projects provider. The board
-  says so under the Done lane.
+  off) are archived on the GitHub project, inside the GitHub Projects provider. Only items
+  whose issue is closed and that this Coordinare owns are archived; the age comes from
+  GitHub's status change time, else a persisted first sighting. The board says so under
+  the Done lane.
 
 Out:
 - Checking that a login exists on GitHub. Jason's decision for (e) asks for an
@@ -57,4 +59,4 @@ Out:
       (node check, E2E).
 - [x] 4. Logins input: parse, flag, preview, refuse on save (node checks, E2E).
 - [x] 5. Settings "Saved" survives the reload (node check, E2E).
-- [ ] 6. (b) archive policy, config, provider sweep, board text (second pull request).
+- [x] 6. (b) archive policy, config, provider sweep, board text (second pull request).
