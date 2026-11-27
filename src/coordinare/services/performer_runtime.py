@@ -49,6 +49,10 @@ class StartedPerformer:
     #: HTTP client needs no changes to support a second runtime.
     endpoint: str
 
+    #: Exact image passed to resource creation after any runtime digest pinning.
+    #: Older runtimes may omit it; reviewed jobs still require an immutable identity.
+    image_ref: str | None = None
+
 
 @runtime_checkable
 class PerformerRuntime(Protocol):
