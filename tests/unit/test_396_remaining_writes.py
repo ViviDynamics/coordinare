@@ -8,7 +8,6 @@ item provider; on GitHub Projects the adapter makes the same GitHub call.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -196,6 +195,11 @@ class TestTheDecline:
 # --- the QA evidence comment ----------------------------------------------------------------------
 
 
+class _DownBoard(_Board):
+    async def add_card_comment(self, card_id: str, body: str) -> dict[str, Any]:
+        raise RuntimeError("tracker down")
+
+
 def _qa_state(response: dict[str, Any], github: Any = None) -> dict[str, Any]:
     from tests.unit.graph.nodes.test_monitor_performer import _make_state, _Performer
 
@@ -262,8 +266,7 @@ class TestTheQaEvidenceComment:
 
         from coordinare.graph.nodes.monitor_performer import monitor_performer
 
-        board = _Board()
-        board.add_card_comment = AsyncMock(side_effect=RuntimeError("tracker down"))  # type: ignore[method-assign]
+        board = _DownBoard()
         state = _qa_state({"status": "qa_failed", "session_id": "s1", "work_item_comment": "## QA Evidence",
                            "failures": [{"criterion": "c", "expected": "e", "actual": "a"}]}, AsyncMock())
         state["board_provider"] = board
@@ -290,15 +293,22 @@ class _Listing:
     def __init__(
         self, states: dict[int, str] | None = None, *, raises: bool = False,
         body: str = "Depends on #999. Depends on #51. Depends on #50",
+        repo: tuple[str, str] | None = None, x_done: bool = False,
     ) -> None:
         self.asked: list[tuple[str, int]] = []
         self._states = states or {}
         self._raises = raises
         self._body = body
+        self._x_done = x_done
+        if repo is not None:
+            self.org, self.project_name = repo
 
     async def poll_board(self) -> dict[str, Any]:
         return {
-            "snapshot": {"TODO": ["ITEM_X", "ITEM_Y"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []},
+            "snapshot": (
+                {"TODO": ["ITEM_Y"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": ["ITEM_X"]} if self._x_done
+                else {"TODO": ["ITEM_X", "ITEM_Y"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []}
+            ),
             "titles": {"ITEM_X": "Some feature", "ITEM_Y": "Other"},
             "descriptions": {"ITEM_X": self._body, "ITEM_Y": ""},
             "issue_numbers": {"ITEM_X": 50, "ITEM_Y": 51},
@@ -329,10 +339,7 @@ class TestBlockerStateFromTheListing:
     @pytest.mark.asyncio
     async def test_only_blockers_of_cards_in_todo_are_read(self) -> None:
         """The dependency filter acts on To Do cards only; reading more costs REST calls every poll."""
-        github = _Listing({999: "closed"})
-        listing = await github.poll_board()
-        listing["snapshot"] = {"TODO": ["ITEM_Y"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": ["ITEM_X"]}
-        github.poll_board = AsyncMock(return_value=listing)  # type: ignore[method-assign]
+        github = _Listing({999: "closed"}, x_done=True)
 
         await GitHubProjectsBoardProvider(github, repo="o/r").poll_board()
 
@@ -341,8 +348,7 @@ class TestBlockerStateFromTheListing:
     @pytest.mark.asyncio
     async def test_the_service_s_own_repository_wins_over_the_configured_one(self) -> None:
         """A symphony's service may be handed in beside another symphony's config."""
-        github = _Listing({999: "closed"})
-        github.org, github.project_name = "acme", "web"  # type: ignore[attr-defined]
+        github = _Listing({999: "closed"}, repo=("acme", "web"))
 
         await GitHubProjectsBoardProvider(github, repo="other/repo").poll_board()
 
@@ -350,8 +356,7 @@ class TestBlockerStateFromTheListing:
 
     @pytest.mark.asyncio
     async def test_the_repository_defaults_to_the_service_s_own(self) -> None:
-        github = _Listing({999: "closed"})
-        github.org, github.project_name = "acme", "web"  # type: ignore[attr-defined]
+        github = _Listing({999: "closed"}, repo=("acme", "web"))
 
         await GitHubProjectsBoardProvider(github).poll_board()
 
