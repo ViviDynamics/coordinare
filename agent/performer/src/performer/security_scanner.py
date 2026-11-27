@@ -54,8 +54,16 @@ _ROOT_UID = 0
 # as a scan error, so a doc beside the code held the floor (#415). bandit gets
 # only Python sources; semgrep keeps every target.
 _PYTHON_SUFFIXES = frozenset({".py", ".pyi", ".pyw"})
-_PYTHON_SHEBANG = re.compile(rb"#![^\n]*\bpython[0-9.]*(?:\s|$)")
+# The suffix security_floor gives an exported file whose name has none. Only
+# such files are classified by shebang or content; a file with any other
+# suffix is not Python, even when it parses as Python (.ini, .json).
+EXTENSIONLESS_SUFFIX = ".scanned"
+_EXTENSIONLESS_SUFFIXES = frozenset({"", EXTENSIONLESS_SUFFIX})
+# Any interpreter named python..., not ipython or other names that end in it.
+_PYTHON_SHEBANG = re.compile(rb"#![^\n]*\bpython")
 _UTF8_BOM = b"\xef\xbb\xbf"
+# A larger extensionless file is not parsed here; it goes to bandit (fail closed).
+_CONTENT_CHECK_MAX_BYTES = 1024 * 1024
 SCANNER_INSTALLATION_HELP = (
     "Install semgrep and bandit system-wide as root-owned executables in "
     "/usr/local/bin or /usr/bin, or use the container transport."
@@ -145,32 +153,45 @@ def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
 
 
 def _python_targets(files: list[str], repo_root: Path) -> list[str]:
-    """The targets bandit scans: Python by suffix, shebang or content.
+    """The targets bandit scans.
 
-    A Python suffix or shebang always goes to bandit, so a Python file it
-    cannot parse still fails the scan. Any other file goes to bandit only when
-    it parses as Python, which keeps extensionless scripts (``uv run --script``,
-    ``SConstruct``) scanned and leaves out the docs and configs bandit rejects.
+    A Python suffix always goes to bandit, so a Python file it cannot parse
+    still fails the scan. A file with no suffix goes to bandit when it has a
+    python shebang, when it parses as Python (``uv run --script`` files,
+    ``SConstruct``), or when it is too large to check here. Any other suffix,
+    and any file with a NUL byte, is left to semgrep.
     """
     return [name for name in files if _is_python(repo_root / name)]
 
 
 def _is_python(path: Path) -> bool:
-    if path.suffix.lower() in _PYTHON_SUFFIXES:
+    suffix = path.suffix.lower()
+    if suffix in _PYTHON_SUFFIXES:
         return True
+    if suffix not in _EXTENSIONLESS_SUFFIXES:
+        return False
     try:
-        source = path.read_bytes()
+        with path.open("rb") as handle:
+            source = handle.read(_CONTENT_CHECK_MAX_BYTES + 1)
     except OSError:
         return False
     if _PYTHON_SHEBANG.match(source.removeprefix(_UTF8_BOM)):
         return True
+    return b"\0" not in source and (
+        len(source) > _CONTENT_CHECK_MAX_BYTES or _parses_as_python(source)
+    )
+
+
+def _parses_as_python(source: bytes) -> bool:
     try:
-        # Parsing never runs the code. Warnings would print source fragments.
+        # Parsing never runs the code. Its warnings would print source fragments.
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             ast.parse(source)
-    except (SyntaxError, ValueError, RecursionError, MemoryError):
+    except (SyntaxError, ValueError):
         return False
+    except (RecursionError, MemoryError):
+        return True  # Too deep or too large to check here: bandit decides.
     return True
 
 

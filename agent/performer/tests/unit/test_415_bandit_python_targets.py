@@ -52,10 +52,13 @@ def _parses_as_python(source: bytes) -> bool:
     return True
 
 
-def _scan(root: Path, files: dict[str, str], **kwargs):
-    for name, text in files.items():
-        (root / name).write_text(text)
-    fake = FakeScanners(root, **kwargs)
+def _scan(root: Path, files: dict[str, str | bytes]):
+    for name, content in files.items():
+        if isinstance(content, bytes):
+            (root / name).write_bytes(content)
+        else:
+            (root / name).write_text(content)
+    fake = FakeScanners(root)
     with patch("performer.security_scanner._resolve_binary", side_effect=lambda tool: f"/usr/bin/{tool}"), \
             patch("performer.security_scanner.subprocess.run", side_effect=fake):
         findings = scan_diff(list(files), root)
@@ -107,9 +110,34 @@ def test_extensionless_python_still_goes_to_bandit(tmp_path, head):
     assert [f["file"] for f in findings] == ["target_0.scanned"]
 
 
-def test_unparsable_file_with_a_python_shebang_still_fails(tmp_path):
+@pytest.mark.parametrize("shebang", ["#!/usr/bin/env python3", "#!/usr/bin/env python3.14t",
+                                     "#!/usr/bin/python3-dbg", "#!/usr/bin/env pythonw"])
+def test_unparsable_file_with_a_python_shebang_still_fails(tmp_path, shebang):
     with pytest.raises(ScanDiagnostic, match="bandit reported scan errors"):
-        _scan(tmp_path, {"target_0.scanned": "#!/usr/bin/env python3\nprint 'py2'\n"})
+        _scan(tmp_path, {"target_0.scanned": f"{shebang}\nprint 'py2'\n"})
+
+
+def test_configs_that_happen_to_parse_as_python_are_not_bandit_targets(tmp_path):
+    _, calls = _scan(tmp_path, {"target_0.ini": "[app]\ndebug = True\n", "target_1.json": '{"a": 1}\n',
+                                "target_2.txt": "main\n", "target_3.ipynb": '{"cells": []}\n'})
+    assert "bandit" not in calls
+
+
+def test_extensionless_binary_is_not_a_bandit_target(tmp_path):
+    _, calls = _scan(tmp_path, {"target_0.scanned": b"\x7fELF\x02\x01\x01\x00" + b"x = 1\n" * 10})
+    assert "bandit" not in calls
+
+
+def test_extensionless_file_too_large_to_classify_goes_to_bandit(tmp_path):
+    with patch("performer.security_scanner._CONTENT_CHECK_MAX_BYTES", 64):
+        with pytest.raises(ScanDiagnostic, match="bandit reported scan errors"):
+            _scan(tmp_path, {"target_0.scanned": "Plain text that is not code.\n" * 10})
+
+
+def test_floor_export_suffix_is_the_one_the_scanner_treats_as_extensionless():
+    from performer import security_floor, security_scanner
+
+    assert security_floor._EXPORT_DEFAULT_SUFFIX == security_scanner.EXTENSIONLESS_SUFFIX
 
 
 def test_other_interpreters_named_like_python_are_not_bandit_targets(tmp_path):

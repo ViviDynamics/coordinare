@@ -389,9 +389,9 @@ unchanged) or `env_blocked`. Since 107, all scans run inside the performer.
 Prose security jobs run semgrep and bandit before starting the backend and
 return a versioned `report.security_floor`; coordinare holds missing or invalid
 scan evidence closed. semgrep scans every changed file; bandit scans only the
-Python ones (a `.py`, `.pyi` or `.pyw` suffix, a Python shebang, or content that
-parses as Python), and does not run when there are none, so a doc change beside
-the code cannot hold the floor. A Python file bandit cannot parse still fails
+Python ones (a `.py`, `.pyi` or `.pyw` suffix, or a file with no suffix that has
+a python shebang or parses as Python), and does not run when there are none, so a
+doc or config change beside the code cannot hold the floor. A Python file bandit cannot parse still fails
 the floor, and so does a missing bandit. A configured security workflow supplies its own scan
 record instead. Coordinare lifts the blocking
 implementer-routed findings into the same `review_findings` carrier the
