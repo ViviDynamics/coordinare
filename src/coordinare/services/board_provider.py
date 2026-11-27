@@ -46,6 +46,8 @@ from typing import Any, Protocol, runtime_checkable
 
 import structlog
 
+from coordinare.services.card_identity import CardIdentityMap
+
 logger = structlog.get_logger(__name__)
 
 
@@ -181,12 +183,23 @@ class GitHubProjectsBoardProvider:
         return MoveOutcome.ok()
 
     async def get_card(self, card_id: str) -> dict[str, Any]:
-        card: dict[str, Any] = await self._github.get_issue_details(card_id)
+        card: dict[str, Any] = await self._github.get_issue_details(self._issue_id(card_id))
         return card
 
     async def add_card_comment(self, card_id: str, body: str) -> dict[str, Any]:
-        posted: dict[str, Any] = await self._github.add_comment(card_id, body)
+        posted: dict[str, Any] = await self._github.add_comment(self._issue_id(card_id), body)
         return posted
+
+    def _issue_id(self, card_id: str) -> str:
+        """The issue node id behind a listed card id (#400).
+
+        GitHub reads and comments on a card through its issue. The pairing comes
+        from the last poll, so it costs nothing; an id the poll did not list (an
+        issue node id a caller already holds) passes through unchanged.
+        """
+        if isinstance(self._github, CardIdentityMap):
+            return self._github.content_id_for_card(card_id)
+        return card_id
 
     async def get_card_comments(
         self, card_id: str, since_id: int | None = None,
