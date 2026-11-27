@@ -42,12 +42,18 @@ has ever heard of an issue number.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
+from coordinare.doctor import CheckResult
+from coordinare.doctor_status import Status
 from coordinare.services.card_identity import CardIdentityMap
+from coordinare.services.github import BOARD_COLUMN_TO_STATUS
 from coordinare.services.work_items import unlisted_text_blockers
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = structlog.get_logger(__name__)
 
@@ -65,6 +71,69 @@ NOT_WORK = "NOT_WORK"
 #: compares it for equality. It never sorts it, takes a maximum of it or reads it as
 #: a number; the provider's order, oldest first, is the order comments are handled in.
 type CommentCursor = int | str
+
+#: The canonical states every provider must map (399). Without them coordinare
+#: cannot take work (To Do), run it (In Progress) or finish it (Done).
+REQUIRED_STATES: tuple[str, ...] = ("TODO", "IN_PROGRESS", "DONE")
+
+#: The canonical states a provider may leave unmapped (399), and what then happens.
+#: A move to one is refused (``MoveOutcome.refused``), logged, and the item stays
+#: where it was:
+#:
+#: - In Review: the item stays in In Progress while its pull request is reviewed.
+#:   Coordinare follows the review on the pull request, not on the board, so the
+#:   run goes on to merge and Done as usual.
+#: - Blocked: a blocked item stays in its current state while coordinare still
+#:   holds it as blocked. A person cannot block an item from the tracker either,
+#:   since coordinare reads a person's block from the Blocked state.
+#:
+#: Backlog is optional as well; nothing is ever moved there but a declined item.
+#: GitHub Projects still requires all five columns, as it always has.
+OPTIONAL_STATES: tuple[str, ...] = ("IN_REVIEW", "BLOCKED")
+
+_STATE_LABELS = {
+    "TODO": "To Do", "IN_PROGRESS": "In Progress", "DONE": "Done", "IN_REVIEW": "In Review", "BLOCKED": "Blocked",
+}
+
+_UNMAPPED_OPTIONAL = {
+    "IN_REVIEW": (
+        "No state maps to In Review: a work item stays in In Progress while its pull request "
+        "is reviewed, and coordinare follows the review on the pull request.",
+        "Optional: map a state to In Review to show review on the board.",
+    ),
+    "BLOCKED": (
+        "No state maps to Blocked: a blocked work item stays in its current state while "
+        "coordinare holds it as blocked, and a person cannot block an item from the tracker.",
+        "Optional: map a state to Blocked so blocked work shows on the board and a person can block an item there.",
+    ),
+}
+
+
+def state_checks(mapped: Iterable[str]) -> list[CheckResult]:
+    """The start checks for the canonical states a provider maps (399).
+
+    A provider's ``preflight`` can return these for its own state mapping: a
+    failure for each required state it lacks, a warning saying what happens for
+    each optional one, or one pass when every state is mapped.
+    """
+
+    have = set(mapped)
+    missing = [state for state in REQUIRED_STATES if state not in have]
+    results: list[CheckResult] = []
+    if missing:
+        names = ", ".join(_STATE_LABELS[state] for state in missing)
+        results.append(CheckResult(
+            "work item states",
+            Status.FAIL,
+            f"No state maps to {names}. Coordinare cannot take, run or finish work without "
+            "To Do, In Progress and Done.",
+            "In the tracker's workflow, map a state to each of To Do, In Progress and Done.",
+        ))
+    for state in OPTIONAL_STATES:
+        if state not in have:
+            detail, fix = _UNMAPPED_OPTIONAL[state]
+            results.append(CheckResult("work item states", Status.WARN, detail, fix))
+    return results or [CheckResult("work item states", Status.OK, "Every coordinare state maps to a state on the board.")]
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +239,26 @@ class BoardProvider(Protocol):
         ...
 
 
+@runtime_checkable
+class ProviderPreflight(Protocol):
+    """A provider that can say, before the daemon starts, whether it is ready (399).
+
+    Separate from ``BoardProvider`` so the board operations stay the five specs
+    149 and 153 pinned: ``init``, ``validate`` and ``doctor`` call this, the graph
+    never does. A provider without it is reported as having no start checks.
+    """
+
+    async def preflight(self) -> list[CheckResult]:
+        """Start checks in the doctor format: name, status, message and fix.
+
+        A check's ``fix`` is shown with it, so a failure says what to change. Raise
+        for a fault (the tracker is unreachable): coordinare retries transient
+        faults within its probe budget and reports the rest, through
+        ``preflight_fault`` when the provider has one.
+        """
+        ...
+
+
 class GitHubProjectsBoardProvider:
     """Today's behaviour, reached through the protocol.
 
@@ -213,6 +302,33 @@ class GitHubProjectsBoardProvider:
         not.
         """
         return self._github
+
+    async def preflight(self) -> list[CheckResult]:
+        """Today's board column check, under its names and messages (399)."""
+
+        await self._github.initialize()
+        options = self._github.field_cache.get("status_option_ids", {})
+        found = {BOARD_COLUMN_TO_STATUS.get(name) for name in options}
+        # GitHub Projects requires every column, including the optional ones.
+        missing = {*REQUIRED_STATES, *OPTIONAL_STATES} - found
+        if missing:
+            return [CheckResult(
+                "board columns",
+                Status.FAIL,
+                f"The board is missing columns: {', '.join(sorted(missing))}.",
+                "In the board's Status field add To Do (or Ready), In Progress, In Review, Blocked and Done options.",
+            )]
+        return [CheckResult("GitHub board", Status.OK, "Board is reachable and all lifecycle Status columns exist.")]
+
+    def preflight_fault(self, status: Status) -> CheckResult:
+        """What to report when the board cannot be read at all."""
+
+        return CheckResult(
+            "GitHub board",
+            status,
+            "Could not read the project board and its Status field after bounded retries.",
+            "Correct github_org, github_project_number and github_graphql_url; grant Projects access and add a Status field with To Do, In Progress, In Review, Blocked and Done.",
+        )
 
     async def poll_board(self) -> dict[str, Any]:
         board: dict[str, Any] = await self._github.poll_board()

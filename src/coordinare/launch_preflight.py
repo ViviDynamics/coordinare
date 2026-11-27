@@ -29,8 +29,10 @@ from coordinare.network_probe import (
     response_status,
 )
 from coordinare.presets import HARNESS_COMMANDS
-from coordinare.services.github import BOARD_COLUMN_TO_STATUS, GitHubService, TransientGitHubError
+from coordinare.services.board_provider import ProviderPreflight
+from coordinare.services.github import GitHubService, TransientGitHubError
 from coordinare.services.system_health import SYSTEM_HEALTH
+from coordinare.services.work_item_providers import DEFAULT_WORK_ITEM_PROVIDER, build_board_provider
 from coordinare.start_checks import validate_start_time
 from coordinare.transport.base import TransportError
 from coordinare.transport.subprocess_transport import SubprocessTransport
@@ -38,7 +40,7 @@ from coordinare.transport.subprocess_transport import SubprocessTransport
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from coordinare.config import CoordinareConfiguration, ProjectConfiguration
+    from coordinare.config import CoordinareConfiguration, ProjectConfiguration, WorkItemsConfig
 
 logger = structlog.get_logger(__name__)
 
@@ -72,7 +74,6 @@ def _missing_nare_fix() -> str:
 PROBE_TIMEOUT_SECONDS = 5.0
 HTTP_OK = 200
 REQUIRED_SCOPES = {"repo", "project", "read:org"}
-REQUIRED_COLUMNS = {"TODO", "IN_PROGRESS", "IN_REVIEW", "BLOCKED", "DONE"}
 
 
 def _failure_status(error: Exception) -> Status:
@@ -284,8 +285,14 @@ def check_token_and_repo(config: ProjectConfiguration, token: str, *, probe_repo
 
 
 async def check_github(
-    config: ProjectConfiguration, *, explicit: bool = False,
+    config: ProjectConfiguration, *, explicit: bool = False, work_items: WorkItemsConfig | None = None,
 ) -> list[CheckResult]:
+    """GitHub as the code host (credential, scopes, repository), then the work item provider.
+
+    399: the board checks are the provider's own (``ProviderPreflight``). With no
+    *work_items* block that is GitHub Projects, whose checks are today's column
+    checks under the same names and messages.
+    """
     try:
         auth = build_auth(config)
         token = await _async_probe(auth.get_token)
@@ -314,39 +321,37 @@ async def check_github(
         auth=auth,
     )
     try:
-        await _async_probe(github.initialize)
-        options = github.field_cache.get("status_option_ids", {})
-        found = {BOARD_COLUMN_TO_STATUS.get(name) for name in options}
-        missing = REQUIRED_COLUMNS - found
-        if missing:
-            results.append(
-                CheckResult(
-                    "board columns",
-                    Status.FAIL if strict else Status.WARN,
-                    f"The board is missing columns: {', '.join(sorted(missing))}.",
-                    "In the board's Status field add To Do (or Ready), In Progress, In Review, Blocked and Done options.",
-                ),
-            )
-        else:
-            results.append(
-                CheckResult(
-                    "GitHub board",
-                    Status.OK,
-                    "Board is reachable and all lifecycle Status columns exist.",
-                ),
-            )
-    except Exception as exc:
-        results.append(
-            CheckResult(
-                "GitHub board",
-                _failure_status(exc),
-                "Could not read the project board and its Status field after bounded retries.",
-                "Correct github_org, github_project_number and github_graphql_url; grant Projects access and add a Status field with To Do, In Progress, In Review, Blocked and Done.",
-            ),
-        )
+        provider = build_board_provider(work_items, github=github)
+        name = work_items.provider if work_items is not None else DEFAULT_WORK_ITEM_PROVIDER
+        results.extend(await _work_item_checks(provider, name))
     finally:
         await github.aclose()
     return _compatible_results(results, strict=strict)
+
+
+async def _work_item_checks(provider: object, name: str) -> list[CheckResult]:
+    """The provider's own start checks, retried like every other probe (399)."""
+    if not isinstance(provider, ProviderPreflight):
+        return [CheckResult(
+            "work items",
+            Status.WARN,
+            f"The {name} work item provider has no start checks; its states are first checked "
+            "when coordinare moves a work item.",
+            "Watch the log for board.move_refused on the first work item coordinare takes.",
+        )]
+    try:
+        return await _async_probe(provider.preflight)
+    except Exception as exc:
+        status = _failure_status(exc)
+        fault = getattr(provider, "preflight_fault", None)
+        if callable(fault):
+            return [fault(status)]
+        return [CheckResult(
+            "work items",
+            status,
+            f"Could not run the {name} work item provider's start checks after bounded retries.",
+            "Check the symphony's work_items settings and that the tracker is reachable, then run coordinare doctor again.",
+        )]
 
 
 def _probe_process(command: list[str], options: ProbeOptions) -> subprocess.CompletedProcess[str]:
@@ -635,14 +640,15 @@ async def run_preflight(
     report = DoctorReport()
     try:
         validate_start_time(config, coordinare_config, raw)
-        configs = [config]
+        # 399: each symphony with its own work item provider block.
+        configs: list[tuple[ProjectConfiguration, WorkItemsConfig | None]] = [(config, None)]
         if coordinare_config is not None:
             configs = []
             for symphony in coordinare_config.symphonies:
                 if not symphony.enabled:
                     continue
                 try:
-                    configs.append(symphony.effective_config(config))
+                    configs.append((symphony.effective_config(config), symphony.work_items))
                 except ValueError as exc:
                     msg = f"Symphony {symphony.name!r}: {exc}"
                     raise ValueError(msg) from exc
@@ -661,11 +667,11 @@ async def run_preflight(
         strict=explicit or config.preset is not None,
     ))
     report.results.append(check_port(config))
-    for effective in configs:
+    for effective, work_items in configs:
         probes = effective if explicit else _active_model_config(effective)
         strict = explicit or effective.preset is not None
         results = (await asyncio.to_thread(run_checks, probes)).results
-        results.extend(await check_github(effective, explicit=explicit))
+        results.extend(await check_github(effective, explicit=explicit, work_items=work_items))
         results.extend(await check_stage_providers(effective))
         results.extend(await check_harnesses(
             effective,
