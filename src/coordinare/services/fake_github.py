@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import structlog
 
 from coordinare.services.card_identity import CardIdentityMap
+from coordinare.services.github import BOARD_COLUMN_TO_STATUS
 from coordinare.services.pr_checks_service import CheckEntry, CheckRollup
 
 if TYPE_CHECKING:
@@ -96,6 +97,20 @@ class _FakePrChecks:
         return None
 
 
+_CANONICAL_STATUSES = frozenset({"BACKLOG", "TODO", "BLOCKED", "IN_PROGRESS", "IN_REVIEW", "DONE"})
+
+
+def _canonical_status(status: str) -> str | None:
+    """The canonical status for a seeded card's column, or None when it has none.
+
+    Seeds use canonical names; a test may also park a card in a native column
+    name, which maps the way the real service maps it.
+    """
+    if status in _CANONICAL_STATUSES:
+        return status
+    return BOARD_COLUMN_TO_STATUS.get(status.strip().lower())
+
+
 class FakeGitHubService(CardIdentityMap):
     """In-process GitHub API stand-in backed by a local bare git repo."""
 
@@ -131,6 +146,10 @@ class FakeGitHubService(CardIdentityMap):
         self._ci_cache: dict[str, CheckRollup] = {}
         self._pr_counter = 0
         self.events: list[dict[str, Any]] = []
+
+        # 400: where the approver reads a card's column when the board is another
+        # work item provider rather than this fake's project. None reads our cards.
+        self.card_status_lookup: Callable[[str], str] | None = None
 
         # Pre-populate the CI cache seam so the node uses our fake PrChecksService.
         self._pr_checks_service_cache = _PrChecksCache(lambda: _FakePrChecks(self))
@@ -191,8 +210,30 @@ class FakeGitHubService(CardIdentityMap):
             "assignees": [],
             "pr_item_id": None,
             "fixture_id": fixture_id,
+            # 400: comments on the card itself, in the GitHub wire shape. A PR's
+            # comments live on the PR; on GitHub both are "issue comments".
+            "comments": [],
         }
         self._record("seed_card", item_id=item_id, title=title, status=status)
+
+    def add_person_comment(self, issue_number: int, *, author: str, body: str) -> dict[str, Any]:
+        """A person comments on the card with this issue number (a harness helper)."""
+        card = next((c for c in self._cards.values() if c["issue_number"] == issue_number), None)
+        if card is None:
+            msg = f"no card with issue number {issue_number}"
+            raise LookupError(msg)
+        return self._append_card_comment(card, author, body)
+
+    def _append_card_comment(self, card: dict[str, Any], author: str, body: str) -> dict[str, Any]:
+        self._comment_seq += 1
+        comment = {
+            "id": self._comment_seq,
+            "user": {"login": author},
+            "body": body,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        card.setdefault("comments", []).append(comment)
+        return comment
 
     def open_pr(
         self,
@@ -288,7 +329,11 @@ class FakeGitHubService(CardIdentityMap):
         content_node_ids: dict[str, str] = {}
         pr_urls: dict[str, str] = {}
         for item_id, card in self._cards.items():
-            snapshot.setdefault(card["status"], []).append(item_id)
+            # 400: mirror the real service, which lists an item only under a
+            # status it can map and leaves out a column it has no name for.
+            status = _canonical_status(card["status"])
+            if status is not None:
+                snapshot[status].append(item_id)
             titles[item_id] = card["title"]
             descriptions[item_id] = card["body"]
             issue_numbers[item_id] = card["issue_number"]
@@ -302,6 +347,7 @@ class FakeGitHubService(CardIdentityMap):
         # 153: mirror production, so the bench translates card ids the same way.
         # Without this the bench routed no comments while every unit test passed.
         self._remember_issue_numbers(issue_numbers)
+        self._remember_content_ids(content_node_ids)
 
         return {
             "snapshot": snapshot,
@@ -348,10 +394,18 @@ class FakeGitHubService(CardIdentityMap):
         # GitHubService.get_issue_comments emits; FakeGitHubServer serves the raw
         # GitHub wire shape to the performer from the same list.
         pr = self._pr_by_number(issue_number)
-        if pr is None:
+        # 400: a card's own comments too. Real GitHub gives issues and pull
+        # requests one number sequence; the bench seeds both from 1, so a number
+        # can name a card and a PR at once, and both sets of comments are returned.
+        card_comments = [
+            c for card in self._cards.values() if card["issue_number"] == issue_number
+            for c in card.get("comments", [])
+        ]
+        if pr is None and not card_comments:
             return []
+        raw = sorted([*(pr["comments"] if pr is not None else []), *card_comments], key=lambda c: int(c.get("id", 0)))
         out: list[dict[str, Any]] = []
-        for c in pr["comments"]:
+        for c in raw:
             cid = int(c.get("id", 0))
             if since_id is not None and cid <= since_id:
                 continue
@@ -360,6 +414,7 @@ class FakeGitHubService(CardIdentityMap):
                 "id": cid,
                 "author": str(author.get("login", "")) if isinstance(author, dict) else "",
                 "body": str(c.get("body", "")),
+                "created_at": str(c.get("created_at", "")),
             })
         return out
 
@@ -453,6 +508,12 @@ class FakeGitHubService(CardIdentityMap):
 
     async def add_comment(self, subject_id: str, body: str) -> dict[str, Any]:
         self._record("add_comment", subject_id=subject_id, body=body[:200])
+        # 400: a comment on a card's issue is kept, so reading the card's comments
+        # returns it, as on GitHub.
+        for card in self._cards.values():
+            if subject_id in (card["content_node_id"], card["issue_node_id"]):
+                self._append_card_comment(card, "coordinare-bot", body)
+                break
         return {"id": f"IC_{len(self.events)}"}
 
     async def close_issue(self, issue_id: str) -> dict[str, Any]:
@@ -726,9 +787,10 @@ class FakeGitHubService(CardIdentityMap):
                 c.conclusion == "success" for c in rollup.checks if c.is_required
             )
             card = self._cards.get(pr["issue_item_id"], {})
+            lookup = self.card_status_lookup
             state = {
                 "ci_green": ci_green,
-                "card_status": card.get("status", ""),
+                "card_status": lookup(pr["issue_item_id"]) if lookup is not None else card.get("status", ""),
                 "reviews": list(pr["reviews"]),
                 "head_sha": rollup.head_sha,
             }
