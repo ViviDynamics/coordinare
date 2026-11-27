@@ -6,7 +6,12 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration, SymphonyConfig
+from coordinare.config import (
+    PerformerRoleConfig,
+    PerformersConfig,
+    ProjectConfiguration,
+    SymphonyConfig,
+)
 from coordinare.services.stage_providers import provider_review_logins, role_provider
 from coordinare.stage_provider_config import ProgettareProviderConfig
 
