@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import hashlib
 import time
 from dataclasses import dataclass, field, replace
@@ -142,6 +143,8 @@ SHARD_SCHEMA_REPAIRS = 2
 # Replies stopped for repetition per conversation, and fresh conversations after one is exhausted.
 AGENT_REPETITION_STOPS = 2
 AGENT_RESTARTS = 1
+# Holds a native shard author is started again for, once, as a new session with its own allowances.
+SHARD_AUTHOR_RESTARTABLE = frozenset({'agent_evidence_call_limit'})
 SPINE_FRACTION = 4
 MERGE_OWNER = 'merge'
 MIN_SPLIT = 2
@@ -768,8 +771,17 @@ class ShardedScope:
                         {'root_directory': inspection.list_directory(),
                          'shard': {'id': shard.id, 'files': len(shard.paths)}, 'shard_files': self.file_list(shard.paths),
                          'shard_evidence': source_evidence_refs(inspection, evidence)})}]
-        summary: ShardSummary = await self.agent_phase(inspection, messages, AgentTask('shard_summary',
-            partial(self._validate_summary, inspection=inspection, shard=shard)))
+        task = AgentTask('shard_summary', partial(self._validate_summary, inspection=inspection, shard=shard))
+        opening = copy.deepcopy(messages)
+        try:
+            summary: ShardSummary = await self.agent_phase(inspection, messages, task)
+        except EnvironmentDiscoveryError as exc:
+            if exc.code not in SHARD_AUTHOR_RESTARTABLE or self.budget.agent_context is None:
+                raise
+            # nare-native-046: one shard author's first reply spent its invalid-evidence allowance and held the run
+            # with 6.6 hours left. It starts once more as a new session, with its own allowance; a second hold stands.
+            self.budget.validation_codes.append('shard_author_restarted')
+            summary = await self.agent_phase(inspection, opening, replace(task, instance_id=f'restart:{shard.id}'))
         completed = dict((self.budget.scope_shards or {}).get('summaries', {}))
         completed[shard.id] = summary.model_dump(mode='json')
         self._persist(summaries=completed)

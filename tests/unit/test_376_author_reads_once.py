@@ -112,7 +112,7 @@ def test_author_reads_survive_the_repair_journal() -> None:
     budget = AttemptBudget()
     budget.author_reads = {'discovery:global': {'guide': 'a' * 64}}
     journal = SimpleNamespace()
-    for name in ('agent_usage_receipts', 'agent_evidence_error_receipts'):
+    for name in ('agent_usage_receipts', 'agent_evidence_error_receipts', 'agent_evidence_turn_receipts'):
         setattr(journal, name, set())
     for name in ('agent_evidence_errors', 'trial_runs', 'shard_schema_repairs'):
         setattr(journal, name, 0)

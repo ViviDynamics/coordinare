@@ -8,12 +8,15 @@ from typing import TYPE_CHECKING, Any
 from nare import Tool, ToolError
 
 from coordinare.services.agent_runtime.errors import refuse_agent
-from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.environment_attempt import EVIDENCE_PROTOCOL, EnvironmentDiscoveryError
 
 if TYPE_CHECKING:
     from coordinare.services.agent_runtime.accounting import BudgetBridge
 
-EVIDENCE_PROTOCOL = 1
+__all__ = ['EVIDENCE_PROTOCOL', 'INVALID_EVIDENCE_CODES', 'MAX_INVALID_EVIDENCE_CALLS', 'EvidenceFailureBudget',
+           'classified_evidence_tool']
+
+# Per agent session, the model replies that made invalid evidence calls (one strike however many calls a reply made).
 MAX_INVALID_EVIDENCE_CALLS = 8
 INVALID_EVIDENCE_CODES = frozenset({'agent_evidence_page', 'invalid_tool_arguments'})
 
@@ -95,6 +98,11 @@ class EvidenceFailureBudget:
         if receipt not in budget.agent_evidence_error_receipts:
             budget.agent_evidence_error_receipts.add(receipt)
             budget.agent_evidence_errors += 1
-            key = self._session_key
-            budget.agent_evidence_phase_errors[key] = budget.agent_evidence_phase_errors.get(key, 0) + 1
+            # One strike per reply: nare-native-046's shard author sent 20 identical parallel calls in its first reply,
+            # was charged 20 against the allowance of 8, and held before it ever saw the refusal.
+            turn_receipt = hashlib.sha256(json.dumps([session_id, turn]).encode()).hexdigest()
+            if turn_receipt not in budget.agent_evidence_turn_receipts:
+                budget.agent_evidence_turn_receipts.add(turn_receipt)
+                key = self._session_key
+                budget.agent_evidence_phase_errors[key] = budget.agent_evidence_phase_errors.get(key, 0) + 1
             await self.bridge.persist()

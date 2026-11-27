@@ -48,6 +48,9 @@ REPAIR_LIMITS = {"schema": 16, "coverage": 8, "scope": 8, "execution": 8}
 # is held to this multiple of it. nare-native-045: reviewers' format slips and one full-repair author's eleven
 # one-at-a-time corrections shared sixteen, and the attempt held with 1,489 calls and 3.9 hours left.
 SCHEMA_BACKSTOP_FACTOR = 2
+# The invalid-evidence accounting version (agent_runtime.evidence_protocol). 2: a session is charged once per model reply
+# that made invalid evidence calls, not once per call (nare-native-046: one first reply of 20 parallel calls held).
+EVIDENCE_PROTOCOL = 2
 MAX_PROBE_BATCHES = 2
 # Each execution repair relocates its cache and brings one more probe batch (see reserve_probe_batch).
 PROBE_BATCH_CEILING = MAX_PROBE_BATCHES + REPAIR_LIMITS["execution"]
@@ -200,9 +203,11 @@ class AttemptBudget:
     agent_usage_unknown: int = 0
     agent_compactions: int = 0
     agent_retries: int = 0
-    agent_evidence_protocol: int = 1
+    agent_evidence_protocol: int = EVIDENCE_PROTOCOL
     agent_evidence_errors: int = 0
     agent_evidence_error_receipts: set[str] = field(default_factory=set, repr=False)
+    # Each (session, turn) already charged against its session's allowance.
+    agent_evidence_turn_receipts: set[str] = field(default_factory=set, repr=False)
     # nare-native-042: per agent session (its phase key), the invalid evidence calls it made. The allowance is each
     # session's own: a fresh divided scope ran 35 sessions, and the merge reviewer's one slip, after shard agents had
     # spent seven, held the attempt.

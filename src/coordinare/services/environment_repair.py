@@ -48,6 +48,7 @@ from coordinare.services.environment_acceptance import (
     saved_execution_accepted,
 )
 from coordinare.services.environment_attempt import (
+    EVIDENCE_PROTOCOL,
     HOLD_CODES,
     MAX_ATTEMPT_SECONDS,
     MAX_PROBE_BATCHES,
@@ -155,6 +156,7 @@ class RepairJournal(BaseModel):
     agent_evidence_protocol: int = Field(default=0, ge=0)
     agent_evidence_errors: int = Field(default=0, ge=0)
     agent_evidence_error_receipts: set[str] = Field(default_factory=set)
+    agent_evidence_turn_receipts: set[str] = Field(default_factory=set)
     agent_evidence_phase_errors: dict[str, NonNegativeInt] = Field(default_factory=dict)
     trial_runs: int = Field(default=0, ge=0)
     trial_usage_unknown: bool = False
@@ -595,9 +597,10 @@ def _restore_agent_accounting(budget: AttemptBudget, journal: RepairJournal) -> 
     budget.agent_usage_unknown = journal.agent_usage_unknown
     budget.agent_compactions = journal.agent_compactions
     budget.agent_retries = journal.agent_retries
-    budget.agent_evidence_protocol = journal.agent_evidence_protocol if journal.calls else 1
+    budget.agent_evidence_protocol = journal.agent_evidence_protocol if journal.calls else EVIDENCE_PROTOCOL
     budget.agent_evidence_errors = journal.agent_evidence_errors
     budget.agent_evidence_error_receipts = set(journal.agent_evidence_error_receipts)
+    budget.agent_evidence_turn_receipts = set(journal.agent_evidence_turn_receipts)
     budget.agent_evidence_phase_errors = dict(journal.agent_evidence_phase_errors)
     budget.trial_runs = journal.trial_runs
     budget.shard_schema_repairs = journal.shard_schema_repairs
@@ -614,6 +617,7 @@ def _save_agent_accounting(journal: RepairJournal, budget: AttemptBudget) -> Non
     journal.agent_evidence_protocol = budget.agent_evidence_protocol
     journal.agent_evidence_errors = max(journal.agent_evidence_errors, budget.agent_evidence_errors)
     journal.agent_evidence_error_receipts |= budget.agent_evidence_error_receipts
+    journal.agent_evidence_turn_receipts |= budget.agent_evidence_turn_receipts
     journal.agent_evidence_phase_errors = {key: max(journal.agent_evidence_phase_errors.get(key, 0), value)
                                            for key, value in budget.agent_evidence_phase_errors.items()}
     journal.agent_phase_schema_repairs = {key: max(journal.agent_phase_schema_repairs.get(key, 0), value)

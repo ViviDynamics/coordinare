@@ -122,7 +122,9 @@ class BatchedFailureTransport(InvalidEvidenceTransport):
 
 
 @pytest.mark.asyncio
-async def test_budget_stops_after_current_batch_without_another_model_request(tmp_path: Path) -> None:
+async def test_a_reply_of_invalid_calls_is_one_strike(tmp_path: Path) -> None:
+    """nare-native-046: a first reply of 20 identical invalid parallel calls was charged 20 strikes against eight, and
+    the session held before it saw the refusal. Each reply is one strike; eight such replies still hold."""
     ran = []
 
     async def action(arguments: dict[str, Any]) -> str:
@@ -136,9 +138,10 @@ async def test_budget_stops_after_current_batch_without_another_model_request(tm
     with pytest.raises(EnvironmentDiscoveryError) as caught:
         await run_environment_phase(req)
     assert caught.value.code == 'agent_evidence_call_limit'
-    assert transport.calls == 1
-    assert ran == ['approved']  # Native events arrive after the whole current batch.
-    assert req.budget.agent_evidence_errors == 8
+    assert transport.calls == 8
+    assert ran == ['approved'] * 8  # Native events arrive after the whole current batch.
+    assert req.budget.agent_evidence_errors == 64
+    assert list(req.budget.agent_evidence_phase_errors.values()) == [8]
 
 
 @pytest.mark.asyncio
@@ -245,17 +248,13 @@ async def test_interrupted_batch_preserves_completed_invalid_calls_before_checkp
     saved = await req.checkpoint_store.load_verified(reference.key, reference.identity)
     assert saved.counters['agent_evidence_errors'] == failures
     assert saved.evidence_error_receipts == req.budget.agent_evidence_error_receipts
-    if failures >= 8:
-        with pytest.raises(EnvironmentDiscoveryError) as caught:
-            await run_environment_phase(req)
-        assert caught.value.code == 'agent_evidence_call_limit'
-        assert transport.calls == 1
-    else:
-        # Clean interruption remains resumable; spent calls must not disappear.
-        with pytest.raises(asyncio.CancelledError):
-            await run_environment_phase(req)
-        assert req.budget.agent_evidence_errors == 2
-        assert transport.calls == 2
+    # However many invalid calls the interrupted reply made, it was one strike: the session stays resumable, and the
+    # calls it spent do not disappear.
+    assert list(req.budget.agent_evidence_phase_errors.values()) == [1]
+    with pytest.raises(asyncio.CancelledError):
+        await run_environment_phase(req)
+    assert req.budget.agent_evidence_errors == 2 * failures
+    assert transport.calls == 2
 
 
 @pytest.mark.asyncio

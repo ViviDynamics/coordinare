@@ -134,3 +134,51 @@ def test_a_full_repair_is_told_what_to_keep():
     assert kept['install_failures_only'] == ['inst-gh']
     budget.execution_attempt_history = [{'failed_ids': ['c-guards']}]
     assert 'install_failures_only' not in discovery.repair_obligations(previous, budget)
+
+
+@pytest.mark.asyncio
+async def test_a_shard_author_held_on_invalid_evidence_calls_starts_once_more_as_a_new_session(monkeypatch):
+    """nare-native-046: one shard author's first reply spent its invalid-evidence allowance and held the run."""
+    from coordinare_service_inference.environment.findings import FindingLedger
+
+    from coordinare.services.environment_agent import EnvironmentAgentContext
+    from coordinare.services.environment_scope import _Request
+    from coordinare.services.environment_shard_scope import ShardedScope
+    from tests.unit.test_353_discovery_repair import COMMIT
+    from tests.unit.test_353_shard_scope import ENTRIES, LIMITS, PLAN, SOURCES
+
+    budget = AttemptBudget()
+    budget.scope_findings = FindingLedger(source_commit=COMMIT)
+    budget.agent_context = EnvironmentAgentContext(object(), 'restart', 'a' * 64)
+
+    async def fetch(path: str) -> str:
+        return SOURCES[path]
+
+    request = _Request(paths=list(SOURCES), fetch=fetch, chat=None, commit=COMMIT, limits=LIMITS, budget=budget,
+                       entries=ENTRIES)
+    scope = ShardedScope(request, ENTRIES, PLAN, 1)
+    await scope.load_spine()
+    tasks = []
+
+    async def agent_phase(_inspection, _messages, task):
+        tasks.append(task.instance_id)
+        if len(tasks) == 1:
+            raise EnvironmentDiscoveryError('Invalid evidence-call allowance exhausted.', code='agent_evidence_call_limit')
+        raise EnvironmentDiscoveryError('held again', code='agent_evidence_call_limit')
+
+    monkeypatch.setattr(scope, 'agent_phase', agent_phase)
+    shard = PLAN.shards[0]
+    with pytest.raises(EnvironmentDiscoveryError, match='held again'):
+        await scope.author_shard(shard)
+    assert tasks == ['', f'restart:{shard.id}']
+    assert 'shard_author_restarted' in budget.validation_codes
+
+    async def other_hold(_inspection, _messages, task):
+        tasks.append(task.instance_id)
+        raise EnvironmentDiscoveryError('deadline', code='attempt_deadline')
+
+    monkeypatch.setattr(scope, 'agent_phase', other_hold)
+    tasks.clear()
+    with pytest.raises(EnvironmentDiscoveryError, match='deadline'):
+        await scope.author_shard(shard)
+    assert tasks == ['']
