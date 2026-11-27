@@ -166,6 +166,26 @@ const dots = timelineDotsHtml({
 check("one dot per stage", (dots.match(/class="tl-dot /g) || []).length, 8);
 check("the current stage is the one ringed", (dots.match(/tl-dot-current/g) || []).length, 1);
 has("a dot names its stage and status", dots, "Implement: In progress");
+// #365 (c): the strip says in words which stage is current and where it sits, beside the dots.
+has("the caption names the current stage and its place", dots, '<span class="tl-dots-caption">Implement, stage 3 of 8</span>');
+has("the strip's accessible name lists every stage with its status", dots,
+  'aria-label="Stages: Assess: Done; Plan: Done; Implement: In progress (current); Review: Skipped');
+has("the dots are one image to assistive tech", dots, 'role="img"');
+const finished = timelineDotsHtml({
+  current: null,
+  statuses: STAGE_CODES.map((code) => ({ stage: code, status: "done" })),
+});
+has("with every stage done the caption says so", finished, '<span class="tl-dots-caption">All 8 stages done</span>');
+const between = timelineDotsHtml({
+  current: "",
+  statuses: STAGE_CODES.map((code, i) => ({ stage: code, status: i < 3 ? "done" : "pending" })),
+});
+has("with no current stage the caption counts what is done", between, '<span class="tl-dots-caption">3 of 8 stages done</span>');
+const hostileStrip = timelineDotsHtml({
+  current: "<b>x</b>",
+  statuses: [{ stage: "<b>x</b>", status: "current" }],
+});
+lacks("a hostile stage code is not written as markup", hostileStrip, "<b>");
 check("no strip means no dots", timelineDotsHtml(null), "");
 check("a strip with no statuses means no dots", timelineDotsHtml({ statuses: "x" }), "");
 

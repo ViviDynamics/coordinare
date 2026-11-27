@@ -202,15 +202,36 @@ function timelineNotesHtml(tl) {
 }
 
 // The board card's compact strip: one dot per stage, the current one ringed.
+// 365: a caption beside the dots says in words which stage is current and where it sits in the
+// pipeline, so a reader does not need the tooltips. The dots are one image whose name lists every
+// stage with its status.
 function timelineDotsHtml(strip) {
   if (!strip || !Array.isArray(strip.statuses)) return '';
-  var dots = strip.statuses.map(function(item) {
+  var names = [];
+  var position = 0;
+  var done = 0;
+  var dots = strip.statuses.map(function(item, index) {
     var label = vocabularyKindLabel('stage_labels', item.stage);
-    var current = item.stage === strip.current ? ' tl-dot-current' : '';
+    var isCurrent = !!strip.current && item.stage === strip.current;
+    if (isCurrent) position = index + 1;
+    if (item.status === 'done') done += 1;
+    names.push(label + ': ' + timelineStatusText(item.status) + (isCurrent ? ' (current)' : ''));
+    var current = isCurrent ? ' tl-dot-current' : '';
     return '<span class="tl-dot tl-' + esc(item.status) + current + '" title="' +
       esc(label + ': ' + timelineStatusText(item.status)) + '"></span>';
   }).join('');
-  return '<span class="tl-dots" title="Pipeline stages">' + dots + '</span>';
+  return '<span class="tl-strip"><span class="tl-dots" role="img" aria-label="' + esc('Stages: ' + names.join('; ')) + '">' +
+    dots + '</span><span class="tl-dots-caption">' + esc(timelineStripCaption(strip, position, done)) + '</span></span>';
+}
+
+// 365: the words beside the dots. The current stage and its place, else how many stages are done.
+function timelineStripCaption(strip, position, done) {
+  var total = strip.statuses.length;
+  if (position > 0) {
+    return vocabularyKindLabel('stage_labels', strip.current) + ', stage ' + position + ' of ' + total;
+  }
+  if (total > 0 && done === total) return 'All ' + total + ' stages done';
+  return done + ' of ' + total + ' stages done';
 }
 
 // The strip of one card, from the snapshot's card_pipeline (any symphony), or null.

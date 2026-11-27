@@ -213,6 +213,11 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .tl-dot.tl-ran { background: var(--color-accent-yellow); }
 .tl-dot.tl-current { background: var(--color-accent-blue); box-shadow: 0 0 0 2px var(--color-bg-surface), 0 0 0 3px var(--color-accent-blue); }
 .tl-dot.tl-skipped, .tl-dot.tl-not_recorded { opacity: 0.4; }
+/* 365: the words beside the dots: the current stage and its place in the pipeline. */
+.tl-strip { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; min-width: 0; max-width: 100%; }
+.tl-dots-caption { font-size: 11px; color: var(--color-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* An active-run tile names its stage in its header, and its track row must stay one line. */
+.ap-tile .tl-dots-caption { display: none; }
 /* 150: the History page's run table, filters, checks and pager. */
 .history-filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; margin-bottom: 12px; font-size: 12px; }
 .history-filters label { display: flex; flex-direction: column; gap: 2px; color: var(--color-text-muted); }
