@@ -36,7 +36,7 @@ def test_the_approver_help_states_the_rule_exactly() -> None:
     assert "every symphony" in help_text
     assert "does not merge" in help_text
     assert "work item" in help_text
-    assert "—" not in help_text and "–" not in help_text
+    assert chr(0x2014) not in help_text and chr(0x2013) not in help_text  # no em or en dash
 
 
 def test_the_bot_field_says_a_bot_cannot_approve_a_merge() -> None:

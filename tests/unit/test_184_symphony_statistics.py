@@ -96,7 +96,7 @@ def test_symphony_statistics_node_contract(tmp_path: Path) -> None:
 def test_merged_symphony_detail_preserves_status_actions_and_settings(tmp_path: Path) -> None:
     scripts = REPO / "src/coordinare/dashboard/dashboard_static"
     bundle = tmp_path / "merged-detail.js"
-    functions = ("renderSymphoniesPage", "symSummaryHtml", "symOverrideFields", "loadSymphonyPersonas")
+    functions = ("renderSymphoniesPage", "symSummaryHtml", "symApproverNoteHtml", "symOverrideFields", "loadSymphonyPersonas")
     sources = [(scripts / f"{name}.js").read_text() for name in ("helpers", "usage", "waiting", "runs", "symphonies", "bootstrap", "stats_charts", "symphony_stats")]
     sources.extend(shipped_function("app", name) for name in functions)
     sources.append("async " + shipped_function("app", "loadSymphonyDetail"))
