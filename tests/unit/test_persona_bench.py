@@ -263,35 +263,32 @@ class TestResolveRoleDispatch:
 
 
 class TestBuildJobPayload:
+    """391: the payload comes from the production builder, fed a card context."""
+
     def _task(self):
         return persona_bench.RoleTask(
             "architect", "architecting", "", None,
             "T", "D", ["ac"], "persona", persona_bench.grade_architect, "rubric")
 
+    def _payload(self, **kw):
+        ctx = persona_bench.build_card_context(
+            self._task(), backend="codex", repo_url="https://github.com/o/r.git", branch="b",
+            model="x", **kw)
+        return persona_bench.build_job_payload(ctx, gh_token="t")
+
     def test_injects_orchestration_into_metadata(self):
         orch = {"strategy": "always", "tool": {"model": "x"}, "thinking": {"model": "y"}}
-        payload = persona_bench.build_job_payload(
-            self._task(), backend="codex", repo_url="r", branch="b",
-            job_id="j", gh_token="t", extra_secrets={}, model="x",
-            orchestration=orch, pr_url=None)
+        payload = self._payload(orchestration=orch)
         assert payload["metadata"]["model"] == "x"
         assert payload["metadata"]["orchestration"] == orch
         assert payload["role"] == "architecting"
         assert payload["secrets"]["GITHUB_TOKEN"] == "t"
 
     def test_single_model_omits_orchestration(self):
-        payload = persona_bench.build_job_payload(
-            self._task(), backend="codex", repo_url="r", branch="b",
-            job_id="j", gh_token="t", extra_secrets={}, model="x",
-            orchestration=None, pr_url=None)
-        assert "orchestration" not in payload["metadata"]
+        assert "orchestration" not in self._payload()["metadata"]
 
     def test_pr_url_attached_when_present(self):
-        payload = persona_bench.build_job_payload(
-            self._task(), backend="codex", repo_url="r", branch="b",
-            job_id="j", gh_token="t", extra_secrets={}, model="x",
-            orchestration=None, pr_url="https://example/pr/1")
-        assert payload["pr_url"] == "https://example/pr/1"
+        payload = self._payload(pr_url="https://example/pr/1")
         assert payload["metadata"]["pr_url"] == "https://example/pr/1"
 
 
@@ -345,25 +342,25 @@ class TestForkThrowawayBranch:
             return _FakeResp(201, {})
 
         monkeypatch.setattr(persona_bench, "_gh_api", fake_api)
-        ok = persona_bench._fork_throwaway_branch(
+        sha = persona_bench._fork_throwaway_branch(
             "https://github.com/O/r.git", "feat/qa-behavior", "bench-ro-qa-1", "t")
-        assert ok is True
+        assert sha == "deadbeef"
         # Resolved the fixture HEAD, then created the throwaway ref at that sha.
         assert calls[0] == ("GET", "/repos/O/r/git/ref/heads/feat/qa-behavior", None)
         assert calls[1] == ("POST", "/repos/O/r/git/refs",
                             {"ref": "refs/heads/bench-ro-qa-1", "sha": "deadbeef"})
 
-    def test_returns_false_when_fixture_missing(self, monkeypatch):
+    def test_returns_none_when_fixture_missing(self, monkeypatch):
         monkeypatch.setattr(persona_bench, "_gh_api",
                             lambda *a, **k: _FakeResp(404, {}))
         assert persona_bench._fork_throwaway_branch(
-            "https://github.com/O/r.git", "nope", "bench-ro-x", "t") is False
+            "https://github.com/O/r.git", "nope", "bench-ro-x", "t") is None
 
-    def test_returns_false_on_unparseable_repo(self, monkeypatch):
+    def test_returns_none_on_unparseable_repo(self, monkeypatch):
         monkeypatch.setattr(persona_bench, "_gh_api",
                             lambda *a, **k: _FakeResp(200, {"object": {"sha": "x"}}))
         assert persona_bench._fork_throwaway_branch(
-            "https://example.com/foo", "b", "bench-ro-x", "t") is False
+            "https://example.com/foo", "b", "bench-ro-x", "t") is None
 
 
 class TestDeleteRemoteBranch:

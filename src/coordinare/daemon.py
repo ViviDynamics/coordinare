@@ -1726,6 +1726,17 @@ def _valid_board_snapshot(snapshot: Any) -> bool:
     )
 
 
+def _board_needs_github_project(state: Any) -> bool:
+    """Whether reading this state's board needs an initialised GitHub project (#400).
+
+    True when no board is configured (the board is then the GitHub service) and
+    when the configured board is the GitHub Projects adapter, which exposes the
+    service it reads through. Any other provider is its own tracker.
+    """
+    provider = state.get("board_provider")
+    return provider is None or getattr(provider, "github", None) is not None
+
+
 async def _preflight_poll_board(
     state: CoordinareState, github: Any, active_sessions: dict[str, Any],
 ) -> None:
@@ -2980,7 +2991,9 @@ class CoordinareDaemon:
         # In multi-symphony mode the global github_service exists but is not
         # initialized (project_id=0, no field_cache — project_number lives
         # per-symphony). Fall back to any per-symphony service that is ready.
-        if not getattr(github, "project_id", None):
+        # #400: a configured board that is not a GitHub project is read as it
+        # is. Its code host has no project id and needs none.
+        if _board_needs_github_project(self._state) and not getattr(github, "project_id", None):
             sym_svcs = self._state.get("symphony_github_services") or {}
             github = next(
                 (svc for svc in sym_svcs.values() if getattr(svc, "project_id", None)),

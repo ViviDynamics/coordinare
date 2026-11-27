@@ -149,6 +149,37 @@ def test_keep_editing_unlocks_the_form_and_sends_nothing(page: Page, live_server
 
 
 @pytest.mark.e2e
+def test_saved_stays_through_keep_editing_and_clears_on_a_later_change(page: Page, live_server_url: str,
+                                                                        store: DashboardStore) -> None:
+    """#340: Saved describes the form as it was saved. Opening a review and keeping on editing changes
+    nothing, so Saved stays. Adding a spec file afterwards is an unsaved change, so the form says
+    Unsaved and Saved goes."""
+    saved: list[Any] = []
+    _stub(page, {"max_concurrent_cards": 2}, saved)
+    _open(page, f"{live_server_url}/config#symphonies/{_NAME}", store)
+    message = page.locator("#sym-save-msg")
+
+    page.locator(_OVERRIDE).fill("3")
+    page.evaluate("document.querySelector('#sym-config-form')._before340 = true")
+    _review_and_confirm(page)
+    expect(message).to_have_text("Saved", timeout=_WAIT)
+
+    page.click("#sym-delete-btn")
+    page.locator("#sym-config-form [data-review] button", has_text="Keep editing").click()
+    expect(page.locator("#sym-config-form [data-review]")).to_have_count(0)
+    # The save's refresh waits out an open review, then redraws the form. Wait for that redraw, so
+    # the edit below lands on the form that stays, and check it kept Saved.
+    page.wait_for_function("() => { const f = document.querySelector('#sym-config-form'); return !!f && !f._before340; }",
+                           timeout=_WAIT)
+    expect(message).to_have_text("Saved", timeout=_WAIT)
+
+    page.locator("#sym-spec-file-input").fill("pyproject.toml")
+    page.locator('#sym-config-form [data-cfg-action="add-spec-file"]').click()
+    expect(page.locator("#sym-config-form [data-sym-dirty]")).to_be_visible(timeout=_WAIT)
+    expect(message).to_have_text("", timeout=_WAIT)
+
+
+@pytest.mark.e2e
 def test_a_refused_save_shows_its_reason_in_plain_words(page: Page, live_server_url: str, store: DashboardStore) -> None:
     saved: list[Any] = []
     refusal = {"error": "Validation failed: Non-loopback dashboard_host requires dashboard_auth_token"}

@@ -55,6 +55,7 @@ from coordinare.daemon import CoordinareDaemon
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.graph.state import _set_current_card
 from coordinare.services import performer_lifecycle
+from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.fake_github import FakeGitHubService
 from coordinare.services.mounted_file import transcript_root_guard
 from coordinare.services.run_transcript import (
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
     from coordinare.bench.fixtures import Fixture
     from coordinare.config import CoordinareConfiguration
     from coordinare.graph.state import CoordinareState
+    from coordinare.services.in_memory_board import InMemoryBoardProvider
     from coordinare.services.run_transcript import TranscriptCollector
     from coordinare.services.token_usage import PriceTable
 
@@ -126,9 +128,11 @@ def _make_stub_dispatch(
         card["previous_status"] = card.get("status", "TODO")
         card["status"] = "IN_REVIEW"
         _set_current_card(cast("CoordinareState", state), card)
-        gh = state.get("github_service")
-        if gh is not None:
-            await gh.move_card(card_id, "IN_REVIEW")
+        # 400: through the board, so a bench on another work item provider moves the
+        # item there. Without a configured provider this is the GitHub fake, as before.
+        board = board_of(state)
+        if board is not None:
+            await move_card_or_warn(board, card_id, "IN_REVIEW")
         state["phase"] = "monitoring_pr"
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
@@ -336,6 +340,7 @@ async def run_board(
     real_poll_interval_seconds: float = 5.0,
     wall_clock_budget_seconds: float = 1200.0,
     sleep_func: Any = None,
+    work_items: InMemoryBoardProvider | None = None,
 ) -> RunArtifact:
     """Run the daemon over a simulated board and return a validated RunArtifact.
 
@@ -362,7 +367,17 @@ async def run_board(
     between polls and is bounded by ``wall_clock_budget_seconds`` (converted to a
     ``max_cycles`` ceiling). ``sleep_func`` overrides the sleep (tests pass
     ``_no_sleep`` to keep the real-mode loop instant).
+
+    ``work_items`` (#400) runs the board on an in-memory work item provider instead
+    of the GitHub fake's project: each fixture becomes an item there, and the daemon
+    reads and moves work items through it. Pull requests, CI and the merge stay on
+    the GitHub fake. ``None`` keeps the GitHub Projects board.
     """
+    if work_items is not None and not stub:
+        # Real performers read the issue from the fake server, which only knows
+        # the fake's own project. Refused rather than run against cards it lacks.
+        msg = "work_items is supported only with stub=True"
+        raise ValueError(msg)
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix="bench-run-"))
@@ -384,8 +399,12 @@ async def run_board(
         approver=gates_green,
         work_dir=scratch / "ci",
     )
-    seed_board(fake, fixtures)
-    card_ids = [f"PVTI_{i}" for i in range(1, len(fixtures) + 1)]
+    if work_items is None:
+        seed_board(fake, fixtures)
+        card_ids = [f"PVTI_{i}" for i in range(1, len(fixtures) + 1)]
+    else:
+        card_ids = [work_items.add_item(fx.title, body=fx.body) for fx in fixtures]
+        fake.card_status_lookup = work_items.status_of
     fixtures_by_card = dict(zip(card_ids, fixtures, strict=False))
 
     overrides: dict[str, Any] = {}
@@ -417,6 +436,8 @@ async def run_board(
         state_store=None,
     )
     daemon.state["github_service"] = fake
+    if work_items is not None:
+        daemon.state["board_provider"] = work_items
     daemon.state["human_reviewers"] = [human_login]
     daemon.state["lifecycle_sequence"] = ["assessing"]
     if config is not None:
@@ -530,7 +551,7 @@ async def run_board(
         )
 
     finished_at = datetime.now(UTC)
-    board = await fake.poll_board()
+    board = await (work_items or fake).poll_board()
     artifact = _build_artifact(
         fake=fake,
         fixtures_by_card=fixtures_by_card,
@@ -544,6 +565,7 @@ async def run_board(
             config=config, real_config=real_config, config_path=config_path,
         ),
         run_error=run_error,
+        work_items=work_items,
     )
     artifact.write(run_dir)
 
@@ -734,6 +756,7 @@ def _build_artifact(
     price_table: PriceTable,
     run_error: str | None,
     config: CoordinareConfiguration | None = None,
+    work_items: InMemoryBoardProvider | None = None,
 ) -> RunArtifact:
     run_id = started_at.strftime("%Y%m%d-%H%M%S")
     cards: list[CardOutcome] = []
@@ -813,7 +836,10 @@ def _build_artifact(
         card_tokens = sum(tokens) if tokens else None
         cards.append(CardOutcome(
             card_id=card_id,
-            issue_ref=fake._cards.get(card_id, {}).get("issue_url", ""),
+            issue_ref=(
+                work_items.item(card_id).url if work_items is not None
+                else fake._cards.get(card_id, {}).get("issue_url", "")
+            ),
             title=fx.title,
             fixture_id=fx.id,
             final_state=final_state,  # type: ignore[arg-type]
