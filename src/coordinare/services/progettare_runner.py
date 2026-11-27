@@ -52,10 +52,15 @@ def without_coordinare_python(env: dict[str, str]) -> dict[str, str]:
     """``env`` without coordinare's own Python: its import path, its virtualenv, and that
     virtualenv's ``bin`` on PATH. A Python-based CLI in its own environment (Progettare)
     then never imports coordinare's packages or resolves ``python3`` to its interpreter."""
-    venv = env.get("VIRTUAL_ENV", "").rstrip("/")
     cleaned = {k: v for k, v in env.items() if k not in _PYTHON_ENV}
-    if venv and "PATH" in cleaned:
-        bins = {f"{venv}/bin", str(Path(sys.executable).parent)}
+    bins = set()
+    if venv := env.get("VIRTUAL_ENV", "").rstrip("/"):
+        bins.add(f"{venv}/bin")
+    if sys.prefix != sys.base_prefix:
+        # Coordinare runs from a virtualenv even when VIRTUAL_ENV is unset (an installed
+        # .venv started by path). A system interpreter's directory is never removed.
+        bins.add(f"{sys.prefix.rstrip('/')}/bin")
+    if bins and "PATH" in cleaned:
         cleaned["PATH"] = os.pathsep.join(p for p in cleaned["PATH"].split(os.pathsep) if p.rstrip("/") not in bins)
     return cleaned
 

@@ -15,7 +15,7 @@ id, and runs the CLI there in a detached runner (``progettare_runner``) that hol
 - the lock is held: the run is in flight;
 - no ``request.json``: never started;
 - ``run.json`` with ``complete``: the plan, read from ``intake.json``, ``size.json`` and
-  ``briefs/*.json`` after checking each is contract version 1;
+  the per-reader briefs under ``briefs/`` after checking each is contract version 1;
 - ``run.json`` with ``blocked``: the questions for a person;
 - ``run.json`` with ``failed``, or no ``run.json`` at all (a clone that failed, a run that
   timed out or was killed by a restart of the host): ended without a result. Progettare
@@ -355,6 +355,8 @@ class ProgettareProvider:
             msg = f"run.json names status {status!r}, which is not complete, blocked or failed"
             raise ContractError(msg)
         blueprint = blueprint_from_run(run_dir, intake, manifest, provider=self.name)
+        # What the plan answers, so a later dispatch can tell whether it still does.
+        blueprint["source"]["pin"] = pin
         return StageOutcome(
             verdict=StageVerdict.PASSED, reviewed_head=pin, input_digest=digest,
             blueprint=blueprint, record_ref=str(run_dir),

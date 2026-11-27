@@ -668,12 +668,16 @@ class WorkItemStageService(ExternalStageService):
         *,
         stage: str,
         work_item_reader: WorkItemReader,
+        github_hosts: frozenset[str] = frozenset({"github.com"}),
     ) -> None:
         if stage not in WORK_ITEM_STAGES:
             msg = f"the {stage} stage judges a pull request, not a work item"
             raise ValueError(msg)
         super().__init__(provider, stage=stage, pr_reader=_no_pull_request)
         self._read_item = work_item_reader
+        #: The hosts coordinare's GitHub lives on. The clone sends the GitHub token, so
+        #: an issue URL on any other host is refused, never cloned from.
+        self._github_hosts = frozenset(h.lower() for h in github_hosts)
 
     async def relay_feedback(self, review_payload: dict[str, Any]) -> dict[str, Any]:
         del review_payload
@@ -700,6 +704,13 @@ class WorkItemStageService(ExternalStageService):
             msg = f"{self._provider.name}: the card has no id"
             raise TransportError(msg)
         host, repository, number = target
+        if host not in self._github_hosts:
+            msg = (
+                f"{self._provider.name}: the card's issue is on {host}, not the configured GitHub "
+                f"host ({', '.join(sorted(self._github_hosts))}); it is not planned, and no token "
+                "is sent there"
+            )
+            raise PerformerAuthError(msg)
         snapshot = await self._item(repository, node)
         return WorkItemRequest(
             card_id=card_id,
@@ -772,6 +783,22 @@ class WorkItemStageService(ExternalStageService):
                 blocked["questions"] = list(outcome.questions)
         blocked["report"] = {"stage_record": record}
         return blocked
+
+
+def planned_input_is_current(blueprint: dict[str, Any], card: dict[str, Any], clarifications: Any) -> bool:
+    """403: whether a provider's plan still answers the card as it is now.
+
+    A plan made by a work-item provider records the pin of the input it answered. It is
+    current only while the card's title, body and recorded answers give the same pin: an
+    edited body, or an answer recorded after the run read the issue, means planning
+    again. A blueprint without a pin (a performer's) is not this check's business.
+    """
+    source = blueprint.get("source")
+    pin = source.get("pin") if isinstance(source, dict) else None
+    if not pin:
+        return True
+    current = work_item_digest(str(card.get("title") or ""), str(card.get("description") or ""))
+    return bool(pin == work_item_pin(current, clarifications))
 
 
 async def _no_pull_request(repository: str, node: str) -> PullRequestSnapshot:

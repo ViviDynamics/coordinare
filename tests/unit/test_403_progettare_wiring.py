@@ -264,3 +264,60 @@ async def test_doctor_ignores_progettare_when_no_role_uses_it(monkeypatch: pytes
 
     monkeypatch.setattr(ProgettareProvider, "health", never)
     assert await check_stage_providers(_config(opted_in=False)) == []
+
+
+# -- copilot round ------------------------------------------------------------------------
+
+
+def _planned_by_progettare(card: dict[str, Any], clarifications: list[dict[str, Any]]) -> dict[str, Any]:
+    from coordinare.graph.nodes.dispatch_performer import stamp_blueprint_signature
+    from coordinare.services.stage_contract import work_item_pin
+
+    state = initial_state()
+    state["current_card"] = dict(card)
+    state["card_clarifications"] = list(clarifications)
+    state["requirements_changed"] = False
+    state["relay_feedback"] = []
+    pin = work_item_pin(work_item_digest(card["title"], card["description"]), clarifications)
+    state["blueprint"] = {"milestones": [{"goal": "CSV"}], "source": {"provider": "progettare", "pin": pin}}
+    stamp_blueprint_signature(state)
+    return state
+
+
+def test_a_progettare_plan_is_reused_only_while_its_input_is_unchanged() -> None:
+    from coordinare.graph.nodes.dispatch_performer import blueprint_reuse_allowed
+
+    card = {"id": "PVTI_card1", "title": TITLE, "description": BODY}
+    state = _planned_by_progettare(card, [])
+    assert blueprint_reuse_allowed(state, "architecting") is True
+    # The body was edited after the plan was lifted: the old plan is not reused.
+    state["current_card"] = {**card, "description": BODY + "- [ ] and JSON\n"}
+    assert blueprint_reuse_allowed(state, "architecting") is False
+    # An answer recorded after the run read the issue: not reused either.
+    state = _planned_by_progettare(card, [])
+    state["card_clarifications"] = [{"questions": ["Which format?"], "answer": "CSV"}]
+    state["blueprint_signature"] = None
+    from coordinare.graph.nodes.dispatch_performer import stamp_blueprint_signature
+
+    stamp_blueprint_signature(state)  # as if the lift happened after the answer
+    assert blueprint_reuse_allowed(state, "architecting") is False
+
+
+def test_an_issue_on_another_host_never_gets_the_token() -> None:
+    import asyncio
+
+    from coordinare.transport.http_transport import PerformerAuthError
+
+    services = _build_stage_provider_services(_config(opted_in=True), {}, _GitHub())
+    planner = services["stage-provider:progettare:architecting"]
+    card = {"id": "C", "issue_url": "https://github.evil.example/acme/widgets/issues/12", "issue_id": "I_1"}
+    with pytest.raises(PerformerAuthError, match="not the configured GitHub host"):
+        asyncio.run(planner.dispatch_card(card))
+
+
+def test_a_ghe_host_is_the_configured_one() -> None:
+    from coordinare.services.stage_providers import github_hosts
+
+    config = _config(opted_in=True).model_copy(update={"github_api_url": "https://github.corp.example/api/v3"})
+    assert github_hosts(config) == frozenset({"github.corp.example"})
+    assert github_hosts(_config(opted_in=True)) == frozenset({"github.com"})

@@ -515,3 +515,14 @@ def test_coordinares_virtualenv_is_taken_off_the_path() -> None:
     assert "VIRTUAL_ENV" not in cleaned
     assert "PYTHONPATH" not in cleaned
     assert cleaned["HOME"] == "/srv/coordinare"
+
+
+def test_the_daemons_own_virtualenv_leaves_the_path_without_virtual_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    import coordinare.services.progettare_runner as runner
+
+    monkeypatch.setattr(runner.sys, "prefix", "/opt/coordinare/.venv")
+    monkeypatch.setattr(runner.sys, "base_prefix", "/usr")
+    cleaned = runner.without_coordinare_python({"PATH": "/opt/coordinare/.venv/bin:/usr/bin"})
+    assert cleaned["PATH"] == "/usr/bin"
+    monkeypatch.setattr(runner.sys, "prefix", "/usr")
+    assert runner.without_coordinare_python({"PATH": "/usr/bin:/bin"})["PATH"] == "/usr/bin:/bin"

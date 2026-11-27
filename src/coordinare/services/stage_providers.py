@@ -8,6 +8,7 @@ performers.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import structlog
 
@@ -67,6 +68,13 @@ def provider_fix(name: str, provider_config: StageProviderConfig) -> str:
     )
 
 
+def github_hosts(config: Any) -> frozenset[str]:
+    """403: the web host of the configured GitHub: github.com, or a GitHub Enterprise host."""
+    api = str(getattr(config, "github_api_url", "") or "https://api.github.com")
+    host = (urlsplit(api).hostname or "").lower()
+    return frozenset({"github.com"}) if host in ("", "api.github.com", "github.com") else frozenset({host})
+
+
 def build_stage_provider_services(
     config: ProjectConfiguration,
     pr_reader: PullRequestReader,
@@ -88,7 +96,10 @@ def build_stage_provider_services(
             if stage in WORK_ITEM_STAGES:
                 if work_item_reader is None:
                     continue
-                service = WorkItemStageService(provider, stage=stage, work_item_reader=work_item_reader)
+                service = WorkItemStageService(
+                    provider, stage=stage, work_item_reader=work_item_reader,
+                    github_hosts=github_hosts(config),
+                )
             else:
                 service = ExternalStageService(provider, stage=stage, pr_reader=pr_reader)
             services[service.performer_id] = service

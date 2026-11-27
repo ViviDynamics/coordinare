@@ -44,6 +44,7 @@ from coordinare.services.persona_service import get_effective_instructions, load
 from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.run_header import PERSONA_LANGUAGE_SUFFIX, build_run_inputs_bounded
 from coordinare.services.security_floor import SCAN_VERSION
+from coordinare.services.stage_contract import planned_input_is_current
 from coordinare.services.stage_providers import claim_stage_provider, refuse_provider_default
 from coordinare.services.test_env_loader import TestEnvFileError
 from coordinare.transport.base import TransportError
@@ -306,6 +307,10 @@ def blueprint_reuse_allowed(state: Any, performer_stage: str | None) -> bool:
         return False
     recorded = str(state.get("blueprint_signature") or "").strip()
     if not recorded:
+        return False
+    # 403: a provider's plan records the input it answered (the issue body included).
+    card = state.get("current_card") if isinstance(state.get("current_card"), dict) else {}
+    if not planned_input_is_current(blueprint, card, state.get("card_clarifications")):
         return False
     return recorded == blueprint_requirements_signature(state)
 

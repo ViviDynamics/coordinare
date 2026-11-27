@@ -182,6 +182,7 @@ performers:
 - Install Progettare where coordinare runs (its release installer puts the CLI and its own
   Nare runtime in place), with `git` and `gh` on `PATH`. In a container deployment that
   means the coordinare image, not the performer image.
+- `command` is a name on `PATH` or an absolute path; a relative path is refused.
 - `version` is the release coordinare speaks to. A run refuses to start under another
   version, and `doctor` says which version is installed.
 - `gh_token_env` names the variable that holds a GitHub token able to read the issue and
@@ -241,7 +242,15 @@ people to read; the blueprint's `source.run_dir` points at it.
 
 A finished plan must be of the issue as it is now: when the run ends, the title and body it
 recorded are compared with the issue's current ones, and a plan of text that changed since
-is refused and the current text planned.
+is refused and the current text planned. The blueprint also records the pin it answers, so
+a later dispatch of the architect reuses it only while the card's title, body and recorded
+answers still give that pin. An answer recorded while a run is in flight is not seen by
+that run (Progettare read the issue's comments when it started); the plan is used, and the
+next dispatch of the architect plans again.
+
+Only issues on the configured GitHub host (github.com, or the host of `github_api_url` for
+GitHub Enterprise) are planned. The clone sends the GitHub token, so a card whose issue URL
+names another host blocks instead.
 
 Feedback routed back to the architect, such as security findings or an observer's
 correction, cannot reach Progettare: it reads the issue, not coordinare's feedback. As for

@@ -132,7 +132,8 @@ class ProgettareProviderConfig(BaseModel):
     @classmethod
     def _validate_command(cls, value: str) -> str:
         value = (value or "").strip()
-        if not value or any(c.isspace() for c in value):
+        relative_path = "/" in value and not PurePosixPath(value).is_absolute()
+        if not value or any(c.isspace() for c in value) or relative_path:
             msg = "command must be the progettare executable: a name on PATH or an absolute path, no arguments"
             raise ValueError(msg)
         return value
