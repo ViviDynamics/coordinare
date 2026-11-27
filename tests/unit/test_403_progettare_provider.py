@@ -1,7 +1,8 @@
-"""403: the Progettare provider and its detached runner, against a fake Progettare CLI.
+"""403: the Progettare provider and its stage job, against a fake Progettare CLI.
 
-The runner is a real subprocess, the clone is a real ``git clone`` of a local repository,
-and the CLI is ``tests/unit/fake_progettare.py``. Nothing reaches the network.
+The run is a real subprocess standing in for its performer container (#423,
+``tests/unit/stage_job_fixtures.py``), the clone is a real ``git clone`` of a local
+repository, and the CLI is ``tests/unit/fake_progettare.py``. Nothing reaches the network.
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ from coordinare.services.stage_contract import (
 from coordinare.stage_provider_config import ProgettareProviderConfig
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
+from tests.unit.stage_job_fixtures import LocalStageJobs
 
 FAKE = Path(__file__).with_name("fake_progettare.py")
 TITLE = "Export widgets as CSV"
@@ -37,6 +39,17 @@ PASS_ENV = [
     "FAKE_PROGETTARE_MODE", "FAKE_PROGETTARE_SLEEP", "FAKE_PROGETTARE_TITLE", "FAKE_PROGETTARE_BODY",
     "FAKE_PROGETTARE_ARTIFACT_VERSION", "FAKE_PROGETTARE_DOCUMENTER", "FAKE_PROGETTARE_VERSION", "OPENAI_API_KEY",
 ]
+
+
+@pytest.fixture(autouse=True)
+def performers(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """423: runs go to performer containers; here one local stand-in for the Docker host,
+    which every provider built without its own runtime uses (so a provider built again is a
+    restarted daemon that finds the same containers)."""
+    jobs = LocalStageJobs()
+    monkeypatch.setattr("coordinare.services.progettare.UnavailableStageJobs", lambda reason: jobs)
+    yield jobs
+    jobs.stop_all()
 
 
 def _git(*args: str, cwd: Path) -> None:
@@ -299,7 +312,10 @@ async def test_a_configured_progettare_yaml_is_used(tmp_path: Path, command: Pat
     ref = _request().request_id(1)
     await provider.submit(_request(), ref)
     assert (await _settled(provider, ref)).state is JobState.DONE
-    assert _invocations(tmp_path, ref)[0]["argv"][5:7] == ["--config", str(config)]
+    # 423: copied into the request's directory, which is all the run's container mounts.
+    copied = tmp_path / "runs" / ref / "progettare-config.yaml"
+    assert _invocations(tmp_path, ref)[0]["argv"][5:7] == ["--config", str(copied)]
+    assert copied.read_text() == config.read_text()
 
 
 @pytest.mark.asyncio
@@ -462,15 +478,19 @@ async def test_the_version_is_checked_for_every_run(
         await provider.submit(_request(), _request().request_id(2))
 
 
-def test_the_run_gets_the_proxy_and_import_path_it_needs(
-    tmp_path: Path, command: Path, origin: Path, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.asyncio
+async def test_the_run_gets_the_proxy_it_needs(
+    tmp_path: Path, command: Path, origin: Path, monkeypatch: pytest.MonkeyPatch, performers: LocalStageJobs,
 ) -> None:
+    # 423: the run's container takes these from the daemon's environment by name.
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
-    monkeypatch.setenv("PYTHONPATH", "/opt/coordinare/src")
-    env = _provider(tmp_path, command, origin)._child_env("t", "github.com")
-    assert env["HTTPS_PROXY"] == "http://proxy.internal:3128"
-    assert env["PYTHONPATH"] == "/opt/coordinare/src"
-    assert "NOT_FOR_PROGETTARE" not in env
+    provider = _provider(tmp_path, command, origin)
+    await provider.submit(_request(), _request().request_id(1))
+    (launch,) = performers.launches
+    assert "HTTPS_PROXY" in launch.env_names
+    assert "OPENAI_API_KEY" in launch.env_names
+    assert "NOT_FOR_PROGETTARE" not in launch.env_names
+    assert launch.token == "ghs_test_token"
 
 
 @pytest.mark.asyncio
@@ -502,27 +522,3 @@ async def test_progettare_does_not_inherit_coordinares_python(
     assert (await _settled(provider, ref)).state is JobState.DONE
     (invocation,) = _invocations(tmp_path, ref)
     assert "VIRTUAL_ENV" not in invocation["env"]
-
-
-def test_coordinares_virtualenv_is_taken_off_the_path() -> None:
-    from coordinare.services.progettare_runner import without_coordinare_python
-
-    env = {"PATH": "/opt/coordinare/.venv/bin:/usr/local/bin:/usr/bin", "VIRTUAL_ENV": "/opt/coordinare/.venv",
-           "PYTHONPATH": "/opt/coordinare/src", "HOME": "/srv/coordinare"}
-    cleaned = without_coordinare_python(env)
-    assert cleaned["PATH"].split(":")[-2:] == ["/usr/local/bin", "/usr/bin"]
-    assert "/opt/coordinare/.venv/bin" not in cleaned["PATH"]
-    assert "VIRTUAL_ENV" not in cleaned
-    assert "PYTHONPATH" not in cleaned
-    assert cleaned["HOME"] == "/srv/coordinare"
-
-
-def test_the_daemons_own_virtualenv_leaves_the_path_without_virtual_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    import coordinare.services.progettare_runner as runner
-
-    monkeypatch.setattr(runner.sys, "prefix", "/opt/coordinare/.venv")
-    monkeypatch.setattr(runner.sys, "base_prefix", "/usr")
-    cleaned = runner.without_coordinare_python({"PATH": "/opt/coordinare/.venv/bin:/usr/bin"})
-    assert cleaned["PATH"] == "/usr/bin"
-    monkeypatch.setattr(runner.sys, "prefix", "/usr")
-    assert runner.without_coordinare_python({"PATH": "/usr/bin:/bin"})["PATH"] == "/usr/bin:/bin"

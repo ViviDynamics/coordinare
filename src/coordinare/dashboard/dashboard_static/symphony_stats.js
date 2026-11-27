@@ -102,8 +102,8 @@ function symphonyStatsNowHtml(name, response, health, flow) {
   var columns = flow.columns_now;
   var metrics = columns ? Object.keys(columns).map(function(column) {
     return symphonyStatsMetric(response, boardColumnLabel(column), symphonyStatsNumber(columns[column]),
-      'Cards in the latest Dashboard board snapshot, column ' + column + '. Current, independent of selected window.');
-  }).join('') : '<p class="muted">Board has not been checked yet.</p>';
+      'Work items in state ' + column + ' at the latest check. Current, independent of selected window.');
+  }).join('') : '<p class="muted">Not checked yet.</p>';
   metrics += symphonyStatsMetric(response, 'Cards running', symphonyStatsNumber(health.cards_active), 'Cards with live performer work now.');
   metrics += symphonyStatsMetric(response, 'Queued', symphonyStatsNumber(health.cards_queued), 'Cards waiting for a performer slot now.');
   metrics += symphonyStatsMetric(response, 'Parked in review', symphonyStatsNumber(health.cards_parked), 'Cards waiting on human review without live work now.');
@@ -193,7 +193,7 @@ function symphonyStatsHtml(name, response, models) {
     metric('Performer system errors', symphonyStatsNumber((totals.outcomes || {}).system_error), 'Runs starting in the window whose latest attributed outcome is system_error.') + '</div>' +
     (check.reason ? '<p role="status">Not recorded: ' + esc(check.reason) + '</p>' : '') +
     (check.partial ? '<p class="sym-stats-coverage" role="status">Board check history is partial: ' + esc((check.partial_reasons || []).join('; ')) + '</p>' : '') +
-    '<h4>Recent board errors</h4>' + symphonyStatsTable(response, ['When', 'Reason'], errors, 'Most recent failed board polls in this window.') +
+    '<h4>Recent check errors</h4>' + symphonyStatsTable(response, ['When', 'Reason'], errors, 'Most recent failed board polls in this window.') +
     ((health.state || {}).last_error ? '<p>Last cycle error: ' + esc(health.state.last_error) + ' (time not recorded)</p>' : '') +
     '<h4>Env cache and bootstrap</h4><p>' + esc(env.label + ': ' + env.reason) + '</p>' +
     symphonyBootstrapHtml(health.env_bootstrap, name) + '</section>';

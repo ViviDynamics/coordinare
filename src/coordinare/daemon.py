@@ -90,6 +90,7 @@ from coordinare.services.env_cache import (
 )
 from coordinare.services.env_provenance import DEFAULT_LIMITS, ProvenanceTransientError
 from coordinare.services.http_performer_service import DispatchStoppingError, HTTPPerformerService
+from coordinare.services.issue_comment_service import comment_cursor
 from coordinare.services.kubernetes_provenance import parse_summary
 from coordinare.services.kubernetes_verifier import (
     VerifierConfigurationError,
@@ -413,22 +414,26 @@ def _persist_stage_verdicts(raw: Any) -> dict[str, StageVerdict]:
     return stage_verdicts
 
 
-def _persist_comment_ids(raw: Any) -> list[int]:
-    """125: per-card issue-comment dedup watermark.  Bound the processed-ID
-    list to the numerically largest 2000 (GitHub comment IDs are
-    monotonic → largest == newest); reject bools/non-ints defensively.
+def _persist_comment_ids(raw: Any) -> list[int | str]:
+    """125: per-card issue-comment dedup watermark, bounded to 2000 ids.
+
+    398: an id is the provider's own, opaque (``comment_cursor``): an int (never
+    a bool, never a float, which ``int()`` would silently turn into an unrelated
+    id) or a non-empty string, kept exactly as issued. Integer ids are ordered
+    numerically and come first, so GitHub (whose ids rise with time) keeps its
+    newest 2000 exactly as before; string ids follow in text order, which is
+    deterministic, and for the timestamps and sequence keys trackers issue, also
+    oldest first. The bound only drops dedup memory: the cursor alone already
+    keeps a processed comment from being read again.
     """
-    comment_ids: list[int] = []
+    comment_ids: set[int | str] = set()
     if isinstance(raw, (set, list, tuple)):
         for cid_val in raw:
-            # GitHub comment IDs are integers. Accept only int (never
-            # bool, never float): int(42.9) would silently coerce to an
-            # unrelated id (42) and corrupt the dedup watermark. Matches
-            # the last_issue_comment_id handling in the scalar fields.
-            if isinstance(cid_val, bool) or not isinstance(cid_val, int):
-                continue
-            comment_ids.append(cid_val)
-    return sorted(set(comment_ids))[-2000:]
+            cid = comment_cursor(cid_val)
+            if cid is not None:
+                comment_ids.add(cid)
+    ordered = sorted(comment_ids, key=lambda c: (1, 0, c) if isinstance(c, str) else (0, c, ""))
+    return ordered[-2000:]
 
 
 def _persist_feedback_ledger(raw: Any) -> list[FeedbackItemRecord]:
@@ -566,12 +571,7 @@ def _persist_review_fields(sess: dict[str, Any]) -> dict[str, Any]:
         and isinstance(review_findings_raw.get("verdict"), str)
         else None
     )
-    last_comment_raw = sess.get("last_issue_comment_id")
-    last_issue_comment_id: int | None = (
-        int(last_comment_raw)
-        if isinstance(last_comment_raw, int) and not isinstance(last_comment_raw, bool)
-        else None
-    )
+    last_issue_comment_id = comment_cursor(sess.get("last_issue_comment_id"))
     return {
         "feedback_origin_sha": feedback_origin_sha,
         "noop_success_retries": noop_success_retries,
@@ -879,8 +879,8 @@ def _restored_session_dict(
             sv_stage: sv.model_dump(mode="json")
             for sv_stage, sv in persisted.stage_verdicts.items()
         },
-        "processed_issue_comment_ids": set(persisted.processed_issue_comment_ids),
-        "last_issue_comment_id": persisted.last_issue_comment_id,
+        "processed_issue_comment_ids": set(_persist_comment_ids(persisted.processed_issue_comment_ids)),
+        "last_issue_comment_id": comment_cursor(persisted.last_issue_comment_id),
         "pipeline_admitted": persisted.pipeline_admitted,
         # 126: restore the terminal-success-floor state so the
         # feedback contract and no-op budget survive restarts.
@@ -2320,7 +2320,7 @@ def _merge_retry_queue_entry(
 def _record_unconfirmed_board_pause(session: dict[str, Any]) -> None:
     """Retain a closed-PR guard while warning about an uncertain stop."""
     if not is_closed_pr_block(session.get("system_error_reason")):
-        session["system_error_reason"] = "The card moved out of its GitHub Project column; worker termination is unconfirmed"
+        session["system_error_reason"] = "The work item was moved to another state; worker termination is unconfirmed"
 
 
 def _observe_handoff_board_column(session: dict[str, Any], column: str) -> None:
@@ -5889,7 +5889,7 @@ class CoordinareDaemon:
                         activity_type="blocked", card_id=card_id,
                         card_title=str(card.get("title") or ""),
                         stage=str(sess.get("performer_stage") or ""),
-                        text="The card moved out of its GitHub Project column; the worker may still be running. Ownership is kept, and resuming waits for a confirmed stop.",
+                        text="The work item was moved to another state; the worker may still be running. Ownership is kept, and resuming waits for a confirmed stop.",
                     )
                 continue
             sess["phase"] = "blocked"

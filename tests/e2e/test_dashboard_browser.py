@@ -2251,7 +2251,7 @@ def test_glossary_page_explains_the_vocabulary(page: Page, live_server_url: str)
     section = page.locator("#glossary-section")
     for noun in ("Symphony", "Stage", "Agent", "Run", "Check"):
         expect(section.locator("strong", has_text=re.compile(rf"^{noun}$"))).to_have_count(1, timeout=_WAIT_LIVE)
-    expect(section).to_contain_text("One agent working on one stage of one card")
+    expect(section).to_contain_text("One agent working on one stage of one work item")  # 401
     expect(page.locator(".nav-link.nav-active")).to_have_attribute("href", "/glossary")
     labels = page.evaluate("() => [humanPhase('monitoring_performer'), humanPhase('never_seen_code')]")
     assert labels == ["Watching an agent", "never_seen_code"]

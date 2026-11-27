@@ -490,16 +490,20 @@
           "processed_issue_comment_ids": {
             "type": "array",
             "items": {
-              "type": "integer"
+              "type": [
+                "integer",
+                "string"
+              ]
             },
-            "description": "125: per-card already-classified issue-comment IDs (bounded to the numerically largest 2000 at save), so restarts do not re-classify processed comments (schema v13+)."
+            "description": "125: per-card already-classified issue-comment IDs (bounded to the newest 2000 at save), so restarts do not re-classify processed comments (schema v13+). 398: each ID is the work item provider's own, opaque and kept as issued: an integer on GitHub, a string on a tracker that issues string keys, timestamps or tokens."
           },
           "last_issue_comment_id": {
             "type": [
               "integer",
+              "string",
               "null"
             ],
-            "description": "125: per-card since_id fetch watermark for the issue-comment router (schema v13+)."
+            "description": "125: per-card since_id fetch watermark for the issue-comment router (schema v13+). 398: the provider's own comment ID, opaque, as issued."
           },
           "feedback_ledger": {
             "type": "array",

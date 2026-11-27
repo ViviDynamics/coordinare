@@ -42,12 +42,17 @@ has ever heard of an issue number.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
+from coordinare.doctor import CheckResult
+from coordinare.doctor_status import Status
 from coordinare.services.card_identity import CardIdentityMap
 from coordinare.services.work_items import unlisted_text_blockers
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = structlog.get_logger(__name__)
 
@@ -58,6 +63,72 @@ logger = structlog.get_logger(__name__)
 #: item to DONE, and a tracker with no such state lists it under DONE. Never a
 #: listing's status, so no listing reports it.
 NOT_WORK = "NOT_WORK"
+
+#: A comment id, and so the cursor coordinare keeps per work item (398). Opaque: it
+#: is whatever the provider issued (GitHub's integer comment id, a tracker's string
+#: key, a timestamp, a page token), and coordinare stores it, hands it back and
+#: compares it for equality. It never sorts it, takes a maximum of it or reads it as
+#: a number; the provider's order, oldest first, is the order comments are handled in.
+type CommentCursor = int | str
+
+#: The canonical states every provider must map (399). Without To Do, In Progress
+#: and Done coordinare cannot take, run or finish work. In Review and Blocked are
+#: required too, for now: see ``CANDIDATE_OPTIONAL_STATES``.
+REQUIRED_STATES: tuple[str, ...] = ("TODO", "IN_PROGRESS", "IN_REVIEW", "BLOCKED", "DONE")
+
+#: The states a provider may leave unmapped (399): none yet.
+OPTIONAL_STATES: tuple[str, ...] = ()
+
+#: The states that could become optional, and what coordinare does today when a
+#: provider leaves one unmapped (399). A move to it is refused (``MoveOutcome``),
+#: logged as ``board.move_refused``, and the item stays where it was. Coordinare
+#: reads the item's state back from the board, so:
+#:
+#: - In Review: the item stays in In Progress while its pull request is reviewed.
+#:   An In Progress item holds a concurrency slot (``session_consumes_slot``), so
+#:   a full review queue stops new work. After a restart the session is rebuilt
+#:   from the board as an agent run (``_infer_phase_from_board_column``) and the
+#:   pull request is no longer watched.
+#: - Blocked: a work item blocked before it reached In Progress stays in To Do,
+#:   which the next cycle reads as a person unblocking it, so a failing dispatch
+#:   retries every cycle without escalating. One blocked in In Progress holds its
+#:   slot, and a restart drops the block. A person cannot block an item either.
+#:
+#: Making one optional means changing those paths to trust the session's own state
+#: when the board cannot show it; until then ``state_checks`` fails without them.
+CANDIDATE_OPTIONAL_STATES: tuple[str, ...] = ("IN_REVIEW", "BLOCKED")
+
+_STATE_LABELS = {
+    "TODO": "To Do", "IN_PROGRESS": "In Progress", "DONE": "Done", "IN_REVIEW": "In Review", "BLOCKED": "Blocked",
+}
+
+_WHY_REQUIRED = {
+    "IN_REVIEW": "Without In Review a work item waits out its review in In Progress, holding a slot, "
+                 "and a restart stops watching its pull request.",
+    "BLOCKED": "Without Blocked a blocked work item looks unblocked to coordinare, so it retries "
+               "without escalating, and a restart drops the block.",
+}
+
+
+def state_checks(mapped: Iterable[str]) -> list[CheckResult]:
+    """The start checks for the canonical states a provider maps (399).
+
+    A provider's ``preflight`` can return these for its own state mapping: one
+    failure naming every required state it lacks, with what goes wrong for In
+    Review and Blocked, or one pass when every state is mapped.
+    """
+    have = set(mapped)
+    missing = [state for state in REQUIRED_STATES if state not in have]
+    if not missing:
+        return [CheckResult("work item states", Status.OK, "Every coordinare state maps to a state on the board.")]
+    names = ", ".join(_STATE_LABELS[state] for state in missing)
+    why = " ".join(_WHY_REQUIRED[state] for state in missing if state in _WHY_REQUIRED)
+    return [CheckResult(
+        "work item states",
+        Status.FAIL,
+        f"No state maps to {names}. " + (why or "Coordinare cannot take, run or finish work without it."),
+        "In the tracker's workflow, map a state to each of To Do, In Progress, In Review, Blocked and Done.",
+    )]
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,21 +203,53 @@ class BoardProvider(Protocol):
         ...
 
     async def get_card_comments(
-        self, card_id: str, since_id: int | None = None,
+        self, card_id: str, since_id: CommentCursor | None = None,
     ) -> list[dict[str, Any]]:
         """Comments on the card, oldest first, optionally only those after *since_id*.
 
         The watermark keeps coordinare from reprocessing feedback it has already
-        acted on.
+        acted on. It is a comment id this provider issued, handed back exactly as
+        issued (``CommentCursor``); coordinare never reads meaning into it. A cursor
+        the provider does not recognise should return every comment rather than
+        none: coordinare keeps the ids it processed, so a replay is dropped, where
+        a lost comment is gone.
+
+        The cursor coordinare hands back is always the id of the last comment it
+        handled, so a tracker whose native position is a page token or an
+        "updated since" time maps that comment id back to its position itself.
 
         Each comment is ``{"id", "author", "body", "created_at"}`` -- four plain
         fields, not a host's payload. That is already the shape coordinare works
         in, so a provider normalises to it rather than coordinare learning a new
         one per board.
 
+        ``"id"`` is an ``int`` or a non-empty ``str``; a timestamp goes as a string.
+        A comment with any other id is skipped, since it can be neither
+        deduplicated nor handed back as a cursor.
+
         Returns ``[]`` rather than raising when the card cannot be found or the
         read fails. Comment routing is how a human redirects work in flight; a
         board hiccup should delay that, not stall the cycle.
+        """
+        ...
+
+
+@runtime_checkable
+class ProviderPreflight(Protocol):
+    """A provider that can say, before the daemon starts, whether it is ready (399).
+
+    Separate from ``BoardProvider`` so the board operations stay the five specs
+    149 and 153 pinned: ``init``, ``validate`` and ``doctor`` call this, the graph
+    never does. A provider without it is reported as having no start checks.
+    """
+
+    async def preflight(self) -> list[CheckResult]:
+        """Start checks in the doctor format: name, status, message and fix.
+
+        A check's ``fix`` is shown with it, so a failure says what to change. Raise
+        for a fault (the tracker is unreachable): coordinare retries transient
+        faults within its probe budget and reports the rest, through
+        ``preflight_fault`` when the provider has one.
         """
         ...
 
@@ -194,6 +297,35 @@ class GitHubProjectsBoardProvider:
         not.
         """
         return self._github
+
+    async def preflight(self) -> list[CheckResult]:
+        """Today's board column check, under its names and messages (399)."""
+        # Here rather than at the top: the board seam is imported by config, and
+        # the GitHub client stack is only needed to run this check.
+        from coordinare.services.github import BOARD_COLUMN_TO_STATUS
+
+        await self._github.initialize()
+        options = self._github.field_cache.get("status_option_ids", {})
+        found = {BOARD_COLUMN_TO_STATUS.get(name) for name in options}
+        missing = set(REQUIRED_STATES) - found
+        if missing:
+            return [CheckResult(
+                "board columns",
+                Status.FAIL,
+                f"The board is missing columns: {', '.join(sorted(missing))}.",
+                "In the board's Status field add To Do (or Ready), In Progress, In Review, Blocked and Done options.",
+            )]
+        return [CheckResult("GitHub board", Status.OK, "Board is reachable and all lifecycle Status columns exist.")]
+
+    def preflight_fault(self, status: Status) -> CheckResult:
+        """What to report when the board cannot be read at all."""
+
+        return CheckResult(
+            "GitHub board",
+            status,
+            "Could not read the project board and its Status field after bounded retries.",
+            "Correct github_org, github_project_number and github_graphql_url; grant Projects access and add a Status field with To Do, In Progress, In Review, Blocked and Done.",
+        )
 
     async def poll_board(self) -> dict[str, Any]:
         board: dict[str, Any] = await self._github.poll_board()
@@ -268,7 +400,7 @@ class GitHubProjectsBoardProvider:
         return card_id
 
     async def get_card_comments(
-        self, card_id: str, since_id: int | None = None,
+        self, card_id: str, since_id: CommentCursor | None = None,
     ) -> list[dict[str, Any]]:
         # The one place that knows GitHub calls a card two things. Callers pass the
         # same card id they use for every other operation; the translation happens
@@ -278,9 +410,37 @@ class GitHubProjectsBoardProvider:
             logger.warning("board.card_not_resolvable", card_id=card_id)
             return []
         comments: list[dict[str, Any]] = await self._github.get_issue_comments(
-            number, since_id=since_id,
+            number, since_id=self._github_comment_id(card_id, since_id),
         )
-        return comments
+        # 398: coordinare handles comments in the order a provider returns them.
+        # GitHub comment ids rise with time, so id order is creation order.
+        return sorted(comments, key=_github_comment_order)
+
+    @staticmethod
+    def _github_comment_id(card_id: str, cursor: CommentCursor | None) -> int | None:
+        """The GitHub comment id a cursor names (398).
+
+        GitHub issues integer ids. One that went through text (a log line, a JSON
+        field) is read back as the same number. A cursor GitHub never issued names
+        no comment here, so every comment is returned and coordinare's processed
+        ids drop the replay: a lost comment could not be recovered.
+        """
+        if cursor is None:
+            return None
+        if isinstance(cursor, int) and not isinstance(cursor, bool):
+            return cursor
+        if isinstance(cursor, str) and cursor.isascii() and cursor.isdigit():
+            return int(cursor)
+        logger.warning("board.unknown_comment_cursor", card_id=card_id, cursor=str(cursor))
+        return None
+
+
+def _github_comment_order(comment: dict[str, Any]) -> tuple[int, int]:
+    """Sort key for GitHub comments: by id, with any id that is not a number last, as given."""
+    cid = comment.get("id")
+    if isinstance(cid, int) and not isinstance(cid, bool):
+        return (0, cid)
+    return (1, 0)
 
 
 def board_of(state: Any, service: Any = None) -> BoardProvider | None:

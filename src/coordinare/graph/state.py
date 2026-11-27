@@ -480,8 +480,8 @@ class CoordinareState(TypedDict, total=False):
     todo_capacity: dict[str, int] | None
     # 055: Issue comment idempotency fields.
     pipeline_admitted: bool
-    last_issue_comment_id: int | None
-    processed_issue_comment_ids: set[int]
+    last_issue_comment_id: int | str | None  # 398: the provider's opaque comment id
+    processed_issue_comment_ids: set[int | str]
     # 056: Containerized performer endpoint registry — id → PerformerEndpointState.
     # Typed as Any because LangGraph's get_type_hints() resolves annotations at
     # runtime; a TYPE_CHECKING import would NameError. Reset on coordinare restart.

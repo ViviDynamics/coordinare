@@ -33,9 +33,9 @@ blocked · recovery · system_error`.
 
 ## The board model
 
-A symphony works from a **GitHub Projects v2 project**. Its columns map to phases:
+A symphony works from a source of work items, by default a **GitHub Projects v2 project**. A work item's state (on GitHub Projects, its column) maps to phases:
 
-| Column | Phase(s) | Consumes a slot? |
+| State | Phase(s) | Consumes a slot? |
 |---|---|---|
 | Backlog | idle | no |
 | TODO | dispatching (initial) | yes |

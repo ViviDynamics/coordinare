@@ -162,7 +162,7 @@ def test_an_unclaimed_item_is_labelled_without_the_word_board(
     store.broadcaster.broadcast(_snapshot(_two_symphonies(), open_questions=[question]))
 
     expect(page.locator("#attention-list")).to_contain_text(
-        "not on any symphony's GitHub Project", timeout=_WAIT_LIVE,
+        "not a work item of any symphony", timeout=_WAIT_LIVE,  # 401
     )
     attention = page.locator("#attention-list").inner_text()
     assert not re.search(r"board", attention, re.IGNORECASE), attention

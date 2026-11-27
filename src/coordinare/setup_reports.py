@@ -37,6 +37,10 @@ DOCTOR_CHECKS = {
     "GitHub API": ("github_api", "GitHub API availability.", "Check github_api_url and network access, then retry doctor."),
     "board columns": ("board_columns", "Required board Status columns.", "Add To Do or Ready, In Progress, In Review, Blocked and Done to the board Status field."),
     "GitHub board": ("github_board", "Project board access and lifecycle columns.", "Correct github_org and github_project_number; ask the operator to verify Projects access and Status columns."),
+    # 399: a work item provider's own start checks. Curated text, like every id here;
+    # the provider's own message and fix are in the prose report (init, doctor).
+    "work item states": ("work_item_states", "Work item states the provider maps.", "Map a state in the tracker's workflow to each of To Do, In Progress, In Review, Blocked and Done."),
+    "work items": ("work_items", "Work item provider readiness.", "Run coordinare doctor for the provider's own message and fix; check the symphony's work_items settings and the tracker's availability."),
     "container harness ": ("container_harness", "Container harness readiness.", "Check the selected performer image includes the configured harness; rerun init in Docker mode."),
     "harness ": ("harness", "Local harness installation and readiness.", "Install and authenticate the selected harness CLI on PATH."),
     "performer protocol": ("performer_protocol", "Local performer protocol readiness.", "Reinstall the matching release with its bundled performer; agent_executable must be the performer protocol command."),

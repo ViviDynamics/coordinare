@@ -16,6 +16,8 @@ from coordinare.services.conductor_calls import conductor_call
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from coordinare.services.board_provider import CommentCursor
+
 logger = structlog.get_logger(__name__)
 
 def normalize_logins(logins: Iterable[str]) -> frozenset[str]:
@@ -32,7 +34,7 @@ class CommentClassification:
     """
 
     source: Literal["pr", "issue"]
-    comment_id: int
+    comment_id: CommentCursor
     author: str
     classification: Literal["clarification", "scope_change", "blocker_update", "approval", "noise"]
     card_id: str
@@ -72,7 +74,8 @@ _APPROVAL_RE = _compile_keyword_pattern(_APPROVAL_KEYWORDS)
 @dataclass
 class IssueCommentEvent:
     issue_number: int
-    comment_id: int
+    #: The provider's own id, as issued (398). Never read as a number.
+    comment_id: CommentCursor
     author: str
     body: str
     created_at: str
@@ -197,7 +200,7 @@ async def _ask_comment_label(prompt_text: str, conducting_backend: Any) -> str |
 
 async def fetch_new_issue_comments(
     card_id: str,
-    since_id: int | None,
+    since_id: CommentCursor | None,
     board: Any,
     issue_number: int = 0,
     *,
@@ -217,6 +220,11 @@ async def fetch_new_issue_comments(
     logs and the dashboard. Nothing reads it to fetch anything, and a board that
     has no such number can leave it at 0.
 
+    398: *since_id* and each event's ``comment_id`` are the provider's own ids,
+    passed through untouched. A comment with no usable id (missing, empty, not a
+    number or a string) is skipped: it could be neither deduplicated nor named
+    as a cursor.
+
     Returns [] if there is no card id or on any error.
     """
     if not card_id or board is None:
@@ -235,10 +243,14 @@ async def fetch_new_issue_comments(
     for c in raw:
         if str(c.get("author", "")).strip().lower() in self_logins:
             continue
+        comment_id = comment_cursor(c.get("id"))
+        if comment_id is None:
+            logger.warning("fetch_new_issue_comments.unusable_id", card_id=card_id, id=repr(c.get("id")))
+            continue
         events.append(
             IssueCommentEvent(
                 issue_number=issue_number,
-                comment_id=int(c["id"]),
+                comment_id=comment_id,
                 author=str(c.get("author", "")),
                 body=str(c.get("body", "")),
                 created_at=str(c.get("created_at", "")),
@@ -246,3 +258,19 @@ async def fetch_new_issue_comments(
             ),
         )
     return events
+
+
+def comment_cursor(value: object) -> CommentCursor | None:
+    """*value* as a comment id coordinare can keep, or None (398).
+
+    An int (never a bool, which is an int to Python but no provider's id) or a
+    non-empty string, unchanged. A digit string stays a string: a provider gets
+    back exactly what it issued.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value:
+        return value
+    return None
