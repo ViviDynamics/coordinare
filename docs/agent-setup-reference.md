@@ -106,7 +106,8 @@ input disclosure. The prose command retains its existing detailed output.
 | `doctor.performer_version`, `doctor.performer_image` | Matching daemon/image and local image availability |
 | `doctor.endpoint`, `doctor.model`, `doctor.native_model` | OpenAI-compatible /models or Ollama /api/tags verification and model enumeration, native authentication |
 | `doctor.github_credential`, `doctor.github_token`, `doctor.github_scopes`, `doctor.github_permissions`, `doctor.github_api`, `doctor.github_repository` | GitHub credential, permissions and repository probes |
-| `doctor.board_columns`, `doctor.github_board` | Board access and Status options |
+| `doctor.board_columns`, `doctor.github_board` | Board access and Status options (GitHub Projects) |
+| `doctor.work_item_states`, `doctor.work_items` | Another work item provider's start checks. A provider must map To Do, In Progress, In Review, Blocked and Done; the prose report gives the provider's own message and fix |
 | `doctor.harness`, `doctor.container_harness`, `doctor.remote_harness` | Harness readiness by run mode |
 | `doctor.performer_protocol`, `doctor.performer_transport`, `doctor.performer`, `doctor.container_runtime` | Performer protocol, transport, persistent endpoint and Docker |
 | `doctor.egress`, `doctor.other` | Opt-in egress enforcement or future uncatalogued checks |

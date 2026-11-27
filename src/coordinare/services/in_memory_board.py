@@ -32,12 +32,13 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from coordinare.services.board_provider import NOT_WORK, MoveOutcome
+from coordinare.services.board_provider import NOT_WORK, MoveOutcome, state_checks
 from coordinare.services.work_items import OPEN, UNKNOWN, Blocker, WorkItem, safe_reference
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from coordinare.doctor import CheckResult
     from coordinare.services.board_provider import CommentCursor
 
 logger = structlog.get_logger(__name__)
@@ -169,6 +170,12 @@ class InMemoryBoardProvider:
 
     def item(self, item_id: str) -> InMemoryWorkItem:
         return self._item(item_id)
+
+    # ---- ProviderPreflight ----------------------------------------------------------
+
+    async def preflight(self) -> list[CheckResult]:
+        """Whether this tracker maps the states coordinare needs (399)."""
+        return state_checks(self._states.values())
 
     # ---- BoardProvider ---------------------------------------------------------------
 
