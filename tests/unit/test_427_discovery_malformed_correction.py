@@ -99,9 +99,11 @@ async def test_one_malformed_review_reply_is_answered_with_a_correction():
 @pytest.mark.asyncio
 async def test_two_consecutive_malformed_replies_end_discovery():
     chat = Replies(FENCED, FENCED, READ, MANIFEST)
-    with pytest.raises(EnvironmentDiscoveryError, match=r"^discovery returned malformed JSON$"):
+    with pytest.raises(EnvironmentDiscoveryError, match=r"^discovery returned malformed JSON$") as caught:
         await discover(chat)
     assert len(chat.calls) == 2
+    # Operators see the public error type, as for every other discovery failure.
+    assert type(caught.value) is EnvironmentDiscoveryError
 
 
 @pytest.mark.asyncio
@@ -129,8 +131,9 @@ async def test_corrections_count_toward_the_model_call_limit():
 @pytest.mark.parametrize(("reply", "error"), [
     ('{"tool":"list_files","tool":"list_files"}', r"^discovery returned malformed JSON$"),
     ('["tool"]', "invalid envelope"),
+    ('{"tool":"list_files","n":' + "9" * 5000 + "}", r"^discovery returned malformed JSON$"),
     ('{"tool":"execute","argv":["touch","bad"]}', "unsupported tool"),
-])
+], ids=["duplicate-key", "not-an-object", "over-long-integer", "unsupported-tool"])
 async def test_other_rejections_still_end_discovery_at_once(reply, error):
     chat = Replies(reply, READ, MANIFEST, READ, ASSESSMENT)
     with pytest.raises(EnvironmentDiscoveryError, match=error):
@@ -144,3 +147,15 @@ async def test_an_oversize_reply_still_ends_discovery_at_once():
     with pytest.raises(EnvironmentDiscoveryError, match="output limit exceeded"):
         await discover(chat, limits=DiscoveryLimits(max_output_bytes=100))
     assert len(chat.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_large_rejected_reply_is_echoed_bounded():
+    big = MANIFEST + "\n```" + " " * 200_000
+    chat = Replies(READ, big, MANIFEST, READ, ASSESSMENT)
+    (_, accepted), _ = await discover(chat)
+    assert accepted.verdict == "accept"
+    echoed = chat.calls[2][-2]
+    assert echoed["role"] == "assistant"
+    assert big.startswith(echoed["content"])
+    assert len(echoed["content"]) <= 2048

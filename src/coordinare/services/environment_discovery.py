@@ -39,8 +39,11 @@ class _DuplicateKeyError(ValueError):
     """An ambiguous JSON object; never corrected, since which value the model meant is unknown."""
 
 
-# 427: how many malformed replies in a row the phase answers with a correction before it ends.
+# 427: how many malformed replies in a row the phase answers with a correction before it ends,
+# and how much of a rejected reply goes back to the model with it (the whole of a near-limit
+# reply, resent on every later call, could overflow the context window).
 _MALFORMED_CORRECTIONS = 1
+_MALFORMED_ECHO_CHARS = 2048
 _MALFORMED_CORRECTION = (
     "reply rejected and not acted on: it must be exactly one JSON object and nothing else "
     "(no code fences, prose or second object); send that reply again"
@@ -99,10 +102,11 @@ def _decode_reply(raw: str, name: str, limits: DiscoveryLimits) -> dict[str, Any
     message = f"{name} returned malformed JSON"
     try:
         reply = json.loads(raw, object_pairs_hook=_object)
-    except (_DuplicateKeyError, RecursionError) as exc:
-        raise EnvironmentDiscoveryError(message) from exc
-    except ValueError as exc:
+    except json.JSONDecodeError as exc:
         raise _MalformedReplyError(message) from exc
+    except (ValueError, RecursionError) as exc:
+        # Duplicate keys and values Python refuses (an over-long integer) are not a stray fence.
+        raise EnvironmentDiscoveryError(message) from exc
     if not isinstance(reply, dict):
         message = f"{name} returned an invalid envelope"
         raise EnvironmentDiscoveryError(message)
@@ -190,12 +194,12 @@ async def _phase(
                 raw = await _model_reply(chat, messages, inspection.name)
                 try:
                     reply = _decode_reply(raw, inspection.name, inspection.limits)
-                except _MalformedReplyError:
+                except _MalformedReplyError as exc:
                     # 427: the strict decoder stays strict; the model gets one more turn.
                     malformed += 1
                     if malformed > _MALFORMED_CORRECTIONS:
-                        raise
-                    messages.append({"role": "assistant", "content": raw})
+                        raise EnvironmentDiscoveryError(str(exc)) from exc
+                    messages.append({"role": "assistant", "content": raw[:_MALFORMED_ECHO_CHARS]})
                     messages.append({"role": "user", "content": _json({"error": _MALFORMED_CORRECTION})})
                     continue
                 malformed = 0
