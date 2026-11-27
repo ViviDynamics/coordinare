@@ -40,13 +40,13 @@ Out:
 - [x] 1. Fixture branch `feat/techwriter-wiki` pushed to the fixture repository.
 - [x] 2. Production payload builders are module functions: a test calls them
   without a service instance.
-- [ ] 3. Bench card context and payload go through the production builder: tests
+- [x] 3. Bench card context and payload go through the production builder: tests
   for nare rail metadata, security scan request, PR diff context.
-- [ ] 4. env_bootstrap card context from discovery and review: test with a fake
+- [x] 4. env_bootstrap card context from discovery and review: test with a fake
   chat reaches an accepted manifest the performer's contract check accepts.
-- [ ] 5. Distinct tech_writer labels, `--roles` matches label or performer key.
-- [ ] 6. Transcript saved per cell: test the cursor loop and the file.
-- [ ] 7. Advocate task: payload, grader and fixture-issue lifecycle tests.
+- [x] 5. Distinct tech_writer labels, `--roles` matches label or performer key.
+- [x] 6. Transcript saved per cell: test the cursor loop and the file.
+- [x] 7. Advocate task: payload, grader and fixture-issue lifecycle tests.
 - [x] 8. QA failures and executed checks: tests for string failures and aliased
   check keys, and that the guard still refuses a check with no exit code.
 - [x] 9. Contract reminder and persona state the exact shapes.
