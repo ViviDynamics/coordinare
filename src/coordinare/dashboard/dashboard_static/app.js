@@ -94,11 +94,11 @@ function renderState(s) {
   var phaseDescriptions = {
     'idle':             'Waiting for a work item to reach To Do.',
     'running':          'Running a check.',
-    'blocked':          'Needs human: the card is stopped until a person acts. Review the Open Questions below.',
-    'dispatching':      'Assessing and dispatching card to the performer agent.',
-    'monitoring_agent': 'Performer agent is actively working on the card.',
-    'monitoring_performer': 'Performer agent is actively working on the card.',
-    'monitoring_pr':    'Watching the open PR. Each card says what it waits on.',
+    'blocked':          'Needs human: the work item is stopped until a person acts. Review the Open Questions below.',
+    'dispatching':      'Assessing and dispatching the work item to a performer.',
+    'monitoring_agent': 'Performer agent is actively working on the work item.',
+    'monitoring_performer': 'Performer agent is actively working on the work item.',
+    'monitoring_pr':    'Watching the open PR. Each work item says what it waits on.',
     'merging':          'Merging the approved pull request.',
     'relay_feedback':   'Relaying PR review feedback to the performer agent.',
     'recovery':         'A check failed; the daemon is recovering before retrying.',
@@ -408,7 +408,7 @@ function updateNavActive(path) {
   var activeLabel = activeLink ? activeLink.querySelector('.nav-link-label') || activeLink : null;
   document.getElementById('workspace-title').textContent = activeLabel ? activeLabel.textContent.trim() : 'Dashboard';
   // 153: setPageTitle keeps the "(N)" attention prefix across navigation.
-  setPageTitle(titles[path] || (path.startsWith('/symphonies/') ? 'Symphony | Coordinare' : path.indexOf('/performers/') === 0 ? 'Run detail | Coordinare' : isRunsPath(path) ? 'Transcript | Coordinare' : isCardPath(path) ? 'Card | Coordinare' : 'Coordinare'));
+  setPageTitle(titles[path] || (path.startsWith('/symphonies/') ? 'Symphony | Coordinare' : path.indexOf('/performers/') === 0 ? 'Run detail | Coordinare' : isRunsPath(path) ? 'Transcript | Coordinare' : isCardPath(path) ? 'Work item | Coordinare' : 'Coordinare'));
 }
 
 function renderSymphoniesPage(s) {
@@ -481,10 +481,10 @@ function renderSymphoniesPage(s) {
     + '<th style="text-align:left" title="The GitHub Project this symphony works from.">GitHub Project</th>'
     + '<th style="text-align:left" title="The GitHub repository this symphony works against.">Repository</th>'
     + '<th style="text-align:left" title="Whether the symphony\'s performer environment is cached.">Env</th>'
-    + '<th style="text-align:left" title="Cards a performer is working on now.">Cards active</th>'
-    + '<th style="text-align:left" title="Cards waiting for a performer slot.">Cards queued</th>'
+    + '<th style="text-align:left" title="Work items a performer is working on now.">Running</th>'
+    + '<th style="text-align:left" title="Work items waiting for a performer slot.">Queued</th>'
     + '<th style="text-align:left" title="Run start cohort cost in the rolling 7d window from the statistics API.">Spend this week</th>'
-    + '<th title="Recorded card merges in the rolling 7d window from the statistics API.">Completed this week</th>'
+    + '<th title="Recorded work item merges in the rolling 7d window from the statistics API.">Completed this week</th>'
     + '<th style="text-align:left" title="Checks this symphony has run.">Checks run</th>'
     + '<th style="text-align:left" title="Checks that failed in a row. A successful check resets this to 0.">Failed checks in a row</th>'
     + '<th style="text-align:left" title="When coordinare last checked this symphony.">Last checked</th>'
@@ -542,7 +542,7 @@ async function loadSymphonyDetail(name, el) {
     ['GitHub project', data.github_project_number != null ? '#' + data.github_project_number : 'None'],
     ['Cycles', st.cycle_count != null ? st.cycle_count : 'None'],
     ['Failed checks in a row', st.error_count != null ? st.error_count : 'None'],
-    ['Active card', st.active_card ? esc(st.active_card.title || st.active_card.id || '') : 'None'],
+    ['Active work item', st.active_card ? esc(st.active_card.title || st.active_card.id || '') : 'None'],
     ['Last checked', st.last_poll_at ? timeHtml(st.last_poll_at) : 'None'],
     ['Last error', st.last_error ? esc(st.last_error) : 'None'],
     // 394: last, so the live refresh's row indexes above stay put.
@@ -642,8 +642,8 @@ var _symShown = null;
 
 function symOverrideFields() {
   return [
-    {key: 'max_concurrent_cards', label: 'Max concurrent cards', type: 'number', placeholder: '1'},
-    {key: 'max_cards_in_review', label: 'Max cards waiting on review', type: 'number', placeholder: '3', noCapOption: true},
+    {key: 'max_concurrent_cards', label: 'Max concurrent work items', type: 'number', placeholder: '1'},
+    {key: 'max_cards_in_review', label: 'Max work items waiting on review', type: 'number', placeholder: '3', noCapOption: true},
     {key: 'poll_interval_seconds', label: 'Poll interval (seconds)', type: 'number', placeholder: '30'},
     {key: 'max_feedback_cycles', label: 'Max feedback cycles', type: 'number', placeholder: '5'},
     {key: 'max_closed_pr_attempts_per_issue', label: 'Max closed PRs per issue', type: 'number', placeholder: '3'},
@@ -1294,7 +1294,7 @@ function afUpdateFilterOptions() {
   var key = cards.map(function(e) { return e.card_id; }).join(',');
   if (key === sel.getAttribute('data-cards')) return;
   sel.setAttribute('data-cards', key);
-  var html = '<option value="">All cards</option>';
+  var html = '<option value="">All work items</option>';
   cards.forEach(function(e) {
     var label = (e.card_number ? '#' + e.card_number + ' ' : '') + (e.card_title || e.card_id);
     html += '<option value="' + esc(e.card_id) + '">' + esc(label) + '</option>';

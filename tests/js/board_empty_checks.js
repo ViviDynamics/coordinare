@@ -13,14 +13,14 @@ function render(symphonies,phase='blocked',choice=''){
 }
 const held={TODO:[],BLOCKED:[],IN_PROGRESS:[],IN_REVIEW:[],BACKLOG:['held'],DONE:['finished']};
 const cases={
-  initial(){const html=render([sym('unpolled',null),sym('sample',held)]);assert.ok(html.includes('No active cards in this symphony'),'A received board is shown under All');assert.ok(!html.includes('Waiting for cards'));},
-  late(){render([sym('unpolled',null),sym('sample',null)]);const html=render([sym('unpolled',null),sym('sample',held)]);assert.ok(!html.includes('Waiting for cards'),'A board that arrives late is shown');},
-  held(){const html=render([sym('sample',held)]);assert.ok(!html.includes('Waiting for cards'),'A received held/completed board must not be reported missing');assert.ok(html.includes('Backlog: 1'));},
-  empty(){const html=render([sym('sample',{})]);assert.ok(!html.includes('Waiting for cards'),'A received empty snapshot is not missing');},
-  missing(){const html=render([sym('sample',null)]);assert.ok(html.includes('Waiting for cards'));},
-  selected(){const syms=[sym('unpolled',null),sym('sample',held)];assert.ok(render(syms,'blocked','unpolled').includes('Waiting for cards'));assert.ok(!render(syms,'blocked','sample').includes('Waiting for cards'));},
-  populated(){const html=render([sym('sample',{TODO:['new-card']})]);assert.ok(html.includes('new-card'));assert.ok(!html.includes('Waiting for cards'));},
-  idleMissing(){const html=render([sym('sample',null)],'idle');assert.ok(html.includes('Waiting for cards'),'A selected board with a missing snapshot must wait, not claim an empty TODO column');assert.ok(!html.includes('No cards in the TODO column'),'Global idle does not prove the selected board is empty');},
+  initial(){const html=render([sym('unpolled',null),sym('sample',held)]);assert.ok(html.includes('No active work items in this symphony'),'A received board is shown under All');assert.ok(!html.includes('Waiting for work items'));},
+  late(){render([sym('unpolled',null),sym('sample',null)]);const html=render([sym('unpolled',null),sym('sample',held)]);assert.ok(!html.includes('Waiting for work items'),'A board that arrives late is shown');},
+  held(){const html=render([sym('sample',held)]);assert.ok(!html.includes('Waiting for work items'),'A received held/completed board must not be reported missing');assert.ok(html.includes('Backlog: 1'));},
+  empty(){const html=render([sym('sample',{})]);assert.ok(!html.includes('Waiting for work items'),'A received empty snapshot is not missing');},
+  missing(){const html=render([sym('sample',null)]);assert.ok(html.includes('Waiting for work items'));},
+  selected(){const syms=[sym('unpolled',null),sym('sample',held)];assert.ok(render(syms,'blocked','unpolled').includes('Waiting for work items'));assert.ok(!render(syms,'blocked','sample').includes('Waiting for work items'));},
+  populated(){const html=render([sym('sample',{TODO:['new-card']})]);assert.ok(html.includes('new-card'));assert.ok(!html.includes('Waiting for work items'));},
+  idleMissing(){const html=render([sym('sample',null)],'idle');assert.ok(html.includes('Waiting for work items'),'A selected board with a missing snapshot must wait, not claim an empty TODO column');assert.ok(!html.includes('No work items in To Do'),'Global idle does not prove the selected board is empty');},
 };
 const name=process.argv[3];
 assert.ok(cases[name],'unknown case '+name);

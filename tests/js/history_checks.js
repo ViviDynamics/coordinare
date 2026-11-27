@@ -292,8 +292,8 @@ check("a complete listing gives no incomplete notice", historyPartialHtml({ part
 // --- final review: the server's messages, refresh, in-flight paging, every reason ----- //
 
 const badRequest = { innerHTML: "" };
-historyShow(badRequest, { status: 400, body: { error: "bad_request", detail: "the card filter is not a card address" } });
-has("a 400 shows the server's message", badRequest.innerHTML, "the card filter is not a card address");
+historyShow(badRequest, { status: 400, body: { error: "bad_request", detail: "the work item filter is not a work item address" } });
+has("a 400 shows the server's message", badRequest.innerHTML, "the work item filter is not a work item address");
 const notFound = { innerHTML: "" };
 historyShow(notFound, { status: 404, body: { error: "not_found", detail: "no symphony named x on this daemon" } });
 has("a 404 shows the server's message", notFound.innerHTML, "no symphony named x on this daemon");
@@ -325,8 +325,8 @@ check("only one request went out for two Older clicks", fetchedUrls.length, 1);
 has("the pager is disabled while a request is in flight", historyPagerHtml(true, true, true), 'data-history-action="older" disabled');
 
 const twoReasons = historyPartialHtml({ partial: true, partial_reasons: ["a", "b"],
-  partial_details: ["This listing is incomplete: not every card was checked.", "Second reason here."] });
-has("the first partial reason is shown", twoReasons, "not every card was checked");
+  partial_details: ["This listing is incomplete: not every work item was checked.", "Second reason here."] });
+has("the first partial reason is shown", twoReasons, "not every work item was checked");
 has("the second partial reason is shown too", twoReasons, "Second reason here.");
 
 // 233: the card cell links to the card page; a card id that is not a plausible name keeps the filter.

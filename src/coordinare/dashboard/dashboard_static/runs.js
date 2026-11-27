@@ -365,7 +365,7 @@ function runDownloadHref(detail, extension) {
 }
 
 function runCardRunsHtml(runs, card) {
-  if (!runs || runs.length === 0) return '<div class="muted">No transcripts for this card yet.</div>';
+  if (!runs || runs.length === 0) return '<div class="muted">No transcripts for this work item yet.</div>';
   return groupRunsByStage(runs).map(function(group) {
     var items = group.runs.map(function(run) {
       var outcome = run.outcome ? esc(run.outcome) : '';

@@ -347,7 +347,7 @@ def _not_recorded(events: list[dict[str, Any]], runs: RunIndex, usage: UsageLedg
     if usage.stages is None:
         notes.append(usage.reason or "Token and cost figures are not tracked.")
     if not events:
-        notes.append("No lifecycle events were recorded for this card. Cards finished before the timeline was recorded have none.")
+        notes.append("No lifecycle events were recorded for this work item. Work items finished before the timeline was recorded have none.")
     return notes
 
 

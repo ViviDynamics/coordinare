@@ -52,13 +52,13 @@ def test_skip_confirms_states_its_effect_and_calls_the_endpoint(
     expect(tile.locator(".card-actions")).to_have_count(1, timeout=_WAIT_LIVE)
     tile.locator(".card-actions > summary").click()
     menu = tile.locator(".card-actions-menu")
-    expect(menu.get_by_role("button", name="Cancel card")).to_be_visible()
+    expect(menu.get_by_role("button", name="Cancel work item")).to_be_visible()
     expect(menu.get_by_role("button", name="Restart from stage")).to_be_visible()
     expect(menu.locator("select option")).to_have_text(["Assess", "Implement", "Review", "QA"])
 
     menu.get_by_role("button", name="Skip current stage").click()
     expect(menu.locator(".card-action-msg")).to_have_text("Queued. It takes effect on the next check.", timeout=_WAIT_LIVE)
-    assert dialogs == ["Skip the current stage? The card moves on to its next stage on the next check, "
+    assert dialogs == ["Skip the current stage? The work item moves on to its next stage on the next check, "
                        "without this stage finishing."]
     assert requests == [f"POST api/skip-role?card_id={_CARD}"]
 
@@ -74,7 +74,7 @@ def test_declining_the_confirmation_sends_nothing(page: Page, live_server_url: s
 
     tile = page.locator("#active-performers .ap-tile")
     tile.locator(".card-actions > summary").click(timeout=_WAIT_LIVE)
-    tile.get_by_role("button", name="Cancel card").click()
+    tile.get_by_role("button", name="Cancel work item").click()
     expect(tile.locator(".card-action-msg")).to_have_text("")
     assert called == []
 
@@ -91,7 +91,7 @@ def test_a_check_in_progress_offers_a_retry(page: Page, live_server_url: str, st
 
     tile = page.locator("#active-performers .ap-tile")
     tile.locator(".card-actions > summary").click(timeout=_WAIT_LIVE)
-    tile.get_by_role("button", name="Cancel card").click()
+    tile.get_by_role("button", name="Cancel work item").click()
     message = tile.locator(".card-action-msg")
     expect(message).to_contain_text("A check is in progress. Try again in a moment.", timeout=_WAIT_LIVE)
     expect(message.get_by_role("button", name="Retry")).to_be_visible()

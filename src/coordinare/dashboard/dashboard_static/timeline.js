@@ -190,7 +190,7 @@ function timelineEventHtml(event) {
 // The vertical lifecycle list, oldest first. An empty list says so; it does not guess.
 function timelineEventsHtml(tl) {
   var events = Array.isArray(tl.events) ? tl.events : [];
-  if (events.length === 0) return '<div class="muted">No lifecycle events recorded for this card.</div>';
+  if (events.length === 0) return '<div class="muted">No lifecycle events recorded for this work item.</div>';
   return '<ol class="tl-events">' + events.map(timelineEventHtml).join('') + '</ol>';
 }
 
@@ -304,7 +304,7 @@ function timelineLoad(node, symphony, card) {
     .then(function(res) {
       if (!res.ok) {
         // 233: a card the daemon does not know (404) is said plainly, not as the server's detail.
-        var text = res.status === 404 ? 'No timeline recorded for this card' : ((res.body && res.body.detail) || 'The timeline could not be loaded.');
+        var text = res.status === 404 ? 'No timeline recorded for this work item' : ((res.body && res.body.detail) || 'The timeline could not be loaded.');
         if (node.isConnected !== false) node.innerHTML = '<div class="muted">' + esc(text) + '</div>';
         return;
       }

@@ -72,7 +72,7 @@ _USAGE_KIND: dict[str, str] = {"endpoints": "model_server", "model_endpoints": "
 # idea. The key stays (it is the config contract); the label says what it is.
 _FIELD_LABELS: dict[str, str] = {
     "max_feedback_cycles": "Max revision rounds per PR (max_feedback_cycles)",
-    "max_cards_in_review": "Max cards waiting on review (max_cards_in_review)",
+    "max_cards_in_review": "Max work items waiting on review (max_cards_in_review)",
     # 365: the field decides who can approve a merge, so its label says that.
     "human_reviewers": "Who can approve merges (human_reviewers)",
     "trusted_bot_reviewers": "Bots whose reviews are acted on (trusted_bot_reviewers)",

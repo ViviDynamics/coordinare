@@ -204,7 +204,7 @@ def test_idle_shows_no_active_card(page: Page, live_server_url: str) -> None:
     """Empty-state message must appear in the card section when no card is active."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
-    expect(page.locator("#swimlane-section")).to_contain_text("No cards in the TODO column")
+    expect(page.locator("#swimlane-section")).to_contain_text("No work items in To Do")
 
 
 @pytest.mark.e2e
@@ -851,7 +851,7 @@ def test_performers_page_row_click_opens_detail_and_back_restores_list(
     expect(row).to_be_visible(timeout=_WAIT_LIVE)
     row.click()
     expect(page.locator("#performers-page-detail-view")).to_be_visible(timeout=_WAIT_LIVE)
-    expect(page.locator("#performers-page-detail")).to_contain_text("Card Context", timeout=_WAIT_LIVE)
+    expect(page.locator("#performers-page-detail")).to_contain_text("Work item context", timeout=_WAIT_LIVE)
     expect(page.locator("#performers-page-detail")).to_contain_text("Live Events", timeout=_WAIT_LIVE)
     page.locator("#performers-page-back").click()
     expect(page.locator("#performers-page-list-view")).to_be_visible(timeout=_WAIT_LIVE)
@@ -2136,7 +2136,7 @@ def test_pipeline_queue_is_distinct_from_dispatching(page, live_server_url, stor
         active_sessions=[session], active_session_count=1,
         session_skip_reasons={"queued-card": {"reason": "pipeline_capacity", "capacity": {"in_use": 1, "limit": 1}}},
     ))
-    expect(page.locator("#swimlane-section")).to_contain_text("Queued: 1 of 1 card slots in use")
+    expect(page.locator("#swimlane-section")).to_contain_text("Queued: 1 of 1 item slots in use")
 
 
 @pytest.mark.e2e
@@ -2169,7 +2169,7 @@ def test_phone_width_shows_no_node_id_and_never_scrolls_sideways(
     expect(tiles).to_contain_text("#57", timeout=_WAIT_LIVE)
     expect(tiles).to_contain_text("PR #81")
     assert "PVTI_" not in tiles.inner_text()
-    expect(tiles.locator(".ap-pill-card")).to_have_attribute("title", f"Card {node_id}")
+    expect(tiles.locator(".ap-pill-card")).to_have_attribute("title", f"Work item {node_id}")
 
     metrics = page.evaluate("""() => {
       const pill = document.querySelector('#active-performers .ap-pill-card').getBoundingClientRect();

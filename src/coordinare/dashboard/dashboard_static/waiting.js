@@ -15,13 +15,13 @@ function waitLabel(kind) {
   return vocabularyKindLabel('wait_labels', kind);
 }
 
-// "1 of 1 card slots in use", plus the queue when there is one. The same shape
+// "1 of 1 item slots in use", plus the queue when there is one. The same shape
 // as busyText(), which counts performers rather than cards.
 function slotsText(inUse, limit, queued) {
   var a = Number(inUse) || 0;
   var m = Number(limit) || 0;
   var q = Number(queued) || 0;
-  return a + ' of ' + m + ' card slots in use' + (q > 0 ? ' · ' + q + ' queued' : '');
+  return a + ' of ' + m + ' item slots in use' + (q > 0 ? ' · ' + q + ' queued' : '');
 }
 
 // Blockers arrive as issue numbers (sessions) or as preformatted labels
@@ -53,7 +53,7 @@ function needsHumanReason(reason, title) {
   return {
     kind: 'needs_human',
     text: waitLabel('needs_human') + (short ? ': ' + short : ''),
-    title: title || 'A person has to act before this card goes on. The conductor does not record why it stopped.',
+    title: title || 'A person has to act before this work item goes on. The conductor does not record why it stopped.',
   };
 }
 
@@ -84,12 +84,12 @@ function queuedWaitText(reason, facts) {
   if (reason === 'pipeline_capacity') {
     var slots = f.capacity
       ? slotsText(f.capacity.in_use, f.capacity.limit, 0)
-      : 'waiting for a free card slot';
+      : 'waiting for a free item slot';
     return waitLabel('queued') + ': ' + slots;
   }
   if (reason === 'review_capacity') {
     var n = Number(f.waiting) || 0;
-    return waitLabel('queued') + ': ' + n + (n === 1 ? ' card' : ' cards') + ' waiting on review';
+    return waitLabel('queued') + ': ' + n + (n === 1 ? ' work item' : ' work items') + ' waiting on review';
   }
   return null;
 }
@@ -98,7 +98,7 @@ function queuedReason(reason, facts, detail) {
   return {
     kind: 'queued',
     text: queuedWaitText(reason, facts),
-    title: detail || 'The conductor works this many cards at once. This card is picked up when a slot frees.',
+    title: detail || 'The conductor works this many work items at once. This one is picked up when a slot frees.',
   };
 }
 
@@ -129,7 +129,7 @@ function waitingReason(card, snapshot) {
       }
     }
     var cause = blockCauseText(c.block_cause);
-    return needsHumanReason(cause, cause ? 'The conductor stopped this card: ' + cause + '.' : undefined);
+    return needsHumanReason(cause, cause ? 'The conductor stopped this work item: ' + cause + '.' : undefined);
   }
 
   // 266: a card the symphony's env bootstrap holds. The words are the server's, so they match the Symphonies page.
@@ -179,21 +179,21 @@ function waitingReason(card, snapshot) {
     return {
       kind: 'needs_human',
       text: waitLabel('needs_human') + ': the advocate escalated it to a person',
-      title: 'A person now owns this card. The conductor will not start it.',
+      title: 'A person now owns this work item. The conductor will not start it.',
     };
   }
   if (wait.reason === 'assigned_elsewhere') {
     return {
       kind: 'filtered',
       text: waitLabel('filtered') + ': assigned to someone else',
-      title: 'The ownership filter leaves cards assigned to other people alone.',
+      title: 'The ownership filter leaves work items assigned to other people alone.',
     };
   }
   if (wait.reason === 'unassigned') {
     return {
       kind: 'filtered',
       text: waitLabel('filtered') + ': unassigned',
-      title: 'This coordinare only takes cards assigned to it, and this card has no assignee.',
+      title: 'This coordinare only takes work items assigned to it, and this one has no assignee.',
     };
   }
   return none;
@@ -224,7 +224,7 @@ function dependencyReason(blockers) {
   return {
     kind: 'waiting_on',
     text: waitLabel('waiting_on') + ' ' + waitBlockersText(blockers),
-    title: 'The conductor does not start this card until the cards it depends on are done.',
+    title: 'The conductor does not start this work item until the work items it depends on are done.',
   };
 }
 
@@ -235,7 +235,7 @@ function todoHeaderTitle(capacity, queuedCount) {
   var text = slotsText(capacity.in_use, capacity.limit, queuedCount);
   if (capacity.review_limit !== null && capacity.review_limit !== undefined) {
     text += ' · ' + (Number(capacity.waiting_on_review) || 0) + ' of ' + capacity.review_limit +
-      ' cards waiting on review';
+      ' work items waiting on review';
   }
   return text;
 }

@@ -38,7 +38,7 @@ def test_a_quiet_tick_under_a_selected_symphony_shows_only_its_own_tiles(
     expect(page.locator("#symphony-select")).to_have_value("beta-sym", timeout=_WAIT_LIVE)
     page.wait_for_timeout(7000)  # the quiet tick runs every 5 seconds; wait past one
 
-    expect(page.locator("#active-performer-tiles .ap-pill-card[title='Card PVTI_A1']")).to_have_count(0)
+    expect(page.locator("#active-performer-tiles .ap-pill-card[title='Work item PVTI_A1']")).to_have_count(0)
 
 
 # --- item 2: the history page never shows the snapshot's checks (#150 lists runs from the server) ---- #

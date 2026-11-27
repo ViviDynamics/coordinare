@@ -92,7 +92,7 @@ def test_small_labels() -> None:
     assert "Last poll" not in _SHIPPED and "Last checked" in _SHIPPED  # the Symphonies table's column; 154 removed the header copy
     assert "Active / Idle / Max" not in _SHIPPED
     assert '<label for="af-filter">Card</label>' not in page_source()
-    assert 'aria-label="Filter activity by card"' in page_source()
+    assert 'aria-label="Filter activity by work item"' in page_source()
     assert "Observer Verdicts" not in _SHIPPED and "Progress checks (recent)" in _PERFORMERS
     assert "progress_check" in vocabulary.CONCEPTS
     # 154: the tile labels its tokens "Tokens" (the card's name is in the tile title).

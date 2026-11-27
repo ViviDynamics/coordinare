@@ -102,14 +102,14 @@ def idle_explanation(counts: dict[str, int], skips: dict[str, Any]) -> str:
         for s in skips.values()
         if isinstance(s, dict)
     ):
-        return "Idle: To Do cards are filtered by assignee. Check assignee_filter and include_unassigned."
+        return "Idle: To Do work items are filtered by assignee. Check assignee_filter and include_unassigned."
     if counts.get("BLOCKED", 0):
-        return "Idle: cards are blocked and need attention. Open a blocked card for its question or failure."
+        return "Idle: work items are blocked and need attention. Open a blocked work item for its question or failure."
     if counts.get("TODO", 0):
-        return "Idle: To Do cards are waiting on dependencies, filters or capacity. Open a card for its wait reason."
+        return "Idle: To Do work items are waiting on dependencies, filters or capacity. Open a work item for its wait reason."
     if counts.get("IN_REVIEW", 0):
         return "Idle: pull requests are waiting for review or checks."
-    return "Idle: No cards in To Do. Add a work item in To Do (on GitHub Projects, add an issue to the Project and set its Status to To Do or Ready)."
+    return "Idle: No work items in To Do. Add one in To Do (on GitHub Projects, add an issue to the Project and set its Status to To Do or Ready)."
 
 
 def board_idle_explanation(

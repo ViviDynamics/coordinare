@@ -357,7 +357,7 @@ afAppend([
 check('filter options built from the cards present in the feed',
       els['af-filter'].innerHTML.includes('#1 Alpha') &&
       els['af-filter'].innerHTML.includes('#2 Beta'));
-check('"All cards" option present', els['af-filter'].innerHTML.includes('>All cards<'));
+check('"All work items" option present', els['af-filter'].innerHTML.includes('>All work items<'));
 els['af-filter'].value = 'CARD_A';
 onActivityFilterChange();
 check('filtered to one card', feed.childElementCount === 1 && /a1/.test(feed.rows[0]));

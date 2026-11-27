@@ -83,10 +83,10 @@ check('a checked symphony with failing checks and no recorded error still says h
   assert.ok(status.reason.indexOf('2 checks failed in a row') === 0);
 });
 check('a symphony with cards the board paused is Paused, with the count', () => {
-  assert.strictEqual(symphonyStatus(sym({cards_paused: 1})).reason, '1 card is paused on the board.');
+  assert.strictEqual(symphonyStatus(sym({cards_paused: 1})).reason, '1 work item is paused.');
   const two = symphonyStatus(sym({cards_paused: 2}));
   assert.strictEqual(two.label, 'Paused');
-  assert.strictEqual(two.reason, '2 cards are paused on the board.');
+  assert.strictEqual(two.reason, '2 work items are paused.');
 });
 check('a disabled symphony outranks an error and a pause', () => {
   assert.strictEqual(symphonyStatus(sym({enabled: false, error_count: 4, cards_paused: 1})).label, 'Disabled');

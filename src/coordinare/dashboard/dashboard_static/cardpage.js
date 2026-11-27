@@ -62,7 +62,7 @@ function cardPageAddressOk(symphony, card) {
 // nothing about it is fetched while the note stands.
 function cardPageScopeNote(choice, symphony) {
   if (!choice || !symphony || choice === symphony) return '';
-  return 'This card belongs to ' + symphony + '. The header shows ' + choice +
+  return 'This work item belongs to ' + symphony + '. The header shows ' + choice +
     ', so it is not shown here. Choose All symphonies or ' + symphony + ' in the header to see it.';
 }
 
@@ -85,7 +85,7 @@ function cardPageRoute(path) {
   var addr = cardAddressFromPath(path);
   if (addr.invalid) {
     _cardPageNote = null;
-    section.innerHTML = '<div class="muted">This is not a card address.</div>';
+    section.innerHTML = '<div class="muted">This is not a work item address.</div>';
     return;
   }
   var heading = '<div class="card-page-title">' + esc(addr.card) + '</div>' +

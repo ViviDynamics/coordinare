@@ -107,7 +107,7 @@ CONCEPTS: dict[str, Term] = _terms(
     ("symphony", "Symphony", "Symphonies", "One source of work items and the repository coordinare works them against. The dashboard's symphony switcher filters every panel to one symphony or to all of them."),
     ("github_project", "GitHub Project", "GitHub Projects", "On the GitHub Projects provider, the GitHub Project a symphony takes its work items from. The dashboard shows its number as #N."),
     ("repository", "Repository", "Repositories", "The GitHub repository a symphony's pull requests are opened in. The dashboard shows it as owner/repo."),
-    ("cards", "Cards", "Cards", "The work items of a symphony, one card each, in the states To Do, Blocked, In Progress and In Review. On GitHub Projects they are the cards of the Project."),
+    ("cards", "Work items", "Work items", "The work items of a symphony, in the states To Do, Blocked, In Progress and In Review. On GitHub Projects they are the items of the Project."),
     ("stage", "Stage", "Stages", "A step in a work item's pipeline, such as implementing or reviewing."),
     ("agent", "Agent", "Agents", "The persona that does the work of a stage, such as the implementer."),
     ("run", "Run", "Runs", "One agent working on one stage of one work item, from dispatch to result."),

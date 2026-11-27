@@ -55,12 +55,12 @@ function cardRefHtml(sess) {
   sess = sess || {};
   var nodeId = String(sess.card_id || '');
   var number = sess.issue_number;
-  var label = number ? '#' + String(number) : 'Card';
+  var label = number ? '#' + String(number) : 'Work item';
   var safeUrl = sess.issue_url && /^https?:\/\//i.test(sess.issue_url);
   var inner = safeUrl
     ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">' + esc(label) + '</a>'
     : esc(label);
-  var html = '<span class="ap-pill ap-pill-card" title="' + esc(nodeId ? 'Card ' + nodeId : '') + '"><strong>' + inner + '</strong></span>';
+  var html = '<span class="ap-pill ap-pill-card" title="' + esc(nodeId ? 'Work item ' + nodeId : '') + '"><strong>' + inner + '</strong></span>';
   if (sess.pr_url && /^https?:\/\//i.test(sess.pr_url)) {
     var prNumber = (String(sess.pr_url).match(/\/pull\/(\d+)/) || [])[1];
     html += '<span class="ap-pill ap-pill-pr"><strong><a href="' + esc(sess.pr_url) + '" target="_blank" rel="noopener">PR' + (prNumber ? ' #' + esc(prNumber) : '') + '</a></strong></span>';
@@ -221,7 +221,7 @@ function serverNowMs(s) {
 // always names the hand-off and how old the result is. A stale result is neutral and says so.
 function checksIconHtml(checks, nowMs) {
   if (!checks || typeof checks !== 'object') {
-    var none = 'PR checks: unknown, no CI gate has judged this card yet';
+    var none = 'PR checks: unknown, no CI gate has judged this work item yet';
     return '<span class="checks-icon checks-unknown" role="img" aria-label="' + esc(none) +
       '" title="' + esc(none) + '">?</span>';
   }
@@ -422,19 +422,19 @@ function renderActiveWorkPanels(s) {
         backlogCount += Array.isArray(snap.BACKLOG) ? snap.BACKLOG.length : 0;
         doneCount += Array.isArray(snap.DONE) ? snap.DONE.length : 0;
       });
-      workEl.innerHTML = '<span class="empty-state">No active cards in this symphony. Backlog: ' + backlogCount + '. Done: ' + doneCount + '.</span>';
+      workEl.innerHTML = '<span class="empty-state">No active work items in this symphony. Backlog: ' + backlogCount + '. Done: ' + doneCount + '.</span>';
       if (workCard) workCard.classList.remove('card-warning');
       return;
     }
     if (symphonies.length > 0) {
-      workEl.innerHTML = '<span class="empty-state">Waiting for cards&hellip;</span>';
+      workEl.innerHTML = '<span class="empty-state">Waiting for work items&hellip;</span>';
       if (workCard) workCard.classList.remove('card-warning');
       return;
     }
     var idleAndEmpty = s.phase === 'idle';
     workEl.innerHTML = idleAndEmpty
-      ? '<span class="empty-state-warning">&#9888; No cards in the TODO column. Add a card to your GitHub Project with status <code>TODO</code> to start work.</span>'
-      : '<span class="empty-state">Waiting for cards&hellip;</span>';
+      ? '<span class="empty-state-warning">&#9888; No work items in To Do. Add one in To Do to start work (on GitHub Projects, add an issue to the Project and set its Status to To Do or Ready).</span>'
+      : '<span class="empty-state">Waiting for work items&hellip;</span>';
     if (workCard) workCard.classList.toggle('card-warning', idleAndEmpty);
     return;
   }
@@ -590,7 +590,7 @@ function renderCardDetailContent(sess, s) {
     pipeline +
     '<table style="border-collapse:collapse;font-size:13px;margin-bottom:10px">' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Stage</td><td style="padding:3px 0" title="Conductor: ' + phaseLabel + '">' + (sess.performer_stage ? stageAgentLabel(sess.performer_stage) : phaseLabel) + '</td></tr>' +
-    '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Card</td><td style="padding:3px 0">' + cardLink + '</td></tr>' +
+    '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Work item</td><td style="padding:3px 0">' + cardLink + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Run</td><td style="padding:3px 0">' + runIdHtml(sess.session_id, {copy: true}) + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Elapsed</td><td style="padding:3px 0">' + elapsedHtml + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Cost</td><td style="padding:3px 0">' + cost + '</td></tr>' +
@@ -856,12 +856,12 @@ function renderPerformersPage(s) {
   var statusBadge = '<span class="role-status-badge ' + (isSelectedRoleActive ? 'role-active' : 'role-idle') + ' detail-badge">' + (isSelectedRoleActive ? 'active' : 'idle') + '</span>';
   var roleCardsHtml = selectedSessions.length
     ? '<ul class="detail-list">' + selectedSessions.map(function(sess) {
-      return '<li>' + esc(sess.card_title || sess.card_id || 'Untitled card') + '</li>';
+      return '<li>' + esc(sess.card_title || sess.card_id || 'Untitled work item') + '</li>';
     }).join('') + '</ul>'
     : '<div class="muted">No run in progress for this role.</div>';
   // 348: the panels below describe ONE card -- name it.
   var telemetryFor = selectedSessions.length > 1
-    ? '<div class="muted" style="margin-top:4px;font-size:12px">Live panels below show <strong>' + esc((selectedSessions[0] || {}).card_title || (selectedSessions[0] || {}).card_id || 'Untitled card') + '</strong> (' + String(selectedSessions.length) + ' cards on this role).</div>'
+    ? '<div class="muted" style="margin-top:4px;font-size:12px">Live panels below show <strong>' + esc((selectedSessions[0] || {}).card_title || (selectedSessions[0] || {}).card_id || 'Untitled work item') + '</strong> (' + String(selectedSessions.length) + ' work items on this role).</div>'
     : '';
   // 348: telemetry is per-card, so read the session running this role rather
   // than top-level state (null in shared-pool mode). No fallback: a role with
@@ -933,7 +933,7 @@ function renderPerformersPage(s) {
   detailEl.innerHTML =
     '<div class="performer-detail-head"><h2 style="margin-bottom:12px">' + esc(roleOrStageLabel(selectedRole)) + '</h2>' + statusBadge + '</div>' +
     '<div class="muted" style="margin-top:4px">' + esc(busyText(row.active, row.max, row.queued)) + '</div>' +
-    '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + telemetryFor + stepTrailHtml(sel, s.stall_timeout_seconds) + (skipHtml ? '<div style="margin-top:8px"><span style="color:var(--color-accent-yellow);font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
+    '<div class="detail-block"><strong>Work item context</strong>' + roleCardsHtml + telemetryFor + stepTrailHtml(sel, s.stall_timeout_seconds) + (skipHtml ? '<div style="margin-top:8px"><span style="color:var(--color-accent-yellow);font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
     runBlock +
     '<div class="detail-block"><strong>Metrics</strong><div class="muted" style="margin-top:4px">' + metricsHtml + '</div></div>' +
     performerTechnicalHtml(metrics, sel.container_id) +

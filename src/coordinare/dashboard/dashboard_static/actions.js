@@ -8,9 +8,9 @@ var CARD_ACTION_PHASES = { monitoring_performer: true, monitoring_agent: true, d
 
 // What the confirmation dialog says for each action.
 function cardActionEffect(kind, stage) {
-  if (kind === 'cancel') return 'Cancel this card? This stops the agent, discards its workspace and moves the card back to To Do.';
-  if (kind === 'skip') return 'Skip the current stage? The card moves on to its next stage on the next check, without this stage finishing.';
-  if (kind === 'restart') return 'Restart from ' + vocabularyKindLabel('stage_labels', stage) + '? The card goes back to that stage on the next check and every later stage runs again.';
+  if (kind === 'cancel') return 'Cancel this work item? This stops the agent, discards its workspace and moves the work item back to To Do.';
+  if (kind === 'skip') return 'Skip the current stage? The work item moves on to its next stage on the next check, without this stage finishing.';
+  if (kind === 'restart') return 'Restart from ' + vocabularyKindLabel('stage_labels', stage) + '? The work item goes back to that stage on the next check and every later stage runs again.';
   return '';
 }
 
@@ -30,14 +30,14 @@ function cardActionOutcome(kind, status, body) {
     return { text: 'A check is in progress. Try again in a moment.', retry: true };
   }
   if (status === 409 && body.status === 'not_active_card') {
-    return { text: 'Cancel works only for the card the conductor is working on right now, and this is not it (a card held by another symphony cannot be cancelled from here). Nothing was cancelled.', retry: false };
+    return { text: 'Cancel works only for the work item the conductor is working on right now, and this is not it (a work item held by another symphony cannot be cancelled from here). Nothing was cancelled.', retry: false };
   }
-  if (status === 409) return { text: String(body.error || 'Another control is already pending for this card.'), retry: false };
+  if (status === 409) return { text: String(body.error || 'Another control is already pending for this work item.'), retry: false };
   if (status >= 400) return { text: String(body.error || 'The request was refused.'), retry: false };
   if (kind === 'cancel') {
     return body.status === 'cancelled'
-      ? { text: 'Card cancelled.', retry: false }
-      : { text: 'There was no active card to cancel.', retry: false };
+      ? { text: 'Work item cancelled.', retry: false }
+      : { text: 'There was no active work item to cancel.', retry: false };
   }
   return { text: 'Queued. It takes effect on the next check.', retry: false };
 }
@@ -91,7 +91,7 @@ function cardActionMsgHtml(cardId, now) {
 
 // 168: the server says which card Cancel would act on (cancel_available). Cancel acts on that
 // one card only, so a card another symphony holds gets no Cancel button, and the menu says why.
-var CARD_CANCEL_NOTE = 'Cancel is offered only for the card the conductor is working on right now. This card is not it, so it cannot be cancelled from here.';
+var CARD_CANCEL_NOTE = 'Cancel is offered only for the work item the conductor is working on right now. This one is not it, so it cannot be cancelled from here.';
 
 function cardCancelOffered(sess) {
   return !!sess && sess.cancel_available === true;
@@ -103,7 +103,7 @@ function cardActionsHtml(sess, s, now) {
   var cardId = String(sess.card_id);
   var id = esc(cardId);
   var cancel = cardCancelOffered(sess)
-    ? '<button type="button" class="card-action-btn card-action-danger" data-card-action="cancel" data-card-id="' + id + '">Cancel card</button>'
+    ? '<button type="button" class="card-action-btn card-action-danger" data-card-action="cancel" data-card-id="' + id + '">Cancel work item</button>'
     : '<span class="card-action-note" style="color:var(--color-text-muted);font-size:12px">' + esc(CARD_CANCEL_NOTE) + '</span>';
   var stages = Array.isArray(s && s.lifecycle_sequence) ? s.lifecycle_sequence : [];
   var options = stages.map(function(stage) {
@@ -116,7 +116,7 @@ function cardActionsHtml(sess, s, now) {
   var msg = cardActionMsgHtml(cardId, now);
   var open = msg || _cardActionOpen[cardId] === true ? ' open' : '';
   return '<details class="card-actions" data-card-id="' + id + '"' + open + '>' +
-    '<summary aria-label="Card actions" title="Card actions">&#8943;</summary>' +
+    '<summary aria-label="Work item actions" title="Work item actions">&#8943;</summary>' +
     '<div class="card-actions-menu">' +
       cancel +
       '<button type="button" class="card-action-btn" data-card-action="skip" data-card-id="' + id + '">Skip current stage</button>' +

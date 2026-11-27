@@ -86,7 +86,7 @@ check('no gate at all shows the unknown icon with its own title', () => {
   for (const value of [null, undefined, 'bogus']) {
     const html = checksIconHtml(value, NOW);
     assert.ok(html.indexOf('checks-unknown') !== -1);
-    assert.ok(html.indexOf('PR checks: unknown, no CI gate has judged this card yet') !== -1, html);
+    assert.ok(html.indexOf('PR checks: unknown, no CI gate has judged this work item yet') !== -1, html);
   }
 });
 

@@ -271,7 +271,7 @@ def test_a_run_menu_calls_the_existing_cancel_and_skip_endpoints(
     expect(tile.locator(".card-action-msg")).to_have_text("Queued. It takes effect on the next check.", timeout=_WAIT_LIVE)
 
     with page.expect_request("**/api/cancel**") as cancel:
-        tile.get_by_role("button", name="Cancel card").click()
+        tile.get_by_role("button", name="Cancel work item").click()
     assert cancel.value.method == "POST"
     assert cancel.value.url.split("/api/", 1)[1] == f"cancel?card_id={_RUNNING_A}"
 
@@ -284,7 +284,7 @@ def test_a_run_menu_opens_from_the_keyboard(page: Page, live_server_url: str, st
     summary.focus()
     page.keyboard.press("Enter")
     expect(tile.locator(".card-actions")).to_have_attribute("open", "")
-    expect(tile.get_by_role("button", name="Cancel card")).to_be_visible()
+    expect(tile.get_by_role("button", name="Cancel work item")).to_be_visible()
 
 
 @pytest.mark.e2e
@@ -402,9 +402,9 @@ def test_the_conductor_description_is_visible_text_with_the_full_text_on_hover(
 ) -> None:
     _show_the_layout(page, live_server_url, store)
     desc = page.locator("#phase-desc")
-    expect(desc).to_have_text("Performer agent is actively working on the card.", timeout=_WAIT_LIVE)
+    expect(desc).to_have_text("Performer agent is actively working on the work item.", timeout=_WAIT_LIVE)
     expect(desc).to_be_visible()
-    assert desc.get_attribute("title") == "Performer agent is actively working on the card."
+    assert desc.get_attribute("title") == "Performer agent is actively working on the work item."
 
 
 # --- Review: one stage tracker per running tile; no duplicate View run ----------
@@ -500,11 +500,11 @@ def test_the_conductor_description_sits_on_its_own_line_and_shows_about_sixty_ch
     page.evaluate("age => { _lastStateAt = Date.now() - age * 1000; refreshFreshness(); }", age_seconds)
     phase = page.locator("#phase").bounding_box()
     desc = page.locator("#phase-desc")
-    expect(desc).to_have_text("Performer agent is actively working on the card.", timeout=_WAIT_LIVE)
+    expect(desc).to_have_text("Performer agent is actively working on the work item.", timeout=_WAIT_LIVE)
     box = desc.bounding_box()
     assert phase is not None and box is not None
     assert box["y"] >= phase["y"] + phase["height"] - 1, (phase, box)
-    # The sentence is 47 characters: it must show in full, with no ellipsis, on one line. Pixel
+    # The sentence is 53 characters: it must show in full, with no ellipsis, on one line. Pixel
     # widths differ between font stacks (CI renders it narrower), so the check is "not cut".
     assert box["height"] <= DESCRIPTION_LINE_HEIGHT + 2, box
     fits = desc.evaluate("el => el.scrollWidth <= el.clientWidth + 1")

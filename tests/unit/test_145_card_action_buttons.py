@@ -82,7 +82,7 @@ def test_cancel_is_recorded_when_it_cancels(monkeypatch) -> None:
     assert response.json() == {"status": "cancelled"}
     cancel.assert_awaited_once()
     (entry,) = _feed(store)
-    assert entry["text"] == "Operator cancelled the card." and entry["card_number"] == 57
+    assert entry["text"] == "Operator cancelled the work item." and entry["card_number"] == 57
 
 
 def test_cancel_with_nothing_to_cancel_is_not_recorded(monkeypatch) -> None:

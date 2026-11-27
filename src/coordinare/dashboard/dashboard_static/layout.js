@@ -204,7 +204,7 @@ function activeRunsIdleHtml(s) {
     (s && s.idle_reason ? '<p>' + esc(s.idle_reason) + '</p>' : '') +
     (filterHint ? '<div class="ap-idle-rows"><div class="ap-idle-row">' +
       '<span class="ap-pill">Filter: <strong>' + filterHint + '</strong></span></div></div>' : '') +
-    (emptyBoard ? '<details><summary>Try a first card</summary>' +
+    (emptyBoard ? '<details><summary>Try a first work item</summary>' +
     '<p>Create an issue titled <strong>Document our first Coordinare run</strong>.</p>' +
     '<p>Create <code>FIRST_CARD.md</code> at the repository root with one sentence: ' +
     'Coordinare can open a pull request for this repository. Change no other files. ' +

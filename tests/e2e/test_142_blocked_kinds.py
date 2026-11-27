@@ -134,7 +134,7 @@ def test_a_card_held_for_capacity_says_queued(page: Page, live_server_url: str, 
     ))
 
     card = page.locator("#swimlane-section .swimlane-card").filter(has_text="Waiting for a slot")
-    expect(card.locator(".swimlane-wait")).to_have_text("Queued: 1 of 1 card slots in use", timeout=_WAIT_LIVE)
+    expect(card.locator(".swimlane-wait")).to_have_text("Queued: 1 of 1 item slots in use", timeout=_WAIT_LIVE)
     expect(card.locator(".swimlane-wait")).to_have_attribute("data-wait", "queued")
 
 

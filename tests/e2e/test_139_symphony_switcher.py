@@ -106,8 +106,8 @@ def test_choosing_a_symphony_filters_every_panel(page: Page, live_server_url: st
 
     expect(page.locator("#swimlane-section")).not_to_contain_text("Alpha card")
     expect(page.locator("#swimlane-section")).to_contain_text("Beta card")
-    expect(page.locator("#active-performer-tiles .ap-pill-card[title='Card PVTI_A1']")).to_have_count(0)
-    expect(page.locator("#active-performer-tiles .ap-pill-card[title='Card PVTI_B1']")).to_have_count(1)
+    expect(page.locator("#active-performer-tiles .ap-pill-card[title='Work item PVTI_A1']")).to_have_count(0)
+    expect(page.locator("#active-performer-tiles .ap-pill-card[title='Work item PVTI_B1']")).to_have_count(1)
     expect(page.locator("#symphony-identity")).to_have_text("beta-sym · GitHub Project #2 · acme/beta-repo")
     expect(page.locator("#spend-strip")).to_have_text("$0.00 today · $0.00 week")
     expect(page.locator("#attention-list")).to_contain_text("Which branch?")
@@ -204,7 +204,7 @@ def test_hostile_symphony_names_are_escaped(page: Page, live_server_url: str, st
 def test_no_user_facing_board_or_swimlane_text_remains(page: Page, live_server_url: str, store: DashboardStore) -> None:
     _open(page, live_server_url, store, _snapshot(_two_symphonies()))
     # 154: the Cards heading carries the board's counts beside its name.
-    expect(page.locator("#active-work-card h2")).to_contain_text("Cards", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-work-card h2")).to_contain_text("Work items", timeout=_WAIT_LIVE)
     text = page.locator("body").inner_text()
     assert not re.search(r"\bBoard\b", text), "a Board label is still visible"
     assert "swimlane" not in text.lower(), "a swimlane label is still visible"

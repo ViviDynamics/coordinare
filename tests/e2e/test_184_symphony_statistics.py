@@ -98,7 +98,7 @@ def test_list_and_detail_headlines_agree_and_now_matches_board(
     row.locator('a[href="/symphonies/alpha"]').click()
     content = page.locator(CONTENT)
     expect(content).to_contain_text("Throughput", timeout=_WAIT_LIVE)
-    expect(content.locator('.sym-stat').filter(has_text="Cards completed").locator("strong")).to_have_text("1")
+    expect(content.locator('.sym-stat').filter(has_text="Work items completed").locator("strong")).to_have_text("1")
     expect(content.locator('.sym-stat').filter(has_text="Cost").first.locator("strong")).to_have_text(spend)
     expect(content.locator('.sym-stat').filter(has_text="To Do").locator("strong")).to_have_text("1")
 
@@ -117,4 +117,4 @@ def test_partial_usage_and_disabled_state_are_explained(
     content = page.locator(CONTENT)
     expect(content).to_contain_text("Disabled", timeout=_WAIT_LIVE)
     expect(content.locator('.sym-stat').filter(has_text="Tokens").locator("strong")).to_have_text("partial")
-    expect(content.locator('.sym-stat').filter(has_text="Board check success rate").locator("strong")).to_have_text("Not recorded")
+    expect(content.locator('.sym-stat').filter(has_text="Check success rate").locator("strong")).to_have_text("Not recorded")

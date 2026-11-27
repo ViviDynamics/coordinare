@@ -196,7 +196,7 @@ def test_each_pr_checks_state_has_its_own_icon_and_an_unknown_one(
         "title", aged_title("running"),
     )
     expect(cards.filter(has_text="Unjudged card").locator(".checks-icon.checks-unknown")).to_have_attribute(
-        "title", "PR checks: unknown, no CI gate has judged this card yet",
+        "title", "PR checks: unknown, no CI gate has judged this work item yet",
     )
 
 
@@ -382,7 +382,7 @@ def test_a_card_shows_its_stage_pair_and_its_waiting_reason(
     working = page.locator("#swimlane-section .swimlane-card").filter(has_text="Wire the export")
     expect(working.locator("code")).to_have_text("Implement · Implementer", timeout=_WAIT_LIVE)
     queued = page.locator("#swimlane-section .swimlane-card").filter(has_text="Queued work")
-    expect(queued.locator(".swimlane-wait")).to_have_text("Queued: 1 of 1 card slots in use", timeout=_WAIT_LIVE)
+    expect(queued.locator(".swimlane-wait")).to_have_text("Queued: 1 of 1 item slots in use", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e

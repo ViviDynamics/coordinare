@@ -26,7 +26,7 @@ const response = {
 };
 const sym = response.symphony_health.alpha;
 const html = symphonyStatsHtml('alpha', response, response);
-['Throughput', 'Flow', 'Spend', 'Reliability', 'Now', 'Recent runs', 'Recent completed cards',
+['Throughput', 'Flow', 'Spend', 'Reliability', 'Now', 'Recent runs', 'Recent completed work items',
  '50%', '25%', 'title=', '/cards/alpha/card', '/runs/alpha/card/run', 'h.symphony=alpha',
  'Env', '1 of 3'].forEach(text => assert.ok(html.includes(text), text));
 assert.ok(!html.includes('<script>bad'));
@@ -73,7 +73,7 @@ const costs = statsChartHtml([
 assert.ok(costs.includes('cx="6" cy="42"'));
 assert.ok(costs.includes('cx="314" cy="6"'));
 assert.ok(costs.includes('aria-label="Daily cost. First day: 0.02; Last day: 0.05"'));
-const zeros = statsChartHtml([{x: 100, label: 'First day', value: 0}], 'Completed cards');
+const zeros = statsChartHtml([{x: 100, label: 'First day', value: 0}], 'Completed work items');
 assert.ok(zeros.includes('First day: 0'));
 assert.ok(!/NaN|Infinity/.test(zeros));
 console.log('Symphony statistics contracts passed');

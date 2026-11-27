@@ -272,7 +272,7 @@ def test_running_summary_names_board_roles_skips_and_concurrency(minimal: dict) 
 @pytest.mark.parametrize(
     "counts,skips,expected",
     [
-        ({"TODO": 0}, {}, "No cards"),
+        ({"TODO": 0}, {}, "No work items"),
         ({"TODO": 2}, {"a": {"kind": "assignee_filter"}}, "assignee"),
         ({"TODO": 0, "BLOCKED": 2}, {}, "blocked"),
         ({"TODO": 2}, {"a": {"kind": "dependencies"}}, "waiting"),

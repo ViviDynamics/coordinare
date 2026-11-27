@@ -85,7 +85,7 @@ LIST_CAP_REASON = "folder_listing"
 EXAMINE_CAP_REASON = "examine_budget"
 PARTIAL_DETAILS = {
     FOLDER_CAP_REASON: (
-        "This listing is incomplete: not every card was checked. Runs in cards the scan did not "
+        "This listing is incomplete: not every work item was checked. Runs in work items the scan did not "
         "reach are missing."
     ),
     STAT_CAP_REASON: (
@@ -93,11 +93,11 @@ PARTIAL_DETAILS = {
         "did not reach are missing."
     ),
     CARD_CAP_REASON: (
-        f"This listing is incomplete: a card has more than {HISTORY_CARD_FILES_MAX} runs, so its "
+        f"This listing is incomplete: a work item has more than {HISTORY_CARD_FILES_MAX} runs, so its "
         "oldest runs are not listed."
     ),
     LIST_CAP_REASON: (
-        f"This listing is incomplete: a card folder has more than {HISTORY_FOLDER_LIST_MAX} entries, "
+        f"This listing is incomplete: a work item folder has more than {HISTORY_FOLDER_LIST_MAX} entries, "
         "and the entries past the first read are not listed."
     ),
     EXAMINE_CAP_REASON: (
@@ -595,7 +595,7 @@ def list_history(root: Path, query: HistoryQuery, usage: UsageSource) -> dict[st
         message = f"no symphony named {filters.symphony!r} on this daemon"
         raise HistorySymphonyError(message)
     if filters.card is not None and not run_viewer.is_address_segment(filters.card):
-        message = "the card filter is not a card address"
+        message = "the work item filter is not a work item address"
         raise HistoryQueryError(message)
     fingerprint = filter_fingerprint(filters)
     anchor = time.time_ns()

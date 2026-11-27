@@ -71,7 +71,7 @@ const format = waitingReason(Object.assign({}, ON_BLOCKED, { block_cause: "forma
 check("a format failure whose retries are spent says so",
   format.text, "Needs human: retries exhausted on a format failure");
 check("the title says the conductor stopped the card", format.title,
-  "The conductor stopped this card: retries exhausted on a format failure.");
+  "The conductor stopped this work item: retries exhausted on a format failure.");
 
 const closed = waitingReason(Object.assign({}, ON_BLOCKED, { block_cause: "closed_pr" }), {});
 check("a closed pull request is named", closed.text, "Needs human: the pull request was closed without merging");
@@ -93,7 +93,7 @@ check("and its kind is waiting_on", dependent.kind, "waiting_on");
 
 const queued = waitingReason({ id: "PVTI_3", column: "TODO" },
   { todo_waits: { PVTI_3: { reason: "queued", blockers: [] } }, todo_capacity: { in_use: 1, limit: 1 } });
-check("a capacity wait on a To Do card is Queued", queued.text, "Queued: 1 of 1 card slots in use");
+check("a capacity wait on a To Do card is Queued", queued.text, "Queued: 1 of 1 item slots in use");
 check("capacity is never a Blocked-column reason", waitingReason({ id: "PVTI_3", column: "BLOCKED" },
   { todo_waits: { PVTI_3: { reason: "queued", blockers: [] } }, todo_capacity: { in_use: 1, limit: 1 } }).text,
   "Needs human");
@@ -157,7 +157,7 @@ lacks("the banner row does not say blocked", attentionListHtml(attentionBlocked)
 check("a dependency skip on the Performers page says Waiting on",
   skipReasonText({ reason: "dependency_blocked", blockers: [42, 43] }), "Waiting on #42, #43");
 check("a queued skip keeps the queued words",
-  skipReasonText({ reason: "pipeline_capacity", capacity: { in_use: 1, limit: 1 } }), "Queued: 1 of 1 card slots in use");
+  skipReasonText({ reason: "pipeline_capacity", capacity: { in_use: 1, limit: 1 } }), "Queued: 1 of 1 item slots in use");
 check("an unrecognised skip is not shown by its wire code",
   skipReasonText({ reason: "blocked_column" }), "Not picked up this check");
 check("a skip with no reason is still named", skipReasonText(undefined), "Not picked up this check");
