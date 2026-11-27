@@ -17,6 +17,12 @@ if TYPE_CHECKING:
     from performer.models import BackendEvent, Score, Stand
 
 
+#: 383: how a workflow turn that asked instead of finishing begins its
+#: ``output_tail`` (adapter.build_agent_turn_runner). The implementer's retry
+#: keys on it to hand the question back.
+BLOCKED_TURN_PREFIX = "agent asked instead of finishing: "
+
+
 @dataclass
 class WorkflowMetrics:
     """Per-run counters, used for the spec's performance budgets."""

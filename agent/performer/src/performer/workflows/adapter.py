@@ -26,7 +26,7 @@ import structlog
 
 from performer.backends.base import BackendStatus
 from performer.workflows import get_workflow
-from performer.workflows.base import SchemaViolation, WorkflowMetrics, WorkflowResult
+from performer.workflows.base import BLOCKED_TURN_PREFIX, SchemaViolation, WorkflowMetrics, WorkflowResult
 from performer.workflows.budget import ModelReply
 from performer.workflows.toolkit import Toolkit
 _GIT = shutil.which("git") or "git"  # 440: resolve the real git path once
@@ -35,6 +35,9 @@ if TYPE_CHECKING:
     from performer.models import BackendEvent, Score, Stand
 
 log = structlog.get_logger(__name__)
+
+#: The longest output_tail a turn result carries.
+_TAIL_CHARS = 4000
 
 # Read timeout for one model call. 300 s killed the first live QA run: a
 # reasoning model producing a doubled 6000-token plan budget needs longer
@@ -276,6 +279,16 @@ def build_agent_turn_runner(
 
                 if status.state in {"done", "error"}:
                     break
+                if status.state == "blocked":
+                    # 383: the agent asked instead of finishing (nare's ask tool).
+                    # A workflow turn has no board to answer on, so waiting would
+                    # only spend the turn's timeout. The questions are the result,
+                    # so a stop that fails must not lose them.
+                    try:
+                        await backend.stop()
+                    except Exception as exc:
+                        log.warning("workflow.turn_stop_failed", error=str(exc))
+                    break
 
                 await asyncio.sleep(poll_interval_s)
         except asyncio.CancelledError:
@@ -350,6 +363,23 @@ def build_agent_turn_runner(
             output_tail = output[-4000:] if len(output) > 4000 else output
 
         wall_ms = int((time.monotonic() - started_at) * 1000)
+
+        if final_status and final_status.state == "blocked":
+            # 383: an error that keeps the questions, so a caller can hand them
+            # back on its retry. The prefix and questions come first and are never
+            # cut; any output a backend reported fills the space left after them.
+            questions = "; ".join(final_status.questions) or "no question given"
+            asked = f"{BLOCKED_TURN_PREFIX}{questions}"[:_TAIL_CHARS]
+            room = _TAIL_CHARS - len(asked) - 2
+            if output_tail and room > 0:
+                asked = f"{asked}\n\n{output_tail[-room:]}"
+            return {
+                "exit_state": "error",
+                "output_tail": asked,
+                "changed_paths": changed_paths,
+                "wall_ms": wall_ms,
+                "harness_commits": harness_commits,
+            }
 
         if final_status and final_status.state == "error":
             return {

@@ -87,6 +87,10 @@ class FakeBackend:
             if self.poll_count < self.polls_until_done:
                 return BackendStatus(state="working")
             return BackendStatus(state="error", error_reason="backend failed")
+        if self.behavior == "blocked":
+            return BackendStatus(state="blocked", questions=["Which database?", "Keep the old API?"])
+        if self.behavior == "blocked_long":
+            return BackendStatus(state="blocked", questions=["Which database?"], output="x" * 6000)
         if self.behavior == "timeout":
             return BackendStatus(state="working")
         return BackendStatus(state="working")
@@ -443,3 +447,62 @@ def test_backend_names_are_normalised_like_main_py():
     with pytest.raises(RuntimeError):
         asyncio.run(runner({"persona": "x", "kind": "tests", "milestone_index": 0}, timeout_s=1))
     assert seen == ["claude_code"]
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_backend_ends_the_turn_at_once(stand, temp_git_repo):
+    """#383: a backend that asks instead of finishing (nare's ask tool) must not
+    hold the turn until its wall-clock timeout; there is no board to answer on."""
+    backend = FakeBackend(behavior="blocked")
+    runner = build_agent_turn_runner(
+        stand=stand,
+        score=_make_score(workspace_path=str(temp_git_repo)),
+        backend_name="example",
+        backend_factory=lambda _name: backend,
+    )
+
+    result = await asyncio.wait_for(runner({"persona": "p"}, timeout_s=30.0), timeout=10.0)
+
+    assert result["exit_state"] == "error"
+    assert "Which database?" in result["output_tail"]
+    assert "Keep the old API?" in result["output_tail"]
+    assert backend.poll_count == 1
+    assert backend.stopped
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_turn_survives_a_failing_stop(stand, temp_git_repo):
+    """The questions are the result; a backend whose stop() raises must not lose them."""
+    backend = FakeBackend(behavior="blocked")
+
+    async def _raise() -> None:
+        raise ProcessLookupError("already gone")
+
+    backend.stop = _raise
+    runner = build_agent_turn_runner(
+        stand=stand,
+        score=_make_score(workspace_path=str(temp_git_repo)),
+        backend_name="example",
+        backend_factory=lambda _name: backend,
+    )
+    result = await asyncio.wait_for(runner({"persona": "p"}, timeout_s=30.0), timeout=10.0)
+    assert result["exit_state"] == "error"
+    assert "Which database?" in result["output_tail"]
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_turn_keeps_its_prefix_and_question_past_a_long_output(stand, temp_git_repo):
+    """Copilot on #385: slicing the combined text from the left dropped the prefix,
+    so the implementer no longer saw the turn had asked."""
+    from performer.workflows.base import BLOCKED_TURN_PREFIX
+
+    backend = FakeBackend(behavior="blocked_long")
+    runner = build_agent_turn_runner(
+        stand=stand,
+        score=_make_score(workspace_path=str(temp_git_repo)),
+        backend_name="example",
+        backend_factory=lambda _name: backend,
+    )
+    result = await asyncio.wait_for(runner({"persona": "p"}, timeout_s=30.0), timeout=10.0)
+    assert result["output_tail"].startswith(f"{BLOCKED_TURN_PREFIX}Which database?")
+    assert len(result["output_tail"]) <= 4000
