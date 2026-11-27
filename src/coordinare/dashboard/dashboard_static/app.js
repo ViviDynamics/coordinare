@@ -791,8 +791,8 @@ function symSave(btn) {
   if (!changed.length) { cfgFlash(statusEl, 'No changes to save', 'muted'); return; }
   var body = symRequestBody(entries, _symBase);
   var pending = cfgPendingFor(form, changed);
-  cfgSymphonyActionStarts(form, statusEl);
   cfgShowReview(form, cfgDiffRows(changed), function() {
+    cfgSymphonyActionStarts(form, statusEl);
     return symValidateAndSave(name, body, pending, form, statusEl, btn);
   });
 }
@@ -803,8 +803,8 @@ function symDelete(btn) {
   var statusEl = form.querySelector('[data-status]');
   var name = form.getAttribute('data-symphony') || '';
   var rows = [{label: 'Symphony', before: name, after: '(deleted)', secret: false, cleared: false}];
-  cfgSymphonyActionStarts(form, statusEl);
   cfgShowReview(form, rows, function() {
+    cfgSymphonyActionStarts(form, statusEl);
     _cfgPending = null;
     cfgPut('/api/symphonies/' + encodeURIComponent(name),
       {store: 'symphony', _method: 'DELETE', 'If-Match': _symCfgHash || ''}, form, statusEl, btn);
@@ -814,7 +814,11 @@ function symDelete(btn) {
 function symSyncSpecFiles(form) {
   var names = Array.prototype.map.call(form.querySelectorAll('#sym-spec-files-list [data-spec-file]'),
     function(chip) { return chip.getAttribute('data-spec-file'); });
-  form.querySelector('input[data-field="env_spec_files"]').value = names.join(', ');
+  var field = form.querySelector('input[data-field="env_spec_files"]');
+  field.value = names.join(', ');
+  // #340: a value set in code fires no event, so the form is told: it marks itself Unsaved and
+  // clears an earlier Saved, as it does for a typed edit.
+  field.dispatchEvent(new Event('change', {bubbles: true}));
 }
 
 function symAddSpecFile(btn) {

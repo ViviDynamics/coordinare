@@ -849,6 +849,8 @@ function cfgHandleSymphonySave(status, body, container, statusEl, newHash) {
     clearTimeout(container._cfgReloadTimer);
     container._cfgReloadTimer = setTimeout(function() {
       if (container.isConnected === false || cfgHasUnsaved()) return;
+      // A review opened since is the reader's next step, and a redraw would throw it away.
+      if (container.querySelector && container.querySelector('[data-review]')) return;
       var saved = statusEl.textContent === 'Saved';
       cfgReloadSymphony(saved ? {text: 'Saved', color: statusEl.style ? statusEl.style.color : ''} : null);
     }, 1000);
@@ -863,9 +865,9 @@ function cfgHandleSymphonySave(status, body, container, statusEl, newHash) {
   return false;
 }
 
-// #340: a save or delete whose review opens starts from the form as the reader sees it now. An
-// earlier save's refresh would redraw the form under the review and drop its answer, so it is
-// cancelled, and that save's Saved message no longer describes the form.
+// #340: a confirmed save or delete is the form's next request. An earlier save's refresh would
+// redraw the form while it is in flight and drop its answer, so it is cancelled, and that save's
+// Saved message no longer describes what the form is doing.
 function cfgSymphonyActionStarts(form, statusEl) {
   clearTimeout(form._cfgReloadTimer);
   if (statusEl && statusEl.textContent === 'Saved') cfgFlash(statusEl, '', 'muted');
