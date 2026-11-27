@@ -25,8 +25,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
+import shutil
+import signal
 import sys
 import time
 from http import HTTPStatus
@@ -114,10 +117,17 @@ def run_job(job_dir: Path, *, token: str = "", env: dict[str, str] | None = None
         status = stop.status
     except Exception as exc:  # a runner bug must still end the run with a status
         status = {"outcome": ERROR, "step": "runner", "reason": f"{type(exc).__name__}: {exc}"}
+    _drop_checkouts(job_dir)
     status["finished_at"] = time.time()
     status["elapsed_seconds"] = round(time.monotonic() - started, 1)
     _write_atomic(job_dir / STATUS_FILE, json.dumps(status, indent=2))
     return status
+
+
+def _drop_checkouts(job_dir: Path) -> None:
+    """Remove the run's checkouts once it ended: the evidence is all that is read later."""
+    for name in ("base", "repo"):
+        shutil.rmtree(job_dir / name, ignore_errors=True)
 
 
 class _StopError(Exception):
@@ -259,16 +269,19 @@ class _Run:
         if remaining <= 0:
             raise _StopError({"outcome": TIMEOUT, "step": step, "reason": "the run took longer than timeout_seconds"})
         try:
+            # A process group of its own, so a timeout stops what it started too (QAre
+            # boots apps and containers), not only the command itself.
             proc = await asyncio.create_subprocess_exec(
                 *argv, cwd=cwd, env=env, stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
         except OSError as exc:
             return None, "", f"{argv[0]} could not be started: {exc.strerror or exc}"
         try:
             out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=remaining)
         except TimeoutError as exc:
-            proc.kill()
+            _kill_group(proc.pid)
             await proc.wait()
             _append(self.log, f"{step} (timed out)", argv, "")
             raise _StopError({"outcome": TIMEOUT, "step": step, "reason": "the run took longer than timeout_seconds"}) from exc
@@ -294,6 +307,11 @@ def _change_diff(request: dict[str, Any], *, base: str, head: str, token: str, d
     return response.text
 
 
+def qare_env(env: dict[str, str], passthrough: list[str]) -> dict[str, str]:
+    """What QAre may see of ``env``: the base names and the operator's passthrough names."""
+    return _qare_env(env, passthrough)
+
+
 def _qare_env(env: dict[str, str], passthrough: list[str]) -> dict[str, str]:
     names = [*_BASE_ENV, *passthrough]
     return {name: env[name] for name in names if name in env and name != CREDENTIAL_ENV}
@@ -303,6 +321,11 @@ def _append(log: Path, heading: str, argv: list[str], text: str) -> None:
     shown = " ".join(argv[:_SHOWN_ARGS]) + (" ..." if len(argv) > _SHOWN_ARGS else "")
     with log.open("a", encoding="utf-8") as handle:
         handle.write(f"== {heading}: {shown}\n{text}\n")
+
+
+def _kill_group(pid: int) -> None:
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pid, signal.SIGKILL)
 
 
 def _tail(text: str) -> str:

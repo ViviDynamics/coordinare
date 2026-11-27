@@ -195,3 +195,16 @@ async def test_a_publish_that_fails_is_retried_not_passed() -> None:
     provider.publish_error = RuntimeError("GitHub said no")
     with pytest.raises(TransportError, match="could not publish"):
         await service.check_status(accepted["session_id"])
+
+
+@pytest.mark.asyncio
+async def test_qa_without_a_base_is_retried_not_run_one_sided() -> None:
+    class NoBase(FakeGitHub):
+        async def read(self, repository: str, node: str) -> PullRequestSnapshot:
+            return PullRequestSnapshot(head_sha=self.head)
+
+    provider = FakeQA()
+    service = ExternalStageService(provider, stage="qa", pr_reader=NoBase().read)
+    with pytest.raises(TransportError, match="no usable base"):
+        await service.dispatch_card(dict(CARD))
+    assert provider.requests == []

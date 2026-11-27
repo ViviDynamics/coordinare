@@ -20,13 +20,14 @@ from coordinare.services.qare import (
     QAreProvider,
     job_from_status,
     parse_result,
+    prune_finished,
     web_base_for,
 )
 from coordinare.services.stage_contract import JobState, StageCriterion, StageRequest, StageVerdict
 from coordinare.stage_provider_config import QAreProviderConfig
 from coordinare.transport.base import TransportError
 from tests.unit import fake_qare
-from tests.unit.qare_fixtures import CRITERIA, FAKE_QARE, make_remote, request_spec, scenario
+from tests.unit.qare_fixtures import CRITERIA, FAKE_QARE, calls, make_remote, request_spec, scenario
 
 TOKEN = "ghs_providertokenvalue00000000000000000"
 HEAD = "b" * 40
@@ -385,3 +386,52 @@ async def test_health_names_a_qare_that_cannot_be_executed(tmp_path: Path) -> No
     ok, detail = await QAreProvider("qare", _config(command=[str(script)]), work_dir=tmp_path).health()
     assert not ok
     assert "could not be started" in detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ref", ["..", ".", "...", ".hidden"])
+async def test_dot_refs_never_leave_the_work_dir(tmp_path: Path, ref: str) -> None:
+    provider = QAreProvider("qare", _config(), work_dir=tmp_path / "runs")
+    with pytest.raises(TransportError):
+        await provider.poll(ref)
+
+
+@pytest.mark.parametrize("job", [{}, {"id": None}, {"id": ""}, "x"])
+def test_a_job_record_must_name_this_job(job: Any) -> None:
+    outcome, problem = parse_result(_result(job=job), SPEC, exit_code=0)
+    assert outcome is None
+    assert "result of job" in problem
+
+
+@pytest.mark.parametrize("evidence", ["checks/a/stdout.txt", [1], [""], []])
+def test_evidence_must_be_a_list_of_paths(evidence: Any) -> None:
+    document = json.loads(_result())
+    document["criteria"][0]["evidence"] = evidence
+    outcome, _problem = parse_result(json.dumps(document), SPEC, exit_code=0)
+    assert outcome is None
+
+
+@pytest.mark.asyncio
+async def test_health_gives_qare_only_the_run_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = scenario(tmp_path)
+    monkeypatch.setenv("FAKE_QARE_SCENARIO", str(path))
+    monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "ghp_secret")
+    ok, _ = await QAreProvider("qare", _config(), work_dir=tmp_path).health()
+    assert ok
+    (call,) = calls(path)
+    assert "COORDINARE_GITHUB_TOKEN" not in call["env"]
+    assert "FAKE_QARE_SCENARIO" in call["env"]
+
+
+def test_finished_runs_are_pruned_after_their_retention(tmp_path: Path) -> None:
+    old, fresh, running = (tmp_path / name for name in ("coordinare.qa.old.1", "coordinare.qa.new.1", "coordinare.qa.run.1"))
+    for job in (old, fresh, running):
+        job.mkdir()
+    for job in (old, fresh):
+        (job / runner.STATUS_FILE).write_text("{}")
+    stale = time.time() - 30 * 86400
+    os.utime(old / runner.STATUS_FILE, (stale, stale))
+    os.utime(running, (stale, stale))
+    assert prune_finished(tmp_path, 14) == [old.name]
+    assert fresh.exists()
+    assert running.exists()

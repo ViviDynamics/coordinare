@@ -68,7 +68,8 @@ _VERDICTS = {
     "waived": StageVerdict.NEEDS_HUMAN,
 }
 _OUTCOMES = frozenset({"proven", "failed", "unverified"})
-_REF = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
+#: A job reference: a request id, which always starts with a letter (so never ``.`` or ``..``).
+_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 #: How long a job directory may exist without a launch record before it counts as dead.
 _LAUNCH_GRACE_SECONDS = 120.0
@@ -142,13 +143,14 @@ class QAreProvider:
         return self._work_dir
 
     def job_dir(self, ref: str) -> Path:
-        if not _REF.match(ref):
+        if not _REF.match(ref) or set(ref) <= {"."}:
             msg = f"QAre job {ref!r} is not one this provider names"
             raise TransportError(msg)
         return self._work_dir / ref
 
     async def submit(self, request: StageRequest, request_id: str) -> StageJob:
         job_dir = self.job_dir(request_id)
+        await asyncio.to_thread(prune_finished, self._work_dir, self._config.retain_days, keep=request_id)
         try:
             job_dir.parent.mkdir(parents=True, exist_ok=True)
             job_dir.mkdir()
@@ -188,8 +190,10 @@ class QAreProvider:
     async def health(self) -> tuple[bool, str]:
         """QAre starts and prints the pinned version, and ``work_dir`` is writable."""
         try:
+            # The environment a run gives QAre, never the daemon's own (its secrets).
             proc = await asyncio.create_subprocess_exec(
                 *self._config.command, "--version",
+                env=runner.qare_env(dict(os.environ), self._config.env_passthrough),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
@@ -407,8 +411,9 @@ def _parse(text: str, spec: dict[str, Any], exit_code: Any) -> StageOutcome:
         msg = f"qare run exited {exit_code!r} but its result says {verdict_word!r}"
         raise _OutsideContractError(msg)
     job = document.get("job")
-    if isinstance(job, dict) and job.get("id") not in (None, spec.get("request_id")):
-        msg = f"it is the result of job {job.get('id')!r}, not {spec.get('request_id')!r}"
+    if job is not None and (not isinstance(job, dict) or job.get("id") != spec.get("request_id")):
+        found = job.get("id") if isinstance(job, dict) else job
+        msg = f"it is the result of job {found!r}, not {spec.get('request_id')!r}"
         raise _OutsideContractError(msg)
     head = str(spec.get("head_sha") or "")
     if not _SHA.match(head):
@@ -444,10 +449,16 @@ def _criteria(raw: Any, asked: list[dict[str, Any]]) -> list[CriterionOutcome]:
                 reason="QAre reported nothing for this criterion",
             ))
             continue
+        evidence = entry.get("evidence", [])
+        if not isinstance(evidence, list) or not all(isinstance(p, str) and p for p in evidence):
+            msg = f"criterion {entry['id']!r} has evidence that is not a list of paths"
+            raise _OutsideContractError(msg)
+        if entry["outcome"] in ("proven", "failed") and not evidence:
+            msg = f"criterion {entry['id']!r} is {entry['outcome']} with no evidence"
+            raise _OutsideContractError(msg)
         criteria.append(CriterionOutcome(
             id=entry["id"], text=str(item.get("text") or ""), outcome=entry["outcome"],
-            reason=str(entry.get("reason") or ""),
-            evidence=[str(p) for p in entry.get("evidence") or [] if isinstance(p, str)],
+            reason=str(entry.get("reason") or ""), evidence=list(evidence),
         ))
     return criteria
 
@@ -498,6 +509,30 @@ def _alive(pid: int, job_dir: Path) -> bool:
         except OSError:
             return True
     return True
+
+
+def prune_finished(work_dir: Path, retain_days: int, *, keep: str = "") -> list[str]:
+    """Remove runs that ended more than ``retain_days`` ago. Returns what was removed.
+
+    Only a run with a status (it ended) is ever removed, so a run still going, and the
+    restart that finds it, are never affected. Its evidence is on ``qa-assets`` by then.
+    """
+    removed: list[str] = []
+    if not work_dir.is_dir():
+        return removed
+    cutoff = time.time() - retain_days * 86400
+    for job_dir in work_dir.iterdir():
+        status = job_dir / runner.STATUS_FILE
+        try:
+            if job_dir.name == keep or not status.is_file() or status.stat().st_mtime > cutoff:
+                continue
+        except OSError:
+            continue
+        _remove_tree(job_dir)
+        removed.append(job_dir.name)
+    if removed:
+        logger.info("qare.runs_pruned", count=len(removed), retain_days=retain_days)
+    return removed
 
 
 def _remove_tree(path: Path) -> None:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -49,7 +50,10 @@ def test_a_run_plans_then_runs_and_records_how_it_ended(tmp_path: Path, monkeypa
     # The base revision's profile runs, and the base checkout is handed to QAre.
     assert run_argv[run_argv.index("--profile") + 1] == str(job / "base" / ".qa")
     assert run_argv[run_argv.index("--base-repo") + 1] == str(job / "base")
-    assert (job / "repo" / "app.txt").read_text() == "v2\n"
+    # The checkouts go once the run ends; the evidence stays.
+    assert not (job / "repo").exists()
+    assert not (job / "base").exists()
+    assert (job / "evidence" / "result.json").exists()
 
 
 def test_qare_sees_only_the_passthrough_and_base_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -178,4 +182,35 @@ def test_a_relative_job_dir_works(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.chdir(tmp_path)
     status = runner.run_job(Path("jobs/coordinare.qa.abc.1"), token=TOKEN)
     assert status["outcome"] == runner.RAN, status
-    assert (tmp_path / "jobs" / "coordinare.qa.abc.1" / "repo" / "app.txt").exists()
+    assert (tmp_path / "jobs" / "coordinare.qa.abc.1" / "evidence" / "result.json").exists()
+
+
+def test_a_timeout_stops_what_the_command_started(tmp_path: Path) -> None:
+    import os
+    import time as _time
+
+    job = tmp_path / "jobs" / "coordinare.qa.abc.1"
+    request_spec(job, web_base="file:///x", base="a" * 40, head="b" * 40)
+    pid_file = tmp_path / "child.pid"
+    script = (
+        "import subprocess, sys, time; "
+        f"c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        f"open({str(pid_file)!r}, 'w').write(str(c.pid)); time.sleep(60)"
+    )
+    run = runner._Run(job, {**json.loads((job / "request.json").read_text()), "timeout_seconds": 2},
+                      token="", env=dict(os.environ), started=_time.monotonic())
+    import asyncio
+
+    with pytest.raises(runner._StopError) as stopped:
+        asyncio.run(run._call([sys.executable, "-c", script], cwd=job, env=dict(os.environ), step="run"))
+    assert stopped.value.status["outcome"] == runner.TIMEOUT
+    child = int(pid_file.read_text())
+    for _ in range(50):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        _time.sleep(0.1)
+    else:
+        os.kill(child, 9)
+        raise AssertionError("the command's child outlived the timeout")

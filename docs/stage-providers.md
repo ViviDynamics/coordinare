@@ -169,6 +169,7 @@ stage_providers:
     env_passthrough: [OPENAI_API_KEY]  # NAMES of variables QAre's nare may read
     # work_dir: /var/lib/coordinare/qare  # default: stage-providers/<name> beside the state file
     # timeout_seconds: 3600
+    # retain_days: 14                 # how long a finished run's evidence and logs are kept
 
 performers:
   qa:
@@ -239,6 +240,12 @@ work, so a daemon restart finds the run still going or finished:
    plan comes first (ViviDynamics/qare#450 asks QAre's docs to say so).
 5. `qare run --plan` runs the checks against both sides and writes
    `evidence/result.json`. Its `schemaVersion` is checked before anything else is read.
+
+A step that runs past `timeout_seconds` is stopped with everything it started (each command
+runs in a process group of its own). When a run ends its checkouts are removed, and a
+finished run's directory, with its evidence and logs, is removed `retain_days` after it
+ended. A run still going is never removed. QA needs the pull request's base: while GitHub
+gives none, the dispatch is retried rather than run against the head alone.
 
 ### Verdicts
 

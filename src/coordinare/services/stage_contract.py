@@ -419,6 +419,11 @@ class ExternalStageService:
         repository, number = target
         snapshot = await self._snapshot(repository, node)
         base_sha = snapshot.base_sha if _SHA.match(snapshot.base_sha or "") else ""
+        if self._stage == "qa" and not base_sha:
+            # QA compares the head with its base; a run without the base would quietly
+            # check one side only. Retry until GitHub says what the base is.
+            msg = f"GitHub returned no usable base for {repository}#{number}; QA needs it to compare"
+            raise TransportError(msg)
         return StageRequest(
             card_id=card_id,
             stage=self._stage,

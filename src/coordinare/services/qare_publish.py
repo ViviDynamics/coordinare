@@ -161,7 +161,7 @@ def render_comment(spec: dict[str, Any], outcome: StageOutcome, record: dict[str
         text = _cell(criterion.text or criterion.id)
         result = _OUTCOME_LABEL.get(criterion.outcome, criterion.outcome)
         if criterion.reason:
-            result += f": {_cell(criterion.reason)}"
+            result += f": {_cell(redact_secrets(criterion.reason))}"
         shown = criterion.evidence[:_LINKS_PER_CRITERION]
         links = ", ".join(_link(ref) for ref in shown) or "none"
         if len(criterion.evidence) > len(shown):
@@ -172,7 +172,7 @@ def render_comment(spec: dict[str, Any], outcome: StageOutcome, record: dict[str
         lines += ["", "### Screenshots", ""]
         lines += [f"![{PurePosixPath(ref).name}]({ref})" for ref in images[:8]]
     if outcome.summary:
-        lines += ["", outcome.summary]
+        lines += ["", redact_secrets(outcome.summary)]
     if record.get("skipped"):
         lines += ["", f"Not uploaded (too large, not text, or outside the evidence directory): "
                       f"{', '.join(f'`{s}`' for s in record['skipped'][:10])}"]

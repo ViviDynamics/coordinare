@@ -97,7 +97,7 @@ def test_env_passthrough_takes_names_never_values() -> None:
     assert secret not in str(caught.value)
 
 
-@pytest.mark.parametrize("profile", ["/etc/qa", "../qa", "a/../../b"])
+@pytest.mark.parametrize("profile", ["/etc/qa", "../qa", "a/../../b", "", "  "])
 def test_the_profile_stays_inside_the_repository(profile: str) -> None:
     with pytest.raises(ValidationError, match="profile must be a relative path"):
         _config(providers={"qare": {**_QARE, "profile": profile}})

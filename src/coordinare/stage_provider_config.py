@@ -114,6 +114,9 @@ class QAreProviderConfig(BaseModel):
     env_passthrough: list[str] = Field(default_factory=list)
     #: How long one run (checkout, plan and run) may take before it is stopped.
     timeout_seconds: int = Field(default=3600, gt=0, le=86400)
+    #: Days a finished run's directory (its evidence and logs) is kept. Its checkouts are
+    #: removed as soon as it ends; the evidence is on ``qa-assets`` by then.
+    retain_days: int = Field(default=14, ge=1, le=3650)
 
     @field_validator("version")
     @classmethod
@@ -135,8 +138,9 @@ class QAreProviderConfig(BaseModel):
     @field_validator("profile")
     @classmethod
     def _validate_profile(cls, value: str) -> str:
-        path = PurePosixPath((value or "").strip())
-        if not str(path) or path.is_absolute() or ".." in path.parts or "\\" in str(path):
+        raw = (value or "").strip()
+        path = PurePosixPath(raw)
+        if not raw or not path.parts or path.is_absolute() or ".." in path.parts or "\\" in raw:
             msg = "profile must be a relative path inside the repository, for example .qa"
             raise ValueError(msg)
         return str(path)

@@ -195,3 +195,11 @@ def test_odd_evidence_paths_are_left_out_not_fatal(tmp_path: Path, ref: str) -> 
     files, _skipped = qare_publish.collect_files(job, outcome)
     assert "evidence/." not in files
     assert all(name.startswith(("evidence/checks/", "result.json", "plan.json")) for name in files)
+
+
+def test_free_text_is_redacted_before_it_is_posted(tmp_path: Path) -> None:
+    _job_dir, spec, outcome = _job(tmp_path)
+    outcome.criteria[0].reason = f"login failed with {SECRET}"
+    outcome = outcome.model_copy(update={"summary": f"QAre saw {SECRET}"})
+    body = qare_publish.render_comment(spec, outcome, {"prefix": "p", "tree_url": "u", "skipped": []})
+    assert SECRET not in body
