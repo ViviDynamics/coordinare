@@ -37,7 +37,6 @@ PASS_ENV = [
     "FAKE_PROGETTARE_MODE", "FAKE_PROGETTARE_SLEEP", "FAKE_PROGETTARE_TITLE", "FAKE_PROGETTARE_BODY",
     "FAKE_PROGETTARE_ARTIFACT_VERSION", "FAKE_PROGETTARE_DOCUMENTER", "FAKE_PROGETTARE_VERSION", "OPENAI_API_KEY",
 ]
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the runner relies on POSIX flock")
 
 
 def _git(*args: str, cwd: Path) -> None:
@@ -509,10 +508,10 @@ def test_coordinares_virtualenv_is_taken_off_the_path() -> None:
     from coordinare.services.progettare_runner import without_coordinare_python
 
     env = {"PATH": "/opt/coordinare/.venv/bin:/usr/local/bin:/usr/bin", "VIRTUAL_ENV": "/opt/coordinare/.venv",
-           "PYTHONPATH": "/opt/coordinare/src", "HOME": "/home/c"}
+           "PYTHONPATH": "/opt/coordinare/src", "HOME": "/srv/coordinare"}
     cleaned = without_coordinare_python(env)
     assert cleaned["PATH"].split(":")[-2:] == ["/usr/local/bin", "/usr/bin"]
     assert "/opt/coordinare/.venv/bin" not in cleaned["PATH"]
     assert "VIRTUAL_ENV" not in cleaned
     assert "PYTHONPATH" not in cleaned
-    assert cleaned["HOME"] == "/home/c"
+    assert cleaned["HOME"] == "/srv/coordinare"

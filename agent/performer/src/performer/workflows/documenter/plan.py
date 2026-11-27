@@ -67,10 +67,11 @@ _RESERVED_PAGES = frozenset({"readme", "index", "home"})
 
 def _slug(text: str) -> str:
     """Letters, digits and combining marks of any script, NFC-normalised; the rest is '-'."""
-    out = []
-    for char in unicodedata.normalize("NFC", text.lower()):
-        out.append(char if unicodedata.category(char)[0] in ("L", "N", "M") else "-")
-    return re.sub(r"-+", "-", "".join(out)).strip("-")[:60].strip("-")
+    kept = "".join(
+        char if unicodedata.category(char)[0] in ("L", "N", "M") else "-"
+        for char in unicodedata.normalize("NFC", text.lower())
+    )
+    return re.sub(r"-+", "-", kept).strip("-")[:60].strip("-")
 
 
 def _placed_by_topic(entry: dict[str, Any], docs_root: str) -> str:

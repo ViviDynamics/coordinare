@@ -36,7 +36,7 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
-    os.replace(handle.name, path)
+    Path(handle.name).replace(path)
 
 
 def _tail(text: str | bytes | None) -> str:
@@ -155,5 +155,5 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":  # pragma: no cover - started as a module by the provider
+if __name__ == "__main__":
     raise SystemExit(main())

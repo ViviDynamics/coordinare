@@ -30,7 +30,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import errno
-import fcntl
 import hashlib
 import json
 import os
@@ -57,11 +56,22 @@ from coordinare.transport.http_transport import PerformerAuthError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from types import ModuleType
 
     from coordinare.services.stage_contract import AnyStageRequest
     from coordinare.stage_provider_config import ProgettareProviderConfig
 
 logger = structlog.get_logger(__name__)
+
+# coordinare is imported on hosts without fcntl (Windows). A Progettare run cannot work
+# there, and says so; nothing else may break.
+_FCNTL: ModuleType | None
+try:
+    import fcntl
+except ImportError:
+    _FCNTL = None
+else:
+    _FCNTL = fcntl
 
 #: The Progettare artifact contract version this module speaks (``progettare.contract``).
 ARTIFACT_VERSION = 1
@@ -220,12 +230,8 @@ class ProgettareProvider:
             msg = f"Progettare: cannot use {directory}: {exc}"
             raise TransportError(msg) from exc
         try:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as exc:
-                if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
-                    return StageJob(ref=ref, state=JobState.PENDING, detail="running")
-                raise
+            if not _try_lock(fd):
+                return StageJob(ref=ref, state=JobState.PENDING, detail="running")
             for stale in ("runner.json", "stdout.txt", "stderr.txt"):
                 (directory / stale).unlink(missing_ok=True)
             shutil.rmtree(directory / "runs", ignore_errors=True)
@@ -537,17 +543,32 @@ def _locked(path: Path) -> bool:
     except FileNotFoundError:
         return False  # never started; any other error is the caller's retryable error
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as exc:
-        if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+        if not _try_lock(fd):
             return True
-        raise
-    else:
-        with contextlib.suppress(OSError):
-            fcntl.flock(fd, fcntl.LOCK_UN)
+        _unlock(fd)
         return False
     finally:
         os.close(fd)
+
+
+def _try_lock(fd: int) -> bool:
+    """Take the request's lock without waiting; False when someone holds it."""
+    if _FCNTL is None:
+        msg = "Progettare runs need POSIX file locks, which this host does not have"
+        raise TransportError(msg)
+    try:
+        _FCNTL.flock(fd, _FCNTL.LOCK_EX | _FCNTL.LOCK_NB)
+    except OSError as exc:
+        if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+            return False
+        raise
+    return True
+
+
+def _unlock(fd: int) -> None:
+    if _FCNTL is not None:
+        with contextlib.suppress(OSError):
+            _FCNTL.flock(fd, _FCNTL.LOCK_UN)
 
 
 def _log_tail(path: Path) -> str:
