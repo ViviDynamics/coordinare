@@ -67,7 +67,7 @@ from coordinare.services.todo_waits import (
     refresh_todo_waits,
     warn_once_per_cycle,
 )
-from coordinare.services.work_items import WorkItem, board_metadata, work_items_of
+from coordinare.services.work_items import WorkItem, board_metadata, listed_text, work_items_of
 from coordinare.session import create_session_from_card, session_to_state, state_to_session
 
 if TYPE_CHECKING:
@@ -325,21 +325,6 @@ def _issue_fields(board: dict[str, Any], work_item: WorkItem) -> dict[str, Any]:
         fields["work_item_ref"] = work_item.reference
         fields["work_item_pr_line"] = work_item.pr_line
     return fields
-
-
-def _text_maps(board: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Card id -> title and card id -> body, as the listing supplied them.
-
-    Kept as maps, not read off the record, so a field the listing supplied empty
-    is applied empty and one it did not supply leaves the card's value alone.
-    """
-    typed = board.get("items") if isinstance(board, dict) else None
-    if isinstance(typed, dict):
-        listed = work_items_of(board)
-        return {k: v.title for k, v in listed.items()}, {k: v.body for k, v in listed.items()}
-    titles = board.get("titles") if isinstance(board, dict) else None
-    descriptions = board.get("descriptions") if isinstance(board, dict) else None
-    return (titles if isinstance(titles, dict) else {}), (descriptions if isinstance(descriptions, dict) else {})
 
 
 def _comment_target(board: dict[str, Any], item: str) -> str:
@@ -997,7 +982,7 @@ def _refresh_current_card_metadata(
     if isinstance(active_card, dict):
         active_id = str(active_card.get("id", ""))
         if active_id:
-            titles, descriptions = _text_maps(board)
+            titles, descriptions = listed_text(board)
             fresh = _work_item(board, active_id)
             if active_id in titles or fresh.issue is not None:
                 fresh_fields = _issue_fields(board, fresh)
@@ -1251,7 +1236,7 @@ async def _handle_in_review_cards(
         # slot, so we fall through to TODO pickup to fill open slots.
         active_sessions: dict[str, Any] = state.get("active_sessions") or {}
         already_active_ids = set(active_sessions.keys())
-        titles_m = board.get("titles", {})  # kept for the log statement below
+        titles_m = listed_text(board)[0]  # kept for the log statement below
         readopted_any = False
         for item in in_review:
             if item in already_active_ids:
@@ -1317,7 +1302,7 @@ async def _readopt_in_progress_cards(
     # monitoring_pr re-adoptions in the IN_REVIEW branch).
     active_sessions: dict[str, Any] = state.get("active_sessions") or {}
     already_active_ids = set(active_sessions.keys())
-    titles_p = board.get("titles", {})  # kept for the log statement below
+    titles_p = listed_text(board)[0]  # kept for the log statement below
     readopted_any = False
     # 076 (live QA #150): resume-stage policy used when no snapshot stage is
     # available.  The old policy blindly downgraded assessor/architect →
@@ -1680,7 +1665,8 @@ def _select_eligible_todo(
     if config is not None and hasattr(config, "priority"):
         prio_cfg = config.priority
         if prio_cfg.field_name:
-            item_field_values = board.get("item_field_values", {})
+            # 393: the field values come from the record, as the labels do.
+            item_field_values = {iid: wi.fields for iid, wi in listed.items()}
             has_field = any(
                 prio_cfg.field_name in item_field_values.get(iid, {})
                 for iid in eligible_todo

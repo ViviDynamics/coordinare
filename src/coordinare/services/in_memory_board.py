@@ -73,6 +73,8 @@ class InMemoryWorkItem:
     blocked_by: tuple[str, ...] = ()
     #: Off-board blockers this tracker knows the state of: key -> open/closed.
     external_states: dict[str, str] = field(default_factory=dict)
+    #: The tracker's other fields by name, such as a priority (393).
+    fields: dict[str, str] = field(default_factory=dict)
     comments: list[dict[str, Any]] = field(default_factory=list)
     #: Each transition as ``(from native state, to native state, actor)``.
     history: list[tuple[str, str, str]] = field(default_factory=list)
@@ -123,10 +125,11 @@ class InMemoryBoardProvider:
         """Create an item in the native state that *status* maps to. Returns its key.
 
         *record* sets the item's other fields: ``labels``, ``owners``,
-        ``blocked_by`` (keys of the items that block it) and ``external_states``
-        (the state of each off-board blocker this tracker knows).
+        ``blocked_by`` (keys of the items that block it), ``external_states``
+        (the state of each off-board blocker this tracker knows) and ``fields``
+        (its other fields by name, such as a priority).
         """
-        unknown = set(record) - {"labels", "owners", "blocked_by", "external_states"}
+        unknown = set(record) - {"labels", "owners", "blocked_by", "external_states", "fields"}
         if unknown:
             msg = f"unknown work item fields: {sorted(unknown)}"
             raise TypeError(msg)
@@ -143,6 +146,7 @@ class InMemoryBoardProvider:
             owners=tuple(record.get("owners", ())),
             blocked_by=tuple(record.get("blocked_by", ())),
             external_states=dict(record.get("external_states") or {}),
+            fields=dict(record.get("fields") or {}),
         )
         return item_id
 
@@ -192,8 +196,8 @@ class InMemoryBoardProvider:
             titles[item_id] = item.title
             descriptions[item_id] = item.body
             items[item_id] = self._record(item, status)
-        # 395: typed records are the listing; titles and descriptions stay for
-        # callers that have not moved to it.
+        # 395: typed records are the listing. 393: every caller reads them now;
+        # titles and descriptions stay for any outside reader of the listing.
         return {"snapshot": snapshot, "titles": titles, "descriptions": descriptions, "items": items}
 
     def _record(self, item: InMemoryWorkItem, status: str) -> WorkItem:
@@ -216,6 +220,7 @@ class InMemoryBoardProvider:
             # 397: no issue number here, so the code host names the item by key.
             reference=safe_reference(item.id),
             pr_line=_pr_line(item.id, item.url),
+            fields=dict(item.fields),
         )
 
     async def move_card(self, card_id: str, status: str) -> MoveOutcome:
