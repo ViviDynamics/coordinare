@@ -6,8 +6,9 @@
   "properties": {
     "schema": { "type": "string", "enum": ["MERGE_RESULT"] },
     "pr": { "type": "integer" },
-    "state": { "type": "string", "enum": ["merged", "blocked", "preconditions_failed"] },
+    "state": { "type": "string", "enum": ["merged", "blocked", "preconditions_failed", "updated"] },
     "merge_commit": { "type": "string" },
+    "head_sha": { "type": "string" },
     "reason": { "type": "string" }
   }
 }

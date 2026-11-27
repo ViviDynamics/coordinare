@@ -40,6 +40,9 @@ as `$S/<script>`.
    (`COORDINARE_GH_TOKEN_FILE`), then `~/.gh_token`, then the org token file. Each
    shell call is fresh; scripts handle that for you.
 2. A claim needs a read-back. "Merged" means `merge-verified` printed `merged`.
+   Its exit 5 (`state: updated`) is not merged: the default branch moved after the green
+   run started, so it updated the branch instead; watch CI on `head_sha` and run it
+   again, or pass `--wait-min N` to have it wait and retry (merge-pr, "The freshness rule").
    "Retried" means `verified-rerun` exited 0. "Assigned" means the assignee list read
    back non-empty.
 3. State for a long chain lives in `.agents/state/<issue>.json` via `$S/state`.

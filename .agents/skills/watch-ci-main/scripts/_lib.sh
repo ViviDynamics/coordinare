@@ -13,7 +13,14 @@ coordinare_load_env() {
   local root file line key val env_assignee=${COORDINARE_ASSIGNEE:-}
   root=$(coordinare_root) || exit 2
   file="$root/repo.env"
-  [ -f "$file" ] || coordinare_die 2 "repo.env not found at $file (see ADOPTING.md)"
+  if [ ! -f "$file" ]; then
+    # repo.env is gitignored on purpose (COORDINARE_ASSIGNEE is per person), so every
+    # fresh clone and worktree starts without one. Say the exact fix.
+    if [ -f "$root/repo.env.example" ]; then
+      coordinare_die 2 "repo.env not found at $file. It is gitignored, so each checkout creates its own: run 'cp \"$root/repo.env.example\" \"$file\"', then optionally set COORDINARE_ASSIGNEE to your GitHub login in it (see ADOPTING.md)"
+    fi
+    coordinare_die 2 "repo.env not found at $file, and there is no repo.env.example to copy (see ADOPTING.md)"
+  fi
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in COORDINARE_*=*) ;; *) continue;; esac
     key=${line%%=*}; val=${line#*=}

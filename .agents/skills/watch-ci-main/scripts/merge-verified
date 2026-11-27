@@ -1,57 +1,249 @@
 #!/usr/bin/env bash
 # Merge a PR with the consumer's configured flags and verify state == MERGED.
-# usage: merge-verified <pr>      exit: 0 merged, 1 not merged, 4 preconditions failed
+# usage: merge-verified <pr> [--wait-min N]
+# exit: 0 merged, 1 not merged, 3 transient API failure, 4 preconditions failed,
+#       5 updated: the branch was brought onto the current default branch and is
+#         waiting for CI on its new head (head_sha in the JSON); merge after that is green
 # Before merging it reads ci-runs for the PR's current head and refuses unless
 # the state is green: every workflow run on the head concluded success (or a
 # documented skip). A parked head (runs at action_required, or completed with
 # zero jobs) never ran CI and is refused, as are pending, failed and none
 # (none passes only with COORDINARE_ALLOW_NO_CI=true, for a repo with no CI at all).
+#
+# Then it checks that the green run TESTED THE CURRENT DEFAULT BRANCH (skills#37,
+# from ViviDynamics/elm#3867). A pull_request run tests a merge of the head into the
+# base as it stood when the run was created, so green says nothing about a base that
+# moved since. COORDINARE_MERGE_FRESHNESS picks how fresh is proven:
+#   record (default) fresh when the head already contains the current default branch,
+#            or when the run recorded the merge commit it tested (a step named
+#            "Record the tested merge <sha>") and that commit's first parent, its base
+#            side, IS the current default branch and its second parent is the head.
+#            A run with no record is refused (exit 4): push or rebase to get one.
+#   contains fresh only when the head already contains the current default branch;
+#            anything else is stale and gets updated. For a consumer whose CI does not
+#            record the tested merge: always safe, costs a CI run per moved base.
+#   off      no freshness check: only for a repo that keeps the branch up to date some
+#            other way (a sweep that merges the default branch into every PR, or a
+#            ruleset requiring branches to be up to date before merging).
+# Exact SHAs, no timestamps. A base that cannot be determined is refused (exit 4),
+# never assumed. A base that moved is not merged: the branch is updated once with
+# update-branch, pinned to the head that was checked (expected_head_sha), and the
+# script exits 5 with the new head, or with --wait-min N (or COORDINARE_FRESH_WAIT_MIN)
+# watches CI on that head with ci-watch for up to N minutes and starts over, at
+# most COORDINARE_FRESH_ROUNDS (default 3) times.
 # The merge is pinned to the head it verified with --match-head-commit, so a
 # push between the check and the merge cannot slip in untested code.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
-coordinare_load_env; coordinare_require COORDINARE_REPO COORDINARE_MERGE_FLAGS
-pr=${1:-}; [ -n "$pr" ] || coordinare_die 2 "usage: merge-verified <pr>"
+coordinare_load_env; coordinare_require COORDINARE_REPO COORDINARE_MERGE_FLAGS COORDINARE_DEFAULT_BRANCH
+usage="usage: merge-verified <pr> [--wait-min N]"
+pr=${1:-}
+case "$pr" in ''|*[!0-9]*) coordinare_die 2 "$usage";; esac
+shift
+wait_min=${COORDINARE_FRESH_WAIT_MIN:-0}
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --wait-min) [ $# -ge 2 ] || coordinare_die 2 "$usage"; wait_min=$2; shift 2;;
+    *) coordinare_die 2 "$usage";;
+  esac
+done
+case "$wait_min" in ''|*[!0-9]*) coordinare_die 2 "$usage";; esac
+rounds=${COORDINARE_FRESH_ROUNDS:-3}
+freshness_mode=${COORDINARE_MERGE_FRESHNESS:-record}
+case "$freshness_mode" in record|contains|off) ;; *) coordinare_die 2 "COORDINARE_MERGE_FRESHNESS must be record, contains or off (got $freshness_mode)";; esac
+case "$rounds" in ''|*[!0-9]*) coordinare_die 2 "COORDINARE_FRESH_ROUNDS must be a number";; esac
+here=$(dirname "$0")
 view() { coordinare_gh pr view "$pr" --repo "$COORDINARE_REPO" --json state,mergedAt,mergeCommit; }
-emit() { jq -nc --argjson pr "$pr" --arg state "$1" --arg mc "$2" --arg reason "$3" '{schema:"MERGE_RESULT", pr:$pr, state:$state} + (if $mc!="" then {merge_commit:$mc} else {} end) + (if $reason!="" then {reason:$reason} else {} end)'; }
+emit() { jq -nc --argjson pr "$pr" --arg state "$1" --arg mc "$2" --arg reason "$3" --arg head "${4:-}" '{schema:"MERGE_RESULT", pr:$pr, state:$state} + (if $mc!="" then {merge_commit:$mc} else {} end) + (if $head!="" then {head_sha:$head} else {} end) + (if $reason!="" then {reason:$reason} else {} end)'; }
 tmp_err=$(mktemp)
 trap 'rm -f "$tmp_err"' EXIT
+sha_shape='^[0-9a-f]{40}$'
 
-before=$(view 2>"$tmp_err") || {
-  code=$?
-  [ "$code" -eq 3 ] && exit 3
-  emit preconditions_failed "" "pr view failed: $(head -n1 "$tmp_err")"; exit 4
+# Prints "<fresh|stale|unknown> <default-branch-sha or -> <detail>" for the head and the
+# ci-runs JSON in $ci. Every read is shape-checked: an answer it could not read is
+# "unknown", which the caller refuses. Exit 3 only for a transient API failure.
+tested_base() {
+  local main behind runs_ids id jobs merges merge parents base second code
+  main=$(coordinare_gh api "repos/$COORDINARE_REPO/commits/$COORDINARE_DEFAULT_BRANCH" --jq .sha 2>"$tmp_err") || {
+    code=$?; [ "$code" -eq 3 ] && return 3
+    echo "unknown - could not read the head of $COORDINARE_DEFAULT_BRANCH"; return 0; }
+  [[ "$main" =~ $sha_shape ]] || { echo "unknown - could not read the head of $COORDINARE_DEFAULT_BRANCH"; return 0; }
+  # A head that already contains the default branch: merging it in is a no-op, so
+  # whatever base the run merged with, it tested exactly what would land.
+  behind=$(coordinare_gh api "repos/$COORDINARE_REPO/compare/$main...$head?per_page=1" --jq .behind_by 2>"$tmp_err") || {
+    code=$?; [ "$code" -eq 3 ] && return 3; behind=""; }
+  if [ "$behind" = "0" ]; then
+    echo "fresh $main head ${head:0:8} contains $COORDINARE_DEFAULT_BRANCH at ${main:0:8}"; return 0
+  fi
+  if [ "$freshness_mode" = contains ]; then
+    case "$behind" in
+      ''|*[!0-9]*) echo "unknown $main could not compare head ${head:0:8} with $COORDINARE_DEFAULT_BRANCH";;
+      *) echo "stale $main head ${head:0:8} is $behind commit(s) behind $COORDINARE_DEFAULT_BRANCH at ${main:0:8}";;
+    esac
+    return 0
+  fi
+  # The merge each pull_request run tested, from the step that records it by name.
+  merges=""; recording=""; unrecorded=""
+  runs_ids=$(printf '%s' "$ci" | jq -r '.runs[] | select(.event=="pull_request") | .id')
+  for id in $runs_ids; do
+    jobs=$(coordinare_gh api "repos/$COORDINARE_REPO/actions/runs/$id/jobs?per_page=100&filter=latest" 2>"$tmp_err") || {
+      code=$?; [ "$code" -eq 3 ] && return 3
+      echo "unknown $main could not read the jobs of run $id"; return 0; }
+    found=$(printf '%s' "$jobs" | jq -r '[.jobs[]?.steps[]?.name // empty
+      | capture("^Record the tested merge (?<m>[0-9a-f]{40})$")? | .m] | unique | join(" ")' 2>/dev/null || true)
+    if [ -n "$found" ]; then merges="$merges $found"; recording="$recording $id"; else unrecorded="$unrecorded $id"; fi
+  done
+  merges=$(tr ' ' '\n' <<<"$merges" | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ *$//')
+  case "$merges" in
+    "") echo "unknown $main no run at ${head:0:8} recorded the merge it tested (the CI step \"Record the tested merge <sha>\" is missing, or the run predates it; see COORDINARE_MERGE_FRESHNESS)"; return 0;;
+    *" "*) echo "unknown $main runs at ${head:0:8} recorded different tested merges: $merges"; return 0;;
+  esac
+  merge=$merges
+  [[ "$merge" =~ $sha_shape ]] || { echo "unknown $main the recorded tested merge is not a commit"; return 0; }
+  parents=$(coordinare_gh api "repos/$COORDINARE_REPO/commits/$merge" --jq '[.parents[].sha] | join(" ")' 2>"$tmp_err") || {
+    code=$?; [ "$code" -eq 3 ] && return 3
+    echo "unknown $main could not read the tested merge ${merge:0:8}"; return 0; }
+  base=${parents%% *}; second=${parents#* }
+  # A pull_request merge is "Merge <head> into <base>": base first, head second. Any
+  # other shape is not that merge, and is not evidence of anything.
+  if ! [[ "$base" =~ $sha_shape ]] || [ "$second" != "$head" ]; then
+    echo "unknown $main the tested merge ${merge:0:8} is not a merge of head ${head:0:8} (parents: ${parents:-none})"; return 0
+  fi
+  # A pull_request run with no record of its own (another workflow without the step)
+  # is only covered by the record when the same event created it, which puts it in
+  # the same batch as the recording run. One created earlier may have tested an older
+  # base; a recording workflow re-triggered alone (labeled, ready_for_review) would
+  # otherwise vouch for it. Such a head is stale, never fresh: updating it is safe.
+  if [ "$base" = "$main" ] && [ -n "$unrecorded" ]; then
+    older=$(printf '%s' "$ci" | jq -r --arg rec "$recording" --arg un "$unrecorded" --argjson w "${COORDINARE_RECORD_BATCH_SEC:-120}" '
+      def ids($s): $s | split(" ") | map(select(. != "") | tonumber);
+      def t: (.created_at // "" | (fromdateiso8601? // null));
+      ([.runs[] | select(.id as $i | ids($rec) | index($i)) | t] | if any(. == null) then null else min end) as $first |
+      [.runs[] | select(.id as $i | ids($un) | index($i))
+       | select($first == null or t == null or t < ($first - $w)) | "\(.id) \(.name)"] | join(", ")')
+    if [ -n "$older" ]; then
+      echo "stale $main the recorded merge is current, but run(s) $older have no record and started before it, so they may have tested an older $COORDINARE_DEFAULT_BRANCH"; return 0
+    fi
+  fi
+  if [ "$base" = "$main" ]; then
+    echo "fresh $main the run tested ${head:0:8} merged into $COORDINARE_DEFAULT_BRANCH at ${main:0:8}, its current head"
+  else
+    echo "stale $main the run tested ${head:0:8} merged into ${base:0:8}; $COORDINARE_DEFAULT_BRANCH is now ${main:0:8}"
+  fi
 }
-before_state=$(printf '%s' "$before" | jq -r .state)
-if [ "$before_state" = "MERGED" ]; then
-  emit merged "$(printf '%s' "$before" | jq -r '.mergeCommit.oid // ""')" "already merged"; exit 0
-fi
-if [ "$before_state" != "OPEN" ]; then
-  emit preconditions_failed "" "PR is $before_state, not OPEN"; exit 4
-fi
-ci=$("$(dirname "$0")/ci-runs" "$pr" 2>"$tmp_err") || {
-  code=$?
-  [ "$code" -eq 3 ] && exit 3
-  emit preconditions_failed "" "ci-runs failed: $(head -n1 "$tmp_err")"; exit 4
-}
-ci_state=$(printf '%s' "$ci" | jq -r .state)
-head=$(printf '%s' "$ci" | jq -r .head_sha)
-# none is acceptable only where repo.env says the repo has no CI at all.
-# A configured required workflow (COORDINARE_CI_WORKFLOW) means the repo has CI, so
-# none there is "not started yet", never "no CI".
-if [ "$ci_state" = "none" ] && [ "${COORDINARE_ALLOW_NO_CI:-}" = "true" ] && [ -z "${COORDINARE_CI_WORKFLOW:-}" ]; then ci_state=green; fi
-if [ "$ci_state" != "green" ]; then
-  detail=$(printf '%s' "$ci" | jq -r '
-    [ (.parked_runs[]? | "parked run \(.run_id) \(.name) (\(.conclusion), \(.jobs) jobs)"),
-      (.failed_runs[]? | "failed run \(.run_id) \(.name) (\(.conclusion))"),
-      (.failed_jobs[]? | "failed job \(.job) in run \(.run_id) (\(.conclusion))"),
-      (.runs[]? | select(.status!="completed") | "run \(.id) \(.name) still \(.status)"),
-      (.runs[]? | select(.status=="completed") | .id as $rid | .jobs[]? | select(.status!="completed" or .conclusion==null or .conclusion=="stale") | "job \(.name) in run \($rid) still \(.status)"),
-      (.pending_checks[]? | "check \(.name) still \(.status)"),
-      (if .missing_workflow then "no \(.missing_workflow) run at the head yet" else empty end)
-    ] | join("; ")')
-  emit preconditions_failed "" "CI on head $head is $ci_state, not green${detail:+: $detail}"; exit 4
-fi
+
+round=0
+while :; do
+  round=$((round + 1))
+  before=$(view 2>"$tmp_err") || {
+    code=$?
+    [ "$code" -eq 3 ] && exit 3
+    emit preconditions_failed "" "pr view failed: $(head -n1 "$tmp_err")"; exit 4
+  }
+  before_state=$(printf '%s' "$before" | jq -r .state)
+  if [ "$before_state" = "MERGED" ]; then
+    emit merged "$(printf '%s' "$before" | jq -r '.mergeCommit.oid // ""')" "already merged"; exit 0
+  fi
+  if [ "$before_state" != "OPEN" ]; then
+    emit preconditions_failed "" "PR is $before_state, not OPEN"; exit 4
+  fi
+  ci=$("$here/ci-runs" "$pr" 2>"$tmp_err") || {
+    code=$?
+    [ "$code" -eq 3 ] && exit 3
+    emit preconditions_failed "" "ci-runs failed: $(head -n1 "$tmp_err")"; exit 4
+  }
+  ci_state=$(printf '%s' "$ci" | jq -r .state)
+  head=$(printf '%s' "$ci" | jq -r .head_sha)
+  # none is acceptable only where repo.env says the repo has no CI at all.
+  # A configured required workflow (COORDINARE_CI_WORKFLOW) means the repo has CI, so
+  # none there is "not started yet", never "no CI".
+  no_ci=""
+  if [ "$ci_state" = "none" ] && [ "${COORDINARE_ALLOW_NO_CI:-}" = "true" ] && [ -z "${COORDINARE_CI_WORKFLOW:-}" ]; then ci_state=green; no_ci=1; fi
+  if [ "$ci_state" != "green" ]; then
+    detail=$(printf '%s' "$ci" | jq -r '
+      [ (.parked_runs[]? | "parked run \(.run_id) \(.name) (\(.conclusion), \(.jobs) jobs)"),
+        (.failed_runs[]? | "failed run \(.run_id) \(.name) (\(.conclusion))"),
+        (.failed_jobs[]? | "failed job \(.job) in run \(.run_id) (\(.conclusion))"),
+        (.runs[]? | select(.status!="completed") | "run \(.id) \(.name) still \(.status)"),
+        (.runs[]? | select(.status=="completed") | .id as $rid | .jobs[]? | select(.status!="completed" or .conclusion==null or .conclusion=="stale") | "job \(.name) in run \($rid) still \(.status)"),
+        (.pending_checks[]? | "check \(.name) still \(.status)"),
+        (if .missing_workflow then "no \(.missing_workflow) run at the head yet" else empty end)
+      ] | join("; ")')
+    emit preconditions_failed "" "CI on head $head is $ci_state, not green${detail:+: $detail}"; exit 4
+  fi
+
+  # GREEN FOR WHICH BASE? Without a sweep that merges every new default branch into
+  # every open PR (which cancels their CI on every merge), this check is what keeps a PR
+  # from landing green against a base that moved after its run started.
+  if [ -z "$no_ci" ] && [ "$freshness_mode" != off ]; then
+    freshness=$(tested_base) || { code=$?; [ "$code" -eq 3 ] && exit 3; freshness="unknown - the freshness check failed"; }
+    verdict=${freshness%% *}; rest=${freshness#* }; checked_main=${rest%% *}; why=${rest#* }
+    case "$verdict" in
+      fresh) ;;
+      stale)
+        if [ "$round" -gt "$rounds" ]; then
+          emit preconditions_failed "" "base moved again after $rounds update(s): $why" "$head"; exit 4
+        fi
+        # One update, pinned to the head checked above. A push since then makes GitHub
+        # refuse it rather than merge over code nobody has tested.
+        out=$(coordinare_gh api --method PUT "repos/$COORDINARE_REPO/pulls/$pr/update-branch" \
+              -f expected_head_sha="$head" 2>&1) || {
+          code=$?
+          [ "$code" -eq 3 ] && exit 3
+          case "$out" in
+            *[Mm]erge\ conflict*) emit preconditions_failed "" "$why, and the branch conflicts with it: rebase onto $COORDINARE_DEFAULT_BRANCH and push" "$head"; exit 4;;
+            *"expected head sha"*) emit preconditions_failed "" "$why, and the head moved while updating it: run merge-verified again" "$head"; exit 4;;
+            *"no new commits"*|*[Uu]p[\ -]to[\ -]date*) emit preconditions_failed "" "$why, but GitHub says the branch already contains it: run merge-verified again" "$head"; exit 4;;
+          esac
+          emit blocked "" "$why; update-branch failed: $(printf '%s' "$out" | tail -n 3)" "$head"; exit 1
+        }
+        # update-branch answers 202 before the merge commit exists; wait for the head
+        # to actually change rather than read the old one and call it new.
+        new_head=""
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do
+          now=$(coordinare_gh pr view "$pr" --repo "$COORDINARE_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || now=""
+          if [[ "$now" =~ $sha_shape ]] && [ "$now" != "$head" ]; then new_head=$now; break; fi
+          coordinare_sleep 5
+        done
+        if [ -z "$new_head" ]; then
+          emit blocked "" "$why; update-branch was accepted but no new head appeared" "$head"; exit 1
+        fi
+        if [ "$wait_min" -eq 0 ]; then
+          emit updated "" "$why; updated the branch to ${new_head:0:8}. Watch CI on that head (watch-ci --expect-head $new_head), then run merge-verified again" "$new_head"; exit 5
+        fi
+        watch_code=0
+        "$here/ci-watch" "$pr" --expect-head "$new_head" --timeout-min "$wait_min" >"$tmp_err" 2>/dev/null || watch_code=$?
+        case "$watch_code" in
+          0) ;;
+          3) exit 3 ;;
+          4) emit updated "" "$why; updated the branch to ${new_head:0:8}, and CI on it was still running after ${wait_min} min. Watch it (watch-ci --expect-head $new_head), then run merge-verified again" "$new_head"; exit 5 ;;
+          *) emit preconditions_failed "" "$why; updated the branch to ${new_head:0:8}, and CI on it is not green (ci-watch exit $watch_code: 1 failed, 5 parked). Read it with watch-ci before merging" "$new_head"; exit 4 ;;
+        esac
+        continue ;;
+      *)
+        emit preconditions_failed "" "could not determine which base the green run tested, so it is not merged: $why. Push or rebase onto $COORDINARE_DEFAULT_BRANCH to get a run that records it" "$head"; exit 4 ;;
+    esac
+    # ONE LAST LOOK. The check above took a few API calls; a sibling merging in that
+    # gap moves the base again. --match-head-commit pins the head, not the base, so read
+    # the base once more and go round again if it moved. (A merge landing between this
+    # read and the merge call is the race only a merge queue closes.)
+    if [ "$verdict" = "fresh" ]; then
+      main_now=$(coordinare_gh api "repos/$COORDINARE_REPO/commits/$COORDINARE_DEFAULT_BRANCH" --jq .sha 2>"$tmp_err") || {
+        code=$?; [ "$code" -eq 3 ] && exit 3; main_now=""; }
+      if ! [[ "$main_now" =~ $sha_shape ]]; then
+        emit preconditions_failed "" "could not re-read $COORDINARE_DEFAULT_BRANCH right before merging, so it is not merged: run merge-verified again" "$head"; exit 4
+      fi
+      if [ "$main_now" != "$checked_main" ]; then
+        if [ "$round" -gt "$rounds" ]; then
+          emit preconditions_failed "" "$COORDINARE_DEFAULT_BRANCH moved while checking, again after $rounds round(s); run merge-verified again" "$head"; exit 4
+        fi
+        continue
+      fi
+    fi
+  fi
+  break
+done
+
 # The consumer's flags are word-split on purpose; set -f keeps the shell from
 # glob-expanding any of them against the working directory.
 # shellcheck disable=SC2086

@@ -101,6 +101,18 @@ head moves mid-watch (`head_changed: true`), and ends only in `green` (exit 0),
 `timed_out`, report the last known state and the elapsed time. Exit 5 is §7.
 "Unknown" is not a state you may report.
 
+**Long waits and tool time limits.** `ci-watch` waits up to 60 minutes by default and
+`merge-verified --wait-min N` up to N minutes per wait. Many harnesses cap one foreground
+command at about 10 minutes and kill it silently, which reads like a hang. Either run the
+command in the background and wait for it to exit (Claude Code: `run_in_background`,
+then wait on the task; never end the turn to wait), or loop with bounded foreground
+calls: `ci-watch --timeout-min 9`, which exits 4 `timed_out` with the state so far, then
+call it again with the same `--expect-head`; `merge-verified <pr> --wait-min 0`, which
+exits 5 (`state: updated`) as soon as it has updated a stale branch, then watch the new
+head and call it again. Pass `--wait-min 0` explicitly: without the flag it waits
+`COORDINARE_FRESH_WAIT_MIN` minutes when repo.env sets that. A bounded call that timed out is not a result: only green,
+failed, parked or merged is.
+
 ## §7 Parked is not green
 
 A run is parked when it concluded `action_required`, or completed having executed zero
