@@ -51,14 +51,18 @@ def test_the_settings_functions_pass_their_checks_under_node(tmp_path: Path) -> 
     config = (_STATIC / "config.js").read_text(encoding="utf-8")
     app = (_STATIC / "app.js").read_text(encoding="utf-8")
     helpers = (_STATIC / "helpers.js").read_text(encoding="utf-8")
-    start = config.index("var CFG_LOGIN_FIELDS")
+    def declaration(name: str) -> str:
+        start = config.index(f"var {name}")
+        return config[start:config.index(";\n", start) + 1]
+
     shipped = [
         "var _CFG_REFS = {}; var CFG_INPUT = ''; var CFG_HINT = '';",
-        config[start:config.index(";", start) + 1],
+        declaration("CFG_LOGIN_FIELDS"),
+        declaration("CFG_LOGIN_PATTERN"),
         _function(helpers, "esc"),
         *(_function(config, name) for name in (
-            "cfgParseLogins", "cfgLoginsPreviewHtml", "cfgLoginsErrors", "cfgInput", "cfgCoerce",
-            "cfgSavedNotice", "cfgRestoreNotice",
+            "cfgParseLogins", "cfgLoginsPreviewHtml", "cfgRedrawLogins", "cfgLoginsErrors", "cfgInput", "cfgCoerce",
+            "cfgSavedNotice", "cfgRestoreNotice", "cfgSetControl", "cfgSameValue", "cfgUnset",
         )),
         _function(app, "symApproverNoteHtml"),
     ]

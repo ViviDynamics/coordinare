@@ -14,8 +14,8 @@ from playwright.sync_api import Page, expect
 from tests.e2e.test_143_settings import _open_settings, _setting, _snapshot, _stub_config
 
 _WAIT = 5000
-_HELP = ("Only these GitHub logins can approve a merge, in every symphony. An approval from any "
-         "other login shows on the work item and does not merge.")
+_HELP = ("Only these GitHub logins can approve a merge, in every symphony that does not set its own "
+         "list. An approval from any other login shows on the work item and does not merge.")
 
 
 def _with_reviewers(humans: list[str]) -> dict[str, Any]:
@@ -58,11 +58,11 @@ def test_a_flagged_login_is_refused_before_any_save(page: Page, live_server_url:
     saves: list[dict[str, Any]] = []
     _stub_config(page, _with_reviewers(["alice"]), saves)
     _open_settings(page, live_server_url)
-    _field(page).fill("alice, al_ice")
+    _field(page).fill("alice, al.ice")
     page.locator('#config-page-section [data-cfg-action="save-section"]').first.click()
     expect(page.locator("#config-page-section [data-review]")).to_have_count(0)
     row = page.locator("#config-page-section [data-fieldrow]", has=page.locator('[data-field="human_reviewers"]'))
-    expect(row.locator("[data-err]")).to_contain_text("Not a GitHub login: al_ice")
+    expect(row.locator("[data-err]")).to_contain_text("Not a GitHub login: al.ice")
     assert saves == []
 
 
@@ -104,12 +104,14 @@ def test_the_symphony_settings_say_who_can_approve_and_link_to_it(
         _snapshot(store)
         note = page.locator("[data-sym-summary-view] [data-approver-note]")
     expect(note).to_be_visible(timeout=_WAIT)
-    expect(note).to_contain_text("Only the logins in Who can approve merges can approve a merge.")
+    if not own:
+        expect(note).to_contain_text("Only the logins in Who can approve merges can approve a merge.")
     expect(note).to_contain_text("An approval from any other login shows on the work item and does not merge.")
     if own:
-        expect(note).to_contain_text("This symphony sets its own list: carol, dan.")
+        expect(note).to_contain_text("This symphony sets its own list of who can approve merges: carol, dan.")
+        expect(note).not_to_contain_text("Only the logins in Who can approve merges")
     else:
         expect(note).not_to_contain_text("its own list")
-    note.locator("a", has_text="Change who can approve").click()
+    note.locator("a").click()
     expect(page).to_have_url(f"{live_server_url}/config#global", timeout=_WAIT)
     expect(page.locator("#config-page")).to_be_visible(timeout=_WAIT)

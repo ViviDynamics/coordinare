@@ -187,23 +187,25 @@ function cfgRefSelect(s, refSpec, base) {
     + html + '</select>';
 }
 
-// 365: a GitHub login is letters, digits and single hyphens, neither first nor last, up to 39
-// characters. A bot account carries a "[bot]" suffix. Anything else cannot be a login, and an
-// approval could never match it, so it is flagged rather than saved quietly.
+// 365: a GitHub login starts with a letter or digit and holds only letters, digits, hyphens and
+// underscores. That admits legacy logins (a trailing or doubled hyphen) and Enterprise Managed
+// User logins (handle_shortcode). A bot account carries a "[bot]" suffix. Anything else, an @, a
+// dot, a quote, can never match an approver, so it is flagged rather than saved quietly.
+var CFG_LOGIN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}(?:\[bot\])?$/;
 function cfgParseLogins(text) {
-  // entries: everything read, in order, each login once. logins: the valid ones.
+  // entries: every entry read, in order, as typed. logins: the valid ones, each once.
   var out = {entries: [], logins: [], invalid: [], duplicates: []};
   var seen = {};
   String(text || '').split(/[\s,]+/).forEach(function(entry) {
     if (!entry) return;
+    out.entries.push(entry);
     var key = entry.toLowerCase();
     if (Object.prototype.hasOwnProperty.call(seen, key)) {
       if (out.duplicates.indexOf(key) < 0) out.duplicates.push(key);
       return;
     }
     seen[key] = true;
-    out.entries.push(entry);
-    if (/^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}(?:\[bot\])?$/.test(entry)) out.logins.push(entry);
+    if (CFG_LOGIN_PATTERN.test(entry)) out.logins.push(entry);
     else out.invalid.push(entry);
   });
   return out;
@@ -218,7 +220,7 @@ function cfgLoginsPreviewHtml(parsed) {
   var head = n ? 'Reads as ' + n + (n === 1 ? ' login: ' : ' logins: ') : 'No logins.';
   var bad = parsed.invalid.length
     ? '<div class="cfg-logins-invalid">Not a GitHub login: ' + esc(parsed.invalid.join(', '))
-      + '. A login is letters, digits and single hyphens, up to 39 characters, with no @.</div>'
+      + '. A login is letters, digits, hyphens and underscores, with no @.</div>'
     : '';
   var repeated = parsed.duplicates.length
     ? '<div>Listed more than once, kept once: ' + esc(parsed.duplicates.join(', ')) + '.</div>'
@@ -226,10 +228,21 @@ function cfgLoginsPreviewHtml(parsed) {
   return '<div>' + head + chips + '</div>' + bad + repeated;
 }
 
-// 365: the field errors a save refuses on: any logins field with an entry that is not a login.
+// 365: a logins field's preview follows its value, whether it was typed or set in code.
+function cfgRedrawLogins(el) {
+  if (!el || !el.getAttribute || el.getAttribute('data-list') !== 'logins' || !el.parentNode) return;
+  var preview = el.parentNode.querySelector('[data-logins-preview]');
+  if (preview) preview.innerHTML = cfgLoginsPreviewHtml(cfgParseLogins(el.value));
+}
+
+// 365: the field errors a save refuses on: an edited logins field with an entry that is not a
+// login. A field nobody touched is not judged, so an old entry on disk never blocks another save.
 function cfgLoginsErrors(container) {
   var errs = [];
   container.querySelectorAll('[data-list="logins"]').forEach(function(el) {
+    var saved = null;
+    try { saved = JSON.parse(el.getAttribute('data-orig') || 'null'); } catch (e) { saved = null; }
+    if (cfgSameValue(cfgCoerce(el), saved)) return;
     var parsed = cfgParseLogins(el.value);
     if (!parsed.invalid.length) return;
     errs.push({key: el.getAttribute('data-field'),
@@ -584,7 +597,7 @@ function cfgShowReview(container, rows, onConfirm) {
 // 143: put a saved value back into its control after a reload.
 function cfgSetControl(el, value) {
   if (el.type === 'checkbox') { el.checked = !!value; return; }
-  if (Array.isArray(value)) { el.value = value.join(', '); return; }
+  if (Array.isArray(value)) { el.value = value.join(', '); cfgRedrawLogins(el); return; }
   var text = value === null || value === undefined ? '' : String(value);
   if (el.hasAttribute('data-md-source')) personaSetSource(el, text);
   else el.value = text;
@@ -892,6 +905,8 @@ function cfgHandleSave(status, body, container, statusEl, store, newHash) {
 function cfgSavedNotice(container, statusEl) {
   var text = statusEl ? String(statusEl.textContent || '') : '';
   if (!container || text.indexOf('Saved') !== 0) return null;
+  // A New form is emptied by the save, so its next use must not open already saying Saved.
+  if (container.hasAttribute && container.hasAttribute('data-create')) return null;
   return {scope: container.getAttribute('data-scope') || '', text: text, color: statusEl.style ? statusEl.style.color : ''};
 }
 
@@ -1590,10 +1605,7 @@ function cfgWireControls(root, dispatch) {
   root.addEventListener('input', function(event) {
     var t = event.target;
     // 365: a logins field shows the list it reads as while it is typed.
-    if (t && t.getAttribute && t.getAttribute('data-list') === 'logins' && t.parentNode) {
-      var preview = t.parentNode.querySelector('[data-logins-preview]');
-      if (preview) preview.innerHTML = cfgLoginsPreviewHtml(cfgParseLogins(t.value));
-    }
+    cfgRedrawLogins(t);
     if (t && t.getAttribute && t.getAttribute('data-clear') === 'true') {
       t.removeAttribute('data-clear');
       t.placeholder = 'leave masked to keep current';

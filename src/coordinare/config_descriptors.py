@@ -82,8 +82,8 @@ _FIELD_LABELS: dict[str, str] = {
 # used for every other field.
 _FIELD_HELP: dict[str, str] = {
     "human_reviewers": (
-        "Only these GitHub logins can approve a merge, in every symphony. An approval from "
-        "any other login shows on the work item and does not merge."
+        "Only these GitHub logins can approve a merge, in every symphony that does not set "
+        "its own list. An approval from any other login shows on the work item and does not merge."
     ),
     "trusted_bot_reviewers": (
         "Bot logins whose review comments are passed to the agent as feedback. A bot never "

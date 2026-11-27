@@ -230,10 +230,11 @@ def test_a_board_card_shows_one_dot_per_stage_with_the_current_one_ringed(page: 
     expect(card.locator(".tl-dots .tl-dot")).to_have_count(8)
     expect(card.locator(".tl-dots .tl-dot-current")).to_have_count(1)
     expect(card.locator(".tl-dots .tl-dot").nth(3)).to_have_class(re.compile(r"\btl-dot-current\b"))
-    # 365 (c): the current stage is named in visible words beside the dots, with its place.
+    # 365 (c): the current stage is named in visible words beside the dots, with its place among
+    # the stages this lifecycle runs (four of the eight; the others are skipped).
     caption = card.locator(".tl-dots-caption")
     expect(caption).to_be_visible()
-    expect(caption).to_have_text(re.compile(r"^Stage 4 of 8: \w[\w ]*$"))
+    expect(caption).to_have_text("Stage 3 of 4: Review")
     expect(card.locator(".tl-dots")).to_have_attribute("aria-label", re.compile(r"^Stages: .+\(current\)"))
 
 

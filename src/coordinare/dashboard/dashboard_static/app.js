@@ -708,11 +708,15 @@ function symSpecFileChip(file) {
 // symphony; a symphony that sets its own in config.yaml shows it here.
 function symApproverNoteHtml(data) {
   var ov = (data && data.overrides) || {};
-  var own = Array.isArray(ov.human_reviewers) && ov.human_reviewers.length
-    ? ' This symphony sets its own list: ' + esc(ov.human_reviewers.join(', ')) + '.' : '';
+  var own = Array.isArray(ov.human_reviewers) && ov.human_reviewers.length;
+  var rule = own
+    ? 'This symphony sets its own list of who can approve merges: ' + esc(ov.human_reviewers.join(', '))
+      + '. Only those logins can approve its merges.'
+    : 'Only the logins in Who can approve merges can approve a merge.';
   return '<p class="sym-approver-note" data-approver-note style="font-size:12px;color:var(--color-text-muted);margin:0 0 10px">'
-    + 'Only the logins in Who can approve merges can approve a merge. An approval from any other login shows on the work item and does not merge.'
-    + own + ' <a href="/config#global" onclick="navigate(event,this.getAttribute(\'href\'))">Change who can approve</a></p>';
+    + rule + ' An approval from any other login shows on the work item and does not merge.'
+    + ' <a href="/config#global" onclick="navigate(event,this.getAttribute(\'href\'))">'
+    + (own ? 'See the shared list' : 'Change who can approve') + '</a></p>';
 }
 
 // 221: the Configuration card. Every control it shows is a data-field the shared functions read.
