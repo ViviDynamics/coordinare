@@ -586,7 +586,8 @@ def judge(task: RoleTask, ctx: GradeCtx, det_detail: str, base_url: str,
 # live wiring so the bench actually validates the planner+executor combo.
 # ---------------------------------------------------------------------------
 def resolve_role_dispatch(config_path: str, role: str,
-                          cfg: dict | None = None) -> dict:
+                          cfg: dict | None = None, *, backend: str = "",
+                          dotenv: dict | None = None) -> dict:
     """Resolve a role's dispatch model, its full model block, orchestration and
     workflow from the coordinare config catalogs, mirroring ``dispatch_performer``.
     ``role`` is the performer key (e.g. ``architect``). Falls back to the pre-080
@@ -596,27 +597,35 @@ def resolve_role_dispatch(config_path: str, role: str,
     (``endpoint_kind``, ``base_url``, ``auth_token_env``, ``api_key_env``,
     ``reasoning_policy``), which production spreads into the card context and the
     nare adapter reads to pick its rail. ``workflow_env`` and ``tuning`` (effort,
-    thinking, temperature) are what ``_apply_role_tuning`` adds."""
+    thinking, temperature) are what ``_apply_role_tuning`` adds; the tuning is
+    translated for ``backend``, the one the cell runs, since production always
+    translates for the backend it dispatches. ``effort`` and ``temperature`` are
+    the raw role values the daemon's bootstrap dispatch sends. The config loads
+    under ``.env``, as the daemon's does, so ``${VAR}`` placeholders expand."""
     model = ""
     orchestration = None
     model_block: dict = {}
     workflow = ""
     workflow_env: dict = {}
     tuning: dict = {}
+    effort = temperature = None
     try:
         from coordinare.config import ProjectConfiguration
         from coordinare.env_placeholders import operator_workflow_env
         from coordinare.services.performer_tuning import translate_tuning
-        pc = ProjectConfiguration.from_yaml(config_path)
-        model_block = dict(pc.resolve_performer_dispatch_model(role) or {})
-        model = model_block.get("model", "") or ""
-        orchestration = pc.resolve_performer_orchestration(role)
-        rc = pc.performers.resolved_role(role)
-        if rc is not None:
-            workflow = str(getattr(rc, "workflow", "") or "")
-            if getattr(rc, "workflow_env", None):
-                workflow_env = operator_workflow_env(rc)
-            tuning = dict(translate_tuning(rc))
+        with _daemon_env(dotenv or {}):
+            pc = ProjectConfiguration.from_yaml(config_path)
+            model_block = dict(pc.resolve_performer_dispatch_model(role) or {})
+            model = model_block.get("model", "") or ""
+            orchestration = pc.resolve_performer_orchestration(role)
+            rc = pc.performers.resolved_role(role)
+            if rc is not None:
+                workflow = str(getattr(rc, "workflow", "") or "")
+                if getattr(rc, "workflow_env", None):
+                    workflow_env = operator_workflow_env(rc)
+                effort, temperature = rc.effort, rc.temperature
+                cell_rc = rc.model_copy(update={"backend": backend}) if backend else rc
+                tuning = dict(translate_tuning(cell_rc))
     except Exception:
         pass
     if not model and cfg is not None:
@@ -624,7 +633,8 @@ def resolve_role_dispatch(config_path: str, role: str,
         if isinstance(rc, dict) and rc.get("model"):
             model = str(rc["model"])
     return {"model": model, "orchestration": orchestration, "model_block": model_block,
-            "workflow": workflow, "workflow_env": workflow_env, "tuning": tuning}
+            "workflow": workflow, "workflow_env": workflow_env, "tuning": tuning,
+            "effort": effort, "temperature": temperature}
 
 
 def _prod_persona(role: str, config_path: str | None) -> str | None:
@@ -745,7 +755,7 @@ def _legacy_gateway_key(wire: dict, card_context: dict, master: str) -> None:
     performer prefers over the container env. As the bench always did, the
     gateway's master key goes in their place. A routed mode is left alone."""
     backend = str(card_context.get("backend") or "").replace("-", "_")
-    routed = any(card_context.get(k) for k in ("base_url", "auth_token_env", "api_key_env"))
+    routed = any(card_context.get(k) for k in ("base_url", "auth_token_env", "api_key_env", "endpoint_kind"))
     if routed or not master or backend not in ("codex", "claude_code"):
         return
     secrets = wire["secrets"]
@@ -849,7 +859,11 @@ def clone_snapshot(repo_url: str, token: str, dest: Path) -> tuple[str, list[str
         listing = subprocess.run(["git", "-C", str(dest), "ls-tree", "-r", "-z", "--name-only", "HEAD"],
                                  check=True, capture_output=True, text=True).stdout
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"git failed to read the fixture snapshot (exit {exc.returncode})") from None
+        stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        if token:
+            stderr = stderr.replace(token, "***")
+        detail = " ".join(stderr.split())[-160:]
+        raise RuntimeError(f"git failed to read the fixture snapshot (exit {exc.returncode}): {detail}") from None
     except subprocess.TimeoutExpired:
         raise RuntimeError("git timed out reading the fixture snapshot") from None
     return commit, [p for p in listing.split("\0") if p]
@@ -1158,9 +1172,9 @@ def prepare_cell(task: RoleTask, *, backend: str, repo_url: str, gh_token: str,
                     orchestration=orchestration, workflow=workflow)
             except Exception as exc:
                 raise BenchSetupError(f"environment discovery did not accept: {exc}"[:240]) from exc
-        # The daemon's bootstrap dispatch adds the role's effort and temperature,
-        # and its workflow env when the role runs a workflow.
-        context.update({k: tuning[k] for k in ("effort", "temperature") if tuning.get(k) is not None})
+        # The daemon's bootstrap dispatch adds the role's raw effort and
+        # temperature, and its workflow env when the role runs a workflow.
+        context.update({k: dispatch[k] for k in ("effort", "temperature") if dispatch.get(k) is not None})
         if workflow:
             context["workflow_env"] = workflow_env
         return PreparedCell(context)
@@ -1263,7 +1277,8 @@ def run_cell(task: RoleTask, endpoint: dict, cfg: dict, dotenv: dict,
     backend = (endpoint.get("env", {}) or {}).get("BACKEND", "")
     # 080: resolve the dispatch model + orchestration from the role's mode,
     # falling back to the legacy inline model for pre-080 configs.
-    _dispatch = resolve_role_dispatch(config_path or "", task.config_key, cfg=cfg)
+    _dispatch = resolve_role_dispatch(config_path or "", task.config_key, cfg=cfg,
+                                      backend=backend, dotenv=dotenv)
     model = _dispatch["model"] or _backend_model(cfg, endpoint)
     _dispatch["model"] = model
     orchestration = _dispatch["orchestration"]

@@ -48,6 +48,14 @@ class TestReportedFailures:
             "message": "KeyError when the cart has no discount key",
         }]
 
+    @pytest.mark.parametrize("defect", [
+        "No discount key makes checkout_total raise KeyError",
+        "None of the carts without a discount can be totalled",
+        "All criteria passed except the empty cart, which raises KeyError",
+    ])
+    def test_a_defect_that_starts_like_a_placeholder_is_kept(self, defect):
+        assert [f["actual"] for f in _qa_reported_failures([defect])] == [defect]
+
     def test_objects_pass_through_and_blanks_drop(self):
         obj = {"criterion": "c", "expected": "e", "actual": "a"}
         assert _qa_reported_failures([obj, "  ", None, 3]) == [obj]
@@ -55,7 +63,10 @@ class TestReportedFailures:
     def test_not_a_list_is_nothing(self):
         assert _qa_reported_failures("KeyError") == []
 
-    @pytest.mark.parametrize("placeholder", ["None", "n/a", "N/A", "none.", "No failures", "nothing", "-", "[]"])
+    @pytest.mark.parametrize("placeholder", [
+        "None", "n/a", "N/A", "none.", "No failures", "nothing", "-", "[]",
+        "No failures found.", "None found", "No issues detected", "All criteria passed.", "all checks pass",
+    ])
     def test_a_placeholder_for_no_failures_is_not_a_defect(self, placeholder):
         assert _qa_reported_failures([placeholder]) == []
 
@@ -78,6 +89,7 @@ class TestExecutionEvidence:
 
     @pytest.mark.parametrize(("value", "expected"), [
         (0.0, 0), ("0 (passed)", "0 (passed)"), ("exit 0", "exit 0"), (2, 2), ("3", 3),
+        ("--1", "--1"), ("\u00b2", "\u00b2"), ("-2", -2),
     ])
     def test_exit_code_shapes_accepted_before_still_count(self, value, expected):
         checks = _qa_execution_evidence({"executed_checks": [{"command": "pytest -q", "exit_code": value}]})
@@ -133,3 +145,18 @@ class TestContractReminder:
         assert '"executed_checks": [{"command"' in text
         assert "every command you ran" in text
         assert "including the ones that failed" in text
+
+
+class TestAppBootEvidence:
+    @pytest.mark.parametrize("boot", [
+        {"command": "curl -fsS localhost:3000", "exitCode": 0},
+        {"cmd": "curl -fsS localhost:3000", "exit_code": "0"},
+    ])
+    def test_boot_proof_reads_the_same_spellings_as_checks(self, boot):
+        from performer.qa_postprocess import _qa_app_boot_evidence
+
+        out = {"app_boot_check": boot,
+               "executed_checks": [{"command": "curl -fsS localhost:3000", "returncode": 0}]}
+        parsed, ok = _qa_app_boot_evidence(out, _qa_execution_evidence(out))
+        assert ok is True
+        assert parsed == {"command": "curl -fsS localhost:3000", "exit_code": 0}

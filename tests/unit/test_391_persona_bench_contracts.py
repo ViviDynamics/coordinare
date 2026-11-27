@@ -470,12 +470,13 @@ class TestRunCell:
 class TestReviewRound1:
     def test_failed_clone_never_carries_the_token(self, monkeypatch, tmp_path):
         def run(argv, **kw):
-            raise subprocess.CalledProcessError(128, argv, stderr=b"fatal: auth")
+            raise subprocess.CalledProcessError(128, argv, stderr="fatal: auth failed for ghs_SECRET")
 
         monkeypatch.setattr(persona_bench.subprocess, "run", run)
         with pytest.raises(RuntimeError) as err:
             persona_bench.clone_snapshot(REPO_URL, "ghs_SECRET", tmp_path / "r")
         assert "ghs_SECRET" not in str(err.value)
+        assert "fatal: auth failed" in str(err.value)
         assert err.value.__cause__ is None
 
     def test_clone_puts_the_token_in_env_not_argv(self, monkeypatch, tmp_path):
@@ -490,9 +491,14 @@ class TestReviewRound1:
 
         monkeypatch.setattr(persona_bench.subprocess, "run", run)
         persona_bench.clone_snapshot(REPO_URL, "ghs_SECRET", tmp_path / "r")
+        import base64
+
         clone_argv, clone_env = seen[0]
         assert "ghs_SECRET" not in " ".join(clone_argv)
-        assert any("ghs_SECRET" not in v and k.startswith("GIT_CONFIG") for k, v in clone_env.items())
+        assert clone_env["GIT_CONFIG_KEY_0"] == "http.extraHeader"
+        header = clone_env["GIT_CONFIG_VALUE_0"]
+        assert header.startswith("Authorization: Basic ")
+        assert base64.b64decode(header.split()[-1]).decode() == "x-access-token:ghs_SECRET"
 
     def test_paths_with_spaces_survive_the_inventory(self, snapshot):
         repo, _commit, _paths = snapshot
@@ -505,6 +511,11 @@ class TestReviewRound1:
         _c, paths = persona_bench.clone_snapshot(str(repo), "", repo.parent / "clone")
         assert "docs/Getting Started.md" in paths
 
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for key in ("LITELLM_MASTER_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GW_KEY", "QA_BASE_URL"):
+            monkeypatch.delenv(key, raising=False)
+
     def test_pre_080_gateway_endpoint_keeps_the_master_key(self):
         ctx = persona_bench.build_card_context(
             _task("reviewer"), backend="claude_code", repo_url=REPO_URL, branch="b", model="m")
@@ -516,6 +527,15 @@ class TestReviewRound1:
             {**ctx, "backend": "codex"}, gh_token="t",
             dotenv={"LITELLM_MASTER_KEY": "sk-master", "OPENAI_API_KEY": "sk-vendor"})
         assert codex["secrets"]["OPENAI_API_KEY"] == "sk-master"
+
+    def test_a_native_mode_keeps_the_vendor_key(self):
+        ctx = persona_bench.build_card_context(
+            _task("reviewer"), backend="claude_code", repo_url=REPO_URL, branch="b", model="m",
+            model_block={"model": "m", "endpoint_kind": "anthropic"})
+        payload = persona_bench.build_job_payload(
+            ctx, gh_token="t", dotenv={"LITELLM_MASTER_KEY": "sk-master", "ANTHROPIC_API_KEY": "sk-vendor"})
+        assert payload["secrets"]["ANTHROPIC_API_KEY"] == "sk-vendor"
+        assert "ANTHROPIC_AUTH_TOKEN" not in payload["secrets"]
 
     def test_a_routed_mode_keeps_the_production_secrets(self):
         ctx = persona_bench.build_card_context(
@@ -533,16 +553,27 @@ class TestReviewRound1:
             "model_endpoints:\n  - {name: m1, endpoint: gw, model: m-1}\n"
             "modes:\n  - {name: solo, strategy: single, tool: m1}\n"
             "performers:\n  default: {backend: nare, mode: solo}\n"
-            "  qa: {backend: nare, mode: solo, effort: high, workflow: qa, workflow_env: {QA_X: '1'}}\n")
-        out = persona_bench.resolve_role_dispatch(str(cfg), "qa")
+            "  qa: {backend: nare, mode: solo, effort: high, workflow: qa,"
+            " workflow_env: {QA_X: '1', QA_BASE_URL: '${QA_BASE_URL}'}}\n"
+            "  env_bootstrap: {backend: claude_code, mode: solo, effort: high, temperature: 0.2}\n")
+        out = persona_bench.resolve_role_dispatch(str(cfg), "qa", backend="nare",
+                                                  dotenv={"QA_BASE_URL": "https://qa.example"})
         assert out["workflow"] == "qa"
-        assert out["workflow_env"] == {"QA_X": "1"}
+        assert out["workflow_env"] == {"QA_X": "1", "QA_BASE_URL": "https://qa.example"}
         assert out["tuning"].get("effort") == "high"
+        # Tuning is translated for the backend the cell runs, not the config's.
+        claude = persona_bench.resolve_role_dispatch(str(cfg), "qa", backend="claude_code")
+        assert "effort" not in claude["tuning"]
+        assert claude["tuning"].get("thinking")
+        # The bootstrap reads the raw effort and temperature, as the daemon does.
+        boot = persona_bench.resolve_role_dispatch(str(cfg), "env_bootstrap", backend="claude_code")
+        assert boot["effort"] == "high"
+        assert boot["temperature"] == 0.2
         ctx = persona_bench.build_card_context(
             _task("qa"), backend="nare", repo_url=REPO_URL, branch="b", model=out["model"],
             model_block=out["model_block"], workflow=out["workflow"],
             workflow_env=out["workflow_env"], tuning=out["tuning"])
-        assert ctx["workflow_env"] == {"QA_X": "1"}
+        assert ctx["workflow_env"] == {"QA_X": "1", "QA_BASE_URL": "https://qa.example"}
         assert ctx["effort"] == "high"
         assert ctx["endpoint_kind"] == "litellm"
 
