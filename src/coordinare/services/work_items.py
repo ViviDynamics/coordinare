@@ -120,7 +120,9 @@ def safe_reference(key: str) -> str:
     differ only in punctuation should supply its own reference.
     """
     token = _UNSAFE_IN_REF.sub("-", key).replace("..", "-").strip("-.")
-    return token.removesuffix(".lock")
+    while token.endswith(".lock"):
+        token = token.removesuffix(".lock").rstrip("-.")
+    return token
 
 
 def card_status_of(board: Any) -> dict[str, str]:

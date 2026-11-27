@@ -236,6 +236,7 @@ def test_the_resume_probe_looks_where_the_performer_writes() -> None:
 def test_a_reference_is_a_valid_ref_segment() -> None:
     assert safe_reference("REL..2") == "REL-2"
     assert safe_reference("x.lock") == "x"
+    assert safe_reference("foo.lock.lock") == "foo"
 
 
 @pytest.mark.asyncio
