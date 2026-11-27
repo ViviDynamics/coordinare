@@ -70,6 +70,10 @@ logger = structlog.get_logger(__name__)
 
 # 127: review states that carry feedback coordinare must process before any
 # merge decision (contracts/review-routing.md).
+# #364: the wait when GitHub holds a current approval, but only from logins outside
+# ``human_reviewers``. The allow-list still decides who can approve a merge; this reason
+# only stops such an approval from vanishing without a trace.
+UNLISTED_APPROVER_REASON = "approval_from_unlisted_reviewer"
 _ACTIONABLE_STATES = frozenset({"COMMENTED", "CHANGES_REQUESTED"})
 
 
@@ -869,6 +873,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         and r.get("state") == "APPROVED"
         and (id(r) in withdrawn or (not _approval_is_current(r, cutoff, _pr_head_oid) and id(r) not in carried))
     ]
+    unlisted_approvers = _unlisted_approvers(reviews, cutoff, _pr_head_oid, _review_decision)
     _decision_card = str(card.get("id", ""))
     _observed: dict[str, object] = {
         "review_decision": _review_decision or "unknown",
@@ -912,8 +917,15 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         state["phase"] = "relay_feedback"
         _record_review_wait(state, _decision_card, None, reason="actionable_feedback", head=_pr_head_oid)
     elif approval_review is not None and not state.get('_pr_comment_poll_incomplete'):
-        merge_ready, _ = github_operation_ready(state, f"merge_pr:{pr_node_id}:{_pr_head_oid}")
+        merge_ready, retry_in = github_operation_ready(state, f"merge_pr:{pr_node_id}:{_pr_head_oid}")
         if not merge_ready:
+            # #364: an earlier merge attempt on this head failed and is backing off. Said
+            # in the log, so an approved PR that is not merging never waits in silence.
+            # The countdown has its own line: in the decision it would change the repeat
+            # signature on every poll and the #100 wedge warning would never fire.
+            logger.info("monitor_pr.merge_retry_backoff", card_id=_decision_card,
+                        retry_in_seconds=round(retry_in, 1))
+            _log_merge_decision(_decision_card, "waiting", "merge_retry_backoff", **_observed)
             state["phase"] = "monitoring_pr"
             return state
         # 090 L1 (US1) — refuse to advance to merge while a REQUIRED check on
@@ -1021,6 +1033,9 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             # from inside the loop. Said plainly, so the card does not read as generic waiting.
             _wait_reason = "external_review_required"
             _observed["merge_state_status"] = _merge_state
+        elif unlisted_approvers:
+            _wait_reason = UNLISTED_APPROVER_REASON
+            _observed["unlisted_approvers"] = unlisted_approvers
         else:
             _wait_reason = "no_human_approval"
         _log_merge_decision(_decision_card, "waiting", _wait_reason, **_observed)
@@ -1035,4 +1050,40 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             else REVIEW_WAIT_HUMAN
         )
         _record_review_wait(state, _decision_card, _wait, reason=_wait_reason, head=_pr_head_oid)
+        if _wait_reason == UNLISTED_APPROVER_REASON:
+            state["review_wait_detail"] = _unlisted_approver_detail(unlisted_approvers)
     return state
+
+
+def _unlisted_approvers(
+    reviews: list[dict[str, object]], cutoff: datetime | None, head_oid: str, review_decision: str,
+) -> list[str]:
+    """#364: logins outside human_reviewers whose approval of the head GitHub still holds.
+
+    These approvals never merge: the allow-list decides who can approve. They are named so
+    an approved PR that is not merging says why. Each reviewer's latest *verdict* counts, as
+    GitHub counts it, so a later plain comment does not hide an approval. Bots are left out,
+    because a bot cannot approve a merge by design, and so is a PR whose review state GitHub
+    itself still blocks, where listing the login would not let it merge.
+    """
+    if review_decision.upper() in {"REVIEW_REQUIRED", "CHANGES_REQUESTED"}:
+        return []
+    verdicts = [r for r in reviews if str(r.get("state", "")) in _VERDICT_STATES]
+    return sorted({
+        login
+        for r in _latest_reviews_per_author(verdicts)
+        if r.get("state") == "APPROVED"
+        and r.get("author_type") == ReviewerType.BOT.value
+        and (login := str(r.get("author_login") or "").strip())
+        and not login.lower().endswith("[bot]")
+        and _approval_is_current(r, cutoff, head_oid)
+    })
+
+
+def _unlisted_approver_detail(logins: list[str]) -> str:
+    """#364: the card's words for an approval that does not count, naming who gave it."""
+    names = ", ".join(logins)
+    return (
+        f"Approved by {names}, who is not in human_reviewers, so the approval does not merge. "
+        f"Add {names} to human_reviewers, or ask a listed reviewer to approve."
+    )

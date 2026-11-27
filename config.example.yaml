@@ -282,7 +282,7 @@ agent_executable: "bin/run-performer"  # portable wrapper (sources .env, runs vi
 
 # --- Reviewers ---
 
-human_reviewers:                    # Required. GitHub logins who can approve PRs.
+human_reviewers:                    # Required. GitHub logins whose approval merges a PR. Other approvals are named on the card but never merge.
   - "your-github-login"
 
 # Bot reviewers whose comments trigger the performer lifecycle (same as human reviews).

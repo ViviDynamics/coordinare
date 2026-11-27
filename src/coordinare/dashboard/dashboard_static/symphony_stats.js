@@ -115,7 +115,8 @@ function symphonyStatsNowHtml(name, response, health, flow) {
     if (column === 'DONE') return;
     (st.board_snapshot[column] || []).forEach(function(id) {
       var session = sessions[id] || {};
-      var reason = waitingReason({id: id, column: column, has_session: !!sessions[id], block_cause: session.block_cause}, st);
+      var reason = waitingReason({id: id, column: column, has_session: !!sessions[id], block_cause: session.block_cause,
+        review_wait_reason: session.review_wait_reason, review_wait_detail: session.review_wait_detail}, st);
       if ((health.running_card_ids || []).indexOf(id) !== -1) return;
       var text = reason.text || session.review_wait_reason ||
         (column === 'IN_REVIEW' ? 'Waiting on review; reason not recorded' :
