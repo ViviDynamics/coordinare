@@ -98,7 +98,7 @@ function renderState(s) {
     'dispatching':      'Assessing and dispatching card to the performer agent.',
     'monitoring_agent': 'Performer agent is actively working on the card.',
     'monitoring_performer': 'Performer agent is actively working on the card.',
-    'monitoring_pr':    'Waiting for PR review approval.',
+    'monitoring_pr':    'Watching the open PR. Each card says what it waits on.',
     'merging':          'Merging the approved pull request.',
     'relay_feedback':   'Relaying PR review feedback to the performer agent.',
     'recovery':         'A check failed; the daemon is recovering before retrying.',

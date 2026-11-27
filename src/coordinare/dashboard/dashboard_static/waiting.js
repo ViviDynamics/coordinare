@@ -147,6 +147,12 @@ function waitingReason(card, snapshot) {
     return needsHumanReason(c.review_wait_detail, c.review_wait_detail);
   }
 
+  // #364: GitHub shows an approval, but from a login outside human_reviewers. The server's
+  // words name the login, so the card does not read as an ordinary wait for approval.
+  if (c.column === 'IN_REVIEW' && c.review_wait_reason === 'approval_from_unlisted_reviewer' && c.review_wait_detail) {
+    return needsHumanReason(c.review_wait_detail, c.review_wait_detail);
+  }
+
   if (c.column !== 'TODO') return none;
 
   // A card with a session takes its reason from the session's skip record.

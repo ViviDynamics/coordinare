@@ -252,6 +252,21 @@ _PHASE_PRIORITY: dict[str, int] = {
 }
 
 
+def _apply_reviewer_logins(state: Any, cfg: Any) -> None:
+    """#364: the reviewer lists the graph reads follow the config in force.
+
+    ``human_reviewers`` and ``trusted_bot_reviewers`` are copied into the state at startup.
+    Without this, a reload or a symphony's override changed ``config`` but the closer kept
+    judging approvals against the startup lists.
+    """
+    humans = getattr(cfg, "human_reviewers", None)
+    bots = getattr(cfg, "trusted_bot_reviewers", None)
+    if isinstance(humans, list):
+        state["human_reviewers"] = list(humans)
+    if isinstance(bots, list):
+        state["trusted_bot_reviewers"] = list(bots)
+
+
 def _coerce_counter(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
@@ -3639,6 +3654,7 @@ class CoordinareDaemon:
         self._state["todo_capacity"] = sym_state.todo_capacity if sym_state is not None else None
         if _effective_cfg is not None and _effective_cfg is not _prev_config:
             self._state["config"] = _effective_cfg
+            _apply_reviewer_logins(self._state, _effective_cfg)
         if _sym_github is not None:
             self._state["github_service"] = _sym_github
             # 149: the board follows the symphony's service. Leaving it behind
@@ -3680,6 +3696,7 @@ class CoordinareDaemon:
         self._state["todo_waits"] = prev_todo_waits or {}
         self._state["todo_capacity"] = prev_todo_capacity
         self._state["config"] = prev_config
+        _apply_reviewer_logins(self._state, prev_config)
         if sym_github is not None:
             self._state["github_service"] = prev_github
             self._state["board_provider"] = GitHubProjectsBoardProvider(prev_github)
@@ -3999,6 +4016,7 @@ class CoordinareDaemon:
             self._state["symphony_configs"] = new_configs
             self._state["coordinare_config"] = coordinare_cfg
             self._state["config"] = coordinare_cfg.global_config
+            _apply_reviewer_logins(self._state, coordinare_cfg.global_config)
             self._state["orchestra_config"] = coordinare_cfg.orchestra
             self._state["symphony_states"] = sym_states
             self._state["config_mode"] = (

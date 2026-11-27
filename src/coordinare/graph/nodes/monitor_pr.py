@@ -70,6 +70,10 @@ logger = structlog.get_logger(__name__)
 
 # 127: review states that carry feedback coordinare must process before any
 # merge decision (contracts/review-routing.md).
+# #364: the wait when GitHub holds a current approval, but only from logins outside
+# ``human_reviewers``. The allow-list still decides who can approve a merge; this reason
+# only stops such an approval from vanishing without a trace.
+UNLISTED_APPROVER_REASON = "approval_from_unlisted_reviewer"
 _ACTIONABLE_STATES = frozenset({"COMMENTED", "CHANGES_REQUESTED"})
 
 
@@ -869,6 +873,16 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         and r.get("state") == "APPROVED"
         and (id(r) in withdrawn or (not _approval_is_current(r, cutoff, _pr_head_oid) and id(r) not in carried))
     ]
+    # #364: current approvals from logins not in human_reviewers. They never merge, but the
+    # wait names them so the card and the log say why an approved PR is not merging.
+    unlisted_approvers = sorted({
+        str(r.get("author_login") or "").strip()
+        for r in effective
+        if r.get("author_type") != ReviewerType.HUMAN.value
+        and r.get("state") == "APPROVED"
+        and id(r) not in withdrawn
+        and _approval_is_current(r, cutoff, _pr_head_oid)
+    } - {""})
     _decision_card = str(card.get("id", ""))
     _observed: dict[str, object] = {
         "review_decision": _review_decision or "unknown",
@@ -912,8 +926,14 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         state["phase"] = "relay_feedback"
         _record_review_wait(state, _decision_card, None, reason="actionable_feedback", head=_pr_head_oid)
     elif approval_review is not None and not state.get('_pr_comment_poll_incomplete'):
-        merge_ready, _ = github_operation_ready(state, f"merge_pr:{pr_node_id}:{_pr_head_oid}")
+        merge_ready, retry_in = github_operation_ready(state, f"merge_pr:{pr_node_id}:{_pr_head_oid}")
         if not merge_ready:
+            # #364: an earlier merge attempt on this head failed and is backing off. Said
+            # in the log, so an approved PR that is not merging never waits in silence.
+            _log_merge_decision(
+                _decision_card, "waiting", "merge_retry_backoff",
+                retry_in_seconds=round(retry_in, 1), **_observed,
+            )
             state["phase"] = "monitoring_pr"
             return state
         # 090 L1 (US1) — refuse to advance to merge while a REQUIRED check on
@@ -1012,6 +1032,9 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             # The approval was given on a commit that is no longer the head.
             _wait_reason = "approval_predates_head"
             _observed["approved_commit"] = str(stale_approvals[-1].get("commit_oid") or "")[:7] or "unknown"
+        elif unlisted_approvers:
+            _wait_reason = UNLISTED_APPROVER_REASON
+            _observed["unlisted_approvers"] = unlisted_approvers
         elif await _pr_waits_on_external_review(
             github,
             PrFacts(_review_decision, _merge_state, _author_login, _checks_state),
@@ -1035,4 +1058,15 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             else REVIEW_WAIT_HUMAN
         )
         _record_review_wait(state, _decision_card, _wait, reason=_wait_reason, head=_pr_head_oid)
+        if _wait_reason == UNLISTED_APPROVER_REASON:
+            state["review_wait_detail"] = _unlisted_approver_detail(unlisted_approvers)
     return state
+
+
+def _unlisted_approver_detail(logins: list[str]) -> str:
+    """#364: the card's words for an approval that does not count, naming who gave it."""
+    names = ", ".join(logins)
+    return (
+        f"Approved by {names}, who is not in human_reviewers, so the approval does not merge. "
+        f"Add {names} to human_reviewers, or ask a listed reviewer to approve."
+    )

@@ -193,5 +193,15 @@ check("a docs dismissal retains the full action in its title", waitingReason(doc
 check("a stale docs detail does not survive a cleared reason",
   waitingReason({...docsCard, review_wait_reason: null}, {}).kind, "none");
 
+// #364: an approval from a login outside human_reviewers names that login on its card.
+const unlistedWait = "Approved by alex, who is not in human_reviewers, so the approval does not merge. Add alex to human_reviewers, or ask a listed reviewer to approve.";
+const unlistedCard = {id: "unlisted", column: "IN_REVIEW", has_session: true,
+  review_wait_reason: "approval_from_unlisted_reviewer", review_wait_detail: unlistedWait};
+check("an unlisted approval names the login on its card", waitingReason(unlistedCard, {}).text,
+  "Needs human: " + unlistedWait);
+check("an unlisted approval is a wait on a person", waitingReason(unlistedCard, {}).kind, "needs_human");
+check("an unlisted approval with no detail falls back to no line",
+  waitingReason({...unlistedCard, review_wait_detail: null}, {}).kind, "none");
+
 console.log(`SUMMARY ${passed} ${failed}`);
 if (failed > 0) process.exit(1);
