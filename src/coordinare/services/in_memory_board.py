@@ -12,10 +12,11 @@ It behaves like a tracker, not like a test double:
   canonical statuses, and an item in a state with no mapping is not listed.
 - Its workflow can forbid a transition, which ``move_card`` reports as a refused
   ``MoveOutcome`` and leaves the item where it was.
-- Comment ids, and therefore comment cursors, are strings, as a tracker's API
-  returns them. They are decimal strings ("1", "2") for now: coordinare still
-  persists its comment cursor as an integer and reads each id with ``int()``,
-  and #398 makes that cursor opaque. The provider compares cursors as strings.
+- Comment ids, and therefore comment cursors, are opaque strings, as a tracker's
+  API returns them (398): by default a random token whose text order is not its
+  creation order, so nothing that sorts or parses an id can pass the conformance
+  suite. ``comment_ids`` issues them another way (timestamps, sequence keys).
+  The provider matches a cursor by equality and nothing else.
 - A person can move an item or comment on it at any time, through methods the
   protocol does not have, because coordinare must never be the one doing that.
 
@@ -24,14 +25,20 @@ Nothing here persists. A daemon restart against it starts from an empty board.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from coordinare.services.board_provider import NOT_WORK, MoveOutcome
 from coordinare.services.work_items import OPEN, UNKNOWN, Blocker, WorkItem, safe_reference
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from coordinare.services.board_provider import CommentCursor
 
 logger = structlog.get_logger(__name__)
 
@@ -70,6 +77,11 @@ class InMemoryWorkItem:
     history: list[tuple[str, str, str]] = field(default_factory=list)
 
 
+def _opaque_comment_id(_n: int) -> str:
+    """A comment id with no order and no number in it, as many trackers issue."""
+    return f"c-{uuid.uuid4().hex[:12]}"
+
+
 def _pr_line(key: str, url: str) -> str:
     """The line a pull request body carries for an item (397): a link when the URL is one."""
     if url.startswith(("https://", "http://")) and not any(c in url for c in " ()"):
@@ -87,7 +99,9 @@ class InMemoryBoardProvider:
         states: dict[str, str] | None = None,
         base_url: str = "memory://work-items",
         login: str = "coordinare",
+        comment_ids: Callable[[int], str] | None = None,
     ) -> None:
+        """*comment_ids* issues the id of the nth comment (from 1); by default a random token."""
         self._key = project_key
         self._states = dict(states if states is not None else DEFAULT_STATES)
         unknown = set(self._states.values()) - set(CANONICAL_STATUSES)
@@ -100,6 +114,7 @@ class InMemoryBoardProvider:
         self._forbidden: set[tuple[str, str]] = set()
         self._next_item = 0
         self._next_comment = 0
+        self._comment_id = comment_ids or _opaque_comment_id
 
     # ---- the tracker's own side: what a person (or a test) does --------------------
 
@@ -231,7 +246,7 @@ class InMemoryBoardProvider:
         return dict(next(c for c in item.comments if c["id"] == comment_id))
 
     async def get_card_comments(
-        self, card_id: str, since_id: str | int | None = None,
+        self, card_id: str, since_id: CommentCursor | None = None,
     ) -> list[dict[str, Any]]:
         item = self._items.get(card_id)
         if item is None:
@@ -239,7 +254,7 @@ class InMemoryBoardProvider:
         comments = item.comments
         if since_id is not None:
             ids = [c["id"] for c in comments]
-            cursor = str(since_id)
+            cursor = since_id
             if cursor in ids:
                 comments = comments[ids.index(cursor) + 1:]
             else:
@@ -271,7 +286,10 @@ class InMemoryBoardProvider:
 
     def _append_comment(self, item: InMemoryWorkItem, author: str, body: str) -> str:
         self._next_comment += 1
-        comment_id = str(self._next_comment)
+        comment_id = self._comment_id(self._next_comment)
+        if any(c["id"] == comment_id for i in self._items.values() for c in i.comments):
+            msg = f"comment id {comment_id!r} was already issued"
+            raise ValueError(msg)
         item.comments.append({
             "id": comment_id,
             "author": author,

@@ -113,8 +113,8 @@ class CardSession(TypedDict, total=False):
     backend_ui_url: str | None
     session_stats: SessionStats | None
     pipeline_admitted: bool
-    last_issue_comment_id: int | None
-    processed_issue_comment_ids: set[int]
+    last_issue_comment_id: int | str | None  # 398: the provider's opaque comment id
+    processed_issue_comment_ids: set[int | str]
     feedback_cycle_count: int
     total_feedback_cycles: int
     triage_blocks: int

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.lib.redaction import redact_state_value
-from coordinare.services.board_provider import board_of
+from coordinare.services.board_provider import CommentCursor, board_of
 from coordinare.services.issue_comment_service import (
     CommentClassification,
     classify_issue_comment,
@@ -70,8 +70,10 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
     # Metadata only: it rides along on the events for the logs and the dashboard.
     # Nothing fetches with it.
     issue_number = int(card.get("issue_number") or 0)
-    since_id: int | None = state.get("last_issue_comment_id")
-    processed: set[int] = set(state.get("processed_issue_comment_ids") or ())
+    # 398: the cursor and the processed ids are the provider's own comment ids,
+    # opaque here. They are stored, handed back and compared for equality only.
+    since_id: CommentCursor | None = state.get("last_issue_comment_id")
+    processed: set[CommentCursor] = set(state.get("processed_issue_comment_ids") or ())
 
     events = await fetch_new_issue_comments(
         card_id, since_id, board, issue_number, self_logins=await _own_logins(state),
@@ -80,8 +82,9 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
         return state
 
     # Process an ordered prefix so the watermark never skips deferred comments.
-    events = sorted(events, key=lambda event: event.comment_id)
-    new_max_id = since_id or 0
+    # The provider returns comments oldest first, and that order is the one used:
+    # an opaque id has no order of its own (398).
+    cursor = since_id
     deadline = monotonic() + _COMMENT_BUDGET_SECONDS
     handled = 0
 
@@ -91,7 +94,7 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
 
     for event in events:
         if event.comment_id in processed:
-            new_max_id = max(new_max_id, event.comment_id)
+            cursor = event.comment_id
             continue
         remaining = deadline - monotonic()
         if handled >= _COMMENTS_PER_TICK or remaining <= 0:
@@ -108,7 +111,7 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
             label = None
             logger.info("route_issue_comments.classifier_timeout", card_id=card_id)
         handled += 1
-        new_max_id = max(new_max_id, event.comment_id)
+        cursor = event.comment_id
         classifier = "ai"
         if label is None:
             label = classify_issue_comment(event.body)
@@ -155,7 +158,7 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
 
     state["card_clarifications"] = redact_state_value(clarifications)
     state["requirements_changed"] = requirements_changed
-    state["last_issue_comment_id"] = new_max_id or since_id
+    state["last_issue_comment_id"] = cursor
     state["processed_issue_comment_ids"] = processed
 
     return state
