@@ -199,8 +199,11 @@ var saveButton = {closest: function() { return actionForm; }};
     actionStatus.textContent);
   advanceTo(now + 1000);
   check('the refresh waits while a ' + action[0] + ' review is open', reloads === before);
-
   reviewOpen = false;
+  advanceTo(now + 1000);
+  check('the refresh runs once the ' + action[0] + ' review is closed', reloads === before + 1);
+  before = reloads;
+
   cfgHandleSymphonySave(200, {}, actionForm, actionStatus, '"seventh"');
   action[1](saveButton);
   reviewOpen = false;

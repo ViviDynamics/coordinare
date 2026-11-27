@@ -847,13 +847,18 @@ function cfgHandleSymphonySave(status, body, container, statusEl, newHash) {
     // #340: the refresh draws a new form, so it takes Saved with it when Saved is
     // still showing. Otherwise the message would vanish one second after it appeared.
     clearTimeout(container._cfgReloadTimer);
-    container._cfgReloadTimer = setTimeout(function() {
+    var refresh = function() {
       if (container.isConnected === false || cfgHasUnsaved()) return;
-      // A review opened since is the reader's next step, and a redraw would throw it away.
-      if (container.querySelector && container.querySelector('[data-review]')) return;
+      // A review opened since is the reader's next step, and a redraw would throw it away,
+      // so the refresh waits until the review is closed.
+      if (container.querySelector && container.querySelector('[data-review]')) {
+        container._cfgReloadTimer = setTimeout(refresh, 1000);
+        return;
+      }
       var saved = statusEl.textContent === 'Saved';
       cfgReloadSymphony(saved ? {text: 'Saved', color: statusEl.style ? statusEl.style.color : ''} : null);
-    }, 1000);
+    };
+    container._cfgReloadTimer = setTimeout(refresh, 1000);
     return true;
   }
   if (status === 428 || (status === 409 && body && body.conflict)) {

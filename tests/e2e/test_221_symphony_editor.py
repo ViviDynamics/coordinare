@@ -160,12 +160,17 @@ def test_saved_stays_through_keep_editing_and_clears_on_a_later_change(page: Pag
     message = page.locator("#sym-save-msg")
 
     page.locator(_OVERRIDE).fill("3")
+    page.evaluate("document.querySelector('#sym-config-form')._before340 = true")
     _review_and_confirm(page)
     expect(message).to_have_text("Saved", timeout=_WAIT)
 
     page.click("#sym-delete-btn")
     page.locator("#sym-config-form [data-review] button", has_text="Keep editing").click()
     expect(page.locator("#sym-config-form [data-review]")).to_have_count(0)
+    # The save's refresh waits out an open review, then redraws the form. Wait for that redraw, so
+    # the edit below lands on the form that stays, and check it kept Saved.
+    page.wait_for_function("() => { const f = document.querySelector('#sym-config-form'); return !!f && !f._before340; }",
+                           timeout=_WAIT)
     expect(message).to_have_text("Saved", timeout=_WAIT)
 
     page.locator("#sym-spec-file-input").fill("pyproject.toml")
