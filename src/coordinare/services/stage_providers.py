@@ -7,11 +7,13 @@ performers.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from coordinare.lifecycle import ROLE_TO_STAGE
+from coordinare.services.qare import GitHubAccess, QAreProvider
 from coordinare.services.scrutare import ScrutareProvider
 from coordinare.services.stage_contract import (
     STAGE_MARKERS,
@@ -20,7 +22,12 @@ from coordinare.services.stage_contract import (
     PullRequestSnapshot,
     stage_provider_id,
 )
-from coordinare.stage_provider_config import PROVIDER_ROLES, normalize_login
+from coordinare.stage_provider_config import (
+    PROVIDER_ROLES,
+    QAreProviderConfig,
+    ScrutareProviderConfig,
+    normalize_login,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -36,11 +43,13 @@ _STAGE_TO_ROLE = {stage: role for role, stage in ROLE_TO_STAGE.items()}
 def build_stage_provider_services(
     config: ProjectConfiguration,
     pr_reader: PullRequestReader,
+    *,
+    github: GitHubAccess | None = None,
 ) -> dict[str, ExternalStageService]:
     """One service per catalog entry and stage it can fill, keyed by performer id."""
     services: dict[str, ExternalStageService] = {}
     for name, provider_config in sorted(config.stage_providers.items()):
-        provider = ScrutareProvider(name, provider_config)
+        provider = build_provider(name, provider_config, config, github=github)
         for role in sorted(PROVIDER_ROLES.get(provider_config.kind, frozenset())):
             stage = ROLE_TO_STAGE[role]
             if stage not in STAGE_MARKERS:
@@ -48,6 +57,27 @@ def build_stage_provider_services(
             service = ExternalStageService(provider, stage=stage, pr_reader=pr_reader)
             services[service.performer_id] = service
     return services
+
+
+def build_provider(
+    name: str,
+    provider_config: ScrutareProviderConfig | QAreProviderConfig,
+    config: Any,
+    *,
+    github: GitHubAccess | None = None,
+) -> ScrutareProvider | QAreProvider:
+    """The provider object for one catalog entry, by its kind."""
+    if isinstance(provider_config, QAreProviderConfig):
+        return QAreProvider(name, provider_config, work_dir=qare_work_dir(name, provider_config, config), github=github)
+    return ScrutareProvider(name, provider_config)
+
+
+def qare_work_dir(name: str, provider_config: QAreProviderConfig, config: Any) -> Path:
+    """404: where a QAre provider keeps its runs. Beside the state file unless configured."""
+    if provider_config.work_dir:
+        return Path(provider_config.work_dir).expanduser().absolute()
+    state_file = Path(str(getattr(config, "state_file_path", "") or "coordinare.state.json")).expanduser()
+    return state_file.absolute().parent / "stage-providers" / name
 
 
 def role_provider(config: Any, stage: str) -> str | None:
@@ -143,6 +173,26 @@ def provider_review_logins(config: Any) -> set[str]:
     }
 
 
+def github_access(resolve: Callable[[str], Any]) -> GitHubAccess:
+    """404: a provider's token and REST base for a repository, from the owner's GitHubService."""
+
+    def service(repository: str) -> Any:
+        github = resolve(repository.split("/", 1)[0])
+        if github is None:
+            msg = f"no GitHub service can reach {repository}"
+            raise RuntimeError(msg)
+        return github
+
+    async def token(repository: str) -> str:
+        return str(await service(repository).current_token())
+
+    def api_base(repository: str) -> str:
+        base = getattr(service(repository), "rest_api_base", None)
+        return str(base()) if callable(base) else "https://api.github.com"
+
+    return GitHubAccess(token, api_base)
+
+
 def github_pr_reader(resolve: Callable[[str], Any]) -> PullRequestReader:
     """A pull request reader over GitHubService. ``resolve`` picks the service by owner."""
 
@@ -155,6 +205,8 @@ def github_pr_reader(resolve: Callable[[str], Any]) -> PullRequestReader:
         return PullRequestSnapshot(
             head_sha=str(context.get("head_oid") or ""),
             reviews=list(context.get("reviews") or []),
+            base_sha=str(context.get("base_oid") or ""),
+            base_ref=str(context.get("base_ref") or ""),
         )
 
     return read

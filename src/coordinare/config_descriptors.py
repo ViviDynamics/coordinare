@@ -477,9 +477,25 @@ def _is_scalar_field(field_info: FieldInfo) -> bool:
     # 402: a mapping of models (the stage_providers catalog) is a catalog too.
     if typing.get_origin(inner) is dict:
         value_type = typing.get_args(inner)[-1:] or (None,)
-        if isinstance(value_type[0], type) and issubclass(value_type[0], BaseModel):
+        if _is_model_type(value_type[0]):
             return False
     return True
+
+
+def _is_model_type(annotation: Any) -> bool:
+    """True for a model, or (404) a union of models such as a discriminated catalog entry."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return True
+    if typing.get_origin(annotation) is typing.Annotated:
+        return _is_model_type(typing.get_args(annotation)[0])
+    members = typing.get_args(annotation) if _is_union(annotation) else ()
+    return bool(members) and all(_is_model_type(member) for member in members)
+
+
+def _is_union(annotation: Any) -> bool:
+    import types
+
+    return typing.get_origin(annotation) in (typing.Union, types.UnionType)
 
 
 #: What ``PUT /api/config/global`` will actually accept. Narrower than the section's

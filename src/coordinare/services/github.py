@@ -305,6 +305,8 @@ query GetPRReviews($prId: ID!) {
         }
       }
       headRefOid
+      baseRefOid
+      baseRefName
       reviewDecision
       mergeable
       mergeStateStatus
@@ -1471,6 +1473,10 @@ class GitHubService(CardIdentityMap):
                 params = {}
         return comments
 
+    def rest_api_base(self) -> str:
+        """404: the REST API base, for stage providers that call GitHub themselves."""
+        return self._rest_api_base()
+
     def _rest_api_base(self) -> str:
         """Derive the REST API base URL from the configured GraphQL endpoint.
 
@@ -2200,6 +2206,9 @@ class GitHubService(CardIdentityMap):
             "reviews": reviews,
             "review_threads": threads,
             "head_oid": str(node.get("headRefOid") or ""),
+            # 404: a QA stage provider compares the head with the base it merges into.
+            "base_oid": str(node.get("baseRefOid") or ""),
+            "base_ref": str(node.get("baseRefName") or ""),
             "review_decision": str(node.get("reviewDecision") or ""),
             "state": str(node.get("state") or ""),
             # 101: the closer names a daemon-authored PR that waits on a review it cannot give.
