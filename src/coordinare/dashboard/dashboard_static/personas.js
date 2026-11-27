@@ -371,7 +371,11 @@ function symPersonaRefresh(form, catalog) {
     });
   });
   form.querySelector('[data-sym-summary]').textContent = symPersonaSummary(catalog, overrides);
-  form.querySelector('[data-sym-dirty]').hidden = !cfgEntries(form).some(cfgChanged);
+  var dirty = cfgEntries(form).some(cfgChanged);
+  form.querySelector('[data-sym-dirty]').hidden = !dirty;
+  // #340: Saved describes the form as it was saved, so an edit since then clears it.
+  var message = form.querySelector('#sym-save-msg');
+  if (dirty && message && message.textContent === 'Saved') cfgFlash(message, '', 'muted');
   personaRefresh(form.querySelector('[data-persona-context]'));
 }
 

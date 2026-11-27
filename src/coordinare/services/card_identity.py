@@ -56,6 +56,27 @@ class CardIdentityMap:
         """
         self._issue_number_cache().update({k: v for k, v in issue_numbers.items() if v})
 
+    def _content_id_cache(self) -> dict[str, str]:
+        known: dict[str, str] | None = getattr(self, "_card_content_ids", None)
+        if known is None:
+            known = {}
+            self._card_content_ids = known
+        return known
+
+    def _remember_content_ids(self, content_node_ids: dict[str, str]) -> None:
+        """Record ``card id -> issue node id`` from a board poll (#400). Blanks are not pairings."""
+        self._content_id_cache().update({k: v for k, v in content_node_ids.items() if v})
+
+    def content_id_for_card(self, card_id: str) -> str:
+        """The issue node id for a card id the last poll listed, else *card_id* itself.
+
+        GitHub reads and comments on a card through its issue, so the adapter needs
+        the issue's node id where coordinare holds the project item's id (#400).
+        An id the poll did not list passes through unchanged: callers that already
+        hold the issue node id keep working exactly as before.
+        """
+        return self._content_id_cache().get(card_id, card_id)
+
     async def get_issue_details(self, card_id: str) -> dict[str, Any]:  # pragma: no cover
         raise NotImplementedError
 

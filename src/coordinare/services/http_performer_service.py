@@ -1977,139 +1977,7 @@ class HTTPPerformerService:
         card_context: dict[str, Any],
         workspace_info: WorkspaceInfo | None,
     ) -> JobInitPayload:
-        from coordinare.models.performer_endpoint import JobInitPayload
-
-        # 060/Option A: env_bootstrap dispatches do not flow through
-        # WorkspaceManager (no card, no workspace prep). Synthesize the
-        # workspace fields from BootstrapJobPayload so the performer's
-        # standard clone+dispatch flow can pick up the symphony repo and
-        # run install steps from env_spec_contents into cache_mount_path.
-        if card_context.get("job_type") == "env_bootstrap":
-            return self._build_env_bootstrap_payload(card_context)
-
-        repo_url = (
-            str(workspace_info.repo_url)
-            if workspace_info is not None and workspace_info.repo_url
-            else str(card_context.get("repo_url") or "")
-        )
-        branch = (
-            workspace_info.branch
-            if workspace_info is not None and workspace_info.branch
-            else str(card_context.get("branch") or "")
-        )
-        if not repo_url or not branch:
-            raise ValueError("workspace context missing repo_url or branch")
-
-        import os
-
-        secrets: dict[str, str] = {}
-        # 092: symphony test-environment vars are injected FIRST so a test file can
-        # never clobber a coordinare-owned operational credential (GITHUB_TOKEN, API
-        # keys) appended below — operational secrets always win on a name collision.
-        # These reach code-running performers (e.g. the implementer) and the env-cache
-        # QA runtime where services-start.sh runs. Secret-like: redacted from metadata
-        # below; the dispatch payload carries values but logs emit names + source only.
-        _test_env_vars = _str_dict(card_context.get("test_env_vars"))
-        secrets.update(_test_env_vars)
-        if _test_env_vars:
-            # 092 US3: log only the var NAMES + source label — never values. The
-            # values are routed exclusively through the redacted `secrets` channel
-            # above; this confirms the redacted hand-off at the dispatch boundary.
-            logger.info(
-                "http_performer.test_env_injected",
-                card_id=str(card_context.get("id", "")),
-                context="performer_payload",
-                source=str(card_context.get("test_env_source") or "card_context"),
-                keys=sorted(_test_env_vars.keys()),
-            )
-        if workspace_info is not None and workspace_info.github_token:
-            secrets["GITHUB_TOKEN"] = workspace_info.github_token
-        # Only inject the API key(s) required by the selected backend to avoid
-        # leaking unrelated credentials into container environments.
-        # opencode/junie read provider keys from env natively (no special
-        # CLI flag needed), but still need secrets injected here so they reach
-        # the subprocess when operators use the HTTP-payload secret path instead
-        # of Docker env vars.
-        backend = str(card_context.get("backend", "")).replace("-", "_")
-        # Per-role overrides plumbed from PerformerRoleConfig via dispatch_performer.
-        # base_url + api_key_env let an operator point a backend at a proxy
-        # (e.g. LiteLLM) instead of the vendor's native endpoint.
-        role_base_url = card_context.get("base_url")
-        role_api_key_env = card_context.get("api_key_env")
-        role_auth_token_env = card_context.get("auth_token_env")
-        if backend == "codex":
-            # 080: a self-hosted mode resolves to auth_token_env (proxy bearer);
-            # prefer it so the catalog's endpoint key reaches codex, falling back
-            # to api_key_env then the default. Native modes set api_key_env only.
-            key_env_name = str(role_auth_token_env or role_api_key_env or "OPENAI_API_KEY")
-            openai_key = os.environ.get(key_env_name, "")
-            if openai_key:
-                secrets["OPENAI_API_KEY"] = openai_key
-            if role_base_url:
-                secrets["OPENAI_BASE_URL"] = str(role_base_url)
-        elif backend == "claude_code":
-            _inject_claude_code_secrets(
-                secrets, role_base_url, role_api_key_env, role_auth_token_env,
-            )
-        elif backend in {"opencode", "junie"}:
-            # These backends can use either Anthropic or OpenAI providers;
-            # inject whichever keys are available so the subprocess can choose.
-            for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
-                val = os.environ.get(key, "")
-                if val:
-                    secrets[key] = val
-            # 080: a self-hosted mode's endpoint key (auth_token_env) — inject its
-            # value under both provider keys so the subprocess's provider config
-            # can authenticate against the proxy regardless of which it selects.
-            if role_auth_token_env:
-                token = os.environ.get(str(role_auth_token_env), "")
-                if token:
-                    secrets["ANTHROPIC_API_KEY"] = token
-                    secrets["OPENAI_API_KEY"] = token
-            # 123: the OPENAI_API_KEY injected above is the daemon's REAL OpenAI key
-            # (from .env) — correct for a NATIVE opencode/junie, but it 401s and
-            # poisons the 078 health probe when the backend is routed through the
-            # self-hosted shim to LiteLLM (the probe reads OPENAI_API_KEY). The
-            # coordinare can't see the container-mounted routing table, so it cannot
-            # tell here whether this dispatch is shim-routed. Instead, ALSO expose the
-            # LiteLLM master key under a DEDICATED, non-colliding env var; a shim
-            # routing entry sets `upstream_auth_env: COORDINARE_PROXY_AUTH` so the
-            # probe + the shim's Authorization override use the clean proxy bearer,
-            # while a native (unrouted) opencode/junie ignores it and keeps the raw
-            # provider keys above. Secret rides the redacted `secrets` channel.
-            _proxy_bearer = os.environ.get("LITELLM_MASTER_KEY", "")
-            if _proxy_bearer:
-                secrets["COORDINARE_PROXY_AUTH"] = _proxy_bearer
-        elif backend == "nare":
-            _inject_nare_secrets(secrets, card_context)
-
-        _inject_orchestration_secrets(secrets, card_context.get("orchestration"))
-
-        # Stash card_context as metadata so the performer has full access to
-        # role/persona/relay_feedback/etc. without us forking the schema here.
-        # 092: test_env_vars are secret-like — they ride the redacted `secrets`
-        # channel above and MUST NOT be echoed into metadata (which is unredacted).
-        # 234: the frozen env-cache steps ride their own field, not the unredacted metadata.
-        meta_src = {k: v for k, v in card_context.items() if k not in ("test_env_vars", "env_provenance")}
-        metadata = json.loads(json.dumps(meta_src, default=str))
-        metadata["environment_secret_names"] = sorted(secrets)
-
-        env_cache_path = card_context.get("env_cache_path")
-        return JobInitPayload.model_validate(
-            {
-                "job_id": str(uuid.uuid4()),
-                "card_id": str(card_context.get("id", "")),
-                "role": str(card_context.get("role", "")),
-                "backend": str(card_context.get("backend", "")),
-                "persona": str(card_context.get("persona_instructions", "")),
-                "repo_url": repo_url,
-                "branch": branch,
-                "secrets": secrets,
-                "metadata": metadata,
-                "env_cache_path": env_cache_path or None,
-                "env_provenance": card_context.get("env_provenance"),
-            },
-        )
+        return build_job_payload(card_context, workspace_info)
 
     @staticmethod
     def _verifier_context_block(cache_mount_path: str) -> str:
@@ -2200,162 +2068,308 @@ class HTTPPerformerService:
         )
 
     def _build_env_bootstrap_payload(self, card_context: dict[str, Any]) -> JobInitPayload:
-        """Synthesize a JobInitPayload for an env_bootstrap dispatch.
+        return build_env_bootstrap_payload(card_context)
 
-        BootstrapJobPayload is coordinare-internal and does not carry the
-        repo_url/branch/secrets that JobInitPayload requires, so we derive
-        them here: the repo is the symphony's own GitHub repo (the agent
-        clones it to read env_spec_files), branch defaults to 'main', the
-        GitHub token comes from the coordinare's environment.
-        """
-        import os
+def build_job_payload(
+    card_context: dict[str, Any],
+    workspace_info: WorkspaceInfo | None,
+) -> JobInitPayload:
+    """Build the ``/jobs`` payload for one card dispatch.
 
-        from coordinare.models.performer_endpoint import JobInitPayload
+    391: a module function so the persona bench sends what a dispatch sends.
+    """
+    from coordinare.models.performer_endpoint import JobInitPayload
 
-        symphony_org = str(card_context.get("symphony_org") or "")
-        symphony_repo = str(card_context.get("symphony_repo") or "")
-        if not symphony_org or not symphony_repo:
-            raise ValueError("env_bootstrap card_context missing symphony_org or symphony_repo")
+    # 060/Option A: env_bootstrap dispatches do not flow through
+    # WorkspaceManager (no card, no workspace prep). Synthesize the
+    # workspace fields from BootstrapJobPayload so the performer's
+    # standard clone+dispatch flow can pick up the symphony repo and
+    # run install steps from env_spec_contents into cache_mount_path.
+    if card_context.get("job_type") == "env_bootstrap":
+        return build_env_bootstrap_payload(card_context)
 
-        repo_url = f"https://github.com/{symphony_org}/{symphony_repo}.git"
-        # Synthetic branch — bootstrap never pushes/PRs. clone_repository fetches
-        # ``origin {branch}:{branch}`` and, if the ref doesn't exist remotely,
-        # falls back to ``checkout -b`` from the shallow-cloned default branch.
-        # Using a real branch (e.g. "main") triggers git's "refusing to fetch
-        # into current branch" error, which surfaces as WorkspaceSetupError.
-        branch = f"env-bootstrap-{uuid.uuid4().hex[:8]}"
+    repo_url = (
+        str(workspace_info.repo_url)
+        if workspace_info is not None and workspace_info.repo_url
+        else str(card_context.get("repo_url") or "")
+    )
+    branch = (
+        workspace_info.branch
+        if workspace_info is not None and workspace_info.branch
+        else str(card_context.get("branch") or "")
+    )
+    if not repo_url or not branch:
+        raise ValueError("workspace context missing repo_url or branch")
 
-        cache_mount_path = str(card_context.get("cache_mount_path") or "")
-        # 077: coordinare-derived authoritative manifest artifacts.
-        # 265: on Kubernetes the verifier pod decides, so the context block says where and how, and comes first.
+    import os
 
-        secrets: dict[str, str] = {}
-        # 092: THE load-bearing dry-run fix. The service-inference start-phase
-        # validation runs INSIDE this bootstrap performer (the performer sets
-        # os.environ from payload.secrets before _run_service_inference → validate),
-        # so threading the symphony's test-env vars here is what lets the dry-run see
-        # e.g. POSTGRESQL_PASSWORD and clear the unset-secret gate (exit 75). Injected
-        # FIRST so the coordinare-owned operational secrets below always win on a name
-        # collision; secret-like, so redacted from metadata (logs carry names only).
-        _test_env_vars = _str_dict(card_context.get("test_env_vars"))
-        secrets.update(_test_env_vars)
-        if _test_env_vars:
-            # 092 US3: keys + source label only — never values (the load-bearing
-            # dry-run vars ride the redacted `secrets` channel into the bootstrap
-            # performer, where the start-phase validation reads them from os.environ).
-            logger.info(
-                "http_performer.test_env_injected",
-                card_id=str(card_context.get("id", "")),
-                context="env_bootstrap_payload",
-                source=str(card_context.get("test_env_source") or "card_context"),
-                keys=sorted(_test_env_vars.keys()),
-            )
-        # Prefer the daemon-injected token (fresh App installation token or
-        # configured PAT, sourced via WorkspaceManager.get_fresh_github_token);
-        # fall back to the coordinare process env only when not provided.
-        gh_token = str(card_context.get("_github_token") or "") or os.environ.get(
-            "GITHUB_TOKEN", "",
+    secrets: dict[str, str] = {}
+    # 092: symphony test-environment vars are injected FIRST so a test file can
+    # never clobber a coordinare-owned operational credential (GITHUB_TOKEN, API
+    # keys) appended below — operational secrets always win on a name collision.
+    # These reach code-running performers (e.g. the implementer) and the env-cache
+    # QA runtime where services-start.sh runs. Secret-like: redacted from metadata
+    # below; the dispatch payload carries values but logs emit names + source only.
+    _test_env_vars = _str_dict(card_context.get("test_env_vars"))
+    secrets.update(_test_env_vars)
+    if _test_env_vars:
+        # 092 US3: log only the var NAMES + source label — never values. The
+        # values are routed exclusively through the redacted `secrets` channel
+        # above; this confirms the redacted hand-off at the dispatch boundary.
+        logger.info(
+            "http_performer.test_env_injected",
+            card_id=str(card_context.get("id", "")),
+            context="performer_payload",
+            source=str(card_context.get("test_env_source") or "card_context"),
+            keys=sorted(_test_env_vars.keys()),
         )
-        if gh_token:
-            secrets["GITHUB_TOKEN"] = gh_token
-        # Honor per-role auth_token_env (proxy-only mode) the same way the regular
-        # claude_code path does: when set, inject ANTHROPIC_AUTH_TOKEN and SKIP
-        # ANTHROPIC_API_KEY so the proxy receives only the Bearer token.
-        bootstrap_backend = str(card_context.get("backend") or "nare").replace("-", "_")
-        role_base_url = card_context.get("base_url")
-        role_api_key_env = card_context.get("api_key_env")
-        role_auth_token_env = card_context.get("auth_token_env")
-        if bootstrap_backend == "nare":
-            # Service inference in the bootstrap performer reads the vendor keys
-            # whatever rail nare rides (main._run_service_inference), so they
-            # stay as before; the endpoint's own key then wins for nare.
-            for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
-                val = os.environ.get(key, "")
-                if val:
-                    secrets[key] = val
-            _inject_nare_secrets(secrets, card_context)
-        elif bootstrap_backend == "claude_code":
-            _inject_claude_code_secrets(
-                secrets, role_base_url, role_api_key_env, role_auth_token_env,
-            )
-            openai_key = os.environ.get("OPENAI_API_KEY", "")
-            if openai_key:
-                secrets["OPENAI_API_KEY"] = openai_key
-        else:
-            for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
-                val = os.environ.get(key, "")
-                if val:
-                    secrets[key] = val
-
-        _inject_orchestration_secrets(secrets, card_context.get("orchestration"))
-
-        persona = (
-            "You are the environment installer for an independently reviewed manifest. "
-            "Execute its declared install actions and preserve its requirements, checks, "
-            "activation and service lifecycle. Do not infer a different toolchain or "
-            "weaken checks. A required failure or unrun check cannot be waived.\n\n"
-            f"INSTALL IN PLACE under the absolute path {cache_mount_path}. "
-            "Use that exact prefix before building; do not install elsewhere and relocate. "
-            "Consumers mount this cache read-only at the same absolute path, so all "
-            "persistent tools must work there without installer-only state.\n\n"
-            "The daemon owns activate.sh and verify.sh. Do not rewrite either file. "
-            "A separate clean consumer executes the accepted checks after this workload "
-            "has stopped. Its result and frozen provenance decide readiness, never "
-            "your success prose. Do not commit, push, or open a pull request.\n\n"
-            + str(card_context.get("dependency_checklist") or "")
-            + "\nPrevious failure: " + str(card_context.get("last_failure") or "none")
+    if workspace_info is not None and workspace_info.github_token:
+        secrets["GITHUB_TOKEN"] = workspace_info.github_token
+    # Only inject the API key(s) required by the selected backend to avoid
+    # leaking unrelated credentials into container environments.
+    # opencode/junie read provider keys from env natively (no special
+    # CLI flag needed), but still need secrets injected here so they reach
+    # the subprocess when operators use the HTTP-payload secret path instead
+    # of Docker env vars.
+    backend = str(card_context.get("backend", "")).replace("-", "_")
+    # Per-role overrides plumbed from PerformerRoleConfig via dispatch_performer.
+    # base_url + api_key_env let an operator point a backend at a proxy
+    # (e.g. LiteLLM) instead of the vendor's native endpoint.
+    role_base_url = card_context.get("base_url")
+    role_api_key_env = card_context.get("api_key_env")
+    role_auth_token_env = card_context.get("auth_token_env")
+    if backend == "codex":
+        # 080: a self-hosted mode resolves to auth_token_env (proxy bearer);
+        # prefer it so the catalog's endpoint key reaches codex, falling back
+        # to api_key_env then the default. Native modes set api_key_env only.
+        key_env_name = str(role_auth_token_env or role_api_key_env or "OPENAI_API_KEY")
+        openai_key = os.environ.get(key_env_name, "")
+        if openai_key:
+            secrets["OPENAI_API_KEY"] = openai_key
+        if role_base_url:
+            secrets["OPENAI_BASE_URL"] = str(role_base_url)
+    elif backend == "claude_code":
+        _inject_claude_code_secrets(
+            secrets, role_base_url, role_api_key_env, role_auth_token_env,
         )
+    elif backend in {"opencode", "junie"}:
+        # These backends can use either Anthropic or OpenAI providers;
+        # inject whichever keys are available so the subprocess can choose.
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+            val = os.environ.get(key, "")
+            if val:
+                secrets[key] = val
+        # 080: a self-hosted mode's endpoint key (auth_token_env) — inject its
+        # value under both provider keys so the subprocess's provider config
+        # can authenticate against the proxy regardless of which it selects.
+        if role_auth_token_env:
+            token = os.environ.get(str(role_auth_token_env), "")
+            if token:
+                secrets["ANTHROPIC_API_KEY"] = token
+                secrets["OPENAI_API_KEY"] = token
+        # 123: the OPENAI_API_KEY injected above is the daemon's REAL OpenAI key
+        # (from .env) — correct for a NATIVE opencode/junie, but it 401s and
+        # poisons the 078 health probe when the backend is routed through the
+        # self-hosted shim to LiteLLM (the probe reads OPENAI_API_KEY). The
+        # coordinare can't see the container-mounted routing table, so it cannot
+        # tell here whether this dispatch is shim-routed. Instead, ALSO expose the
+        # LiteLLM master key under a DEDICATED, non-colliding env var; a shim
+        # routing entry sets `upstream_auth_env: COORDINARE_PROXY_AUTH` so the
+        # probe + the shim's Authorization override use the clean proxy bearer,
+        # while a native (unrouted) opencode/junie ignores it and keeps the raw
+        # provider keys above. Secret rides the redacted `secrets` channel.
+        _proxy_bearer = os.environ.get("LITELLM_MASTER_KEY", "")
+        if _proxy_bearer:
+            secrets["COORDINARE_PROXY_AUTH"] = _proxy_bearer
+    elif backend == "nare":
+        _inject_nare_secrets(secrets, card_context)
 
-        # 092: also drop test_env_vars — secret-like values ride the redacted
-        # `secrets` channel, never the unredacted metadata.
-        # 265: the rendered scripts ride their own field (bootstrap_scripts), not the metadata.
-        meta_src = {
-            k: v
-            for k, v in card_context.items()
-            if k not in ("_github_token", "test_env_vars", "rendered_verify_sh", "rendered_activate_sh")
-        }
-        # Score (performer-side dispatch payload model) requires a `title`
-        # field; BootstrapJobPayload doesn't carry one, so synthesize it from
-        # the symphony name. Also seed `description` from the spec block so the
-        # backend agent has user-facing context if it inspects the Score.
-        symphony_name = str(card_context.get("symphony_name") or "")
-        meta_src.setdefault(
-            "title", f"env_bootstrap: {symphony_name}" if symphony_name else "env_bootstrap",
-        )
-        meta_src.setdefault(
-            "description",
-            f"Install dev environment into {cache_mount_path} per project spec files.",
-        )
-        metadata = json.loads(json.dumps(meta_src, default=str))
-        metadata["environment_secret_names"] = sorted(secrets)
-        # 265: both scripts or neither. A half-set pair is not written, so the performer falls back to the cache copy.
-        rendered_verify = card_context.get("rendered_verify_sh")
-        rendered_activate = card_context.get("rendered_activate_sh")
-        bootstrap_scripts = (
-            {"verify_sh": rendered_verify, "activate_sh": rendered_activate}
-            if isinstance(rendered_verify, str) and isinstance(rendered_activate, str)
-            else None
-        )
+    _inject_orchestration_secrets(secrets, card_context.get("orchestration"))
 
-        return JobInitPayload.model_validate(
-            {
-                "job_id": str(uuid.uuid4()),
-                "card_id": f"env_bootstrap:{card_context.get('symphony_name', '')}",
-                "role": "env_bootstrap",
-                "backend": str(card_context.get("backend", "") or "nare"),
-                "persona": persona,
-                "repo_url": repo_url,
-                "branch": branch,
-                "secrets": secrets,
-                "metadata": metadata,
-                # The bootstrap *writes into* the cache mount, so the
-                # container-side env_cache_path is the same directory the
-                # performer will populate. Without this, service inference
-                # short-circuits with skipped_reason=no_env_cache_path.
-                "env_cache_path": cache_mount_path or None,
-                "bootstrap_scripts": bootstrap_scripts,
-            },
-        )
+    # Stash card_context as metadata so the performer has full access to
+    # role/persona/relay_feedback/etc. without us forking the schema here.
+    # 092: test_env_vars are secret-like — they ride the redacted `secrets`
+    # channel above and MUST NOT be echoed into metadata (which is unredacted).
+    # 234: the frozen env-cache steps ride their own field, not the unredacted metadata.
+    meta_src = {k: v for k, v in card_context.items() if k not in ("test_env_vars", "env_provenance")}
+    metadata = json.loads(json.dumps(meta_src, default=str))
+    metadata["environment_secret_names"] = sorted(secrets)
+
+    env_cache_path = card_context.get("env_cache_path")
+    return JobInitPayload.model_validate(
+        {
+            "job_id": str(uuid.uuid4()),
+            "card_id": str(card_context.get("id", "")),
+            "role": str(card_context.get("role", "")),
+            "backend": str(card_context.get("backend", "")),
+            "persona": str(card_context.get("persona_instructions", "")),
+            "repo_url": repo_url,
+            "branch": branch,
+            "secrets": secrets,
+            "metadata": metadata,
+            "env_cache_path": env_cache_path or None,
+            "env_provenance": card_context.get("env_provenance"),
+        },
+    )
 
 
-__all__ = ["HTTPPerformerService"]
+def build_env_bootstrap_payload(card_context: dict[str, Any]) -> JobInitPayload:
+    """Synthesize a JobInitPayload for an env_bootstrap dispatch.
+
+    BootstrapJobPayload is coordinare-internal and does not carry the
+    repo_url/branch/secrets that JobInitPayload requires, so we derive
+    them here: the repo is the symphony's own GitHub repo (the agent
+    clones it to read env_spec_files), branch defaults to 'main', the
+    GitHub token comes from the coordinare's environment.
+    """
+    import os
+
+    from coordinare.models.performer_endpoint import JobInitPayload
+
+    symphony_org = str(card_context.get("symphony_org") or "")
+    symphony_repo = str(card_context.get("symphony_repo") or "")
+    if not symphony_org or not symphony_repo:
+        raise ValueError("env_bootstrap card_context missing symphony_org or symphony_repo")
+
+    repo_url = f"https://github.com/{symphony_org}/{symphony_repo}.git"
+    # Synthetic branch — bootstrap never pushes/PRs. clone_repository fetches
+    # ``origin {branch}:{branch}`` and, if the ref doesn't exist remotely,
+    # falls back to ``checkout -b`` from the shallow-cloned default branch.
+    # Using a real branch (e.g. "main") triggers git's "refusing to fetch
+    # into current branch" error, which surfaces as WorkspaceSetupError.
+    branch = f"env-bootstrap-{uuid.uuid4().hex[:8]}"
+
+    cache_mount_path = str(card_context.get("cache_mount_path") or "")
+    # 077: coordinare-derived authoritative manifest artifacts.
+    # 265: on Kubernetes the verifier pod decides, so the context block says where and how, and comes first.
+
+    secrets: dict[str, str] = {}
+    # 092: THE load-bearing dry-run fix. The service-inference start-phase
+    # validation runs INSIDE this bootstrap performer (the performer sets
+    # os.environ from payload.secrets before _run_service_inference → validate),
+    # so threading the symphony's test-env vars here is what lets the dry-run see
+    # e.g. POSTGRESQL_PASSWORD and clear the unset-secret gate (exit 75). Injected
+    # FIRST so the coordinare-owned operational secrets below always win on a name
+    # collision; secret-like, so redacted from metadata (logs carry names only).
+    _test_env_vars = _str_dict(card_context.get("test_env_vars"))
+    secrets.update(_test_env_vars)
+    if _test_env_vars:
+        # 092 US3: keys + source label only — never values (the load-bearing
+        # dry-run vars ride the redacted `secrets` channel into the bootstrap
+        # performer, where the start-phase validation reads them from os.environ).
+        logger.info(
+            "http_performer.test_env_injected",
+            card_id=str(card_context.get("id", "")),
+            context="env_bootstrap_payload",
+            source=str(card_context.get("test_env_source") or "card_context"),
+            keys=sorted(_test_env_vars.keys()),
+        )
+    # Prefer the daemon-injected token (fresh App installation token or
+    # configured PAT, sourced via WorkspaceManager.get_fresh_github_token);
+    # fall back to the coordinare process env only when not provided.
+    gh_token = str(card_context.get("_github_token") or "") or os.environ.get(
+        "GITHUB_TOKEN", "",
+    )
+    if gh_token:
+        secrets["GITHUB_TOKEN"] = gh_token
+    # Honor per-role auth_token_env (proxy-only mode) the same way the regular
+    # claude_code path does: when set, inject ANTHROPIC_AUTH_TOKEN and SKIP
+    # ANTHROPIC_API_KEY so the proxy receives only the Bearer token.
+    bootstrap_backend = str(card_context.get("backend") or "nare").replace("-", "_")
+    role_base_url = card_context.get("base_url")
+    role_api_key_env = card_context.get("api_key_env")
+    role_auth_token_env = card_context.get("auth_token_env")
+    if bootstrap_backend == "nare":
+        # Service inference in the bootstrap performer reads the vendor keys
+        # whatever rail nare rides (main._run_service_inference), so they
+        # stay as before; the endpoint's own key then wins for nare.
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+            val = os.environ.get(key, "")
+            if val:
+                secrets[key] = val
+        _inject_nare_secrets(secrets, card_context)
+    elif bootstrap_backend == "claude_code":
+        _inject_claude_code_secrets(
+            secrets, role_base_url, role_api_key_env, role_auth_token_env,
+        )
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        if openai_key:
+            secrets["OPENAI_API_KEY"] = openai_key
+    else:
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+            val = os.environ.get(key, "")
+            if val:
+                secrets[key] = val
+
+    _inject_orchestration_secrets(secrets, card_context.get("orchestration"))
+
+    persona = (
+        "You are the environment installer for an independently reviewed manifest. "
+        "Execute its declared install actions and preserve its requirements, checks, "
+        "activation and service lifecycle. Do not infer a different toolchain or "
+        "weaken checks. A required failure or unrun check cannot be waived.\n\n"
+        f"INSTALL IN PLACE under the absolute path {cache_mount_path}. "
+        "Use that exact prefix before building; do not install elsewhere and relocate. "
+        "Consumers mount this cache read-only at the same absolute path, so all "
+        "persistent tools must work there without installer-only state.\n\n"
+        "The daemon owns activate.sh and verify.sh. Do not rewrite either file. "
+        "A separate clean consumer executes the accepted checks after this workload "
+        "has stopped. Its result and frozen provenance decide readiness, never "
+        "your success prose. Do not commit, push, or open a pull request.\n\n"
+        + str(card_context.get("dependency_checklist") or "")
+        + "\nPrevious failure: " + str(card_context.get("last_failure") or "none")
+    )
+
+    # 092: also drop test_env_vars — secret-like values ride the redacted
+    # `secrets` channel, never the unredacted metadata.
+    # 265: the rendered scripts ride their own field (bootstrap_scripts), not the metadata.
+    meta_src = {
+        k: v
+        for k, v in card_context.items()
+        if k not in ("_github_token", "test_env_vars", "rendered_verify_sh", "rendered_activate_sh")
+    }
+    # Score (performer-side dispatch payload model) requires a `title`
+    # field; BootstrapJobPayload doesn't carry one, so synthesize it from
+    # the symphony name. Also seed `description` from the spec block so the
+    # backend agent has user-facing context if it inspects the Score.
+    symphony_name = str(card_context.get("symphony_name") or "")
+    meta_src.setdefault(
+        "title", f"env_bootstrap: {symphony_name}" if symphony_name else "env_bootstrap",
+    )
+    meta_src.setdefault(
+        "description",
+        f"Install dev environment into {cache_mount_path} per project spec files.",
+    )
+    metadata = json.loads(json.dumps(meta_src, default=str))
+    metadata["environment_secret_names"] = sorted(secrets)
+    # 265: both scripts or neither. A half-set pair is not written, so the performer falls back to the cache copy.
+    rendered_verify = card_context.get("rendered_verify_sh")
+    rendered_activate = card_context.get("rendered_activate_sh")
+    bootstrap_scripts = (
+        {"verify_sh": rendered_verify, "activate_sh": rendered_activate}
+        if isinstance(rendered_verify, str) and isinstance(rendered_activate, str)
+        else None
+    )
+
+    return JobInitPayload.model_validate(
+        {
+            "job_id": str(uuid.uuid4()),
+            "card_id": f"env_bootstrap:{card_context.get('symphony_name', '')}",
+            "role": "env_bootstrap",
+            "backend": str(card_context.get("backend", "") or "nare"),
+            "persona": persona,
+            "repo_url": repo_url,
+            "branch": branch,
+            "secrets": secrets,
+            "metadata": metadata,
+            # The bootstrap *writes into* the cache mount, so the
+            # container-side env_cache_path is the same directory the
+            # performer will populate. Without this, service inference
+            # short-circuits with skipped_reason=no_env_cache_path.
+            "env_cache_path": cache_mount_path or None,
+            "bootstrap_scripts": bootstrap_scripts,
+        },
+    )
+
+
+__all__ = ["HTTPPerformerService", "build_env_bootstrap_payload", "build_job_payload"]

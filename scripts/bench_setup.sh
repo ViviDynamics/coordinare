@@ -21,12 +21,25 @@ git remote get-url origin >/dev/null 2>&1 || git remote add origin "$REPO_URL"
 git remote set-url origin "$REPO_URL"
 echo "Pushing branches to $REPO_URL ..."
 git push -u origin main
-for b in fix/reviewer-offbyone feat/security-sqli feat/qa-behavior feat/techwriter-nodoc feat/impl-failing-test feat/closer-ready; do
-  git push -u origin "$b"
+# Every fixture branch persona_bench.py names (391). A branch this clone does
+# not hold must already be on the remote; a missing fixture fails here rather
+# than as a FAIL_HARNESS cell mid-run.
+for b in fix/reviewer-offbyone bench/security-sqli-vuln feat/qa-behavior feat/techwriter-nodoc \
+         feat/techwriter-wiki feat/impl-failing-test feat/closer-ready; do
+  if git show-ref --verify --quiet "refs/heads/$b"; then
+    git push -u origin "$b"
+  elif git ls-remote --exit-code --heads origin "$b" >/dev/null; then
+    echo "  $b: on the remote only (kept as is)"
+  else
+    echo "missing fixture branch: $b" >&2
+    exit 1
+  fi
 done
 
-# role -> head branch for the four review-target PRs (bash 3.2 safe: no assoc arrays)
-PR_PAIRS="reviewer:fix/reviewer-offbyone security:feat/security-sqli qa:feat/qa-behavior closer:feat/closer-ready"
+# role -> head branch for the four review-target PRs (bash 3.2 safe: no assoc arrays).
+# 391: the security task forks bench/security-sqli-vuln, and the scan request
+# binds to that head, so its PR must be the one for that branch.
+PR_PAIRS="reviewer:fix/reviewer-offbyone security:bench/security-sqli-vuln qa:feat/qa-behavior closer:feat/closer-ready"
 mkdir -p "$COORDINARE_DIR/tmp"
 echo "{" > "$PRS_OUT"; first=1
 for pair in $PR_PAIRS; do

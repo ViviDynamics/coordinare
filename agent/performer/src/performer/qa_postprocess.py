@@ -208,7 +208,7 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
 
     # Check for failures/env blockers before summarising and posting evidence.
     raw_failures = qa_output.get("failures", [])
-    failures = [f for f in (raw_failures if isinstance(raw_failures, list) else []) if isinstance(f, dict)]
+    failures = _qa_reported_failures(raw_failures)
     env_error = str(qa_output.get("environment_error", "")).strip()
     # 088 US6 (FR-013): fold any coordinare-recorded env-cache
     # services-start failure (e.g. Postgres could not start without a
@@ -1251,6 +1251,70 @@ def _qa_failure_is_environmental(f: dict) -> bool:
     )
     return bool(_QA_ENV_FAILURE_PATTERNS.search(blob))
 
+#: 391: spellings of an executed check's command and exit code that models
+#: send. Each still needs a command AND an exit code to count as evidence.
+_CHECK_COMMAND_KEYS = ("command", "cmd")
+_CHECK_EXIT_KEYS = ("exit_code", "exitCode", "returncode", "return_code", "exit_status", "exit")
+
+
+def _first_present(entry: dict, keys: tuple[str, ...]) -> object:
+    """The first value under *keys* that is neither missing nor empty."""
+    for key in keys:
+        value = entry.get(key)
+        if value is not None and not (isinstance(value, str) and not value.strip()):
+            return value
+    return None
+
+
+def _exit_code(value: object) -> object:
+    """The recorded exit code, as an int where it reads as one; None when absent.
+
+    Any recorded value counts, as before 391; only an empty one does not.
+    """
+    if value is None:
+        return None
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and _INT_TEXT.fullmatch(value.strip()):
+        return int(value.strip())
+    return value
+
+
+_INT_TEXT = re.compile(r"-?[0-9]+")
+
+#: A whole ``failures`` string that means there are none ("None", "No failures
+#: found.", "All criteria passed"). Anchored at both ends, so a defect that only
+#: starts the same way ("No discount key raises KeyError") is kept.
+_NO_FAILURE_PLACEHOLDER = re.compile(
+    r"(?:none|nothing|null|n/?a|-|\[\]"
+    r"|no (?:failures?|issues?|defects?|problems?|errors?|bugs?)"
+    r"|all (?:criteria|checks|tests|steps) (?:pass|passed))"
+    r"(?: (?:found|reported|observed|detected))?[.!]?",
+    re.IGNORECASE,
+)
+
+
+def _qa_reported_failures(raw: object) -> list[dict]:
+    """391: the model's ``failures``, every reported defect kept.
+
+    A failure written as a plain string is still a reported defect; dropping it
+    turned a found bug into an unsubstantiated pass. Keeping it can only fail a
+    verdict, never pass one.
+    """
+    if not isinstance(raw, list):
+        return []
+    kept: list[dict] = []
+    for entry in raw:
+        if isinstance(entry, dict):
+            kept.append(entry)
+        elif isinstance(entry, str) and entry.strip():
+            text = entry.strip()
+            if _NO_FAILURE_PLACEHOLDER.fullmatch(" ".join(text.split())):
+                continue
+            kept.append({"criterion": "QA reported failure", "actual": text, "message": text})
+    return kept
+
+
 def _qa_execution_evidence(qa_output: dict) -> list[dict]:
     """083: normalise the model's self-reported executed checks. Each entry must
     carry a non-empty command AND a recorded exit_code; entries lacking either
@@ -1266,8 +1330,8 @@ def _qa_execution_evidence(qa_output: dict) -> list[dict]:
     for entry in raw:
         if not isinstance(entry, dict):
             continue
-        command = str(entry.get("command", "")).strip()
-        exit_code = entry.get("exit_code")
+        command = str(_first_present(entry, _CHECK_COMMAND_KEYS) or "").strip()
+        exit_code = _exit_code(_first_present(entry, _CHECK_EXIT_KEYS))
         if command and exit_code is not None:
             cleaned.append(
                 {
@@ -1361,8 +1425,9 @@ def _qa_app_boot_evidence(
     raw = qa_output.get("app_boot_check")
     if not isinstance(raw, dict):
         return None, False
-    command = str(raw.get("command", "")).strip()
-    exit_code = raw.get("exit_code")
+    # 391: the same key spellings ``executed_checks`` accepts.
+    command = str(_first_present(raw, _CHECK_COMMAND_KEYS) or "").strip()
+    exit_code = _exit_code(_first_present(raw, _CHECK_EXIT_KEYS))
     if not command or exit_code is None:
         return None, False
     parsed = {"command": command, "exit_code": exit_code}

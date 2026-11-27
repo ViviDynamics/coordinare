@@ -1294,6 +1294,7 @@ class GitHubService(CardIdentityMap):
         # contract without spending another request. Additive: the dict returned below
         # is unchanged, so no caller sees a difference.
         self._remember_issue_numbers(issue_numbers)
+        self._remember_content_ids(content_node_ids)
 
         return {
             "snapshot": snapshot,
