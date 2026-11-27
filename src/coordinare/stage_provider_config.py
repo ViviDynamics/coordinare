@@ -10,7 +10,8 @@ the token, and the value is read when a request is made.
 from __future__ import annotations
 
 import re
-from typing import Literal
+from pathlib import PurePosixPath
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -19,10 +20,23 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 #: add their kinds here; the stage contract itself is shared.
 PROVIDER_ROLES: dict[str, frozenset[str]] = {
     "scrutare": frozenset({"reviewer"}),
+    "progettare": frozenset({"architect"}),
 }
 
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PROVIDER_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+#: A released version, as ``progettare --version`` prints it (``2026.11.3``, ``1.2.0``).
+_RELEASE = re.compile(r"^\d+(\.\d+){1,3}([.+-][0-9A-Za-z.]+)?$")
+
+
+def _env_name(value: str, field: str) -> str:
+    if not _ENV_NAME.match(value or ""):
+        msg = (
+            f"{field} must be the NAME of an environment variable (for example "
+            "GITHUB_TOKEN), never its value"
+        )
+        raise ValueError(msg)
+    return value
 
 
 class ScrutareProviderConfig(BaseModel):
@@ -81,8 +95,83 @@ class ScrutareProviderConfig(BaseModel):
         return value
 
 
-#: One entry of the ``stage_providers`` catalog. A union once a second kind exists.
-StageProviderConfig = ScrutareProviderConfig
+class ProgettareProviderConfig(BaseModel):
+    """403: Progettare's released CLI, run by coordinare for the architecting stage.
+
+    Progettare has no job API of its own: coordinare runs ``progettare blueprint`` in a
+    detached runner, one run directory per request id under ``runs_dir``, and reads the
+    run's artifacts. It pins its own harness and models (``progettare.yaml``), so the
+    architect's ``backend``, ``mode`` and ``workflow`` have no effect while it is set.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    kind: Literal["progettare"]
+    #: The CLI to run: a name on PATH or an absolute path.
+    command: str = "progettare"
+    #: The release coordinare speaks to. ``progettare --version`` must print exactly
+    #: this; doctor and the startup preflight check it, and a run refuses to start
+    #: under another version.
+    version: str
+    #: Where run directories are kept, one per request id. Must survive a restart of
+    #: coordinare: it is how a restarted daemon finds a run already in flight.
+    runs_dir: str
+    #: ``progettare.yaml`` to plan with. None (default) uses the one on the planned
+    #: repository's default branch.
+    config_path: str | None = None
+    #: Name of the environment variable holding a GitHub token that can read the issue
+    #: and clone the repository. Handed to the run as ``GH_TOKEN``.
+    gh_token_env: str
+    #: Names of further environment variables the run receives, for example the model
+    #: provider's credential (``OPENAI_API_KEY``). Nothing else is passed through.
+    pass_env: list[str] = Field(default_factory=list)
+    #: A run that takes longer is stopped and retried as a system error.
+    timeout_seconds: int = Field(default=3600, gt=0, le=6 * 3600)
+
+    @field_validator("command")
+    @classmethod
+    def _validate_command(cls, value: str) -> str:
+        value = (value or "").strip()
+        if not value or any(c.isspace() for c in value):
+            msg = "command must be the progettare executable: a name on PATH or an absolute path, no arguments"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("version")
+    @classmethod
+    def _validate_version(cls, value: str) -> str:
+        value = (value or "").strip()
+        if not _RELEASE.match(value):
+            msg = "version must be a release, as `progettare --version` prints it (for example 2026.11.3)"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("runs_dir", "config_path")
+    @classmethod
+    def _validate_absolute(cls, value: str | None, info: object) -> str | None:
+        if value is None:
+            return None
+        field = getattr(info, "field_name", "path")
+        if not PurePosixPath(value.strip()).is_absolute():
+            msg = f"{field} must be an absolute path on the coordinare host"
+            raise ValueError(msg)
+        return value.strip().rstrip("/") or "/"
+
+    @field_validator("gh_token_env")
+    @classmethod
+    def _validate_gh_token_env(cls, value: str) -> str:
+        return _env_name(value, "gh_token_env")
+
+    @field_validator("pass_env")
+    @classmethod
+    def _validate_pass_env(cls, value: list[str]) -> list[str]:
+        return [_env_name(name, "every pass_env entry") for name in value]
+
+
+#: One entry of the ``stage_providers`` catalog, chosen by its ``kind``.
+StageProviderConfig = Annotated[
+    ScrutareProviderConfig | ProgettareProviderConfig, Field(discriminator="kind"),
+]
 
 
 def normalize_login(login: str) -> str:
@@ -128,9 +217,10 @@ def provider_role_errors(
             )
     humans = {normalize_login(login) for login in human_reviewers}
     for name, provider in sorted(providers.items()):
-        if normalize_login(provider.review_login) in humans:
+        login = getattr(provider, "review_login", None)
+        if login and normalize_login(login) in humans:
             errors.append(
-                f"stage_providers.{name}.review_login {provider.review_login!r} is also listed in "
+                f"stage_providers.{name}.review_login {login!r} is also listed in "
                 "human_reviewers; a provider's approval must never count as a human approval",
             )
     return errors
