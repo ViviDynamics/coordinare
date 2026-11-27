@@ -82,6 +82,8 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 _ISSUE_URL = re.compile(
     r"^https?://(?P<host>[^/\s]+)/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+)/issues/(?P<number>\d+)/?$",
 )
+#: The fields of a recorded clarification that carry what a person said.
+_CLARIFICATION_CONTENT = ("questions", "answer", "comment_id", "body")
 #: Planning a work item that is not a GitHub issue needs Progettare to take it as data.
 WORK_ITEM_AS_DATA_ISSUE = "ViviDynamics/progettare#68"
 
@@ -276,12 +278,15 @@ def work_item_digest(title: str, body: str) -> str:
 
 def work_item_pin(digest: str, clarifications: Any) -> str:
     """The pin of a planning request: the issue text and the answers recorded so far."""
+    # What a clarification says, in either shape coordinare records: a blocked card's
+    # answer (questions, answer) or a routed comment (comment_id, body). Bookkeeping
+    # fields stay out, so they cannot make a restart look like a new request.
     answers = [
-        [str(q) for q in (c.get("questions") or [])] + [str(c.get("answer") or "")]
+        {key: c.get(key) for key in _CLARIFICATION_CONTENT if c.get(key) not in (None, "", [])}
         for c in (clarifications if isinstance(clarifications, list) else [])
         if isinstance(c, dict)
     ]
-    payload = json.dumps([digest, answers], sort_keys=True, separators=(",", ":"))
+    payload = json.dumps([digest, answers], sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode()).hexdigest()[:40]
 
 
@@ -669,6 +674,30 @@ class WorkItemStageService(ExternalStageService):
             "status": "error",
             "reason": f"{self._provider.name} takes no relayed feedback; it plans each request afresh",
         }
+
+    async def dispatch_card(
+        self,
+        card_context: dict[str, Any],
+        workspace_info: Any = None,
+        **ignored: Any,
+    ) -> dict[str, Any]:
+        """Refuse feedback routed back to the planner, unless an operator restarted the stage.
+
+        Findings sent back to the architect (security's, an observer's correction) cannot
+        reach the planner, and the pin does not move, so a plain dispatch would hand back
+        the plan that drew them. A person decides: answer on the card, edit the issue, or
+        restart the stage to plan again.
+        """
+        queued = card_context.get("relay_feedback")
+        card_id = str(card_context.get("id") or "").strip()
+        if isinstance(queued, list) and queued and card_id not in self._fresh:
+            msg = (
+                f"{self._provider.name} takes no feedback, and {len(queued)} item(s) were routed "
+                "back to the architect. Answer on the card, edit the issue, or restart the "
+                "architecting stage to plan again"
+            )
+            raise PerformerAuthError(msg)
+        return await super().dispatch_card(card_context, workspace_info, **ignored)
 
     async def _request_for(self, card_context: dict[str, Any]) -> WorkItemRequest:
         card_id = str(card_context.get("id") or "").strip()

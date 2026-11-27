@@ -129,6 +129,10 @@ def test_the_pin_moves_with_the_text_and_the_answers_only() -> None:
     assert _pin(title="Other") != _pin()
     assert _pin(body=BODY + "more") != _pin()
     assert _pin(clarifications=[{"questions": ["Which format?"], "answer": "CSV"}]) != _pin()
+    # route_issue_comments records a comment's body, not an answer: its content counts.
+    routed = [{"comment_id": 1, "body": "use semicolons", "classification": "clarification"}]
+    assert _pin(clarifications=routed) != _pin(clarifications=[{**routed[0], "body": "use commas"}])
+    assert _pin(clarifications=routed) == _pin(clarifications=[{**routed[0], "classification": "other"}])
     # Line endings are GitHub's business, not a change of requirements.
     assert _pin(body=BODY.replace("\n", "\r\n")) == _pin()
 
@@ -274,4 +278,21 @@ async def test_an_operator_restart_plans_again(planner: FakePlanner, issues: Fak
     planner.finish(_ref(session), _passed(_pin()))
     service.set_fresh_attempt("PVTI_card1", allowed=True)
     fresh = await service.dispatch_card(dict(CARD))
+    assert _ref(fresh["session_id"]) == _request().request_id(2)
+
+
+@pytest.mark.asyncio
+async def test_feedback_routed_back_to_the_planner_blocks_instead_of_replaying_the_plan(
+    planner: FakePlanner, issues: FakeIssues,
+) -> None:
+    service = _service(planner, issues)
+    session = (await service.dispatch_card(dict(CARD)))["session_id"]
+    planner.finish(_ref(session), _passed(_pin()))
+    bounced = {**CARD, "relay_feedback": [{"body": "SQL injection in export.py", "author_login": "security"}]}
+    with pytest.raises(PerformerAuthError, match="takes no feedback"):
+        await service.dispatch_card(bounced)
+    assert len(planner.submitted) == 1
+    # An operator restart plans again, and the feedback cannot ride along.
+    service.set_fresh_attempt("PVTI_card1", allowed=True)
+    fresh = await service.dispatch_card(bounced)
     assert _ref(fresh["session_id"]) == _request().request_id(2)

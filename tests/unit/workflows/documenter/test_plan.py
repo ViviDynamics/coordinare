@@ -210,3 +210,13 @@ def test_175_existing_brief_page_is_read_and_merged():
     selected = [plan for plan in plans if plan.path == page.path]
     assert len(selected) == 1
     assert selected[0].exists is True
+
+
+def test_403_a_topic_without_a_location_is_placed_under_the_docs_root():
+    """A brief from a planner that names topics only (Progettare) is planned, not dropped."""
+    brief_docs = [{"topic": "The CSV export, in the user guide", "location": "", "say": "the CSV export in the user guide"}]
+    plans, _deferred, refused = select_pages(brief_docs, [], [], 8, "docs")
+    assert "docs/the-csv-export-in-the-user-guide.md" in [p.path for p in plans]
+    assert refused == []
+    plans, _deferred, _refused = select_pages([{"topic": "", "location": "", "say": "x"}], [], [], 8, "docs")
+    assert all(p.source != "brief" for p in plans)

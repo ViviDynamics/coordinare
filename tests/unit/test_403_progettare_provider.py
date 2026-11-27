@@ -414,3 +414,61 @@ async def test_the_architecting_stage_reaches_a_plan_through_the_contract(
         status = await service.check_status(session)
     assert status["status"] == "plan_committed"
     assert status["report"]["blueprint"]["milestones"][0]["goal"] == "CSV export"
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_documenter_brief_is_refused_not_raised(
+    tmp_path: Path, command: Path, origin: Path,
+) -> None:
+    provider = _provider(tmp_path, command, origin)
+    ref = _request().request_id(1)
+    await provider.submit(_request(), ref)
+    assert (await _settled(provider, ref)).state is JobState.DONE
+    (brief,) = (tmp_path / "runs" / ref / "runs").glob("*/briefs/documenter.json")
+    brief.write_text(json.dumps({"artifact_version": 1, "artifact": "documenter_brief", "brief": None}))
+    job = await provider.poll(ref)
+    assert job.state is JobState.NEEDS_HUMAN
+    assert "no documenter brief" in job.reason
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_runs_directory_is_a_retryable_error(tmp_path: Path, command: Path, origin: Path) -> None:
+    blocked = tmp_path / "not-a-dir"
+    blocked.write_text("")
+    provider = _provider(tmp_path, command, origin, runs_dir=str(blocked / "runs"))
+    with pytest.raises(TransportError):
+        await provider.submit(_request(), _request().request_id(1))
+
+
+@pytest.mark.asyncio
+async def test_a_runner_that_died_says_why_from_its_log(tmp_path: Path, command: Path, origin: Path) -> None:
+    ref = _request().request_id(1)
+    directory = tmp_path / "runs" / ref
+    directory.mkdir(parents=True)
+    (directory / "request.json").write_text(json.dumps({"pin": _request().pin}))
+    (directory / "runner.log").write_text("ModuleNotFoundError: No module named 'coordinare'\n")
+    job = await _provider(tmp_path, command, origin).poll(ref)
+    assert job.state is JobState.RETRYABLE
+    assert "ModuleNotFoundError" in job.reason
+
+
+@pytest.mark.asyncio
+async def test_the_version_is_checked_for_every_run(
+    tmp_path: Path, command: Path, origin: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider(tmp_path, command, origin)
+    await provider.submit(_request(), _request().request_id(1))
+    monkeypatch.setenv("FAKE_PROGETTARE_VERSION", "2026.12.0")
+    with pytest.raises(PerformerAuthError, match="is pinned"):
+        await provider.submit(_request(), _request().request_id(2))
+
+
+def test_the_run_gets_the_proxy_and_import_path_it_needs(
+    tmp_path: Path, command: Path, origin: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+    monkeypatch.setenv("PYTHONPATH", "/opt/coordinare/src")
+    env = _provider(tmp_path, command, origin)._child_env("t", "github.com")
+    assert env["HTTPS_PROXY"] == "http://proxy.internal:3128"
+    assert env["PYTHONPATH"] == "/opt/coordinare/src"
+    assert "NOT_FOR_PROGETTARE" not in env

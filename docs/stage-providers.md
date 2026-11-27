@@ -227,7 +227,7 @@ leaves one plan.
 
 | Progettare | Coordinare |
 | --- | --- |
-| `complete` | the architecting stage passes (`plan_committed`) with the blueprint: the implementer brief's milestones, the QA brief's testable criteria, the documenter brief's topics (when Progettare's sizing turned the documenter on), and the size (`single_turn` is small, `milestone_loop` is large) |
+| `complete` | the architecting stage passes (`plan_committed`) with the blueprint: the implementer brief's milestones, the QA brief's testable criteria, the documenter brief's topics (when Progettare's sizing turned the documenter on; Progettare names no location, so the documenter workflow writes each topic on a page under the docs root named by the topic), and the size (`single_turn` is small, `milestone_loop` is large) |
 | `blocked` | the card blocks with Progettare's questions |
 | `failed`, clone failure, timeout, a run killed by a restart | retryable system error; the retry starts the next attempt, which is safe because the CLI posts nothing |
 | a record at another contract version | blocks: coordinare speaks Progettare's artifact contract version 1 and never guesses at another |
@@ -243,6 +243,11 @@ A finished plan must be of the issue as it is now: when the run ends, the title 
 recorded are compared with the issue's current ones, and a plan of text that changed since
 is refused and the current text planned.
 
+Feedback routed back to the architect, such as security findings or an observer's
+correction, cannot reach Progettare, and the issue text has not changed, so planning again
+would hand back the same plan. The card blocks instead, saying so. Answer on the card, edit
+the issue, or restart the architecting stage.
+
 ### Answering a blocked run
 
 A new answer starts a new run. When a person answers the card's questions, coordinare
@@ -254,9 +259,10 @@ restart of the architecting stage also starts a new run.
 
 ### Timing
 
-A run can take as long as `timeout_seconds` (an hour by default) and reports no progress
-while it works. If the architect's `timeout_seconds` or `dispatcher_dedup.stall_timeout_seconds`
-is set, set it above Progettare's `timeout_seconds`.
+A run can take as long as the clone (up to 10 minutes) plus `timeout_seconds` (an hour by
+default), and reports no progress while it works. If the architect's `timeout_seconds` or
+`dispatcher_dedup.stall_timeout_seconds` is set, set it above Progettare's `timeout_seconds`
+plus 600.
 
 ### Work items that are not GitHub issues
 

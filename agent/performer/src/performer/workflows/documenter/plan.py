@@ -1,6 +1,7 @@
 """Plan building for documenter workflow (spec 171)."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from performer.workflows.documenter.docsroot import DOCS_ROOT_DEFAULT, needs_documentation
@@ -59,6 +60,14 @@ def _plannable_brief_location(location: str, docs_root: str) -> bool:
     return location.startswith(f"{docs_root.rstrip('/')}/")
 
 
+def _placed_by_topic(entry: dict[str, Any], docs_root: str) -> str:
+    """403: where a brief entry that names no location is written: a page under the
+    resolved docs root, named by its topic. A planner that names topics only (Progettare)
+    would otherwise have every topic dropped. No topic, no page."""
+    slug = re.sub(r"[^a-z0-9]+", "-", str(entry.get("topic") or "").lower()).strip("-")[:60].strip("-")
+    return f"{docs_root.rstrip('/')}/{slug}.md" if slug else ""
+
+
 def _collect_brief_entries(
     brief_docs: list[dict[str, Any]],
     inventory: list[WikiPage],
@@ -68,7 +77,7 @@ def _collect_brief_entries(
     """Group brief entries by location, merging say texts and modules."""
     brief_by_location = {}
     for entry in brief_docs:
-        location = entry.get("location", "")
+        location = entry.get("location", "") or _placed_by_topic(entry, docs_root)
         if not location:
             continue
 

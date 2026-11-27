@@ -68,7 +68,14 @@ ARTIFACT_VERSION = 1
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$")
 _READERS = ("implementer", "qa", "documenter")
 #: Environment every run gets, when the daemon has it. Anything else is named in pass_env.
-_BASE_ENV = ("PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR")
+_BASE_ENV = (
+    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR",
+    # The runner is ``python -m coordinare...``: it imports coordinare as the daemon does.
+    "PYTHONPATH", "VIRTUAL_ENV",
+    # git, gh and the model calls go out the way the daemon's own requests do.
+    "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO",
+)
 _VERSION_TIMEOUT_SECONDS = 15
 _INTAKE_HINT = (
     "Progettare reads the acceptance criteria from the issue body: answer by editing the "
@@ -98,7 +105,6 @@ class ProgettareProvider:
         #: Runners this process started, kept referenced until they exit. Only a
         #: convenience: whether a run is in flight is always read from its lock.
         self._children: dict[str, asyncio.subprocess.Process] = {}
-        self._version_checked = False
 
     @property
     def config(self) -> ProgettareProviderConfig:
@@ -110,15 +116,19 @@ class ProgettareProvider:
         if not isinstance(request, WorkItemRequest):
             msg = "Progettare plans work items, not pull requests"
             raise TransportError(msg)
-        found = self._inspect(_checked_ref(request_id))
+        found = self._inspect_or_retry(_checked_ref(request_id))
         if found is not None:
             return found
         token = self._token()
         await self._check_version()
-        return await self._start(request, request_id, token)
+        try:
+            return await self._start(request, request_id, token)
+        except OSError as exc:
+            msg = f"Progettare: cannot start a run under {self._config.runs_dir}: {exc}"
+            raise TransportError(msg) from exc
 
     async def poll(self, ref: str) -> StageJob:
-        found = self._inspect(_checked_ref(ref))
+        found = self._inspect_or_retry(_checked_ref(ref))
         if found is None:
             msg = f"Progettare has no run for request {ref} under {self._config.runs_dir}"
             raise TransportError(msg)
@@ -158,8 +168,7 @@ class ProgettareProvider:
         return token
 
     async def _check_version(self) -> None:
-        if self._version_checked:
-            return
+        """Checked before every run, so an upgrade under a running daemon is noticed."""
         found = await self._installed_version()
         if found != self._config.version:
             msg = (
@@ -169,7 +178,6 @@ class ProgettareProvider:
                 f"{self.name}.version"
             )
             raise PerformerAuthError(msg)
-        self._version_checked = True
 
     async def _installed_version(self) -> str:
         """What ``<command> --version`` prints, or empty when it cannot be run."""
@@ -246,6 +254,14 @@ class ProgettareProvider:
 
     # -- reading a run --------------------------------------------------------------
 
+    def _inspect_or_retry(self, ref: str) -> StageJob | None:
+        """Read a request's directory; a filesystem error is a retryable system error."""
+        try:
+            return self._inspect(ref)
+        except OSError as exc:
+            msg = f"Progettare: cannot read request {ref} under {self._config.runs_dir}: {exc}"
+            raise TransportError(msg) from exc
+
     def _inspect(self, ref: str) -> StageJob | None:
         child = self._children.get(ref)
         if child is not None and child.returncode is not None:
@@ -273,7 +289,9 @@ class ProgettareProvider:
             return _retry(ref, phase, f"{phase} failed: {detail}" if phase == "clone" else detail)
         run_dir = _run_dir(directory / "runs")
         if run_dir is None:
-            why = detail or "the run stopped before it recorded anything (was the host restarted?)"
+            why = detail or _log_tail(directory / "runner.log") or (
+                "the run stopped before it recorded anything (was the host restarted?)"
+            )
             return _retry(ref, phase or "interrupted", f"progettare recorded no run: {why}")
         try:
             manifest = _artifact(run_dir / "run.json", "run")
@@ -285,7 +303,9 @@ class ProgettareProvider:
                 ))
             intake = _artifact(run_dir / "intake.json", "intake")
             outcome = self._outcome(request, run_dir, manifest, intake, status)
-        except ContractError as exc:
+        except (KeyError, TypeError, AttributeError, ValueError) as exc:
+            # A record in a shape this module does not expect is refused for a person,
+            # never raised into the monitor. ContractError is a ValueError.
             reason = f"Progettare's record in {run_dir} is refused: {exc}"
             return StageJob(ref=ref, state=JobState.NEEDS_HUMAN, detail="refused", reason=reason)
         return StageJob(ref=ref, state=JobState.DONE, outcome=outcome, detail=status)
@@ -386,7 +406,7 @@ def blueprint_from_run(
             "done_when": "every change in scope is in place",
         })
     criteria = _strings(_brief(briefs, "qa").get("testable_criteria"), "qa testable_criteria")
-    topics = _strings(briefs["documenter"]["brief"].get("topics"), "documenter topics") if "documenter" in briefs else []
+    topics = _strings(_brief(briefs, "documenter").get("topics"), "documenter topics") if "documenter" in briefs else []
     classification = size.get("classification")
     if classification not in ("single_turn", "milestone_loop"):
         msg = f"size.json names classification {classification!r}"
@@ -403,6 +423,8 @@ def blueprint_from_run(
         "interfaces": [],
         "risks": [],
         "criteria": [{"surface": "", "action": c, "expected": "", "kind": "functional"} for c in criteria],
+        # Progettare names topics, not places: the documenter places a topic with no
+        # location under the repository's docs root, which only it can resolve.
         "docs": [{"topic": t[:120], "location": "", "say": t} for t in topics],
     }
     digest = json.dumps(blueprint, sort_keys=True, separators=(",", ":"))
@@ -491,7 +513,7 @@ def _locked(path: Path) -> bool:
     try:
         fd = os.open(path, os.O_RDWR)
     except FileNotFoundError:
-        return False
+        return False  # never started; any other error is the caller's retryable error
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
@@ -504,6 +526,15 @@ def _locked(path: Path) -> bool:
         return False
     finally:
         os.close(fd)
+
+
+def _log_tail(path: Path) -> str:
+    """The end of the runner's own log, which says why a runner died before it reported."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    return text[-500:]
 
 
 def _retry(ref: str, detail: str, reason: str) -> StageJob:
