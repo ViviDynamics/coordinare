@@ -9,23 +9,31 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import structlog
 
 from coordinare.lifecycle import ROLE_TO_STAGE
+from coordinare.services.progettare import ProgettareProvider
 from coordinare.services.qare import GitHubAccess, QAreProvider
 from coordinare.services.scrutare import ScrutareProvider
 from coordinare.services.stage_contract import (
     STAGE_MARKERS,
+    WORK_ITEM_STAGES,
     ExternalStageService,
     PullRequestReader,
     PullRequestSnapshot,
+    WorkItemReader,
+    WorkItemSnapshot,
+    WorkItemStageService,
     stage_provider_id,
+    web_host,
 )
 from coordinare.stage_provider_config import (
     PROVIDER_ROLES,
+    ProgettareProviderConfig,
     QAreProviderConfig,
-    ScrutareProviderConfig,
+    StageProviderConfig,
     normalize_login,
 )
 
@@ -43,10 +51,15 @@ _STAGE_TO_ROLE = {stage: role for role, stage in ROLE_TO_STAGE.items()}
 def build_stage_provider_services(
     config: ProjectConfiguration,
     pr_reader: PullRequestReader,
+    work_item_reader: WorkItemReader | None = None,
     *,
     github: GitHubAccess | None = None,
 ) -> dict[str, ExternalStageService]:
-    """One service per catalog entry and stage it can fill, keyed by performer id."""
+    """One service per catalog entry and stage it can fill, keyed by performer id.
+
+    403: a stage that plans a work item (architecting) gets a WorkItemStageService, which
+    reads issues with ``work_item_reader``; without one, that stage is not served.
+    """
     services: dict[str, ExternalStageService] = {}
     for name, provider_config in sorted(config.stage_providers.items()):
         provider = build_provider(name, provider_config, config, github=github)
@@ -54,22 +67,67 @@ def build_stage_provider_services(
             stage = ROLE_TO_STAGE[role]
             if stage not in STAGE_MARKERS:
                 continue
-            service = ExternalStageService(provider, stage=stage, pr_reader=pr_reader)
+            service: ExternalStageService
+            if stage in WORK_ITEM_STAGES:
+                if work_item_reader is None:
+                    continue
+                service = WorkItemStageService(
+                    provider, stage=stage, work_item_reader=work_item_reader,
+                    github_hosts=github_hosts(config),
+                )
+            else:
+                service = ExternalStageService(provider, stage=stage, pr_reader=pr_reader)
             services[service.performer_id] = service
     return services
 
 
+def github_hosts(config: Any) -> frozenset[str]:
+    """403: the host coordinare clones from (``git_base_url``), which a planned issue must be on.
+
+    The same host the clone goes to, port included, so the token only ever goes where
+    coordinare already sends it.
+    """
+    parts = urlsplit(str(getattr(config, "git_base_url", "") or "https://github.com"))
+    # Issue URLs are http(s): a git:// base names the same host on another port.
+    netloc = parts.netloc if parts.scheme in ("http", "https") else (parts.hostname or "")
+    return frozenset({web_host(netloc) or "github.com"})
+
+
 def build_provider(
     name: str,
-    provider_config: ScrutareProviderConfig | QAreProviderConfig,
+    provider_config: StageProviderConfig,
     config: Any,
     *,
     github: GitHubAccess | None = None,
-) -> ScrutareProvider | QAreProvider:
+) -> ScrutareProvider | QAreProvider | ProgettareProvider:
     """The provider object for one catalog entry, by its kind."""
+    if isinstance(provider_config, ProgettareProviderConfig):
+        git_base_url = str(getattr(config, "git_base_url", "") or "https://github.com")
+        return ProgettareProvider(name, provider_config, git_base_url=git_base_url)
     if isinstance(provider_config, QAreProviderConfig):
         return QAreProvider(name, provider_config, work_dir=qare_work_dir(name, provider_config, config), github=github)
     return ScrutareProvider(name, provider_config)
+
+
+def provider_fix(name: str, provider_config: StageProviderConfig) -> str:
+    """What to do when a provider's health check fails, for doctor and the preflight."""
+    if isinstance(provider_config, ProgettareProviderConfig):
+        return (
+            f"Install progettare {provider_config.version} where coordinare runs "
+            f"(stage_providers.{name}.command, now {provider_config.command!r}), with git and gh "
+            f"on PATH; set {provider_config.gh_token_env} and every pass_env variable; and make "
+            "runs_dir writable and config_path exist."
+        )
+    if isinstance(provider_config, QAreProviderConfig):
+        return (
+            f"Install QAre {provider_config.version} where coordinare runs (its host install or "
+            f"image), or correct stage_providers.{name}.command and .version; make work_dir writable."
+        )
+    return (
+        f"Start {provider_config.kind} or correct stage_providers.{name}.url (it must be "
+        "reachable from coordinare), and set "
+        f"{provider_config.token_env} to its performer API token."
+    )
 
 
 def qare_work_dir(name: str, provider_config: QAreProviderConfig, config: Any) -> Path:
@@ -207,6 +265,27 @@ def github_pr_reader(resolve: Callable[[str], Any]) -> PullRequestReader:
             reviews=list(context.get("reviews") or []),
             base_sha=str(context.get("base_oid") or ""),
             base_ref=str(context.get("base_ref") or ""),
+        )
+
+    return read
+
+
+def github_work_item_reader(resolve: Callable[[str], Any]) -> WorkItemReader:
+    """403: an issue reader over GitHubService. ``resolve`` picks the service by owner."""
+
+    async def read(repository: str, issue_node_id: str) -> WorkItemSnapshot:
+        github = resolve(repository.split("/", 1)[0])
+        if github is None:
+            msg = f"no GitHub service can read {repository}"
+            raise RuntimeError(msg)
+        details = await github.get_issue_details(issue_node_id)
+        if not isinstance(details, dict) or not details:
+            msg = f"GitHub returned no issue for {repository} ({issue_node_id})"
+            raise RuntimeError(msg)
+        return WorkItemSnapshot(
+            title=str(details.get("title") or ""),
+            body=str(details.get("body") or ""),
+            state=str(details.get("state") or ""),
         )
 
     return read
