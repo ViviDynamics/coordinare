@@ -15,8 +15,10 @@ from pathlib import Path
 from performer.stage_jobs import CREDENTIAL_ENV
 
 KINDS = ("qare", "progettare")
+#: The arguments: the kind and the job directory.
+_ARGS = 2
 #: The descriptor the token is handed over on, after the entry started itself again.
-TOKEN_FD_ENV = "COORDINARE_STAGE_TOKEN_FD"  # noqa: S105 - a variable name, not a secret
+HANDOVER_FD_ENV = "COORDINARE_STAGE_HANDOVER_FD"
 
 
 def _restart_without_token(args: list[str], token: str) -> None:
@@ -26,12 +28,12 @@ def _restart_without_token(args: list[str], token: str) -> None:
     os.close(write_fd)
     os.set_inheritable(read_fd, True)
     env = {k: v for k, v in os.environ.items() if k != CREDENTIAL_ENV}
-    env[TOKEN_FD_ENV] = str(read_fd)
+    env[HANDOVER_FD_ENV] = str(read_fd)
     os.execve(sys.executable, [sys.executable, "-m", "performer.stage_jobs", *args], env)  # noqa: S606
 
 
 def _handed_over_token() -> str:
-    raw = os.environ.pop(TOKEN_FD_ENV, "")
+    raw = os.environ.pop(HANDOVER_FD_ENV, "")
     if not raw.isdigit():
         return ""
     fd = int(raw)
@@ -57,12 +59,13 @@ def main(argv: list[str] | None = None) -> int:
     if token and entry and hasattr(os, "execve"):
         _restart_without_token(args, token)
     token = token or _handed_over_token()
-    if len(args) != 2 or args[0] not in KINDS:  # noqa: PLR2004 - kind and job dir
+    if len(args) != _ARGS or args[0] not in KINDS:
         sys.stderr.write(f"usage: python -m performer.stage_jobs <{'|'.join(KINDS)}> <job dir>\n")
         return 2
     kind, job_dir = args[0], Path(args[1])
     # The job's log starts here: a job that ends with nothing logged never started.
-    print(f"stage job {kind} started", flush=True)  # noqa: T201
+    sys.stdout.write(f"stage job {kind} started\n")
+    sys.stdout.flush()
     if kind == "qare":
         from performer.stage_jobs import qare
 

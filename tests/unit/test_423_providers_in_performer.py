@@ -105,7 +105,7 @@ def docker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 def spawned(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Every program the test process starts, whether through subprocess or asyncio."""
     seen: list[list[str]] = []
-    real = subprocess.Popen._execute_child  # type: ignore[attr-defined]
+    real = vars(subprocess.Popen)["_execute_child"]
 
     def record(self: subprocess.Popen[Any], args: Any, *rest: Any, **kw: Any) -> Any:
         seen.append([str(a) for a in (args if isinstance(args, (list, tuple)) else [args])])
@@ -343,9 +343,9 @@ def test_the_token_never_stays_in_the_jobs_initial_environment(
     assert started["argv"][1:] == ["-m", "performer.stage_jobs", "qare", str(tmp_path)]
     # The process started again finds the token on the descriptor, once.
     monkeypatch.delenv(CREDENTIAL_ENV, raising=False)
-    monkeypatch.setenv(entry.TOKEN_FD_ENV, started["env"][entry.TOKEN_FD_ENV])
+    monkeypatch.setenv(entry.HANDOVER_FD_ENV, started["env"][entry.HANDOVER_FD_ENV])
     assert entry._handed_over_token() == TOKEN
-    assert entry.TOKEN_FD_ENV not in os.environ
+    assert entry.HANDOVER_FD_ENV not in os.environ
 
 
 @pytest.mark.asyncio
