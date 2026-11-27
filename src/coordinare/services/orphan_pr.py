@@ -28,6 +28,7 @@ from coordinare.services.defunct_branch import (
     configured_repo_of,
     delete_defunct_branch,
 )
+from coordinare.services.work_items import work_items_of
 
 if TYPE_CHECKING:
     from coordinare.config import OrphanPrConfig
@@ -202,25 +203,24 @@ def _cards_from_board(board: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """
     cards: dict[str, dict[str, Any]] = {}
     snapshot = board.get("snapshot") or {}
-    titles = board.get("titles") or {}
-    issue_numbers = board.get("issue_numbers") or {}
-    issue_urls = board.get("issue_urls") or {}
-    content_node_ids = board.get("content_node_ids") or {}
-    pr_urls = board.get("pr_urls") or {}
+    # 395: read from the typed listing, so any provider's items are swept.
+    listed = work_items_of(board)
     for status, members in snapshot.items():
         if not isinstance(members, list):
             continue
         for item_id in members:
             if not isinstance(item_id, str) or not item_id:
                 continue
+            work_item = listed.get(item_id)
+            issue = work_item.issue if work_item is not None else None
             cards[item_id] = {
                 "id": item_id,
                 "status": str(status),
-                "title": titles.get(item_id),
-                "issue_number": issue_numbers.get(item_id),
-                "issue_url": issue_urls.get(item_id, ""),
-                "content_node_id": content_node_ids.get(item_id),
-                "pr_url": pr_urls.get(item_id),
+                "title": work_item.title if work_item is not None and work_item.title else None,
+                "issue_number": issue.number if issue is not None and issue.number else None,
+                "issue_url": work_item.url if work_item is not None else "",
+                "content_node_id": issue.node_id if issue is not None and issue.node_id else None,
+                "pr_url": work_item.pr_url if work_item is not None and work_item.pr_url else None,
             }
     return cards
 

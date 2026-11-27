@@ -1,0 +1,219 @@
+"""One typed record per listed work item (#395).
+
+A board listing used to be a snapshot plus seven parallel dicts keyed by card id:
+``issue_numbers``, ``content_node_ids``, ``issue_urls``, ``pr_urls``,
+``item_labels``, ``item_assignees`` and ``native_blockers``. Every caller reached
+into whichever it needed, and a tracker with no issue numbers and no node ids
+could not supply half of them, so those callers could not run against it.
+
+Callers now read ``work_items_of(board)``: one ``WorkItem`` per card. A provider
+may put the records in the listing itself, under ``items``. The GitHub Projects
+listing is translated here, from the shape ``GitHubService.poll_board`` returns,
+so the translation sits with the provider rather than in each caller, and the
+service and every existing fake keep their shape.
+
+Fields a provider cannot supply stay empty. An empty ``owners``, ``labels`` or
+``blockers`` is an ordinary value and no caller special-cases it.
+
+``issue`` is the one GitHub-shaped field: the GitHub issue behind the item, set
+only by the GitHub Projects translation. It is the code host's join key (the
+issue a pull request closes, the issue whose comments the dependency check reads)
+and only code-host paths read it.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Any
+
+#: Matches "Depends on #N", "Blocked by #N", "After #N", "Requires #N"
+#: (case-insensitive). The GitHub Projects text syntax for a blocker; the same
+#: syntax ``services/dependency.parse_dependencies`` documents.
+_DEP_PATTERN = re.compile(r"(?:depends\s+on|blocked\s+by|after|requires)\s+#(\d+)", re.IGNORECASE)
+
+#: Blocker states a provider may report.
+OPEN, CLOSED, UNKNOWN = "open", "closed", "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class IssueLink:
+    """The GitHub issue behind a work item, or behind a blocker.
+
+    ``repo`` is the ``owner/name`` slug when the issue is known to live in a
+    repository other than the board's; empty means the board's own.
+    """
+
+    number: int
+    node_id: str = ""
+    repo: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class Blocker:
+    """Something a work item waits on.
+
+    ``ref`` is the provider's own name for it (``#12``, ``acme/other#2``,
+    ``PAY-3``). ``item_id`` is the blocking item's id when the provider knows
+    it is on this board. ``state`` is what the provider knows of it when it is
+    not: ``open``, ``closed`` or ``unknown``. ``native`` is true for the
+    tracker's own relation and false for text syntax in the body.
+    """
+
+    ref: str
+    item_id: str = ""
+    state: str = UNKNOWN
+    native: bool = False
+    issue: IssueLink | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkItem:
+    """One listed work item."""
+
+    id: str
+    key: str = ""
+    url: str = ""
+    title: str = ""
+    body: str = ""
+    #: The canonical status the listing put it under, ``""`` when unlisted.
+    status: str = ""
+    #: The tracker's own name for its state, when the provider reports one.
+    native_status: str = ""
+    owners: tuple[str, ...] = ()
+    labels: tuple[str, ...] = ()
+    blockers: tuple[Blocker, ...] = ()
+    #: The pull request the tracker links to the item, when it knows one.
+    pr_url: str = ""
+    #: GitHub only: the issue behind the item. See the module docstring.
+    issue: IssueLink | None = None
+
+
+def work_items_of(board: Any) -> dict[str, WorkItem]:
+    """The listing as typed records, keyed by card id, in listing order.
+
+    Reads ``board["items"]`` when the provider supplied records, and otherwise
+    translates the GitHub Projects listing. Anything that is not a listing
+    yields no items.
+    """
+    if not isinstance(board, dict):
+        return {}
+    items = board.get("items")
+    if isinstance(items, dict):
+        return {str(k): v for k, v in items.items() if isinstance(v, WorkItem)}
+    return _from_github_listing(board)
+
+
+def card_status_of(board: Any) -> dict[str, str]:
+    """Card id -> canonical status, from the listing's snapshot."""
+    snapshot = board.get("snapshot") if isinstance(board, dict) else None
+    status: dict[str, str] = {}
+    if isinstance(snapshot, dict):
+        for column, ids in snapshot.items():
+            for item_id in ids if isinstance(ids, list) else []:
+                status.setdefault(str(item_id), str(column))
+    return status
+
+
+def parse_text_blockers(body: str) -> list[int]:
+    """Issue numbers named by the GitHub text syntax in *body*, deduplicated, in order."""
+    if not body:
+        return []
+    seen: set[int] = set()
+    result: list[int] = []
+    for match in _DEP_PATTERN.findall(body):
+        number = int(match)
+        if number > 0 and number not in seen:
+            seen.add(number)
+            result.append(number)
+    return result
+
+
+def _mapping(board: dict[str, Any], key: str) -> dict[str, Any]:
+    value = board.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _from_github_listing(board: dict[str, Any]) -> dict[str, WorkItem]:
+    """Translate the GitHub Projects listing (snapshot plus side tables)."""
+    titles = _mapping(board, "titles")
+    descriptions = _mapping(board, "descriptions")
+    issue_numbers = _mapping(board, "issue_numbers")
+    issue_urls = _mapping(board, "issue_urls")
+    content_node_ids = _mapping(board, "content_node_ids")
+    pr_urls = _mapping(board, "pr_urls")
+    labels = _mapping(board, "item_labels")
+    assignees = _mapping(board, "item_assignees")
+    native = _mapping(board, "native_blockers")
+    status = card_status_of(board)
+
+    # Every id any part of the listing names. The descriptions come first: the
+    # dependency check has always walked them in that order, and keeping it keeps
+    # the order of the edges it builds.
+    ids: dict[str, None] = {}
+    for source in (descriptions, titles, issue_numbers, status, native, labels, assignees, content_node_ids):
+        for item_id in source:
+            ids.setdefault(str(item_id), None)
+
+    number_to_item: dict[int, str] = {}
+    for item_id, number in issue_numbers.items():
+        if isinstance(number, int) and number > 0:
+            number_to_item[number] = str(item_id)
+
+    result: dict[str, WorkItem] = {}
+    for item_id in ids:
+        raw_number = issue_numbers.get(item_id, 0)
+        number = raw_number if isinstance(raw_number, int) else 0
+        node_id = str(content_node_ids.get(item_id, "") or "")
+        body = str(descriptions.get(item_id, ""))
+        blockers: list[Blocker] = [
+            Blocker(ref=f"#{n}", item_id=number_to_item.get(n, ""), issue=IssueLink(number=n))
+            for n in parse_text_blockers(body)
+        ]
+        for raw in native.get(item_id, []) if isinstance(native.get(item_id), list) else []:
+            if not isinstance(raw, dict):
+                continue
+            n = raw.get("number")
+            if not isinstance(n, int) or n <= 0:
+                continue
+            repo = str(raw.get("repo", ""))
+            blockers.append(Blocker(
+                ref=f"{repo}#{n}" if repo else f"#{n}",
+                item_id=number_to_item.get(n, ""),
+                state=CLOSED if str(raw.get("state", "OPEN")).upper() == "CLOSED" else OPEN,
+                native=True,
+                issue=IssueLink(number=n, repo=repo),
+            ))
+        result[item_id] = WorkItem(
+            id=item_id,
+            key=f"#{number}" if number else "",
+            url=str(issue_urls.get(item_id, "") or ""),
+            title=str(titles.get(item_id, "")),
+            body=body,
+            status=status.get(item_id, ""),
+            owners=tuple(str(a) for a in assignees.get(item_id, []) or []),
+            labels=tuple(str(label) for label in labels.get(item_id, []) or []),
+            blockers=tuple(blockers),
+            pr_url=str(pr_urls.get(item_id, "") or ""),
+            issue=IssueLink(number=number, node_id=node_id) if (number or node_id) else None,
+        )
+    return result
+
+
+def board_metadata(board: Any) -> dict[str, dict[str, Any]]:
+    """The per-card maps coordinare keeps in state for the dashboard and the prompts.
+
+    Keyed by the state key each one is stored under. Derived from the typed
+    listing, so every provider fills them the same way; a field the provider
+    does not supply is simply absent from its map.
+    """
+    listed = work_items_of(board)
+    return {
+        "_board_titles": {item_id: wi.title for item_id, wi in listed.items()},
+        "_board_issue_numbers": {
+            item_id: wi.issue.number for item_id, wi in listed.items() if wi.issue is not None and wi.issue.number
+        },
+        "_board_issue_urls": {item_id: wi.url for item_id, wi in listed.items() if wi.url},
+        "_board_pr_urls": {item_id: wi.pr_url for item_id, wi in listed.items() if wi.pr_url},
+        "_board_item_labels": {item_id: list(wi.labels) for item_id, wi in listed.items()},
+    }

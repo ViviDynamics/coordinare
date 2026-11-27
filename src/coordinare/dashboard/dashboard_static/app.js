@@ -155,7 +155,8 @@ function renderState(s) {
   if (s.blocked_by_dependencies && s.blocked_by_dependencies.length > 0) {
     depCard.style.display = '';
     depList.innerHTML = s.blocked_by_dependencies.map(function(d) {
-      var label = '#' + d.issue_number;
+      // 395: a blocker without a GitHub issue is named by its reference.
+      var label = d.blocker_ref || ('#' + d.issue_number);
       if (d.title) label += ': ' + esc(d.title);
       var col = d.column || 'not on the GitHub Project';
       var link = d.issue_url && /^https?:\/\//i.test(d.issue_url)

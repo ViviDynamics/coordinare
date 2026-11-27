@@ -130,6 +130,7 @@ from coordinare.services.run_transcript import TranscriptCollector, prune_expire
 from coordinare.services.stats_poll import poll_board_observed
 from coordinare.services.symphony_failures import record_cycle_failure, record_cycle_success
 from coordinare.services.work_item_providers import build_board_provider
+from coordinare.services.work_items import board_metadata
 from coordinare.session import _SESSION_FIELDS, CardSession, session_to_state, state_to_session
 from coordinare.state_store import (
     DocumentingSideRun,
@@ -219,7 +220,8 @@ class SessionEligibility:
     card_id: str
     eligible: bool
     reason: EligibilityReason
-    blockers: list[int] = field(default_factory=list)
+    #: GitHub issue numbers, or a provider's reference for a blocker without one (395).
+    blockers: list[int | str] = field(default_factory=list)
 
 
 @dataclass
@@ -1301,7 +1303,7 @@ def _compute_eligibility(
                 card_id=card_id,
                 eligible=False,
                 reason=DEPENDENCY_BLOCKED,
-                blockers=[d.blocker_issue_number for d in unresolved],
+                blockers=[d.blocker_issue_number or d.blocker_ref for d in unresolved],
             )
 
     # 065 US3: kick-back detection. If a performer is actively running for
@@ -1697,15 +1699,13 @@ def _mirror_board_metadata(state: CoordinareState, board: dict[str, Any]) -> Non
     check_board sets these too, but they're not in _GLOBAL_STATE_KEYS
     so per-session mutations are dropped after the fanout merge.
     """
-    for _meta_src, _meta_dst in (
-        ("titles", "_board_titles"),
-        ("issue_numbers", "_board_issue_numbers"),
-        ("issue_urls", "_board_issue_urls"),
-        ("pr_urls", "_board_pr_urls"),
-    ):
-        _meta_val = board.get(_meta_src)
-        if isinstance(_meta_val, dict):
-            state[_meta_dst] = _meta_val  # type: ignore[literal-required]
+    # 395: from the typed listing, so the dashboard has them for any provider.
+    # A map the listing leaves empty keeps the last one, as before.
+    _metadata = board_metadata(board)
+    for _meta_dst in ("_board_titles", "_board_issue_numbers", "_board_issue_urls", "_board_pr_urls"):
+        _meta_val = _metadata[_meta_dst]
+        if _meta_val:
+            state[_meta_dst] = _meta_val
 
 
 def _has_fresh_board_snapshot(state: CoordinareState) -> bool:

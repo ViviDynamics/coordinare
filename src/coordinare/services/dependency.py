@@ -10,8 +10,8 @@ Stateless — the graph is rebuilt from scratch on every poll cycle.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
-import re
 from collections import defaultdict, deque
 from typing import Any
 
@@ -23,6 +23,14 @@ from coordinare.models.dependency import (
     DependencySource,
     DependencyStatus,
 )
+from coordinare.services.work_items import (
+    CLOSED,
+    OPEN,
+    WorkItem,
+    card_status_of,
+    parse_text_blockers,
+    work_items_of,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -30,31 +38,27 @@ logger = structlog.get_logger(__name__)
 # worst-case cycle latency when many TODO candidates are pending.
 _COMMENT_FETCH_CONCURRENCY = 5
 
-# Matches "Depends on #N", "Blocked by #N", "After #N", "Requires #N"
-# Case-insensitive, captures the issue number.
-_DEP_PATTERN = re.compile(
-    r"(?:depends\s+on|blocked\s+by|after|requires)\s+#(\d+)",
-    re.IGNORECASE,
-)
-
-
 def parse_dependencies(description: str) -> list[int]:
     """Extract explicit dependency issue numbers from a card description.
 
     Supports: "Depends on #N", "Blocked by #N", "After #N", "Requires #N"
     (case-insensitive).  Returns a deduplicated list of positive integers.
+
+    395: the syntax lives with the GitHub Projects listing translation
+    (``services/work_items``), which turns it into blockers on the record.
     """
-    if not description:
-        return []
-    matches = _DEP_PATTERN.findall(description)
-    seen: set[int] = set()
-    result: list[int] = []
-    for m in matches:
-        num = int(m)
-        if num > 0 and num not in seen:
-            seen.add(num)
-            result.append(num)
-    return result
+    return parse_text_blockers(description)
+
+
+def _issue_numbers(items: dict[str, WorkItem]) -> dict[str, int]:
+    """Card id -> GitHub issue number, for the cards that have one (395)."""
+    return {item_id: item.issue.number for item_id, item in items.items() if item.issue is not None and item.issue.number}
+
+
+def _index(graph: DependencyGraph, dep: CardDependency) -> None:
+    graph.dependencies.append(dep)
+    graph.by_dependent.setdefault(dep.dependent_item_id, []).append(dep)
+    graph.by_blocker.setdefault(dep.blocker_issue_number, []).append(dep)
 
 
 def build_reverse_lookup(
@@ -67,8 +71,7 @@ def build_reverse_lookup(
         - issue_to_item: {issue_number → item_id}
         - issue_to_column: {issue_number → column_name}
     """
-    issue_numbers: dict[str, int] = board.get("issue_numbers", {})
-    snapshot: dict[str, list[str]] = board.get("snapshot", {})
+    issue_numbers = _issue_numbers(work_items_of(board))
 
     # item_id → issue_number (forward) → invert
     issue_to_item: dict[int, str] = {
@@ -76,10 +79,7 @@ def build_reverse_lookup(
     }
 
     # item_id → column (scan all columns)
-    item_to_column: dict[str, str] = {}
-    for column, items in snapshot.items():
-        for item_id in items:
-            item_to_column[item_id] = column
+    item_to_column = card_status_of(board)
 
     # issue_number → column
     issue_to_column: dict[int, str] = {}
@@ -127,9 +127,9 @@ def build_graph(
     their own issue state alone — issue numbers are repository-local, so a
     cross-repo ``other#2`` must never collide with an on-board ``#2``.
     """
-    descriptions: dict[str, str] = board.get("descriptions", {})
+    items = work_items_of(board)
     if self_issue_numbers is None:
-        self_issue_numbers = board.get("issue_numbers", {})
+        self_issue_numbers = _issue_numbers(items)
 
     issue_to_item, issue_to_column = build_reverse_lookup(board)
 
@@ -138,37 +138,71 @@ def build_graph(
         issue_to_column=issue_to_column,
     )
 
-    for item_id, desc in descriptions.items():
+    # 395: blockers come from the record. On GitHub Projects the text syntax
+    # in the body is a blocker naming an issue number, as it always was.
+    for item_id, item in items.items():
         own_issue = self_issue_numbers.get(item_id, 0)
-        deps = parse_dependencies(desc)
-        for blocker_num in deps:
+        for blocker in item.blockers:
+            if blocker.native or blocker.issue is None:
+                continue
+            blocker_num = blocker.issue.number
             # Filter self-references
             if blocker_num == own_issue:
                 continue
-            status = _resolve_status(blocker_num, issue_to_column)
-            dep = CardDependency(
+            _index(graph, CardDependency(
                 dependent_item_id=item_id,
                 blocker_issue_number=blocker_num,
                 source=DependencySource.EXPLICIT,
-                status=status,
-            )
-            graph.dependencies.append(dep)
-            graph.by_dependent.setdefault(item_id, []).append(dep)
-            graph.by_blocker.setdefault(blocker_num, []).append(dep)
+                status=_resolve_status(blocker_num, issue_to_column),
+            ))
 
-    _add_native_edges(graph, board, self_issue_numbers, repo)
+    _add_native_edges(graph, items, self_issue_numbers, repo)
+    _add_item_blockers(graph, items, card_status_of(board))
 
     graph.cycles = detect_cycles(graph, issue_to_item)
     return graph
 
 
+def _add_item_blockers(
+    graph: DependencyGraph, items: dict[str, WorkItem], status: dict[str, str],
+) -> None:
+    """Edges for blockers a provider names without a GitHub issue number (395).
+
+    A blocker on this board is satisfied when its item is in DONE and pending
+    otherwise. One off the board is satisfied when the provider reports it
+    closed, pending when open, and unresolvable when its state is unknown.
+    """
+    for item_id, item in items.items():
+        for blocker in item.blockers:
+            if blocker.issue is not None or blocker.item_id == item_id:
+                continue
+            on_board = bool(blocker.item_id) and blocker.item_id in status
+            if on_board:
+                done = status[blocker.item_id] == "DONE"
+                dep_status = DependencyStatus.SATISFIED if done else DependencyStatus.PENDING
+            elif blocker.state == CLOSED:
+                dep_status = DependencyStatus.SATISFIED
+            elif blocker.state == OPEN:
+                dep_status = DependencyStatus.PENDING
+            else:
+                dep_status = DependencyStatus.UNRESOLVABLE
+            _index(graph, CardDependency(
+                dependent_item_id=item_id,
+                blocker_issue_number=0,
+                source=DependencySource.NATIVE_RELATIONSHIP if blocker.native else DependencySource.EXPLICIT,
+                status=dep_status,
+                blocker_ref=blocker.ref,
+                blocker_item_id=blocker.item_id if on_board else "",
+            ))
+
+
 def _add_native_edges(
     graph: DependencyGraph,
-    board: dict[str, Any],
+    items: dict[str, WorkItem],
     self_issue_numbers: dict[str, int],
     repo: str = "",
 ) -> None:
-    """Fold ``board["native_blockers"]`` into the graph (NATIVE_RELATIONSHIP edges).
+    """Fold the tracker's own blocked-by relation into the graph (NATIVE_RELATIONSHIP edges).
 
     The native relationship is authoritative about the blocker's existence, so
     an open off-board blocker is PENDING (not UNRESOLVABLE) and a closed one is
@@ -183,22 +217,20 @@ def _add_native_edges(
     Pairs already detected as EXPLICIT are skipped (description wins); a pair
     can't yet be COMMENT here because comments are resolved asynchronously.
     """
-    native_blockers: dict[str, list[dict[str, Any]]] = board.get("native_blockers", {})
-    if not native_blockers:
-        return
-    for item_id, blockers in native_blockers.items():
+    for item_id, item in items.items():
         own_issue = self_issue_numbers.get(item_id, 0)
         already = graph.by_dependent.get(item_id, [])
-        for blocker in blockers:
-            blocker_num = int(blocker.get("number", 0))
+        for blocker in item.blockers:
+            if not blocker.native or blocker.issue is None:
+                continue
+            blocker_num = blocker.issue.number
             if blocker_num <= 0 or blocker_num == own_issue:
                 continue
             if any(d.blocker_issue_number == blocker_num for d in already):
                 continue  # EXPLICIT wins for this pair
-            blocker_repo = str(blocker.get("repo", ""))
+            blocker_repo = blocker.issue.repo
             cross_repo = bool(blocker_repo) and bool(repo) and blocker_repo != repo
-            state = str(blocker.get("state", "OPEN")).upper()
-            if state == "CLOSED":
+            if blocker.state == CLOSED:
                 status = DependencyStatus.SATISFIED
             elif cross_repo:
                 # Verifiably open elsewhere: authoritative, no board lookup.
@@ -259,7 +291,7 @@ async def resolve_comment_dependencies(
     if fetch is None:
         return set()
     accepts_strict = "strict" in inspect.signature(fetch).parameters
-    issue_numbers: dict[str, int] = board.get("issue_numbers", {})
+    issue_numbers = _issue_numbers(work_items_of(board))
     items = (
         list(candidate_item_ids)
         if candidate_item_ids is not None
@@ -344,12 +376,12 @@ def _merge_comment_edges(graph: DependencyGraph, incoming: list[CardDependency])
     numbers are repo-local, so a cross-repo native edge never merges with a
     same-numbered local edge (Copilot round 2).
     """
-    merged: dict[tuple[str, str, int], CardDependency] = {
-        (d.dependent_item_id, d.blocker_repo, d.blocker_issue_number): d
+    merged: dict[tuple[str, str, int, str], CardDependency] = {
+        (d.dependent_item_id, d.blocker_repo, d.blocker_issue_number, d.blocker_ref): d
         for d in graph.dependencies
     }
     for dep in incoming:
-        key = (dep.dependent_item_id, dep.blocker_repo, dep.blocker_issue_number)
+        key = (dep.dependent_item_id, dep.blocker_repo, dep.blocker_issue_number, dep.blocker_ref)
         current = merged.get(key)
         if current is None:
             merged[key] = dep
@@ -411,7 +443,8 @@ def detect_cycles(
             continue
         if dep.blocker_repo:
             continue  # cross-repo edge — the foreign issue can't be a local node
-        blocker_item = issue_to_item.get(dep.blocker_issue_number)
+        # 395: an edge a provider named by item id carries it.
+        blocker_item = dep.blocker_item_id or issue_to_item.get(dep.blocker_issue_number)
         if blocker_item is None:
             continue  # off-board — can't form a cycle
         dependent = dep.dependent_item_id
@@ -510,7 +543,8 @@ async def resolve_off_board_dependencies(
     # Collect unique off-board issue numbers to avoid duplicate API calls.
     off_board: set[int] = set()
     for dep in graph.dependencies:
-        if dep.status == DependencyStatus.UNRESOLVABLE:
+        # 395: only a GitHub issue can be checked on GitHub.
+        if dep.status == DependencyStatus.UNRESOLVABLE and dep.blocker_issue_number > 0:
             off_board.add(dep.blocker_issue_number)
     if not off_board:
         return
@@ -543,12 +577,7 @@ async def resolve_off_board_dependencies(
     new_deps: list[CardDependency] = []
     for dep in graph.dependencies:
         if dep.status == DependencyStatus.UNRESOLVABLE and dep.blocker_issue_number in resolved:
-            dep = CardDependency(
-                dependent_item_id=dep.dependent_item_id,
-                blocker_issue_number=dep.blocker_issue_number,
-                source=dep.source,
-                status=resolved[dep.blocker_issue_number],
-            )
+            dep = dataclasses.replace(dep, status=resolved[dep.blocker_issue_number])
         new_deps.append(dep)
     graph.dependencies = new_deps
     # Rebuild both indexes so all consumers see the updated statuses.

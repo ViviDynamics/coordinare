@@ -67,6 +67,7 @@ from coordinare.services.todo_waits import (
     refresh_todo_waits,
     warn_once_per_cycle,
 )
+from coordinare.services.work_items import WorkItem, board_metadata, work_items_of
 from coordinare.session import create_session_from_card, session_to_state, state_to_session
 
 if TYPE_CHECKING:
@@ -253,9 +254,14 @@ def _safe_issue_url(raw_url: str, allowed_host: str | None) -> str | None:
     return raw_url
 
 
-def _dep_announcement_signature(item_id: str, reason: str, blockers: list[int]) -> str:
-    """Canonical signature so we re-announce only when the blocker set changes."""
-    return f"{item_id}|{reason}|" + ",".join(str(n) for n in sorted(blockers))
+def _dep_announcement_signature(item_id: str, reason: str, blockers: list[int] | list[int | str]) -> str:
+    """Canonical signature so we re-announce only when the blocker set changes.
+
+    395: a blocker without a GitHub issue number is named by its reference;
+    numbers sort first, as numbers, so a GitHub signature is unchanged.
+    """
+    ordered = sorted(blockers, key=lambda b: (isinstance(b, str), b if isinstance(b, int) else 0, str(b)))
+    return f"{item_id}|{reason}|" + ",".join(str(n) for n in ordered)
 
 
 def _sort_by_priority(
@@ -288,6 +294,59 @@ def _sort_by_priority(
     return sorted(item_ids, key=_sort_key)
 
 
+def _work_item(board: dict[str, Any], item: str) -> WorkItem:
+    """The listed record for *item*, or an empty one when the listing lacks it (395)."""
+    return work_items_of(board).get(item) or WorkItem(id=item)
+
+
+def _issue_fields(board: dict[str, Any], work_item: WorkItem) -> dict[str, Any]:
+    """The fields a card dict uses to address its work item.
+
+    ``issue_id`` is what reads and comments on the item go to. On GitHub
+    Projects that is the issue node id, as before (empty for a card without
+    one). An item from a provider that lists typed records and has no GitHub
+    issue is addressed by its own id, which that provider accepts. #397 names
+    such items on the code host.
+    """
+    issue = work_item.issue
+    typed = isinstance(board.get("items"), dict) if isinstance(board, dict) else False
+    own_id = work_item.id if typed else ""
+    return {
+        "issue_id": issue.node_id if issue is not None else own_id,
+        "issue_number": issue.number if issue is not None else 0,
+        "issue_url": work_item.url,
+    }
+
+
+def _text_maps(board: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Card id -> title and card id -> body, as the listing supplied them.
+
+    Kept as maps, not read off the record, so a field the listing supplied empty
+    is applied empty and one it did not supply leaves the card's value alone.
+    """
+    typed = board.get("items") if isinstance(board, dict) else None
+    if isinstance(typed, dict):
+        listed = work_items_of(board)
+        return {k: v.title for k, v in listed.items()}, {k: v.body for k, v in listed.items()}
+    titles = board.get("titles") if isinstance(board, dict) else None
+    descriptions = board.get("descriptions") if isinstance(board, dict) else None
+    return (titles if isinstance(titles, dict) else {}), (descriptions if isinstance(descriptions, dict) else {})
+
+
+def _comment_target(board: dict[str, Any], item: str) -> str:
+    """Where a comment about *item* goes, ``""`` for nowhere.
+
+    A GitHub Projects card is commented on through its issue's node id, and a
+    card without one gets no comment, as before. A provider that lists typed
+    records takes comments on the item id itself.
+    """
+    work_item = _work_item(board, item)
+    if work_item.issue is not None:
+        return work_item.issue.node_id
+    typed = board.get("items") if isinstance(board, dict) else None
+    return item if isinstance(typed, dict) and item in typed else ""
+
+
 def _build_card_dict(item: str, board: dict[str, Any], status: str) -> dict[str, Any]:
     """066 T013/FR-002: unified card_dict builder for the pickup paths.
 
@@ -296,14 +355,12 @@ def _build_card_dict(item: str, board: dict[str, Any], status: str) -> dict[str,
     re-adopts; `previous_status` mirrors `status` because re-adopting a card
     from the board always treats the visible column as the canonical state.
     """
-    descriptions = board.get("descriptions", {})
-    description = str(descriptions.get(item, ""))
+    work_item = _work_item(board, item)
+    description = work_item.body
     return {
         "id": item,
-        "issue_id": str(board.get("content_node_ids", {}).get(item, "")),
-        "issue_number": int(board.get("issue_numbers", {}).get(item, 0)),
-        "issue_url": str(board.get("issue_urls", {}).get(item, "")),
-        "title": str(board.get("titles", {}).get(item, "")),
+        **_issue_fields(board, work_item),
+        "title": work_item.title,
         "description": description,
         "acceptance_criteria": parse_acceptance_criteria(description),
         "status": status,
@@ -617,7 +674,7 @@ async def _attempt_blocked_card_recovery(
     human_reviewers = state.get("human_reviewers") or []
     if not isinstance(human_reviewers, list):
         human_reviewers = []
-    content_node_ids = board.get("content_node_ids", {}) if isinstance(board, dict) else {}
+    listed = work_items_of(board)
 
     for item in list(blocked):
         cid = str(item)
@@ -647,7 +704,8 @@ async def _attempt_blocked_card_recovery(
             _gather_env_blocked_reason(state, active_reasons, sig, cid, sess)
 
             # --- STALE_REVIEW gatherer (spec-128; PR-based) ---
-            issue_node = str(content_node_ids.get(cid, "") or "")
+            listed_issue = listed[cid].issue if cid in listed else None
+            issue_node = listed_issue.node_id if listed_issue is not None else ""
             (
                 pr, pr_node_id, head_oid, review_gate_checked,
             ) = await _gather_stale_review_reason(
@@ -930,25 +988,20 @@ def _refresh_current_card_metadata(
     if isinstance(active_card, dict):
         active_id = str(active_card.get("id", ""))
         if active_id:
-            titles = board.get("titles", {})
-            descriptions = board.get("descriptions", {})
-            issue_numbers = board.get("issue_numbers", {})
-            issue_urls = board.get("issue_urls", {})
-            content_node_ids = board.get("content_node_ids", {})
-            if active_id in titles or active_id in issue_numbers:
+            titles, descriptions = _text_maps(board)
+            fresh = _work_item(board, active_id)
+            if active_id in titles or fresh.issue is not None:
+                fresh_fields = _issue_fields(board, fresh)
                 refreshed_description = str(descriptions.get(active_id, active_card.get("description", "")))
                 active_card["title"] = str(titles.get(active_id, active_card.get("title", "")))
                 active_card["description"] = refreshed_description
                 active_card["acceptance_criteria"] = parse_acceptance_criteria(refreshed_description)
-                fresh_number = int(issue_numbers.get(active_id, 0))
-                if fresh_number:
-                    active_card["issue_number"] = fresh_number
-                fresh_url = str(issue_urls.get(active_id, ""))
-                if fresh_url:
-                    active_card["issue_url"] = fresh_url
-                fresh_content_id = str(content_node_ids.get(active_id, ""))
-                if fresh_content_id:
-                    active_card["issue_id"] = fresh_content_id
+                if fresh_fields["issue_number"]:
+                    active_card["issue_number"] = fresh_fields["issue_number"]
+                if fresh_fields["issue_url"]:
+                    active_card["issue_url"] = fresh_fields["issue_url"]
+                if fresh_fields["issue_id"]:
+                    active_card["issue_id"] = fresh_fields["issue_id"]
 
 
 async def _reconcile_stale_checkboard_sessions(
@@ -1067,7 +1120,7 @@ async def _ownership_gate(
     # that loses its assignee mid-cycle keeps its session, keeps its
     # current_card branch below, and is not read as having left the board.
     _ownership = ownership_policy(state.get("config"))
-    _assignees = board.get("item_assignees", {}) if isinstance(board, dict) else {}
+    _assignees = {item_id: list(wi.owners) for item_id, wi in work_items_of(board).items()}
     _all_cards = [*todo, *in_progress, *in_review, *blocked]
     # Not "no card carries an assignee" but "no card is coordinare's". Measured on
     # a real board (ViviDynamics/website: 73 cards, 8 with any assignee), the
@@ -1399,7 +1452,8 @@ async def _handle_in_progress_cards(
 
 
 async def _collect_blocked_clarification(
-    state: CoordinareState, board_provider: BoardProvider, board: dict[str, Any], item: str, content_node_ids: dict[str, Any],
+    state: CoordinareState, board_provider: BoardProvider, board: dict[str, Any], item: str,
+    issue_ids: dict[str, Any] | None = None,
 ) -> CoordinareState | None:
     session = (state.get("active_sessions") or {}).get(item) or {}
     reason = session.get("system_error_reason")
@@ -1421,7 +1475,8 @@ async def _collect_blocked_clarification(
         else None
     )
     last_notified = sess_last if sess_last is not None else state.get("last_blocked_notified_at")
-    issue_node_id = str(content_node_ids.get(item, ""))
+    # A caller may still pass the card id -> issue node id map it holds.
+    issue_node_id = str((issue_ids or {}).get(item, "")) or _issue_fields(board, _work_item(board, item))["issue_id"]
     if last_notified is not None and isinstance(last_notified, datetime):
         try:
             details = await board_provider.get_card(issue_node_id or item)
@@ -1533,18 +1588,12 @@ async def _handle_blocked_cards(
             # else: fall through to TODO pickup below — skip blocked-card handling.
         else:
             item = _cur_id or blocked[0]
-            titles = board.get("titles", {})
-            descriptions = board.get("descriptions", {})
-            issue_numbers = board.get("issue_numbers", {})
-            issue_urls = board.get("issue_urls", {})
-            content_node_ids = board.get("content_node_ids", {})
-            description = str(descriptions.get(item, ""))
+            blocked_item = _work_item(board, item)
+            description = blocked_item.body
             blocked_card_dict = {
                 "id": item,
-                "issue_id": str(content_node_ids.get(item, "")),
-                "issue_number": int(issue_numbers.get(item, 0)),
-                "issue_url": str(issue_urls.get(item, "")),
-                "title": str(titles.get(item, "")),
+                **_issue_fields(board, blocked_item),
+                "title": blocked_item.title,
                 "description": description,
                 "acceptance_criteria": parse_acceptance_criteria(description),
                 "status": "BLOCKED",
@@ -1565,7 +1614,7 @@ async def _handle_blocked_cards(
             state["active_card_id"] = item
             _rederive_current_card(state)
 
-            result = await _collect_blocked_clarification(state, board_provider, board, item, content_node_ids)
+            result = await _collect_blocked_clarification(state, board_provider, board, item)
             if result is not None:
                 return result
             # 069 follow-up: always route a still-blocked card to
@@ -1603,10 +1652,11 @@ def _select_eligible_todo(
     if escalation:
         advocate_labels.add(str(escalation))
 
-    item_labels = board.get("item_labels", {})
+    # 395: the labels come from the record (this was item_labels = board.get(...)).
+    listed = work_items_of(board)
     eligible_todo = [
         item_id for item_id in todo
-        if not (set(item_labels.get(item_id, [])) & advocate_labels)
+        if not (set(listed[item_id].labels if item_id in listed else ()) & advocate_labels)
     ]
 
     # 050/160: only cards this coordinare owns (see card_ownership).
@@ -1690,9 +1740,7 @@ async def _announce_unresolvable_deps(
     # Populate blocked_by_dependencies for the first filtered card
     # (in the priority-sorted eligible_todo order, not raw board
     # order) so the operator sees the highest-priority blocker.
-    titles_map = board.get("titles", {})
-    issue_urls_map = board.get("issue_urls", {})
-    content_node_ids = board.get("content_node_ids", {})
+    listed = work_items_of(board)
     allowed_host = _allowed_github_host(config)
     blocked_deps_for_state: list[dict[str, Any]] = []
     for item_id in filtered_ids:
@@ -1705,18 +1753,24 @@ async def _announce_unresolvable_deps(
                 # repo slug instead and skip title/column.
                 foreign = bool(d.blocker_repo)
                 blocker_item = (
-                    None if foreign else dep_graph.issue_to_item.get(d.blocker_issue_number)
+                    None if foreign
+                    else d.blocker_item_id or dep_graph.issue_to_item.get(d.blocker_issue_number)
                 )
                 if foreign:
                     raw_url = f"https://{allowed_host}/{d.blocker_repo}/issues/{d.blocker_issue_number}"
                     title: str | None = None
                     column: str | None = None
                 else:
-                    raw_url = issue_urls_map.get(blocker_item, "") if blocker_item else ""
-                    title = titles_map.get(blocker_item, "") if blocker_item else None
-                    column = dep_graph.issue_to_column.get(d.blocker_issue_number)
+                    blocker_record = listed.get(blocker_item) if blocker_item else None
+                    raw_url = blocker_record.url if blocker_record is not None else ""
+                    title = (blocker_record.title if blocker_record is not None else "") if blocker_item else None
+                    column = (
+                        dep_graph.issue_to_column.get(d.blocker_issue_number)
+                        if d.blocker_issue_number else (blocker_record.status or None if blocker_record else None)
+                    )
                 blocked_deps_for_state.append({
                     "issue_number": d.blocker_issue_number,
+                    **({"blocker_ref": d.blocker_ref} if d.blocker_ref else {}),
                     "blocker_repo": d.blocker_repo or None,
                     "title": title,
                     "column": column,
@@ -1746,15 +1800,15 @@ async def _announce_unresolvable_deps(
             signature = _dep_announcement_signature(
                 item_id,
                 "unresolvable",
-                [d.blocker_issue_number for d in unresolvable],
+                [d.blocker_issue_number or d.blocker_ref for d in unresolvable],
             )
             if announced.get(item_id) == signature:
                 continue  # already announced this exact blocker set
             import contextlib
-            dep_labels = ", ".join(f"#{d.blocker_issue_number}" for d in unresolvable)
+            dep_labels = ", ".join(d.blocker_ref or f"#{d.blocker_issue_number}" for d in unresolvable)
             with contextlib.suppress(Exception):
                 await move_card_or_warn(board_provider, item_id, "BLOCKED")
-            issue_node = content_node_ids.get(item_id)
+            issue_node = _comment_target(board, item_id)
             if issue_node and board_provider is not None:
                 with contextlib.suppress(Exception):
                     header = coordinare_attribution(state.get("config"), None)
@@ -1771,14 +1825,29 @@ async def _announce_unresolvable_deps(
         state["_dep_announcements"] = announced  # type: ignore[typeddict-unknown-key]
 
 
+def _cycle_label(work_item: WorkItem | None) -> str:
+    """``#12`` for a GitHub issue, the item's key elsewhere, ``#?`` when unknown."""
+    if work_item is None:
+        return "#?"
+    if work_item.issue is not None:
+        return f"#{work_item.issue.number}"
+    return work_item.key or "#?"
+
+
+def _cycle_signature_part(work_item: WorkItem | None) -> int | str:
+    if work_item is None:
+        return 0
+    if work_item.issue is not None:
+        return work_item.issue.number
+    return work_item.key or work_item.id
+
+
 async def _handle_dep_cycles(
     state: CoordinareState, board: dict[str, Any], todo: list[str], dep_graph: DependencyGraph, eligible_todo: list[str],
 ) -> list[str]:
     cycle_item_ids = {iid for cycle in dep_graph.cycles for iid in cycle}
-    issue_numbers_map = board.get("issue_numbers", {})
-    cycle_issues = [
-        f"#{issue_numbers_map.get(iid, '?')}" for iid in sorted(cycle_item_ids)
-    ]
+    listed = work_items_of(board)
+    cycle_issues = [_cycle_label(listed.get(iid)) for iid in sorted(cycle_item_ids)]
     cycle_desc = ", ".join(cycle_issues)
     logger.warning(
         "check_board.circular_dependency_detected",
@@ -1795,7 +1864,6 @@ async def _handle_dep_cycles(
     # filter already removed them).
     github = state.get("github_service")
     board_provider = board_of(state)
-    content_node_ids = board.get("content_node_ids", {})
     import contextlib
 
     # Only move TODO cards to BLOCKED — DONE/IN_PROGRESS/etc. cards
@@ -1805,9 +1873,7 @@ async def _handle_dep_cycles(
     todo_set = set(todo)
     if github is not None:
         cycle_announced: dict[str, str] = state.get("_dep_announcements") or {}  # type: ignore[ assignment]
-        cycle_blockers = [
-            issue_numbers_map.get(iid, 0) for iid in sorted(cycle_item_ids)
-        ]
+        cycle_blockers: list[int | str] = [_cycle_signature_part(listed.get(iid)) for iid in sorted(cycle_item_ids)]
         for iid in cycle_item_ids:
             if iid not in todo_set:
                 continue
@@ -1818,7 +1884,7 @@ async def _handle_dep_cycles(
                 continue  # already announced this exact cycle
             with contextlib.suppress(Exception):
                 await move_card_or_warn(board_provider, iid, "BLOCKED")
-            issue_node_id = content_node_ids.get(iid)
+            issue_node_id = _comment_target(board, iid)
             if issue_node_id and board_provider is not None:
                 with contextlib.suppress(Exception):
                     header = coordinare_attribution(state.get("config"), None)
@@ -2171,13 +2237,15 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     state["board_snapshot"] = snapshot if isinstance(snapshot, dict) else {}
     # 046: Stash titles and issue_numbers so assess_card can inject active-card
     # context into the assessor's prompt for implicit dependency detection.
-    state["_board_titles"] = board.get("titles", {})
-    state["_board_issue_numbers"] = board.get("issue_numbers", {})
-    state["_board_issue_urls"] = board.get("issue_urls", {})
-    state["_board_pr_urls"] = board.get("pr_urls", {})
+    # 395: derived from the typed listing, so they hold for any provider.
+    metadata = board_metadata(board)
+    state["_board_titles"] = metadata["_board_titles"]
+    state["_board_issue_numbers"] = metadata["_board_issue_numbers"]
+    state["_board_issue_urls"] = metadata["_board_issue_urls"]
+    state["_board_pr_urls"] = metadata["_board_pr_urls"]
     # 410: card labels ride the dispatch payload so a no-brief implementer run
     # can infer its lane from them (docs, config, dependency, chore).
-    state["_board_item_labels"] = board.get("item_labels", {})
+    state["_board_item_labels"] = metadata["_board_item_labels"]
 
     # 047: Detect external merges (non-coordinare PRs merged by humans) by
     # comparing last_known_main_sha against the current main HEAD.  If

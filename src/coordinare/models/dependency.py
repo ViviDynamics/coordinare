@@ -44,6 +44,18 @@ class CardDependency:
     # different repository — issue numbers are repo-local, so those
     # edges must never merge with a same-numbered local edge.
     blocker_repo: str = ""
+    # 395: a blocker a provider names without a GitHub issue number. The
+    # provider's reference (``PAY-3``), and the blocking item's id when it is
+    # on this board. ``blocker_issue_number`` is 0 for such an edge.
+    blocker_ref: str = ""
+    blocker_item_id: str = ""
+
+    @property
+    def label(self) -> str:
+        """How a person names the blocker: ``#12``, ``acme/other#2`` or ``PAY-3``."""
+        if self.blocker_ref:
+            return self.blocker_ref
+        return f"{self.blocker_repo}#{self.blocker_issue_number}" if self.blocker_repo else f"#{self.blocker_issue_number}"
 
 
 @dataclass
