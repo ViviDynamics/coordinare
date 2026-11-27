@@ -59,8 +59,11 @@ _PYTHON_SUFFIXES = frozenset({".py", ".pyi", ".pyw"})
 # suffix is not Python, even when it parses as Python (.ini, .json).
 EXTENSIONLESS_SUFFIX = ".scanned"
 _EXTENSIONLESS_SUFFIXES = frozenset({"", EXTENSIONLESS_SUFFIX})
-# Any interpreter named python..., not ipython or other names that end in it.
-_PYTHON_SHEBANG = re.compile(rb"#![^\n]*\bpython")
+# The shebang interpreter's basename: python, python3, python3.14t, pythonw,
+# python3-dbg. Not ipython, and not a path that only contains "python".
+_PYTHON_INTERPRETER = re.compile(rb"python[0-9.]*[a-z]?(?:-[a-z]+)?")
+# env options that take the next word as their value.
+_ENV_VALUE_OPTIONS = frozenset({b"-u", b"--unset", b"-C", b"--chdir"})
 _UTF8_BOM = b"\xef\xbb\xbf"
 # A larger extensionless file is not parsed here; it goes to bandit (fail closed).
 _CONTENT_CHECK_MAX_BYTES = 1024 * 1024
@@ -175,11 +178,38 @@ def _is_python(path: Path) -> bool:
             source = handle.read(_CONTENT_CHECK_MAX_BYTES + 1)
     except OSError:
         return False
-    if _PYTHON_SHEBANG.match(source.removeprefix(_UTF8_BOM)):
+    if _has_python_shebang(source.removeprefix(_UTF8_BOM)):
         return True
     return b"\0" not in source and (
         len(source) > _CONTENT_CHECK_MAX_BYTES or _parses_as_python(source)
     )
+
+
+def _has_python_shebang(source: bytes) -> bool:
+    if not source.startswith(b"#!"):
+        return False
+    words = source[2:].split(b"\n", 1)[0].split()
+    if words and Path(os.fsdecode(words[0])).name == "env":
+        words = _env_command(words[1:])
+    return bool(words) and _PYTHON_INTERPRETER.fullmatch(
+        os.fsencode(Path(os.fsdecode(words[0])).name),
+    ) is not None
+
+
+def _env_command(words: list[bytes]) -> list[bytes]:
+    """The command an ``env`` shebang runs, after its options and assignments."""
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word == b"--":
+            return words[index + 1:]
+        if word in _ENV_VALUE_OPTIONS:
+            index += 2
+        elif word.startswith(b"-") or b"=" in word:
+            index += 1
+        else:
+            break
+    return words[index:]
 
 
 def _parses_as_python(source: bytes) -> bool:

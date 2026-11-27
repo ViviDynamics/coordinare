@@ -140,8 +140,19 @@ def test_floor_export_suffix_is_the_one_the_scanner_treats_as_extensionless():
     assert security_floor._EXPORT_DEFAULT_SUFFIX == security_scanner.EXTENSIONLESS_SUFFIX
 
 
-def test_other_interpreters_named_like_python_are_not_bandit_targets(tmp_path):
-    _, calls = _scan(tmp_path, {"target_0.scanned": "#!/usr/bin/env ipython\n%matplotlib inline\n"})
+@pytest.mark.parametrize("shebang", ["#!/usr/bin/env -S python3 -u", "#!/usr/bin/env -u FOO python3",
+                                     "#!/usr/bin/env PYTHONPATH=lib python3", "#!/usr/bin/env -- python3",
+                                     "#! /usr/bin/python3"])
+def test_env_forms_of_a_python_shebang_still_fail_when_unparsable(tmp_path, shebang):
+    with pytest.raises(ScanDiagnostic, match="bandit reported scan errors"):
+        _scan(tmp_path, {"target_0.scanned": f"{shebang}\nprint 'py2'\n"})
+
+
+@pytest.mark.parametrize("shebang", ["#!/usr/bin/env ipython", "#!/opt/python-tools/bin/bash",
+                                     "#!/usr/bin/env python-tools-wrapper.sh",
+                                     "#!/usr/bin/env -S bash --python"])
+def test_other_interpreters_named_like_python_are_not_bandit_targets(tmp_path, shebang):
+    _, calls = _scan(tmp_path, {"target_0.scanned": f"{shebang}\n%matplotlib inline\nfi\n"})
     assert "bandit" not in calls
 
 
