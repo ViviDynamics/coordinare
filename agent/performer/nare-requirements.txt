@@ -1,4 +1,4 @@
-# nare 2026.11.111 runtime dependencies, with the [bedrock] extra, from that tag's uv.lock:
+# nare 2026.11.121 runtime dependencies, with the [bedrock] extra, from that tag's uv.lock:
 #   uv export --frozen --no-dev --extra bedrock --no-emit-project --format requirements-txt
 # Regenerate with NARE_VERSION in Dockerfile.base (#360). Installed with --require-hashes.
 annotated-types==0.8.0 \
