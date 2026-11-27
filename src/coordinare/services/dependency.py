@@ -571,10 +571,10 @@ async def resolve_off_board_dependencies(
     resolved: dict[int, DependencyStatus] = {
         num: status for num, status in listed.items() if status != DependencyStatus.UNRESOLVABLE
     }
-    check = getattr(github, "check_issue_state", None) if github is not None and repo else None
+    check: Any = getattr(github, "check_issue_state", None) if github is not None and repo else None
     # Check each off-board issue the listing does not carry (one REST call per unique issue number).
     transient = {"auth_error", "api_error", "transient"}
-    for num in off_board - set(listed) if check is not None else ():
+    for num in off_board - set(listed) if callable(check) else ():
         state = await check(repo, num)
         if state == "closed":
             resolved[num] = DependencyStatus.SATISFIED

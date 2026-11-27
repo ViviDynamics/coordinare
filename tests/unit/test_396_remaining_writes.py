@@ -372,7 +372,11 @@ class TestBlockerStateFromTheListing:
     @pytest.mark.asyncio
     async def test_a_comment_blocker_the_listing_knows_takes_the_listed_state(self) -> None:
         from coordinare.models.dependency import CardDependency, DependencySource, DependencyStatus
-        from coordinare.services.dependency import _index, build_graph, resolve_off_board_dependencies
+        from coordinare.services.dependency import (
+            _index,
+            build_graph,
+            resolve_off_board_dependencies,
+        )
 
         board = await GitHubProjectsBoardProvider(_Listing({999: "closed"}), repo="o/r").poll_board()
         graph = build_graph(board, repo="o/r")
