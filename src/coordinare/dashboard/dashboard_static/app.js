@@ -95,7 +95,7 @@ function renderState(s) {
     'idle':             'Waiting for a work item to reach To Do.',
     'running':          'Running a check.',
     'blocked':          'Needs human: the work item is stopped until a person acts. Review the Open Questions below.',
-    'dispatching':      'Assessing and dispatching the work item to the performer agent.',
+    'dispatching':      'Assessing and dispatching the work item to a performer.',
     'monitoring_agent': 'Performer agent is actively working on the work item.',
     'monitoring_performer': 'Performer agent is actively working on the work item.',
     'monitoring_pr':    'Watching the open PR. Each work item says what it waits on.',

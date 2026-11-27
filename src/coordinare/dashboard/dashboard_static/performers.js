@@ -433,7 +433,7 @@ function renderActiveWorkPanels(s) {
     }
     var idleAndEmpty = s.phase === 'idle';
     workEl.innerHTML = idleAndEmpty
-      ? '<span class="empty-state-warning">&#9888; No work items in To Do. Add an issue to your GitHub Project and set its Status to <code>TODO</code> to start work.</span>'
+      ? '<span class="empty-state-warning">&#9888; No work items in To Do. Add one in To Do to start work (on GitHub Projects, add an issue to the Project and set its Status to To Do or Ready).</span>'
       : '<span class="empty-state">Waiting for work items&hellip;</span>';
     if (workCard) workCard.classList.toggle('card-warning', idleAndEmpty);
     return;

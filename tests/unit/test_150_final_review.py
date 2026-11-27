@@ -80,7 +80,7 @@ def test_the_folder_phase_message_says_not_every_card_was_checked(root: Path, mo
         _write(root, f"{card}-run", card, mtime_ns=EPOCH * 10**9)
     body = list_history(root, _query(), NO_USAGE)
     details = " ".join(body["partial_details"])
-    assert "This listing is incomplete: not every card was checked." in details
+    assert "This listing is incomplete: not every work item was checked." in details
 
 
 # --- 2: the card cap keeps the newest runs and says what it dropped --------------- #

@@ -18,7 +18,7 @@ from tests.e2e.test_dashboard_browser import _WAIT_LIVE, _WAIT_SSE, _active_sess
 
 _ACTIVE = "PVTI_168_ACTIVE"
 _HELD = "PVTI_168_HELD"
-_NOTE = "Cancel is offered only for the card the conductor is working on right now"
+_NOTE = "Cancel is offered only for the work item the conductor is working on right now"
 _LIFECYCLE = ["assessing", "implementing", "reviewing", "qa"]
 
 

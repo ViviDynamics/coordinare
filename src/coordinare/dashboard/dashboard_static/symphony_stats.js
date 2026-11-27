@@ -189,7 +189,7 @@ function symphonyStatsHtml(name, response, models) {
   var errors = (check.recent_errors || []).map(function(row) { return [timeHtml(row.at), esc(row.reason)]; });
   var reliabilityHtml = '<section class="card sym-stats-section"><h3>Reliability</h3><div class="sym-stats-grid">' +
     metric('Check success rate', symphonyStatsPercent(check.success_rate) + (check.partial ? ' (partial)' : ''), definitions.reliability || 'Successful observed upstream board polls / observed polls in completed UTC hours. Cache hits, deferred polls and restart-reconcile polls are not counted. Legacy checks were not recorded.') +
-    metric('Board checks observed', symphonyStatsNumber(check.checks) + (check.partial ? ' (partial)' : ''), 'Actual board poll observations retained in this window; recording begins with this release.') +
+    metric('Checks observed', symphonyStatsNumber(check.checks) + (check.partial ? ' (partial)' : ''), 'Actual board poll observations retained in this window; recording begins with this release.') +
     metric('Performer system errors', symphonyStatsNumber((totals.outcomes || {}).system_error), 'Runs starting in the window whose latest attributed outcome is system_error.') + '</div>' +
     (check.reason ? '<p role="status">Not recorded: ' + esc(check.reason) + '</p>' : '') +
     (check.partial ? '<p class="sym-stats-coverage" role="status">Board check history is partial: ' + esc((check.partial_reasons || []).join('; ')) + '</p>' : '') +

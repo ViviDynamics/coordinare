@@ -504,7 +504,7 @@ def test_the_conductor_description_sits_on_its_own_line_and_shows_about_sixty_ch
     box = desc.bounding_box()
     assert phase is not None and box is not None
     assert box["y"] >= phase["y"] + phase["height"] - 1, (phase, box)
-    # The sentence is 47 characters: it must show in full, with no ellipsis, on one line. Pixel
+    # The sentence is 53 characters: it must show in full, with no ellipsis, on one line. Pixel
     # widths differ between font stacks (CI renders it narrower), so the check is "not cut".
     assert box["height"] <= DESCRIPTION_LINE_HEIGHT + 2, box
     fits = desc.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
