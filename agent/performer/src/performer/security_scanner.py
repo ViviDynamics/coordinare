@@ -59,11 +59,12 @@ _PYTHON_SUFFIXES = frozenset({".py", ".pyi", ".pyw"})
 # suffix is not Python, even when it parses as Python (.ini, .json).
 EXTENSIONLESS_SUFFIX = ".scanned"
 _EXTENSIONLESS_SUFFIXES = frozenset({"", EXTENSIONLESS_SUFFIX})
-# The shebang interpreter's basename: python, python3, python3.14t, pythonw,
-# python3-dbg. Not ipython, and not a path that only contains "python".
-_PYTHON_INTERPRETER = re.compile(rb"python[0-9.]*[a-z]?(?:-[a-z]+)?")
-# env options that take the next word as their value.
-_ENV_VALUE_OPTIONS = frozenset({b"-u", b"--unset", b"-C", b"--chdir"})
+# A Python interpreter's basename: python, python3, python3.14t, pythonw,
+# python3-dbg, pypy3. Not ipython, python-tools, or a directory named python.
+_PYTHON_INTERPRETER = re.compile(rb"(?:python|pypy)[0-9.]*[a-z]?(?:-dbg|-debug)?")
+# Shebang words split on whitespace, quotes, "=" and backslashes, so every env
+# form (-S "python3 -u", --split-string=python3, -P DIR python3) yields its words.
+_SHEBANG_WORD_SEPARATORS = re.compile(rb"[\s\"'=\\]+")
 _UTF8_BOM = b"\xef\xbb\xbf"
 # A larger extensionless file is not parsed here; it goes to bandit (fail closed).
 _CONTENT_CHECK_MAX_BYTES = 1024 * 1024
@@ -186,30 +187,14 @@ def _is_python(path: Path) -> bool:
 
 
 def _has_python_shebang(source: bytes) -> bool:
+    """True when any word of the shebang line names a Python interpreter."""
     if not source.startswith(b"#!"):
         return False
-    words = source[2:].split(b"\n", 1)[0].split()
-    if words and Path(os.fsdecode(words[0])).name == "env":
-        words = _env_command(words[1:])
-    return bool(words) and _PYTHON_INTERPRETER.fullmatch(
-        os.fsencode(Path(os.fsdecode(words[0])).name),
-    ) is not None
-
-
-def _env_command(words: list[bytes]) -> list[bytes]:
-    """The command an ``env`` shebang runs, after its options and assignments."""
-    index = 0
-    while index < len(words):
-        word = words[index]
-        if word == b"--":
-            return words[index + 1:]
-        if word in _ENV_VALUE_OPTIONS:
-            index += 2
-        elif word.startswith(b"-") or b"=" in word:
-            index += 1
-        else:
-            break
-    return words[index:]
+    line = source[2:].split(b"\n", 1)[0]
+    return any(
+        _PYTHON_INTERPRETER.fullmatch(word.rsplit(b"/", 1)[-1])
+        for word in _SHEBANG_WORD_SEPARATORS.split(line) if word
+    )
 
 
 def _parses_as_python(source: bytes) -> bool:
