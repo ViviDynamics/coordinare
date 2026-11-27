@@ -37,10 +37,10 @@ DOCTOR_CHECKS = {
     "GitHub API": ("github_api", "GitHub API availability.", "Check github_api_url and network access, then retry doctor."),
     "board columns": ("board_columns", "Required board Status columns.", "Add To Do or Ready, In Progress, In Review, Blocked and Done to the board Status field."),
     "GitHub board": ("github_board", "Project board access and lifecycle columns.", "Correct github_org and github_project_number; ask the operator to verify Projects access and Status columns."),
-    # 399: a work item provider's own start checks. Its message and fix are the
-    # provider's (see _PROVIDER_CHECKS); these are the fallbacks.
-    "work item states": ("work_item_states", "Work item states the provider maps.", "Map the provider's states to To Do, In Progress and Done."),
-    "work items": ("work_items", "Work item provider readiness.", "Check the symphony's work_items settings and the tracker's availability."),
+    # 399: a work item provider's own start checks. Curated text, like every id here;
+    # the provider's own message and fix are in the prose report (init, doctor).
+    "work item states": ("work_item_states", "Work item states the provider maps.", "Map a state in the tracker's workflow to each of To Do, In Progress, In Review, Blocked and Done."),
+    "work items": ("work_items", "Work item provider readiness.", "Run coordinare doctor for the provider's own message and fix; check the symphony's work_items settings and the tracker's availability."),
     "container harness ": ("container_harness", "Container harness readiness.", "Check the selected performer image includes the configured harness; rerun init in Docker mode."),
     "harness ": ("harness", "Local harness installation and readiness.", "Install and authenticate the selected harness CLI on PATH."),
     "performer protocol": ("performer_protocol", "Local performer protocol readiness.", "Reinstall the matching release with its bundled performer; agent_executable must be the performer protocol command."),
@@ -52,11 +52,6 @@ DOCTOR_CHECKS = {
     "model endpoint ": ("native_model", "Native provider authentication and reachability.", "Supply the API key named by endpoints[].auth_env privately, or repair provider connectivity; harness login is verified on first use."),
     "egress enforcement": ("egress", "Kubernetes NetworkPolicy egress enforcement.", "Verify cluster credentials, scheduling and CNI egress enforcement before relying on network isolation."),
 }
-
-
-#: Checks whose message and fix come from the provider that ran them (399), since
-#: only the provider knows its tracker. GitHub Projects keeps its fixed entries.
-_PROVIDER_CHECKS = {"work_item_states", "work_items"}
 
 
 def check(check_id: str, status: str, message: str, fix: str | None, *, field: str | None = None) -> dict[str, Any]:
@@ -129,8 +124,6 @@ def doctor_checks(result: DoctorReport) -> list[dict[str, Any]]:
             (DOCTOR_CHECKS[prefix] for prefix in prefixes if item.name.startswith(prefix)),
             ("other", "Additional preflight check.", CONFIG_REFERENCE),
         )
-        if category in _PROVIDER_CHECKS:
-            message, fix = item.detail, item.fix or fix
         checks.append(check(
             "doctor." + category, item.status.value, message,
             fix if item.status in {Status.FAIL, Status.WARN} else None,

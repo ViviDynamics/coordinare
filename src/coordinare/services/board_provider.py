@@ -49,7 +49,6 @@ import structlog
 from coordinare.doctor import CheckResult
 from coordinare.doctor_status import Status
 from coordinare.services.card_identity import CardIdentityMap
-from coordinare.services.github import BOARD_COLUMN_TO_STATUS
 from coordinare.services.work_items import unlisted_text_blockers
 
 if TYPE_CHECKING:
@@ -72,68 +71,64 @@ NOT_WORK = "NOT_WORK"
 #: a number; the provider's order, oldest first, is the order comments are handled in.
 type CommentCursor = int | str
 
-#: The canonical states every provider must map (399). Without them coordinare
-#: cannot take work (To Do), run it (In Progress) or finish it (Done).
-REQUIRED_STATES: tuple[str, ...] = ("TODO", "IN_PROGRESS", "DONE")
+#: The canonical states every provider must map (399). Without To Do, In Progress
+#: and Done coordinare cannot take, run or finish work. In Review and Blocked are
+#: required too, for now: see ``CANDIDATE_OPTIONAL_STATES``.
+REQUIRED_STATES: tuple[str, ...] = ("TODO", "IN_PROGRESS", "IN_REVIEW", "BLOCKED", "DONE")
 
-#: The canonical states a provider may leave unmapped (399), and what then happens.
-#: A move to one is refused (``MoveOutcome.refused``), logged, and the item stays
-#: where it was:
+#: The states a provider may leave unmapped (399): none yet.
+OPTIONAL_STATES: tuple[str, ...] = ()
+
+#: The states that could become optional, and what coordinare does today when a
+#: provider leaves one unmapped (399). A move to it is refused (``MoveOutcome``),
+#: logged as ``board.move_refused``, and the item stays where it was. Coordinare
+#: reads the item's state back from the board, so:
 #:
 #: - In Review: the item stays in In Progress while its pull request is reviewed.
-#:   Coordinare follows the review on the pull request, not on the board, so the
-#:   run goes on to merge and Done as usual.
-#: - Blocked: a blocked item stays in its current state while coordinare still
-#:   holds it as blocked. A person cannot block an item from the tracker either,
-#:   since coordinare reads a person's block from the Blocked state.
+#:   An In Progress item holds a concurrency slot (``session_consumes_slot``), so
+#:   a full review queue stops new work. After a restart the session is rebuilt
+#:   from the board as an agent run (``_infer_phase_from_board_column``) and the
+#:   pull request is no longer watched.
+#: - Blocked: a work item blocked before it reached In Progress stays in To Do,
+#:   which the next cycle reads as a person unblocking it, so a failing dispatch
+#:   retries every cycle without escalating. One blocked in In Progress holds its
+#:   slot, and a restart drops the block. A person cannot block an item either.
 #:
-#: Backlog is optional as well; nothing is ever moved there but a declined item.
-#: GitHub Projects still requires all five columns, as it always has.
-OPTIONAL_STATES: tuple[str, ...] = ("IN_REVIEW", "BLOCKED")
+#: Making one optional means changing those paths to trust the session's own state
+#: when the board cannot show it; until then ``state_checks`` fails without them.
+CANDIDATE_OPTIONAL_STATES: tuple[str, ...] = ("IN_REVIEW", "BLOCKED")
 
 _STATE_LABELS = {
     "TODO": "To Do", "IN_PROGRESS": "In Progress", "DONE": "Done", "IN_REVIEW": "In Review", "BLOCKED": "Blocked",
 }
 
-_UNMAPPED_OPTIONAL = {
-    "IN_REVIEW": (
-        "No state maps to In Review: a work item stays in In Progress while its pull request "
-        "is reviewed, and coordinare follows the review on the pull request.",
-        "Optional: map a state to In Review to show review on the board.",
-    ),
-    "BLOCKED": (
-        "No state maps to Blocked: a blocked work item stays in its current state while "
-        "coordinare holds it as blocked, and a person cannot block an item from the tracker.",
-        "Optional: map a state to Blocked so blocked work shows on the board and a person can block an item there.",
-    ),
+_WHY_REQUIRED = {
+    "IN_REVIEW": "Without In Review a work item waits out its review in In Progress, holding a slot, "
+                 "and a restart stops watching its pull request.",
+    "BLOCKED": "Without Blocked a blocked work item looks unblocked to coordinare, so it retries "
+               "without escalating, and a restart drops the block.",
 }
 
 
 def state_checks(mapped: Iterable[str]) -> list[CheckResult]:
     """The start checks for the canonical states a provider maps (399).
 
-    A provider's ``preflight`` can return these for its own state mapping: a
-    failure for each required state it lacks, a warning saying what happens for
-    each optional one, or one pass when every state is mapped.
+    A provider's ``preflight`` can return these for its own state mapping: one
+    failure naming every required state it lacks, with what goes wrong for In
+    Review and Blocked, or one pass when every state is mapped.
     """
-
     have = set(mapped)
     missing = [state for state in REQUIRED_STATES if state not in have]
-    results: list[CheckResult] = []
-    if missing:
-        names = ", ".join(_STATE_LABELS[state] for state in missing)
-        results.append(CheckResult(
-            "work item states",
-            Status.FAIL,
-            f"No state maps to {names}. Coordinare cannot take, run or finish work without "
-            "To Do, In Progress and Done.",
-            "In the tracker's workflow, map a state to each of To Do, In Progress and Done.",
-        ))
-    for state in OPTIONAL_STATES:
-        if state not in have:
-            detail, fix = _UNMAPPED_OPTIONAL[state]
-            results.append(CheckResult("work item states", Status.WARN, detail, fix))
-    return results or [CheckResult("work item states", Status.OK, "Every coordinare state maps to a state on the board.")]
+    if not missing:
+        return [CheckResult("work item states", Status.OK, "Every coordinare state maps to a state on the board.")]
+    names = ", ".join(_STATE_LABELS[state] for state in missing)
+    why = " ".join(_WHY_REQUIRED[state] for state in missing if state in _WHY_REQUIRED)
+    return [CheckResult(
+        "work item states",
+        Status.FAIL,
+        f"No state maps to {names}. " + (why or "Coordinare cannot take, run or finish work without it."),
+        "In the tracker's workflow, map a state to each of To Do, In Progress, In Review, Blocked and Done.",
+    )]
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,12 +300,14 @@ class GitHubProjectsBoardProvider:
 
     async def preflight(self) -> list[CheckResult]:
         """Today's board column check, under its names and messages (399)."""
+        # Here rather than at the top: the board seam is imported by config, and
+        # the GitHub client stack is only needed to run this check.
+        from coordinare.services.github import BOARD_COLUMN_TO_STATUS
 
         await self._github.initialize()
         options = self._github.field_cache.get("status_option_ids", {})
         found = {BOARD_COLUMN_TO_STATUS.get(name) for name in options}
-        # GitHub Projects requires every column, including the optional ones.
-        missing = {*REQUIRED_STATES, *OPTIONAL_STATES} - found
+        missing = set(REQUIRED_STATES) - found
         if missing:
             return [CheckResult(
                 "board columns",

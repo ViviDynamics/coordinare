@@ -25,6 +25,7 @@ from coordinare.config import (
 from coordinare.doctor import CheckResult, DoctorReport, Status
 from coordinare.services import work_item_providers
 from coordinare.services.board_provider import (
+    CANDIDATE_OPTIONAL_STATES,
     OPTIONAL_STATES,
     REQUIRED_STATES,
     GitHubProjectsBoardProvider,
@@ -188,9 +189,11 @@ async def test_a_provider_fails_preflight_with_its_own_message_and_fix(
     assert "Tracker project PAY has no workflow state for In Progress." in rendered
     assert "fix: In PAY's workflow settings add a state and map it to In Progress." in rendered
 
+    # doctor --json keeps curated text, never a provider's raw message.
     (as_json,) = [c for c in doctor_checks(DoctorReport(results=results)) if c["id"] == "doctor.work_items"]
-    assert as_json["message"] == failure.detail
-    assert as_json["fix"] == failure.fix
+    assert as_json["status"] == "fail"
+    assert as_json["message"] == "Work item provider readiness."
+    assert "Tracker project PAY" not in str(as_json)
 
 
 @pytest.mark.asyncio
@@ -258,8 +261,10 @@ async def test_run_preflight_checks_each_symphony_with_its_own_provider(
 
 
 def test_the_state_policy() -> None:
-    assert set(REQUIRED_STATES) == {"TODO", "IN_PROGRESS", "DONE"}
-    assert set(OPTIONAL_STATES) == {"IN_REVIEW", "BLOCKED"}
+    """No state is optional yet; In Review and Blocked are the candidates, with the reasons written down."""
+    assert set(REQUIRED_STATES) == {"TODO", "IN_PROGRESS", "IN_REVIEW", "BLOCKED", "DONE"}
+    assert OPTIONAL_STATES == ()
+    assert set(CANDIDATE_OPTIONAL_STATES) == {"IN_REVIEW", "BLOCKED"}
 
 
 @pytest.mark.asyncio
@@ -271,49 +276,23 @@ async def test_the_in_memory_provider_passes_with_every_state_mapped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unmapped_optional_states_warn_and_say_what_coordinare_does() -> None:
+async def test_unmapped_in_review_and_blocked_fail_and_say_why() -> None:
     provider = InMemoryBoardProvider(states={"To Do": "TODO", "Doing": "IN_PROGRESS", "Done": "DONE"})
 
-    results = await provider.preflight()
+    (result,) = await provider.preflight()
 
-    assert all(r.status is Status.WARN for r in results)
-    review, blocked = sorted(results, key=lambda r: "Blocked" in r.detail)
-    assert "In Review" in review.detail and "In Progress" in review.detail
-    assert "Blocked" in blocked.detail
-    assert all(r.fix for r in results)
+    assert result.status is Status.FAIL
+    assert "In Review, Blocked" in result.detail
+    assert "holding a slot" in result.detail and "retries without escalating" in result.detail
+    assert result.fix
 
 
 @pytest.mark.asyncio
 async def test_an_unmapped_required_state_fails_with_a_fix() -> None:
-    provider = InMemoryBoardProvider(states={"To Do": "TODO", "Done": "DONE"})
+    provider = InMemoryBoardProvider(states={"To Do": "TODO", "Done": "DONE", "Review": "IN_REVIEW", "Blocked": "BLOCKED"})
 
-    results = await provider.preflight()
+    (result,) = await provider.preflight()
 
-    failure = next(r for r in results if r.status is Status.FAIL)
-    assert "In Progress" in failure.detail
-    assert failure.fix
-
-
-def test_an_item_left_in_progress_through_review_is_not_reset_by_the_monitor() -> None:
-    """What the In Review warning promises: the review goes on with the item in In Progress."""
-    from coordinare.graph.nodes.monitor.board import _reconcile_board_mismatch
-    from coordinare.graph.state import initial_state
-
-    state = initial_state()
-    state["phase"] = "monitoring_pr"
-
-    reset = _reconcile_board_mismatch(state, "PAY-1", "IN_REVIEW", "IN_PROGRESS")
-
-    assert reset is False
-    assert state["phase"] == "monitoring_pr"
-
-
-def test_an_item_left_in_progress_through_review_keeps_its_pin() -> None:
-    from coordinare.services.reconciliation import reconcile_board_state
-
-    state: dict[str, Any] = {"active_card": {"id": "PAY-1", "status": "IN_REVIEW"}, "active_sessions": {}}
-
-    outcome = reconcile_board_state(state, {"IN_PROGRESS": ["PAY-1"]})
-
-    assert outcome["action"] == "deferred"
-    assert state["active_card"] == {"id": "PAY-1", "status": "IN_REVIEW"}
+    assert result.status is Status.FAIL
+    assert "In Progress" in result.detail
+    assert result.fix
