@@ -2025,6 +2025,10 @@ def _base_card_context(state: CoordinareState, card: dict[str, Any] | None, card
 
     # Pass the performer role so the performer can gate behavior on it.
     card_context["role"] = performer_stage
+    # 396: coordinare posts work item comments through its provider, so the QA
+    # performer hands its evidence comment back instead of posting it.
+    if performer_stage == "qa":
+        card_context["work_item_comments_by_coordinare"] = True
 
     # 123 US4 (FR-011): on an assessor (re-)dispatch, carry forward answered Q&A
     # from prior assessor runs so the assessor doesn't re-ask questions already

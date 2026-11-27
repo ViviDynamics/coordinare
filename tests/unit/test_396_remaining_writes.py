@@ -190,3 +190,91 @@ class TestTheDecline:
             ("close_issue", "I_node1"),
             ("move_card", "PVTI_1", "DONE"),
         ]
+
+
+# --- the QA evidence comment ----------------------------------------------------------------------
+
+
+def _qa_state(response: dict[str, Any], github: Any = None) -> dict[str, Any]:
+    from tests.unit.graph.nodes.test_monitor_performer import _make_state, _Performer
+
+    return _make_state(
+        service=_Performer(response), stage="qa", sequence=["implementing", "qa", "documenting"],
+        card={"id": "PAY-7", "issue_id": "PAY-7", "status": "IN_REVIEW", "pr_url": "https://github.com/o/r/pull/3"},
+        github=github,
+    )
+
+
+class TestTheQaEvidenceComment:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["qa_passed", "qa_failed", "qa_env_blocked", "blocked"])
+    async def test_coordinare_posts_it_on_the_configured_board(self, status: str) -> None:
+        from unittest.mock import AsyncMock
+
+        from coordinare.graph.nodes.monitor_performer import monitor_performer
+
+        github, board = AsyncMock(), _Board()
+        state = _qa_state(
+            {"status": status, "session_id": "s1", "work_item_comment": "## QA Evidence\n\nPASSED",
+             "report": {"criteria_checked": 1}, "questions": ["QA: 1 failure"]},
+            github,
+        )
+        state["board_provider"] = board
+
+        await monitor_performer(state)
+
+        assert board.comments == [("PAY-7", "## QA Evidence\n\nPASSED")]
+        github.add_comment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_status_without_the_comment_posts_nothing(self) -> None:
+        """An older performer posted it itself, so coordinare must not post it again."""
+        from unittest.mock import AsyncMock
+
+        from coordinare.graph.nodes.monitor_performer import monitor_performer
+
+        board = _Board()
+        state = _qa_state({"status": "qa_passed", "session_id": "s1", "report": {"criteria_checked": 1}}, AsyncMock())
+        state["board_provider"] = board
+
+        await monitor_performer(state)
+
+        assert board.comments == []
+
+    @pytest.mark.asyncio
+    async def test_github_projects_puts_it_on_the_issue(self) -> None:
+        from coordinare.graph.nodes.monitor_performer import monitor_performer
+
+        github = _GitHub()
+        state = _qa_state({"status": "qa_passed", "session_id": "s1", "work_item_comment": "## QA Evidence"}, github)
+        state["current_card"] = {**state["current_card"], "id": "PVTI_1", "issue_id": "I_node1"}
+        state["board_provider"] = GitHubProjectsBoardProvider(github)
+
+        await monitor_performer(state)
+
+        assert ("add_comment", "I_node1", "## QA Evidence") in github.calls
+        assert [c for c in github.calls if c[0] == "add_comment"] == [("add_comment", "I_node1", "## QA Evidence")]
+
+    @pytest.mark.asyncio
+    async def test_a_board_failure_does_not_stop_the_verdict(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from coordinare.graph.nodes.monitor_performer import monitor_performer
+
+        board = _Board()
+        board.add_card_comment = AsyncMock(side_effect=RuntimeError("tracker down"))  # type: ignore[method-assign]
+        state = _qa_state({"status": "qa_failed", "session_id": "s1", "work_item_comment": "## QA Evidence",
+                           "failures": [{"criterion": "c", "expected": "e", "actual": "a"}]}, AsyncMock())
+        state["board_provider"] = board
+
+        result = await monitor_performer(state)
+
+        assert result["phase"] != "system_error"
+
+
+def test_the_dispatch_payload_says_coordinare_posts_work_item_comments() -> None:
+    from coordinare.graph.nodes.dispatch_performer import _base_card_context
+
+    context, _ = _base_card_context({}, {"id": "PAY-7"}, "PAY-7", "qa")
+
+    assert context["work_item_comments_by_coordinare"] is True

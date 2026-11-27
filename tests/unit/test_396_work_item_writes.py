@@ -6,8 +6,8 @@ second tracker it must reach that tracker, not a GitHub issue.
 
 The guard below fails on any new issue write a graph node or a performer role
 sends to GitHub directly. The sites still listed each say why: a pull request
-comment, or a write an existing test pins to the GitHub service, which #396
-leaves for a follow-up rather than edit the test that holds it.
+comment, or the QA performer's own post, which runs only for a coordinare old
+enough not to post the comment itself.
 """
 
 from __future__ import annotations
@@ -31,8 +31,9 @@ ISSUE_WRITES = {
 }
 
 _PR_COMMENT = "a pull request comment: the code host, not the work item"
-_PINNED = (
-    "pinned to the GitHub service by an existing test; moving it is the open part of #396"
+_OLDER_COORDINARE = (
+    "runs only when the dispatch lacks work_item_comments_by_coordinare, which every QA "
+    "dispatch from this coordinare sets: an older daemon does not post the comment itself"
 )
 
 #: "<path>::<function>::<method>" -> why that call may stay on the GitHub service.
@@ -41,9 +42,7 @@ ALLOWED: dict[str, str] = {
     "src/coordinare/graph/nodes/notify.py::_emit_persona_scope_rollup::add_comment": _PR_COMMENT,
     "src/coordinare/graph/nodes/monitor/repair.py::_post_repair_comment::add_comment": _PR_COMMENT,
     "src/coordinare/services/orphan_pr.py::close_superseded_prs::add_comment": _PR_COMMENT,
-    # agent/performer/tests/unit/test_main.py asserts the QA performer posts the
-    # evidence comment on the issue itself.
-    "agent/performer/src/performer/qa_postprocess.py::finalize_qa::post_issue_comment": _PINNED,
+    "agent/performer/src/performer/qa_postprocess.py::finalize_qa::post_issue_comment": _OLDER_COORDINARE,
 }
 
 #: The repository root, so the guard checks the same files from any directory.
@@ -125,6 +124,28 @@ def test_every_allowance_is_still_a_real_site() -> None:
     sites = set(_issue_writes(_coordinare_files())) | set(_issue_writes(_performer_role_files()))
     stale = sorted(set(ALLOWED) - sites)
     assert not stale, f"allowances with no call site left: {stale}"
+
+
+def test_the_qa_performer_posts_on_the_issue_only_for_an_older_coordinare() -> None:
+    """The one performer issue write left is behind the dispatch flag coordinare sets."""
+    path = ROOT / "agent/performer/src/performer/qa_postprocess.py"
+    tree = ast.parse(path.read_text())
+    finalize = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "finalize_qa"
+    )
+    guarded: list[bool] = []
+    for branch in ast.walk(finalize):
+        if not isinstance(branch, ast.If):
+            continue
+        for call in ast.walk(branch):
+            if isinstance(call, ast.Call) and ast.unparse(call.func) == "post_issue_comment":
+                guarded.append("not coordinare_posts" in ast.unparse(branch.test))
+    assert guarded == [True], "post_issue_comment must run only when coordinare does not post"
+
+    from coordinare.graph.nodes.dispatch_performer import _base_card_context
+
+    context, _ = _base_card_context({}, {"id": "PAY-7"}, "PAY-7", "qa")
+    assert context["work_item_comments_by_coordinare"] is True
 
 
 def test_the_guard_sees_a_direct_write(tmp_path: Path) -> None:

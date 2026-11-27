@@ -861,6 +861,31 @@ async def poll_service(
     ctx.status = status
     return None
 
+async def _phase_work_item_comment(
+    state: CoordinareState,
+    ctx: _BodyCtx,
+) -> CoordinareState | None:
+    """Post the comment the performer handed over for the work item (396).
+
+    The QA performer returns its evidence comment rather than posting it when
+    the dispatch said coordinare posts work item comments. It is on the first
+    terminal status only, so posting it here, straight after the poll, posts it
+    once. Best effort, as the performer's own post was: a board failure is
+    logged and the verdict carries on.
+    """
+    status = ctx.status
+    comment = status.get("work_item_comment") if isinstance(status, dict) else None
+    if not isinstance(comment, str) or not comment.strip() or ctx.board_provider is None:
+        return None
+    try:
+        await ctx.board_provider.add_card_comment(ctx.card_id, comment)
+    except Exception as exc:
+        logger.warning(
+            "monitor_performer.work_item_comment_failed",
+            card_id=ctx.card_id, performer_stage=ctx.stage, error=str(exc),
+        )
+    return None
+
 async def poll_transport_error(
     state: CoordinareState,
     ctx: _BodyCtx,
@@ -4288,6 +4313,7 @@ _PHASES = (
     _phase_stall_expired,
     phase_458,
     poll_service,
+    _phase_work_item_comment,
     _phase_merge_events,
     phase_651,
     _phase_token_counters,
