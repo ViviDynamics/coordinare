@@ -3,12 +3,18 @@
 ## The added operation
 
 ```
-async def get_card_comments(card_id: str, since_id: int | None = None) -> list[dict[str, Any]]
+async def get_card_comments(card_id: str, since_id: CommentCursor | None = None) -> list[dict[str, Any]]
 ```
 
 - `card_id` is **opaque**. A provider may interpret it; no caller may.
-- `since_id` is a watermark: return only comments after it. `None` means all.
-- Returns comments oldest-first, each `{"id": int, "author": str, "body": str, "created_at": str}`.
+- `since_id` is a watermark: return only comments after it. `None` means all. Since #398 it is
+  opaque too (`CommentCursor = int | str`): it is always the id of a comment this provider
+  returned, handed back exactly as issued. A cursor the provider does not recognise returns
+  every comment (coordinare drops the replay by id), never none.
+- Returns comments oldest-first, each `{"id": int | str, "author": str, "body": str, "created_at": str}`.
+  The id is an int or a non-empty string (a timestamp goes as a string); a comment with any
+  other id is skipped. Coordinare compares ids for equality only and handles comments in the
+  order returned.
 - Returns `[]` when the card cannot be resolved or the read fails. It MUST NOT raise for those:
   a board hiccup must not stall the cycle. This matches the behaviour that already exists.
 

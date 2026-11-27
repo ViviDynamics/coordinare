@@ -386,6 +386,41 @@ class TestComments:
         assert await harness.provider.get_card_comments(card, since_id=last) == []
 
     @pytest.mark.asyncio
+    async def test_comment_ids_are_ints_or_non_empty_strings(self, harness: Any) -> None:
+        """398: the only ids coordinare can keep and hand back as a cursor."""
+        card = harness.seed("One", "TODO")
+        await harness.provider.poll_board()
+        harness.person_comments(card, "a question")
+        await harness.provider.add_card_comment(card, "an answer")
+
+        for c in await harness.provider.get_card_comments(card):
+            cid = c["id"]
+            assert (isinstance(cid, int) and not isinstance(cid, bool)) or (isinstance(cid, str) and cid)
+
+    @pytest.mark.asyncio
+    async def test_coordinare_routes_comments_by_the_providers_own_cursor(self, harness: Any) -> None:
+        """398: the cursor coordinare keeps is the id the provider issued, untouched."""
+        from coordinare.graph.nodes.route_issue_comments import route_issue_comments
+        from coordinare.graph.state import initial_state
+
+        card = harness.seed("One", "TODO")
+        await harness.provider.poll_board()
+        harness.person_comments(card, "what about the 404 case?")
+        harness.person_comments(card, "and the 410 case?")
+        issued = [c["id"] for c in await harness.provider.get_card_comments(card)]
+        state = initial_state()
+        state["board_provider"] = harness.provider
+        state["current_card"] = {"id": card}
+
+        await route_issue_comments(state)
+
+        assert state["last_issue_comment_id"] == issued[-1]
+        assert state["processed_issue_comment_ids"] == set(issued)
+        routed = len(state["card_clarifications"])
+        await route_issue_comments(state)
+        assert len(state["card_clarifications"]) == routed, "a comment was routed twice"
+
+    @pytest.mark.asyncio
     async def test_an_unknown_card_has_no_comments_rather_than_an_error(self, harness: Any) -> None:
         harness.seed("One", "TODO")
         await harness.provider.poll_board()
@@ -465,3 +500,12 @@ class TestTheInMemoryProviderHasNothingGitHubShaped:
         provider.person_comments(card, author="pat", body="hi")
         (comment,) = await provider.get_card_comments(card)
         assert isinstance(comment["id"], str)
+
+    @pytest.mark.asyncio
+    async def test_its_comment_ids_are_not_numbers(self) -> None:
+        """398: nothing that reads an id as a number, or sorts ids, can pass with it."""
+        provider = InMemoryBoardProvider(project_key="PAY")
+        card = provider.add_item("One")
+        provider.person_comments(card, author="pat", body="hi")
+        (comment,) = await provider.get_card_comments(card)
+        assert not comment["id"].isdigit()

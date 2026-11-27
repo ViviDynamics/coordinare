@@ -184,12 +184,12 @@ class TestFetchNewIssueComments:
         assert len(result) == 2
         assert isinstance(result[0], IssueCommentEvent)
         assert result[0].issue_number == 42
-        assert result[0].comment_id == 12345
+        assert result[0].comment_id == "12345"  # 398: the id as the board issued it
         assert result[0].author == "alice"
         assert result[0].body == "This looks good"
         assert result[0].card_id == "card-1"
 
-        assert result[1].comment_id == 12346
+        assert result[1].comment_id == "12346"
         assert result[1].author == "bob"
 
     @pytest.mark.asyncio
@@ -206,7 +206,7 @@ class TestFetchNewIssueComments:
         result = await fetch_new_issue_comments("card-x", None, FakeBoard(), 99)
 
         assert len(result) == 1
-        assert result[0].comment_id == 99999
+        assert result[0].comment_id == "99999"  # 398: the id as the board issued it
         assert result[0].author == ""
         assert result[0].body == ""
         assert result[0].created_at == ""

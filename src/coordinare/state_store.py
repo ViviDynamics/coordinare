@@ -24,6 +24,10 @@ from coordinare.lib.redaction import redact_persisted_text
 if TYPE_CHECKING:
     from coordinare.metrics import CoordinareMetrics
 
+#: A work item comment id as its provider issued it (398): an int, or a string kept
+#: byte for byte (models here strip whitespace from strings; an id is not text).
+_CommentId = int | Annotated[str, StringConstraints(strip_whitespace=False)]
+
 logger = structlog.get_logger(__name__)
 
 CURRENT_SCHEMA_VERSION: int = 40  # 351: persist the independently accepted environment contract
@@ -475,12 +479,17 @@ class PersistedSession(BaseModel):
     # comment router (route_issue_comments) is per-card — it reads the ACTIVE
     # card's linked issue — and both keys already round-trip session ↔ state
     # via _SESSION_FIELDS, so persistence lives here (per-card), NOT top-level.
-    # The processed-ID list is bounded at save time (numerically largest 2000 —
-    # GitHub comment IDs are monotonic, so largest == newest); restored as a
-    # set into the session.  Numeric IDs only — never comment bodies.
-    processed_issue_comment_ids: list[int] = Field(default_factory=list)
+    # The processed-ID list is bounded at save time (newest 2000; see
+    # daemon._persist_comment_ids); restored as a set into the session.  IDs
+    # only — never comment bodies.  398: an ID is the provider's own, opaque
+    # (GitHub's integer, a tracker's string key, a timestamp, a page token) and
+    # kept exactly as issued, so the field accepts both.  Widening int to
+    # int | str needs no schema bump: every earlier snapshot is still valid and
+    # loads unchanged, and GitHub still persists integers.
+    # The model strips whitespace from strings; a comment id is kept exactly.
+    processed_issue_comment_ids: list[_CommentId] = Field(default_factory=list)
     pipeline_admitted: bool = False
-    last_issue_comment_id: int | None = None
+    last_issue_comment_id: _CommentId | None = None
     # 126 (schema v15+): terminal-success-floor state.  feedback_ledger holds
     # the per-item feedback contract (stamped at bounce, disposed by the
     # implementer completion, adjudicated by the raiser); feedback_origin_sha

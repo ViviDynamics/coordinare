@@ -59,6 +59,13 @@ logger = structlog.get_logger(__name__)
 #: listing's status, so no listing reports it.
 NOT_WORK = "NOT_WORK"
 
+#: A comment id, and so the cursor coordinare keeps per work item (398). Opaque: it
+#: is whatever the provider issued (GitHub's integer comment id, a tracker's string
+#: key, a timestamp, a page token), and coordinare stores it, hands it back and
+#: compares it for equality. It never sorts it, takes a maximum of it or reads it as
+#: a number; the provider's order, oldest first, is the order comments are handled in.
+type CommentCursor = int | str
+
 
 @dataclass(frozen=True, slots=True)
 class MoveOutcome:
@@ -132,17 +139,29 @@ class BoardProvider(Protocol):
         ...
 
     async def get_card_comments(
-        self, card_id: str, since_id: int | None = None,
+        self, card_id: str, since_id: CommentCursor | None = None,
     ) -> list[dict[str, Any]]:
         """Comments on the card, oldest first, optionally only those after *since_id*.
 
         The watermark keeps coordinare from reprocessing feedback it has already
-        acted on.
+        acted on. It is a comment id this provider issued, handed back exactly as
+        issued (``CommentCursor``); coordinare never reads meaning into it. A cursor
+        the provider does not recognise should return every comment rather than
+        none: coordinare keeps the ids it processed, so a replay is dropped, where
+        a lost comment is gone.
+
+        The cursor coordinare hands back is always the id of the last comment it
+        handled, so a tracker whose native position is a page token or an
+        "updated since" time maps that comment id back to its position itself.
 
         Each comment is ``{"id", "author", "body", "created_at"}`` -- four plain
         fields, not a host's payload. That is already the shape coordinare works
         in, so a provider normalises to it rather than coordinare learning a new
         one per board.
+
+        ``"id"`` is an ``int`` or a non-empty ``str``; a timestamp goes as a string.
+        A comment with any other id is skipped, since it can be neither
+        deduplicated nor handed back as a cursor.
 
         Returns ``[]`` rather than raising when the card cannot be found or the
         read fails. Comment routing is how a human redirects work in flight; a
@@ -268,7 +287,7 @@ class GitHubProjectsBoardProvider:
         return card_id
 
     async def get_card_comments(
-        self, card_id: str, since_id: int | None = None,
+        self, card_id: str, since_id: CommentCursor | None = None,
     ) -> list[dict[str, Any]]:
         # The one place that knows GitHub calls a card two things. Callers pass the
         # same card id they use for every other operation; the translation happens
@@ -278,9 +297,37 @@ class GitHubProjectsBoardProvider:
             logger.warning("board.card_not_resolvable", card_id=card_id)
             return []
         comments: list[dict[str, Any]] = await self._github.get_issue_comments(
-            number, since_id=since_id,
+            number, since_id=self._github_comment_id(card_id, since_id),
         )
-        return comments
+        # 398: coordinare handles comments in the order a provider returns them.
+        # GitHub comment ids rise with time, so id order is creation order.
+        return sorted(comments, key=_github_comment_order)
+
+    @staticmethod
+    def _github_comment_id(card_id: str, cursor: CommentCursor | None) -> int | None:
+        """The GitHub comment id a cursor names (398).
+
+        GitHub issues integer ids. One that went through text (a log line, a JSON
+        field) is read back as the same number. A cursor GitHub never issued names
+        no comment here, so every comment is returned and coordinare's processed
+        ids drop the replay: a lost comment could not be recovered.
+        """
+        if cursor is None:
+            return None
+        if isinstance(cursor, int) and not isinstance(cursor, bool):
+            return cursor
+        if isinstance(cursor, str) and cursor.isascii() and cursor.isdigit():
+            return int(cursor)
+        logger.warning("board.unknown_comment_cursor", card_id=card_id, cursor=str(cursor))
+        return None
+
+
+def _github_comment_order(comment: dict[str, Any]) -> tuple[int, int]:
+    """Sort key for GitHub comments: by id, with any id that is not a number last, as given."""
+    cid = comment.get("id")
+    if isinstance(cid, int) and not isinstance(cid, bool):
+        return (0, cid)
+    return (1, 0)
 
 
 def board_of(state: Any, service: Any = None) -> BoardProvider | None:

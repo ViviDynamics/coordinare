@@ -53,7 +53,8 @@ def test_comment_ids_reject_bools_and_junk() -> None:
 
     out = _persist_active_sessions(live)
 
-    assert out["card-1"].processed_issue_comment_ids == [7, 42]
+    # 398: a string is a provider's opaque comment id, so "junk" is kept as issued.
+    assert out["card-1"].processed_issue_comment_ids == [7, 42, "junk"]
     assert 99 not in out["card-1"].processed_issue_comment_ids
     assert out["card-1"].last_issue_comment_id is None
 
