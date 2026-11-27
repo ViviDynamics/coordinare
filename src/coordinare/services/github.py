@@ -139,7 +139,9 @@ query PollBoard($projectId: ID!, $after: String) {
         }
         nodes {
           id
-          fieldValues(first: 8) {
+          # 437: only the Status value decides the column, so read as many values as
+          # initialize reads fields, and Status is not cut off the page.
+          fieldValues(first: 20) {
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue {
                 name
@@ -277,6 +279,7 @@ def _status_column(field_values: object, status_field_id: str) -> tuple[str, str
     never decides the column. The Status value decides it alone, even when its option maps to
     no column. A value that names no field at all (no field id) keeps the old reading, last
     match wins, and carries no time; GitHub always names the field, since the query asks.
+    Without a known Status field id (never after initialize) every value counts that way.
     """
     unnamed = ""
     if not isinstance(field_values, list):
@@ -289,7 +292,8 @@ def _status_column(field_values: object, status_field_id: str) -> tuple[str, str
             updated = field_value.get("updatedAt")
             return mapped, updated if mapped and isinstance(updated, str) else ""
         field = field_value.get("field")
-        if mapped and not (isinstance(field, dict) and field.get("id")):
+        names_a_field = bool(status_field_id) and isinstance(field, dict) and bool(field.get("id"))
+        if mapped and not names_a_field:
             unnamed = mapped
     return unnamed, ""
 

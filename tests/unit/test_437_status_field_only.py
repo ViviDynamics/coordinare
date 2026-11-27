@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from coordinare.services.github import GitHubService
+from coordinare.services.github import GET_PROJECT_FIELDS_QUERY, POLL_BOARD_QUERY, GitHubService
 
 STATUS = "PVTSSF_status"
 OTHER = "PVTSSF_phase"
@@ -80,3 +80,49 @@ async def test_the_status_change_time_follows_the_status_field(monkeypatch: pyte
     )
     assert _columns(board) == {"DONE": ["PVTI_1"]}
     assert board["status_updated_at"] == {"PVTI_1": "2026-11-01T00:00:00Z"}
+
+
+def _unnamed(name: str) -> dict[str, Any]:
+    """A value with no field id, as older fixtures and stubs build them."""
+    return {"name": name}
+
+
+@pytest.mark.asyncio
+async def test_a_status_with_no_column_wins_over_a_value_naming_no_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    board = await _poll(monkeypatch, _unnamed("Todo"), _value("Triage", STATUS))
+    assert _columns(board) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_value_naming_no_field_is_read_but_another_field_is_not(monkeypatch: pytest.MonkeyPatch) -> None:
+    board = await _poll(monkeypatch, _unnamed("Todo"), _value("Done", OTHER))
+    assert _columns(board) == {"TODO": ["PVTI_1"]}
+    assert board["status_updated_at"] == {}
+
+
+@pytest.mark.asyncio
+async def test_without_a_known_status_field_every_value_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never true after initialize, which fails without a Status field. The old reading is kept."""
+    service = GitHubService.__new__(GitHubService)
+    service.project_id = "PVT_test"
+    service.field_cache = {"status_option_ids": {}}
+    page = {"node": {"items": {
+        "nodes": [{"id": "PVTI_1", "fieldValues": {"nodes": [_value("In Progress", OTHER)]},
+                   "content": {"id": "I_1", "number": 1, "title": "t", "body": "b", "state": "OPEN"}}],
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+    }}}
+
+    async def execute(self: Any, query: str, variables: Any = None) -> Any:
+        return page
+
+    monkeypatch.setattr(GitHubService, "_ensure_initialized", lambda self: None)
+    monkeypatch.setattr(GitHubService, "_guarded_execute", execute)
+    board = await service.poll_board()
+    assert _columns(board) == {"IN_PROGRESS": ["PVTI_1"]}
+    assert board["status_updated_at"] == {}
+
+
+def test_the_poll_reads_as_many_field_values_as_initialize_reads_fields() -> None:
+    """Only Status decides the column, so its value must not be cut off the page."""
+    assert "fieldValues(first: 20)" in POLL_BOARD_QUERY
+    assert "fields(first: 20)" in GET_PROJECT_FIELDS_QUERY
