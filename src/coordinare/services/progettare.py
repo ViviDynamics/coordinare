@@ -294,7 +294,8 @@ class ProgettareProvider:
         self, request: dict[str, Any], run_dir: Path, manifest: dict[str, Any],
         intake: dict[str, Any], status: str,
     ) -> StageOutcome:
-        issue = intake.get("issue") if isinstance(intake.get("issue"), dict) else {}
+        raw_issue = intake.get("issue")
+        issue: dict[str, Any] = raw_issue if isinstance(raw_issue, dict) else {}
         digest = work_item_digest(str(issue.get("title") or ""), str(issue.get("body") or ""))
         pin = str(request.get("pin") or "")
         if status == "blocked":
@@ -390,7 +391,8 @@ def blueprint_from_run(
     if classification not in ("single_turn", "milestone_loop"):
         msg = f"size.json names classification {classification!r}"
         raise ContractError(msg)
-    issue = intake.get("issue") if isinstance(intake.get("issue"), dict) else {}
+    raw_issue = intake.get("issue")
+    issue: dict[str, Any] = raw_issue if isinstance(raw_issue, dict) else {}
     blueprint: dict[str, Any] = {
         "summary": str(issue.get("title") or "").strip(),
         "milestones": plan_milestones,

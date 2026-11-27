@@ -35,6 +35,7 @@ from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
 
 if TYPE_CHECKING:
+    from coordinare.services.stage_contract import AnyStageRequest
     from coordinare.stage_provider_config import ScrutareProviderConfig
 
 logger = structlog.get_logger(__name__)
@@ -70,7 +71,10 @@ class ScrutareProvider:
     def config(self) -> ScrutareProviderConfig:
         return self._config
 
-    async def submit(self, request: StageRequest, request_id: str) -> StageJob:
+    async def submit(self, request: AnyStageRequest, request_id: str) -> StageJob:
+        if not isinstance(request, StageRequest):
+            msg = "Scrutare reviews pull requests, not work items"
+            raise TransportError(msg)
         body = {
             "repository": request.repository,
             "number": request.pr_number,

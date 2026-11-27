@@ -12,15 +12,26 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.lifecycle import ROLE_TO_STAGE
+from coordinare.services.progettare import ProgettareProvider
 from coordinare.services.scrutare import ScrutareProvider
 from coordinare.services.stage_contract import (
     STAGE_MARKERS,
+    WORK_ITEM_STAGES,
     ExternalStageService,
     PullRequestReader,
     PullRequestSnapshot,
+    StageProvider,
+    WorkItemReader,
+    WorkItemSnapshot,
+    WorkItemStageService,
     stage_provider_id,
 )
-from coordinare.stage_provider_config import PROVIDER_ROLES, normalize_login
+from coordinare.stage_provider_config import (
+    PROVIDER_ROLES,
+    ProgettareProviderConfig,
+    StageProviderConfig,
+    normalize_login,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -33,19 +44,53 @@ logger = structlog.get_logger(__name__)
 _STAGE_TO_ROLE = {stage: role for role, stage in ROLE_TO_STAGE.items()}
 
 
+def build_provider(name: str, provider_config: StageProviderConfig) -> StageProvider:
+    """The provider client for one catalog entry, by its kind."""
+    if isinstance(provider_config, ProgettareProviderConfig):
+        return ProgettareProvider(name, provider_config)
+    return ScrutareProvider(name, provider_config)
+
+
+def provider_fix(name: str, provider_config: StageProviderConfig) -> str:
+    """What to do when a provider's health check fails, for doctor and the preflight."""
+    if isinstance(provider_config, ProgettareProviderConfig):
+        return (
+            f"Install progettare {provider_config.version} where coordinare runs "
+            f"(stage_providers.{name}.command, now {provider_config.command!r}), with git and gh "
+            f"on PATH; set {provider_config.gh_token_env} and every pass_env variable; and make "
+            "runs_dir writable and config_path exist."
+        )
+    return (
+        f"Start {provider_config.kind} or correct stage_providers.{name}.url (it must be "
+        "reachable from coordinare), and set "
+        f"{provider_config.token_env} to its performer API token."
+    )
+
+
 def build_stage_provider_services(
     config: ProjectConfiguration,
     pr_reader: PullRequestReader,
+    work_item_reader: WorkItemReader | None = None,
 ) -> dict[str, ExternalStageService]:
-    """One service per catalog entry and stage it can fill, keyed by performer id."""
+    """One service per catalog entry and stage it can fill, keyed by performer id.
+
+    403: a stage that plans a work item (architecting) gets a WorkItemStageService, which
+    reads issues with ``work_item_reader``; without one, that stage is not served.
+    """
     services: dict[str, ExternalStageService] = {}
     for name, provider_config in sorted(config.stage_providers.items()):
-        provider = ScrutareProvider(name, provider_config)
+        provider = build_provider(name, provider_config)
         for role in sorted(PROVIDER_ROLES.get(provider_config.kind, frozenset())):
             stage = ROLE_TO_STAGE[role]
             if stage not in STAGE_MARKERS:
                 continue
-            service = ExternalStageService(provider, stage=stage, pr_reader=pr_reader)
+            service: ExternalStageService
+            if stage in WORK_ITEM_STAGES:
+                if work_item_reader is None:
+                    continue
+                service = WorkItemStageService(provider, stage=stage, work_item_reader=work_item_reader)
+            else:
+                service = ExternalStageService(provider, stage=stage, pr_reader=pr_reader)
             services[service.performer_id] = service
     return services
 
@@ -155,6 +200,27 @@ def github_pr_reader(resolve: Callable[[str], Any]) -> PullRequestReader:
         return PullRequestSnapshot(
             head_sha=str(context.get("head_oid") or ""),
             reviews=list(context.get("reviews") or []),
+        )
+
+    return read
+
+
+def github_work_item_reader(resolve: Callable[[str], Any]) -> WorkItemReader:
+    """403: an issue reader over GitHubService. ``resolve`` picks the service by owner."""
+
+    async def read(repository: str, issue_node_id: str) -> WorkItemSnapshot:
+        github = resolve(repository.split("/", 1)[0])
+        if github is None:
+            msg = f"no GitHub service can read {repository}"
+            raise RuntimeError(msg)
+        details = await github.get_issue_details(issue_node_id)
+        if not isinstance(details, dict) or not details:
+            msg = f"GitHub returned no issue for {repository} ({issue_node_id})"
+            raise RuntimeError(msg)
+        return WorkItemSnapshot(
+            title=str(details.get("title") or ""),
+            body=str(details.get("body") or ""),
+            state=str(details.get("state") or ""),
         )
 
     return read

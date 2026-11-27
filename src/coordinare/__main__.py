@@ -898,13 +898,19 @@ def _build_stage_provider_services(
     github_by_owner: dict[str, Any],
     default_github: Any,
 ) -> dict[str, Any]:
-    """402: one service per stage provider and stage, reading PRs with the owner's GitHub."""
-    from coordinare.services.stage_providers import build_stage_provider_services, github_pr_reader
+    """402: one service per stage provider and stage, reading PRs (and, 403, issues) with the owner's GitHub."""
+    from coordinare.services.stage_providers import (
+        build_stage_provider_services,
+        github_pr_reader,
+        github_work_item_reader,
+    )
 
     def _github_for(owner: str) -> Any:
         return github_by_owner.get(owner.lower(), default_github)
 
-    return build_stage_provider_services(config, github_pr_reader(_github_for))
+    return build_stage_provider_services(
+        config, github_pr_reader(_github_for), github_work_item_reader(_github_for),
+    )
 
 
 def _role_provider(config: ProjectConfiguration, stage: str) -> str | None:
