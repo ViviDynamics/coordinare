@@ -171,13 +171,35 @@ def test_init_accepts_nare_with_a_key(monkeypatch) -> None:
     init_answers._choose_harness(questions, {})
 
 
-def test_preflight_tells_how_to_install_a_missing_nare(tmp_path, monkeypatch) -> None:
-    """The fix is the one command nare publishes (ViviDynamics/nare#323)."""
+def _missing_nare_fix(tmp_path, monkeypatch, installed: str) -> str:
     from coordinare import launch_preflight
 
     config = _config(tmp_path, monkeypatch, {"implementer": {}})
     config = config.model_copy(update={"agent_executable": "/bin/true"})
     monkeypatch.setattr(launch_preflight.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(launch_preflight, "_installed_coordinare_version", lambda: installed)
     results = launch_preflight._local_harnesses(config)
     [missing] = [r for r in results if r.name == "harness nare"]
-    assert "releases/latest/download/install.sh | sh" in (missing.fix or "")
+    return missing.fix or ""
+
+
+def test_preflight_tells_how_to_install_a_missing_nare(tmp_path, monkeypatch) -> None:
+    """The fix is this release's own installer, which installs the nare it pins (#384).
+
+    nare's own latest installer, or coordinare's latest one, could install a
+    nare whose contract this release's adapter does not speak: install.sh
+    compiles its nare pin in, so only the release's own script has the right one.
+    """
+    fix = _missing_nare_fix(tmp_path, monkeypatch, "2026.11.5")
+    assert (
+        "curl -fsSL https://github.com/ViviDynamics/coordinare/releases/download/2026.11.5/install.sh"
+        " | sh -s -- --version 2026.11.5"
+    ) in fix
+    assert "latest" not in fix
+    assert "ViviDynamics/nare/releases" not in fix
+
+
+def test_preflight_points_a_development_build_at_the_latest_installer(tmp_path, monkeypatch) -> None:
+    fix = _missing_nare_fix(tmp_path, monkeypatch, "0.1.0.dev3+g1234")
+    assert "ViviDynamics/coordinare/releases/latest/download/install.sh | sh" in fix
+    assert "ViviDynamics/nare/releases" not in fix

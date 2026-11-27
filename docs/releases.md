@@ -77,8 +77,8 @@ sh install.sh --uninstall --yes --config-dir /path/to/setup
 ```
 
 First remove any login registration with `coordinare service uninstall`, or stop
-the foreground process with Ctrl+C. Installer uninstall removes the tool and its
-bundled performer. It also offers to remove the managed workspace volume for the
+the foreground process with Ctrl+C. Installer uninstall removes the tool, its
+bundled performer and the nare it installed. It also offers to remove the managed workspace volume for the
 default init config directory (`--config-dir` selects another). `--yes` or
 `COORDINARE_YES=1` consents to deleting its workspace data without a terminal;
 otherwise unattended removal preserves the volume. Docker/removal failures warn

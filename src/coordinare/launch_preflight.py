@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import uuid
 from dataclasses import dataclass, replace
 from functools import partial
+from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -39,6 +41,33 @@ if TYPE_CHECKING:
     from coordinare.config import CoordinareConfiguration, ProjectConfiguration
 
 logger = structlog.get_logger(__name__)
+
+_RELEASE_VERSION = re.compile(r"[1-9][0-9]{3}\.[0-9]+\.[0-9]+(\.[0-9]+)?")
+_RELEASES = "https://github.com/ViviDynamics/coordinare/releases"
+
+
+def _installed_coordinare_version() -> str:
+    try:
+        return version("coordinare")
+    except PackageNotFoundError:
+        return ""
+
+
+def _missing_nare_fix() -> str:
+    """Point at the installer that pins the nare this release's adapter speaks (#384).
+
+    install.sh compiles its nare pin in, so a release's own script, not the
+    latest one, installs the matching nare.
+    """
+    installed = _installed_coordinare_version()
+    if _RELEASE_VERSION.fullmatch(installed):
+        command = f"curl -fsSL {_RELEASES}/download/{installed}/install.sh | sh -s -- --version {installed}"
+    else:
+        command = f"curl -fsSL {_RELEASES}/latest/download/install.sh | sh"
+    return (
+        f"Rerun the coordinare installer, which installs the nare release it pins: {command} "
+        "(or name another backend in performers.default.backend)."
+    )
 
 PROBE_TIMEOUT_SECONDS = 5.0
 HTTP_OK = 200
@@ -392,11 +421,7 @@ def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
         cli_executable = shutil.which(binary)
         fix = f"Install and authenticate {binary}, ensure it is on PATH, or correct performers.default.backend (harness for a preset)."
         if harness == "nare":
-            fix = (
-                "Install nare: curl -fsSL "
-                "https://github.com/ViviDynamics/nare/releases/latest/download/install.sh | sh "
-                "(or name another backend in performers.default.backend)."
-            )
+            fix = _missing_nare_fix()
         if cli_executable is None:
             results.append(
                 CheckResult(

@@ -8,7 +8,7 @@ coordinare service uninstall
 ```
 
 For a foreground process, stop it with Ctrl+C. Download the installer, inspect
-it, then remove the tool and bundled performer:
+it, then remove the tool, its bundled performer and the nare it installed:
 
 ```sh
 curl -fsSL https://github.com/ViviDynamics/coordinare/releases/latest/download/install.sh -o install.sh
@@ -28,6 +28,10 @@ Stop performer containers first. If the volume is in use or Docker is unavailabl
 uninstall reports the problem and continues. Retry volume removal after stopping
 the containers. Custom `volume_name` overrides are operator-managed; inspect and
 remove them explicitly with Docker. Service uninstall alone does not delete volumes.
+
+Uninstall removes nare only when this installer installed it and it is still
+that release. A nare you installed another way, or upgraded since, is kept. Install
+replaces such a nare with the pinned release but leaves it yours.
 
 This preserves configuration, secrets, state, transcripts and logs. It also
 keeps uv, managed Python and shared download caches.

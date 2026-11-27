@@ -7,8 +7,8 @@ paths. `--config-dir` changes the setup directory.
 
 | Data | Default location | Notes |
 |---|---|---|
-| Commands | `~/.local/bin/coordinare`, `~/.local/bin/performer` | Add `~/.local/bin` to PATH |
-| Tool environment | `~/.local/share/uv/tools/coordinare` | Installer fixes this under HOME |
+| Commands | `~/.local/bin/coordinare`, `~/.local/bin/performer`, `~/.local/bin/nare` | Add `~/.local/bin` to PATH |
+| Tool environments | `~/.local/share/uv/tools/coordinare`, `~/.local/share/uv/tools/nare` | Installer fixes these under HOME |
 | Managed Python | `~/.local/share/uv/python` | Shared with uv tools |
 | uv download cache | `~/.cache/uv` | Kept on uninstall |
 | Configuration | `~/.config/coordinare/config.yaml` | Uses credential references |

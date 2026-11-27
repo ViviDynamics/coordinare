@@ -5,6 +5,16 @@ main() (
     umask 077
 
     fail() { printf 'Installer error: %s\n' "$*" >&2; exit 1; }
+    # nare, the default agent harness, at the release the performer image pins:
+    # NARE_VERSION and NARE_SHA256 in agent/performer/Dockerfile.base. A unit
+    # test keeps the two equal, so bump them together.
+    nare_version=2026.11.121
+    nare_sha256=1e03d84fb1690a9588aca11b543a47379be3f185119c6775b882a14d1aece8ad
+    nare_wheel=nare-$nare_version-py3-none-any.whl
+    # Holds the version this installer installed, inside nare's tool environment,
+    # so uninstall removes only a nare it installed and that nobody changed since.
+    # Reinstalling nare another way replaces the environment, and the marker.
+    nare_marker='installed-by-coordinare'
     boolean() {
         case "$1" in
             1|true|yes) printf '1\n' ;;
@@ -49,7 +59,8 @@ main() (
                     '       sh install.sh --uninstall [--purge] [--yes] [--config-dir DIR]' \
                     'Environment: COORDINARE_VERSION, COORDINARE_YES, COORDINARE_NO_INIT,' \
                     '             COORDINARE_UNINSTALL, COORDINARE_PURGE.' \
-                    'Installation verifies release wheels, installs with uv, and prints: coordinare init.'
+                    'Installation verifies release wheels, installs coordinare, its performer and' \
+                    "nare $nare_version (the default agent harness) with uv, and prints: coordinare init."
                 exit 0 ;;
             *) fail 'Unknown option. Run sh install.sh --help.' ;;
         esac
@@ -145,6 +156,19 @@ main() (
         else
             printf 'coordinare is already uninstalled from %s.\n' "$UV_TOOL_DIR"
         fi
+        nare_owned=
+        if [ -f "$UV_TOOL_DIR/nare/$nare_marker" ]; then
+            nare_owned=$(cat "$UV_TOOL_DIR/nare/$nare_marker")
+            nare_current=$("$UV_TOOL_BIN_DIR/nare" --version 2>/dev/null || true)
+            [ -n "$nare_owned" ] && [ "$nare_current" = "$nare_owned" ] || nare_owned=
+        fi
+        if [ -n "$nare_owned" ]; then
+            [ -n "$uv_command" ] || fail 'uv is missing. Install uv from https://astral.sh/uv/install.sh, then rerun --uninstall.'
+            "$uv_command" tool uninstall nare || fail 'uv could not uninstall nare.'
+            printf 'Removed nare from %s.\n' "$UV_TOOL_DIR/nare"
+        elif [ -d "$UV_TOOL_DIR/nare" ]; then
+            printf 'Kept nare in %s: this installer did not install it, or it changed since.\n' "$UV_TOOL_DIR/nare"
+        fi
         if [ "$purge" = 1 ]; then
             rm -rf "$HOME/.coordinare"
             printf 'Purged %s. Custom configuration and project state paths are operator managed.\n' "$HOME/.coordinare"
@@ -163,6 +187,14 @@ main() (
     else
         fail 'Checksum verification requires sha256sum or shasum.'
     fi
+    digest() {
+        if [ "$checksum" = sha256sum ]; then
+            digest_line=$(sha256sum "$1")
+        else
+            digest_line=$(shasum -a 256 "$1")
+        fi
+        printf '%s\n' "${digest_line%% *}"
+    }
     temporary=$(mktemp -d "${TMPDIR:-/tmp}/coordinare.XXXXXXXX") || fail 'Cannot create a temporary directory.'
     trap 'rm -rf "$temporary"' 0
     trap 'exit 1' HUP INT TERM
@@ -171,6 +203,13 @@ main() (
     case "$root" in
         https://*|file:///*) ;;
         *) fail 'COORDINARE_RELEASE_ROOT must be an HTTPS or local file URL.' ;;
+    esac
+    # Only for testing against local bytes: the pinned digest still has to match.
+    nare_root=${COORDINARE_NARE_RELEASE_ROOT:-https://github.com/ViviDynamics/nare/releases}
+    nare_root=${nare_root%/}
+    case "$nare_root" in
+        https://*|file:///*) ;;
+        *) fail 'COORDINARE_NARE_RELEASE_ROOT must be an HTTPS or local file URL.' ;;
     esac
     if [ -n "$version" ]; then
         source=$root/download/$version
@@ -202,15 +241,14 @@ main() (
             END { if (count != 1) exit 1 }' "$temporary/SHA256SUMS") \
             || fail 'Checksum manifest is missing a required release wheel.'
         fetch "$source/$wheel" "$temporary/$wheel"
-        if [ "$checksum" = sha256sum ]; then
-            actual=$(sha256sum "$temporary/$wheel")
-        else
-            actual=$(shasum -a 256 "$temporary/$wheel")
-        fi
-        actual=${actual%% *}
+        actual=$(digest "$temporary/$wheel")
         [ "$actual" = "$expected" ] || fail "Checksum mismatch for $wheel. Nothing was installed."
         printf 'Verified %s against SHA256SUMS.\n' "$wheel"
     done
+    fetch "$nare_root/download/$nare_version/$nare_wheel" "$temporary/$nare_wheel"
+    actual=$(digest "$temporary/$nare_wheel")
+    [ "$actual" = "$nare_sha256" ] || fail "Checksum mismatch for $nare_wheel. Nothing was installed."
+    printf 'Verified %s against its pinned SHA-256.\n' "$nare_wheel"
 
     # Verify every release wheel before installing even uv itself.
     if [ -z "$uv_command" ]; then
@@ -254,6 +292,39 @@ main() (
     installed=$("$UV_TOOL_BIN_DIR/coordinare" --version) || fail 'Installed command failed its version check.'
     [ "$installed" = "coordinare $normalized" ] || fail 'Installed version does not match the verified release.'
     printf 'Installed %s. Commands: %s/coordinare and %s/performer.\n' "$installed" "$UV_TOOL_BIN_DIR" "$UV_TOOL_BIN_DIR"
+    # The bedrock extra matches the performer image, which installs nare's
+    # dependencies with it (agent/performer/nare-requirements.txt).
+    # A nare installed another way is replaced, since the performer speaks only
+    # the pinned release's contract, but it stays theirs: no marker, so
+    # uninstall keeps it.
+    nare_partial="$installed is installed, but nare is not. Rerun this installer."
+    nare_owned=1
+    if [ -d "$UV_TOOL_DIR/nare" ] && [ ! -f "$UV_TOOL_DIR/nare/$nare_marker" ]; then
+        nare_owned=0
+        printf 'Replaced the nare already in %s with nare %s, which this release pins. Uninstall keeps it.\n' \
+            "$UV_TOOL_DIR/nare" "$nare_version"
+    fi
+    printf 'Installing nare %s, the default agent harness, into %s.\n' "$nare_version" "$UV_TOOL_DIR/nare"
+    "$uv_command" tool install --force --python 3.12 \
+        "nare[bedrock] @ file://$file_root/$nare_wheel" \
+        || fail "uv could not install nare; the uv error is above. $nare_partial"
+    nare_installed=$("$UV_TOOL_BIN_DIR/nare" --version || true)
+    if [ "$nare_installed" != "$nare_version" ]; then
+        # Whoever owned the environment before, uv has replaced it by now, so a
+        # replacement that fails its check is removed rather than left behind.
+        "$uv_command" tool uninstall nare >/dev/null 2>&1 || true
+        fail "Installed nare does not match the pinned release $nare_version. $nare_partial"
+    fi
+    if [ "$nare_owned" = 1 ]; then
+        printf '%s\n' "$nare_version" > "$UV_TOOL_DIR/nare/$nare_marker" \
+            || fail 'Could not record that this installer installed nare.'
+    fi
+    printf 'Installed nare %s. Command: %s/nare.\n' "$nare_installed" "$UV_TOOL_BIN_DIR"
+    nare_found=$(command -v nare || true)
+    if [ -n "$nare_found" ] && [ "$nare_found" != "$UV_TOOL_BIN_DIR/nare" ]; then
+        printf 'WARNING: %s comes first on PATH, so local runs use it, not nare %s. Remove it or put %s first.\n' \
+            "$nare_found" "$nare_version" "$UV_TOOL_BIN_DIR" >&2
+    fi
     printf 'Preserved existing configuration and state.\n'
     if [ "$(command -v coordinare || true)" != "$UV_TOOL_BIN_DIR/coordinare" ]; then
         printf '%s\n' 'For this shell and your shell profile, add:' "export PATH=\"\$HOME/.local/bin:\$PATH\""

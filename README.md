@@ -70,21 +70,21 @@ Have these ready:
   for fine-grained permissions. Complete the [branch protection setup](#branch-protection)
   before dispatch: the Coordinare identity must be allowed to push to the protected
   branch for squash merge to succeed.
-- One harness. nare (`nare`) is the default; Codex (`codex`), Claude Code
-  (`claude`) and OpenCode (`opencode`) also work. For local mode, install git and
-  the CLI on PATH. nare installs with
-  `curl -fsSL https://github.com/ViviDynamics/nare/releases/latest/download/install.sh | sh`
-  and reads `ANTHROPIC_API_KEY` (or the key of the endpoint you configure). Codex and
-  Claude Code can reuse a harness login; OpenCode's native provider requires
-  `OPENAI_API_KEY`. You can supply a model API key during setup instead.
+- One harness. nare (`nare`) is the default, and the installer below installs the
+  nare release this version of Coordinare pins. Codex (`codex`), Claude Code
+  (`claude`) and OpenCode (`opencode`) also work; for local mode with one of them,
+  install git and the CLI on PATH. nare reads `ANTHROPIC_API_KEY` (or the key of the
+  endpoint you configure). Codex and Claude Code can reuse a harness login; OpenCode's
+  native provider requires `OPENAI_API_KEY`. You can supply a model API key during
+  setup instead.
   [Docker mode](docs/docker-mode-setup.md) runs the harness in containers, where nare
   is preinstalled, and requires an API key for native providers.
 
 ### 2. Install
 
 The installer downloads release wheels, verifies their checksums and installs
-Coordinare and its performer in an isolated user tool environment. It does not
-need sudo or a source checkout.
+Coordinare, its performer and the pinned nare harness in isolated user tool
+environments. It does not need sudo or a source checkout.
 
 ```sh
 curl -fsSL https://github.com/ViviDynamics/coordinare/releases/latest/download/install.sh | sh
@@ -103,7 +103,7 @@ publisher. Read the [threat model](docs/security/threat-model.md) before grantin
 repository write access. Agents execute generated code, and public issue text
 reaches their prompts. Keep the unauthenticated dashboard on loopback.
 
-Commands are installed in `~/.local/bin`. Add it to this shell's PATH and your
+Commands (`coordinare`, `performer` and `nare`) are installed in `~/.local/bin`. Add it to this shell's PATH and your
 shell profile if needed:
 
 ```sh
