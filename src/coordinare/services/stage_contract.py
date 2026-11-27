@@ -23,10 +23,9 @@ Rules the adapter enforces for every provider:
   so a repeated submission (a restart, a re-dispatch) finds the same job instead of
   starting a second one.
 - An attempt that ended without delivering anything is retried under the next attempt
-  number. An attempt that ended in a block for a person (an escalation, or a delivery
-  that is confirmed or uncertain) is never resubmitted automatically: every dispatch finds
-  it again and blocks again, until an operator restarts the stage, which is the only thing
-  that starts the next attempt.
+  number. Any other finished attempt (a verdict, an escalation, a delivery that is
+  confirmed or uncertain) is never resubmitted automatically: every dispatch finds it
+  again. Only an operator restart of the stage starts the next attempt.
 - An outcome whose judged head is not the pull request's current head is refused as a
   retryable error, so a verdict is never applied to a head it did not see.
 - Provider failures and unreachability are retryable system errors (a
@@ -205,20 +204,25 @@ class ExternalStageService:
         self._stage = stage
         self._read_pr = pr_reader
         self.performer_id = stage_provider_id(provider.name, stage)
-        #: Cards an operator restarted this stage for: their next dispatch may walk past
-        #: an attempt that blocked. One-shot, and in memory on purpose: a restarted
-        #: daemon forgets it, which is the side that never posts twice.
+        #: Cards whose current dispatch carries an operator restart of this stage. Set or
+        #: cleared on every dispatch from the persisted restart override, and consumed by
+        #: the submit, so a permission never outlives the dispatch it was given for.
         self._fresh: set[str] = set()
-        #: First attempt worth asking for, per (card, head), once an operator restart has
-        #: walked past a blocked attempt. In memory for the same reason as ``_fresh``.
+        #: First attempt worth asking for, per card and head, once an operator restart
+        #: walked past a finished attempt. In memory: after a daemon restart, dispatch
+        #: starts at attempt 1 again and finds the finished job, the side that never
+        #: posts twice.
         self._floor: dict[tuple[str, str], int] = {}
 
     #: Dispatch needs no workspace, env cache or performer slot: the provider works from GitHub.
     external_stage = True
 
-    def allow_fresh_attempt(self, card_id: str) -> None:
-        """An operator restarted this stage: the card's next dispatch may start a new attempt."""
-        self._fresh.add(card_id)
+    def set_fresh_attempt(self, card_id: str, *, allowed: bool) -> None:
+        """Whether this dispatch of the card carries an operator restart of the stage."""
+        if allowed:
+            self._fresh.add(card_id)
+        else:
+            self._fresh.discard(card_id)
 
     @property
     def provider_name(self) -> str:
@@ -359,11 +363,13 @@ class ExternalStageService:
     async def _submit(self, request: StageRequest, *, fresh: bool) -> StageJob:
         """Find the live job for this head, walking past attempts that are finished with.
 
-        An attempt that delivered nothing is always finished with. One that ended in a
-        block for a person is finished with only when an operator restarted the stage
-        (``fresh``); otherwise it is returned, and the card blocks on it again.
+        An attempt that delivered nothing is always finished with. Any other finished
+        attempt is finished with only when an operator restarted the stage (``fresh``);
+        otherwise it is returned, and the card gets its verdict or block again.
         """
         key = (request.card_id, request.head_sha)
+        for stale in [k for k in self._floor if k[0] == request.card_id and k != key]:
+            del self._floor[stale]
         passed_block = False
         for attempt in range(self._floor.get(key, 1), MAX_ATTEMPTS + 1):
             job = await self._provider.submit(request, request.request_id(attempt))
@@ -470,15 +476,8 @@ class ExternalStageService:
 def _finished_with(job: StageJob, *, fresh: bool) -> bool:
     if job.state is JobState.RETRYABLE:
         return True
-    if not fresh:
-        return False
-    if job.state is JobState.NEEDS_HUMAN:
-        return True
-    return (
-        job.state is JobState.DONE
-        and job.outcome is not None
-        and job.outcome.verdict is StageVerdict.NEEDS_HUMAN
-    )
+    # An operator restart always asks again (125 V1), whatever the last attempt said.
+    return fresh and job.state in (JobState.NEEDS_HUMAN, JobState.DONE)
 
 
 def _session_id(ref: str, request: StageRequest) -> str:

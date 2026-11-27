@@ -234,17 +234,22 @@ def _outcome(
     if verdict is None or not re.fullmatch(r"[0-9a-f]{40}", head):
         return None, "its result has no usable verdict and head"
     review = _as_dict(result.get("review"))
-    if posted:
-        # A posted job must carry the receipt of the review it posted, attached to the
-        # head Scrutare captured. Without it nothing proves a review exists for that head.
-        if not review.get("html_url") or str(review.get("commit_id") or "") != head:
-            return None, "its review receipt is missing or names another commit"
-        login = str(review.get("login") or "")
-        if review_login and login and normalize_login(login) != normalize_login(review_login):
-            return None, (
-                f"it posted as {login!r}, not the configured review_login {review_login!r}; "
-                "correct review_login so its review is recognised as the stage's own"
-            )
+    commit = str(review.get("commit_id") or "")
+    if commit and commit != head:
+        # The receipt names the commit GitHub attached the review to; it must be the head
+        # Scrutare captured, or the document contradicts itself.
+        return None, "its review receipt names another commit"
+    # A posted pass or change request must carry the receipt of the review it posted,
+    # bound to that head: without it nothing proves the review exists. An escalation
+    # blocks for a person either way, so it keeps its own message.
+    if posted and verdict is not StageVerdict.NEEDS_HUMAN and (not review.get("html_url") or not commit):
+        return None, "its review receipt is missing"
+    login = str(review.get("login") or "")
+    if review_login and login and normalize_login(login) != normalize_login(review_login):
+        return None, (
+            f"it posted as {login!r}, not the configured review_login {review_login!r}; "
+            "correct review_login so its review is recognised as the stage's own"
+        )
     return StageOutcome(
         verdict=verdict,
         reviewed_head=head,

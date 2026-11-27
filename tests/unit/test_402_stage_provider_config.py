@@ -163,6 +163,7 @@ def test_routing_follows_the_effective_config() -> None:
     assert stage_provider_for(state, "implementing") == (None, None)
 
 
+@pytest.mark.asyncio
 async def test_a_symphony_that_opts_out_never_reaches_the_global_provider() -> None:
     state, _ = _route_state(_config(reviewer={"provider": "scrutare"}), None)
     state["config"] = _config()
@@ -208,6 +209,7 @@ class _FullSlots:
         return True
 
 
+@pytest.mark.asyncio
 async def test_dispatch_acquires_the_provider_for_an_opted_in_symphony() -> None:
     performer = object()
     state, service = _route_state(_config(reviewer={"provider": "scrutare"}), performer)
@@ -221,6 +223,7 @@ async def test_dispatch_acquires_the_provider_for_an_opted_in_symphony() -> None
     assert ctx["slot_manager"] is None  # nothing to release on an error path
 
 
+@pytest.mark.asyncio
 async def test_dispatch_keeps_the_performer_when_nothing_opts_in() -> None:
     performer = object()
     state, _ = _route_state(_config(), performer)
@@ -232,6 +235,7 @@ async def test_dispatch_keeps_the_performer_when_nothing_opts_in() -> None:
     assert ctx["service"] is performer
 
 
+@pytest.mark.asyncio
 async def test_dispatch_blocks_a_card_whose_provider_is_missing() -> None:
     config = _config(reviewer={"provider": "scrutare"})
     state: dict[str, Any] = {"config": config, "performer_services": {"reviewing": object()}, "performer_services_by_id": {}}
@@ -276,17 +280,20 @@ def _monitor_state(reviews: list[dict[str, Any]], decision: str) -> dict[str, An
     return state
 
 
+@pytest.mark.asyncio
 async def test_a_scrutare_approval_never_merges() -> None:
     result = await monitor_pr(_monitor_state([_scrutare_review("APPROVED")], "APPROVED"))
     assert result["phase"] == "monitoring_pr"
 
 
+@pytest.mark.asyncio
 async def test_a_scrutare_change_request_is_not_routed_a_second_time() -> None:
     result = await monitor_pr(_monitor_state([_scrutare_review("CHANGES_REQUESTED")], "CHANGES_REQUESTED"))
     assert result["phase"] == "monitoring_pr"
     assert not result.get("pending_reviews")
 
 
+@pytest.mark.asyncio
 async def test_the_graphql_form_of_the_bot_login_is_recognised() -> None:
     review = {**_scrutare_review("APPROVED"), "author_login": LOGIN.removesuffix("[bot]")}
     state = _monitor_state([review], "APPROVED")
@@ -301,6 +308,7 @@ def test_only_providers_a_role_uses_are_skipped() -> None:
     assert provider_review_logins(_config(reviewer={"provider": "scrutare"})) == {"vivi-scrutare"}
 
 
+@pytest.mark.asyncio
 async def test_a_human_approval_beside_scrutare_still_merges() -> None:
     human = {"id": "RVW_H", "author_login": "alice", "state": "APPROVED", "commit_oid": _HEAD,
              "submitted_at": "2026-11-27T11:00:00Z", "comments": []}
@@ -323,6 +331,7 @@ def test_the_dashboard_config_page_says_a_provider_ignores_the_backend() -> None
     assert "ignores its backend, mode and workflow" in setting["help"]
 
 
+@pytest.mark.asyncio
 async def test_an_operator_restart_lets_the_provider_start_a_fresh_attempt() -> None:
     state, service = _route_state(_config(reviewer={"provider": "scrutare"}), object())
     ctx: dict[str, Any] = {
@@ -334,8 +343,14 @@ async def test_an_operator_restart_lets_the_provider_start_a_fresh_attempt() -> 
     state["pending_override"] = {"action": "restart", "applied": True, "target_stage": "reviewing"}
     await _acquire_via_slot_manager(state, ctx)
     assert "CARD_1" in service._fresh
+    # A permission from a dispatch that never reached the provider does not linger once
+    # the override is gone (cancelled, or reset).
+    state["pending_override"] = None
+    await _acquire_via_slot_manager(state, ctx)
+    assert "CARD_1" not in service._fresh
 
 
+@pytest.mark.asyncio
 async def test_a_provider_dispatch_needs_no_workspace_or_env_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     """The dispatch body skips the clone and env-cache gates and submits straight away."""
     from unittest.mock import AsyncMock

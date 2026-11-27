@@ -114,6 +114,7 @@ def test_parse_pr_url() -> None:
 # -- dispatch and polling -----------------------------------------------------------------
 
 
+@pytest.mark.asyncio
 async def test_dispatch_submits_the_current_head(fake: FakeScrutare, github: FakeGitHub) -> None:
     service = _service(fake, github)
     accepted = await service.dispatch_card(dict(CARD))
@@ -123,6 +124,7 @@ async def test_dispatch_submits_the_current_head(fake: FakeScrutare, github: Fak
     assert accepted["session_id"].startswith(fake.by_request[rid] + "@acme/widgets#7@PR_node7")
 
 
+@pytest.mark.asyncio
 async def test_a_queued_job_is_working(fake: FakeScrutare, github: FakeGitHub) -> None:
     service = _service(fake, github)
     accepted = await service.dispatch_card(dict(CARD))
@@ -130,6 +132,7 @@ async def test_a_queued_job_is_working(fake: FakeScrutare, github: FakeGitHub) -
     assert status["status"] == "working"
 
 
+@pytest.mark.asyncio
 async def test_approve_passes_the_stage_for_the_reviewed_head(fake: FakeScrutare, github: FakeGitHub) -> None:
     service = _service(fake, github)
     accepted = await service.dispatch_card(dict(CARD))
@@ -143,6 +146,7 @@ async def test_approve_passes_the_stage_for_the_reviewed_head(fake: FakeScrutare
     assert record["record_ref"].endswith("pullrequestreview-4242")
 
 
+@pytest.mark.asyncio
 async def test_changes_requested_carries_the_posted_findings(fake: FakeScrutare, github: FakeGitHub) -> None:
     service = _service(fake, github)
     accepted = await service.dispatch_card(dict(CARD))
@@ -167,6 +171,7 @@ async def test_changes_requested_carries_the_posted_findings(fake: FakeScrutare,
     assert status["comments"][0]["author_login"] == LOGIN
 
 
+@pytest.mark.asyncio
 async def test_escalated_needs_a_human(fake: FakeScrutare, github: FakeGitHub) -> None:
     service = _service(fake, github)
     accepted = await service.dispatch_card(dict(CARD))
@@ -177,6 +182,7 @@ async def test_escalated_needs_a_human(fake: FakeScrutare, github: FakeGitHub) -
     assert "pullrequestreview-4242" in status["questions"][0]
 
 
+@pytest.mark.asyncio
 async def test_a_result_for_an_older_head_is_refused(fake: FakeScrutare, github: FakeGitHub) -> None:
     service = _service(fake, github)
     accepted = await service.dispatch_card(dict(CARD))
@@ -186,6 +192,7 @@ async def test_a_result_for_an_older_head_is_refused(fake: FakeScrutare, github:
         await service.check_status(accepted["session_id"])
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["failed", "interrupted", "not_started"])
 async def test_a_job_that_sent_nothing_is_a_retryable_error(
     fake: FakeScrutare, github: FakeGitHub, status: str,
@@ -197,6 +204,7 @@ async def test_a_job_that_sent_nothing_is_a_retryable_error(
         await service.check_status(accepted["session_id"])
 
 
+@pytest.mark.asyncio
 async def test_a_job_that_may_have_posted_blocks_instead_of_resubmitting(fake: FakeScrutare, github: FakeGitHub) -> None:
     service = _service(fake, github)
     accepted = await service.dispatch_card(dict(CARD))
@@ -209,6 +217,7 @@ async def test_a_job_that_may_have_posted_blocks_instead_of_resubmitting(fake: F
     assert fake.created == 1
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("ending", ["uncertain", "confirmed", "escalated"])
 async def test_only_an_operator_restart_starts_a_fresh_review_after_a_block(
     fake: FakeScrutare, github: FakeGitHub, ending: str,
@@ -226,7 +235,7 @@ async def test_only_an_operator_restart_starts_a_fresh_review_after_a_block(
     assert _job_of(again["session_id"]) == job
     assert fake.created == 1
     # An operator restart of the stage is the one signal that starts the next attempt.
-    service.allow_fresh_attempt(CARD["id"])
+    service.set_fresh_attempt(CARD["id"], allowed=True)
     fresh = await service.dispatch_card(dict(CARD))
     assert _job_of(fresh["session_id"]) != job
     assert fake.by_request[_request().request_id(2)] == _job_of(fresh["session_id"])
@@ -238,6 +247,7 @@ async def test_only_an_operator_restart_starts_a_fresh_review_after_a_block(
     assert fake.created == 3
 
 
+@pytest.mark.asyncio
 async def test_findings_match_the_graphql_form_of_the_bot_login(fake: FakeScrutare, github: FakeGitHub) -> None:
     """REST names the bot ``slug[bot]``; GraphQL's author.login is ``slug``."""
     service = _service(fake, github)
@@ -251,6 +261,7 @@ async def test_findings_match_the_graphql_form_of_the_bot_login(fake: FakeScruta
     assert [c["body"] for c in status["comments"]] == ["Off by one."]
 
 
+@pytest.mark.asyncio
 async def test_feedback_queued_for_a_provider_is_reported_not_silently_dropped(
     fake: FakeScrutare, github: FakeGitHub,
 ) -> None:
@@ -261,6 +272,7 @@ async def test_feedback_queued_for_a_provider_is_reported_not_silently_dropped(
     assert any(e["event"] == "stage_provider.feedback_not_forwarded" and e["items"] == 1 for e in logs)
 
 
+@pytest.mark.asyncio
 async def test_scrutare_unreachable_is_a_retryable_error_at_dispatch_and_poll(
     fake: FakeScrutare, github: FakeGitHub,
 ) -> None:
@@ -275,6 +287,7 @@ async def test_scrutare_unreachable_is_a_retryable_error_at_dispatch_and_poll(
     assert health["status"] == "unhealthy"
 
 
+@pytest.mark.asyncio
 async def test_github_unreadable_is_a_retryable_error(fake: FakeScrutare, github: FakeGitHub) -> None:
     github.fail = True
     with pytest.raises(TransportError, match="GitHub"):
@@ -282,12 +295,14 @@ async def test_github_unreadable_is_a_retryable_error(fake: FakeScrutare, github
     assert fake.created == 0
 
 
+@pytest.mark.asyncio
 async def test_a_card_without_a_pull_request_is_not_submitted(fake: FakeScrutare, github: FakeGitHub) -> None:
     with pytest.raises(TransportError, match="no pull request"):
         await _service(fake, github).dispatch_card({"id": "PVTI_card1"})
     assert fake.created == 0
 
 
+@pytest.mark.asyncio
 async def test_an_unrecognised_session_is_a_retryable_error(fake: FakeScrutare, github: FakeGitHub) -> None:
     with pytest.raises(TransportError, match="unrecognised session"):
         await _service(fake, github).check_status("not-a-session")
@@ -296,6 +311,7 @@ async def test_an_unrecognised_session_is_a_retryable_error(fake: FakeScrutare, 
 # -- the acceptance scenarios ----------------------------------------------------------------
 
 
+@pytest.mark.asyncio
 async def test_restart_during_a_review_resumes_the_same_job(fake: FakeScrutare, github: FakeGitHub) -> None:
     """A new daemon (new service object) re-dispatching the card finds the running job."""
     before = await _service(fake, github).dispatch_card(dict(CARD))
@@ -311,6 +327,7 @@ async def test_restart_during_a_review_resumes_the_same_job(fake: FakeScrutare, 
     assert fake.created == 1
 
 
+@pytest.mark.asyncio
 async def test_one_review_per_head_and_the_next_head_is_reviewed_again(fake: FakeScrutare, github: FakeGitHub) -> None:
     service = _service(fake, github)
     first = await service.dispatch_card(dict(CARD))
@@ -328,6 +345,7 @@ async def test_one_review_per_head_and_the_next_head_is_reviewed_again(fake: Fak
     assert status["head_sha"] == NEXT
 
 
+@pytest.mark.asyncio
 async def test_a_retry_after_a_failure_that_sent_nothing_uses_the_next_attempt(
     fake: FakeScrutare, github: FakeGitHub,
 ) -> None:
@@ -343,6 +361,7 @@ async def test_a_retry_after_a_failure_that_sent_nothing_uses_the_next_attempt(
     assert fake.created == 2
 
 
+@pytest.mark.asyncio
 async def test_attempts_are_bounded() -> None:
     class AlwaysSpent:
         name = "spent"
@@ -366,6 +385,7 @@ def test_only_contracted_stages_can_be_served() -> None:
         ExternalStageService(object(), stage="implementing", pr_reader=FakeGitHub().read)
 
 
+@pytest.mark.asyncio
 async def test_relay_feedback_is_refused_plainly(fake: FakeScrutare, github: FakeGitHub) -> None:
     reply = await _service(fake, github).relay_feedback({"pr_url": "x"})
     assert reply["status"] == "error"
@@ -395,6 +415,7 @@ def _monitored_state(service: ExternalStageService, session_id: str) -> dict[str
     return state
 
 
+@pytest.mark.asyncio
 async def test_monitor_routes_scrutare_findings_to_the_implementer(fake: FakeScrutare, github: FakeGitHub) -> None:
     from coordinare.graph.nodes.monitor_performer import monitor_performer
 
@@ -414,6 +435,7 @@ async def test_monitor_routes_scrutare_findings_to_the_implementer(fake: FakeScr
     assert "reviewing" not in (result.get("stage_verdicts") or {})
 
 
+@pytest.mark.asyncio
 async def test_monitor_records_scrutare_approval_against_the_reviewed_head(fake: FakeScrutare, github: FakeGitHub) -> None:
     from coordinare.graph.nodes.monitor_performer import monitor_performer
 
@@ -427,6 +449,7 @@ async def test_monitor_records_scrutare_approval_against_the_reviewed_head(fake:
     assert result["performer_stage"] == "documenting"
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("ending", ["moved_head", "failed", "unreachable"])
 async def test_monitor_treats_a_refused_or_failed_review_as_a_system_error(
     fake: FakeScrutare, github: FakeGitHub, ending: str,
@@ -448,6 +471,7 @@ async def test_monitor_treats_a_refused_or_failed_review_as_a_system_error(
     assert "reviewing" not in (result.get("stage_verdicts") or {})
 
 
+@pytest.mark.asyncio
 async def test_monitor_keeps_waiting_while_the_job_runs(fake: FakeScrutare, github: FakeGitHub) -> None:
     from coordinare.graph.nodes.monitor_performer import monitor_performer
 
@@ -458,6 +482,7 @@ async def test_monitor_keeps_waiting_while_the_job_runs(fake: FakeScrutare, gith
     assert result["phase"] == "monitoring_performer"
 
 
+@pytest.mark.asyncio
 async def test_startup_reconciliation_keeps_a_provider_session_for_polling(
     fake: FakeScrutare, github: FakeGitHub,
 ) -> None:
@@ -491,3 +516,29 @@ async def test_startup_reconciliation_keeps_a_provider_session_for_polling(
     )
     assert state["active_sessions"]["PVTI_card1"]["agent_dispatch"] == dispatch
     assert fake.created == 1
+
+
+@pytest.mark.asyncio
+async def test_an_operator_restart_after_a_verdict_asks_again(fake: FakeScrutare, github: FakeGitHub) -> None:
+    """125 V1: an operator-forced restart always dispatches, even after an approval."""
+    service = _service(fake, github)
+    first = await service.dispatch_card(dict(CARD))
+    fake.post(_job_of(first["session_id"]), verdict="approve", head=HEAD)
+    assert (await service.dispatch_card(dict(CARD)))["session_id"] == first["session_id"]
+    service.set_fresh_attempt(CARD["id"], allowed=True)
+    again = await service.dispatch_card(dict(CARD))
+    assert _job_of(again["session_id"]) != _job_of(first["session_id"])
+    assert fake.created == 2
+
+
+@pytest.mark.asyncio
+async def test_the_attempt_floor_is_dropped_when_the_head_moves(fake: FakeScrutare, github: FakeGitHub) -> None:
+    service = _service(fake, github)
+    first = await service.dispatch_card(dict(CARD))
+    fake.finish(_job_of(first["session_id"]), "failed", {"delivery": "uncertain"})
+    service.set_fresh_attempt(CARD["id"], allowed=True)
+    await service.dispatch_card(dict(CARD))
+    assert (CARD["id"], HEAD) in service._floor
+    github.head = NEXT
+    await service.dispatch_card(dict(CARD))
+    assert all(key[1] != HEAD for key in service._floor)

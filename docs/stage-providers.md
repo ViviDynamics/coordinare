@@ -34,12 +34,13 @@ The adapter enforces these rules for every provider:
   that ended without delivering anything is a retryable system error: the card is retried on
   the daemon's usual schedule and blocks with the reason once that budget is spent. A job
   that ended without delivering anything is retried under the next attempt's request id.
-- **A blocked attempt is never resubmitted automatically.** A job that may already have
-  posted its record, or that escalated to a person, blocks the card with the reason. Any
-  automatic dispatch finds that job again and blocks again. Only an operator restart of the
-  stage starts the next attempt for the same head. That permission lives in the running
-  daemon: after a daemon restart, a card whose earlier attempt blocked blocks again until the
-  stage is restarted again, which is the side that never posts twice.
+- **A finished attempt is never resubmitted automatically.** A job that may already have
+  posted its record, or that escalated to a person, blocks the card with the reason, and any
+  automatic dispatch finds that job again. Only an operator restart of the stage starts the
+  next attempt for the same head, whatever the last attempt said. A restart that has not
+  been dispatched yet survives a daemon restart (the override is persisted). What a daemon
+  restart forgets is which later attempt a restart already started: the next dispatch finds
+  the earlier, finished job again, which is the side that never posts twice.
 
 ## Scrutare for the reviewing stage
 

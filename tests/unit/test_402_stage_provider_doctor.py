@@ -28,6 +28,7 @@ def _config(*, opted_in: bool) -> ProjectConfiguration:
     )
 
 
+@pytest.mark.asyncio
 async def test_doctor_passes_a_reachable_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     async def healthy(self: ScrutareProvider) -> tuple[bool, str]:
         return True, "reachable, token accepted"
@@ -39,6 +40,7 @@ async def test_doctor_passes_a_reachable_provider(monkeypatch: pytest.MonkeyPatc
     assert "reviewer" in result.name
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["refused", "unreachable"])
 async def test_doctor_fails_an_unusable_provider_and_names_the_fix(
     monkeypatch: pytest.MonkeyPatch, failure: str,
@@ -56,6 +58,7 @@ async def test_doctor_fails_an_unusable_provider_and_names_the_fix(
     assert "SCRUTARE_API_TOKEN" in result.fix
 
 
+@pytest.mark.asyncio
 async def test_doctor_ignores_a_provider_no_role_uses(monkeypatch: pytest.MonkeyPatch) -> None:
     async def never(self: ScrutareProvider) -> tuple[bool, str]:
         raise AssertionError
@@ -74,6 +77,7 @@ class _GitHub:
         return {"head_oid": self.head, "reviews": [{"id": "R1"}]}
 
 
+@pytest.mark.asyncio
 async def test_startup_builds_the_service_and_reads_prs_with_the_owners_github() -> None:
     default, symphony = _GitHub("a" * 40), _GitHub("b" * 40)
     services = _build_stage_provider_services(_config(opted_in=True), {"other": symphony}, default)

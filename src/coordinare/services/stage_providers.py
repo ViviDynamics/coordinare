@@ -97,9 +97,12 @@ async def claim_stage_provider(
         return False, None
     from coordinare.graph.nodes.dispatch_performer import _restart_requires_dispatch
 
-    if _restart_requires_dispatch(state, ctx.get("performer_stage")):
-        # An operator restarted the stage: a blocked attempt may give way to a new one.
-        provider.allow_fresh_attempt(str(ctx.get("card_id") or ""))
+    # Re-derived on every dispatch from the persisted restart override, so a permission
+    # from a dispatch that never reached the provider cannot linger.
+    provider.set_fresh_attempt(
+        str(ctx.get("card_id") or ""),
+        allowed=_restart_requires_dispatch(state, ctx.get("performer_stage")),
+    )
     state["slot_queued_since"] = None
     ctx["service"] = provider
     ctx["slot_manager"] = None  # no slot was taken, so none is released on an error path

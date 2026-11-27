@@ -42,6 +42,7 @@ def _provider(fake: FakeScrutare, **kw: object) -> ScrutareProvider:
     return ScrutareProvider("scrutare", _config(**kw), transport=fake.transport)
 
 
+@pytest.mark.asyncio
 async def test_submit_sends_the_documented_request_with_a_bearer_token(fake: FakeScrutare) -> None:
     job = await _provider(fake).submit(_request(), "rid-1")
     sent = fake.requests[-1]
@@ -55,6 +56,7 @@ async def test_submit_sends_the_documented_request_with_a_bearer_token(fake: Fak
     assert job.detail == "queued"
 
 
+@pytest.mark.asyncio
 async def test_the_same_request_id_finds_the_same_job(fake: FakeScrutare) -> None:
     provider = _provider(fake)
     first = await provider.submit(_request(), "rid-1")
@@ -63,6 +65,7 @@ async def test_the_same_request_id_finds_the_same_job(fake: FakeScrutare) -> Non
     assert fake.created == 1
 
 
+@pytest.mark.asyncio
 async def test_a_request_id_reused_for_another_target_is_an_error_not_a_job(fake: FakeScrutare) -> None:
     provider = _provider(fake)
     await provider.submit(_request(), "rid-1")
@@ -70,12 +73,14 @@ async def test_a_request_id_reused_for_another_target_is_an_error_not_a_job(fake
         await provider.submit(_request(number=8), "rid-1")
 
 
+@pytest.mark.asyncio
 async def test_a_refused_token_is_a_configuration_error(fake: FakeScrutare) -> None:
     fake.token = "something-else"
     with pytest.raises(PerformerAuthError, match="SCRUTARE_TEST_TOKEN"):
         await _provider(fake).submit(_request(), "rid-1")
 
 
+@pytest.mark.asyncio
 async def test_an_unset_token_is_a_configuration_error(fake: FakeScrutare, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SCRUTARE_TEST_TOKEN")
     with pytest.raises(PerformerAuthError, match="SCRUTARE_TEST_TOKEN is not set"):
@@ -83,6 +88,7 @@ async def test_an_unset_token_is_a_configuration_error(fake: FakeScrutare, monke
     assert fake.requests == []
 
 
+@pytest.mark.asyncio
 async def test_unreachable_scrutare_is_a_transport_error(fake: FakeScrutare) -> None:
     fake.up = False
     with pytest.raises(TransportError, match="unreachable"):
@@ -91,6 +97,7 @@ async def test_unreachable_scrutare_is_a_transport_error(fake: FakeScrutare) -> 
         await _provider(fake).poll("0123abcd")
 
 
+@pytest.mark.asyncio
 async def test_poll_reads_the_job_and_maps_a_posted_review(fake: FakeScrutare) -> None:
     provider = _provider(fake)
     job = await provider.submit(_request(), "rid-1")
@@ -105,16 +112,19 @@ async def test_poll_reads_the_job_and_maps_a_posted_review(fake: FakeScrutare) -
     assert done.outcome.record_ref.endswith("pullrequestreview-4242")
 
 
+@pytest.mark.asyncio
 async def test_poll_of_an_unknown_job_is_retryable(fake: FakeScrutare) -> None:
     with pytest.raises(TransportError, match="404"):
         await _provider(fake).poll("deadbeef")
 
 
+@pytest.mark.asyncio
 async def test_health_reports_reachable_and_token_accepted(fake: FakeScrutare) -> None:
     ok, detail = await _provider(fake).health()
     assert ok, detail
 
 
+@pytest.mark.asyncio
 async def test_health_refuses_a_404_that_is_not_scrutares(fake: FakeScrutare) -> None:
     import httpx
 
@@ -129,6 +139,7 @@ async def test_health_refuses_a_404_that_is_not_scrutares(fake: FakeScrutare) ->
     assert "not Scrutare's performer API" in detail
 
 
+@pytest.mark.asyncio
 async def test_health_names_a_refused_token(fake: FakeScrutare) -> None:
     fake.token = "something-else"
     ok, detail = await _provider(fake).health()
@@ -225,3 +236,20 @@ def test_an_unknown_status_fails_closed() -> None:
 def test_unchanged_without_a_verdict_is_not_a_pass() -> None:
     job = job_from_record({"id": "j1", "status": "unchanged", "result": {"reason": "replies are not enabled"}})
     assert job.state is JobState.NEEDS_HUMAN
+
+
+def test_an_unchanged_result_whose_receipt_names_another_commit_is_not_a_pass() -> None:
+    result = posted_result(verdict="approve", head=HEAD)
+    result["status"] = "unchanged"
+    result["review"]["commit_id"] = OTHER
+    job = job_from_record({"id": "j1", "status": "unchanged", "result": result})
+    assert job.state is JobState.NEEDS_HUMAN
+
+
+def test_a_posted_escalation_without_a_receipt_still_reads_as_an_escalation() -> None:
+    result = posted_result(verdict="escalated", head=HEAD)
+    del result["review"]
+    job = job_from_record({"id": "j1", "status": "posted", "result": result})
+    assert job.state is JobState.DONE
+    assert job.outcome is not None
+    assert job.outcome.verdict is StageVerdict.NEEDS_HUMAN
