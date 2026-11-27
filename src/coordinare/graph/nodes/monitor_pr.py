@@ -65,8 +65,8 @@ from coordinare.services.review_staleness import (
     StalenessConfig,
     classify_review_staleness,
 )
-from coordinare.services.stage_contract import normalize_login
 from coordinare.services.stage_providers import provider_review_logins
+from coordinare.stage_provider_config import normalize_login
 
 logger = structlog.get_logger(__name__)
 

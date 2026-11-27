@@ -14,7 +14,7 @@ from coordinare.transport.base import TransportError
 
 _SCRUTARE = {
     "kind": "scrutare", "url": "http://scrutare.test", "token_env": "SCRUTARE_API_TOKEN",
-    "installation": 7,
+    "installation": 7, "review_login": "vivi-scrutare[bot]",
 }
 
 

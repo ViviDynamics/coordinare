@@ -19,7 +19,7 @@ OTHER = "b" * 40
 def _config(**kw: object) -> ScrutareProviderConfig:
     base: dict[str, object] = {
         "kind": "scrutare", "url": "http://scrutare.test", "token_env": "SCRUTARE_TEST_TOKEN",
-        "installation": 169458182,
+        "installation": 169458182, "review_login": LOGIN,
     }
     base.update(kw)
     return ScrutareProviderConfig.model_validate(base)
@@ -170,6 +170,40 @@ def test_an_end_that_may_have_delivered_is_never_retried(status: str, delivery: 
     job = job_from_record({"id": "j1", "status": status, "result": {"delivery": delivery}})
     assert job.state is JobState.NEEDS_HUMAN
     assert job.reason
+
+
+@pytest.mark.parametrize("delivery", ["confirmed", "uncertain"])
+def test_a_superseded_job_that_may_have_posted_is_never_retried(delivery: str) -> None:
+    job = job_from_record({"id": "j1", "status": "superseded", "result": {"delivery": delivery}})
+    assert job.state is JobState.NEEDS_HUMAN
+
+
+def test_a_superseded_job_that_never_ran_is_retryable() -> None:
+    job = job_from_record({"id": "j1", "status": "superseded", "result": {"superseded_by": "j0"}})
+    assert job.state is JobState.RETRYABLE
+
+
+@pytest.mark.parametrize("damage", ["no_review", "no_url", "no_commit"])
+def test_a_posted_job_without_a_head_bound_receipt_is_not_a_pass(damage: str) -> None:
+    result = posted_result(verdict="approve", head=HEAD)
+    if damage == "no_review":
+        del result["review"]
+    elif damage == "no_url":
+        result["review"]["html_url"] = ""
+    else:
+        del result["review"]["commit_id"]
+    job = job_from_record({"id": "j1", "status": "posted", "result": result})
+    assert job.state is JobState.NEEDS_HUMAN
+    assert "receipt" in job.reason
+
+
+def test_a_review_posted_under_another_login_is_not_a_pass() -> None:
+    result = posted_result(verdict="approve", head=HEAD, login="someone-else[bot]")
+    job = job_from_record({"id": "j1", "status": "posted", "result": result}, review_login=LOGIN)
+    assert job.state is JobState.NEEDS_HUMAN
+    assert "review_login" in job.reason
+    same = posted_result(verdict="approve", head=HEAD, login=LOGIN.removesuffix("[bot]"))
+    assert job_from_record({"id": "j1", "status": "posted", "result": same}, review_login=LOGIN).state is JobState.DONE
 
 
 def test_an_unusable_success_document_is_not_a_pass() -> None:

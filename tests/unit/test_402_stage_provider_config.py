@@ -101,9 +101,19 @@ def test_unknown_provider_fields_and_kinds_are_refused() -> None:
         _config(providers={"scrutare": {**_SCRUTARE, "kind": "other"}})
 
 
-def test_a_provider_login_can_never_be_a_human_reviewer() -> None:
+@pytest.mark.parametrize("human", [LOGIN.upper(), LOGIN.removesuffix("[bot]")])
+def test_a_provider_login_can_never_be_a_human_reviewer(human: str) -> None:
     with pytest.raises(ValidationError, match="must never count as a human approval"):
-        _config(human_reviewers=["alice", LOGIN.upper()])
+        _config(human_reviewers=["alice", human])
+
+
+@pytest.mark.parametrize("login", [None, "", "   "])
+def test_a_provider_needs_its_review_login(login: str | None) -> None:
+    provider = {k: v for k, v in _SCRUTARE.items() if k != "review_login"}
+    if login is not None:
+        provider["review_login"] = login
+    with pytest.raises(ValidationError, match="review_login"):
+        _config(providers={"scrutare": provider})
 
 
 def test_a_provider_name_must_be_a_plain_key() -> None:
@@ -311,3 +321,63 @@ def test_the_dashboard_config_page_says_a_provider_ignores_the_backend() -> None
     settings = [s for section in snapshot["sections"] for s in section.get("settings", [])]
     (setting,) = [s for s in settings if s["key"] == "global.stage_providers"]
     assert "ignores its backend, mode and workflow" in setting["help"]
+
+
+async def test_an_operator_restart_lets_the_provider_start_a_fresh_attempt() -> None:
+    state, service = _route_state(_config(reviewer={"provider": "scrutare"}), object())
+    ctx: dict[str, Any] = {
+        "performer_stage": "reviewing", "card_id": "CARD_1",
+        "performer_services": state["performer_services"],
+    }
+    await _acquire_via_slot_manager(state, ctx)
+    assert "CARD_1" not in service._fresh
+    state["pending_override"] = {"action": "restart", "applied": True, "target_stage": "reviewing"}
+    await _acquire_via_slot_manager(state, ctx)
+    assert "CARD_1" in service._fresh
+
+
+async def test_a_provider_dispatch_needs_no_workspace_or_env_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dispatch body skips the clone and env-cache gates and submits straight away."""
+    from unittest.mock import AsyncMock
+
+    from coordinare.graph.nodes import dispatch_performer as dp
+
+    config = _config(reviewer={"provider": "scrutare"})
+    state, service = _route_state(config, object())
+    full = initial_state()
+    full.update(state)
+    full.update(
+        performer_stage="reviewing",
+        current_card={"id": "CARD_1", "pr_url": "https://github.com/acme/widgets/pull/7",
+                      "pr_node_id": "PR_7", "status": "IN_PROGRESS", "title": "t"},
+        github_service=AsyncMock(),
+        workspace_manager=AsyncMock(),
+        env_cache={"widgets": object()},
+        current_symphony="widgets",
+    )
+
+    async def no_gates(state: Any, ctx: dict[str, Any]) -> None:
+        handled, terminal = await dp.claim_stage_provider(state, ctx)
+        assert handled
+        assert terminal is None
+
+    async def healthy(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def never(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a provider dispatch must not prepare a workspace or env cache")
+
+    async def dispatched(state: Any, ctx: dict[str, Any], volumes: Any, release: Any) -> Any:
+        state["dispatched_to"] = ctx["service"]
+        state["volumes"] = volumes
+        return state
+
+    monkeypatch.setattr(dp, "_run_dispatch_gates", no_gates)
+    monkeypatch.setattr(dp, "_check_service_health", healthy)
+    monkeypatch.setattr(dp, "_setup_workspace", never)
+    monkeypatch.setattr(dp, "_prepare_env_dispatch", never)
+    monkeypatch.setattr(dp, "_inject_pr_context", healthy)
+    monkeypatch.setattr(dp, "_execute_dispatch", dispatched)
+    result = await dp._dispatch_performer_body(full)
+    assert result["dispatched_to"] is service
+    assert result["volumes"] is None

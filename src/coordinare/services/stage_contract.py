@@ -23,9 +23,10 @@ Rules the adapter enforces for every provider:
   so a repeated submission (a restart, a re-dispatch) finds the same job instead of
   starting a second one.
 - An attempt that ended without delivering anything is retried under the next attempt
-  number. An attempt whose delivery is confirmed or uncertain is never resubmitted
-  automatically; the card blocks with the reason, and only a person sending the card back
-  to the stage starts the next attempt.
+  number. An attempt that ended in a block for a person (an escalation, or a delivery
+  that is confirmed or uncertain) is never resubmitted automatically: every dispatch finds
+  it again and blocks again, until an operator restarts the stage, which is the only thing
+  that starts the next attempt.
 - An outcome whose judged head is not the pull request's current head is refused as a
   retryable error, so a verdict is never applied to a head it did not see.
 - Provider failures and unreachability are retryable system errors (a
@@ -42,6 +43,7 @@ from typing import Any, Protocol
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
+from coordinare.stage_provider_config import normalize_login
 from coordinare.transport.base import TransportError
 
 logger = structlog.get_logger(__name__)
@@ -176,15 +178,6 @@ def parse_pr_url(pr_url: str) -> tuple[str, int] | None:
     return f"{match['owner']}/{match['repo']}", int(match["number"])
 
 
-def normalize_login(login: str) -> str:
-    """A GitHub login as both APIs can be compared on.
-
-    REST names an App's bot ``slug[bot]``; GraphQL's ``author.login`` names it ``slug``.
-    """
-    value = (login or "").strip().lower()
-    return value.removesuffix("[bot]")
-
-
 def stage_provider_id(name: str, stage: str) -> str:
     """The performer id a provider's service for one stage is registered under."""
     return f"stage-provider:{name}:{stage}"
@@ -212,6 +205,20 @@ class ExternalStageService:
         self._stage = stage
         self._read_pr = pr_reader
         self.performer_id = stage_provider_id(provider.name, stage)
+        #: Cards an operator restarted this stage for: their next dispatch may walk past
+        #: an attempt that blocked. One-shot, and in memory on purpose: a restarted
+        #: daemon forgets it, which is the side that never posts twice.
+        self._fresh: set[str] = set()
+        #: First attempt worth asking for, per (card, head), once an operator restart has
+        #: walked past a blocked attempt. In memory for the same reason as ``_fresh``.
+        self._floor: dict[tuple[str, str], int] = {}
+
+    #: Dispatch needs no workspace, env cache or performer slot: the provider works from GitHub.
+    external_stage = True
+
+    def allow_fresh_attempt(self, card_id: str) -> None:
+        """An operator restarted this stage: the card's next dispatch may start a new attempt."""
+        self._fresh.add(card_id)
 
     @property
     def provider_name(self) -> str:
@@ -243,7 +250,9 @@ class ExternalStageService:
                 card_id=request.card_id,
                 items=len(queued),
             )
-        job = await self._submit(request)
+        fresh = request.card_id in self._fresh
+        self._fresh.discard(request.card_id)
+        job = await self._submit(request, fresh=fresh)
         logger.info(
             "stage_provider.dispatched",
             provider=self._provider.name,
@@ -347,18 +356,22 @@ class ExternalStageService:
             raise TransportError(msg)
         return snapshot
 
-    async def _submit(self, request: StageRequest) -> StageJob:
+    async def _submit(self, request: StageRequest, *, fresh: bool) -> StageJob:
         """Find the live job for this head, walking past attempts that are finished with.
 
-        An attempt is finished with when it delivered nothing (retry it), or when it ended
-        in a block for a person (an escalation, or a delivery that may have happened). A
-        blocked card is only dispatched again after a person unblocks it, so reaching one
-        here means that person asked for a fresh review of the same head.
+        An attempt that delivered nothing is always finished with. One that ended in a
+        block for a person is finished with only when an operator restarted the stage
+        (``fresh``); otherwise it is returned, and the card blocks on it again.
         """
-        for attempt in range(1, MAX_ATTEMPTS + 1):
+        key = (request.card_id, request.head_sha)
+        passed_block = False
+        for attempt in range(self._floor.get(key, 1), MAX_ATTEMPTS + 1):
             job = await self._provider.submit(request, request.request_id(attempt))
-            if not _finished_with(job):
+            if not _finished_with(job, fresh=fresh):
+                if passed_block:
+                    self._floor[key] = attempt
                 return job
+            passed_block = passed_block or job.state is not JobState.RETRYABLE
             logger.info(
                 "stage_provider.attempt_spent",
                 provider=self._provider.name,
@@ -454,8 +467,12 @@ class ExternalStageService:
         }
 
 
-def _finished_with(job: StageJob) -> bool:
-    if job.state in (JobState.RETRYABLE, JobState.NEEDS_HUMAN):
+def _finished_with(job: StageJob, *, fresh: bool) -> bool:
+    if job.state is JobState.RETRYABLE:
+        return True
+    if not fresh:
+        return False
+    if job.state is JobState.NEEDS_HUMAN:
         return True
     return (
         job.state is JobState.DONE

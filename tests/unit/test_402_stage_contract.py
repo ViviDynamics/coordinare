@@ -210,10 +210,9 @@ async def test_a_job_that_may_have_posted_blocks_instead_of_resubmitting(fake: F
 
 
 @pytest.mark.parametrize("ending", ["uncertain", "confirmed", "escalated"])
-async def test_a_person_sending_a_blocked_card_back_gets_a_fresh_review(
+async def test_only_an_operator_restart_starts_a_fresh_review_after_a_block(
     fake: FakeScrutare, github: FakeGitHub, ending: str,
 ) -> None:
-    """A blocked card is dispatched again only after a person unblocks it."""
     service = _service(fake, github)
     accepted = await service.dispatch_card(dict(CARD))
     job = _job_of(accepted["session_id"])
@@ -222,10 +221,21 @@ async def test_a_person_sending_a_blocked_card_back_gets_a_fresh_review(
     else:
         fake.finish(job, "failed", {"delivery": ending})
     assert (await service.check_status(accepted["session_id"]))["status"] == "blocked"
+    # An automatic re-dispatch (retry, restart, unblock) finds the blocked attempt again.
     again = await service.dispatch_card(dict(CARD))
-    assert _job_of(again["session_id"]) != job
-    assert fake.by_request[_request().request_id(2)] == _job_of(again["session_id"])
-    assert fake.created == 2
+    assert _job_of(again["session_id"]) == job
+    assert fake.created == 1
+    # An operator restart of the stage is the one signal that starts the next attempt.
+    service.allow_fresh_attempt(CARD["id"])
+    fresh = await service.dispatch_card(dict(CARD))
+    assert _job_of(fresh["session_id"]) != job
+    assert fake.by_request[_request().request_id(2)] == _job_of(fresh["session_id"])
+    # The signal is one-shot, and later automatic dispatches keep to the new attempt.
+    assert (await service.dispatch_card(dict(CARD)))["session_id"] == fresh["session_id"]
+    fake.finish(_job_of(fresh["session_id"]), "failed", {"delivery": "not_sent"})
+    retried = await service.dispatch_card(dict(CARD))
+    assert fake.by_request[_request().request_id(3)] == _job_of(retried["session_id"])
+    assert fake.created == 3
 
 
 async def test_findings_match_the_graphql_form_of_the_bot_login(fake: FakeScrutare, github: FakeGitHub) -> None:

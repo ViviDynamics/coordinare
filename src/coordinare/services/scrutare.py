@@ -30,6 +30,7 @@ from coordinare.services.stage_contract import (
     StageRequest,
     StageVerdict,
 )
+from coordinare.stage_provider_config import normalize_login
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
 
@@ -176,7 +177,7 @@ def job_from_record(record: dict[str, Any], *, review_login: str | None = None) 
     if status in _PENDING:
         return StageJob(ref=ref, state=JobState.PENDING, detail=status)
     if status in _DONE:
-        outcome = _outcome(result, review_login=review_login)
+        outcome, problem = _outcome(result, posted=status == "posted", review_login=review_login)
         if outcome is None:
             # Scrutare itself treats an unusable success document as an uncertain outcome.
             return StageJob(
@@ -184,8 +185,8 @@ def job_from_record(record: dict[str, Any], *, review_login: str | None = None) 
                 state=JobState.NEEDS_HUMAN,
                 detail=status,
                 reason=(
-                    f"job {status} but its result is not a usable review result; inspect the "
-                    "job's artifacts before requesting another review"
+                    f"job {status} but {problem}; inspect the job's artifacts before requesting "
+                    "another review"
                 ),
             )
         return StageJob(ref=ref, state=JobState.DONE, outcome=outcome, detail=status)
@@ -193,7 +194,10 @@ def job_from_record(record: dict[str, Any], *, review_login: str | None = None) 
         delivery = str(result.get("delivery") or "")
         why = str(result.get("reason") or result.get("error") or "").strip()
         why = f": {why}" if why else ""
-        if status == "superseded" or delivery == "not_sent":
+        # Delivery decides, never the status: a superseded job that may have posted is not
+        # safe to request again. A superseded job with no delivery state never ran a review.
+        safe = delivery == "not_sent" or (status == "superseded" and not delivery)
+        if safe:
             return StageJob(
                 ref=ref,
                 state=JobState.RETRYABLE,
@@ -221,24 +225,33 @@ def job_from_record(record: dict[str, Any], *, review_login: str | None = None) 
     )
 
 
-def _outcome(result: dict[str, Any], *, review_login: str | None) -> StageOutcome | None:
+def _outcome(
+    result: dict[str, Any], *, posted: bool, review_login: str | None,
+) -> tuple[StageOutcome | None, str]:
+    """The contract outcome of a finished job, or None with what is wrong with it."""
     verdict = _VERDICTS.get(str(result.get("verdict") or ""))
     head = str(result.get("head_sha") or "")
     if verdict is None or not re.fullmatch(r"[0-9a-f]{40}", head):
-        return None
+        return None, "its result has no usable verdict and head"
     review = _as_dict(result.get("review"))
-    commit = str(review.get("commit_id") or "")
-    if commit and commit != head:
-        # The receipt names the commit GitHub attached the review to; it must be the
-        # head Scrutare captured, or the document contradicts itself.
-        return None
+    if posted:
+        # A posted job must carry the receipt of the review it posted, attached to the
+        # head Scrutare captured. Without it nothing proves a review exists for that head.
+        if not review.get("html_url") or str(review.get("commit_id") or "") != head:
+            return None, "its review receipt is missing or names another commit"
+        login = str(review.get("login") or "")
+        if review_login and login and normalize_login(login) != normalize_login(review_login):
+            return None, (
+                f"it posted as {login!r}, not the configured review_login {review_login!r}; "
+                "correct review_login so its review is recognised as the stage's own"
+            )
     return StageOutcome(
         verdict=verdict,
         reviewed_head=head,
         summary=str(review.get("body") or ""),
         record_ref=str(review.get("html_url") or ""),
         author_login=str(review.get("login") or review_login or ""),
-    )
+    ), ""
 
 
 def _error_text(response: httpx.Response) -> str:

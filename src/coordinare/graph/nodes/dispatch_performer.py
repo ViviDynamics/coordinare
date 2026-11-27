@@ -1372,7 +1372,9 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # --- Workspace setup (011) ---
     workspace_manager = state.get("workspace_manager")
     workspace_info = None
-    if workspace_manager is not None:
+    # 402: a stage provider works from GitHub: no clone, no env cache, no mounts.
+    external_stage = getattr(service, "external_stage", False) is True
+    if workspace_manager is not None and not external_stage:
         workspace_info, terminal = await _setup_workspace(
             state, ctx["card"], ctx["card_id"], ctx["performer_stage"],
             workspace_manager, ctx["board_provider"], _release_slot_on_error,
@@ -1397,7 +1399,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # 428: LAST in the tuning sequence — a retuned knob is the final word on
     # its payload key, over both the role tuning and the persona tier.
     _apply_observer_retune_overrides(state, card_context)
-    _extra_volumes, terminal = await _prepare_env_dispatch(
+    _extra_volumes, terminal = (None, None) if external_stage else await _prepare_env_dispatch(
         state, service, ctx["card_id"], ctx["performer_stage"], card_context,
         _release_slot_on_error,
     )

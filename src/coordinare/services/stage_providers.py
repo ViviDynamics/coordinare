@@ -18,10 +18,9 @@ from coordinare.services.stage_contract import (
     ExternalStageService,
     PullRequestReader,
     PullRequestSnapshot,
-    normalize_login,
     stage_provider_id,
 )
-from coordinare.stage_provider_config import PROVIDER_ROLES
+from coordinare.stage_provider_config import PROVIDER_ROLES, normalize_login
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -96,6 +95,11 @@ async def claim_stage_provider(
         return True, await block_unroutable_stage(state, ctx, unroutable)
     if provider is None:
         return False, None
+    from coordinare.graph.nodes.dispatch_performer import _restart_requires_dispatch
+
+    if _restart_requires_dispatch(state, ctx.get("performer_stage")):
+        # An operator restarted the stage: a blocked attempt may give way to a new one.
+        provider.allow_fresh_attempt(str(ctx.get("card_id") or ""))
     state["slot_queued_since"] = None
     ctx["service"] = provider
     ctx["slot_manager"] = None  # no slot was taken, so none is released on an error path

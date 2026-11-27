@@ -34,9 +34,12 @@ The adapter enforces these rules for every provider:
   that ended without delivering anything is a retryable system error: the card is retried on
   the daemon's usual schedule and blocks with the reason once that budget is spent. A job
   that ended without delivering anything is retried under the next attempt's request id.
-- **A possible delivery is never resubmitted automatically.** A job that may already have
-  posted its record blocks the card with the reason, for a person to check. When that person
-  sends the card back to the stage, the next attempt starts a fresh job for the same head.
+- **A blocked attempt is never resubmitted automatically.** A job that may already have
+  posted its record, or that escalated to a person, blocks the card with the reason. Any
+  automatic dispatch finds that job again and blocks again. Only an operator restart of the
+  stage starts the next attempt for the same head. That permission lives in the running
+  daemon: after a daemon restart, a card whose earlier attempt blocked blocks again until the
+  stage is restarted again, which is the side that never posts twice.
 
 ## Scrutare for the reviewing stage
 
@@ -65,7 +68,7 @@ performers:
   refused at load, and the error does not repeat it.
 - `installation` must be the installation Scrutare's `SCRUTARE_APP_INSTALLATIONS` lists for
   the repository, or Scrutare refuses the request.
-- `review_login` tells coordinare which reviews are Scrutare's. It cannot also be listed in
+- `review_login` (required) tells coordinare which reviews are Scrutare's. It cannot also be listed in
   `human_reviewers`. Either form of an App's login (`vivi-scrutare[bot]` or `vivi-scrutare`)
   matches.
 
@@ -105,7 +108,7 @@ fill the role, the token is referenced by name, and the review login is not a hu
 | --- | --- |
 | `approve` | the reviewing stage passes; the verdict is recorded against the reviewed head |
 | `changes_requested` | the review's body and inline comments go to the implementer through the existing feedback loop; the next head is reviewed again |
-| `escalated` | the card blocks for a person, with a link to Scrutare's review; sending the card back to review starts a fresh Scrutare review |
+| `escalated` | the card blocks for a person, with a link to Scrutare's review; an operator restart of the reviewing stage starts a fresh Scrutare review |
 
 Scrutare's GitHub review is the reviewing stage's own output. In a symphony whose reviewer
 uses Scrutare, `monitor_pr` never routes it a second time as outside feedback, and never
@@ -123,8 +126,9 @@ forwarded: Scrutare judges each head afresh. Coordinare logs
 | --- | --- |
 | Scrutare unreachable, 5xx, queue full | retryable system error |
 | `failed`, `interrupted` or `not_started` with `delivery: not_sent` | retryable system error; the retry submits the next attempt |
-| `failed` with `delivery: confirmed` | blocks: the review was posted and a later step failed, and Scrutare says not to request another |
-| `interrupted` with `delivery: uncertain` | blocks: the review may have been posted; inspect `posting.json` in the retained run first |
+| any end with `delivery: confirmed` | blocks: the review was posted and a later step failed, and Scrutare says not to request another |
+| any end with `delivery: uncertain` | blocks: the review may have been posted; inspect `posting.json` in the retained run first |
+| `posted` without a receipt bound to the reviewed head, or posted under a login other than `review_login` | blocks: not a pass, and not safe to request again |
 | 401 or 403 | at dispatch, blocks as a configuration error (check the token and the installation); while polling, a retryable system error |
 | result for a head the pull request has moved past | refused as a retryable error; the current head is reviewed |
 

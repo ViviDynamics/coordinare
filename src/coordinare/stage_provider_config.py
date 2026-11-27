@@ -42,9 +42,10 @@ class ScrutareProviderConfig(BaseModel):
     #: The GitHub App installation id Scrutare is allowed to use for the repository.
     installation: int = Field(gt=0)
     #: The GitHub login Scrutare's reviews are posted under, for example
-    #: ``vivi-scrutare[bot]``. Its reviews are the stage's own output: monitor_pr never
-    #: routes them as outside feedback and never counts them as a human approval.
-    review_login: str | None = None
+    #: ``vivi-scrutare[bot]``. Required: its reviews are the stage's own output, and
+    #: monitor_pr can only keep them from being routed as outside feedback, or counted
+    #: as an approval, when it knows whose they are.
+    review_login: str
     request_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
 
     @field_validator("url")
@@ -72,15 +73,25 @@ class ScrutareProviderConfig(BaseModel):
 
     @field_validator("review_login")
     @classmethod
-    def _validate_review_login(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        return value or None
+    def _validate_review_login(cls, value: str) -> str:
+        value = (value or "").strip()
+        if not value:
+            msg = "review_login must name the GitHub login Scrutare posts its reviews under"
+            raise ValueError(msg)
+        return value
 
 
 #: One entry of the ``stage_providers`` catalog. A union once a second kind exists.
 StageProviderConfig = ScrutareProviderConfig
+
+
+def normalize_login(login: str) -> str:
+    """A GitHub login as both APIs can be compared on.
+
+    REST names an App's bot ``slug[bot]``; GraphQL's ``author.login`` names it ``slug``.
+    """
+    value = (login or "").strip().lower()
+    return value.removesuffix("[bot]")
 
 
 def validate_provider_name(name: str) -> None:
@@ -115,9 +126,9 @@ def provider_role_errors(
                 f"performers.{role}.provider: a {provider.kind} provider can fill "
                 f"{', '.join(sorted(allowed)) or 'no role'}, not {role}",
             )
-    humans = {login.strip().lower() for login in human_reviewers}
+    humans = {normalize_login(login) for login in human_reviewers}
     for name, provider in sorted(providers.items()):
-        if provider.review_login and provider.review_login.lower() in humans:
+        if normalize_login(provider.review_login) in humans:
             errors.append(
                 f"stage_providers.{name}.review_login {provider.review_login!r} is also listed in "
                 "human_reviewers; a provider's approval must never count as a human approval",
