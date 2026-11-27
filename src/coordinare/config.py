@@ -31,12 +31,15 @@ from coordinare.models.performer_endpoint import (
     detect_duplicate_endpoints,
 )
 from coordinare.presets import PRESET_NAMES, expand_preset
+from coordinare.services.board_provider import (
+    DEFAULT_ARCHIVE_DONE_AFTER_DAYS,
+    MAX_ARCHIVE_DONE_AFTER_DAYS,
+)
 from coordinare.services.event_store_settings import EventStoreConfig
 from coordinare.services.observer import OBSERVER_TRIGGERS
 from coordinare.services.otlp_settings import ObservabilityConfig
 from coordinare.services.retune import EFFORT_RANK, RETUNE_KNOBS
 from coordinare.services.run_transcript import _within
-from coordinare.services.board_provider import DEFAULT_ARCHIVE_DONE_AFTER_DAYS, MAX_ARCHIVE_DONE_AFTER_DAYS
 from coordinare.services.work_item_providers import (
     DEFAULT_WORK_ITEM_PROVIDER,
     WORK_ITEM_PROVIDER_NAMES,

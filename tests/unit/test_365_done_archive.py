@@ -23,7 +23,11 @@ from coordinare.services.board_provider import (
     GitHubProjectsBoardProvider,
     done_archive_days,
 )
-from coordinare.services.github import ARCHIVE_PROJECT_ITEM_MUTATION, POLL_BOARD_QUERY, GitHubService
+from coordinare.services.github import (
+    ARCHIVE_PROJECT_ITEM_MUTATION,
+    POLL_BOARD_QUERY,
+    GitHubService,
+)
 from coordinare.services.work_item_providers import build_board_provider
 from coordinare.state_store import CURRENT_SCHEMA_VERSION, WorkflowSnapshot
 

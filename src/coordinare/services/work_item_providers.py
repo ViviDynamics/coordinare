@@ -18,7 +18,11 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING, Any
 
-from coordinare.services.board_provider import BoardProvider, GitHubProjectsBoardProvider, done_archive_days
+from coordinare.services.board_provider import (
+    BoardProvider,
+    GitHubProjectsBoardProvider,
+    done_archive_days,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
