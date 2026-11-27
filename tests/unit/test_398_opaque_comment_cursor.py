@@ -299,3 +299,29 @@ def test_a_snapshot_with_string_cursors_meets_the_snapshot_contract() -> None:
     })
 
     jsonschema.validate(instance=json.loads(snapshot.model_dump_json()), schema=contract)
+
+
+def test_string_ids_are_kept_exactly_including_surrounding_spaces() -> None:
+    """The snapshot strips whitespace from strings; a comment id is not text to tidy."""
+    loaded = _round_trip({
+        "PAY-1": {"processed_issue_comment_ids": {" tok ", "a\t"}, "last_issue_comment_id": " tok "},
+    })
+
+    session = loaded.active_sessions["PAY-1"]
+    assert session.last_issue_comment_id == " tok "
+    assert set(session.processed_issue_comment_ids) == {" tok ", "a\t"}
+
+
+def test_a_restored_cursor_that_is_no_id_restores_as_none() -> None:
+    from coordinare.state_store import PersistedSession
+
+    raw = {"schema_version": 40, "snapshot_at": "2026-11-26T09:00:00+00:00", "phase": "idle"}
+    snapshot = WorkflowSnapshot.model_validate_json(json.dumps(raw))
+    persisted = PersistedSession.model_construct(
+        card_id="PAY-1", last_issue_comment_id="", processed_issue_comment_ids=["", "c-1", True],
+    )
+
+    restored = _restored_session_dict("PAY-1", persisted, snapshot, None)
+
+    assert restored["last_issue_comment_id"] is None
+    assert restored["processed_issue_comment_ids"] == {"c-1"}

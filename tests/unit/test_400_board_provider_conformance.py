@@ -386,6 +386,18 @@ class TestComments:
         assert await harness.provider.get_card_comments(card, since_id=last) == []
 
     @pytest.mark.asyncio
+    async def test_comment_ids_are_ints_or_non_empty_strings(self, harness: Any) -> None:
+        """398: the only ids coordinare can keep and hand back as a cursor."""
+        card = harness.seed("One", "TODO")
+        await harness.provider.poll_board()
+        harness.person_comments(card, "a question")
+        await harness.provider.add_card_comment(card, "an answer")
+
+        for c in await harness.provider.get_card_comments(card):
+            cid = c["id"]
+            assert (isinstance(cid, int) and not isinstance(cid, bool)) or (isinstance(cid, str) and cid)
+
+    @pytest.mark.asyncio
     async def test_coordinare_routes_comments_by_the_providers_own_cursor(self, harness: Any) -> None:
         """398: the cursor coordinare keeps is the id the provider issued, untouched."""
         from coordinare.graph.nodes.route_issue_comments import route_issue_comments

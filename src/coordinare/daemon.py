@@ -879,8 +879,8 @@ def _restored_session_dict(
             sv_stage: sv.model_dump(mode="json")
             for sv_stage, sv in persisted.stage_verdicts.items()
         },
-        "processed_issue_comment_ids": set(persisted.processed_issue_comment_ids),
-        "last_issue_comment_id": persisted.last_issue_comment_id,
+        "processed_issue_comment_ids": set(_persist_comment_ids(persisted.processed_issue_comment_ids)),
+        "last_issue_comment_id": comment_cursor(persisted.last_issue_comment_id),
         "pipeline_admitted": persisted.pipeline_admitted,
         # 126: restore the terminal-success-floor state so the
         # feedback contract and no-op budget survive restarts.

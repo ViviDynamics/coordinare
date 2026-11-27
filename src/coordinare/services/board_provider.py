@@ -150,10 +150,18 @@ class BoardProvider(Protocol):
         none: coordinare keeps the ids it processed, so a replay is dropped, where
         a lost comment is gone.
 
+        The cursor coordinare hands back is always the id of the last comment it
+        handled, so a tracker whose native position is a page token or an
+        "updated since" time maps that comment id back to its position itself.
+
         Each comment is ``{"id", "author", "body", "created_at"}`` -- four plain
         fields, not a host's payload. That is already the shape coordinare works
         in, so a provider normalises to it rather than coordinare learning a new
         one per board.
+
+        ``"id"`` is an ``int`` or a non-empty ``str``; a timestamp goes as a string.
+        A comment with any other id is skipped, since it can be neither
+        deduplicated nor handed back as a cursor.
 
         Returns ``[]`` rather than raising when the card cannot be found or the
         read fails. Comment routing is how a human redirects work in flight; a
