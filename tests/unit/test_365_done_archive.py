@@ -353,7 +353,7 @@ async def test_a_done_read_from_another_field_carries_no_status_time(monkeypatch
     monkeypatch.setattr(GitHubService, "_ensure_initialized", lambda self: None)
     monkeypatch.setattr(GitHubService, "_guarded_execute", execute)
     board = await service.poll_board()
-    assert board["status_updated_at"] == {}
+    assert board["status_updated_at"] == {"PVTI_x": "2026-10-01T00:00:00Z"}  # 437: In Progress, not Done
 
 
 @pytest.mark.asyncio

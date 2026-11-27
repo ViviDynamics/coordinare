@@ -139,7 +139,9 @@ query PollBoard($projectId: ID!, $after: String) {
         }
         nodes {
           id
-          fieldValues(first: 8) {
+          # 437: only the Status value decides the column, so read as many values as
+          # initialize reads fields, and Status is not cut off the page.
+          fieldValues(first: 20) {
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue {
                 name
@@ -267,6 +269,33 @@ def _is_field(field_value: dict[str, Any], field_id: str) -> bool:
     """365: whether a project field value belongs to the field *field_id*."""
     field = field_value.get("field")
     return bool(field_id) and isinstance(field, dict) and field.get("id") == field_id
+
+
+def _status_column(field_values: object, status_field_id: str) -> tuple[str, str]:
+    """437: an item's column and when GitHub set it, read from the Status field only.
+
+    Every single-select field on the item is listed, and another field (a review state, a
+    release phase) can have an option named like a column. A value that names another field
+    never decides the column. The Status value decides it alone, even when its option maps to
+    no column. A value that names no field at all (no field id) keeps the old reading, last
+    match wins, and carries no time; GitHub always names the field, since the query asks.
+    Without a known Status field id (never after initialize) every value counts that way.
+    """
+    unnamed = ""
+    if not isinstance(field_values, list):
+        return "", ""
+    for field_value in field_values:
+        if not isinstance(field_value, dict):
+            continue
+        mapped = BOARD_COLUMN_TO_STATUS.get(str(field_value.get("name", "")).strip().lower(), "")
+        if _is_field(field_value, status_field_id):
+            updated = field_value.get("updatedAt")
+            return mapped, updated if mapped and isinstance(updated, str) else ""
+        field = field_value.get("field")
+        names_a_field = bool(status_field_id) and isinstance(field, dict) and bool(field.get("id"))
+        if mapped and not names_a_field:
+            unnamed = mapped
+    return unnamed, ""
 
 
 # 365: archive a project item. Archived items leave the board's item list, and can be
@@ -1232,27 +1261,8 @@ class GitHubService(CardIdentityMap):
             if not item_id:
                 continue
 
-            status_name = ""  # unknown until we read the field
-            status_set_at = ""
-            status_says = ""
             field_values = item.get("fieldValues", {}).get("nodes", [])
-            if isinstance(field_values, list):
-                for field_value in field_values:
-                    if not isinstance(field_value, dict):
-                        continue
-                    raw_name = str(field_value.get("name", "")).strip().lower()
-                    mapped = BOARD_COLUMN_TO_STATUS.get(raw_name)
-                    if mapped:
-                        status_name = mapped
-                        # 365: every single-select field is listed here, and another one can
-                        # have a "Done" option too. The time is the Status field's own, and it
-                        # counts only while the column read agrees with what Status says.
-                        if _is_field(field_value, status_field_id):
-                            updated = field_value.get("updatedAt")
-                            status_set_at = updated if isinstance(updated, str) else ""
-                            status_says = mapped
-                        elif mapped != status_says:
-                            status_set_at = ""
+            status_name, status_set_at = _status_column(field_values, status_field_id)
             if status_name and status_set_at:
                 status_updated_at[item_id] = status_set_at
 
