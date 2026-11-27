@@ -453,6 +453,7 @@ class OpenAiApiBackend:
         content filter, empty text), so none of them is read as malformed JSON.
         """
         reply = await self._reply(messages, json_mode=True, whole=True)
+        # A cut-off reply also carries an error (for its call record), so this check comes first.
         if reply.finish_reason in TRUNCATED_FINISH_REASONS:
             raise ModelOutputTruncatedError(self._max_tokens)
         if reply.error is not None:

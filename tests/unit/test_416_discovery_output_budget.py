@@ -164,17 +164,20 @@ class TestTruncation:
         assert caught.value.max_tokens == 64_000
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("content", "finish_reason", "recorded"), [
-        ('{"manifest": {"sch', "length", "finish_reason length: output truncated at 4096 tokens"),
-        ("", "stop", "empty reply"),
-        ("", "content_filter", "finish_reason content_filter"),
+    @pytest.mark.parametrize(("content", "finish_reason", "recorded", "raised"), [
+        ('{"manifest": {"sch', "length", "finish_reason length: output truncated at 4096 tokens",
+         ModelOutputTruncatedError),
+        ("", "stop", "empty reply", ModelRequestFailedError),
+        ("", "content_filter", "finish_reason content_filter", ModelRequestFailedError),
     ])
-    async def test_the_conductor_call_records_the_failure(self, tmp_path, content, finish_reason, recorded):
+    async def test_the_conductor_call_records_the_failure(
+        self, tmp_path, content, finish_reason, recorded, raised,
+    ):
         # The transcript must not show a held discovery as a successful call (Copilot on #420).
         log = _call_log(tmp_path)
         backend = OpenAiApiBackend(api_key="k", model="m", max_tokens=4096, calls=log)
         with patch("httpx.AsyncClient", return_value=_client(content, finish_reason)), \
-                pytest.raises((ModelOutputTruncatedError, ModelRequestFailedError)):
+                pytest.raises(raised):
             async with conductor_call(backend, kind="env_discovery") as call:
                 await backend.chat_json_checked([{"role": "user", "content": "x"}])
         await log.drain()
