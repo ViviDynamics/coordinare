@@ -441,6 +441,22 @@ def _register_validate_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                 return JSONResponse({"error": "Internal validation error"}, status_code=500)
 
 
+def _updated_symphony(name: str, cfg: Any, body: dict[str, Any], enabled: Any, overrides: Any) -> Any:
+    """The symphony an update body describes, over the stored one. Raises when invalid."""
+    from coordinare.config import SymphonyConfig
+
+    return SymphonyConfig(
+        name=name,
+        github_project_number=cfg.github_project_number,
+        enabled=enabled,
+        overrides=overrides,
+        personas=body.get("personas", getattr(cfg, "personas", None)),
+        env_spec_files=body.get("env_spec_files", getattr(cfg, "env_spec_files", ["README.md"])),
+        # 394: kept unless the body names a block of its own.
+        work_items=body.get("work_items", getattr(cfg, "work_items", None)),
+    )
+
+
 def _register_update_symphony(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
         config_path = ctx.config_path
@@ -448,7 +464,6 @@ def _register_update_symphony(app: FastAPI, ctx: DashboardContext) -> None:
         @app.put("/api/symphonies/{name}")
         async def update_symphony(name: str, request: Request) -> JSONResponse:
             """Update a symphony's overrides or personas (Task 9)."""
-            from coordinare.config import SymphonyConfig
 
             if daemon._cycle_active:
                 return JSONResponse(
@@ -482,16 +497,7 @@ def _register_update_symphony(app: FastAPI, ctx: DashboardContext) -> None:
             if refusal is not None:
                 return refusal
             try:
-                updated = SymphonyConfig(
-                    name=name,
-                    github_project_number=getattr(cfg, "github_project_number", None),  # type: ignore[arg-type]
-                    enabled=enabled,
-                    overrides=overrides,
-                    personas=body.get("personas", getattr(cfg, "personas", None)),
-                    env_spec_files=body.get("env_spec_files", getattr(cfg, "env_spec_files", ["README.md"])),
-                    # 394: kept unless the body names a block of its own.
-                    work_items=body.get("work_items", getattr(cfg, "work_items", None)),
-                )
+                updated = _updated_symphony(name, cfg, body, enabled, overrides)
             except Exception as exc:
                 _log_validation_failure("symphony_config_validation_failed", name, exc)
                 return JSONResponse({"error": "Invalid symphony configuration"}, status_code=400)
