@@ -765,9 +765,10 @@ function cfgSymphonyRefusal(status, body) {
 }
 
 // 221: the symphony form's Reload and reapply reloads that form, through the function app.js sets.
+// #340: a notice ({text, color}) is shown in the redrawn form's message, so a refresh keeps it.
 var _cfgSymReload = null;
-function cfgReloadSymphony() {
-  if (_cfgSymReload) _cfgSymReload();
+function cfgReloadSymphony(notice) {
+  if (_cfgSymReload) _cfgSymReload(notice);
 }
 
 // Map a save response onto field errors + a status badge. Returns true on success.
@@ -843,10 +844,21 @@ function cfgHandleSymphonySave(status, body, container, statusEl, newHash) {
     cfgFlash(statusEl, 'Saved', 'green');
     // Give the latest save its full feedback window. An older save's refresh must
     // not replace its Saved message, or reload an editor that replaced this form.
+    // #340: the refresh draws a new form, so it takes Saved with it when Saved is
+    // still showing. Otherwise the message would vanish one second after it appeared.
     clearTimeout(container._cfgReloadTimer);
-    container._cfgReloadTimer = setTimeout(function() {
-      if (container.isConnected !== false && !cfgHasUnsaved()) cfgReloadSymphony();
-    }, 1000);
+    var refresh = function() {
+      if (container.isConnected === false || cfgHasUnsaved()) return;
+      // A review opened since is the reader's next step, and a redraw would throw it away,
+      // so the refresh waits until the review is closed.
+      if (container.querySelector && container.querySelector('[data-review]')) {
+        container._cfgReloadTimer = setTimeout(refresh, 1000);
+        return;
+      }
+      var saved = statusEl.textContent === 'Saved';
+      cfgReloadSymphony(saved ? {text: 'Saved', color: statusEl.style ? statusEl.style.color : ''} : null);
+    };
+    container._cfgReloadTimer = setTimeout(refresh, 1000);
     return true;
   }
   if (status === 428 || (status === 409 && body && body.conflict)) {
@@ -856,6 +868,14 @@ function cfgHandleSymphonySave(status, body, container, statusEl, newHash) {
   _cfgPending = null;
   cfgFlash(statusEl, cfgSymphonyRefusal(status, body), 'red');
   return false;
+}
+
+// #340: a confirmed save or delete is the form's next request. An earlier save's refresh would
+// redraw the form while it is in flight and drop its answer, so it is cancelled, and that save's
+// Saved message no longer describes what the form is doing.
+function cfgSymphonyActionStarts(form, statusEl) {
+  clearTimeout(form._cfgReloadTimer);
+  if (statusEl && statusEl.textContent === 'Saved') cfgFlash(statusEl, '', 'muted');
 }
 
 // 143 second review: a save that gets no answer in time is reported, and the form unlocks.
@@ -1731,7 +1751,7 @@ function cfgRememberSymphony() {
   _cfgSymphonyDrafts[name] = changed.length ? cfgPendingFor(form, changed) : null;
 }
 
-function cfgLoadSymphony(name, force) {
+function cfgLoadSymphony(name, force, notice) {
   var host = document.querySelector('[data-cfg-symphony-host]');
   if (!host || !name) return;
   if (!force && _cfgSymphonyName === name && host.querySelector('#sym-config-form')) {
@@ -1771,10 +1791,15 @@ function cfgLoadSymphony(name, force) {
     cfgRebaseline(form);
     cfgSyncOffTargets(form);
     cfgRestoreEdits([_cfgSymphonyDrafts[name]].filter(function(draft) { return !!draft; }));
+    if (notice && notice.text) {
+      var message = form.querySelector('#sym-save-msg');
+      message.textContent = notice.text;
+      message.style.color = notice.color || '';
+    }
     cfgReapplyPending();
     symPersonaRefresh(form, catalog);
-    _cfgSymReload = function() {
-      if (host.isConnected && cfgOnSettingsPage() && _cfgSymphonyName === name) cfgLoadSymphony(name, true);
+    _cfgSymReload = function(next) {
+      if (host.isConnected && cfgOnSettingsPage() && _cfgSymphonyName === name) cfgLoadSymphony(name, true, next);
     };
   }).catch(function(error) {
     if (host.isConnected && _cfgSymphonyRequest === request) {

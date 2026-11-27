@@ -132,9 +132,10 @@ var form = {isConnected: true};
 var status = {textContent: ''};
 var reloads = 0;
 var unsaved = false;
+var notices = [];
 cfgFlash = function(el, text) { el.textContent = text; };
 cfgHasUnsaved = function() { return unsaved; };
-_cfgSymReload = function() { reloads += 1; status.textContent = ''; };
+_cfgSymReload = function(notice) { reloads += 1; notices.push(notice); status.textContent = ''; };
 cfgHandleSymphonySave(200, {}, form, status, '"first"');
 advanceTo(900);
 cfgHandleSymphonySave(200, {}, form, status, '"second"');
@@ -142,6 +143,10 @@ advanceTo(1000);
 check('an older refresh cannot erase the newer Saved message', reloads === 0 && status.textContent === 'Saved');
 advanceTo(1900);
 check('the latest save still refreshes after its own feedback window', reloads === 1);
+// #340: the refresh draws a new form, so it is handed the message to show there. Without it the
+// Saved message lived for one second and then the redrawn form came up blank.
+check('the refresh keeps the Saved message on the redrawn form', notices.length === 1 && notices[0] && notices[0].text === 'Saved',
+  JSON.stringify(notices));
 
 cfgHandleSymphonySave(200, {}, form, status, '"third"');
 unsaved = true;
@@ -152,6 +157,71 @@ cfgHandleSymphonySave(200, {}, form, status, '"fourth"');
 form.isConnected = false;
 advanceTo(3900);
 check('a replaced form cannot refresh the current editor', reloads === 1);
+
+// #340: only the save's own message is carried. Anything shown since is not the save's outcome.
+form.isConnected = true;
+cfgHandleSymphonySave(200, {}, form, status, '"fifth"');
+status.textContent = 'No changes to save';
+advanceTo(4900);
+check('a later message is not carried as the save result', reloads === 2 && notices[1] === null,
+  JSON.stringify(notices));
+
+// #340: confirming a new save or delete cancels an earlier save's refresh, which would redraw the
+// form under the request and drop its answer, and clears that save's Saved message. A review that is
+// only open changes neither, and the refresh waits while it is open.
+var confirms = [];
+var reviewOpen = false;
+cfgClearErrors = function() {};
+cfgPendingFor = function() { return {}; };
+cfgShowReview = function(container, rows, onConfirm) { reviewOpen = true; confirms.push(onConfirm); };
+symValidateAndSave = function() {};
+cfgPut = function() {};
+cfgEntries = function() { return [{key: 'enabled', after: false, changed: true}]; };
+_symBase = {overrides: {}, personas: {}};
+var actionStatus = {textContent: ''};
+var actionForm = {
+  isConnected: true,
+  closest: function() { return actionForm; },
+  querySelector: function(selector) {
+    if (selector === '[data-status]') return actionStatus;
+    if (selector === '[data-review]') return reviewOpen ? {} : null;
+    return null;
+  },
+  getAttribute: function() { return 'demo'; },
+};
+var saveButton = {closest: function() { return actionForm; }};
+[['save', symSave], ['delete', symDelete]].forEach(function(action) {
+  reviewOpen = false;
+  cfgHandleSymphonySave(200, {}, actionForm, actionStatus, '"sixth"');
+  var before = reloads;
+  action[1](saveButton);
+  check('an open ' + action[0] + ' review keeps the earlier Saved', actionStatus.textContent === 'Saved',
+    actionStatus.textContent);
+  advanceTo(now + 1000);
+  check('the refresh waits while a ' + action[0] + ' review is open', reloads === before);
+  reviewOpen = false;
+  advanceTo(now + 1000);
+  check('the refresh runs once the ' + action[0] + ' review is closed', reloads === before + 1);
+  before = reloads;
+
+  cfgHandleSymphonySave(200, {}, actionForm, actionStatus, '"seventh"');
+  action[1](saveButton);
+  reviewOpen = false;
+  confirms[confirms.length - 1]();
+  check('confirming a ' + action[0] + ' clears the earlier Saved', actionStatus.textContent === '',
+    actionStatus.textContent);
+  advanceTo(now + 1000);
+  check('confirming a ' + action[0] + ' cancels the earlier refresh', reloads === before);
+});
+reviewOpen = false;
+cfgEntries = function() { return [{key: 'enabled', after: true, changed: false}]; };
+cfgHandleSymphonySave(200, {}, actionForm, actionStatus, '"eighth"');
+var beforeNoop = reloads;
+symSave(saveButton);
+advanceTo(now + 1000);
+check('a Save with nothing to save keeps the refresh',
+  reloads === beforeNoop + 1 && actionStatus.textContent === 'No changes to save',
+  reloads + ' ' + actionStatus.textContent);
 _cfgSymReload = null;
 
 if (failures.length) throw new Error(failures.join(' | '));
