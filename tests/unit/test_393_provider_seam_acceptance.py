@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -150,7 +150,7 @@ class TestTheRecordCarriesWhatCheckBoardUsedToRead:
         fields = work_items_of(board)["I1"].fields
         assert fields == {"Priority": "P1", "Points": "3"}
         with pytest.raises(TypeError):
-            fields["Priority"] = "P0"  # type: ignore[index]
+            cast("dict[str, str]", fields)["Priority"] = "P0"
 
     def test_a_github_listing_without_field_values_gives_empty_fields(self) -> None:
         board = {"snapshot": {"TODO": ["I1"]}, "issue_numbers": {"I1": 3}}
