@@ -58,9 +58,11 @@ In:
   a version skew between daemon and performer image never posts it twice or
   drops it.
 - Blocker state from the listing. The GitHub Projects adapter reads the state of
-  every off-board issue that a body names with the text syntax
+  each off-board issue that a To Do card's body names with the text syntax
   (`check_issue_state`, the same call) while it lists the board, and the
-  listing carries it on each blocker. `resolve_off_board_dependencies` uses the
+  listing carries it on each blocker. To Do only, because that is where the
+  dependency filter acts; reading every card's blockers would spend a REST call
+  per poll on done cards. `resolve_off_board_dependencies` uses the
   listed state and asks GitHub only for blockers the listing does not carry
   (those declared in issue comments).
 
@@ -70,8 +72,8 @@ Out:
   syntax in GitHub issue comments; nothing in the listing names them.
 
 ### Tasks
-- [ ] 3. `NOT_WORK` on the seam: adapter closes and moves to Done; in-memory moves to Done; conformance case.
-- [ ] 4. Decline path through the provider; `test_410_decline_outcomes` expects it through the adapter.
-- [ ] 5. QA evidence comment: score flag, response field, daemon posts once through the provider.
-- [ ] 6. Blocker state on the listing; dependency service reads it first.
-- [ ] 7. Guard: drop the decline allowances, narrow the QA allowance to the older-coordinare path.
+- [x] 3. `NOT_WORK` on the seam: adapter closes and moves to Done; in-memory moves to Done; conformance case.
+- [x] 4. Decline path through the provider; `test_410_decline_outcomes` expects it through the adapter.
+- [x] 5. QA evidence comment: score flag, response field, daemon posts once through the provider.
+- [x] 6. Blocker state on the listing; dependency service reads it first.
+- [x] 7. Guard: drop the decline allowances, narrow the QA allowance to the older-coordinare path.
