@@ -220,7 +220,8 @@ class SessionEligibility:
     card_id: str
     eligible: bool
     reason: EligibilityReason
-    blockers: list[int] = field(default_factory=list)
+    #: GitHub issue numbers, or a provider's reference for a blocker without one (395).
+    blockers: list[int | str] = field(default_factory=list)
 
 
 @dataclass
@@ -1302,7 +1303,7 @@ def _compute_eligibility(
                 card_id=card_id,
                 eligible=False,
                 reason=DEPENDENCY_BLOCKED,
-                blockers=[d.blocker_issue_number for d in unresolved],
+                blockers=[d.blocker_issue_number or d.blocker_ref for d in unresolved],
             )
 
     # 065 US3: kick-back detection. If a performer is actively running for
@@ -1699,10 +1700,12 @@ def _mirror_board_metadata(state: CoordinareState, board: dict[str, Any]) -> Non
     so per-session mutations are dropped after the fanout merge.
     """
     # 395: from the typed listing, so the dashboard has them for any provider.
+    # A map the listing leaves empty keeps the last one, as before.
     _metadata = board_metadata(board)
     for _meta_dst in ("_board_titles", "_board_issue_numbers", "_board_issue_urls", "_board_pr_urls"):
         _meta_val = _metadata[_meta_dst]
-        state[_meta_dst] = _meta_val
+        if _meta_val:
+            state[_meta_dst] = _meta_val
 
 
 def _has_fresh_board_snapshot(state: CoordinareState) -> bool:

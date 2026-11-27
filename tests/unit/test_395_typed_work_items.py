@@ -258,3 +258,24 @@ async def test_an_escalated_item_is_left_alone_on_any_provider() -> None:
     )
 
     assert not result.get("active_card_id")
+
+
+@pytest.mark.asyncio
+async def test_a_blocker_without_an_issue_is_named_by_its_reference() -> None:
+    from coordinare.services.todo_waits import _label
+
+    board = InMemoryBoardProvider(project_key="PAY")
+    first = board.add_item("First")
+    second = board.add_item("Second", blocked_by=(first,))
+
+    (dep,) = build_graph(await board.poll_board()).by_dependent[second]
+
+    assert dep.blocker_issue_number == 0
+    assert _label(dep) == "PAY-1"
+
+
+def test_an_unknown_field_adds_no_item() -> None:
+    board = InMemoryBoardProvider(project_key="PAY")
+    with pytest.raises(TypeError, match="label"):
+        board.add_item("x", label=("bug",))
+    assert board.add_item("y") == "PAY-1"

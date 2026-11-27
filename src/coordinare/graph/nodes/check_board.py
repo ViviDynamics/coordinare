@@ -312,6 +312,21 @@ def _issue_fields(work_item: WorkItem) -> dict[str, Any]:
     }
 
 
+def _text_maps(board: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Card id -> title and card id -> body, as the listing supplied them.
+
+    Kept as maps, not read off the record, so a field the listing supplied empty
+    is applied empty and one it did not supply leaves the card's value alone.
+    """
+    typed = board.get("items") if isinstance(board, dict) else None
+    if isinstance(typed, dict):
+        listed = work_items_of(board)
+        return {k: v.title for k, v in listed.items()}, {k: v.body for k, v in listed.items()}
+    titles = board.get("titles") if isinstance(board, dict) else None
+    descriptions = board.get("descriptions") if isinstance(board, dict) else None
+    return (titles if isinstance(titles, dict) else {}), (descriptions if isinstance(descriptions, dict) else {})
+
+
 def _comment_target(board: dict[str, Any], item: str) -> str:
     """Where a comment about *item* goes, ``""`` for nowhere.
 
@@ -967,12 +982,12 @@ def _refresh_current_card_metadata(
     if isinstance(active_card, dict):
         active_id = str(active_card.get("id", ""))
         if active_id:
-            listed = work_items_of(board)
-            if active_id in listed:
-                fresh = listed[active_id]
+            titles, descriptions = _text_maps(board)
+            fresh = _work_item(board, active_id)
+            if active_id in titles or fresh.issue is not None:
                 fresh_fields = _issue_fields(fresh)
-                refreshed_description = fresh.body or str(active_card.get("description", ""))
-                active_card["title"] = fresh.title or str(active_card.get("title", ""))
+                refreshed_description = str(descriptions.get(active_id, active_card.get("description", "")))
+                active_card["title"] = str(titles.get(active_id, active_card.get("title", "")))
                 active_card["description"] = refreshed_description
                 active_card["acceptance_criteria"] = parse_acceptance_criteria(refreshed_description)
                 if fresh_fields["issue_number"]:
@@ -1432,6 +1447,7 @@ async def _handle_in_progress_cards(
 
 async def _collect_blocked_clarification(
     state: CoordinareState, board_provider: BoardProvider, board: dict[str, Any], item: str,
+    issue_ids: dict[str, Any] | None = None,
 ) -> CoordinareState | None:
     session = (state.get("active_sessions") or {}).get(item) or {}
     reason = session.get("system_error_reason")
@@ -1453,7 +1469,8 @@ async def _collect_blocked_clarification(
         else None
     )
     last_notified = sess_last if sess_last is not None else state.get("last_blocked_notified_at")
-    issue_node_id = _issue_fields(_work_item(board, item))["issue_id"]
+    # A caller may still pass the card id -> issue node id map it holds.
+    issue_node_id = str((issue_ids or {}).get(item, "")) or _issue_fields(_work_item(board, item))["issue_id"]
     if last_notified is not None and isinstance(last_notified, datetime):
         try:
             details = await board_provider.get_card(issue_node_id or item)
@@ -1629,6 +1646,7 @@ def _select_eligible_todo(
     if escalation:
         advocate_labels.add(str(escalation))
 
+    # 395: the labels come from the record (this was item_labels = board.get(...)).
     listed = work_items_of(board)
     eligible_todo = [
         item_id for item_id in todo

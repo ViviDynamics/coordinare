@@ -56,7 +56,7 @@ def open_slots(in_use: int, limit: int) -> int:
 
 
 def _label(dep: Any) -> str:
-    return f"{dep.blocker_repo}#{dep.blocker_issue_number}" if dep.blocker_repo else f"#{dep.blocker_issue_number}"
+    return str(dep.label)
 
 
 def _blockers(dep_graph: DependencyGraph, card_id: str, statuses: frozenset[DependencyStatus]) -> list[str]:

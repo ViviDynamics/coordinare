@@ -103,22 +103,24 @@ class InMemoryBoardProvider:
         ``blocked_by`` (keys of the items that block it) and ``external_states``
         (the state of each off-board blocker this tracker knows).
         """
+        unknown = set(record) - {"labels", "owners", "blocked_by", "external_states"}
+        if unknown:
+            msg = f"unknown work item fields: {sorted(unknown)}"
+            raise TypeError(msg)
+        native_state = self._native_for(status)
         self._next_item += 1
         item_id = f"{self._key}-{self._next_item}"
         self._items[item_id] = InMemoryWorkItem(
             id=item_id,
             title=title,
             body=body,
-            native_state=self._native_for(status),
+            native_state=native_state,
             url=f"{self._base_url}/{item_id}",
-            labels=tuple(record.pop("labels", ())),
-            owners=tuple(record.pop("owners", ())),
-            blocked_by=tuple(record.pop("blocked_by", ())),
-            external_states=dict(record.pop("external_states", {}) or {}),
+            labels=tuple(record.get("labels", ())),
+            owners=tuple(record.get("owners", ())),
+            blocked_by=tuple(record.get("blocked_by", ())),
+            external_states=dict(record.get("external_states") or {}),
         )
-        if record:
-            msg = f"unknown work item fields: {sorted(record)}"
-            raise TypeError(msg)
         return item_id
 
     def person_moves(self, item_id: str, status: str) -> None:
