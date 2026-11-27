@@ -26,6 +26,19 @@ PROVIDER_ROLES: dict[str, frozenset[str]] = {
 }
 
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _image_or_none(value: str | None) -> str | None:
+    """423: a performer image reference, or None for the role's performer image."""
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if any(c.isspace() for c in value) or value.startswith("-"):
+        msg = "image must be one image reference, for example ghcr.io/vividynamics/coordinare-performer-full:2026.11.0"
+        raise ValueError(msg)
+    return value
 _PROVIDER_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
 
@@ -105,10 +118,11 @@ _QARE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+_-]*$")
 class QAreProviderConfig(BaseModel):
     """404: QAre for the QA stage, run as its CLI (``qare plan``, ``qare run``).
 
-    QAre has no service to call: coordinare runs the pinned CLI on its own host against a
-    checkout of the pull request, with QAre's posting turned off, and posts the evidence
-    itself. QAre needs no token from coordinare; the model settings its nare reads reach
-    it only through ``env_passthrough``, by variable name.
+    QAre has no service to call: each run is a stage job (#423), an ephemeral performer
+    container that checks the pull request out and runs the pinned CLI there, with QAre's
+    posting turned off; coordinare posts the evidence itself. QAre needs no token from
+    coordinare; the model settings its nare reads reach it only through
+    ``env_passthrough``, by variable name.
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -117,20 +131,25 @@ class QAreProviderConfig(BaseModel):
     #: The exact version ``qare --version`` must print. QAre's interfaces can change
     #: between releases, so a run on any other version is refused.
     version: str
-    #: The command that starts QAre, as an argument list (``["qare"]``, or a path).
+    #: The command that starts QAre in the performer, as an argument list (``["qare"]``,
+    #: or a path inside the performer image).
     command: list[str] = Field(default_factory=lambda: ["qare"])
+    #: 423: the performer image runs use. None (default) is the image of the performer
+    #: endpoint that serves the ``qa`` role, else of the first one with an image.
+    image: str | None = None
     #: The QA profile's directory in the repository under test.
     profile: str = ".qa"
-    #: Where runs keep their checkout and evidence. Defaults to a directory beside the
-    #: state file, so a restarted daemon finds its runs again.
+    #: Where runs keep their request, status and evidence (never a checkout: that stays in
+    #: the performer). Mounted into each run's container at the same path. Defaults to a
+    #: directory beside the state file, so a restarted daemon finds its runs again.
     work_dir: str | None = None
     #: NAMES of environment variables QAre (and the nare it runs) may read, for example
     #: its model endpoint and key. Nothing else from coordinare's environment reaches it.
     env_passthrough: list[str] = Field(default_factory=list)
     #: How long one run (checkout, plan and run) may take before it is stopped.
     timeout_seconds: int = Field(default=3600, gt=0, le=86400)
-    #: Days a finished run's directory (its evidence and logs) is kept. Its checkouts are
-    #: removed as soon as it ends; the evidence is on ``qa-assets`` by then.
+    #: Days a finished run's directory (its evidence and logs) is kept. Its checkouts go
+    #: with its performer as soon as it ends; the evidence is on ``qa-assets`` by then.
     retain_days: int = Field(default=14, ge=1, le=3650)
 
     @field_validator("version")
@@ -141,6 +160,11 @@ class QAreProviderConfig(BaseModel):
             msg = "version must be the exact QAre release to run, for example 2026.11.42"
             raise ValueError(msg)
         return value
+
+    @field_validator("image")
+    @classmethod
+    def _validate_image(cls, value: str | None) -> str | None:
+        return _image_or_none(value)
 
     @field_validator("command")
     @classmethod
@@ -176,23 +200,28 @@ class QAreProviderConfig(BaseModel):
 class ProgettareProviderConfig(BaseModel):
     """403: Progettare's released CLI, run by coordinare for the architecting stage.
 
-    Progettare has no job API of its own: coordinare runs ``progettare blueprint`` in a
-    detached runner, one run directory per request id under ``runs_dir``, and reads the
-    run's artifacts. It pins its own harness and models (``progettare.yaml``), so the
+    Progettare has no job API of its own: each request is a stage job (#423), an ephemeral
+    performer container that clones the default branch and runs ``progettare blueprint``,
+    with one run directory per request id under ``runs_dir`` mounted into it; coordinare
+    reads the run's artifacts. It pins its own harness and models (``progettare.yaml``), so the
     architect's ``backend``, ``mode`` and ``workflow`` have no effect while it is set.
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     kind: Literal["progettare"]
-    #: The CLI to run: a name on PATH or an absolute path.
+    #: The CLI to run in the performer: a name on its PATH or an absolute path.
     command: str = "progettare"
+    #: 423: the performer image runs use. None (default) is the image of the performer
+    #: endpoint that serves the ``architect`` role, else of the first one with an image.
+    image: str | None = None
     #: The release coordinare speaks to. ``progettare --version`` must print exactly
     #: this; doctor and the startup preflight check it, and a run refuses to start
     #: under another version.
     version: str
-    #: Where run directories are kept, one per request id. Must survive a restart of
-    #: coordinare: it is how a restarted daemon finds a run already in flight.
+    #: Where run directories are kept, one per request id, each mounted into its run's
+    #: container at the same path. Must survive a restart of coordinare: it is how a
+    #: restarted daemon finds a run already in flight.
     runs_dir: str
     #: ``progettare.yaml`` to plan with. None (default) uses the one on the planned
     #: repository's default branch.
@@ -205,6 +234,11 @@ class ProgettareProviderConfig(BaseModel):
     pass_env: list[str] = Field(default_factory=list)
     #: A run that takes longer is stopped and retried as a system error.
     timeout_seconds: int = Field(default=3600, gt=0, le=6 * 3600)
+
+    @field_validator("image")
+    @classmethod
+    def _validate_image(cls, value: str | None) -> str | None:
+        return _image_or_none(value)
 
     @field_validator("command")
     @classmethod

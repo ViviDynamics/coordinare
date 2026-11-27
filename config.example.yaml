@@ -369,20 +369,23 @@ modes:
 #     installation: 12345678              # the GitHub App installation id for the repositories
 #     review_login: "vivi-scrutare[bot]"  # the login its reviews are posted under
 #     # request_timeout_seconds: 30
-#   # 404: QAre for the QA stage. Coordinare runs the pinned QAre CLI on its own host
-#   # (qare plan, then qare run with posting off) and posts the evidence itself.
+#   # 404: QAre for the QA stage. Each run is a stage job (423): the pinned QAre CLI runs in an
+#   # ephemeral performer container (qare plan, then qare run with posting off), never on
+#   # coordinare's host, and coordinare posts the evidence itself.
 #   qare:
 #     kind: qare
 #     version: "2026.11.42"               # the exact release `qare --version` must print
-#     # command: ["qare"]                 # how to start it, as an argument list
+#     # command: ["qare"]                 # how to start it in the performer, as an argument list
+#     # image: ghcr.io/vividynamics/coordinare-performer-full:<tag>  # default: the qa performer's image
 #     # profile: .qa                      # the QA profile's directory in each repository
 #     # work_dir: /var/lib/coordinare/qare   # default: beside state_file_path
 #     # env_passthrough: [OPENAI_API_KEY] # NAMES of variables QAre's nare may read
 #     # timeout_seconds: 3600
-#     # retain_days: 14                 # finished runs' evidence and logs; checkouts go at once
+#     # retain_days: 14                 # finished runs' evidence and logs; checkouts stay in the performer
 #
 # 403: Progettare can fill the architect role. Coordinare runs its released CLI at the
-# pinned version on the coordinare host, one run per request, and turns the run's briefs
+# pinned version in an ephemeral performer container (a stage job, 423), one run per
+# request, never on the coordinare host, and turns the run's briefs
 # into the blueprint the implementer, QA and documenter read. GitHub issues only until
 # ViviDynamics/progettare#68. Progettare pins its own harness and models
 # (progettare.yaml), so the architect's backend, mode and workflow have no effect.
@@ -393,7 +396,8 @@ modes:
 #     runs_dir: /var/lib/coordinare/progettare-runs   # durable across coordinare restarts
 #     gh_token_env: GITHUB_TOKEN          # NAME of the env var with a token that reads issues and clones
 #     pass_env: [OPENAI_API_KEY]          # NAMES of the model credentials progettare.yaml needs
-#     # command: progettare               # a name on PATH or an absolute path
+#     # command: progettare               # a name on the performer's PATH or an absolute path
+#     # image: ghcr.io/vividynamics/coordinare-performer-full:<tag>  # default: the architect performer's image
 #     # config_path: /etc/coordinare/progettare.yaml   # default: the repository's own progettare.yaml
 #     # timeout_seconds: 3600
 

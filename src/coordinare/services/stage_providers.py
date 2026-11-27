@@ -29,6 +29,7 @@ from coordinare.services.stage_contract import (
     stage_provider_id,
     web_host,
 )
+from coordinare.services.stage_jobs import DockerStageJobs, StageJobs, UnavailableStageJobs
 from coordinare.stage_provider_config import (
     PROVIDER_ROLES,
     ProgettareProviderConfig,
@@ -103,25 +104,67 @@ def build_provider(
     """The provider object for one catalog entry, by its kind."""
     if isinstance(provider_config, ProgettareProviderConfig):
         git_base_url = str(getattr(config, "git_base_url", "") or "https://github.com")
-        return ProgettareProvider(name, provider_config, git_base_url=git_base_url)
+        jobs = stage_jobs_for(name, provider_config, config, role="architect")
+        return ProgettareProvider(name, provider_config, git_base_url=git_base_url, jobs=jobs)
     if isinstance(provider_config, QAreProviderConfig):
-        return QAreProvider(name, provider_config, work_dir=qare_work_dir(name, provider_config, config), github=github)
+        return QAreProvider(
+            name, provider_config, work_dir=qare_work_dir(name, provider_config, config), github=github,
+            jobs=stage_jobs_for(name, provider_config, config, role="qa"),
+        )
     return ScrutareProvider(name, provider_config)
+
+
+def stage_jobs_for(
+    name: str, provider_config: QAreProviderConfig | ProgettareProviderConfig, config: Any, *, role: str,
+) -> StageJobs:
+    """423: where a provider's runs go: performer containers of the role's performer image.
+
+    The image is the provider's own ``image``, else that of the performer endpoint that
+    serves ``role``, else that of the first endpoint with one. The endpoint's isolation
+    (its egress allowlist and extra hosts) applies to the runs as it does to the role's
+    other work. Runs need Docker: under the Kubernetes transport they cannot start yet,
+    and every use says so.
+    """
+    if str(getattr(config, "agent_transport", "") or "") == "kubernetes":
+        return UnavailableStageJobs(
+            f"stage provider {name!r} runs in a Docker performer container, and this coordinare "
+            "uses the Kubernetes transport; stage jobs on Kubernetes are not supported yet",
+        )
+    endpoints = [
+        ep for ep in getattr(config, "performer_endpoints", None) or []
+        if getattr(ep, "mode", "subprocess") != "subprocess" and getattr(ep, "image", None)
+    ]
+    endpoint = next((ep for ep in endpoints if role in (getattr(ep, "roles", None) or [])), None)
+    endpoint = endpoint or (endpoints[0] if endpoints else None)
+    image = provider_config.image or (endpoint.image if endpoint is not None else None)
+    if not image:
+        return UnavailableStageJobs(
+            f"stage provider {name!r} has no performer image to run in: set "
+            f"stage_providers.{name}.image, or configure a performer endpoint with an image",
+        )
+    return DockerStageJobs(
+        str(image),
+        egress_allowlist=getattr(endpoint, "egress_allowlist", None) if endpoint is not None else None,
+        extra_hosts=list(getattr(endpoint, "extra_hosts", None) or []) if endpoint is not None else [],
+    )
 
 
 def provider_fix(name: str, provider_config: StageProviderConfig) -> str:
     """What to do when a provider's health check fails, for doctor and the preflight."""
     if isinstance(provider_config, ProgettareProviderConfig):
         return (
-            f"Install progettare {provider_config.version} where coordinare runs "
-            f"(stage_providers.{name}.command, now {provider_config.command!r}), with git and gh "
-            f"on PATH; set {provider_config.gh_token_env} and every pass_env variable; and make "
-            "runs_dir writable and config_path exist."
+            f"Install progettare {provider_config.version}, git and gh in the performer image its "
+            f"runs use (stage_providers.{name}.image, else the architect's performer image; the full "
+            f"performer image ships them), with Docker where coordinare runs; set "
+            f"{provider_config.gh_token_env} and every pass_env variable; and make runs_dir "
+            "writable and config_path exist."
         )
     if isinstance(provider_config, QAreProviderConfig):
         return (
-            f"Install QAre {provider_config.version} where coordinare runs (its host install or "
-            f"image), or correct stage_providers.{name}.command and .version; make work_dir writable."
+            f"Install QAre {provider_config.version} in the performer image its runs use "
+            f"(stage_providers.{name}.image, else the qa performer image; the full performer image "
+            f"ships it), with Docker where coordinare runs; or correct stage_providers.{name}.command "
+            "and .version; make work_dir writable."
         )
     return (
         f"Start {provider_config.kind} or correct stage_providers.{name}.url (it must be "

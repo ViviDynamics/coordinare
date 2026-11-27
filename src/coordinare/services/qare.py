@@ -1,11 +1,13 @@
 """404: QAre as the QA stage's provider.
 
 QAre (ViviDynamics/qare) is a CLI with an orchestrator contract (``docs/orchestrator.md``),
-not a service. This provider runs one QAre job per request id in a directory of its own
-under ``work_dir``: :mod:`coordinare.services.qare_runner` fetches the pull request's head
-and base, plans the work item's criteria with ``qare plan`` and runs them with ``qare run``
-with posting off. The job directory is the job's whole state, so a restarted daemon polls
-the same job, and submitting a request id again finds it instead of starting another.
+not a service. This provider runs one QAre job per request id as a stage job (#423,
+:mod:`coordinare.services.stage_jobs`): an ephemeral performer container checks the pull
+request's head and base out with the performer's workspace layer, plans the work item's
+criteria with ``qare plan`` and runs them with ``qare run`` with posting off. Coordinare's
+own host never clones or fetches. The job directory under ``work_dir`` (mounted into the
+container) is the job's whole state, so a restarted daemon polls the same job, and
+submitting a request id again finds it instead of starting another.
 
 Reading the result follows QAre's contract: ``schemaVersion`` is checked before anything
 else is read, exit code 4 is never a verdict, and the exit code and the verdict must agree.
@@ -19,20 +21,16 @@ else is read, exit code 4 is never a verdict, and the exit code and the verdict 
 | an unknown ``schemaVersion`` or verdict, a result that contradicts itself | needs a person |
 
 The evidence is posted by coordinare (:mod:`coordinare.services.qare_publish`) once the
-adapter has checked the head, never by QAre.
+adapter has checked the head, never by QAre. Publishing reads the job directory and writes
+through GitHub's REST API, so it needs no checkout.
 """
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
-import os
 import re
 import shutil
-import signal
-import sys
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -48,11 +46,13 @@ from coordinare.services.stage_contract import (
     StageRequest,
     StageVerdict,
 )
+from coordinare.services.stage_jobs import RunState, StageJobLaunch, StageJobs, UnavailableStageJobs
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from pathlib import Path
 
     import httpx
 
@@ -79,11 +79,12 @@ _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 #: How long a job directory may exist without a launch record before it counts as dead.
 _LAUNCH_GRACE_SECONDS = 120.0
-#: How long the runner's launcher may take to fork the run off.
-_LAUNCH_TIMEOUT_SECONDS = 60.0
 #: Past its timeout_seconds, how long a run without a status still counts as running.
 _OVERDUE_GRACE_SECONDS = 300.0
-_VERSION_TIMEOUT_SECONDS = 30.0
+#: A version check starts a container, which may first pull the image.
+_VERSION_TIMEOUT_SECONDS = 180.0
+#: How long a passed version check stands before the next health check repeats it.
+_HEALTH_REUSE_SECONDS = 300.0
 
 
 class GitHubAccess:
@@ -129,18 +130,21 @@ class QAreProvider:
         *,
         work_dir: Path,
         github: GitHubAccess | None = None,
-        runner_argv: list[str] | None = None,
+        jobs: StageJobs | None = None,
     ) -> None:
         self.name = name
         self._config = config
-        # Absolute (not resolved, so it is the path the operator mounts): the runner works
-        # from the job directory, where a relative path would name a different place.
+        # Absolute (not resolved, so it is the path the operator mounts): the job's
+        # container mounts the job directory at this same path.
         self._work_dir = work_dir.expanduser().absolute()
-        #: Launchers still running, each the parent of one run (it reaps the run).
-        self._launchers: dict[str, asyncio.subprocess.Process] = {}
         self._github = github
-        #: How to start the runner.
-        self._runner_argv = runner_argv or [sys.executable, "-m", "coordinare.services.qare_runner"]
+        #: Where the runs go: a performer container each (#423).
+        self._jobs: StageJobs = jobs or UnavailableStageJobs(
+            f"stage provider {name!r} has no performer to run QAre in",
+        )
+        #: When the version check last passed, so a dispatch's health check does not start
+        #: a container every time.
+        self._healthy_at: float | None = None
 
     @property
     def config(self) -> QAreProviderConfig:
@@ -166,7 +170,7 @@ class QAreProvider:
             job_dir.parent.mkdir(parents=True, exist_ok=True)
             job_dir.mkdir()
         except FileExistsError:
-            return self._read(request_id)
+            return await self._read(request_id)
         except OSError as exc:
             msg = f"QAre work_dir {self._work_dir} is not writable: {exc}"
             raise TransportError(msg) from exc
@@ -183,7 +187,7 @@ class QAreProvider:
         return StageJob(ref=request_id, state=JobState.PENDING, detail="running")
 
     async def poll(self, ref: str) -> StageJob:
-        return self._read(ref)
+        return await self._read(ref)
 
     async def publish(self, ref: str, outcome: StageOutcome) -> StageOutcome:
         """Post the evidence on the pull request and the work item (QAre's posting is off).
@@ -199,27 +203,24 @@ class QAreProvider:
         )
 
     async def health(self) -> tuple[bool, str]:
-        """QAre starts and prints the pinned version, and ``work_dir`` is writable."""
-        try:
-            # The environment a run gives QAre, never the daemon's own (its secrets).
-            proc = await asyncio.create_subprocess_exec(
-                *self._config.command, "--version",
-                env=runner.qare_env(dict(os.environ), self._config.env_passthrough),
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-        except OSError as exc:
-            return False, f"{self._config.command[0]} could not be started: {exc.strerror or exc}"
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=_VERSION_TIMEOUT_SECONDS)
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return False, f"qare --version did not answer within {_VERSION_TIMEOUT_SECONDS:.0f} seconds"
-        installed = out.decode(errors="replace").strip()
-        if proc.returncode != 0 or installed != self._config.version:
-            shown = installed or err.decode(errors="replace").strip()[:200]
-            return False, f"qare --version printed {shown!r}; the pinned version is {self._config.version}"
+        """The performer has QAre at the pinned version, and ``work_dir`` is writable."""
+        now = time.monotonic()
+        if self._healthy_at is None or now - self._healthy_at > _HEALTH_REUSE_SECONDS:
+            # In a container of the image the runs use, with only the names QAre may read.
+            try:
+                code, out, err = await self._jobs.probe(
+                    [*self._config.command, "--version"], env_names=self._config.env_passthrough,
+                    within=_VERSION_TIMEOUT_SECONDS,
+                )
+            except TransportError as exc:
+                return False, str(exc)
+            if code is None:
+                return False, err or f"qare --version did not answer within {_VERSION_TIMEOUT_SECONDS:.0f} seconds"
+            installed = out.strip()
+            if code != 0 or installed != self._config.version:
+                shown = installed or err.strip()[:200]
+                return False, f"qare --version printed {shown!r}; the pinned version is {self._config.version}"
+            self._healthy_at = now
         try:
             self._work_dir.mkdir(parents=True, exist_ok=True)
             probe = self._work_dir / ".coordinare-write-probe"
@@ -227,7 +228,7 @@ class QAreProvider:
             probe.unlink()
         except OSError as exc:
             return False, f"work_dir {self._work_dir} is not writable: {exc}"
-        return True, f"qare {installed}; work_dir {self._work_dir}"
+        return True, f"qare {self._config.version} in the performer; work_dir {self._work_dir}"
 
     def request_spec(self, ref: str) -> dict[str, Any]:
         """The request a job was started with (no secret is in it)."""
@@ -279,41 +280,24 @@ class QAreProvider:
         return token, spec
 
     async def _launch(self, ref: str, job_dir: Path, token: str) -> None:
-        """Start the runner's launcher and wait until it has recorded the run's pid.
+        """Start the job's performer container and record that it was started.
 
-        The launcher stays the run's parent and reaps it; it is kept referenced here until it
-        ends, so nothing stops it early. If it does not record a pid in time it is stopped
-        before the caller removes the job directory, so a late run cannot start there.
+        The token goes to the container only (a private env file), never to disk here.
+        If the start fails the container is removed before the caller removes the job
+        directory, so a late run cannot start there.
         """
-        env = dict(os.environ)
-        env[runner.CREDENTIAL_ENV] = token
+        launch = StageJobLaunch(
+            kind=runner.KIND, ref=ref, provider=self.name, job_dir=job_dir, token=token,
+            env_names=tuple(self._config.env_passthrough),
+        )
         try:
-            with (job_dir / runner.LOG_FILE).open("ab") as log:
-                launcher = await asyncio.create_subprocess_exec(
-                    *self._runner_argv, "--detach", str(job_dir),
-                    stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=log, env=env,
-                    start_new_session=True, close_fds=True,
-                )
-        except OSError as exc:
-            msg = f"could not start the QAre runner for {ref}: {exc}"
-            raise TransportError(msg) from exc
-        deadline = time.monotonic() + _LAUNCH_TIMEOUT_SECONDS
-        while _load_json(job_dir / runner.LAUNCH_FILE) is None:
-            if launcher.returncode is not None or time.monotonic() > deadline:
-                if launcher.returncode is None:
-                    with contextlib.suppress(ProcessLookupError, PermissionError):
-                        os.killpg(launcher.pid, signal.SIGKILL)
-                    await launcher.wait()
-                msg = (
-                    f"the QAre runner for {ref} did not start (exit {launcher.returncode}); "
-                    f"see {job_dir / runner.LOG_FILE}"
-                )
-                raise TransportError(msg)
-            await asyncio.sleep(0.05)
-        self._launchers = {k: p for k, p in self._launchers.items() if p.returncode is None}
-        self._launchers[ref] = launcher
+            handle = await self._jobs.start(launch)
+        except BaseException:
+            await self._jobs.stop(job_dir)
+            raise
+        runner._write_atomic(job_dir / runner.LAUNCH_FILE, json.dumps({"job": handle, "started_at": time.time()}))
 
-    def _read(self, ref: str) -> StageJob:
+    async def _read(self, ref: str) -> StageJob:
         job_dir = self.job_dir(ref)
         if not job_dir.is_dir():
             return StageJob(ref=ref, state=JobState.RETRYABLE, detail="missing",
@@ -322,27 +306,29 @@ class QAreProvider:
         if status is not None:
             return job_from_status(ref, status, job_dir)
         if self._overdue(job_dir):
+            await self._jobs.stop(job_dir)
             return StageJob(ref=ref, state=JobState.RETRYABLE, detail="overdue",
                             reason="the QAre run passed its timeout without saying how it ended")
-        if self._running(job_dir):
+        if await self._running(job_dir):
             return StageJob(ref=ref, state=JobState.PENDING, detail="running")
+        # The job may have written its status just before its container went away.
+        status = _load_json(job_dir / runner.STATUS_FILE)
+        if status is not None:
+            return job_from_status(ref, status, job_dir)
         return StageJob(ref=ref, state=JobState.RETRYABLE, detail="ended",
-                        reason="the QAre run ended without saying how (the runner stopped)")
+                        reason="the QAre run ended without saying how (its performer stopped)")
 
-    def _running(self, job_dir: Path) -> bool:
-        launch = _load_json(job_dir / runner.LAUNCH_FILE)
-        if launch is None:
-            # Being launched now, or the daemon stopped before the runner started.
-            age = time.time() - job_dir.stat().st_mtime
-            return age < _LAUNCH_GRACE_SECONDS
-        pid = launch.get("pid")
-        return isinstance(pid, int) and _alive(pid, job_dir)
+    async def _running(self, job_dir: Path) -> bool:
+        if _load_json(job_dir / runner.LAUNCH_FILE) is None:
+            # Being launched now, or the daemon stopped before the job started.
+            return _age(job_dir) < _LAUNCH_GRACE_SECONDS
+        # A Docker that cannot answer is a TransportError: retried, never read as over.
+        return await self._jobs.state(job_dir) is RunState.RUNNING
 
     def _overdue(self, job_dir: Path) -> bool:
-        """Past the run's own timeout with no status: whatever holds its pid is not the run.
+        """Past the run's own timeout with no status: the job is stuck, or not the run.
 
-        Bounds a run whose pid was reused (a host restart) where the process cannot be told
-        apart by its command line.
+        The job stops itself at its timeout; this bounds one that never reports.
         """
         spec = _load_json(job_dir / runner.REQUEST_FILE) or {}
         created = spec.get("created_at")
@@ -516,29 +502,16 @@ def _summary(verdict: str, criteria: list[CriterionOutcome], document: dict[str,
     )
 
 
+def _age(path: Path) -> float:
+    return time.time() - path.stat().st_mtime
+
+
 def _load_json(path: Path) -> dict[str, Any] | None:
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
-
-
-def _alive(pid: int, job_dir: Path) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return False  # another user's process: the pid was reused
-    cmdline = Path(f"/proc/{pid}/cmdline")
-    if cmdline.exists():
-        # Guard against a reused pid after the host restarted.
-        try:
-            return str(job_dir) in cmdline.read_bytes().decode(errors="replace")
-        except OSError:
-            return True
-    return True
 
 
 #: What a pruned run keeps: enough for a later dispatch at the same head to find it, read
@@ -554,8 +527,9 @@ def prune_finished(work_dir: Path, retain_days: int, *, keep: str = "") -> list[
     A finished run keeps its request, status, result and publish record, so the attempt is
     still found (and never posted twice); its evidence files, plan, diff and log go, since
     the evidence is on ``qa-assets``. A run whose result was never published keeps all of
-    it. A run that died without a status loses only its checkouts. A run still going is
-    never touched: nothing is pruned younger than ``retain_days``.
+    it. A run that died without a status loses only the checkouts a host-side run from
+    before #423 left in its directory (runs now check out inside their performer). A run
+    still going is never touched: nothing is pruned younger than ``retain_days``.
     """
     pruned: list[str] = []
     if not work_dir.is_dir():

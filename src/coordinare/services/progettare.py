@@ -9,16 +9,19 @@ server and a GitHub App; coordinare uses the released CLI at a pinned version:
 
 Progettare has no job API and no request ids (ViviDynamics/progettare#69), so this
 provider gives every request its own directory under ``runs_dir``, named by the request
-id, and runs the CLI there in a detached runner (``progettare_runner``) that holds an
-``flock`` for the life of the run. Looking a request up is reading its directory:
+id, and runs the CLI as a stage job (#423, :mod:`coordinare.services.stage_jobs`): an
+ephemeral performer container, with that directory mounted, clones the default branch with
+the performer's workspace layer and runs the CLI there. Coordinare's own host never clones.
+The container lives exactly as long as the run. Looking a request up is reading its
+directory, and asking Docker about its container only while it has not reported:
 
-- the lock is held: the run is in flight;
 - no ``request.json``: never started;
+- no ``runner.json`` and the container is running: the run is in flight;
 - ``run.json`` with ``complete``: the plan, read from ``intake.json``, ``size.json`` and
   the per-reader briefs under ``briefs/`` after checking each is contract version 1;
 - ``run.json`` with ``blocked``: the questions for a person;
 - ``run.json`` with ``failed``, or no ``run.json`` at all (a clone that failed, a run that
-  timed out or was killed by a restart of the host): ended without a result. Progettare
+  timed out, a container that was stopped): ended without a result. Progettare
   posts nothing, so every such attempt is safe to retry under the next request id.
 
 A record whose contract version is not the one this module speaks is refused for a person,
@@ -27,22 +30,19 @@ imported, because Progettare runs as a CLI and is not installed in coordinare.
 """
 from __future__ import annotations
 
-import asyncio
-import contextlib
-import errno
 import hashlib
 import json
 import os
 import re
 import shutil
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from coordinare.services.progettare_runner import without_coordinare_python, write_json
+from coordinare.services import progettare_runner as runner
+from coordinare.services.progettare_runner import write_json
 from coordinare.services.stage_contract import (
     JobState,
     StageJob,
@@ -51,42 +51,30 @@ from coordinare.services.stage_contract import (
     WorkItemRequest,
     work_item_digest,
 )
+from coordinare.services.stage_jobs import RunState, StageJobLaunch, StageJobs, UnavailableStageJobs
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from types import ModuleType
 
     from coordinare.services.stage_contract import AnyStageRequest
     from coordinare.stage_provider_config import ProgettareProviderConfig
 
 logger = structlog.get_logger(__name__)
 
-# coordinare is imported on hosts without fcntl (Windows). A Progettare run cannot work
-# there, and says so; nothing else may break.
-_FCNTL: ModuleType | None
-try:
-    import fcntl
-except ImportError:
-    _FCNTL = None
-else:
-    _FCNTL = fcntl
-
 #: The Progettare artifact contract version this module speaks (``progettare.contract``).
 ARTIFACT_VERSION = 1
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$")
 _READERS = ("implementer", "qa", "documenter")
-#: Environment every run gets, when the daemon has it. Anything else is named in pass_env.
-_BASE_ENV = (
-    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR",
-    # The runner is ``python -m coordinare...``: it imports coordinare as the daemon does.
-    "PYTHONPATH", "VIRTUAL_ENV",
-    # git, gh and the model calls go out the way the daemon's own requests do.
-    "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
-    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO",
-)
-_VERSION_TIMEOUT_SECONDS = 15
+#: Variables the run's container takes from the daemon's environment, when it has them:
+#: git, gh and the model calls go out the way the daemon's own requests do. Anything else
+#: is named in pass_env.
+_PROXY_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy")
+#: A version check starts a container, which may first pull the image.
+_VERSION_TIMEOUT_SECONDS = 180
+#: Tools a run needs in the performer beside the CLI.
+_TOOLS = ("git", "gh")
 _INTAKE_HINT = (
     "Progettare reads the acceptance criteria from the issue body: answer by editing the "
     "issue's acceptance section, then reply on the card"
@@ -106,8 +94,8 @@ class ProgettareProvider:
         config: ProgettareProviderConfig,
         *,
         clone_url: Callable[[WorkItemRequest], str] | None = None,
-        python: str = sys.executable,
         git_base_url: str = "https://github.com",
+        jobs: StageJobs | None = None,
     ) -> None:
         self.name = name
         self._config = config
@@ -115,10 +103,10 @@ class ProgettareProvider:
         # The clone goes to the git host coordinare is configured with, never to a host a
         # card names: the issue's host is only checked against it.
         self._clone_url = clone_url or (lambda request: f"{base}/{request.repository}.git")
-        self._python = python
-        #: Runners this process started, kept referenced until they exit. Only a
-        #: convenience: whether a run is in flight is always read from its lock.
-        self._children: dict[str, asyncio.subprocess.Process] = {}
+        #: Where the runs go: a performer container each (#423).
+        self._jobs: StageJobs = jobs or UnavailableStageJobs(
+            f"stage provider {name!r} has no performer to run Progettare in",
+        )
 
     @property
     def config(self) -> ProgettareProviderConfig:
@@ -130,7 +118,7 @@ class ProgettareProvider:
         if not isinstance(request, WorkItemRequest):
             msg = "Progettare plans work items, not pull requests"
             raise TransportError(msg)
-        found = self._inspect_or_retry(_checked_ref(request_id))
+        found = await self._inspect_or_retry(_checked_ref(request_id))
         if found is not None:
             return found
         token = self._token()
@@ -142,28 +130,29 @@ class ProgettareProvider:
             raise TransportError(msg) from exc
 
     async def poll(self, ref: str) -> StageJob:
-        found = self._inspect_or_retry(_checked_ref(ref))
+        found = await self._inspect_or_retry(_checked_ref(ref))
         if found is None:
             msg = f"Progettare has no run for request {ref} under {self._config.runs_dir}"
             raise TransportError(msg)
         return found
 
     async def health(self) -> tuple[bool, str]:
-        """Installed at the pinned version, with its token, runs directory and config."""
-        executable = shutil.which(self._config.command)
-        if executable is None:
-            return False, f"{self._config.command} is not installed or not on PATH"
-        found = await self._installed_version()
+        """The performer has the pinned CLI and its tools; the token, the variables it
+        passes, the runs directory and the config are in place."""
+        try:
+            tools, found = await self._probe_performer()
+        except TransportError as exc:  # no performer could be run at all
+            return False, str(exc)
         for problem in (
-            self._version_problem(executable, found),
-            _tools_problem(),
+            self._version_problem(found),
+            tools,
             self._environment_problem(),
             self._config_problem(),
             self._runs_problem(),
         ):
             if problem:
                 return False, problem
-        return True, f"progettare {found} at {executable}; runs in {self._config.runs_dir}"
+        return True, f"progettare {found} in the performer; runs in {self._config.runs_dir}"
 
     # -- starting a run -------------------------------------------------------------
 
@@ -181,141 +170,132 @@ class ProgettareProvider:
             raise PerformerAuthError(msg)
         return token
 
-    async def _check_version(self) -> None:
-        """Checked before every run, so an upgrade under a running daemon is noticed.
+    def _env_names(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys((*_PROXY_ENV, *self._config.pass_env)))
 
-        A version that differs from the pin, or a CLI that is not there, is a configuration
-        error and blocks. A CLI that does not answer in time is retried.
+    async def _check_version(self) -> None:
+        """Checked before every run, so an image change under a running daemon is noticed.
+
+        A version that differs from the pin, or a CLI the performer does not have, is a
+        configuration error and blocks. A check that does not answer in time is retried.
         """
-        found = await self._installed_version()
+        code, out, err = await self._jobs.probe(
+            [self._config.command, "--version"], env_names=self._env_names(), within=_VERSION_TIMEOUT_SECONDS,
+        )
+        found = _version_of(code, out, err)
         if found is None:
             msg = f"stage provider {self.name!r}: could not read the version of {self._config.command} in time"
             raise TransportError(msg)
+        if not found:
+            msg = f"stage provider {self.name!r}: {err}; use a performer image with progettare {self._config.version}"
+            raise PerformerAuthError(msg)
         if found != self._config.version:
             msg = (
                 f"stage provider {self.name!r}: {self._config.command} --version reports "
-                f"{found or 'nothing (it could not be started; is it installed?)'}, but version "
-                f"{self._config.version} is pinned; install "
+                f"{found}, but version {self._config.version} is pinned; use a performer image with "
                 "the pinned release or change stage_providers."
                 f"{self.name}.version"
             )
             raise PerformerAuthError(msg)
 
-    async def _installed_version(self) -> str | None:
-        """What ``<command> --version`` prints; empty when it cannot be run, None when it
-        did not answer in time."""
-        try:
-            # The environment the run gets, so the check sees what the run will see.
-            process = await asyncio.create_subprocess_exec(
-                self._config.command, "--version",
-                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE, env=without_coordinare_python(self._child_env(None, "github.com")),
-            )
-        except OSError:
-            return ""
-        try:
-            out, err = await asyncio.wait_for(process.communicate(), _VERSION_TIMEOUT_SECONDS)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-            return None
-        lines = out.decode("utf-8", "replace").strip().splitlines()
-        if lines:
-            return lines[-1].strip()
-        why = err.decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
-        return f"nothing (exit {process.returncode}{': ' + why[0][:200] if why[0] else ''})"
+    async def _probe_performer(self) -> tuple[str | None, str | None]:
+        """One container for health: which tools are missing, and the CLI's version."""
+        script = (
+            f'for t in {" ".join(_TOOLS)}; do command -v "$t" >/dev/null 2>&1 || echo "missing $t"; done; '
+            'exec "$0" --version'
+        )
+        code, out, err = await self._jobs.probe(
+            ["sh", "-c", script, self._config.command], env_names=self._env_names(),
+            within=_VERSION_TIMEOUT_SECONDS,
+        )
+        missing = [line.split(" ", 1)[1] for line in out.splitlines() if line.startswith("missing ")]
+        tools = f"{', '.join(missing)} not in the performer image; Progettare runs need them" if missing else None
+        rest = "\n".join(line for line in out.splitlines() if not line.startswith("missing "))
+        return tools, _version_of(code, rest, err)
 
     async def _start(self, request: WorkItemRequest, ref: str, token: str) -> StageJob:
         directory = self._directory(ref)
         try:
             directory.mkdir(parents=True, exist_ok=True)
-            fd = os.open(directory / "lock", os.O_RDWR | os.O_CREAT, 0o600)
         except OSError as exc:
             msg = f"Progettare: cannot use {directory}: {exc}"
             raise TransportError(msg) from exc
+        if await self._jobs.state(directory) is RunState.RUNNING:
+            return StageJob(ref=ref, state=JobState.PENDING, detail="running")
+        for stale in runner.STALE_FILES:
+            (directory / stale).unlink(missing_ok=True)
+        shutil.rmtree(directory / runner.RUNS_DIR, ignore_errors=True)
+        config_file = None
+        if self._config.config_path:
+            shutil.copyfile(self._config.config_path, directory / runner.CONFIG_FILE)
+            config_file = runner.CONFIG_FILE
+        write_json(directory / runner.REQUEST_FILE, {
+            "request_id": ref,
+            "issue": request.ref,
+            "host": request.host,
+            "clone_url": self._clone_url(request),
+            "pin": request.pin,
+            "command": self._config.command,
+            "version": self._config.version,
+            "config_path": self._config.config_path,
+            "config_file": config_file,
+            "pass_env": list(self._config.pass_env),
+            "timeout_seconds": self._config.timeout_seconds,
+            "created_at": datetime.now(UTC).isoformat(),
+        })
+        launch = StageJobLaunch(
+            kind=runner.KIND, ref=ref, provider=self.name, job_dir=directory, token=token,
+            env_names=self._env_names(),
+        )
         try:
-            if not _try_lock(fd):
-                return StageJob(ref=ref, state=JobState.PENDING, detail="running")
-            for stale in ("runner.json", "stdout.txt", "stderr.txt"):
-                (directory / stale).unlink(missing_ok=True)
-            shutil.rmtree(directory / "runs", ignore_errors=True)
-            write_json(directory / "request.json", {
-                "request_id": ref,
-                "issue": request.ref,
-                "host": request.host,
-                "clone_url": self._clone_url(request),
-                "pin": request.pin,
-                "command": self._config.command,
-                "version": self._config.version,
-                "config_path": self._config.config_path,
-                "timeout_seconds": self._config.timeout_seconds,
-                "created_at": datetime.now(UTC).isoformat(),
-            })
-            try:
-                with (directory / "runner.log").open("wb") as log:
-                    child = await asyncio.create_subprocess_exec(
-                        self._python, "-m", "coordinare.services.progettare_runner", str(directory), str(fd),
-                        stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=log, cwd=directory,
-                        env=self._child_env(token, request.host), pass_fds=(fd,), start_new_session=True,
-                    )
-            except OSError as exc:
-                (directory / "request.json").unlink(missing_ok=True)
-                msg = f"Progettare: could not start the run: {exc}"
-                raise TransportError(msg) from exc
-            self._children[ref] = child
-        finally:
-            os.close(fd)
+            await self._jobs.start(launch)
+        except BaseException:
+            # Nothing ran: the next dispatch finds no request and starts it afresh.
+            await self._jobs.stop(directory)
+            (directory / runner.REQUEST_FILE).unlink(missing_ok=True)
+            raise
         logger.info("progettare.run_started", provider=self.name, request=ref, issue=request.ref)
         return StageJob(ref=ref, state=JobState.PENDING, detail="started")
 
-    def _child_env(self, token: str | None, host: str) -> dict[str, str]:
-        env = {k: os.environ[k] for k in (*_BASE_ENV, *self._config.pass_env) if k in os.environ}
-        if token is not None:
-            env["GH_TOKEN"] = token
-        if host != "github.com":
-            env["GH_HOST"] = host
-        return env
-
     # -- reading a run --------------------------------------------------------------
 
-    def _inspect_or_retry(self, ref: str) -> StageJob | None:
+    async def _inspect_or_retry(self, ref: str) -> StageJob | None:
         """Read a request's directory; a filesystem error is a retryable system error."""
         try:
-            return self._inspect(ref)
+            return await self._inspect(ref)
         except OSError as exc:
             msg = f"Progettare: cannot read request {ref} under {self._config.runs_dir}: {exc}"
             raise TransportError(msg) from exc
 
-    def _inspect(self, ref: str) -> StageJob | None:
-        child = self._children.get(ref)
-        if child is not None and child.returncode is not None:
-            del self._children[ref]  # reaped; the lock below says whether the run is over
+    async def _inspect(self, ref: str) -> StageJob | None:
         directory = self._directory(ref)
         if not directory.is_dir():
             return None
-        if _locked(directory / "lock"):
-            return StageJob(ref=ref, state=JobState.PENDING, detail="running")
         try:
-            request = _read_json(directory / "request.json")
+            request = _read_json(directory / runner.REQUEST_FILE)
         except FileNotFoundError:
             return None  # a start that never got as far as recording the request
         except ContractError as exc:
             return StageJob(ref=ref, state=JobState.NEEDS_HUMAN, detail="unreadable", reason=str(exc))
+        # Not reported yet: in flight while its container runs. A Docker that cannot answer
+        # is a TransportError, retried, never read as the run being over.
+        if not (directory / runner.RESULT_FILE).exists() and await self._jobs.state(directory) is RunState.RUNNING:
+            return StageJob(ref=ref, state=JobState.PENDING, detail="running")
         return self._ended(ref, directory, request)
 
     def _ended(self, ref: str, directory: Path, request: dict[str, Any]) -> StageJob:
-        runner = _read_optional(directory / "runner.json")
-        phase = str(runner.get("phase") or "")
-        detail = str(runner.get("detail") or "").strip()
+        result = _read_optional(directory / runner.RESULT_FILE)
+        phase = str(result.get("phase") or "")
+        detail = str(result.get("detail") or "").strip()
         if phase == "config":
             return StageJob(ref=ref, state=JobState.NEEDS_HUMAN, detail="config", reason=detail)
         if phase in ("clone", "timeout"):
             return _retry(ref, phase, f"{phase} failed: {detail}" if phase == "clone" else detail)
-        run_dir = _run_dir(directory / "runs")
+        run_dir = _run_dir(directory / runner.RUNS_DIR)
         if run_dir is None:
-            log = "" if detail else _log_tail(directory / "runner.log")
+            log = "" if detail else _log_tail(directory / runner.LOG_FILE)
             why = detail or (f"the runner's log ends: {log}" if log else (
-                "the run stopped before it recorded anything (was the host restarted?)"
+                "the run stopped before it recorded anything (was its performer stopped?)"
             ))
             return _retry(ref, phase or "interrupted", f"progettare recorded no run: {why}")
         try:
@@ -369,12 +349,15 @@ class ProgettareProvider:
 
     # -- health ---------------------------------------------------------------------
 
-    def _version_problem(self, executable: str, found: str | None) -> str | None:
+    def _version_problem(self, found: str | None) -> str | None:
+        command = self._config.command
         if found == self._config.version:
             return None
         if found is None:
-            return f"{executable} --version did not answer within {_VERSION_TIMEOUT_SECONDS}s"
-        return f"{executable} --version reports {found or 'nothing'}, but {self._config.version} is pinned"
+            return f"{command} --version did not answer within {_VERSION_TIMEOUT_SECONDS}s in the performer"
+        if not found:
+            return f"{command} is not installed in the performer image (it could not be started)"
+        return f"{command} --version in the performer reports {found}, but {self._config.version} is pinned"
 
     def _environment_problem(self) -> str | None:
         names = (self._config.gh_token_env, *self._config.pass_env)
@@ -394,9 +377,16 @@ class ProgettareProvider:
         return None if os.access(runs, os.W_OK) else f"runs_dir {runs} is not writable"
 
 
-def _tools_problem() -> str | None:
-    missing = [tool for tool in ("git", "gh") if shutil.which(tool) is None]
-    return f"{', '.join(missing)} not on PATH; Progettare runs need them" if missing else None
+def _version_of(code: int | None, out: str, err: str) -> str | None:
+    """A version check's answer: the version, empty when the CLI could not be run, None
+    when it did not answer in time."""
+    if code is None:
+        return "" if err else None
+    lines = out.strip().splitlines()
+    if lines:
+        return lines[-1].strip()
+    why = err.strip().splitlines()[-1:] or [""]
+    return f"nothing (exit {code}{': ' + why[0][:200] if why[0] else ''})"
 
 
 # -- the blueprint ----------------------------------------------------------------------
@@ -540,41 +530,6 @@ def _run_dir(runs: Path) -> Path | None:
         return None
     recorded = sorted(p for p in runs.iterdir() if (p / "run.json").is_file())
     return recorded[-1] if recorded else None
-
-
-def _locked(path: Path) -> bool:
-    """Whether a runner (or the Progettare it started) still holds the request's lock."""
-    try:
-        fd = os.open(path, os.O_RDWR)
-    except FileNotFoundError:
-        return False  # never started; any other error is the caller's retryable error
-    try:
-        if not _try_lock(fd):
-            return True
-        _unlock(fd)
-        return False
-    finally:
-        os.close(fd)
-
-
-def _try_lock(fd: int) -> bool:
-    """Take the request's lock without waiting; False when someone holds it."""
-    if _FCNTL is None:
-        msg = "Progettare runs need POSIX file locks, which this host does not have"
-        raise TransportError(msg)
-    try:
-        _FCNTL.flock(fd, _FCNTL.LOCK_EX | _FCNTL.LOCK_NB)
-    except OSError as exc:
-        if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
-            return False
-        raise
-    return True
-
-
-def _unlock(fd: int) -> None:
-    if _FCNTL is not None:
-        with contextlib.suppress(OSError):
-            _FCNTL.flock(fd, _FCNTL.LOCK_UN)
 
 
 def _log_tail(path: Path) -> str:
