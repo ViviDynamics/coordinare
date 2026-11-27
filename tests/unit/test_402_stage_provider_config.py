@@ -297,3 +297,17 @@ async def test_a_human_approval_beside_scrutare_still_merges() -> None:
     state = _monitor_state([_scrutare_review("CHANGES_REQUESTED"), human], "APPROVED")
     result = await monitor_pr(state)  # type: ignore[arg-type]
     assert result["phase"] == "merging"
+
+
+def test_the_dashboard_config_page_says_a_provider_ignores_the_backend() -> None:
+    from coordinare.config import CoordinareConfiguration
+    from coordinare.config_descriptors import build_snapshot
+
+    config = CoordinareConfiguration(
+        global_config=_config(reviewer={"provider": "scrutare"}),
+        symphonies=[SymphonyConfig(name="widgets", github_project_number=1)],
+    )
+    snapshot = build_snapshot(config).model_dump()
+    settings = [s for section in snapshot["sections"] for s in section.get("settings", [])]
+    (setting,) = [s for s in settings if s["key"] == "global.stage_providers"]
+    assert "ignores its backend, mode and workflow" in setting["help"]

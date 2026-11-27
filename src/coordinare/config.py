@@ -695,7 +695,14 @@ class PerformerRoleConfig(BaseModel):
     # instead of a performer (Scrutare for reviewer). None (default) runs a performer.
     # The provider runs its own harness, so ``backend``/``mode``/``workflow`` have no
     # effect on a provider-backed role.
-    provider: str | None = None
+    provider: str | None = Field(
+        default=None,
+        description=(
+            "A stage provider from stage_providers that fills this role instead of a "
+            "performer (Scrutare for reviewer). It runs its own harness, so backend, mode, "
+            "workflow and tuning have no effect while it is set."
+        ),
+    )
     # 080: model selection moved to the root-level catalogs. A role references a
     # `mode` (modes → model_endpoints → endpoints); inline `model`/`base_url`/
     # `api_key_env`/`auth_token_env` are removed (hard cut, see validator below).
@@ -1437,7 +1444,14 @@ class ProjectConfiguration(BaseSettings):
     model_endpoints: list[ModelEndpoint] = Field(default_factory=list)
     modes: list[Mode] = Field(default_factory=list)
     # 402: outside services that can fill a stage (referenced by performers.<role>.provider)
-    stage_providers: dict[str, StageProviderConfig] = Field(default_factory=dict)
+    stage_providers: dict[str, StageProviderConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Outside services that can fill a stage, chosen per role with "
+            "performers.<role>.provider. A provider runs its own harness, so a role it "
+            "fills ignores its backend, mode and workflow. Read from the global config only."
+        ),
+    )
     priority: PriorityConfig = Field(default_factory=PriorityConfig)
     # 050 — Only dispatch cards assigned to this GitHub login. None = no filter.
     assignee_filter: str | None = Field(default=None)
