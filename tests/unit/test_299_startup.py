@@ -282,8 +282,11 @@ async def test_event_store_shutdown_is_bounded(monkeypatch) -> None:
     monkeypatch.setattr(app_main, "EventStore", MagicMock(return_value=store))
     monkeypatch.setattr(app_main, "_run_with_events", AsyncMock())
     monkeypatch.setattr(app_main, "load_unexpanded_config", MagicMock(return_value={}))
+    # Half the production bound: only the patched 0.01s bound can meet it, and the unpatched
+    # startup checks still have room on a slow, coverage-traced CI runner (427).
+    within = app_main.EVENT_STORE_SHUTDOWN_SECONDS / 2
     monkeypatch.setattr(app_main, "EVENT_STORE_SHUTDOWN_SECONDS", 0.01, raising=False)
-    await asyncio.wait_for(app_main._run(config), 0.1)
+    await asyncio.wait_for(app_main._run(config), within)
     await asyncio.wait_for(cancelled.wait(), WAIT_SECONDS)
 
 
