@@ -27,7 +27,6 @@ from coordinare.services.work_items import (
     OPEN,
     Blocker,
     IssueLink,
-    WorkItem,
     board_metadata,
     work_items_of,
 )
@@ -128,10 +127,10 @@ class TestATrackerWithoutIssueNumbers:
 
         (item,) = work_items_of(await board.poll_board()).values()
 
-        assert item == WorkItem(
-            id=card, key=card, url=f"memory://work-items/{card}", title="One", status="TODO",
-            native_status="To Do", owners=("pat",), labels=("docs",),
+        assert (item.id, item.key, item.url, item.title, item.status, item.native_status) == (
+            card, card, f"memory://work-items/{card}", "One", "TODO", "To Do",
         )
+        assert (item.owners, item.labels, item.blockers) == (("pat",), ("docs",), ())
         assert item.issue is None
 
     @pytest.mark.asyncio
