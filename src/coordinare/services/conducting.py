@@ -5,7 +5,7 @@ import asyncio
 import contextlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
@@ -232,6 +232,19 @@ def _openai_usage(data: Any) -> dict[str, int] | None:
     return {"input_tokens": max(prompt - read, 0), "output_tokens": output, "cache_read": read, "cache_write": 0}
 
 
+def _unusable(reply: ModelReply, max_tokens: int) -> str | None:
+    """Why a reply holds no usable whole text, or None (416). A send error stays as it is."""
+    if reply.error is not None:
+        return reply.error
+    if reply.finish_reason in TRUNCATED_FINISH_REASONS:
+        return f"finish_reason {reply.finish_reason}: output truncated at {max_tokens} tokens"
+    if reply.finish_reason == "content_filter":
+        return "finish_reason content_filter"
+    if not reply.text.strip():
+        return "empty reply"
+    return None
+
+
 def _http_error_name(exc: Exception) -> str:
     """How a failed send is recorded: ``http_<status>`` for a refused request (416), else the error's type."""
     response = getattr(exc, "response", None) if type(exc).__name__ == "HTTPStatusError" else None
@@ -311,8 +324,14 @@ class OpenAiApiBackend:
         """The reply text of one chat call ('' on any failure), recorded on the open call (131)."""
         return (await self._reply(messages, json_mode)).text
 
-    async def _reply(self, messages: list[dict[str, str]], json_mode: bool) -> ModelReply:
-        """One chat call, recorded on the open call (131)."""
+    async def _reply(
+        self, messages: list[dict[str, str]], json_mode: bool, *, whole: bool = False,
+    ) -> ModelReply:
+        """One chat call, recorded on the open call (131).
+
+        ``whole``: a reply with no usable whole text (cut off, filtered, empty) comes back with
+        ``error`` set, so the call record says it failed and keeps the text and usage (416).
+        """
         system, user = split_messages(messages)
         request = ModelRequest(
             model=self._model,
@@ -321,7 +340,13 @@ class OpenAiApiBackend:
             prompt=user,
             parameters=self._request_parameters(json_mode),
         )
-        return await self.calls.invoke(request, lambda: self._post_chat(messages, json_mode))
+
+        async def send() -> ModelReply:
+            reply = await self._post_chat(messages, json_mode)
+            problem = _unusable(reply, self._max_tokens) if whole else None
+            return replace(reply, error=problem) if problem is not None else reply
+
+        return await self.calls.invoke(request, send)
 
     def _request_parameters(self, json_mode: bool) -> dict[str, Any]:
         parameters: dict[str, Any] = {"max_tokens": self._max_tokens, "json_mode": json_mode}
@@ -427,16 +452,11 @@ class OpenAiApiBackend:
         ``ModelRequestFailedError`` when the request returned no usable reply (an error, a
         content filter, empty text), so none of them is read as malformed JSON.
         """
-        reply = await self._reply(messages, json_mode=True)
+        reply = await self._reply(messages, json_mode=True, whole=True)
         if reply.finish_reason in TRUNCATED_FINISH_REASONS:
             raise ModelOutputTruncatedError(self._max_tokens)
-        problem = reply.error
-        if problem is None and reply.finish_reason == "content_filter":
-            problem = "finish_reason content_filter"
-        if problem is None and not reply.text.strip():
-            problem = "empty reply"
-        if problem is not None:
-            raise ModelRequestFailedError(problem, max_tokens=self._max_tokens)
+        if reply.error is not None:
+            raise ModelRequestFailedError(reply.error, max_tokens=self._max_tokens)
         return reply.text
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:

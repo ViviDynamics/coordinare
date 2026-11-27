@@ -15,13 +15,19 @@ import pytest
 from coordinare.config import ConductingConfig
 from coordinare.daemon import CoordinareDaemon
 from coordinare.services.conducting import OpenAiApiBackend, discovery_chat
-from coordinare.services.conductor_calls import ModelOutputTruncatedError, ModelRequestFailedError
+from coordinare.services.conductor_calls import (
+    ConductorCallLog,
+    ModelOutputTruncatedError,
+    ModelRequestFailedError,
+    conductor_call,
+)
 from coordinare.services.environment_discovery import (
     DiscoveryLimits,
     EnvironmentDiscoveryError,
     discover_and_review,
     discovery_output_tokens,
 )
+from coordinare.services.run_transcript import TranscriptCollector
 
 COMMIT = "a" * 40
 PATH = "README.md"
@@ -40,6 +46,15 @@ def _client(content: str, finish_reason: str | None = "stop") -> MagicMock:
     client.__aexit__ = AsyncMock(return_value=None)
     client.post = AsyncMock(return_value=response)
     return client
+
+
+def _call_log(root) -> ConductorCallLog:
+    return ConductorCallLog(TranscriptCollector(root, enabled=True, max_bytes_per_run=10**6, retention_days=0))
+
+
+def _transcript_result(root) -> dict:
+    (path,) = list(root.rglob("*.jsonl"))
+    return json.loads(path.read_text().splitlines()[-1])
 
 
 def _sent_budget(client: MagicMock) -> int:
@@ -147,6 +162,40 @@ class TestTruncation:
             await backend.chat_json_checked([{"role": "user", "content": "x"}])
         assert caught.value.error == "http_400"
         assert caught.value.max_tokens == 64_000
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("content", "finish_reason", "recorded"), [
+        ('{"manifest": {"sch', "length", "finish_reason length: output truncated at 4096 tokens"),
+        ("", "stop", "empty reply"),
+        ("", "content_filter", "finish_reason content_filter"),
+    ])
+    async def test_the_conductor_call_records_the_failure(self, tmp_path, content, finish_reason, recorded):
+        # The transcript must not show a held discovery as a successful call (Copilot on #420).
+        log = _call_log(tmp_path)
+        backend = OpenAiApiBackend(api_key="k", model="m", max_tokens=4096, calls=log)
+        with patch("httpx.AsyncClient", return_value=_client(content, finish_reason)), \
+                pytest.raises((ModelOutputTruncatedError, ModelRequestFailedError)):
+            async with conductor_call(backend, kind="env_discovery") as call:
+                await backend.chat_json_checked([{"role": "user", "content": "x"}])
+        await log.drain()
+        assert call.error == recorded
+        assert call.reply is not None
+        assert call.reply.text == content
+        assert call.reply.finish_reason == finish_reason
+        result = _transcript_result(tmp_path)
+        assert result["type"] == "result"
+        assert result["is_error"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_complete_reply_is_not_recorded_as_an_error(self, tmp_path):
+        log = _call_log(tmp_path)
+        backend = OpenAiApiBackend(api_key="k", model="m", calls=log)
+        with patch("httpx.AsyncClient", return_value=_client("{}", "stop")):
+            async with conductor_call(backend, kind="env_discovery") as call:
+                await backend.chat_json_checked([{"role": "user", "content": "x"}])
+        await log.drain()
+        assert call.error is None
+        assert _transcript_result(tmp_path)["is_error"] is False
 
     @pytest.mark.asyncio
     async def test_a_failed_request_raises_instead_of_returning_nothing(self):
