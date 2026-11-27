@@ -74,7 +74,7 @@ class ScrutareProvider:
     async def submit(self, request: AnyStageRequest, request_id: str) -> StageJob:
         if not isinstance(request, StageRequest):
             msg = "Scrutare reviews pull requests, not work items"
-            raise TransportError(msg)
+            raise PerformerAuthError(msg)  # a wiring mistake: blocks, never retried
         body = {
             "repository": request.repository,
             "number": request.pr_number,

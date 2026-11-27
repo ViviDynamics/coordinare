@@ -320,6 +320,7 @@ def test_an_issue_on_another_host_never_gets_the_token() -> None:
     ("https://acme.ghe.com", {"acme.ghe.com"}),
     ("https://ghe.example:8443/", {"ghe.example:8443"}),
     ("https://ghe.example:443", {"ghe.example"}),
+    ("git://git.corp:9418", {"git.corp"}),
 ])
 def test_the_github_host_is_the_one_coordinare_clones_from(git_base_url: str, hosts: set[str]) -> None:
     from coordinare.services.stage_providers import github_hosts

@@ -33,7 +33,6 @@ from coordinare.stage_provider_config import (
     PROVIDER_ROLES,
     ProgettareProviderConfig,
     QAreProviderConfig,
-    ScrutareProviderConfig,
     StageProviderConfig,
     normalize_login,
 )
@@ -88,8 +87,10 @@ def github_hosts(config: Any) -> frozenset[str]:
     The same host the clone goes to, port included, so the token only ever goes where
     coordinare already sends it.
     """
-    base = str(getattr(config, "git_base_url", "") or "https://github.com")
-    return frozenset({web_host(urlsplit(base).netloc) or "github.com"})
+    parts = urlsplit(str(getattr(config, "git_base_url", "") or "https://github.com"))
+    # Issue URLs are http(s): a git:// base names the same host on another port.
+    netloc = parts.netloc if parts.scheme in ("http", "https") else (parts.hostname or "")
+    return frozenset({web_host(netloc) or "github.com"})
 
 
 def build_provider(
@@ -117,8 +118,11 @@ def provider_fix(name: str, provider_config: StageProviderConfig) -> str:
             f"on PATH; set {provider_config.gh_token_env} and every pass_env variable; and make "
             "runs_dir writable and config_path exist."
         )
-    if not isinstance(provider_config, ScrutareProviderConfig):
-        return f"Install {provider_config.kind} where coordinare runs, at the pinned version."
+    if isinstance(provider_config, QAreProviderConfig):
+        return (
+            f"Install QAre {provider_config.version} where coordinare runs (its host install or "
+            f"image), or correct stage_providers.{name}.command and .version; make work_dir writable."
+        )
     return (
         f"Start {provider_config.kind} or correct stage_providers.{name}.url (it must be "
         "reachable from coordinare), and set "

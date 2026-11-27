@@ -128,3 +128,19 @@ def test_the_catalog_with_both_kinds_stays_off_the_global_settings_form() -> Non
 def test_the_command_is_a_name_or_an_absolute_path(command: str) -> None:
     with pytest.raises(ValidationError, match="command must be"):
         _config(providers={"progettare": {**PROGETTARE, "command": command}})
+
+
+def test_a_symphony_cannot_move_a_progettare_architect_to_another_git_host() -> None:
+    config = _config()
+    moved = SymphonyConfig(
+        name="widgets", github_project_number=1,
+        overrides={
+            "git_base_url": "https://ghe.example",
+            "performers": {"implementer": {}, "architect": {"provider": "progettare"}},
+        },
+    )
+    with pytest.raises(ValueError, match="git_base_url"):
+        moved.effective_config(config)
+    # Without Progettare, the override is the symphony's business, as before.
+    plain = SymphonyConfig(name="widgets", github_project_number=1, overrides={"git_base_url": "https://ghe.example"})
+    assert plain.effective_config(config).git_base_url == "https://ghe.example"
