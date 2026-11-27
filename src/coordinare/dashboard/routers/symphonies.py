@@ -57,6 +57,14 @@ def _persist_symphony_configs(sym_configs: dict[str, Any], config_path: Path | N
     loaded["symphonies"] = symphony_documents(sym_configs, loaded)
     atomic_write_yaml(config_path, loaded)
 
+def _work_items_view(cfg: Any) -> dict[str, str]:
+    """The provider a symphony reads (#394), the default when it names none."""
+    from coordinare.services.work_item_providers import DEFAULT_WORK_ITEM_PROVIDER
+
+    work_items = getattr(cfg, "work_items", None)
+    return {"provider": getattr(work_items, "provider", None) or DEFAULT_WORK_ITEM_PROVIDER}
+
+
 def _register_get_symphonies(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
         config_path = ctx.config_path
@@ -78,6 +86,7 @@ def _register_get_symphonies(app: FastAPI, ctx: DashboardContext) -> None:
                     "name": name,
                     "priority": i,
                     "github_project_number": getattr(cfg, "github_project_number", None),
+                    "work_items": _work_items_view(cfg),
                     "env_bootstrap_performer_id": getattr(cfg, "env_bootstrap_performer_id", None),
                     "bootstrap_in_flight": bool(getattr(_ec, "bootstrap_in_flight", False)) if _ec else False,
                     "cache_dir_ready": bool(getattr(_ec, "cache_dir_ready", False)) if _ec else False,
@@ -153,6 +162,7 @@ def _register_get_symphony(app: FastAPI, ctx: DashboardContext) -> None:
             return JSONResponse({
                 "name": name,
                 "github_project_number": getattr(cfg, "github_project_number", None),
+                "work_items": _work_items_view(cfg),
                 "enabled": getattr(cfg, "enabled", True),
                 "overrides": _mask_secret_overrides(getattr(cfg, "overrides", None) or {}),
                 "secret_overrides": _secret_override_fields(daemon, getattr(cfg, "overrides", None) or {}),
@@ -240,6 +250,7 @@ def _construct_new_symphony(
             overrides=body.get("overrides") or None,
             personas=body.get("personas") or None,
             env_spec_files=body.get("env_spec_files") or ["README.md"],
+            work_items=body.get("work_items") or None,
         )
     except Exception as exc:
         _log_validation_failure("symphony_create_validation_failed", name, exc)
@@ -373,6 +384,7 @@ def _register_validate_symphony(app: FastAPI, ctx: DashboardContext) -> None:
             # Accept optional body with proposed overrides/personas for dry-run validation
             proposed_overrides = getattr(cfg, "overrides", None)
             proposed_personas = getattr(cfg, "personas", None)
+            proposed_work_items = getattr(cfg, "work_items", None)
             raw_body = await request.body()
             if raw_body:
                 try:
@@ -385,6 +397,7 @@ def _register_validate_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                     )
                 proposed_overrides = body.get("overrides", proposed_overrides)
                 proposed_personas = body.get("personas", proposed_personas)
+                proposed_work_items = body.get("work_items", proposed_work_items)
 
             try:
                 candidate = SymphonyConfig(
@@ -392,11 +405,13 @@ def _register_validate_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                     github_project_number=getattr(cfg, "github_project_number", None),  # type: ignore[arg-type]
                     overrides=proposed_overrides,
                     personas=proposed_personas,
+                    work_items=proposed_work_items,
                 )
                 effective = candidate.effective_config(coordinare_cfg.global_config)
                 return JSONResponse({
                     "valid": True,
                     "symphony": name,
+                    "work_items": _work_items_view(candidate),
                     "effective_config": {
                         "github_org": effective.github_org,
                         "github_project_number": effective.github_project_number,
@@ -466,6 +481,8 @@ def _register_update_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                     overrides=overrides,
                     personas=body.get("personas", getattr(cfg, "personas", None)),
                     env_spec_files=body.get("env_spec_files", getattr(cfg, "env_spec_files", ["README.md"])),
+                    # 394: kept unless the body names a block of its own.
+                    work_items=body.get("work_items", getattr(cfg, "work_items", None)),
                 )
             except Exception as exc:
                 _log_validation_failure("symphony_config_validation_failed", name, exc)

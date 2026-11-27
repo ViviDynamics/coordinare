@@ -168,7 +168,11 @@ async def upsert_symphony_handler(
 async def upsert_symphony(
     name: str, spec: dict[str, Any] | None = None, bootstrap: str | None = None,
 ) -> dict[str, Any]:
-    """Create or replace one symphony; optionally chain env or wiki bootstrap after it."""
+    """Create or replace one symphony; optionally chain env or wiki bootstrap after it.
+
+    The spec may carry ``work_items: {provider: ...}``; without it the symphony
+    keeps the provider it has (GitHub Projects by default).
+    """
     parsed = UpsertSymphonyInput.model_validate(
         {"name": name, "spec": spec, "bootstrap": bootstrap},
     )
@@ -255,7 +259,8 @@ TOOLS: tuple[ToolDefinition, ...] = (
         domain="symphonies",
         description=(
             "Create or replace one symphony spec (PUT with POST-create fallback); "
-            "optionally chain env or wiki bootstrap after the write."
+            "optionally chain env or wiki bootstrap after the write. The spec may set "
+            "work_items.provider (default github_projects); an unknown provider is refused."
         ),
         input_model=UpsertSymphonyInput,
         annotations=_WRITE_IDEMPOTENT,

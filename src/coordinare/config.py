@@ -36,6 +36,10 @@ from coordinare.services.observer import OBSERVER_TRIGGERS
 from coordinare.services.otlp_settings import ObservabilityConfig
 from coordinare.services.retune import EFFORT_RANK, RETUNE_KNOBS
 from coordinare.services.run_transcript import _within
+from coordinare.services.work_item_providers import (
+    DEFAULT_WORK_ITEM_PROVIDER,
+    WORK_ITEM_PROVIDER_NAMES,
+)
 from coordinare.stage_provider_config import StageProviderConfig, provider_role_errors
 from coordinare.user_config import expand_environment_values, load_config_environment
 
@@ -2537,6 +2541,26 @@ class ObserverConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class WorkItemsConfig(BaseModel):
+    """Where a symphony's work items come from (#394).
+
+    Optional on a symphony. Without it the symphony reads GitHub Projects through
+    its ``github_project_number``, exactly as before the block existed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = DEFAULT_WORK_ITEM_PROVIDER
+
+    @field_validator("provider")
+    @classmethod
+    def _known_provider(cls, v: str) -> str:
+        if v not in WORK_ITEM_PROVIDER_NAMES:
+            msg = f"unknown work item provider {v!r}; use one of: {', '.join(WORK_ITEM_PROVIDER_NAMES)}"
+            raise ValueError(msg)
+        return v
+
+
 class SymphonyConfig(BaseModel):
     """A named project orchestration configuration."""
 
@@ -2563,6 +2587,14 @@ class SymphonyConfig(BaseModel):
 
     # 092 — Symphony test-environment injection (opt-in; None = agent-discovery fallback).
     test_env: TestEnvConfig | None = None
+
+    # 394 — Where the work items come from (opt-in; None = GitHub Projects).
+    work_items: WorkItemsConfig | None = None
+
+    @property
+    def work_item_provider(self) -> str:
+        """The provider name this symphony reads, the default when it names none."""
+        return self.work_items.provider if self.work_items is not None else DEFAULT_WORK_ITEM_PROVIDER
 
     @field_validator("env_spec_files")
     @classmethod

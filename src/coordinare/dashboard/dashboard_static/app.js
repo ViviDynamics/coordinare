@@ -523,6 +523,9 @@ async function loadSymphonyDetail(name, el) {
     return;
   }
   var st = data.state || {};
+  // 394: the provider a symphony reads its work items from.
+  var workItemsProvider = (data.work_items && data.work_items.provider) || 'github_projects';
+  var workItemsLabel = workItemsProvider === 'github_projects' ? 'GitHub Projects' : esc(workItemsProvider);
   var statusRows = [
     ['GitHub project', data.github_project_number != null ? '#' + data.github_project_number : 'None'],
     ['Cycles', st.cycle_count != null ? st.cycle_count : 'None'],
@@ -530,6 +533,8 @@ async function loadSymphonyDetail(name, el) {
     ['Active card', st.active_card ? esc(st.active_card.title || st.active_card.id || '') : 'None'],
     ['Last checked', st.last_poll_at ? timeHtml(st.last_poll_at) : 'None'],
     ['Last error', st.last_error ? esc(st.last_error) : 'None'],
+    // 394: last, so the live refresh's row indexes above stay put.
+    ['Work items', workItemsLabel],
   ].map(function(r) {
     return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:var(--color-text-muted);font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
   }).join('');
