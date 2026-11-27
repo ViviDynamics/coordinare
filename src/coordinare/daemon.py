@@ -2320,7 +2320,7 @@ def _merge_retry_queue_entry(
 def _record_unconfirmed_board_pause(session: dict[str, Any]) -> None:
     """Retain a closed-PR guard while warning about an uncertain stop."""
     if not is_closed_pr_block(session.get("system_error_reason")):
-        session["system_error_reason"] = "The card moved out of its GitHub Project column; worker termination is unconfirmed"
+        session["system_error_reason"] = "The work item was moved to another state; worker termination is unconfirmed"
 
 
 def _observe_handoff_board_column(session: dict[str, Any], column: str) -> None:
@@ -5889,7 +5889,7 @@ class CoordinareDaemon:
                         activity_type="blocked", card_id=card_id,
                         card_title=str(card.get("title") or ""),
                         stage=str(sess.get("performer_stage") or ""),
-                        text="The card moved out of its GitHub Project column; the worker may still be running. Ownership is kept, and resuming waits for a confirmed stop.",
+                        text="The work item was moved to another state; the worker may still be running. Ownership is kept, and resuming waits for a confirmed stop.",
                     )
                 continue
             sess["phase"] = "blocked"

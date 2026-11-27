@@ -391,7 +391,7 @@ function renderActiveWorkPanels(s) {
     if (symphonies.length > 0 && unchecked.every(function(note) { return note !== null; })) {
       var failedCheck = unchecked.some(function(note) { return note.kind === 'failed'; });
       workEl.innerHTML = '<span class="empty-state">' + esc(symphonyUncheckedText(symphonies)) + '. ' +
-        esc(failedCheck ? 'The last check did not finish.' : 'Its board has not been read yet.') + '</span>';
+        esc(failedCheck ? 'The last check did not finish.' : 'Its work items have not been read yet.') + '</span>';
       if (workCard) workCard.classList.remove('card-warning');
       return;
     }

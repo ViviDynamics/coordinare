@@ -87,7 +87,7 @@ def test_a_question_on_an_unclaimed_card_stays_visible_under_a_symphony(
     page.locator("#symphony-select").select_option("beta-sym")
 
     expect(page.locator("#attention-list")).to_contain_text("Which account owns this?")
-    expect(page.locator("#attention-list")).to_contain_text("not on any symphony's GitHub Project")
+    expect(page.locator("#attention-list")).to_contain_text("not a work item of any symphony")  # 401
 
 
 # --- item 4: in-app navigation keeps the choice in the address bar ------------------- #

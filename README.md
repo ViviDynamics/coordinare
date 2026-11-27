@@ -1,9 +1,10 @@
 # Coordinare
 
-An autonomous software development orchestrator for GitHub Project boards.
-Coordinare polls a Project for cards and dispatches them through configurable AI
-performer roles. It can advance each card from TODO through implementation,
-review, security scanning, QA validation and documentation before human PR review.
+An autonomous software development orchestrator for work items.
+Coordinare reads work items from a provider (a GitHub Project by default) and
+dispatches them through configurable AI performer roles. It can advance each work
+item from To Do through implementation, review, security scanning, QA validation
+and documentation before human PR review.
 
 Installing with a coding agent? Start with the authoritative
 [agent setup guide](docs/setup-for-agents.md).
@@ -24,23 +25,23 @@ Copy this prompt:
 
 ## How It Works
 
-1. **Poll**: Coordinare watches a GitHub Project board for cards in the TODO column
-2. **Assess**: Each card is evaluated for sufficient context (acceptance criteria, scope)
-3. **Dispatch**: The card is dispatched through a sequential lifecycle of performer roles
+1. **Poll**: Coordinare watches a symphony's work items (on GitHub Projects, the cards of a Project) for items in To Do
+2. **Assess**: Each work item is evaluated for sufficient context (acceptance criteria, scope)
+3. **Dispatch**: The work item is dispatched through a sequential lifecycle of performer roles
 4. **Monitor**: Each performer is polled until it completes or blocks
-5. **Advance**: On success, the card advances to the next role automatically
-6. **Review**: After all automated roles complete, the card enters human PR review
-7. **Merge**: On human approval, the PR is squash-merged and the card moves to Done
+5. **Advance**: On success, the work item advances to the next role automatically
+6. **Review**: After all automated roles complete, the work item enters human PR review
+7. **Merge**: On human approval, the PR is squash-merged and the work item moves to Done
 
 ## Performer Lifecycle
 
-Cards progress through configurable roles (unconfigured roles are skipped):
+Work items progress through configurable roles (unconfigured roles are skipped):
 
 | Role | Stage | What it does | Terminal state |
 |------|-------|-------------|---------------|
 | Advocate | `advocate` | Answers inbound issues from the documentation, escalates the rest | none |
-| Curator | `curator` | Proposes ready issues to the board backlog for a human to promote | none |
-| Assessor | `assessing` | Evaluates card sufficiency, asks clarifying questions | none |
+| Curator | `curator` | Proposes ready issues to the Backlog for a human to promote | none |
+| Assessor | `assessing` | Evaluates work item sufficiency, asks clarifying questions | none |
 | Architect | `architecting` | Analyses codebase, commits a technical plan to the branch | `plan_committed` |
 | Implementer | `implementing` | Writes code, opens a PR | `pr_opened` |
 | Reviewer | `reviewing` | Reviews the PR, approves or requests changes | `approved` |
@@ -49,7 +50,7 @@ Cards progress through configurable roles (unconfigured roles are skipped):
 | Tech Writer | `documenting` | Commits CHANGELOG, README updates, docstrings | `docs_committed` |
 | Closer | `closing_review` | Final pass: verifies prior feedback was addressed, resolves review threads | `approved` |
 
-When a role finds issues (reviewer requests changes, security finds vulnerabilities, QA fails criteria), the coordinare routes feedback back to the implementer or architect and re-runs the affected roles. The review → implement loop is bounded by `max_feedback_cycles` (default `5`); when exceeded, the card needs a human (it is parked in the Blocked column) with an actionable break-case comment that `@`-mentions `human_reviewers` so they can triage.
+When a role finds issues (reviewer requests changes, security finds vulnerabilities, QA fails criteria), the coordinare routes feedback back to the implementer or architect and re-runs the affected roles. The review → implement loop is bounded by `max_feedback_cycles` (default `5`); when exceeded, the work item needs a human (it is parked in Blocked) with an actionable break-case comment that `@`-mentions `human_reviewers` so they can triage.
 
 ## Quick Start
 
@@ -120,9 +121,9 @@ coordinare init
 ```
 
 Setup asks for your GitHub token, repository, Project number, local or Docker
-mode, harness, model, optional endpoint and API key, concurrent cards and human
+mode, harness, model, optional endpoint and API key, concurrent work items and human
 reviewers. It detects existing credentials and installed harnesses. Secret input
-is hidden. Defaults enable only the implementer, one card at a time, with your
+is hidden. Defaults enable only the implementer, one work item at a time, with your
 GitHub login as the human reviewer. Other roles are optional.
 
 Init writes `~/.config/coordinare/config.yaml` and private
@@ -141,7 +142,7 @@ coordinare
 
 The daemon loads `coordinare.env` automatically. Open **<http://127.0.0.1:8090>**,
 or the dashboard URL printed by setup. Put an issue on the board in To Do or
-Ready to dispatch it. Try the [small first card](docs/first-launch.md#try-one-card)
+Ready to dispatch it. Try the [small first work item](docs/first-launch.md#try-one-card)
 and review its PR as the configured human reviewer.
 
 The health endpoint is <http://localhost:8080/health>. The dashboard activity
@@ -213,7 +214,7 @@ whichever one is active (or both, if both exist).
 If both systems are configured on the same branch, both must allow
 the App: GitHub enforces them independently.  When coordinare hits
 this, it logs a permanent error `"You're not authorized to push to
-this branch"` and surfaces the card as needing a human, with the GitHub error
+this branch"` and surfaces the work item as needing a human, with the GitHub error
 message in `open_questions` so you can act on it directly.
 
 ### Performer Roles
@@ -267,7 +268,7 @@ personas:
 
 Notifications ship **off by default** (`channels: []`, `routing: []`) so a freshly copied
 config validates without any Slack webhook or SMTP credentials. Opt in by configuring Slack
-and/or email alerts for card transitions, blocks, and circuit breaker trips:
+and/or email alerts for work item transitions, blocks, and circuit breaker trips:
 
 ```yaml
 notifications:
@@ -286,7 +287,7 @@ Maintainer checkout setup, test commands and project layout are in
 
 ## Architecture
 
-Coordinare uses [LangGraph](https://github.com/langchain-ai/langgraph) to orchestrate a state machine that drives each card through the development lifecycle. The performer is a separate process (or container) that speaks a JSON stdin/stdout wire protocol and delegates actual coding work to an AI backend (OpenCode, Claude Code, etc.).
+Coordinare uses [LangGraph](https://github.com/langchain-ai/langgraph) to orchestrate a state machine that drives each work item through the development lifecycle. The performer is a separate process (or container) that speaks a JSON stdin/stdout wire protocol and delegates actual coding work to an AI backend (OpenCode, Claude Code, etc.).
 
 The coordinare and performer communicate via a transport layer (subprocess, SSH, or Kubernetes) and share no in-memory state. Each performer session is ephemeral: the performer clones the repo, does its work, and exits.
 

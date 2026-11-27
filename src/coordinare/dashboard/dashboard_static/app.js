@@ -92,7 +92,7 @@ function renderState(s) {
   // conductor's internal state are the tooltip.
   var phaseEl = document.getElementById('phase');
   var phaseDescriptions = {
-    'idle':             'Waiting for a card to enter the TODO column on the GitHub Project.',
+    'idle':             'Waiting for a work item to reach To Do.',
     'running':          'Running a check.',
     'blocked':          'Needs human: the card is stopped until a person acts. Review the Open Questions below.',
     'dispatching':      'Assessing and dispatching card to the performer agent.',
@@ -158,7 +158,7 @@ function renderState(s) {
       // 395: a blocker without a GitHub issue is named by its reference.
       var label = d.blocker_ref || ('#' + d.issue_number);
       if (d.title) label += ': ' + esc(d.title);
-      var col = d.column || 'not on the GitHub Project';
+      var col = d.column || "not one of this symphony's work items";
       var link = d.issue_url && /^https?:\/\//i.test(d.issue_url)
         ? '<a href="' + esc(d.issue_url) + '" target="_blank" rel="noopener">' + esc(label) + '</a>'
         : esc(label);
@@ -474,7 +474,7 @@ function renderSymphoniesPage(s) {
     + '<th style="text-align:left" title="Cards waiting for a performer slot.">Cards queued</th>'
     + '<th style="text-align:left" title="Run start cohort cost in the rolling 7d window from the statistics API.">Spend this week</th>'
     + '<th title="Recorded card merges in the rolling 7d window from the statistics API.">Completed this week</th>'
-    + '<th style="text-align:left" title="Checks of the board this symphony has run.">Checks run</th>'
+    + '<th style="text-align:left" title="Checks this symphony has run.">Checks run</th>'
     + '<th style="text-align:left" title="Checks that failed in a row. A successful check resets this to 0.">Failed checks in a row</th>'
     + '<th style="text-align:left" title="When coordinare last checked this symphony.">Last checked</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>'

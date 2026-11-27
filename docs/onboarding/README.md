@@ -1,7 +1,7 @@
 # Coordinare — Developer Onboarding
 
 Welcome. **Coordinare** is an autonomous software-engineering orchestrator: it watches a
-GitHub project board, picks up cards, and drives them through a full engineering lifecycle —
+symphony's work items (by default the cards of a GitHub Project), picks them up, and drives them through a full engineering lifecycle —
 plan → implement → review → security → QA → document → merge — by dispatching AI agents
 ("performers") that run real CLIs in containers against the project's real environment.
 
@@ -38,8 +38,8 @@ for a quick orientation or a presentation.
 | Term | Meaning |
 |---|---|
 | **Coordinare** | The orchestrator daemon. One process, watches all symphonies. |
-| **Symphony** | One orchestrated project = one GitHub Projects board + repo + config. |
-| **Card** | A unit of work (a GitHub issue on the board) moving through the lifecycle. |
+| **Symphony** | One orchestrated project = one source of work items (a GitHub Projects board by default) + repo + config. |
+| **Work item** | A unit of work moving through the lifecycle (on GitHub Projects, an issue on the Project, shown as a card). The code still calls it a card (`card_id`). |
 | **Performer** | An AI agent instance dispatched for one role/stage, running in a container. |
 | **Role / Stage** | The job a performer does (implementer, reviewer, qa…) and its lifecycle position. |
 | **Agent harness / Backend** | The CLI the performer runs (claude_code, codex, opencode, junie, pi, hermes, openclaw). |

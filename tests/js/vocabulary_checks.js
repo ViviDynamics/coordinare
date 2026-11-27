@@ -61,7 +61,7 @@ renderGlossaryPage();
   check("glossary explains " + noun, glossaryEl.innerHTML.indexOf("<strong>" + noun + "</strong>") !== -1, true);
 });
 check("glossary has a description for Run",
-  glossaryEl.innerHTML.indexOf("One agent working on one stage of one card") !== -1, true);
+  glossaryEl.innerHTML.indexOf("One agent working on one stage of one work item") !== -1, true);
 check("glossary lists stages and conductor statuses",
   [glossaryEl.innerHTML.indexOf("<h3>Stages</h3>") !== -1, glossaryEl.innerHTML.indexOf("<h3>Conductor status</h3>") !== -1], [true, true]);
 

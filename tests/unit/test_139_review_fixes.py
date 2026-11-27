@@ -30,7 +30,7 @@ def test_user_facing_protocol_descriptions_name_cards_and_github_project_columns
 def test_the_paused_card_activity_and_error_name_the_github_project_not_the_board() -> None:
     daemon = (_SRC / "daemon.py").read_text(encoding="utf-8")
     assert "Board paused" not in daemon
-    assert "The card moved out of its GitHub Project column" in daemon
+    assert "The work item was moved to another state" in daemon  # 401: no longer assumes a GitHub Project
 
 
 # --- item 1: every top-level snapshot field declares how a symphony scopes it --------- #
@@ -106,7 +106,7 @@ def test_every_read_of_the_full_snapshot_goes_through_the_scope_or_is_allow_list
 
 def test_the_unclaimed_label_names_the_github_project_and_never_says_board() -> None:
     label = shipped_function("attention", "attentionDetail")
-    assert "not on any symphony's GitHub Project" in label
+    assert "not a work item of any symphony" in label  # 401: no longer assumes a GitHub Project
     assert not re.search(r"board", label, re.IGNORECASE), label
 
 
