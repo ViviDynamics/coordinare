@@ -21,10 +21,10 @@ var body = {
 context.runPathFor = function(s, c, r) { return '/runs/' + [s, c, r].map(encodeURIComponent).join('/'); };
 var html = context.personaStatsHtml(body, 'reviewer', 'alpha');
 ['75%', '50%', '150.00s', '222.00s', '660', '$0.040000', '$0.010000', 'Override', 'worker', 'h.agent=reviewer', '/runs/alpha/c%2F1/r'].forEach(function(value) { assert(html.indexOf(value) >= 0, value); });
-assert(html.indexOf('/history?symphony=alpha&amp;h.agent=reviewer') >= 0);
+assert(html.indexOf('/activity/history?symphony=alpha&amp;h.agent=reviewer') >= 0);
 assert(html.indexOf('h.symphony') < 0);
-assert(context.personaStatsRecent(body, 'reviewer', '').indexOf('/history?symphony=&amp;h.agent=reviewer') >= 0);
-assert(context.personaStatsRecent(body, 'review&er', 'alpha + beta').indexOf('/history?symphony=alpha%20%2B%20beta&amp;h.agent=review%26er') >= 0);
+assert(context.personaStatsRecent(body, 'reviewer', '').indexOf('/activity/history?symphony=&amp;h.agent=reviewer') >= 0);
+assert(context.personaStatsRecent(body, 'review&er', 'alpha + beta').indexOf('/activity/history?symphony=alpha%20%2B%20beta&amp;h.agent=review%26er') >= 0);
 assert(html.indexOf('<script>') < 0);
 assert(html.indexOf('&lt;script&gt;') >= 0);
 assert(html.indexOf('role="img"') >= 0);
@@ -140,7 +140,7 @@ async function selectionChecks() {
   await new Promise(function(resolve) { setImmediate(resolve); });
   assert(target.innerHTML.indexOf('Use Refresh') >= 0);
   context.personaStatsRefresh(true);
-  context.location.pathname = '/history';
+  context.location.pathname = '/activity/history';
   requests[3].resolve({ok: true, json: function() { return body; }});
   await new Promise(function(resolve) { setImmediate(resolve); });
   assert(target.innerHTML.indexOf('Loading statistics') >= 0, 'response after leaving is ignored');

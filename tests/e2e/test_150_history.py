@@ -183,7 +183,7 @@ def history_server_url(store: DashboardStore, transcript_root: Path) -> Generato
 
 def _history(page: Page, base: str, store: DashboardStore, query: str = "") -> None:
     """Open the History page, wait for the stream, and send the snapshot that carries the symphonies."""
-    _connected(page, base + "/history" + query)
+    _connected(page, base + "/activity/history" + query)
     store.broadcaster.broadcast(_snapshot(_two_symphonies()))
     expect(page.locator("#history-page-section form.history-filters")).to_be_visible(timeout=WAIT_PAGE)
 
@@ -266,7 +266,7 @@ def test_the_header_selector_rescopes_history_and_apply_keeps_that_scope(
     expect(page.locator("#symphony-select")).to_have_value(BETA)
     page.locator("#history-page-section [data-history-action='reset']").click()
     expect(page.locator("#history-page-section [name='card']")).to_have_value("", timeout=WAIT_PAGE)
-    expect(page).to_have_url(f"{history_server_url}/history?symphony={BETA}")
+    expect(page).to_have_url(f"{history_server_url}/activity/history?symphony={BETA}")
     expect(page.locator("#history-page-section a[data-history-link]")).to_have_count(1)
     page.locator("#symphony-select").select_option(ALPHA)
     # A page holds PAGE_SIZE rows; the conductor's checks among them carry no transcript link.

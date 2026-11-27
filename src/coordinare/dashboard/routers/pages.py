@@ -111,18 +111,39 @@ def _register_dashboard_run_detail(app: FastAPI, ctx: DashboardContext) -> None:
             return HTMLResponse(_page_html(_assistant_on))
 
 
-def _register_dashboard_history(app: FastAPI, ctx: DashboardContext) -> None:
-        _assistant_on = ctx.assistant_on
-
-        @app.get("/history", response_class=HTMLResponse)
-        async def dashboard_history() -> HTMLResponse:
-            return HTMLResponse(_page_html(_assistant_on))
+def _moved(request: Request, path: str, status_code: int) -> RedirectResponse:
+    """A redirect to *path* that keeps the request's query string."""
+    query = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(url=f"{path}{query}", status_code=status_code)
 
 
-def _register_dashboard_logs(app: FastAPI, ctx: DashboardContext) -> None:
-    @app.get("/logs", response_class=HTMLResponse)
+def _register_dashboard_activity(app: FastAPI, ctx: DashboardContext) -> None:
+    """365: History and Logs are the two views of one Activity page.
+
+    The old ``/history`` and ``/logs`` addresses moved for good, so they answer 301.
+    ``/activity`` opens History; that choice could change, so it answers 302.
+    """
+    _assistant_on = ctx.assistant_on
+
+    @app.get("/activity")
+    async def dashboard_activity(request: Request) -> RedirectResponse:
+        return _moved(request, "/activity/history", 302)
+
+    @app.get("/activity/history", response_class=HTMLResponse)
+    async def dashboard_history() -> HTMLResponse:
+        return HTMLResponse(_page_html(_assistant_on))
+
+    @app.get("/activity/logs", response_class=HTMLResponse)
     async def dashboard_logs() -> HTMLResponse:
-        return HTMLResponse(_page_html(ctx.assistant_on))
+        return HTMLResponse(_page_html(_assistant_on))
+
+    @app.get("/history")
+    async def dashboard_history_moved(request: Request) -> RedirectResponse:
+        return _moved(request, "/activity/history", 301)
+
+    @app.get("/logs")
+    async def dashboard_logs_moved(request: Request) -> RedirectResponse:
+        return _moved(request, "/activity/logs", 301)
 
 
 def _register_dashboard_glossary(app: FastAPI, ctx: DashboardContext) -> None:
@@ -208,8 +229,7 @@ def register(app: FastAPI, ctx: DashboardContext) -> None:
     _register_dashboard_performers(app, ctx)
     _register_dashboard_run_detail(app, ctx)
     _register_dashboard_personas(app, ctx)
-    _register_dashboard_history(app, ctx)
-    _register_dashboard_logs(app, ctx)
+    _register_dashboard_activity(app, ctx)
     _register_dashboard_glossary(app, ctx)
     _register_dashboard_symphonies(app, ctx)
     _register_dashboard_symphony_detail(app, ctx)

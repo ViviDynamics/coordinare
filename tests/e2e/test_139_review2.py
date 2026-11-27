@@ -48,7 +48,7 @@ def test_a_quiet_tick_under_a_selected_symphony_shows_only_its_own_tiles(
 def test_the_history_page_does_not_show_the_dashboards_checks_under_any_symphony(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    _connected(page, live_server_url + "/history?symphony=beta-sym")
+    _connected(page, live_server_url + "/activity/history?symphony=beta-sym")
     checks = [{"phase": "merging", "outcome": "success", "timestamp": "2026-10-14T06:00:00+00:00",
                "duration_seconds": 2.0}]
     store.broadcaster.broadcast(_snapshot(_two_symphonies(), cycle_history=checks))

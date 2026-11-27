@@ -204,12 +204,12 @@ function symphonyStatsHtml(name, response, models) {
   });
   var cards = (flow.recent_completed || []).map(function(row) {
     return [symphonyStatsLink('/cards/' + encodeURIComponent(name) + '/' + encodeURIComponent(row.card), row.card), timeHtml(row.merged_at),
-      symphonyStatsLink('/history?h.symphony=' + encodeURIComponent(name) + '&h.card=' + encodeURIComponent(row.card), 'Runs and transcripts')];
+      symphonyStatsLink('/activity/history?h.symphony=' + encodeURIComponent(name) + '&h.card=' + encodeURIComponent(row.card), 'Runs and transcripts')];
   });
   return header + coverage + symphonyStatsNowHtml(name, response, health, flow) + throughput + flowHtml + spend + reliabilityHtml +
     '<section class="card sym-stats-section"><h3>Recent runs</h3>' + symphonyStatsTable(response, ['Transcript', 'Card timeline', 'Stage', 'Outcome', 'Started'], runs, 'Last 10 retained runs starting in the selected window, newest first.') +
     '<h3>Recent completed cards</h3>' + symphonyStatsTable(response, ['Card timeline', 'Merged', 'History'], cards, 'Last 10 recorded card completions in the selected window, newest first.') +
-    '<p>' + symphonyStatsLink('/history?h.symphony=' + encodeURIComponent(name), 'History for this symphony') + '</p></section>';
+    '<p>' + symphonyStatsLink('/activity/history?h.symphony=' + encodeURIComponent(name), 'History for this symphony') + '</p></section>';
 }
 
 function symphonyStatsFetch(query) {

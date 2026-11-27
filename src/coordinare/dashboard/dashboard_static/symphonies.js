@@ -834,7 +834,7 @@ function writeStoredSymphony(choice) {
 // Old History bookmarks carried their own scope. Move it to the header before resolving any
 // scoped view, keeping the router state and hash. Deleting the old key makes this a one-time move.
 function migrateHistorySymphony() {
-  if (typeof location === 'undefined' || location.pathname !== '/history') return;
+  if (typeof location === 'undefined' || location.pathname !== '/activity/history') return;
   var params = new URLSearchParams(location.search);
   if (!params.has('h.symphony')) return;
   params.set(SYMPHONY_PARAM, params.get('h.symphony'));
@@ -900,9 +900,9 @@ function refreshScopedViews() {
   if (isPerformersPath(location.pathname)) renderPerformersPage(scoped);
   else if (location.pathname === '/personas') personaStatsRefresh(false);
   else if (location.pathname === '/symphonies' || location.pathname.indexOf('/symphonies/') === 0) renderSymphoniesPage(_lastState);
-  else if (location.pathname === '/logs') renderLogsPage(currentScopedState());
+  else if (location.pathname === '/activity/logs') renderLogsPage(currentScopedState());
   // 295: History has no symphony filter of its own, so the header's choice re-scopes it now.
-  else if (location.pathname === '/history') renderHistoryPage(scoped);
+  else if (location.pathname === '/activity/history') renderHistoryPage(scoped);
   else if (isBootstrapRunPath(location.pathname)) bootstrapPageRefresh();
   else if (isCardPath(location.pathname)) cardPageRefresh();
   else renderDashboardExtras(scoped);

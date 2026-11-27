@@ -94,7 +94,7 @@ def logs_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[Lo
 
 
 def _open(page: Page, server: LogsServer, query: str = "") -> None:
-    page.goto(server.url + "/logs" + query)
+    page.goto(server.url + "/activity/logs" + query)
     expect(page.locator("#connection-label")).to_have_text("Live", timeout=WAIT_MS)
     expect(page.locator("#logs-rows tr")).to_have_count(PAGE_ROWS, timeout=WAIT_MS)
 
@@ -112,7 +112,7 @@ def test_filters_and_header_scope(page: Page, logs_server: LogsServer) -> None:
     page.locator("#logs-page button[type='submit']").click()
     expect(page.locator("#logs-rows tr")).to_have_count(1, timeout=WAIT_MS)
     expect(page.locator("#logs-rows")).to_contain_text("beta marker")
-    page.goto(logs_server.url + "/logs?symphony=" + ALPHA)
+    page.goto(logs_server.url + "/activity/logs?symphony=" + ALPHA)
     expect(page.locator("#logs-rows tr")).to_have_count(PAGE_ROWS, timeout=WAIT_MS)
     expect(page.locator("#logs-rows")).not_to_contain_text("beta marker")
     expect(page.locator("#logs-page [name='symphony']")).to_be_disabled()

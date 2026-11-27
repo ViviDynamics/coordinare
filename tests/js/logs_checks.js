@@ -38,7 +38,7 @@ Object.defineProperty(section, 'innerHTML', {
 });
 var ctx = {
   console: console, Date: Date, Promise: Promise,
-  location: {pathname: '/logs'},
+  location: {pathname: '/activity/logs'},
   document: {getElementById: function() { return section; }},
   currentScopedState: function() { return {}; },
   currentSymphonyChoice: function() { return 'alpha'; },
@@ -163,7 +163,7 @@ respond(0, {events: [row], cursor: 'old'}).then(function() {
   ctx.location.pathname = '/';
   advance(DEBOUNCE_MS);
   assert.strictEqual(requests.length, 6, 'leaving the page cancels live work');
-  ctx.location.pathname = '/logs';
+  ctx.location.pathname = '/activity/logs';
   ctx.renderLogsPage({}, true);
   assert.strictEqual(requests.length, 7, 'revisiting the page refreshes it');
   requests[6].resolve({ok: false, status: 422, json: function() {

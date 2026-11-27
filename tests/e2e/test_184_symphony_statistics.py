@@ -82,7 +82,7 @@ def test_read_only_stats_fit_mobile_in_both_themes(
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
     expect(content.locator('a[href="/cards/alpha/card"]').first).to_be_visible()
     expect(content.locator('a[href="/runs/alpha/card/run"]')).to_be_visible()
-    expect(content.locator('a[href="/history?h.symphony=alpha"]')).to_be_visible()
+    expect(content.locator('a[href="/activity/history?h.symphony=alpha"]')).to_be_visible()
     page.locator("#sym-stats-window").select_option("24h")
     expect(content.locator('[title*="Window: 24h"]').first).to_be_visible()
 

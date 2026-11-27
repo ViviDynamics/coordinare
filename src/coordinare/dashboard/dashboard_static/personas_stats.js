@@ -93,7 +93,7 @@ function personaStatsActivity(body) {
 }
 
 function personaStatsRecent(body, role, scope) {
-  var path = '/history?symphony=' + encodeURIComponent(scope) + '&h.agent=' + encodeURIComponent(role);
+  var path = '/activity/history?symphony=' + encodeURIComponent(scope) + '&h.agent=' + encodeURIComponent(role);
   return '<h3>Recent runs</h3><p><a href="' + esc(path) + '" data-persona-link>History for this agent</a></p>' +
     ((body.recent_runs || []).length ? '<div class="persona-table-scroll" tabindex="0" role="region" aria-label="Statistics table"><table><thead><tr><th>Started</th><th>Card</th><th>Symphony</th><th>Outcome</th><th>Duration</th><th>Cost</th></tr></thead><tbody>' + body.recent_runs.map(function(row) {
       return '<tr><td>' + timeHtml(row.started_at) + '</td><td><a href="' + esc(runPathFor(row.symphony, row.card, row.run)) + '" data-persona-link title="Open transcript">' + esc(row.card_title || row.card) + '</a></td><td>' + esc(row.attributed_symphony || row.symphony) + '</td><td>' + esc(PERSONA_OUTCOMES[row.outcome] || 'Not recorded') + '</td><td>' + personaStatValue(body, row, 'duration_seconds', 'duration', row.duration_seconds) + '</td><td>' + personaStatValue(body, row, 'cost', 'cost', (row.cost || {}).usd) + '</td></tr>';
