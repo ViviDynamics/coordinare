@@ -315,9 +315,44 @@ def test_an_issue_on_another_host_never_gets_the_token() -> None:
         asyncio.run(planner.dispatch_card(card))
 
 
-def test_a_ghe_host_is_the_configured_one() -> None:
+@pytest.mark.parametrize(("git_base_url", "hosts"), [
+    ("https://github.com", {"github.com"}),
+    ("https://acme.ghe.com", {"acme.ghe.com"}),
+    ("https://ghe.example:8443/", {"ghe.example:8443"}),
+    ("https://ghe.example:443", {"ghe.example"}),
+])
+def test_the_github_host_is_the_one_coordinare_clones_from(git_base_url: str, hosts: set[str]) -> None:
     from coordinare.services.stage_providers import github_hosts
 
-    config = _config(opted_in=True).model_copy(update={"github_api_url": "https://github.corp.example/api/v3"})
-    assert github_hosts(config) == frozenset({"github.corp.example"})
-    assert github_hosts(_config(opted_in=True)) == frozenset({"github.com"})
+    config = _config(opted_in=True).model_copy(update={"git_base_url": git_base_url})
+    assert github_hosts(config) == frozenset(hosts)
+
+
+def test_issue_urls_compare_with_their_port() -> None:
+    from coordinare.services.stage_contract import parse_issue_url
+
+    assert parse_issue_url("https://ghe.example:8443/o/r/issues/1") == ("ghe.example:8443", "o/r", 1)
+    assert parse_issue_url("https://GHE.example:443/o/r/issues/1") == ("ghe.example", "o/r", 1)
+
+
+def test_the_clone_goes_to_the_configured_git_host_not_the_cards() -> None:
+    from coordinare.services.progettare import ProgettareProvider
+    from coordinare.services.stage_contract import WorkItemRequest
+    from coordinare.stage_provider_config import ProgettareProviderConfig
+
+    provider = ProgettareProvider(
+        "progettare", ProgettareProviderConfig(**_PROGETTARE), git_base_url="https://ghe.example:8443",
+    )
+    request = WorkItemRequest(card_id="C", stage="architecting", repository="acme/widgets", number=1,
+                              node_id="I_1", host="ghe.example:8443", pin="a" * 40)
+    assert provider._clone_url(request) == "https://ghe.example:8443/acme/widgets.git"
+    env = provider._child_env("t", request.host)
+    assert env["GH_HOST"] == "ghe.example:8443"
+
+
+def test_the_token_header_is_scoped_to_the_clone_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    from coordinare.services.progettare_runner import _git_env
+
+    monkeypatch.setenv("GH_TOKEN", "t")
+    env = _git_env("https://ghe.example:8443/acme/widgets.git")
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://ghe.example:8443/.extraheader"

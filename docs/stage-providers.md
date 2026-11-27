@@ -248,9 +248,9 @@ answers still give that pin. An answer recorded while a run is in flight is not 
 that run (Progettare read the issue's comments when it started); the plan is used, and the
 next dispatch of the architect plans again.
 
-Only issues on the configured GitHub host (github.com, or the host of `github_api_url` for
-GitHub Enterprise) are planned. The clone sends the GitHub token, so a card whose issue URL
-names another host blocks instead.
+The clone goes to `git_base_url`, the git host coordinare already clones from (github.com
+by default), never to a host a card names. A card whose issue URL is on another host,
+port included, blocks instead of being planned, so the token never goes anywhere else.
 
 Feedback routed back to the architect, such as security findings or an observer's
 correction, cannot reach Progettare: it reads the issue, not coordinare's feedback. As for

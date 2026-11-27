@@ -107,10 +107,14 @@ class ProgettareProvider:
         *,
         clone_url: Callable[[WorkItemRequest], str] | None = None,
         python: str = sys.executable,
+        git_base_url: str = "https://github.com",
     ) -> None:
         self.name = name
         self._config = config
-        self._clone_url = clone_url or _github_clone_url
+        base = git_base_url.rstrip("/")
+        # The clone goes to the git host coordinare is configured with, never to a host a
+        # card names: the issue's host is only checked against it.
+        self._clone_url = clone_url or (lambda request: f"{base}/{request.repository}.git")
         self._python = python
         #: Runners this process started, kept referenced until they exit. Only a
         #: convenience: whether a run is in flight is always read from its lock.
@@ -592,6 +596,3 @@ def _checked_ref(ref: str) -> str:
         raise TransportError(msg)
     return ref
 
-
-def _github_clone_url(request: WorkItemRequest) -> str:
-    return f"https://{request.host}/{request.repository}.git"

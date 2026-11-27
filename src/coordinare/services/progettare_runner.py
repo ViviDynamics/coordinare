@@ -25,6 +25,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 #: Bound on the clone, separate from the run's own timeout.
 CLONE_TIMEOUT_SECONDS = 600
@@ -65,15 +66,17 @@ def without_coordinare_python(env: dict[str, str]) -> dict[str, str]:
     return cleaned
 
 
-def _git_env(host: str) -> dict[str, str]:
-    """The environment git clones with: the token as an extra header, no prompts."""
+def _git_env(clone_url: str) -> dict[str, str]:
+    """The environment git clones with: the token as an extra header scoped to the clone
+    URL's own scheme and host, no prompts."""
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     token = env.get("GH_TOKEN", "")
     if token:
         basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
         env["GIT_CONFIG_COUNT"] = "1"
-        env["GIT_CONFIG_KEY_0"] = f"http.https://{host}/.extraheader"
+        parts = urlsplit(clone_url)
+        env["GIT_CONFIG_KEY_0"] = f"http.{parts.scheme}://{parts.netloc}/.extraheader"
         env["GIT_CONFIG_VALUE_0"] = f"AUTHORIZATION: basic {basic}"
     return env
 
@@ -88,7 +91,7 @@ async def _clone(spec: dict[str, Any], checkout: Path) -> dict[str, Any] | None:
         process = await asyncio.create_subprocess_exec(
             git, "clone", "--quiet", "--depth", "1", "--no-tags", spec["clone_url"], str(checkout),
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE, env=_git_env(str(spec.get("host") or "github.com")),
+            stderr=asyncio.subprocess.PIPE, env=_git_env(spec["clone_url"]),
         )
     except OSError as exc:
         return {"phase": "clone", "exit_code": None, "detail": f"{type(exc).__name__}: {exc}"}

@@ -26,6 +26,7 @@ from coordinare.services.stage_contract import (
     WorkItemSnapshot,
     WorkItemStageService,
     stage_provider_id,
+    web_host,
 )
 from coordinare.stage_provider_config import (
     PROVIDER_ROLES,
@@ -45,10 +46,12 @@ logger = structlog.get_logger(__name__)
 _STAGE_TO_ROLE = {stage: role for role, stage in ROLE_TO_STAGE.items()}
 
 
-def build_provider(name: str, provider_config: StageProviderConfig) -> StageProvider:
+def build_provider(
+    name: str, provider_config: StageProviderConfig, *, git_base_url: str = "https://github.com",
+) -> StageProvider:
     """The provider client for one catalog entry, by its kind."""
     if isinstance(provider_config, ProgettareProviderConfig):
-        return ProgettareProvider(name, provider_config)
+        return ProgettareProvider(name, provider_config, git_base_url=git_base_url)
     return ScrutareProvider(name, provider_config)
 
 
@@ -69,10 +72,13 @@ def provider_fix(name: str, provider_config: StageProviderConfig) -> str:
 
 
 def github_hosts(config: Any) -> frozenset[str]:
-    """403: the web host of the configured GitHub: github.com, or a GitHub Enterprise host."""
-    api = str(getattr(config, "github_api_url", "") or "https://api.github.com")
-    host = (urlsplit(api).hostname or "").lower()
-    return frozenset({"github.com"}) if host in ("", "api.github.com", "github.com") else frozenset({host})
+    """403: the host coordinare clones from (``git_base_url``), which a planned issue must be on.
+
+    The same host the clone goes to, port included, so the token only ever goes where
+    coordinare already sends it.
+    """
+    base = str(getattr(config, "git_base_url", "") or "https://github.com")
+    return frozenset({web_host(urlsplit(base).netloc) or "github.com"})
 
 
 def build_stage_provider_services(
@@ -87,7 +93,9 @@ def build_stage_provider_services(
     """
     services: dict[str, ExternalStageService] = {}
     for name, provider_config in sorted(config.stage_providers.items()):
-        provider = build_provider(name, provider_config)
+        provider = build_provider(
+            name, provider_config, git_base_url=str(getattr(config, "git_base_url", "") or "https://github.com"),
+        )
         for role in sorted(PROVIDER_ROLES.get(provider_config.kind, frozenset())):
             stage = ROLE_TO_STAGE[role]
             if stage not in STAGE_MARKERS:

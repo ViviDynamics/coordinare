@@ -267,7 +267,16 @@ def parse_issue_url(issue_url: str) -> tuple[str, str, int] | None:
     match = _ISSUE_URL.match((issue_url or "").strip())
     if match is None:
         return None
-    return match["host"].lower(), f"{match['owner']}/{match['repo']}", int(match["number"])
+    return web_host(match["host"]), f"{match['owner']}/{match['repo']}", int(match["number"])
+
+
+def web_host(netloc: str) -> str:
+    """A host as two URLs can be compared on: lower case, the port kept unless it is the
+    default one (``ghe.example:8443`` stays, ``github.com:443`` is ``github.com``)."""
+    host = (netloc or "").strip().lower().rstrip("/")
+    for default in (":443", ":80"):
+        host = host.removesuffix(default)
+    return host
 
 
 def work_item_digest(title: str, body: str) -> str:
