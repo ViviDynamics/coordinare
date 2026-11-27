@@ -4,7 +4,7 @@ description: Use when a GitHub issue should go all the way to a merged PR withou
 license: Proprietary
 compatibility: Requires gh, jq, git and a repo.env in the consumer repo (see ADOPTING.md). Scripts are bash 3.2 compatible.
 metadata:
-  version: "1.2.0"
+  version: "1.3.0"
   owner: Vivi Dynamics
   requires: ci-safety watch-ci merge-pr rebase-main copilot-review
 ---
@@ -288,8 +288,16 @@ findings, and what was fixed, or "no findings".
 
 ## Stage 4: Merge
 
-Use the merge-pr skill. Verify the PR is actually mergeable, then merge with the
-consumer's `COORDINARE_MERGE_FLAGS`. If the merge succeeds, read the merge commit SHA.
+Use the merge-pr skill. Verify the PR is actually mergeable, then merge with
+`$S/merge-verified <pr>`, which uses the consumer's `COORDINARE_MERGE_FLAGS`; never
+`gh pr merge` directly, since only `merge-verified` checks which base the green run
+tested. If the merge succeeds, read the merge commit SHA.
+
+If `merge-verified` exits 5 (`state: updated`), the default branch moved after the green
+run started, so it updated the branch instead of merging (merge-pr, "The freshness
+rule"). That is not a failure and not a rebase: re-enter Stage 2 with
+`--expect-head <head_sha>` from its JSON, then merge again. Each such round counts
+against the watch budget, not the rebase budget.
 
 If the merge fails: report the reason in SHIP_RESULT with `merge_state: blocked`.
 

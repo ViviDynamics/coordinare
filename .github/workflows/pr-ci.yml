@@ -665,6 +665,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      # merge-verified reads this step's NAME to learn which merge the run tested, so it
+      # can merge a PR whose base has not moved since without another run
+      # (COORDINARE_MERGE_FRESHNESS=record, the default). Keep the name's exact shape.
+      # This job has no `if`, so every pr-ci run records it.
+      - name: Record the tested merge ${{ github.sha }}
+        env:
+          TESTED_MERGE: ${{ github.sha }}
+        run: git log -1 --format='Tested merge %H, base side %P' "$TESTED_MERGE"
 
       - name: Verify workflow skills are wired
         run: |

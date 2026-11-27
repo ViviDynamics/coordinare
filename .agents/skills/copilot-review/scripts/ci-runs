@@ -41,7 +41,7 @@ selected=$(printf '%s' "$runs" | jq -c --arg head "$head" --arg ignore "$ignore"
   def wfmatch($f): ((.path // "") | endswith("/"+$f)) or (.path // "") == $f;
   ($ignore | split(" ") | map(select(. != ""))) as $ign |
   [.workflow_runs[] | select(.head_sha==$head)
-   | {id, name, path, event, status, conclusion, run_attempt, head_sha}
+   | {id, name, path, event, status, conclusion, run_attempt, head_sha, created_at}
    | . + {ignored: (. as $r | any($ign[]; . as $f | $r | wfmatch($f)))}]
   | (map(select(.ignored)) | map(.id)) as $ignored
   | map(select(.ignored | not) | del(.ignored)) as $kept
