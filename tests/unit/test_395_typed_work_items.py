@@ -16,7 +16,11 @@ from typing import Any
 import pytest
 
 from coordinare.models.dependency import DependencySource, DependencyStatus
-from coordinare.services.dependency import build_graph, filter_eligible_todo, resolve_off_board_dependencies
+from coordinare.services.dependency import (
+    build_graph,
+    filter_eligible_todo,
+    resolve_off_board_dependencies,
+)
 from coordinare.services.in_memory_board import InMemoryBoardProvider
 from coordinare.services.work_items import (
     CLOSED,
@@ -177,7 +181,8 @@ class TestATrackerWithoutIssueNumbers:
         graph = build_graph(await board.poll_board())
 
         class Github:
-            asked: list[int] = []
+            def __init__(self) -> None:
+                self.asked: list[int] = []
 
             async def check_issue_state(self, repo: str, number: int) -> str:
                 self.asked.append(number)

@@ -96,18 +96,13 @@ class InMemoryBoardProvider:
 
     # ---- the tracker's own side: what a person (or a test) does --------------------
 
-    def add_item(
-        self,
-        title: str,
-        *,
-        body: str = "",
-        status: str = "TODO",
-        labels: tuple[str, ...] = (),
-        owners: tuple[str, ...] = (),
-        blocked_by: tuple[str, ...] = (),
-        external_states: dict[str, str] | None = None,
-    ) -> str:
-        """Create an item in the native state that *status* maps to. Returns its key."""
+    def add_item(self, title: str, *, body: str = "", status: str = "TODO", **record: Any) -> str:
+        """Create an item in the native state that *status* maps to. Returns its key.
+
+        *record* sets the item's other fields: ``labels``, ``owners``,
+        ``blocked_by`` (keys of the items that block it) and ``external_states``
+        (the state of each off-board blocker this tracker knows).
+        """
         self._next_item += 1
         item_id = f"{self._key}-{self._next_item}"
         self._items[item_id] = InMemoryWorkItem(
@@ -116,11 +111,14 @@ class InMemoryBoardProvider:
             body=body,
             native_state=self._native_for(status),
             url=f"{self._base_url}/{item_id}",
-            labels=tuple(labels),
-            owners=tuple(owners),
-            blocked_by=tuple(blocked_by),
-            external_states=dict(external_states or {}),
+            labels=tuple(record.pop("labels", ())),
+            owners=tuple(record.pop("owners", ())),
+            blocked_by=tuple(record.pop("blocked_by", ())),
+            external_states=dict(record.pop("external_states", {}) or {}),
         )
+        if record:
+            msg = f"unknown work item fields: {sorted(record)}"
+            raise TypeError(msg)
         return item_id
 
     def person_moves(self, item_id: str, status: str) -> None:
