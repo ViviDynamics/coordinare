@@ -27,7 +27,6 @@ shows every stage runs with exactly that.
 from __future__ import annotations
 
 import ast
-import tempfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -78,12 +77,37 @@ PROVIDER_LAYER = {
 }
 
 
-def _listing_reads(path: Path) -> list[str]:
-    """A string constant naming a listing key is a read of it (as #395's guard does)."""
+_READ_METHODS = frozenset({"get", "pop", "setdefault"})
+
+
+def _key_read(node: ast.AST) -> str | None:
+    """The listing key *node* reads, if any: ``x["key"]``, ``x.get("key")`` or ``"key" in x``.
+
+    A dict literal that builds a listing (a fake service, a dashboard payload of its
+    own) is not a read, so it is not matched.
+    """
+    key: object = None
+    if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+        key = node.slice.value
+    elif (
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _READ_METHODS and node.args and isinstance(node.args[0], ast.Constant)
+    ):
+        key = node.args[0].value
+    elif (
+        isinstance(node, ast.Compare) and isinstance(node.left, ast.Constant)
+        and any(isinstance(op, ast.In | ast.NotIn) for op in node.ops)
+    ):
+        key = node.left.value
+    return key if isinstance(key, str) and key in LISTING_KEYS else None
+
+
+def _listing_reads(path: Path, root: Path = PACKAGE) -> list[str]:
     found: list[str] = []
     for node in ast.walk(ast.parse(path.read_text())):
-        if isinstance(node, ast.Constant) and node.value in LISTING_KEYS:
-            found.append(f"{path.relative_to(path.parents[len(path.parents) - 1])}:{node.lineno} {node.value!r}")
+        key = _key_read(node)
+        if key is not None:
+            found.append(f"{path.relative_to(root).as_posix()}:{getattr(node, 'lineno', 0)} {key!r}")
     return found
 
 
@@ -103,22 +127,36 @@ def test_every_provider_layer_module_still_exists() -> None:
 
 def test_the_guard_sees_a_direct_read(tmp_path: Path) -> None:
     probe = tmp_path / "probe.py"
-    probe.write_text("def f(board):\n    return board.get('item_field_values', {})\n")
-    assert _listing_reads(probe), "the guard missed a direct read"
+    probe.write_text(
+        "def f(board):\n"
+        "    a = board.get('item_field_values', {})\n"
+        "    b = board['issue_numbers']\n"
+        "    return a, b, 'native_blockers' in board, {'titles': {}}\n",
+    )
+    reads = sorted(line.split()[-1] for line in _listing_reads(probe, tmp_path))
+    # Three reads; the dict literal that builds a listing is not one.
+    assert reads == ["'issue_numbers'", "'item_field_values'", "'native_blockers'"], reads
 
 
 class TestTheRecordCarriesWhatCheckBoardUsedToRead:
     def test_github_field_values_reach_the_record(self) -> None:
+        """The key the listing fakes carry. GitHubService.poll_board does not emit it
+        yet, so on GitHub Projects the record's fields are empty, as the sort's input was."""
         board = {
             "snapshot": {"TODO": ["I1"]},
             "issue_numbers": {"I1": 3},
-            "item_field_values": {"I1": {"Priority": "P1"}},
+            "item_field_values": {"I1": {"Priority": "P1", "Points": 3, "Owner": None}},
         }
-        assert work_items_of(board)["I1"].fields == {"Priority": "P1"}
+        fields = work_items_of(board)["I1"].fields
+        assert fields == {"Priority": "P1", "Points": "3"}
+        with pytest.raises(TypeError):
+            fields["Priority"] = "P0"  # type: ignore[index]
 
     def test_a_github_listing_without_field_values_gives_empty_fields(self) -> None:
         board = {"snapshot": {"TODO": ["I1"]}, "issue_numbers": {"I1": 3}}
         assert work_items_of(board)["I1"].fields == {}
+
+    @pytest.mark.asyncio
 
     async def test_the_in_memory_provider_lists_its_fields(self) -> None:
         board = InMemoryBoardProvider(project_key="PAY")
@@ -131,12 +169,16 @@ class TestTheRecordCarriesWhatCheckBoardUsedToRead:
         assert titles == {"I1": "One"}
         assert bodies == {}
 
+    @pytest.mark.asyncio
+
     async def test_listed_text_reads_typed_records(self) -> None:
         board = InMemoryBoardProvider(project_key="PAY")
         key = board.add_item("Pay", body="the body")
         titles, bodies = listed_text(await board.poll_board())
         assert titles == {key: "Pay"}
         assert bodies == {key: "the body"}
+
+    @pytest.mark.asyncio
 
     async def test_priority_sorts_items_from_a_provider_that_is_not_github(self) -> None:
         from coordinare.graph.nodes.check_board import _select_eligible_todo
@@ -227,8 +269,11 @@ async def _no_sleep(_: float) -> None:
     return None
 
 
-async def test_one_in_memory_item_goes_through_every_stage_to_done() -> None:
-    scratch = Path(tempfile.mkdtemp(prefix="test-393-"))
+@pytest.mark.asyncio
+
+
+async def test_one_in_memory_item_goes_through_every_stage_to_done(tmp_path: Path) -> None:
+    scratch = tmp_path
     fixture = tiny_fixture()
     code_host = FakeGitHubService(
         bare_repo_path=materialize_repo([fixture], scratch / "repos"),
@@ -359,6 +404,9 @@ def test_the_daemon_reads_a_symphony_with_no_provider_key_on_github_projects(tmp
 
     assert isinstance(during, GitHubProjectsBoardProvider)
     assert during.github is symphony_github
+
+
+@pytest.mark.asyncio
 
 
 async def test_a_card_runs_to_merged_on_github_projects_from_a_config_with_no_provider_key(

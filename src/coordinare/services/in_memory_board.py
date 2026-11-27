@@ -33,7 +33,14 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.services.board_provider import NOT_WORK, MoveOutcome, state_checks
-from coordinare.services.work_items import OPEN, UNKNOWN, Blocker, WorkItem, safe_reference
+from coordinare.services.work_items import (
+    OPEN,
+    UNKNOWN,
+    Blocker,
+    WorkItem,
+    field_text,
+    safe_reference,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -220,7 +227,7 @@ class InMemoryBoardProvider:
             # 397: no issue number here, so the code host names the item by key.
             reference=safe_reference(item.id),
             pr_line=_pr_line(item.id, item.url),
-            fields=dict(item.fields),
+            fields=field_text(item.fields),
         )
 
     async def move_card(self, card_id: str, status: str) -> MoveOutcome:

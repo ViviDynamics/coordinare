@@ -25,7 +25,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 #: Matches "Depends on #N", "Blocked by #N", "After #N", "Requires #N"
 #: (case-insensitive). The GitHub Projects text syntax for a blocker; the same
@@ -108,9 +112,9 @@ class WorkItem:
     pr_line: str = ""
     #: GitHub only: the issue behind the item. See the module docstring.
     issue: IssueLink | None = None
-    #: 393: the tracker's other fields by name (a priority field, say), as the
-    #: provider reports them. Empty when it reports none.
-    fields: dict[str, Any] = field(default_factory=dict, hash=False)
+    #: 393: the tracker's other fields by name (a priority field, say), as text.
+    #: Read-only, like the tuples above. Empty when the provider reports none.
+    fields: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}), hash=False)
 
 
 def work_items_of(board: Any) -> dict[str, WorkItem]:
@@ -244,9 +248,20 @@ def _from_github_listing(board: dict[str, Any]) -> dict[str, WorkItem]:
             reference=str(number) if number else "",
             pr_line=f"Closes #{number}" if number else "",
             issue=IssueLink(number=number, node_id=node_id) if (number or node_id) else None,
-            fields=dict(raw_fields) if isinstance(raw_fields := field_values.get(item_id), dict) else {},
+            fields=field_text(field_values.get(item_id)),
         )
     return result
+
+
+def field_text(raw: Any) -> Mapping[str, str]:
+    """A provider's field values as a read-only name -> text map (393).
+
+    A value the tracker leaves unset (``None``) is left out, as it always read:
+    an item without a value sorts after those with one.
+    """
+    if not isinstance(raw, dict):
+        return MappingProxyType({})
+    return MappingProxyType({str(k): str(v) for k, v in raw.items() if v is not None})
 
 
 def listed_text(board: Any) -> tuple[dict[str, Any], dict[str, Any]]:

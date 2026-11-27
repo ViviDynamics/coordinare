@@ -1666,7 +1666,7 @@ def _select_eligible_todo(
         prio_cfg = config.priority
         if prio_cfg.field_name:
             # 393: the field values come from the record, as the labels do.
-            item_field_values = {iid: wi.fields for iid, wi in listed.items()}
+            item_field_values = {iid: dict(wi.fields) for iid, wi in listed.items()}
             has_field = any(
                 prio_cfg.field_name in item_field_values.get(iid, {})
                 for iid in eligible_todo
