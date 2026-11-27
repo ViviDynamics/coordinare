@@ -45,10 +45,7 @@ from coordinare.models.dependency import DependencyStatus
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.observability import HEALTH, HealthStatus, bind_cycle_id, clear_cycle_id
 from coordinare.resilience import CircuitOpenError
-from coordinare.services.board_provider import (
-    GitHubProjectsBoardProvider,
-    board_of,
-)
+from coordinare.services.board_provider import board_of
 from coordinare.services.bootstrap_history import (
     ACT_DISPATCHED,
     AttemptEnd,
@@ -132,6 +129,7 @@ from coordinare.services.run_log import RunLogCollector, prune_run_logs
 from coordinare.services.run_transcript import TranscriptCollector, prune_expired
 from coordinare.services.stats_poll import poll_board_observed
 from coordinare.services.symphony_failures import record_cycle_failure, record_cycle_success
+from coordinare.services.work_item_providers import build_board_provider
 from coordinare.session import _SESSION_FIELDS, CardSession, session_to_state, state_to_session
 from coordinare.state_store import (
     DocumentingSideRun,
@@ -3650,6 +3648,15 @@ class CoordinareDaemon:
         _sym_github_services = self._state.get("symphony_github_services") or {}
         _prev_github = self._state.get("github_service")
         _sym_github = _sym_github_services.get(symphony_name)
+        # 394: built before any key is swapped, so a provider that fails to build
+        # leaves the shared state as it was rather than half switched.
+        _sym_board: Any = (
+            build_board_provider(
+                getattr((self._state.get("symphony_configs") or {}).get(symphony_name), "work_items", None),
+                github=_sym_github,
+            )
+            if _sym_github is not None else None
+        )
         _sym_workspace_managers = self._state.get("symphony_workspace_managers") or {}
         _prev_workspace_manager = self._state.get("workspace_manager")
         _sym_workspace_manager = _sym_workspace_managers.get(symphony_name)
@@ -3685,7 +3692,10 @@ class CoordinareDaemon:
             # 149: the board follows the symphony's service. Leaving it behind
             # would have a multi-symphony run reading one board and writing
             # another — silently, since both are GitHub today.
-            self._state["board_provider"] = GitHubProjectsBoardProvider(_sym_github)
+            # 394: the symphony's own board, from its work_items block through the
+            # one factory. The board found here is what the restore puts back.
+            self._swapped_board_provider: tuple[Any] | None = (self._state.get("board_provider"),)
+            self._state["board_provider"] = _sym_board
         if _sym_workspace_manager is not None:
             self._state["workspace_manager"] = _sym_workspace_manager
         return (
@@ -3727,7 +3737,14 @@ class CoordinareDaemon:
             self._state["human_reviewers"], self._state["trusted_bot_reviewers"] = swapped_reviewers
         if sym_github is not None:
             self._state["github_service"] = prev_github
-            self._state["board_provider"] = GitHubProjectsBoardProvider(prev_github)
+            # 394: the board this symphony's swap replaced, not a fresh GitHub
+            # adapter, so a configured provider survives the cycle.
+            swapped_board = getattr(self, "_swapped_board_provider", None)
+            self._swapped_board_provider = None
+            if swapped_board is not None and swapped_board[0] is not None:
+                self._state["board_provider"] = swapped_board[0]
+            else:
+                self._state["board_provider"] = build_board_provider(None, github=prev_github)
         if sym_workspace_manager is not None:
             self._state["workspace_manager"] = prev_workspace_manager
 
