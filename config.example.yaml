@@ -369,6 +369,16 @@ modes:
 #     installation: 12345678              # the GitHub App installation id for the repositories
 #     review_login: "vivi-scrutare[bot]"  # the login its reviews are posted under
 #     # request_timeout_seconds: 30
+#   # 404: QAre for the QA stage. Coordinare runs the pinned QAre CLI on its own host
+#   # (qare plan, then qare run with posting off) and posts the evidence itself.
+#   qare:
+#     kind: qare
+#     version: "2026.11.42"               # the exact release `qare --version` must print
+#     # command: ["qare"]                 # how to start it, as an argument list
+#     # profile: .qa                      # the QA profile's directory in each repository
+#     # work_dir: /var/lib/coordinare/qare   # default: beside state_file_path
+#     # env_passthrough: [OPENAI_API_KEY] # NAMES of variables QAre's nare may read
+#     # timeout_seconds: 3600
 
 performers:
   default:
@@ -490,6 +500,9 @@ performers:
     # the line to restore the single-prompt path exactly. See
     # specs/164-qa-role-workflow/quickstart.md.
     # workflow: qa
+    # 404: let QAre run QA instead of a performer (declare it in stage_providers above).
+    # Opt in per symphony instead with symphonies[].overrides.performers.
+    # provider: qare
     # How the app under test boots. Layered over the env cache's activation env
     # (PORT, toolchain PATH, POSTGRESQL_*/REDIS_*); these values win. Needed
     # whenever infer_app_start_command cannot recognise the project (it knows

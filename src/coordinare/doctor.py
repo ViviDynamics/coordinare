@@ -20,6 +20,7 @@ import os
 import re
 from base64 import b64encode
 from dataclasses import dataclass, field
+from http import HTTPStatus
 from typing import TYPE_CHECKING
 
 import httpx
@@ -36,6 +37,7 @@ __all__ = [
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from coordinare.config import Endpoint, ProjectConfiguration
+    from coordinare.stage_provider_config import QAreProviderConfig
 
 #: How long to wait for an endpoint before calling it unreachable. Short on
 #: purpose: this is a setup gate, and an operator waiting 30 seconds per endpoint
@@ -454,6 +456,7 @@ async def check_stage_providers(config: ProjectConfiguration) -> list[CheckResul
     from coordinare.lifecycle import ROLE_TO_STAGE
     from coordinare.services.scrutare import ScrutareProvider
     from coordinare.services.stage_providers import role_provider
+    from coordinare.stage_provider_config import QAreProviderConfig
     from coordinare.transport.base import TransportError
 
     used = {
@@ -466,6 +469,9 @@ async def check_stage_providers(config: ProjectConfiguration) -> list[CheckResul
         provider_config = config.stage_providers.get(name)
         if provider_config is None:
             continue  # config validation already names the missing entry
+        if isinstance(provider_config, QAreProviderConfig):
+            results.extend(await _check_qare(name, role, provider_config, config))
+            continue
         # A setup gate answers quickly: the probe timeout, not the review request timeout.
         provider = ScrutareProvider(name, provider_config.model_copy(update={
             "request_timeout_seconds": min(provider_config.request_timeout_seconds, PROBE_TIMEOUT_SECONDS),
@@ -486,3 +492,62 @@ async def check_stage_providers(config: ProjectConfiguration) -> list[CheckResul
             ),
         ))
     return results
+
+
+async def _check_qare(
+    name: str, role: str, provider_config: QAreProviderConfig, config: ProjectConfiguration,
+) -> list[CheckResult]:
+    """404: QAre runs at the pinned version, its work_dir is writable, the repo has a profile."""
+    from coordinare.services.stage_providers import build_provider
+
+    label = f"stage provider '{name}' (qare, {role})"
+    provider = build_provider(name, provider_config, config)
+    ok, detail = await provider.health()
+    results = [CheckResult(
+        name=label,
+        status=Status.OK if ok else Status.FAIL,
+        detail=detail,
+        fix=None if ok else (
+            f"Install QAre {provider_config.version} where coordinare runs (its host install or "
+            f"image), or correct stage_providers.{name}.command and .version; make work_dir writable."
+        ),
+    )]
+    results.append(await _check_qare_profile(name, provider_config, config))
+    return results
+
+
+async def _check_qare_profile(
+    name: str, provider_config: QAreProviderConfig, config: ProjectConfiguration,
+) -> CheckResult:
+    """The configured repository has QAre's profile on its default branch."""
+    label = f"stage provider '{name}' QA profile"
+    repository = f"{config.github_org}/{config.project_name}" if config.project_name else ""
+    if not repository:
+        return CheckResult(label, Status.WARN, "project_name is not set, so no repository to check.",
+                           f"Make sure each repository QA runs on has a {provider_config.profile}/ profile.")
+    try:
+        from coordinare.auth import build_auth
+
+        token = await build_auth(config).get_token()
+    except Exception as exc:  # the GitHub check names credential problems
+        return CheckResult(label, Status.WARN, f"could not get a GitHub credential ({type(exc).__name__}).", None)
+    api = str(config.github_graphql_url or "https://api.github.com/graphql").rstrip("/")
+    api = api[: -len("/graphql")] if api.lower().endswith("/graphql") else api
+    api = f"{api}/v3" if api.lower().endswith("/api") else api
+    url = f"{api}/repos/{repository}/contents/{provider_config.profile}"
+    try:
+        async with httpx.AsyncClient(timeout=PROBE_TIMEOUT_SECONDS) as client:
+            response = await client.get(url, headers={
+                "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+            })
+    except httpx.HTTPError as exc:
+        return CheckResult(label, Status.WARN, f"GitHub unreachable ({type(exc).__name__}).", None)
+    if response.status_code == HTTPStatus.OK and isinstance(response.json(), list):
+        return CheckResult(label, Status.OK, f"{repository} has {provider_config.profile}/", None)
+    if response.status_code == HTTPStatus.NOT_FOUND:
+        return CheckResult(
+            label, Status.FAIL, f"{repository} has no {provider_config.profile}/ profile on its default branch.",
+            "Run `qare init` in the repository and commit the profile it writes; until then every QA "
+            "run on it is held for a person.",
+        )
+    return CheckResult(label, Status.WARN, f"GitHub answered {response.status_code} for {provider_config.profile}/.", None)
