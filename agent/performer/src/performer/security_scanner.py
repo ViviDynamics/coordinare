@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -47,6 +48,11 @@ _OK_EXIT_CODES = {0, 1}
 _TRUSTED_BINARY_DIRS = (Path("/usr/local/bin"), Path("/usr/bin"))
 _UNTRUSTED_WRITE_BITS = stat.S_IWGRP | stat.S_IWOTH
 _ROOT_UID = 0
+# bandit parses every target as Python and reports any other file as a scan
+# error, so it gets only Python sources (#415). semgrep keeps every target.
+_PYTHON_SUFFIXES = frozenset({".py", ".pyi", ".pyw"})
+_PYTHON_SHEBANG = re.compile(rb"#![^\n]*python")
+_SHEBANG_READ_BYTES = 256
 SCANNER_INSTALLATION_HELP = (
     "Install semgrep and bandit system-wide as root-owned executables in "
     "/usr/local/bin or /usr/bin, or use the container transport."
@@ -105,7 +111,7 @@ class ScannerSetupError(ScannerError):
 
 
 def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
-    """Run semgrep + bandit over ``changed_files`` under ``repo_root``.
+    """Run semgrep over ``changed_files`` and bandit over their Python files.
 
     Returns a list of normalized findings (the spec-022 schema). Returns ``[]``
     for a clean scan. Raises :class:`ScannerError` on tool-missing / crash /
@@ -116,7 +122,7 @@ def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
 
     findings: list[Finding] = []
     findings.extend(_run_semgrep(files, repo_root))
-    findings.extend(_run_bandit(files, repo_root))
+    findings.extend(_run_bandit(_python_targets(files, repo_root), repo_root))
 
     # Summary-only logging (FR-011): counts by severity, never raw text.
     severity_counts: dict[str, int] = {}
@@ -129,6 +135,22 @@ def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
         severities=severity_counts,
     )
     return findings
+
+
+def _python_targets(files: list[str], repo_root: Path) -> list[str]:
+    """Targets bandit can parse: a Python suffix, or a Python shebang line."""
+    return [name for name in files if _is_python(repo_root / name)]
+
+
+def _is_python(path: Path) -> bool:
+    if path.suffix.lower() in _PYTHON_SUFFIXES:
+        return True
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(_SHEBANG_READ_BYTES)
+    except OSError:
+        return False
+    return _PYTHON_SHEBANG.match(head) is not None
 
 
 def _trusted_executable(candidate: Path) -> bool:

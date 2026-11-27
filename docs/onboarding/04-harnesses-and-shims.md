@@ -388,7 +388,10 @@ the spec-022 shape, so coordinare's routing to implementer or architect is
 unchanged) or `env_blocked`. Since 107, all scans run inside the performer.
 Prose security jobs run semgrep and bandit before starting the backend and
 return a versioned `report.security_floor`; coordinare holds missing or invalid
-scan evidence closed. A configured security workflow supplies its own scan
+scan evidence closed. semgrep scans every changed file; bandit scans only the
+Python ones (a `.py`, `.pyi` or `.pyw` suffix, or a Python shebang), and does not
+run when there are none, so a doc change beside the code cannot hold the floor.
+A Python file bandit cannot parse still fails the floor. A configured security workflow supplies its own scan
 record instead. Coordinare lifts the blocking
 implementer-routed findings into the same `review_findings` carrier the
 reviewer uses, so the spec-167 repair lane fixes them.
