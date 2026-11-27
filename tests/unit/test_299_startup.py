@@ -282,12 +282,24 @@ async def test_event_store_shutdown_is_bounded(monkeypatch) -> None:
     monkeypatch.setattr(app_main, "EventStore", MagicMock(return_value=store))
     monkeypatch.setattr(app_main, "_run_with_events", AsyncMock())
     monkeypatch.setattr(app_main, "load_unexpanded_config", MagicMock(return_value={}))
-    # Half the production bound: only the patched 0.01s bound can meet it, and the unpatched
-    # startup checks still have room on a slow, coverage-traced CI runner (427).
-    within = app_main.EVENT_STORE_SHUTDOWN_SECONDS / 2
-    monkeypatch.setattr(app_main, "EVENT_STORE_SHUTDOWN_SECONDS", 0.01, raising=False)
-    await asyncio.wait_for(app_main._run(config), within)
+    monkeypatch.setattr(app_main, "validate_start_time", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_main, "EVENT_STORE_SHUTDOWN_SECONDS", 0.01)
+    # 427: time the close itself, not startup, so a slow coverage-traced runner cannot fail it.
+    finish = app_main._finish_tasks
+    bounds: list[float] = []
+    elapsed: list[float] = []
+
+    async def timed_finish(tasks, *, within):
+        bounds.append(within)
+        started = asyncio.get_running_loop().time()
+        await finish(tasks, within=within)
+        elapsed.append(asyncio.get_running_loop().time() - started)
+
+    monkeypatch.setattr(app_main, "_finish_tasks", timed_finish)
+    await asyncio.wait_for(app_main._run(config), WAIT_SECONDS)
     await asyncio.wait_for(cancelled.wait(), WAIT_SECONDS)
+    assert bounds == [0.01]
+    assert elapsed[0] < 0.5
 
 
 @pytest.mark.asyncio
