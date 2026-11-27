@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import os
 import signal
 import time
 from dataclasses import dataclass, field, replace
@@ -4105,8 +4106,6 @@ class CoordinareDaemon:
         cc = getattr(cfg, "conducting", None) if cfg is not None else None
         if cc is None:
             return None  # config not ready yet — don't memoize a premature None
-        import os
-
         from coordinare.services.conducting import discovery_chat
 
         # 416: discovery's own output budget, not the short-prompt conducting max_tokens.

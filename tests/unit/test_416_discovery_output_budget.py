@@ -9,9 +9,11 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from coordinare.config import ConductingConfig
+from coordinare.daemon import CoordinareDaemon
 from coordinare.services.conducting import OpenAiApiBackend, discovery_chat
 from coordinare.services.conductor_calls import ModelOutputTruncatedError, ModelRequestFailedError
 from coordinare.services.environment_discovery import (
@@ -84,8 +86,6 @@ class TestBudget:
         assert discovery_chat(ConductingConfig(backend=backend), api_key="k") is None
 
     def test_the_daemon_builds_discovery_with_the_discovery_budget(self, monkeypatch):
-        from coordinare.daemon import CoordinareDaemon
-
         monkeypatch.setenv("OPENAI_API_KEY", "k")
         cfg = SimpleNamespace(conducting=ConductingConfig(backend="openai_api", model="m"))
         holder = SimpleNamespace(_state={"config": cfg, "conductor_calls": None})
@@ -124,6 +124,31 @@ class TestTruncation:
             assert await backend.chat_json([{"role": "user", "content": "x"}]) == '{"a"'
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("content", "finish_reason", "error"), [
+        ("", "stop", "empty reply"),
+        ("", "content_filter", "finish_reason content_filter"),
+    ])
+    async def test_a_reply_with_no_usable_text_raises(self, content, finish_reason, error):
+        backend = OpenAiApiBackend(api_key="k", model="m")
+        with patch("httpx.AsyncClient", return_value=_client(content, finish_reason)), \
+                pytest.raises(ModelRequestFailedError) as caught:
+            await backend.chat_json_checked([{"role": "user", "content": "x"}])
+        assert caught.value.error == error
+
+    @pytest.mark.asyncio
+    async def test_a_refused_request_names_its_http_status(self):
+        request = httpx.Request("POST", "https://api.example/v1/chat/completions")
+        refused = httpx.HTTPStatusError("bad request", request=request, response=httpx.Response(400, request=request))
+        client = _client("{}")
+        client.post.return_value.status_code = 400
+        client.post.return_value.raise_for_status = MagicMock(side_effect=refused)
+        backend = OpenAiApiBackend(api_key="k", model="m", max_tokens=64_000)
+        with patch("httpx.AsyncClient", return_value=client), pytest.raises(ModelRequestFailedError) as caught:
+            await backend.chat_json_checked([{"role": "user", "content": "x"}])
+        assert caught.value.error == "http_400"
+        assert caught.value.max_tokens == 64_000
+
+    @pytest.mark.asyncio
     async def test_a_failed_request_raises_instead_of_returning_nothing(self):
         backend = OpenAiApiBackend(api_key=None, model="m")
         with pytest.raises(ModelRequestFailedError, match="missing api key"):
@@ -158,11 +183,24 @@ class TestDiscoveryReports:
     @pytest.mark.asyncio
     async def test_a_failed_model_request_is_not_reported_as_malformed_json(self):
         async def chat(messages):
-            raise ModelRequestFailedError("HTTPStatusError")
+            raise ModelRequestFailedError("ReadTimeout")
 
         with pytest.raises(EnvironmentDiscoveryError) as caught:
             await _discover(chat)
-        assert str(caught.value) == "discovery model request failed: HTTPStatusError"
+        assert str(caught.value) == "discovery model request failed: ReadTimeout"
+
+    @pytest.mark.asyncio
+    async def test_a_bad_request_suggests_the_budget_may_be_refused(self):
+        # A model capped below the discovery budget (gpt-4o-mini: 16384) answers 400.
+        async def chat(messages):
+            raise ModelRequestFailedError("http_400", max_tokens=64_000)
+
+        with pytest.raises(EnvironmentDiscoveryError) as caught:
+            await _discover(chat)
+        message = str(caught.value)
+        assert message.startswith("discovery model request failed: http_400")
+        assert "64000" in message
+        assert "conducting.discovery_max_tokens" in message
 
     @pytest.mark.asyncio
     async def test_a_complete_reply_within_the_output_limit_is_still_decoded(self):

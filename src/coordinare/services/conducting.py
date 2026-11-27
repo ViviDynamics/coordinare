@@ -20,6 +20,7 @@ from coordinare.services.conductor_calls import (
     ModelRequestFailedError,
     split_messages,
 )
+from coordinare.services.environment_discovery import DiscoveryLimits, discovery_output_tokens
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -28,6 +29,10 @@ if TYPE_CHECKING:
     from coordinare.services.claude import ClaudeService
 
 log = structlog.get_logger(__name__)
+
+#: The output budget of environment discovery and review when ``conducting.discovery_max_tokens``
+#: is unset: sized for the largest reply discovery admits (416).
+DISCOVERY_OUTPUT_TOKENS = discovery_output_tokens(DiscoveryLimits())
 
 def _build_assess_prompt(card: dict[str, Any]) -> str:
     """Build a context-aware assessment prompt from card data.
@@ -227,6 +232,13 @@ def _openai_usage(data: Any) -> dict[str, int] | None:
     return {"input_tokens": max(prompt - read, 0), "output_tokens": output, "cache_read": read, "cache_write": 0}
 
 
+def _http_error_name(exc: Exception) -> str:
+    """How a failed send is recorded: ``http_<status>`` for a refused request (416), else the error's type."""
+    response = getattr(exc, "response", None) if type(exc).__name__ == "HTTPStatusError" else None
+    status = getattr(response, "status_code", None)
+    return f"http_{status}" if isinstance(status, int) else type(exc).__name__
+
+
 @runtime_checkable
 class ConductingBackend(Protocol):
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]: ...
@@ -383,7 +395,7 @@ class OpenAiApiBackend:
             except httpx.HTTPError as exc:
                 # Non-retryable (e.g. 4xx after raise_for_status).
                 log.error("openai_api_http_error", error=str(exc))
-                return ModelReply(error=type(exc).__name__)
+                return ModelReply(error=_http_error_name(exc))
 
         if data is None:
             log.error("openai_api_http_error", error=last_error or "retries_exhausted")
@@ -412,14 +424,19 @@ class OpenAiApiBackend:
         """JSON-mode chat for a caller that needs the whole reply, such as environment discovery (416).
 
         Raises ``ModelOutputTruncatedError`` when the output budget cut the reply off, and
-        ``ModelRequestFailedError`` when the request returned no reply, so neither is read as
-        malformed JSON.
+        ``ModelRequestFailedError`` when the request returned no usable reply (an error, a
+        content filter, empty text), so none of them is read as malformed JSON.
         """
         reply = await self._reply(messages, json_mode=True)
         if reply.finish_reason in TRUNCATED_FINISH_REASONS:
             raise ModelOutputTruncatedError(self._max_tokens)
-        if reply.error is not None:
-            raise ModelRequestFailedError(reply.error)
+        problem = reply.error
+        if problem is None and reply.finish_reason == "content_filter":
+            problem = "finish_reason content_filter"
+        if problem is None and not reply.text.strip():
+            problem = "empty reply"
+        if problem is not None:
+            raise ModelRequestFailedError(problem, max_tokens=self._max_tokens)
         return reply.text
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
@@ -772,13 +789,10 @@ def discovery_chat(
     """
     if cc.backend != "openai_api":
         return None
-    from coordinare.services.environment_discovery import DiscoveryLimits, discovery_output_tokens
-
-    budget = cc.discovery_max_tokens or discovery_output_tokens(DiscoveryLimits())
     return OpenAiApiBackend(
         api_key=api_key,
         model=cc.model or "gpt-4o-mini",
-        max_tokens=budget,
+        max_tokens=cc.discovery_max_tokens or DISCOVERY_OUTPUT_TOKENS,
         temperature=cc.temperature,
         base_url=cc.base_url,
         effort=cc.effort,

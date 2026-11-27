@@ -35,11 +35,16 @@ env_cache:
 Discovery and review ask for one JSON reply of up to 256 KiB, so they have an
 output budget of their own: `conducting.discovery_max_tokens`, which defaults to
 64000 tokens. `conducting.max_tokens` stays the budget of the short conducting
-prompts and does not limit discovery. Set `discovery_max_tokens` lower only for a
-model that refuses a 64000-token request (for example one capped at 16384 output
-tokens). A reply the budget cuts off holds discovery with "discovery output was
-truncated at N tokens"; a request that returns no reply holds it with "discovery
-model request failed". Neither is reported as malformed JSON.
+prompts and does not limit discovery. Set `discovery_max_tokens` lower for a model
+that refuses a 64000-token request: one whose output cap is smaller (gpt-4o and
+gpt-4o-mini stop at 16384), or one whose context window cannot hold the files
+discovery reads plus that budget, since every turn reserves it. A refused request
+holds discovery with "discovery model request failed: http_400" and names the
+budget. A reply the budget cuts off holds it with "discovery output was truncated
+at N tokens", and a request that returns no usable reply with "discovery model
+request failed". None of them is reported as malformed JSON. A large reply also
+takes time to generate: if discovery holds with "discovery deadline exceeded",
+raise `env_cache.manifest_phase_timeout_seconds`.
 
 Set the named API-key variable in the daemon environment, using the deployment's
 normal secret mechanism. For a checkout, create `.env` from `.env.example` and use

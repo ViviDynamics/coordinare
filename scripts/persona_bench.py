@@ -889,11 +889,11 @@ def discovery_chat(config_path: str | None, dotenv: dict, judge_cfg: dict | None
         key_name = cc.api_key_env or "OPENAI_API_KEY"
         return conducting.discovery_chat(cc, api_key=os.environ.get(key_name) or dotenv.get(key_name))
     if judge_cfg:
-        # 416: the judge's gateway and model, with the budget production gives discovery.
-        from coordinare.config import ConductingConfig
-        judge = ConductingConfig(backend="openai_api", model=judge_cfg["model"], base_url=judge_cfg["base_url"],
-                                 effort=None)
-        return conducting.discovery_chat(judge, api_key=judge_cfg["api_key"])
+        # 416: the judge's gateway and model, with the discovery budget production would use.
+        return conducting.OpenAiApiBackend(
+            api_key=judge_cfg["api_key"], model=judge_cfg["model"], base_url=judge_cfg["base_url"],
+            max_tokens=getattr(cc, "discovery_max_tokens", None) or conducting.DISCOVERY_OUTPUT_TOKENS,
+        ).chat_json_checked
     return None
 
 

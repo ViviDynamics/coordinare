@@ -130,10 +130,15 @@ class ModelOutputTruncatedError(RuntimeError):
 
 
 class ModelRequestFailedError(RuntimeError):
-    """A model request that returned no reply, raised by callers that must not read it as text (416)."""
+    """A model request that returned no usable reply, raised by callers that must not read it as text (416).
 
-    def __init__(self, error: str) -> None:
+    ``max_tokens`` is the output budget the request asked for, when the caller knows it: a model
+    whose output cap is smaller refuses the request (HTTP 400).
+    """
+
+    def __init__(self, error: str, *, max_tokens: int | None = None) -> None:
         self.error = error
+        self.max_tokens = max_tokens
         super().__init__(error)
 
 

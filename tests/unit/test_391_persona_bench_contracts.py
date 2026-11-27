@@ -649,6 +649,15 @@ class TestCopilotRound:
         assert backend._model == "judge"
         assert backend._effort is None
 
+    def test_the_judge_fallback_honours_a_configured_discovery_budget(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "github_org: o\nhuman_reviewers: [a]\ngithub_auth: pat\ngithub_token: ghp_x\n"
+            "conducting: {backend: claude_cli, discovery_max_tokens: 8192}\n")
+        chat = persona_bench.discovery_chat(
+            str(cfg), {}, {"api_key": "k", "model": "judge", "base_url": "https://gw.example/v1"})
+        assert chat.__self__._max_tokens == 8192
+
     def test_a_config_that_fails_to_load_says_so(self, tmp_path, capsys):
         cfg = tmp_path / "config.yaml"
         cfg.write_text("not: [valid\n")

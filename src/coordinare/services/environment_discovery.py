@@ -154,6 +154,11 @@ async def _model_reply(chat: ChatJson, messages: list[dict[str, str]], name: str
         raise EnvironmentDiscoveryError(message) from exc
     except ModelRequestFailedError as exc:
         message = f"{name} model request failed: {exc.error}"
+        if exc.error == "http_400" and exc.max_tokens is not None:
+            message += (
+                f"; a model whose output cap or context window is below the {exc.max_tokens}-token "
+                "budget refuses it, so set conducting.discovery_max_tokens within them"
+            )
         raise EnvironmentDiscoveryError(message) from exc
 
 
