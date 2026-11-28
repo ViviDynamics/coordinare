@@ -79,6 +79,8 @@ def running_summary(
                 skipped.append(f"{role} (not configured)")
             elif resolved.max_concurrency == 0:
                 skipped.append(f"{role} (max_concurrency: 0)")
+            elif resolved.provider:
+                enabled.append(f"{role} (provider {resolved.provider})")
             else:
                 enabled.append(f"{role} ({resolved.backend})")
         if not enabled and not effective.performers.implementer and effective.agent_executable:

@@ -20,7 +20,7 @@ from gql.transport.exceptions import TransportConnectionFailed
 from coordinare.auth import build_auth
 from coordinare.dashboard.app import check_port_available
 from coordinare.doctor import CheckResult, DoctorReport, Status, check_stage_providers, run_checks
-from coordinare.lifecycle import CANONICAL_ORDER
+from coordinare.lifecycle import CANONICAL_ORDER, ROLE_TO_STAGE
 from coordinare.network_probe import (
     PROBE_ATTEMPTS,
     PROBE_RETRY_DELAY_SECONDS,
@@ -398,20 +398,61 @@ def _command_probe(
     return CheckResult(name, Status.OK, f"{name} answered.")
 
 
+def _provider_roles(config: ProjectConfiguration) -> set[str]:
+    """451: the active roles a stage provider fills instead of a performer."""
+    return {
+        role
+        for role in CANONICAL_ORDER
+        if (resolved := config.performers.resolved_role(role)) is not None
+        and resolved.max_concurrency > 0
+        and resolved.provider
+    }
+
+
+_STAGE_TO_ROLE = {stage: role for role, stage in ROLE_TO_STAGE.items()}
+
+
+def _endpoint_role(name: str) -> str:
+    """An endpoint lists a role by its role name (reviewer) or its stage name (reviewing)."""
+    return _STAGE_TO_ROLE.get(name, name)
+
+
+def _serves_only_providers(
+    endpoint: Any, provider_roles: set[str], bootstrap_ids: frozenset[str] = frozenset(),
+) -> bool:
+    """451: every role the endpoint lists is filled by a stage provider, so nothing uses it.
+
+    An endpoint a symphony's ``env_bootstrap_performer_id`` names is used by id, whatever
+    roles it lists.
+    """
+    if endpoint.id in bootstrap_ids:
+        return False
+    roles = {_endpoint_role(role) for role in endpoint.roles}
+    return bool(roles) and roles <= provider_roles
+
+
 def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
     results = []
     executables = set()
     harnesses = set()
+    # 451: a stage provider runs its own harness, and check_stage_providers checks it, so a
+    # role it fills needs no local harness or performer and no endpoint can serve it.
+    provider_roles = _provider_roles(config)
     http_roles = {
-        role
+        _endpoint_role(role)
         for endpoint in config.performer_endpoints
         if endpoint.mode != "subprocess"
         for role in endpoint.roles
+        if _endpoint_role(role) not in provider_roles
     }
+    performer_roles = 0
     for role in CANONICAL_ORDER:
         resolved = config.performers.resolved_role(role)
         if resolved is None or resolved.max_concurrency == 0:
             continue
+        if role in provider_roles:
+            continue
+        performer_roles += 1
         if resolved.transport not in (None, "subprocess"):
             continue
         executable = resolved.executable or config.agent_executable
@@ -419,7 +460,9 @@ def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
             continue
         harnesses.add(resolved.backend.replace("-", "_").lower())
         executables.add(executable)
-    if not executables and config.agent_executable and not http_roles:
+    # 451: with every active role on a stage provider, nothing dispatches to a performer.
+    provider_only = bool(provider_roles) and not performer_roles
+    if not executables and config.agent_executable and not http_roles and not provider_only:
         executables.add(config.agent_executable)
     for harness in sorted(harnesses):
         binary = HARNESS_COMMANDS.get(harness, harness)
@@ -448,7 +491,7 @@ def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
                 ),
             ),
         )
-    if not executables and not http_roles:
+    if not executables and not http_roles and not provider_only:
         results.append(
             CheckResult(
                 "performer transport",
@@ -460,7 +503,9 @@ def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
     return results
 
 
-def _container_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
+def _container_harnesses(
+    config: ProjectConfiguration, bootstrap_ids: frozenset[str] = frozenset(),
+) -> list[CheckResult]:
     docker = shutil.which("docker")
     fix = "Install and start Docker, then run coordinare init --run-mode docker --force to pull the matching performer image, or set performer_endpoints[].image to an available image."
     if docker is None:
@@ -471,6 +516,7 @@ def _container_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
     if result.status is not Status.OK:
         return [result]
     results = [result]
+    provider_roles = _provider_roles(config)
     for endpoint in config.performer_endpoints:
         if endpoint.mode != "ephemeral":
             continue
@@ -481,11 +527,14 @@ def _container_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
         results.append(result)
         if result.status is not Status.OK:
             continue
+        if _serves_only_providers(endpoint, provider_roles, bootstrap_ids):
+            continue  # 451: only stage providers fill its roles, so no harness runs in it
         harnesses = {
             resolved.backend.replace("-", "_").lower()
-            for role in endpoint.roles
+            for role in {_endpoint_role(name) for name in endpoint.roles}
             if (resolved := config.performers.resolved_role(role)) is not None
             and resolved.max_concurrency > 0
+            and role not in provider_roles
         }
         if not harnesses:
             harnesses = {endpoint.env.get("BACKEND", "nare").replace("-", "_").lower()}
@@ -522,8 +571,15 @@ def _container_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
 
 
 async def check_harnesses(
-    config: ProjectConfiguration, *, probe_containers: bool = True,
+    config: ProjectConfiguration,
+    *,
+    probe_containers: bool = True,
+    bootstrap_ids: frozenset[str] = frozenset(),
 ) -> list[CheckResult]:
+    """Local, container and persistent performer checks for the roles that dispatch to one.
+
+    ``bootstrap_ids`` are the performer endpoints a symphony's env bootstrap uses by id.
+    """
     results = []
     if config.agent_transport in {"kubernetes", "ssh"}:
         results.append(
@@ -536,15 +592,20 @@ async def check_harnesses(
     else:
         results.extend(await asyncio.to_thread(_local_harnesses, config))
         if probe_containers and any(endpoint.mode == "ephemeral" for endpoint in config.performer_endpoints):
-            results.extend(await asyncio.to_thread(_container_harnesses, config))
-    results.extend(await _persistent_harnesses(config))
+            results.extend(await asyncio.to_thread(_container_harnesses, config, bootstrap_ids))
+    results.extend(await _persistent_harnesses(config, bootstrap_ids))
     return results
 
 
-async def _persistent_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
+async def _persistent_harnesses(
+    config: ProjectConfiguration, bootstrap_ids: frozenset[str] = frozenset(),
+) -> list[CheckResult]:
     results = []
+    provider_roles = _provider_roles(config)
     for endpoint in config.performer_endpoints:
         if endpoint.mode != "persistent" or endpoint.endpoint is None:
+            continue
+        if _serves_only_providers(endpoint, provider_roles, bootstrap_ids):
             continue
         try:
             headers = (
@@ -641,14 +702,21 @@ async def run_preflight(
     try:
         validate_start_time(config, coordinare_config, raw)
         # 399: each symphony with its own work item provider block.
-        configs: list[tuple[ProjectConfiguration, WorkItemsConfig | None]] = [(config, None)]
+        configs: list[tuple[ProjectConfiguration, WorkItemsConfig | None, frozenset[str]]] = [
+            (config, None, frozenset()),
+        ]
         if coordinare_config is not None:
             configs = []
             for symphony in coordinare_config.symphonies:
                 if not symphony.enabled:
                     continue
+                bootstrap = symphony.env_bootstrap_performer_id
                 try:
-                    configs.append((symphony.effective_config(config), symphony.work_items))
+                    configs.append((
+                        symphony.effective_config(config),
+                        symphony.work_items,
+                        frozenset({bootstrap} if bootstrap else ()),
+                    ))
                 except ValueError as exc:
                     msg = f"Symphony {symphony.name!r}: {exc}"
                     raise ValueError(msg) from exc
@@ -667,7 +735,7 @@ async def run_preflight(
         strict=explicit or config.preset is not None,
     ))
     report.results.append(check_port(config))
-    for effective, work_items in configs:
+    for effective, work_items, bootstrap_ids in configs:
         probes = effective if explicit else _active_model_config(effective)
         strict = explicit or effective.preset is not None
         results = (await asyncio.to_thread(run_checks, probes)).results
@@ -678,6 +746,7 @@ async def run_preflight(
             probe_containers=probe_containers and (explicit or (
                 effective.preset is not None and not config.state_file_path.expanduser().exists()
             )),
+            bootstrap_ids=bootstrap_ids,
         ))
         results.extend(await asyncio.to_thread(check_native_models, probes))
         report.results.extend(_compatible_results(results, strict=strict))
@@ -688,7 +757,8 @@ def _active_model_config(config: ProjectConfiguration) -> ProjectConfiguration:
     modes = set()
     for role in (*CANONICAL_ORDER, "env_bootstrap"):
         resolved = config.performers.resolved_role(role)
-        if resolved is not None and resolved.max_concurrency > 0 and resolved.mode is not None:
+        # 451: a provider-backed role's mode has no effect, so its models are never called.
+        if resolved is not None and resolved.max_concurrency > 0 and resolved.mode is not None and not resolved.provider:
             modes.add(resolved.mode)
     models = {
         ref
