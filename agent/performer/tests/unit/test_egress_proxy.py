@@ -447,9 +447,8 @@ async def test_the_claude_code_shim_reaches_its_gateway_through_the_egress_proxy
     app.router.add_route("*", "/{path:.*}", gateway)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 0)
-    await site.start()
-    gateway_port = site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+    gateway_port = _free_port()
+    await web.TCPSite(runner, "127.0.0.1", gateway_port).start()
     dialled: list[tuple[str, int]] = []
     try:
         async with _proxy(["llm.invalid"], _routing(gateway_port, dialled)) as proxy_port:
