@@ -307,3 +307,71 @@ async def test_an_endpoint_naming_a_provider_role_by_its_stage_serves_no_perform
     results = await launch_preflight.check_harnesses(config, probe_containers=False)
 
     assert "performer transport" in _failed(results)
+
+
+async def test_a_stage_named_endpoint_serves_its_performer_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probes: list[tuple[str, list[str]]],
+) -> None:
+    """An endpoint listing implementing serves implementer, so no local performer is needed."""
+    config = _config(
+        tmp_path, monkeypatch, {"implementer": {"backend": "codex"}, "qa": {"provider": "qare"}},
+        performer_endpoints=[{
+            "id": "impl", "mode": "persistent", "roles": ["implementing"],
+            "endpoint": "http://impl.test:8080", "image": "img",
+        }],
+    )
+
+    results = launch_preflight._local_harnesses(config)
+
+    assert _failed(results) == []
+    assert probes == []
+
+
+def test_a_stage_named_container_endpoint_probes_its_roles_harness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probes: list[tuple[str, list[str]]],
+) -> None:
+    monkeypatch.setattr(launch_preflight.shutil, "which", lambda _name: "/usr/bin/docker")
+    config = _config(
+        tmp_path, monkeypatch, {"implementer": {"backend": "codex"}, "reviewer": {"provider": "scrutare"}},
+        performer_endpoints=[{
+            "id": "full", "mode": "ephemeral", "roles": ["implementing", "reviewing"], "image": "img",
+        }],
+    )
+
+    results = launch_preflight._container_harnesses(config)
+
+    assert [n for n in _names(results) if n.startswith("container harness")] == ["container harness codex"]
+
+
+async def test_an_endpoint_the_env_bootstrap_uses_is_still_probed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probes: list[tuple[str, list[str]]],
+) -> None:
+    """A symphony's env_bootstrap_performer_id dispatches to the endpoint by id, whatever its roles."""
+    from coordinare.config import CoordinareConfiguration, SymphonyConfig
+
+    def unreachable(*_args: Any, **_kwargs: Any) -> Any:
+        raise launch_preflight.httpx.ConnectError("down")
+
+    async def nothing(*_args: Any, **_kwargs: Any) -> list[CheckResult]:
+        return []
+
+    monkeypatch.setattr(launch_preflight, "probe_http", unreachable)
+    monkeypatch.setattr(launch_preflight, "check_stage_providers", nothing)
+    monkeypatch.setattr(launch_preflight, "check_github", nothing)
+    monkeypatch.setattr(launch_preflight, "check_directories", lambda _config: [])
+    monkeypatch.setattr(launch_preflight, "check_port", lambda _config: CheckResult("port", Status.OK, "free."))
+    config = _config(
+        tmp_path, monkeypatch, {"qa": {"provider": "qare"}},
+        performer_endpoints=[{
+            "id": "boot", "mode": "persistent", "roles": ["qa"], "endpoint": "http://boot.test:8080",
+            "image": "img",
+        }],
+    )
+    root = CoordinareConfiguration(
+        global_config=config,
+        symphonies=[SymphonyConfig(name="widgets", github_project_number=1, env_bootstrap_performer_id="boot")],
+    )
+
+    report = await launch_preflight.run_preflight(config, root, explicit=True, probe_containers=False)
+
+    assert "performer boot" in _names(report.results)
