@@ -56,9 +56,9 @@ want to inspect the result first. Forced setup keeps private backups. Advanced
 configurations that init refuses must have their performer images updated by
 the operator. See [Docker setup](docker-mode-setup.md).
 
-If any Docker endpoint sets `egress_allowlist` and does not opt out with
-`egress_mode: iptables`, every image those performers use must also be current
-before the daemon starts again, including images init does not manage. See [Egress allowlist: the proxy is now the default](#egress-allowlist-the-proxy-is-now-the-default).
+If any Docker endpoint sets `egress_allowlist`, every image those performers use
+must also be on the new release before the daemon starts again, including images
+init does not manage. See [Egress allowlist: the proxy is now the default](#egress-allowlist-the-proxy-is-now-the-default).
 
 Check the configuration while the daemon is stopped:
 
@@ -81,23 +81,28 @@ explicit config command printed by init. See [user services](service.md).
 
 ## Egress allowlist: the proxy is now the default
 
-This applies when a Docker performer endpoint sets `egress_allowlist`. Every
-ephemeral performer and stage provider job (QAre, Progettare) on such an endpoint
-now runs on an internal Docker network whose only exit is an allowlisting egress
-proxy, and the performer no longer gets `NET_ADMIN` (#449). Endpoints without
+This applies when a Docker performer endpoint sets `egress_allowlist`. Since
+2026.11.36, every ephemeral performer and stage provider job (QAre, Progettare)
+on such an endpoint runs on an internal Docker network whose only exit is an
+allowlisting egress proxy, and the performer no longer gets `NET_ADMIN` (#449). Endpoints without
 `egress_allowlist` are unchanged. Details are in
 [egress allowlist](egress-allowlist.md).
 
 ### Update performer images before starting the upgraded daemon
 
-The proxy runs from the performer's own image. Images built before #448 have no
-`performer.egress_proxy` module, so on an endpoint with an allowlist and the
-default `egress_mode: proxy` every performer start fails at "attach its proxy",
-and the error says to rebuild the image. Nothing starts without the proxy.
-`egress_mode` is new in this release, so every allowlisted endpoint starts out
-on the default. An endpoint set to `egress_mode: iptables` does not run the
-proxy and needs no new image, except for a QAre provider with
-`sandbox: sysbox`, which always uses the proxy.
+The proxy runs from the performer's own image, with options that images from
+releases before 2026.11.36 do not have (images before 2026.11.34 have no
+`performer.egress_proxy` module at all). With such an image, every ephemeral
+performer and stage job start on an endpoint with an allowlist fails at "attach
+its proxy". Nothing starts without the proxy. The error says the image predates
+the proxy module; for a 2026.11.34 or 2026.11.35 image the fix is the same.
+
+This covers every allowlisted endpoint on the default `egress_mode: proxy`,
+which is all of them when you upgrade from a release before 2026.11.36, where
+`egress_mode` did not exist. A QAre provider with `sandbox: sysbox` always uses
+the proxy. An endpoint on `egress_mode: iptables` does not run the proxy, but
+keep its images on the daemon's release as well: images carry other fixes, such
+as keeping the GitHub token away from pull request code in stage jobs (#450).
 
 Update the images after installing the new release and before starting the
 daemon. The image update command above pulls and pins the matching release
@@ -107,8 +112,8 @@ image, but only for the `starter` endpoint that init created:
 coordinare init --force --run-mode docker
 ```
 
-Move every other image those performers use to this release, or rebuild it from
-this release, by hand:
+Move every other image those performers use to the new release, or rebuild it
+from the new release, by hand:
 
 - the `image` of any other endpoint, whether a published release tag or one you
   build yourself
