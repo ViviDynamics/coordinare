@@ -306,3 +306,112 @@ async def test_a_plain_request_goes_upstream_with_the_host_it_was_checked_for() 
     lines = seen[0].lower().split(b"\r\n")
     hosts = [line for line in lines if line.startswith(b"host:")]
     assert hosts == [b"host: a.allowed:8080"], seen[0]
+
+
+# -- 449: the performer's port, relayed in from outside its network ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_forward_relays_every_byte_to_its_one_fixed_target_both_ways() -> None:
+    """The daemon reaches a performer on an internal network through the proxy's published port."""
+    dialled: list[tuple[str, int]] = []
+    async with _server(_echo) as echo:
+        proxy = EgressProxy(parse_allowlist("api.github.com"), connect=_routing(echo, dialled))
+        async with _server(proxy.forward("performer", 8088)) as port:
+            # Even a proxy request goes to the fixed target as plain bytes: the forward never
+            # opens a connection anywhere else, so it is no way out.
+            answer = await _ask(port, b"CONNECT blocked.example:443 HTTP/1.1\r\n\r\n")
+    assert answer == b"CONNECT blocked.example:443 HTTP/1.1\r\n\r\n"
+    assert dialled == [("performer", 8088)]
+
+
+@pytest.mark.asyncio
+async def test_a_forward_whose_target_is_not_up_yet_closes_the_client_connection() -> None:
+    """While the performer starts, the daemon's readiness poll sees a closed connection and retries."""
+
+    async def down(host: str, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        raise ConnectionRefusedError(host, port)
+
+    proxy = EgressProxy(parse_allowlist("api.github.com"), connect=down)
+    async with _server(proxy.forward("performer", 8088)) as port:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        assert await asyncio.wait_for(reader.read(65536), 5) == b""
+        writer.close()
+
+
+# -- 449: the proxy follows its performer ------------------------------------------------------
+
+
+def _resolver(answers: list[bool]) -> Callable[[str], Awaitable[bool]]:
+    """Answers in turn, then the last one for ever."""
+    last = answers[-1]
+
+    async def resolve(name: str) -> bool:
+        assert name == "performer"
+        return answers.pop(0) if answers else last
+
+    return resolve
+
+
+@pytest.mark.asyncio
+async def test_follow_returns_once_the_name_it_saw_stops_resolving_twice() -> None:
+    resolve = _resolver([False, True, True, False, True, False, False, True])
+    task = asyncio.create_task(egress_proxy.follow("performer", resolve=resolve, interval=0.01, grace=60))
+    await asyncio.wait_for(task, 3)
+
+
+@pytest.mark.asyncio
+async def test_follow_keeps_going_while_the_name_resolves() -> None:
+    task = asyncio.create_task(egress_proxy.follow("performer", resolve=_resolver([True]), interval=0.01, grace=0.05))
+    await asyncio.sleep(0.3)
+    assert not task.done()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_follow_returns_when_the_name_never_resolves_within_the_grace() -> None:
+    """A performer that never started (its start failed after the proxy) leaves no proxy behind."""
+    task = asyncio.create_task(egress_proxy.follow("performer", resolve=_resolver([False]), interval=0.01, grace=0.1))
+    await asyncio.wait_for(task, 3)
+
+
+@pytest.mark.asyncio
+async def test_serve_forwards_and_ends_once_the_followed_performer_is_gone() -> None:
+    port, forward_port = _free_port(), _free_port()
+    gone = asyncio.Event()
+
+    async def resolve(name: str) -> bool:
+        assert name == "performer"
+        return not gone.is_set()
+
+    async with _server(_echo) as echo:
+        task = asyncio.create_task(egress_proxy.serve(
+            parse_allowlist("api.github.com"), "127.0.0.1", port,
+            forwards=[(forward_port, "127.0.0.1", echo)], follow_name="performer", resolve=resolve,
+            follow_interval=0.02,
+        ))
+        for _ in range(100):
+            try:
+                answer = await _ask(forward_port, b"status?")
+                break
+            except OSError:
+                await asyncio.sleep(0.02)
+        else:
+            pytest.fail("the forward never listened")
+        assert answer == b"status?"
+        assert (await _ask(port, b"CONNECT blocked.example:443 HTTP/1.1\r\n\r\n")).startswith(b"HTTP/1.1 403")
+        await asyncio.sleep(0.1)
+        assert not task.done()
+        gone.set()
+        await asyncio.wait_for(task, 3)
+
+
+def test_the_command_line_reads_forwards_and_refuses_malformed_ones() -> None:
+    assert egress_proxy.parse_forward("8088=performer:8088") == (8088, "performer", 8088)
+    for bad in ("8088", "8088=performer", "x=performer:8088", "8088=:8088", "8088=performer:0", "70000=p:1"):
+        with pytest.raises(ValueError, match="forward"):
+            egress_proxy.parse_forward(bad)
+    with pytest.raises(SystemExit):
+        egress_proxy.main(["--allow", "api.github.com", "--forward", "8088"])
