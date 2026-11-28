@@ -12,7 +12,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 from performer.stage_jobs.qare import qare_env
+from pydantic import ValidationError
+
+from coordinare.stage_provider_config import QAreProviderConfig
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = ROOT / "agent/performer/Dockerfile.full"
@@ -93,9 +97,26 @@ def test_no_browser_path_is_set_for_qare_or_anything_it_starts() -> None:
 
 
 def test_the_stage_job_gives_qare_home_so_it_finds_the_default_cache() -> None:
-    env = qare_env({"HOME": "/root", "PATH": "/bin", "PLAYWRIGHT_BROWSERS_PATH": "/x"}, [])
+    env = qare_env({"HOME": "/root", "PATH": "/bin"}, [])
     assert env["HOME"] == "/root"
-    assert "PLAYWRIGHT_BROWSERS_PATH" not in env
+
+
+@pytest.mark.parametrize("name", ["XDG_CACHE_HOME", "PLAYWRIGHT_BROWSERS_PATH"])
+def test_the_stage_job_never_hands_qare_a_moved_browser_cache(name: str) -> None:
+    # Either variable moves where QAre's Playwright looks, away from the linked revisions,
+    # whether the image set it or an operator named it.
+    env = {"HOME": "/root", "PATH": "/bin", name: "/elsewhere"}
+    assert name not in qare_env(env, [])
+    assert name not in qare_env(env, [name])
+
+
+@pytest.mark.parametrize("name", ["XDG_CACHE_HOME", "PLAYWRIGHT_BROWSERS_PATH"])
+def test_config_refuses_passing_a_browser_cache_location_to_qare(name: str) -> None:
+    with pytest.raises(ValidationError, match=name):
+        QAreProviderConfig(kind="qare", version="2026.11.44", env_passthrough=["OPENAI_API_KEY", name])
+    assert QAreProviderConfig(
+        kind="qare", version="2026.11.44", env_passthrough=["OPENAI_API_KEY"],
+    ).env_passthrough == ["OPENAI_API_KEY"]
 
 
 def test_the_python_playwright_chromium_is_kept() -> None:

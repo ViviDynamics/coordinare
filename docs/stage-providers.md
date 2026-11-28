@@ -243,10 +243,12 @@ browser comes from QAre's release, not from the image's other Playwright:
   Playwright finds its own revision through `HOME`, which the stage job passes to QAre.
   No `PLAYWRIGHT_BROWSERS_PATH` is set: QAre passes its environment to every check and
   app it starts, and a path set there would hide the other revision from them.
-- That makes the layout depend on how the stage job runs: as root, with `HOME=/root` and
-  no `XDG_CACHE_HOME`, which is how the full image runs. A custom `image` that runs as
-  another user or sets `XDG_CACHE_HOME` moves Playwright's cache, and must link QAre's
-  revision directories and `.links` entry into that cache the same way.
+- That makes the layout depend on how the stage job runs: as root, with `HOME=/root`,
+  which is how the full image runs. The stage job never hands QAre `XDG_CACHE_HOME` or
+  `PLAYWRIGHT_BROWSERS_PATH`, and `env_passthrough` may not name them (refused at load),
+  since either would move Playwright's cache away from the linked revisions. A custom
+  `image` that runs as another user must link QAre's revision directories and `.links`
+  entry into that user's cache the same way.
 - The image build checks both browsers in a clean environment (`HOME` and `PATH` only, as
   the stage job gives QAre): QAre's `playwright-core` must be the version its browsers were
   installed for, find Chromium in the default cache, launch it headless and load

@@ -61,8 +61,11 @@ BASE_ENV = (
     "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "TZ",
     "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
     "SSL_CERT_FILE", "SSL_CERT_DIR",
-    "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+    "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME",
 )
+#: 442: never handed to QAre, even when named. Either moves where QAre's Playwright looks
+#: for browsers, away from the revisions the performer image links into the default cache.
+BROWSER_CACHE_ENV = frozenset({"XDG_CACHE_HOME", "PLAYWRIGHT_BROWSERS_PATH"})
 _TAIL = 1500
 #: The most of a locally computed diff handed to the planner.
 _MAX_DIFF_CHARS = 2_000_000
@@ -276,7 +279,11 @@ def _change_diff(request: dict[str, Any], *, base: str, head: str, token: str, d
 def qare_env(env: dict[str, str], passthrough: list[str]) -> dict[str, str]:
     """What QAre may see of ``env``: the base names and the operator's passthrough names."""
     names = [*BASE_ENV, *passthrough]
-    return {name: env[name] for name in names if name in env and name != CREDENTIAL_ENV}
+    return {
+        name: env[name]
+        for name in names
+        if name in env and name != CREDENTIAL_ENV and name not in BROWSER_CACHE_ENV
+    }
 
 
 def _append(log: Path, heading: str, argv: list[str], text: str) -> None:
