@@ -9,7 +9,10 @@ Run as ``python fake_qare.py <args>``. What it does is read from the JSON file n
   (default the contract's code for the verdict);
 - ``outcomes``: criterion id -> ``proven`` / ``failed`` / ``unverified`` (default proven);
 - ``schema``: the ``schemaVersion`` written (default ``"1"``); ``raw``: written verbatim
-  instead of a result.
+  instead of a result;
+- ``hold``: a path. ``run`` first writes ``<hold>.ready`` with its parent's pid (the stage
+  job that waits on it, as on the pull request's code QAre runs) and then waits, for at
+  most a minute, until ``<hold>.release`` exists (#450 reads that parent meanwhile).
 
 Every call is appended to ``<scenario>.calls.jsonl`` with its arguments and the names of
 the environment variables it could see.
@@ -19,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 VERSION = "2026.11.42"
@@ -28,6 +32,14 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
 def _flag(argv: list[str], name: str) -> str:
     return argv[argv.index(name) + 1]
+
+
+def _hold(path: Path) -> None:
+    Path(f"{path}.ready").write_text(json.dumps({"ppid": os.getppid()}))
+    release = Path(f"{path}.release")
+    deadline = time.monotonic() + 60
+    while not release.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
 
 
 def main(argv: list[str]) -> int:
@@ -52,6 +64,8 @@ def main(argv: list[str]) -> int:
         Path(_flag(argv, "--out")).write_text(json.dumps(plan))
         return 0
     if argv[:1] == ["run"]:
+        if scenario.get("hold"):
+            _hold(Path(scenario["hold"]))
         evidence = Path(_flag(argv, "--evidence"))
         evidence.mkdir(parents=True, exist_ok=True)
         if "raw" in scenario:
