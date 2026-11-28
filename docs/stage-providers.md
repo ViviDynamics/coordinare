@@ -336,8 +336,9 @@ without privilege (#435). It is off by default; off, runs are exactly as describ
   asks the image for `performer.egress_proxy`, so an image built before this release is
   reported by health. If the network or the proxy cannot be set up, coordinare removes what
   it made and does not start the run. The proxy goes on its own a few minutes after its run;
-  the network goes when coordinare stops the run or finds it gone, and each start sweeps the
-  rest (labelled networks whose run is gone, older than ten minutes). Each running sandboxed
+  the network goes when coordinare stops the run, finds it gone, or has read its status and
+  its container is gone, and each start sweeps the rest (labelled networks whose run is gone,
+  older than ten minutes). Each running sandboxed
   run with an allowlist takes one network from Docker's address pools
   (`default-address-pools`), so size them for the concurrency you run. DNS is not part of
   the design: the proxy resolves names. Whether Docker's embedded resolver
@@ -481,7 +482,10 @@ directory.
   network behind the same allowlisting proxy as the sandbox ([Docker sandbox](#docker-sandbox),
   [Egress allowlist](egress-allowlist.md)). Without the sandbox, the job runs the performer
   image's own entry point, which has no heartbeat, so the proxy follows the job's name on the
-  network and exits once the job is gone. With the endpoint's `egress_mode: iptables`, a job
+  network and exits once the job is gone, about half a minute after it, even for a job that
+  ends within seconds (each connection the job makes to the proxy counts as seeing it). Once
+  coordinare has read the job's status or result and its container is gone (it waits up to 30
+  seconds for one still exiting), it removes the proxy and network. With the endpoint's `egress_mode: iptables`, a job
   without the sandbox gets the old in-container rules instead: a baseline, not a boundary, since
   the container then keeps `NET_ADMIN` and its code runs as root.
 - **Values must work from the container.** A passed variable keeps its value, and the

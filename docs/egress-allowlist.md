@@ -114,8 +114,15 @@ always uses the proxy, because the in-container mode cannot cover the sandbox's 
 - **Cleanup.** When coordinare stops a performer, and Docker confirms it is gone, it removes the
   proxy and network with it. The
   proxy also follows its performer and exits once the performer is gone, however it was stopped;
-  it is a `--rm` container. Each proxied start removes egress networks older than ten
-  minutes that nothing is attached to (Docker refuses to remove one still in use).
+  it is a `--rm` container. It looks the performer's name up every 10 seconds and exits after
+  three lookups in a row say it is gone, about half a minute. Each connection the performer
+  makes to the proxy from its own network (its entry point connects before anything else)
+  also counts as seeing it, so a performer that ends within seconds is followed out the same
+  way. Only a performer never seen at all, by a
+  lookup or a connection, keeps its proxy for the ten minute grace, since it may still be
+  starting. A stage job's proxy and network also go as soon as coordinare has read the job's
+  result and its container is gone (it waits up to 30 seconds for a container still exiting). Each proxied start removes egress networks older than
+  ten minutes that nothing is attached to (Docker refuses to remove one still in use).
 - **Labels.** The performer, its network and its proxy carry `coordinare.performer.egress=<name>`;
   the network and proxy also carry `coordinare.performer.egress.for=<endpoint id>`. The proxy does
   not carry `coordinare.performer.id`, so it is never taken for a performer.

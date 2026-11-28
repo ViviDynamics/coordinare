@@ -577,3 +577,116 @@ def test_the_command_line_refuses_a_malformed_network() -> None:
 def test_an_empty_network_is_refused_rather_than_turning_the_pin_off() -> None:
     with pytest.raises(SystemExit):
         egress_proxy.main(["--allow", "api.github.com", "--within", ""])
+
+
+# -- 462: a job that ends before the first lookup ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_follow_counts_the_followed_container_connecting_as_a_sighting() -> None:
+    """A job that came and went between two lookups was never resolved, but it connected: three
+    misses after that, not the grace."""
+    arrived = asyncio.Event()
+    arrived.set()
+    looked: list[bool] = []
+
+    async def resolve(name: str) -> bool:
+        looked.append(False)
+        return False
+
+    await asyncio.wait_for(
+        egress_proxy.follow("performer", resolve=resolve, interval=0.01, grace=60, arrived=arrived), 3,
+    )
+    assert len(looked) == egress_proxy.FOLLOW_MISSES
+
+
+@pytest.mark.asyncio
+async def test_misses_before_the_followed_container_connects_do_not_count() -> None:
+    """Lookups before the job is on its network say nothing about it being gone."""
+    arrived = asyncio.Event()
+    looked: list[bool] = []
+
+    async def resolve(name: str) -> bool:
+        looked.append(False)
+        if len(looked) == 5:
+            arrived.set()  # it connects after five early misses
+        return False
+
+    await asyncio.wait_for(
+        egress_proxy.follow("performer", resolve=resolve, interval=0.01, grace=60, arrived=arrived), 3,
+    )
+    assert len(looked) == 5 + egress_proxy.FOLLOW_MISSES
+
+
+@pytest.mark.asyncio
+async def test_follow_never_ends_early_for_a_job_that_has_not_started() -> None:
+    """No lookup and no connection has seen it: it may still be starting, so only the grace ends it."""
+    task = asyncio.create_task(egress_proxy.follow(
+        "performer", resolve=_resolver([False]), interval=0.01, grace=60, arrived=asyncio.Event(),
+    ))
+    await asyncio.sleep(0.3)
+    assert not task.done()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+def _following(port: int, within: str, *, forward: tuple[int, int] | None = None) -> asyncio.Task[None]:
+    async def never_resolves(name: str) -> bool:
+        return False  # gone before any lookup, as a job that lives a second
+
+    return asyncio.create_task(egress_proxy.serve(
+        parse_allowlist("api.github.com"), "127.0.0.1", port,
+        link=egress_proxy.PerformerLink(
+            forwards=[(forward[0], "127.0.0.1", forward[1])] if forward else (),
+            follow="performer", within=ipaddress.ip_network(within), resolve=never_resolves, interval=0.02,
+        ),
+    ))
+
+
+async def _connect_when_listening(port: int) -> None:
+    for _ in range(100):
+        try:
+            _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        except OSError:
+            await asyncio.sleep(0.02)
+            continue
+        writer.close()
+        return
+    pytest.fail("nothing listened")
+
+
+@pytest.mark.asyncio
+async def test_serve_ends_soon_after_a_job_that_connected_from_its_network_and_left() -> None:
+    port = _free_port()
+    task = _following(port, "127.0.0.0/8")
+    await asyncio.sleep(0.1)
+    assert not task.done()  # never seen: it waits, as for a job still starting
+    await _connect_when_listening(port)  # the job's entry point waits for the proxy
+    await asyncio.wait_for(task, 3)
+
+
+@pytest.mark.asyncio
+async def test_a_connection_from_outside_the_jobs_network_is_no_sighting() -> None:
+    """Other containers on the default bridge can reach the proxy; they say nothing about the job."""
+    port = _free_port()
+    task = _following(port, "198.51.100.0/24")
+    await _connect_when_listening(port)
+    await asyncio.sleep(0.3)
+    assert not task.done()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_the_daemon_reaching_the_performer_through_a_forward_is_no_sighting() -> None:
+    port, forward_port = _free_port(), _free_port()
+    async with _server(_echo) as echo:
+        task = _following(port, "127.0.0.0/8", forward=(forward_port, echo))
+        await _connect_when_listening(forward_port)
+        await asyncio.sleep(0.3)
+        assert not task.done()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task

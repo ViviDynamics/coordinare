@@ -518,6 +518,9 @@ class _StartFailsButRuns:
     async def stop(self, job_dir: Path) -> None:
         self.stopped.append(job_dir)
 
+    async def ended(self, job_dir: Path) -> None:
+        del job_dir
+
     async def probe(self, argv: Any, **kw: Any) -> tuple[int | None, str, str]:
         return 0, "2026.11.2\n", ""
 

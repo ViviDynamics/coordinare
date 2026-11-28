@@ -43,9 +43,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import ipaddress
 import json
+import re
 import shlex
 import time
 import uuid
@@ -149,6 +151,11 @@ class StageJobs(Protocol):
 
     async def stop(self, job_dir: Path) -> None:
         """Stop and remove the job's container, if there is one. Best effort."""
+        ...
+
+    async def ended(self, job_dir: Path) -> None:
+        """462: the job has reported how it ended; free what it held once its container is
+        gone. Best effort, and never raises: it must not hold up the job's verdict."""
         ...
 
     async def probe(
@@ -259,6 +266,15 @@ class DockerStageJobs:
     """
 
     egress_mode: str = "proxy"
+    #: 462: how long ``ended`` waits for a reported job's container to go before it leaves the
+    #: egress to the proxy's ``--follow`` and the sweep, and how often it looks meanwhile.
+    ended_settle_seconds: float = 30.0
+    ended_poll_seconds: float = 1.0
+    #: 462: how often a release asks Docker to remove a gone job's proxy and network (a network
+    #: whose proxy is still being removed can be refused once), ``ended_poll_seconds`` apart.
+    ended_remove_attempts: int = 3
+    #: 462: how long ``ended`` holds up its caller; the release goes on in the background after.
+    ended_wait_seconds: float = 5.0
 
     def __init__(
         self,
@@ -276,6 +292,9 @@ class DockerStageJobs:
         self._docker = docker
         #: The runtime was listed once: it stays registered while Docker runs.
         self._runtime_listed = False
+        #: 462: egress releases under way (by job name), and jobs whose egress is already gone.
+        self._releasing: dict[str, asyncio.Task[None]] = {}
+        self._released: set[str] = set()
 
     def _run_options(self) -> list[str]:
         """What follows ``docker run``: the sandbox runtime, when there is one."""
@@ -369,8 +388,11 @@ class DockerStageJobs:
     async def state(self, job_dir: Path) -> RunState:
         name = job_name(job_dir)
         state = await self._container_state(name)
-        if state is RunState.GONE and self.proxied:
-            await self._egress_down(name)  # 447: the job is over, so is its way out
+        if (
+            state is RunState.GONE and self.proxied and name not in self._released
+            and await self._egress_down(name)  # 447: the job is over, so is its way out
+        ):
+            self._released.add(name)  # 462: nothing left for ended() to do
         return state
 
     async def _container_state(self, name: str) -> RunState:
@@ -388,6 +410,55 @@ class DockerStageJobs:
         if self.proxied:
             await self._egress_down(job_name(job_dir))
 
+    async def ended(self, job_dir: Path) -> None:
+        """462: the job wrote its last word. Once its container is gone, its proxy and network go
+        now, not when the proxy's ``--follow`` or a later start's sweep gets to them.
+
+        The release runs as a task of its own: it waits up to ``ended_settle_seconds`` for a
+        container that is still finishing, and a Docker that is slow to answer holds the caller
+        (and so the job's verdict) for ``ended_wait_seconds`` at most. A container still there
+        after that keeps its egress: the proxy follows it out, and the sweep is the backstop.
+        A removal Docker refuses is tried ``ended_remove_attempts`` times. A job whose egress
+        is confirmed gone makes no Docker call on a later read; one still not removed is tried
+        again if the job is read again.
+        """
+        if not self.proxied:
+            return
+        name = job_name(job_dir)
+        if name in self._released:
+            return
+        task = self._releasing.get(name)
+        if task is None:
+            task = asyncio.get_running_loop().create_task(self._release(name))
+            self._releasing[name] = task
+            task.add_done_callback(functools.partial(self._release_done, name))
+        await asyncio.wait({task}, timeout=self.ended_wait_seconds)
+
+    def _release_done(self, name: str, _task: asyncio.Task[None]) -> None:
+        self._releasing.pop(name, None)
+
+    async def _release(self, name: str) -> None:
+        """Remove a reported job's proxy and network once its container is gone. Never raises."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.ended_settle_seconds
+        try:
+            while await self._container_state(name) is RunState.RUNNING:
+                if loop.time() >= deadline:
+                    logger.info("stage_job.egress_left_to_follow", container=name)
+                    return
+                await asyncio.sleep(self.ended_poll_seconds)
+        except TransportError:
+            return
+        for attempt in range(self.ended_remove_attempts):
+            if attempt:
+                await asyncio.sleep(self.ended_poll_seconds)
+            if await self._egress_down(name):
+                self._released.add(name)
+                logger.info("stage_job.egress_released", container=name)
+                return
+        # A reported job is seldom read again: the start sweep is the backstop from here.
+        logger.info("stage_job.egress_release_incomplete", container=name)
+
     # -- 447: the egress network and proxy of a sandboxed job with an allowlist -------------
 
     async def _egress_up(self, name: str, provider: str) -> str:
@@ -399,7 +470,13 @@ class DockerStageJobs:
         egress = name + EGRESS_SUFFIX
         with contextlib.suppress(TransportError):
             await self._sweep_egress()
+        stale = self._releasing.pop(name, None)
+        if stale is not None:  # 462: an earlier attempt's release must not touch this attempt's egress
+            stale.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await stale
         await self._egress_down(name)  # an earlier attempt's, if any: the job is not running
+        self._released.discard(name)  # 462: this attempt's egress is released when it reports
         labels = [
             "--label", f"{EGRESS_LABEL}={name}",
             "--label", f"{EGRESS_CREATED_LABEL}={int(time.time())}",
@@ -463,13 +540,21 @@ class DockerStageJobs:
             raise TransportError(msg)
         return address
 
-    async def _egress_down(self, name: str) -> None:
-        """Remove a job's proxy, then its network. Best effort: the sweep catches what is left."""
+    async def _egress_down(self, name: str) -> bool:
+        """Remove a job's proxy, then its network. Best effort: the sweep catches what is left.
+
+        462: whether both are confirmed gone (removed now, or not there to remove)."""
         egress = name + EGRESS_SUFFIX
-        with contextlib.suppress(TransportError):
-            await self._call(["rm", "-f", egress])
-        with contextlib.suppress(TransportError):
-            await self._call(["network", "rm", egress])
+        gone = True
+        for args in (["rm", "-f", egress], ["network", "rm", egress]):
+            try:
+                code, _out, err = await self._call(args)
+            except TransportError:
+                gone = False
+                continue
+            if code != 0 and not _already_gone(args[0], err):
+                gone = False
+        return gone
 
     async def _sweep_egress(self) -> None:
         """Remove egress networks (and proxies) whose job is gone: a restart, or a job that ended."""
@@ -565,6 +650,9 @@ class UnavailableStageJobs:
     async def stop(self, job_dir: Path) -> None:
         del job_dir
 
+    async def ended(self, job_dir: Path) -> None:
+        del job_dir
+
     async def probe(
         self, argv: Sequence[str], *, env_names: Sequence[str] = (), env: dict[str, str] | None = None,
         within: float = 60.0,
@@ -590,6 +678,17 @@ async def released(jobs: StageJobs, job_dir: Path) -> bool:
 
 #: ``docker network inspect --format`` for a network's subnets, space separated.
 NETWORK_SUBNETS_FORMAT = "{{range .IPAM.Config}}{{.Subnet}} {{end}}"
+
+
+def _already_gone(command: str, err: str) -> bool:
+    """462: Docker refused a removal because there was nothing to remove (and only that: a
+    daemon that cannot be reached says "no such file or directory", which is no answer)."""
+    text = err.lower()
+    if command == "rm":
+        return "no such container" in text
+    return any(words in text for words in ("no such network", "network not found")) or bool(
+        re.search(r"network \S+ not found", text),
+    )
 
 
 def ipv4_subnet(inspected: str) -> str:

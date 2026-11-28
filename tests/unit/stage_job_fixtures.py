@@ -77,6 +77,9 @@ class LocalStageJobs:
                 os.killpg(process.pid, signal.SIGKILL)
             process.wait()
 
+    async def ended(self, job_dir: Path) -> None:
+        del job_dir  # a local process holds no proxy or network
+
     async def probe(
         self, argv: Sequence[str], *, env_names: Sequence[str] = (), env: dict[str, str] | None = None,
         within: float = 60.0,

@@ -344,18 +344,26 @@ async def _resolves(name: str) -> bool | None:
 
 async def follow(
     name: str, *, resolve: Resolver = _resolves, interval: float = FOLLOW_INTERVAL_SECONDS,
-    grace: float = FOLLOW_GRACE_SECONDS,
+    grace: float = FOLLOW_GRACE_SECONDS, arrived: asyncio.Event | None = None,
 ) -> None:
     """449: return once ``name``, having resolved, misses ``FOLLOW_MISSES`` lookups in a row, or
     when it has not resolved once within ``grace`` seconds. A lookup the resolver does not
     answer (None) is neither. A miss is a definite answer that the name is not on the network:
     "no such name", or (with ``resolves_within``) only addresses elsewhere, which Docker's
-    embedded resolver gives only after it found no container of that name on the network."""
+    embedded resolver gives only after it found no container of that name on the network.
+
+    462: ``arrived`` is set when the followed container connects to the proxy from its own
+    network (its entry point waits for the proxy before anything else). That is a sighting
+    too, so a job that came and went between two lookups gets its three misses, not the grace,
+    and misses from before it was on the network no longer count."""
     loop = asyncio.get_running_loop()
     started = loop.time()
     seen = False
     misses = 0
     while True:
+        if arrived is not None and arrived.is_set():
+            arrived.clear()
+            seen, misses = True, 0
         found = await resolve(name)
         if found:
             seen, misses = True, 0
@@ -398,6 +406,22 @@ class PerformerLink:
     interval: float = FOLLOW_INTERVAL_SECONDS
 
 
+def _noting_arrivals(handle: Handler, within: Network, arrived: asyncio.Event) -> Handler:
+    """462: ``handle``, after setting ``arrived`` for a client on ``within``. Only the followed
+    container shares that network with the proxy, so such a client is it, up and running."""
+
+    async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        peer = writer.get_extra_info("peername")
+        with contextlib.suppress(TypeError, ValueError, IndexError):
+            address = ipaddress.ip_address(peer[0])
+            mapped = getattr(address, "ipv4_mapped", None)
+            if (mapped or address) in within:
+                arrived.set()
+        await handle(reader, writer)
+
+    return handler
+
+
 async def serve(
     allow: frozenset[str], host: str | None = None, port: int = DEFAULT_PORT, *, idle_exit: float = 0.0,
     link: PerformerLink | None = None,
@@ -410,7 +434,11 @@ async def serve(
     """
     link = link or PerformerLink()
     proxy = EgressProxy(allow)
-    server = await asyncio.start_server(proxy.handle, host, port, limit=_HEAD_LIMIT + 1)
+    arrived = asyncio.Event()
+    handle: Handler = proxy.handle
+    if link.follow and link.within is not None:
+        handle = _noting_arrivals(handle, link.within, arrived)
+    server = await asyncio.start_server(handle, host, port, limit=_HEAD_LIMIT + 1)
     servers = [server]
     ends: list[asyncio.Future[None]] = []
     idle: asyncio.Future[None] | None = None
@@ -429,7 +457,7 @@ async def serve(
         if link.follow:
             within = link.within
             resolve = link.resolve or functools.partial(resolves_within, within=within)
-            ends.append(asyncio.ensure_future(follow(link.follow, resolve=resolve, interval=link.interval)))
+            ends.append(asyncio.ensure_future(follow(link.follow, resolve=resolve, interval=link.interval, arrived=arrived)))
         if not ends:
             ends.append(asyncio.ensure_future(server.serve_forever()))
         done, _pending = await asyncio.wait(ends, return_when=asyncio.FIRST_COMPLETED)
