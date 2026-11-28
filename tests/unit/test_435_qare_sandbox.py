@@ -67,6 +67,9 @@ elif args[:2] == ["container", "inspect"]:
 elif args[:2] == ["rm", "-f"]:
     state["inspect"] = "missing"
     json.dump(state, open(os.environ["FAKE_DOCKER_STATE"], "w"))
+elif args[:1] == ["run"] and state.get("run_fails"):
+    sys.stderr.write(state["run_fails"] + "\n")
+    sys.exit(125)
 elif args[:1] == ["run"]:
     if args[-1].startswith("docker info"):
         if state.get("engine"):
@@ -201,6 +204,24 @@ def test_on_kubernetes_a_sandboxed_provider_is_unavailable_and_says_where_suppor
     assert isinstance(jobs, UnavailableStageJobs)
     assert "Kubernetes" in jobs.reason
     assert "#443" in jobs.reason
+
+
+def test_a_sandbox_names_the_endpoint_whose_egress_allowlist_it_cannot_honour() -> None:
+    """No endpoint serves qa, so the runs take the first endpoint's isolation: say which one."""
+    from types import SimpleNamespace
+
+    config = _Config()
+    config.performer_endpoints = [SimpleNamespace(
+        name="builders", mode="docker", image=IMAGE, roles=["implementer"], egress_allowlist=["api.github.com"],
+        extra_hosts=[],
+    )]
+    jobs = stage_jobs_for("qare", _config("sysbox"), config, role="qa")
+    assert isinstance(jobs, UnavailableStageJobs)
+    assert "'builders'" in jobs.reason
+    assert "egress_allowlist" in jobs.reason
+    # Off, the endpoint's isolation applies as in #432.
+    off = stage_jobs_for("qare", _config(None), config, role="qa")
+    assert isinstance(off, DockerStageJobs)
 
 
 # -- the runtime flag, and nothing else ----------------------------------------------------
@@ -351,6 +372,20 @@ async def test_the_runtime_is_checked_once_it_is_found(tmp_path: Path, docker: d
 
 
 @pytest.mark.asyncio
+async def test_a_runtime_that_goes_away_is_reported_as_missing_and_checked_again(
+    tmp_path: Path, docker: dict[str, Any],
+) -> None:
+    jobs = _jobs(docker["bin"], "sysbox")
+    await jobs.probe(["qare", "--version"])
+    docker["set"](runtimes=["runc"], run_fails="docker: Error response from daemon: unknown or invalid runtime name: sysbox-runc.")
+    with pytest.raises(TransportError, match="Install Sysbox"):
+        await jobs.probe(["qare", "--version"])
+    with pytest.raises(TransportError, match="Install Sysbox"):
+        await jobs.probe(["qare", "--version"])
+    assert len([a for a in docker["calls"]() if a[:1] == ["info"]]) == 2
+
+
+@pytest.mark.asyncio
 async def test_a_sandbox_image_without_its_own_engine_is_unhealthy(tmp_path: Path, docker: dict[str, Any]) -> None:
     docker["set"](runtimes=["runc", SANDBOX_RUNTIME], version=VERSION, engine="")
     ok, detail = await _qare(tmp_path / "qare", docker["bin"], "sysbox").health()
@@ -482,7 +517,10 @@ def test_the_sandbox_image_is_a_variant_of_full_and_base_is_untouched() -> None:
     for check in ("dockerd --version", "docker compose version", "docker buildx version"):
         assert check in sandbox
     assert 'ENTRYPOINT ["/sandbox-entrypoint.sh"]' in sandbox
-    assert "VOLUME" not in sandbox  # an anonymous host volume would outlive nothing, but say so plainly
+    assert "VOLUME" not in sandbox
+    # apt trusts exactly Docker's key: only that fingerprint is exported into the keyring.
+    assert '--export "${DOCKER_KEY_FINGERPRINT}"' in sandbox
+    assert "signed-by=/etc/apt/keyrings/docker.gpg" in sandbox  # an anonymous host volume would outlive nothing, but say so plainly
     for name in ("Dockerfile.base", "Dockerfile.full"):
         text = (PERFORMER / name).read_text(encoding="utf-8")
         assert "dockerd" not in text, f"{name} must not carry a Docker engine"
@@ -524,7 +562,11 @@ def _entry_stubs(tmp_path: Path, *, dockerd: str = "serve") -> dict[str, Path]:
 
 
 def _run_entry(stubs: dict[str, Path], extra: dict[str, str] | None = None, *args: str) -> subprocess.CompletedProcess[str]:
+    mountinfo = stubs["bin"].parent / "mountinfo"
+    if not mountinfo.exists():
+        mountinfo.write_text("22 1 0:21 / / rw - overlay overlay rw\n")
     env = {
+        "SANDBOX_MOUNTINFO": str(mountinfo),
         "PATH": f"{stubs['bin']}:/usr/bin:/bin", "HOME": str(stubs["bin"].parent),
         "PERFORMER_BASE_ENTRYPOINT": str(stubs["base"]), "SANDBOX_DOCKERD_WAIT_SECONDS": "5",
         "SANDBOX_DOCKERD_LOG": str(stubs["bin"].parent / "dockerd.log"),
@@ -561,6 +603,31 @@ def test_outside_sysbox_the_entry_point_says_so_and_runs_the_job_without_docker(
     assert "base qare --version" in _log(stubs)
     assert "sysbox-runc" in result.stderr
     assert "WARNING" in result.stderr
+
+
+def _under_sysbox(stubs: dict[str, Path]) -> None:
+    (stubs["bin"].parent / "mountinfo").write_text(
+        "22 1 0:21 / / rw - overlay overlay rw\n"
+        "30 22 0:44 /sys /proc/sys rw,nosuid - sysboxfs sysboxfs rw\n",
+    )
+
+
+def test_under_sysbox_a_dockerd_that_does_not_answer_stops_the_container(tmp_path: Path) -> None:
+    """The sandbox was asked for: never run QAre without its Docker and blame the pull request."""
+    stubs = _entry_stubs(tmp_path, dockerd="die")
+    _under_sysbox(stubs)
+    result = _run_entry(stubs, None, "sh", "-c", "exec python -m performer.stage_jobs qare /job")
+    assert result.returncode != 0
+    assert "refusing to start" in result.stderr
+    assert not any(line.startswith("base") for line in _log(stubs))
+
+
+def test_under_sysbox_a_dockerd_that_answers_runs_the_job(tmp_path: Path) -> None:
+    stubs = _entry_stubs(tmp_path)
+    _under_sysbox(stubs)
+    result = _run_entry(stubs, None, "true")
+    assert result.returncode == 0, result.stderr
+    assert _log(stubs)[-1] == "base true"
 
 
 def test_with_an_egress_allowlist_the_entry_point_refuses_to_start_the_sandbox(tmp_path: Path) -> None:

@@ -136,9 +136,9 @@ def runtime_missing(runtime: str) -> str:
 
 #: 435: why a sandbox and an egress allowlist are not run together.
 SANDBOX_WITH_EGRESS = (
-    "the QAre sandbox cannot run with the performer endpoint's egress_allowlist: the allowlist "
-    "limits what the job container sends, not what the containers its own Docker starts send, so "
-    "it would hold only in part. Serve the qa role from an endpoint without egress_allowlist, or "
+    "the QAre sandbox cannot run with that endpoint's egress_allowlist: the allowlist limits what "
+    "the job container sends, not what the containers its own Docker starts send, so it would hold "
+    "only in part. Serve the qa role from an endpoint with an image and no egress_allowlist, or "
     "turn the sandbox off"
 )
 
@@ -248,6 +248,12 @@ class DockerStageJobs:
             raise TransportError(runtime_missing(self.runtime))
         self._runtime_listed = True
 
+    def _check_runtime_refused(self, err: str) -> None:
+        """A Docker that no longer knows the sandbox runtime: say so, and check it again next time."""
+        if self.runtime and self.runtime in err and "runtime" in err.lower():
+            self._runtime_listed = False
+            raise TransportError(runtime_missing(self.runtime))
+
     def _isolation(self) -> list[str]:
         args: list[str] = []
         for entry in self._extra_hosts:
@@ -288,6 +294,7 @@ class DockerStageJobs:
         if code == 0:
             logger.info("stage_job.started", kind=launch.kind, job=launch.ref, container=name, image=self.image)
             return name
+        self._check_runtime_refused(err)
         msg = f"could not start the {launch.kind} stage job {launch.ref} (docker exit {code}): {_tail(err or out)}"
         raise TransportError(msg)
 
@@ -324,6 +331,7 @@ class DockerStageJobs:
             await self._remove(name)
             return None, "", ""
         if code == _DOCKER_FAILED:
+            self._check_runtime_refused(err)
             msg = f"docker could not run {self.image}: {_tail(err or out)}"
             raise TransportError(msg)
         if code in _NOT_STARTED:

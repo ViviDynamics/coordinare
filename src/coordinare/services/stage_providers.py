@@ -32,6 +32,7 @@ from coordinare.services.stage_contract import (
 from coordinare.services.stage_jobs import (
     SANDBOX_KUBERNETES_ISSUE,
     SANDBOX_RUNTIME,
+    SANDBOX_WITH_EGRESS,
     DockerStageJobs,
     StageJobs,
     UnavailableStageJobs,
@@ -148,6 +149,13 @@ def stage_jobs_for(
     ]
     endpoint = next((ep for ep in endpoints if role in (getattr(ep, "roles", None) or [])), None)
     endpoint = endpoint or (endpoints[0] if endpoints else None)
+    if sandboxed and endpoint is not None and getattr(endpoint, "egress_allowlist", None):
+        # 435: refused, naming the endpoint, which may be one that does not serve the role.
+        return UnavailableStageJobs(
+            f"stage provider {name!r} takes its isolation from performer endpoint "
+            f"{getattr(endpoint, 'name', '?')!r} (it serves {role}, or is the first endpoint with an image), "
+            f"and {SANDBOX_WITH_EGRESS}",
+        )
     image = provider_config.image or (endpoint.image if endpoint is not None else None)
     if not image:
         return UnavailableStageJobs(

@@ -233,7 +233,9 @@ without privilege (#435). It is off by default; off, runs are exactly as describ
   so its root is an unprivileged user on the host, and virtualises `/proc` and `/sys`, so a
   Docker engine runs inside it. The sandbox image's entry point starts that engine before
   the run. QAre then finds Docker on its usual socket, the app it boots on `localhost`, and
-  the checkout at the same paths, all in the one container.
+  the checkout at the same paths, all in the one container. When the engine does not
+  answer, the container stops before QAre runs, so the run is retried rather than reported
+  as a QA failure of the pull request.
 - **Cleanup.** The engine and everything it starts live in the run's container. Removing
   that container, which coordinare does by the run's name (a restarted daemon finds it by
   request id, as for any stage job), removes them too. Nothing is kept on the host: every
@@ -259,11 +261,13 @@ without privilege (#435). It is off by default; off, runs are exactly as describ
   image that has none.
 - **No egress allowlist.** A performer endpoint's `egress_allowlist` limits what the run's
   container sends, but not what the containers its own Docker starts send, so it would hold
-  only in part. A sandboxed provider whose qa endpoint has one is unavailable, with that
-  reason, and the sandbox image refuses to start with one.
+  only in part. A sandboxed provider whose runs take an endpoint with one (the endpoint that
+  serves `qa`, else the first endpoint with an image) is unavailable, and the reason names
+  that endpoint. The sandbox image refuses to start with one.
 - **Browser profiles.** The sandbox image is built FROM the full image, so it has QAre's
   browser driver (#442) too: a browser profile whose app boots with `docker compose` runs
   in the sandbox. One that starts its app with a command needs no sandbox.
+
 
 #### QAre's browser
 
