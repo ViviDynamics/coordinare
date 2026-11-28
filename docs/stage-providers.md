@@ -303,11 +303,36 @@ without privilege (#435). It is off by default; off, runs are exactly as describ
   code without a sandbox carry no engine. With `sandbox: sysbox`, the health check (and
   doctor) asks the image's own engine to answer, with compose and buildx, and reports an
   image that has none.
-- **No egress allowlist.** A performer endpoint's `egress_allowlist` limits what the run's
-  container sends, but not what the containers its own Docker starts send, so it would hold
-  only in part. A sandboxed provider whose runs take an endpoint with one (the endpoint that
-  serves `qa`, else the first endpoint with an image) is unavailable, and the reason names
-  that endpoint. The sandbox image refuses to start with one.
+- **Egress allowlist (#447).** When the runs take an endpoint with `egress_allowlist` (the
+  endpoint that serves `qa`, else the first endpoint with an image), it is enforced outside
+  the run's container, because nothing inside can be trusted to keep it: root in the sandbox,
+  and anything that can use its Docker (`docker run --privileged --network host`), can
+  rewrite the container's own firewall. What is enforced where:
+
+  | Where | What | Can code in the sandbox change it |
+  | --- | --- | --- |
+  | The host's Docker | Each run gets a network of its own, `docker network create --internal`, with no route out, and with no host address on its bridge (`com.docker.network.bridge.inhibit_ipv4`), so host services are not reachable through a gateway address. The run's container is on that network only. | No: the network and the host's forwarding rules are host state, and the sandbox's root is an unprivileged user on the host with no Docker socket. |
+  | The proxy container, `<run>-egress` | `performer.egress_proxy`, on the default bridge and on the run's network: the one way out. It relays `CONNECT host:port` and plain `http://` requests only to the allowlisted hosts (exact names, any port, resolved when the connection is made) and answers anything else with 403 without connecting. A plain request is sent with `Connection: close` and a `Host` header naming the host it checked, and the connection ends with its response, so a client can neither reuse it for another host nor ask the allowed server for another site. Inside a `CONNECT` tunnel (TLS) it cannot see the requested site, so a shared front end that serves an allowed name (a CDN) could still be asked for another site behind it. It runs as `nobody` on a read-only root, with the endpoint's `extra_hosts`, and exits after three minutes with no connection. | No: it is another container. |
+  | The run's container | Its entry point waits for the proxy before it starts dockerd, and stops the run (it is retried) when the proxy does not answer. It points `HTTP_PROXY` and `HTTPS_PROXY` at the proxy, and `NO_PROXY` at loopback, for the stage job, QAre, git, gh, model calls and dockerd's image pulls, and connects to the proxy every 30 seconds while the run lasts, which keeps it from exiting. | Yes, but that only changes which allowed host a request goes to: without the proxy there is no route at all. |
+  | Containers the sandbox's Docker starts | Their traffic is NATed out of the run's one interface, so they have the same single exit. They get no proxy variables (compose services reach each other by name, which a proxy would break); a service or build that needs an allowed host must be given the proxy, for example `${HTTPS_PROXY}` as a compose build argument. | Only as above. |
+
+  The probes (version and engine checks) run with `--network none`; the engine check also
+  asks the image for `performer.egress_proxy`, so an image built before this release is
+  reported by health. If the network or the proxy cannot be set up, coordinare removes what
+  it made and does not start the run. The proxy goes on its own a few minutes after its run;
+  the network goes when coordinare stops the run or finds it gone, and each start sweeps the
+  rest (labelled networks whose run is gone, older than ten minutes). Each running sandboxed
+  run with an allowlist takes one network from Docker's address pools
+  (`default-address-pools`), so size them for the concurrency you run. DNS is not part of
+  the design: the proxy resolves names. Whether Docker's embedded resolver
+  answers outside names on an internal network depends on the Docker version; where it does,
+  a DNS query channel remains, as it does for the iptables baseline below. The proxy
+  connects to the allowlisted hosts directly: a Docker host that reaches the internet only
+  through an upstream proxy is not supported in this mode. The proxy also listens on the
+  default bridge (its route out), where other containers on that bridge could reach it;
+  that gives them only the allowlisted hosts, which a container on the bridge can already
+  reach. The sandbox image still refuses `PERFORMER_EGRESS_ALLOWLIST`, the in-container
+  mode.
 - **Browser profiles.** The sandbox image is built FROM the full image, so it has QAre's
   browser driver (#442) too: a browser profile whose app boots with `docker compose` runs
   in the sandbox. One that starts its app with a command needs no sandbox.
@@ -411,7 +436,11 @@ directory.
   `docker run` returns. It is never an argument and never in the run directory. Variables
   named in `env_passthrough` or `pass_env` (and the proxy variables) are passed by name.
 - **Isolation** is the role's performer's: the endpoint's `egress_allowlist` and
-  `extra_hosts` apply to the stage job as to the role's other work.
+  `extra_hosts` apply to the stage job as to the role's other work. Without the sandbox, the
+  allowlist is the performer entry point's iptables `OUTPUT` rules inside the container: a
+  baseline, not a boundary, since the container keeps `NET_ADMIN` and its code runs as root,
+  so it can remove them. With `sandbox: sysbox` it is enforced outside the container
+  ([Docker sandbox](#docker-sandbox)).
 - **Values must work from the container.** A passed variable keeps its value, and the
   container is on Docker's bridge network: a model endpoint on `localhost` or `127.0.0.1`
   names the container itself. Point such variables at an address the container reaches

@@ -48,6 +48,7 @@ from coordinare.services.stage_contract import (
     StageVerdict,
 )
 from coordinare.services.stage_jobs import (
+    EGRESS_PROXY_CHECK,
     NEVER_STARTED,
     PROXY_ENV,
     RunState,
@@ -264,10 +265,16 @@ class QAreProvider:
         return True, f"qare {self._config.version} in the performer{sandbox}; work_dir {self._work_dir}"
 
     async def _sandbox_engine(self) -> tuple[bool, str]:
-        """435: the sandbox image's own Docker engine answers, with compose and buildx."""
+        """435: the sandbox image's own Docker engine answers, with compose and buildx.
+
+        447: behind an egress proxy, the image must also have the proxy module it runs.
+        """
+        check = _SANDBOX_ENGINE_CHECK
+        if getattr(self._jobs, "proxied", False):
+            check += f" && {EGRESS_PROXY_CHECK}"
         try:
             code, out, err = await self._jobs.probe(
-                ["sh", "-c", _SANDBOX_ENGINE_CHECK], within=_SANDBOX_ENGINE_TIMEOUT_SECONDS,
+                ["sh", "-c", check], within=_SANDBOX_ENGINE_TIMEOUT_SECONDS,
             )
         except TransportError as exc:
             return False, str(exc)
@@ -275,7 +282,9 @@ class QAreProvider:
             why = (err or out).strip()[-300:] or f"no answer within {_SANDBOX_ENGINE_TIMEOUT_SECONDS:.0f} seconds"
             return False, (
                 "the sandbox's own Docker engine did not answer in the job image; use the sandbox image "
-                f"(agent/performer/Dockerfile.sandbox) for stage_providers.{self.name}.image: {why}"
+                f"(agent/performer/Dockerfile.sandbox) for stage_providers.{self.name}.image"
+                + (", built from a release with performer.egress_proxy" if check != _SANDBOX_ENGINE_CHECK else "")
+                + f": {why}"
             )
         return True, out.strip()
 
