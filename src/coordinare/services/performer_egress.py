@@ -43,6 +43,8 @@ from coordinare.services.stage_jobs import (
     EGRESS_PROXY_ENV,
     EGRESS_PROXY_MODULE,
     EGRESS_PROXY_PORT,
+    NETWORK_SUBNETS_FORMAT,
+    ipv4_subnet,
     network_address,
 )
 
@@ -115,6 +117,7 @@ async def up(docker: Docker, config: PerformerEndpointConfig, name: str, image: 
     try:
         await _step(docker, "create its internal network", "network", "create", "--internal",
                     *EGRESS_NETWORK_OPTIONS, *labels, name)
+        subnet = await _subnet(docker, name)
         await _step(
             docker, "start its proxy",
             "run", "-d", "--rm", "--name", name, *labels,
@@ -124,6 +127,9 @@ async def up(docker: Docker, config: PerformerEndpointConfig, name: str, image: 
             "-m", EGRESS_PROXY_MODULE, "--allow", ",".join(config.egress_allowlist or []),
             "--port", str(EGRESS_PROXY_PORT),
             "--forward", f"{PERFORMER_PORT}={target}:{PERFORMER_PORT}", "--follow", target,
+            # Only addresses on the performer's network: an answer for the alias from anywhere
+            # else is never dialled, so the daemon's requests cannot be relayed out.
+            "--within", subnet,
         )
         await _step(
             docker, f"attach its proxy to the internal network ({EGRESS_IMAGE_HINT})",
@@ -189,6 +195,15 @@ async def sweep(docker: Docker) -> None:
         code, _out, _err = await docker("network", "rm", network)
         if code == 0:
             logger.info("performer_egress.swept", network=network)
+
+
+async def _subnet(docker: Docker, name: str) -> str:
+    out = await _step(docker, "read its network's subnet", "network", "inspect", "--format", NETWORK_SUBNETS_FORMAT, name)
+    subnet = ipv4_subnet(out)
+    if not subnet:
+        msg = f"could not set up a performer's egress proxy: its network {name} has no subnet"
+        raise EgressSetupError(msg)
+    return subnet
 
 
 async def _proxy_address(docker: Docker, name: str) -> str:

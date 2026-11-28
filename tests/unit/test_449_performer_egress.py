@@ -69,12 +69,20 @@ elif args[:2] == ["network", "rm"]:
     fail("network_rm_fails")
 elif args[:2] == ["network", "ls"]:
     print(state.get("network_ls", ""))
+elif args[:2] == ["network", "inspect"]:
+    print(state.get("subnet", "10.200.0.0/24 "))
 elif args[:1] == ["run"] and "--entrypoint" in args:
     fail("proxy_fails", 125)
     print("proxy0")
 elif args[:1] == ["run"]:
     fail("performer_fails", 125)
     print("perf0")
+elif args[:2] == ["container", "inspect"] and "{{.State.Running}}" in args:
+    running = state.get("running", "missing")
+    if running == "missing":
+        sys.stderr.write("Error: No such container: perf0\n")
+        sys.exit(1)
+    print(running)
 elif args[:2] == ["container", "inspect"] and "{{json .NetworkSettings.Networks}}" in args:
     name = args[-1]
     address = state.get("proxy_ip", "198.51.100.2")
@@ -315,6 +323,8 @@ async def test_the_proxy_runs_unprivileged_publishes_the_performer_port_and_foll
     # An absolute name: a search domain can never turn it into an outside host.
     assert parse_forward(_option(proxy, "--forward") or "") == (8088, f"{alias}.", 8088)
     assert _option(proxy, "--follow") == f"{alias}."
+    # Pinned to the performer's network: an outside answer for the alias is never dialled.
+    assert _option(proxy, "--within") == "10.200.0.0/24"
     assert "--network" not in proxy  # the default bridge: its route out
     labels = _labels(proxy)
     assert labels[EGRESS_LABEL] == egress
@@ -338,6 +348,7 @@ async def test_the_proxy_runs_unprivileged_publishes_the_performer_port_and_foll
         ({"proxy_fails": "Error: no such image"}, "start its proxy"),
         ({"connect_fails": "Error: network not found"}, "attach its proxy"),
         ({"proxy_ip": ""}, "no address"),
+        ({"subnet": " "}, "no subnet"),
     ],
 )
 async def test_a_setup_failure_starts_no_performer_and_removes_what_was_made(
@@ -496,8 +507,10 @@ async def test_a_stage_job_without_the_sandbox_runs_behind_the_proxy_too(tmp_pat
     assert not any(a.startswith("--runtime") for a in run)
     assert not any(a.startswith("PERFORMER_EGRESS_ALLOWLIST") for a in run)
     proxy_args = calls[proxy]
-    # No sandbox entry point keeps it alive, so it follows its job's (absolute) name instead.
+    # No sandbox entry point keeps it alive, so it follows its job's (absolute) name instead,
+    # pinned to the job's network.
     assert _option(proxy_args, "--follow") == f"{name}."
+    assert _option(proxy_args, "--within") == "10.200.0.0/24"
     assert "--idle-exit" not in proxy_args
     assert not any(a.startswith("--runtime") for a in proxy_args)
 
@@ -556,7 +569,17 @@ async def test_stopping_a_proxied_performer_removes_its_proxy_and_network(docker
     stop = _index(calls, lambda a: a[:1] == ["stop"])
     assert calls[0][:2] == ["container", "inspect"]  # the label is read while the performer exists
     assert calls[stop][-1] == "perf0"
-    assert calls[stop + 1:] == [["rm", "-f", "coordinare-egress-aaaaaaaaaaaa"], ["network", "rm", "coordinare-egress-aaaaaaaaaaaa"]]
+    assert "{{.State.Running}}" in calls[stop + 1]  # and it is confirmed gone before its way out goes
+    assert calls[stop + 2:] == [["rm", "-f", "coordinare-egress-aaaaaaaaaaaa"], ["network", "rm", "coordinare-egress-aaaaaaaaaaaa"]]
+
+
+@pytest.mark.asyncio
+async def test_a_performer_that_did_not_stop_keeps_its_proxy_and_network(docker: dict[str, Any]) -> None:
+    """``stop`` is best effort; a performer still running must keep its published port and exit."""
+    docker["set"](label="coordinare-egress-aaaaaaaaaaaa", running="true")
+    await DockerRuntime().stop("perf0")
+    calls = docker["calls"]()
+    assert not any(a[:2] in (["rm", "-f"], ["network", "rm"]) for a in calls)
 
 
 @pytest.mark.asyncio

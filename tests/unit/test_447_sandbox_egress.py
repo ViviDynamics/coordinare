@@ -82,6 +82,8 @@ elif args[:2] == ["network", "rm"]:
     fail("network_rm_fails")
 elif args[:2] == ["network", "ls"]:
     print(state.get("network_ls", ""))
+elif args[:2] == ["network", "inspect"]:
+    print("10.200.0.0/24 ")  # 449: a proxy that follows its job is pinned to the job's subnet
 elif args[:2] == ["run", "-d"] and "--entrypoint" in args:
     fail("proxy_fails", 125)
     print("proxy0")

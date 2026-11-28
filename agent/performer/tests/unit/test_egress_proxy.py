@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import socket
 from collections.abc import AsyncIterator, Awaitable, Callable
 
@@ -489,7 +490,7 @@ async def test_a_lookup_is_a_miss_only_when_the_resolver_says_the_name_does_not_
         async def getaddrinfo(*_args: object, **_kwargs: object) -> list[object]:
             if error is not None:
                 raise error
-            return [object()]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.2", 0))]
 
         loop = asyncio.get_running_loop()
         monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
@@ -516,3 +517,58 @@ async def test_a_forward_that_cannot_listen_closes_what_serve_already_opened() -
             )
     with socket.socket() as again:
         again.bind(("127.0.0.1", port))  # the proxy's own port was released
+
+
+# -- 449: the forward and the follow are pinned to the performer's own network ---------------
+
+
+def _lookup(answers: list[str]) -> Callable[[str], Awaitable[list[str]]]:
+    async def lookup(name: str) -> list[str]:
+        assert name == "performer."
+        return answers
+
+    return lookup
+
+
+INTERNAL = ipaddress.ip_network("10.200.0.0/24")
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_forward_never_relays_to_an_address_outside_the_performers_network() -> None:
+    """Were the alias ever answered from outside (it is gone, or not up yet), the daemon's requests
+    must not follow it out."""
+    dialled: list[tuple[str, int]] = []
+    async with _server(_echo) as echo:
+        proxy = EgressProxy(parse_allowlist("api.github.com"), connect=_routing(echo, dialled))
+        handler = proxy.forward("performer.", 8088, within=INTERNAL, lookup=_lookup(["203.0.113.7"]))
+        async with _server(handler) as port:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            assert await asyncio.wait_for(reader.read(65536), 5) == b""
+            writer.close()
+    assert dialled == []
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_forward_dials_the_performers_internal_address() -> None:
+    dialled: list[tuple[str, int]] = []
+    async with _server(_echo) as echo:
+        proxy = EgressProxy(parse_allowlist("api.github.com"), connect=_routing(echo, dialled))
+        handler = proxy.forward("performer.", 8088, within=INTERNAL, lookup=_lookup(["203.0.113.7", "10.200.0.3"]))
+        async with _server(handler) as port:
+            assert await _ask(port, b"ping") == b"ping"
+    assert dialled == [("10.200.0.3", 8088)]
+
+
+@pytest.mark.asyncio
+async def test_follow_counts_an_answer_from_outside_the_performers_network_as_a_miss() -> None:
+    async def lookup_of(answers: list[str]) -> bool | None:
+        return await egress_proxy.resolves_within("performer.", INTERNAL, lookup=_lookup(answers))
+
+    assert await lookup_of(["10.200.0.3"]) is True
+    assert await lookup_of(["203.0.113.7"]) is False
+    assert await lookup_of([]) is False
+
+
+def test_the_command_line_refuses_a_malformed_network() -> None:
+    with pytest.raises(SystemExit):
+        egress_proxy.main(["--allow", "api.github.com", "--within", "not-a-network"])

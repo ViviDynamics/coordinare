@@ -108,8 +108,9 @@ upstream proxy is not supported in this mode (as in #448). It refuses
 
 ### Cleanup
 
-- `DockerRuntime.stop`, the daemon's own stop, reads the performer's label first and remove its proxy and network right after (a fixed `port` is held by the proxy
-  until then). Removing the network is retried, since `docker stop` returns before an `--rm`
+- `DockerRuntime.stop`, the daemon's own stop, reads the performer's label first and, once
+  Docker confirms the performer is gone, removes its proxy and network (a fixed `port` is held by
+  the proxy until then; a performer that did not stop keeps both). Removing the network is retried, since `docker stop` returns before an `--rm`
   container is gone.
 - Performers are also stopped by paths that know nothing of the proxy: reconciliation's reaper,
   the orphan sweep, 218's `confirm_stopped` at shutdown (left as it is: its first call must be
@@ -117,8 +118,9 @@ upstream proxy is not supported in this mode (as in #448). It refuses
   performer's alias, having resolved, gets three definite "no such name" answers in a row (a
   lookup that times out counts for nothing), or never resolves within ten minutes. Its
   container is `--rm`. `performer_lifecycle.stop` and `cleanup_orphaned` are unchanged. The alias is looked up as
-  an absolute name (trailing dot), so a resolver search domain can never turn it into an
-  outside host, for `--follow` or for the `--forward` that carries the daemon's requests.
+  an absolute name (trailing dot), and `--within <subnet>` (the performer network's subnet, read
+  after it is made) makes `--forward` dial and `--follow` count only addresses on that network,
+  so an answer for the alias from outside can never carry the daemon's requests out.
 - Networks: each proxied start sweeps labelled networks older than ten minutes with
   `docker network rm`, which Docker refuses for a network that still has a container on it,
   so a live performer's network is never removed. The grace protects a network made by a start

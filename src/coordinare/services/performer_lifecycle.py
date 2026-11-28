@@ -363,6 +363,17 @@ async def egress_of(container_id: str) -> str:
     return await performer_egress.egress_of(_run_docker, container_id)
 
 
+async def gone(container_id: str) -> bool:
+    """449: True only when Docker says the container is not running (or no longer exists)."""
+    try:
+        rc, stdout, stderr = await _run_docker("container", "inspect", "--format", "{{.State.Running}}", container_id)
+    except ContainerStartError:
+        return False
+    if rc != 0:
+        return "no such" in stderr.lower()
+    return stdout.strip() == "false"
+
+
 async def remove_egress(name: str) -> None:
     """449: remove a stopped performer's egress proxy and network. Best effort."""
     await performer_egress.down(_run_docker, name)

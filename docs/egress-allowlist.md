@@ -50,7 +50,9 @@ For each performer, coordinare runs:
 Docker publishes no port of a container whose only network is internal, so the proxy publishes
 the performer's port (`bind_host`, `port`) and relays each connection to the performer. The
 daemon reaches the performer at the same `http://<connect_host>:<port>` as before. The relay goes
-to one fixed address, the performer itself, so it is no way out. A restarted daemon finds a
+to one fixed address, the performer itself, so it is no way out: the proxy resolves the
+performer's alias itself and dials only an address on the performer's own network, so even an
+answer for that name from outside could never receive the daemon's requests. A restarted daemon finds a
 running performer's port on its proxy.
 
 If the network or the proxy cannot be set up, coordinare removes what it made and the start
@@ -105,7 +107,8 @@ always uses the proxy, because the in-container mode cannot cover the sandbox's 
   proxy"; rebuild it.
 - **Address pools.** Each running performer with an allowlist holds one Docker network, so
   Docker's `default-address-pools` bounds how many run at once. Size it for your concurrency.
-- **Cleanup.** When coordinare stops a performer it removes the proxy and network with it. The
+- **Cleanup.** When coordinare stops a performer, and Docker confirms it is gone, it removes the
+  proxy and network with it. The
   proxy also follows its performer and exits once the performer is gone, however it was stopped;
   it is a `--rm` container. Each proxied start removes egress networks older than ten
   minutes that nothing is attached to (Docker refuses to remove one still in use).

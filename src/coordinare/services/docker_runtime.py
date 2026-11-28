@@ -72,9 +72,10 @@ class DockerRuntime:
     async def stop(self, handle: str, *, timeout_s: int = 10) -> None:
         # 449: a proxied performer's proxy and network go with it, so a fixed port is free for
         # the next start. Its label is read while it still exists (it is ``--rm``).
+        # A performer that did not stop (stop is best effort) keeps its port and its way out.
         egress = await performer_lifecycle.egress_of(handle)
         await performer_lifecycle.stop(handle, timeout_s=timeout_s)
-        if egress:
+        if egress and await performer_lifecycle.gone(handle):
             await performer_lifecycle.remove_egress(egress)
 
     async def confirm_stopped(self, handle: str, *, timeout_s: int = 10) -> bool:
