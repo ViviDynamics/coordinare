@@ -1,0 +1,184 @@
+{
+ "format": 1,
+ "run": "nare-native-046",
+ "head": "087a6a74",
+ "hold": {
+  "code": "agent_evidence_call_limit",
+  "stage": "scope_shard_author"
+ },
+ "seam": "nare_transport",
+ "redaction": {
+  "version": 1,
+  "tokens": 0,
+  "paths": 0,
+  "env_names": 0,
+  "texts": 20
+ },
+ "state": {
+  "conductor_kind": "environment_scope_shard_author"
+ },
+ "steps": [
+  {
+   "call": "transcript:acb5d23aca88418eafd94b00f5a325c0",
+   "session": "dfbd5aa4d0753058",
+   "turn": 1,
+   "reply": {
+    "tool_calls": [
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     },
+     {
+      "name": "continue_required_reads",
+      "args": {
+       "p": "<text:5c591403>"
+      }
+     }
+    ]
+   },
+   "request": {
+    "tools": [
+     "continue_required_reads"
+    ],
+    "tool_choice": "required"
+   },
+   "recorded": {
+    "refusal_codes": [
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments",
+     "invalid_tool_arguments"
+    ],
+    "guidance_ids": [],
+    "charged": true,
+    "evidence_strikes": 20
+   }
+  }
+ ]
+}

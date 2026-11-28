@@ -1,0 +1,3416 @@
+{
+ "format": 1,
+ "run": "nare-native-045",
+ "head": "92572952",
+ "hold": {
+  "code": "attempt_schema_limit",
+  "stage": "discovery"
+ },
+ "seam": "candidate_validator",
+ "redaction": {
+  "version": 1,
+  "tokens": 55,
+  "paths": 15,
+  "env_names": 6,
+  "texts": 120
+ },
+ "state": {
+  "prior_manifest": {
+   "install": [
+    {
+     "id": "inst-sysdeps",
+     "argv": [
+      "t01",
+      "t02",
+      "t03"
+     ],
+     "cwd": "{repo}",
+     "env": {},
+     "depends_on": [],
+     "timeout_seconds": 600.0,
+     "required": true,
+     "scope": []
+    },
+    {
+     "id": "inst-gh",
+     "argv": [
+      "t01",
+      "t02",
+      "t04"
+     ],
+     "cwd": "{repo}",
+     "env": {},
+     "depends_on": [],
+     "timeout_seconds": 180.0,
+     "required": true,
+     "scope": []
+    },
+    {
+     "id": "inst-venv",
+     "argv": [
+      "t05",
+      "t06",
+      "t07",
+      "t08"
+     ],
+     "cwd": "{repo}",
+     "env": {
+      "ENV_01": "t09",
+      "ENV_02": "t09",
+      "ENV_03": "t10",
+      "ENV_04": "t11",
+      "ENV_05": "t12"
+     },
+     "depends_on": [],
+     "timeout_seconds": 1800.0,
+     "required": true,
+     "scope": []
+    },
+    {
+     "id": "inst-venv-verify",
+     "argv": [
+      "t01",
+      "t02",
+      "t13"
+     ],
+     "cwd": "{repo}",
+     "env": {},
+     "depends_on": [
+      "inst-venv"
+     ],
+     "timeout_seconds": 300.0,
+     "required": true,
+     "scope": []
+    },
+    {
+     "id": "inst-pull-base",
+     "argv": [
+      "t14",
+      "t15",
+      "t16"
+     ],
+     "cwd": "{repo}",
+     "env": {},
+     "depends_on": [],
+     "timeout_seconds": 900.0,
+     "required": true,
+     "scope": []
+    },
+    {
+     "id": "inst-bench-image",
+     "argv": [
+      "t14",
+      "t17",
+      "t18",
+      "t19",
+      "t20",
+      "t21",
+      "t22"
+     ],
+     "cwd": "{repo}",
+     "env": {},
+     "depends_on": [
+      "inst-pull-base"
+     ],
+     "timeout_seconds": 2400.0,
+     "required": true,
+     "scope": []
+    }
+   ],
+   "checks": [
+    {
+     "id": "c-wiring",
+     "argv": [
+      "t01",
+      "t02",
+      "t23"
+     ],
+     "cwd": "{repo}",
+     "env": {},
+     "depends_on": [],
+     "timeout_seconds": 120.0,
+     "required": true,
+     "scope": []
+    },
+    {
+     "id": "c-guards",
+     "argv": [
+      "t01",
+      "t02",
+      "t24"
+     ],
+     "cwd": "{repo}",
+     "env": {},
+     "depends_on": [],
+     "timeout_seconds": 120.0,
+     "required": true,
+     "scope": []
+    },
+    {
+     "id": "c-cli-import",
+     "argv": [
+      "t01",
+      "t02",
+      "t25"
+     ],
+     "cwd": "{repo}",
+     "env": {},
+     "depends_on": [],
+     "timeout_seconds": 120.0,
+     "required": true,
+     "scope": []
+    },
+    {
+     "id": "c-pytest-sample",
+     "argv": [
+      "t01",
+      "t02",
+      "t26"
+     ],
+     "cwd": "{repo}",
+     "env": {},
+     "depends_on": [],
+     "timeout_seconds": 900.0,
+     "required": true,
+     "scope": []
+    },
+    {
+     "id": "c-sandbox",
+     "argv": [
+      "t01",
+      "t02",
+      "t27"
+     ],
+     "cwd": "{repo}",
+     "env": {
+      "ENV_06": "t28"
+     },
+     "depends_on": [],
+     "timeout_seconds": 900.0,
+     "required": true,
+     "scope": []
+    },
+    {
+     "id": "c-ruff",
+     "argv": [
+      "t01",
+      "t02",
+      "t29"
+     ],
+     "cwd": "{repo}",
+     "env": {},
+     "depends_on": [],
+     "timeout_seconds": 600.0,
+     "required": true,
+     "scope": []
+    },
+    {
+     "id": "c-mypy",
+     "argv": [
+      "t01",
+      "t02",
+      "t30"
+     ],
+     "cwd": "{repo}",
+     "env": {},
+     "depends_on": [],
+     "timeout_seconds": 1800.0,
+     "required": true,
+     "scope": []
+    },
+    {
+     "id": "c-bench-evidence",
+     "argv": [
+      "t01",
+      "t02",
+      "t31"
+     ],
+     "cwd": "{repo}",
+     "env": {},
+     "depends_on": [],
+     "timeout_seconds": 900.0,
+     "required": true,
+     "scope": []
+    },
+    {
+     "id": "c-docker-run",
+     "argv": [
+      "t01",
+      "t02",
+      "t32"
+     ],
+     "cwd": "{repo}",
+     "env": {},
+     "depends_on": [],
+     "timeout_seconds": 300.0,
+     "required": true,
+     "scope": []
+    },
+    {
+     "id": "c-bench-image",
+     "argv": [
+      "t01",
+      "t02",
+      "t33"
+     ],
+     "cwd": "{repo}",
+     "env": {},
+     "depends_on": [],
+     "timeout_seconds": 300.0,
+     "required": true,
+     "scope": []
+    }
+   ],
+   "requirements": [
+    {
+     "id": "req-wiring",
+     "description": "<text:442b2490>",
+     "source": "src/f01",
+     "checks": [
+      "c-wiring"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-uv-env",
+     "description": "<text:f446346e>",
+     "source": "src/f02",
+     "checks": [
+      "c-cli-import",
+      "c-pytest-sample"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-ruff-mypy",
+     "description": "<text:8badf354>",
+     "source": "src/f03",
+     "checks": [
+      "c-ruff",
+      "c-mypy"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-pytest-runner",
+     "description": "<text:4d4a3c40>",
+     "source": "src/f03",
+     "checks": [
+      "c-pytest-sample",
+      "c-sandbox",
+      "c-docker-run"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-bench-tooling",
+     "description": "<text:c837f4cf>",
+     "source": "src/f02",
+     "checks": [
+      "c-docker-run",
+      "c-bench-image"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-guards",
+     "description": "<text:696e761d>",
+     "source": "src/f04",
+     "checks": [
+      "c-guards"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-skill-scripts",
+     "description": "<text:d0bdc799>",
+     "source": "src/f05",
+     "checks": [
+      "c-wiring",
+      "c-guards"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-python-env",
+     "description": "<text:7e23c979>",
+     "source": "src/f03",
+     "checks": [
+      "c-cli-import",
+      "c-bench-evidence"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-pytest-offline",
+     "description": "<text:7463a0ec>",
+     "source": "src/f03",
+     "checks": [
+      "c-pytest-sample"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-bin-build",
+     "description": "<text:69a8a6a0>",
+     "source": "src/f06",
+     "checks": [
+      "c-ruff",
+      "c-mypy"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-docker-tests",
+     "description": "<text:a9dd7d4a>",
+     "source": "src/f03",
+     "checks": [
+      "c-docker-run"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-sandbox-tests",
+     "description": "<text:d5349578>",
+     "source": "src/f03",
+     "checks": [
+      "c-sandbox"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-dev-gate",
+     "description": "<text:9ee3c042>",
+     "source": "src/f07",
+     "checks": [
+      "c-ruff",
+      "c-mypy"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-offline-suite",
+     "description": "<text:1f694021>",
+     "source": "src/f03",
+     "checks": [
+      "c-pytest-sample",
+      "c-sandbox"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-container-tooling",
+     "description": "<text:31391bb9>",
+     "source": "src/f02",
+     "checks": [
+      "c-docker-run",
+      "c-bench-image"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-skills-bootstrap",
+     "description": "<text:19908727>",
+     "source": "src/f05",
+     "checks": [
+      "c-wiring"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-install-source",
+     "description": "<text:e520f328>",
+     "source": "src/f03",
+     "checks": [
+      "c-cli-import"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-evidence-regen",
+     "description": "<text:e510e984>",
+     "source": "src/f08",
+     "checks": [
+      "c-bench-evidence"
+     ],
+     "required": true
+    },
+    {
+     "id": "req-offline-bench-docker",
+     "description": "<text:eaf0fdb0>",
+     "source": "src/f02",
+     "checks": [
+      "c-docker-run",
+      "c-bench-image"
+     ],
+     "required": true
+    }
+   ],
+   "services": [],
+   "criterion_checks": {
+    "Sdc9239f094159188": [
+     "c-wiring"
+    ],
+    "S87e32e81c25f0f09": [
+     "c-cli-import",
+     "c-pytest-sample"
+    ],
+    "Sbc188300094e3ddb": [
+     "c-ruff",
+     "c-mypy"
+    ],
+    "S9fa86c9519d779a2": [
+     "c-pytest-sample",
+     "c-sandbox",
+     "c-docker-run"
+    ],
+    "S7c21d1d39970240f": [
+     "c-docker-run",
+     "c-bench-image"
+    ],
+    "S5f52fc17f73f6944": [
+     "c-guards"
+    ],
+    "S10c228557943ea53": [
+     "c-wiring",
+     "c-guards"
+    ],
+    "Saa4f7532a4533973": [
+     "c-cli-import",
+     "c-bench-evidence"
+    ],
+    "Sba9b020fe3321d84": [
+     "c-pytest-sample"
+    ],
+    "Sa351a250518685d0": [
+     "c-ruff",
+     "c-mypy"
+    ],
+    "S5ba8af6631ec2657": [
+     "c-docker-run"
+    ],
+    "S8cb7ec8df7cc42cf": [
+     "c-sandbox"
+    ],
+    "S9e57eea88472b703": [
+     "c-wiring"
+    ],
+    "S8de776ef3592fca2": [
+     "c-cli-import"
+    ],
+    "S0052ee90653d6283": [
+     "c-bench-evidence"
+    ],
+    "S90c0876305cdbb9c": [
+     "c-ruff",
+     "c-mypy"
+    ],
+    "S8c9f50c493caf1cc": [
+     "c-pytest-sample",
+     "c-sandbox"
+    ],
+    "Sf636ace1b5747d83": [
+     "c-docker-run",
+     "c-bench-image"
+    ],
+    "S0c2f60c8cf42be51": [
+     "c-docker-run",
+     "c-bench-image"
+    ]
+   }
+  },
+  "phase": "discovery",
+  "role": "author"
+ },
+ "steps": [
+  {
+   "call": "checkpoint:e4c2ff31/6ec652ca67cf61d0#m41",
+   "session": "b383fbd8d76f7e8c",
+   "turn": 21,
+   "reply": {
+    "candidate": {
+     "manifest": {
+      "requirements": [
+       {
+        "id": "req-python-env",
+        "description": "<text:7d8cd55a>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import"
+        ]
+       },
+       {
+        "id": "req-uv-env",
+        "description": "<text:349f43c3>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import",
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-install-source",
+        "description": "<text:f0cd8bd0>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import"
+        ]
+       },
+       {
+        "id": "req-pytest-runner",
+        "description": "<text:d11d9df2>",
+        "source": "src/f03",
+        "checks": [
+         "c-pytest-sample",
+         "c-bench-pytest"
+        ]
+       },
+       {
+        "id": "req-offline-suite",
+        "description": "<text:18b8c1de>",
+        "source": "src/f09",
+        "checks": [
+         "c-pytest-sample",
+         "c-bench-pytest"
+        ]
+       },
+       {
+        "id": "req-bench-tooling",
+        "description": "<text:cc03702c>",
+        "source": "src/f02",
+        "checks": [
+         "c-bench-image",
+         "c-docker-run",
+         "c-bench-cli"
+        ]
+       },
+       {
+        "id": "req-offline-bench-docker",
+        "description": "<text:efafc9a6>",
+        "source": "src/f02",
+        "checks": [
+         "c-bench-image",
+         "c-docker-run"
+        ]
+       },
+       {
+        "id": "req-container-tooling",
+        "description": "<text:32b3d512>",
+        "source": "src/f10",
+        "checks": [
+         "c-docker-run",
+         "c-bench-image"
+        ]
+       },
+       {
+        "id": "req-ruff-mypy",
+        "description": "<text:0dea1a08>",
+        "source": "src/f11",
+        "checks": [
+         "c-ruff",
+         "c-mypy"
+        ]
+       },
+       {
+        "id": "req-bin-build",
+        "description": "<text:c680324a>",
+        "source": "src/f06",
+        "checks": [
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-dev-gate",
+        "description": "<text:a69da481>",
+        "source": "src/f07",
+        "checks": [
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-skills-toolchain",
+        "description": "<text:38536c20>",
+        "source": "src/f01",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-wiring",
+        "description": "<text:e617875b>",
+        "source": "src/f12",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-skills-bootstrap",
+        "description": "<text:ac0bea00>",
+        "source": "src/f05",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-skill-scripts",
+        "description": "<text:60781d11>",
+        "source": "src/f13",
+        "checks": [
+         "c-wiring",
+         "c-guards"
+        ]
+       },
+       {
+        "id": "req-guards",
+        "description": "<text:d0a4cce8>",
+        "source": "src/f04",
+        "checks": [
+         "c-guards"
+        ]
+       },
+       {
+        "id": "req-sandbox-tests",
+        "description": "<text:7460c42c>",
+        "source": "src/f03",
+        "checks": [
+         "c-sandbox"
+        ]
+       },
+       {
+        "id": "req-docker-tests",
+        "description": "<text:f89900a2>",
+        "source": "src/f03",
+        "checks": [
+         "c-docker-run"
+        ]
+       },
+       {
+        "id": "req-evidence-regen",
+        "description": "<text:b440a852>",
+        "source": "src/f08",
+        "checks": [
+         "c-bench-evidence"
+        ]
+       }
+      ],
+      "install": [
+       {
+        "id": "inst-sysdeps",
+        "argv": [
+         "t01",
+         "t02",
+         "t34"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [],
+        "scope": []
+       },
+       {
+        "id": "inst-pull-base",
+        "argv": [
+         "t01",
+         "t02",
+         "t35"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1200,
+        "required": true,
+        "depends_on": [],
+        "scope": []
+       },
+       {
+        "id": "inst-venv",
+        "argv": [
+         "t01",
+         "t02",
+         "t36"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1200,
+        "required": true,
+        "depends_on": [
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-venv-verify",
+        "argv": [
+         "t01",
+         "t02",
+         "t37"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-gh",
+        "argv": [
+         "t01",
+         "t02",
+         "t39"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-bench-image",
+        "argv": [
+         "t01",
+         "t02",
+         "t40"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1800,
+        "required": true,
+        "depends_on": [
+         "inst-pull-base"
+        ],
+        "scope": []
+       }
+      ],
+      "checks": [
+       {
+        "id": "c-wiring",
+        "argv": [
+         "t01",
+         "t02",
+         "t41"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-gh"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-guards",
+        "argv": [
+         "t01",
+         "t02",
+         "t42"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-gh"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-cli-import",
+        "argv": [
+         "t01",
+         "t02",
+         "t43"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-ruff",
+        "argv": [
+         "t01",
+         "t02",
+         "t44"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-mypy",
+        "argv": [
+         "t01",
+         "t02",
+         "t45"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 900,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-pytest-sample",
+        "argv": [
+         "t01",
+         "t02",
+         "t46"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-pytest",
+        "argv": [
+         "t01",
+         "t02",
+         "t47"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-sandbox",
+        "argv": [
+         "t01",
+         "t02",
+         "t48"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 900,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-docker-run",
+        "argv": [
+         "t01",
+         "t02",
+         "t49"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-bench-image"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-image",
+        "argv": [
+         "t01",
+         "t02",
+         "t50"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-bench-image"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-cli",
+        "argv": [
+         "t01",
+         "t02",
+         "t51"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-evidence",
+        "argv": [
+         "t01",
+         "t02",
+         "t52"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       }
+      ],
+      "activation": {
+       "path": [
+        "{cache}/t53",
+        "{cache}/t54",
+        "{cache}/t55"
+       ],
+       "env": {}
+      },
+      "services": [],
+      "runtime_endpoints": [],
+      "local_credentials": [],
+      "empty_reason": null,
+      "criterion_checks": {
+       "Sdc9239f094159188": [
+        "c-wiring"
+       ],
+       "S87e32e81c25f0f09": [
+        "c-cli-import",
+        "c-ruff",
+        "c-mypy",
+        "c-pytest-sample"
+       ],
+       "Sbc188300094e3ddb": [
+        "c-ruff",
+        "c-mypy"
+       ],
+       "S9fa86c9519d779a2": [
+        "c-pytest-sample",
+        "c-bench-pytest",
+        "c-sandbox",
+        "c-docker-run",
+        "c-wiring"
+       ],
+       "S7c21d1d39970240f": [
+        "c-bench-image",
+        "c-docker-run",
+        "c-bench-cli"
+       ],
+       "S5f52fc17f73f6944": [
+        "c-guards"
+       ],
+       "S10c228557943ea53": [
+        "c-wiring",
+        "c-guards"
+       ],
+       "Saa4f7532a4533973": [
+        "c-cli-import",
+        "c-bench-cli"
+       ],
+       "Sba9b020fe3321d84": [
+        "c-pytest-sample",
+        "c-bench-pytest"
+       ],
+       "Sa351a250518685d0": [
+        "c-ruff",
+        "c-mypy",
+        "c-pytest-sample"
+       ],
+       "S5ba8af6631ec2657": [
+        "c-docker-run"
+       ],
+       "S8cb7ec8df7cc42cf": [
+        "c-sandbox"
+       ],
+       "S90c0876305cdbb9c": [
+        "c-ruff",
+        "c-mypy"
+       ],
+       "S8c9f50c493caf1cc": [
+        "c-pytest-sample",
+        "c-bench-pytest",
+        "c-sandbox"
+       ],
+       "Sf636ace1b5747d83": [
+        "c-docker-run",
+        "c-bench-image"
+       ],
+       "S9e57eea88472b703": [
+        "c-wiring"
+       ],
+       "S8de776ef3592fca2": [
+        "c-cli-import"
+       ],
+       "S0052ee90653d6283": [
+        "c-bench-evidence",
+        "c-pytest-sample"
+       ],
+       "S0c2f60c8cf42be51": [
+        "c-docker-run",
+        "c-bench-image"
+       ]
+      }
+     },
+     "finding_responses": [
+      {
+       "finding_id": "F0001",
+       "rationale": "<text:c356c06c>",
+       "sources": [
+        "src/f14",
+        "src/f10",
+        "src/f15",
+        "src/f03",
+        "src/f07"
+       ],
+       "affected_ids": [
+        "Sf636ace1b5747d83"
+       ]
+      }
+     ]
+    }
+   },
+   "recorded": {
+    "refusal_codes": [
+     "obligation_removed"
+    ],
+    "guidance_ids": [
+     "c-bench-evidence",
+     "req-python-env"
+    ],
+    "charged": true
+   }
+  },
+  {
+   "call": "checkpoint:e4c2ff31/6ec652ca67cf61d0#m43",
+   "session": "b383fbd8d76f7e8c",
+   "turn": 22,
+   "reply": {
+    "candidate": {
+     "manifest": {
+      "requirements": [
+       {
+        "id": "req-python-env",
+        "description": "<text:7a1c2ddf>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import",
+         "c-bench-evidence"
+        ]
+       },
+       {
+        "id": "req-uv-env",
+        "description": "<text:349f43c3>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import",
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-install-source",
+        "description": "<text:f0cd8bd0>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import"
+        ]
+       },
+       {
+        "id": "req-pytest-runner",
+        "description": "<text:d11d9df2>",
+        "source": "src/f03",
+        "checks": [
+         "c-pytest-sample",
+         "c-bench-pytest"
+        ]
+       },
+       {
+        "id": "req-offline-suite",
+        "description": "<text:18b8c1de>",
+        "source": "src/f09",
+        "checks": [
+         "c-pytest-sample",
+         "c-bench-pytest"
+        ]
+       },
+       {
+        "id": "req-bench-tooling",
+        "description": "<text:cc03702c>",
+        "source": "src/f02",
+        "checks": [
+         "c-bench-image",
+         "c-docker-run",
+         "c-bench-cli"
+        ]
+       },
+       {
+        "id": "req-offline-bench-docker",
+        "description": "<text:efafc9a6>",
+        "source": "src/f02",
+        "checks": [
+         "c-bench-image",
+         "c-docker-run"
+        ]
+       },
+       {
+        "id": "req-container-tooling",
+        "description": "<text:32b3d512>",
+        "source": "src/f10",
+        "checks": [
+         "c-docker-run",
+         "c-bench-image"
+        ]
+       },
+       {
+        "id": "req-ruff-mypy",
+        "description": "<text:0dea1a08>",
+        "source": "src/f11",
+        "checks": [
+         "c-ruff",
+         "c-mypy"
+        ]
+       },
+       {
+        "id": "req-bin-build",
+        "description": "<text:c680324a>",
+        "source": "src/f06",
+        "checks": [
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-dev-gate",
+        "description": "<text:a69da481>",
+        "source": "src/f07",
+        "checks": [
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-skills-toolchain",
+        "description": "<text:38536c20>",
+        "source": "src/f01",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-wiring",
+        "description": "<text:e617875b>",
+        "source": "src/f12",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-skills-bootstrap",
+        "description": "<text:ac0bea00>",
+        "source": "src/f05",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-skill-scripts",
+        "description": "<text:60781d11>",
+        "source": "src/f13",
+        "checks": [
+         "c-wiring",
+         "c-guards"
+        ]
+       },
+       {
+        "id": "req-guards",
+        "description": "<text:d0a4cce8>",
+        "source": "src/f04",
+        "checks": [
+         "c-guards"
+        ]
+       },
+       {
+        "id": "req-sandbox-tests",
+        "description": "<text:7460c42c>",
+        "source": "src/f03",
+        "checks": [
+         "c-sandbox"
+        ]
+       },
+       {
+        "id": "req-docker-tests",
+        "description": "<text:f89900a2>",
+        "source": "src/f03",
+        "checks": [
+         "c-docker-run"
+        ]
+       },
+       {
+        "id": "req-evidence-regen",
+        "description": "<text:b440a852>",
+        "source": "src/f08",
+        "checks": [
+         "c-bench-evidence"
+        ]
+       }
+      ],
+      "install": [
+       {
+        "id": "inst-sysdeps",
+        "argv": [
+         "t01",
+         "t02",
+         "t34"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [],
+        "scope": []
+       },
+       {
+        "id": "inst-pull-base",
+        "argv": [
+         "t01",
+         "t02",
+         "t35"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1200,
+        "required": true,
+        "depends_on": [],
+        "scope": []
+       },
+       {
+        "id": "inst-venv",
+        "argv": [
+         "t01",
+         "t02",
+         "t36"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1200,
+        "required": true,
+        "depends_on": [
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-venv-verify",
+        "argv": [
+         "t01",
+         "t02",
+         "t37"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-gh",
+        "argv": [
+         "t01",
+         "t02",
+         "t39"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-bench-image",
+        "argv": [
+         "t01",
+         "t02",
+         "t40"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1800,
+        "required": true,
+        "depends_on": [
+         "inst-pull-base"
+        ],
+        "scope": []
+       }
+      ],
+      "checks": [
+       {
+        "id": "c-wiring",
+        "argv": [
+         "t01",
+         "t02",
+         "t41"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-gh"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-guards",
+        "argv": [
+         "t01",
+         "t02",
+         "t42"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-gh"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-cli-import",
+        "argv": [
+         "t01",
+         "t02",
+         "t43"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-ruff",
+        "argv": [
+         "t01",
+         "t02",
+         "t44"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-mypy",
+        "argv": [
+         "t01",
+         "t02",
+         "t45"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 900,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-pytest-sample",
+        "argv": [
+         "t01",
+         "t02",
+         "t46"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-pytest",
+        "argv": [
+         "t01",
+         "t02",
+         "t47"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-sandbox",
+        "argv": [
+         "t01",
+         "t02",
+         "t48"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 900,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-docker-run",
+        "argv": [
+         "t01",
+         "t02",
+         "t49"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-bench-image"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-image",
+        "argv": [
+         "t01",
+         "t02",
+         "t50"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-bench-image"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-cli",
+        "argv": [
+         "t01",
+         "t02",
+         "t51"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-evidence",
+        "argv": [
+         "t01",
+         "t02",
+         "t52"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       }
+      ],
+      "activation": {
+       "path": [
+        "{cache}/t53",
+        "{cache}/t54",
+        "{cache}/t55"
+       ],
+       "env": {}
+      },
+      "services": [],
+      "runtime_endpoints": [],
+      "local_credentials": [],
+      "empty_reason": null,
+      "criterion_checks": {
+       "Sdc9239f094159188": [
+        "c-wiring"
+       ],
+       "S87e32e81c25f0f09": [
+        "c-cli-import",
+        "c-ruff",
+        "c-mypy",
+        "c-pytest-sample"
+       ],
+       "Sbc188300094e3ddb": [
+        "c-ruff",
+        "c-mypy"
+       ],
+       "S9fa86c9519d779a2": [
+        "c-pytest-sample",
+        "c-bench-pytest",
+        "c-sandbox",
+        "c-docker-run",
+        "c-wiring"
+       ],
+       "S7c21d1d39970240f": [
+        "c-bench-image",
+        "c-docker-run",
+        "c-bench-cli"
+       ],
+       "S5f52fc17f73f6944": [
+        "c-guards"
+       ],
+       "S10c228557943ea53": [
+        "c-wiring",
+        "c-guards"
+       ],
+       "Saa4f7532a4533973": [
+        "c-cli-import",
+        "c-bench-cli"
+       ],
+       "Sba9b020fe3321d84": [
+        "c-pytest-sample",
+        "c-bench-pytest"
+       ],
+       "Sa351a250518685d0": [
+        "c-ruff",
+        "c-mypy",
+        "c-pytest-sample"
+       ],
+       "S5ba8af6631ec2657": [
+        "c-docker-run"
+       ],
+       "S8cb7ec8df7cc42cf": [
+        "c-sandbox"
+       ],
+       "S90c0876305cdbb9c": [
+        "c-ruff",
+        "c-mypy"
+       ],
+       "S8c9f50c493caf1cc": [
+        "c-pytest-sample",
+        "c-bench-pytest",
+        "c-sandbox"
+       ],
+       "Sf636ace1b5747d83": [
+        "c-docker-run",
+        "c-bench-image"
+       ],
+       "S9e57eea88472b703": [
+        "c-wiring"
+       ],
+       "S8de776ef3592fca2": [
+        "c-cli-import"
+       ],
+       "S0052ee90653d6283": [
+        "c-bench-evidence",
+        "c-pytest-sample"
+       ],
+       "S0c2f60c8cf42be51": [
+        "c-docker-run",
+        "c-bench-image"
+       ]
+      }
+     },
+     "finding_responses": [
+      {
+       "finding_id": "F0001",
+       "rationale": "<text:c356c06c>",
+       "sources": [
+        "src/f14",
+        "src/f10",
+        "src/f15",
+        "src/f03",
+        "src/f07"
+       ],
+       "affected_ids": [
+        "Sf636ace1b5747d83"
+       ]
+      }
+     ]
+    }
+   },
+   "recorded": {
+    "refusal_codes": [
+     "obligation_removed"
+    ],
+    "guidance_ids": [
+     "c-docker-run",
+     "c-sandbox",
+     "req-pytest-runner"
+    ],
+    "charged": true
+   }
+  },
+  {
+   "call": "checkpoint:e4c2ff31/6ec652ca67cf61d0#m45",
+   "session": "b383fbd8d76f7e8c",
+   "turn": 23,
+   "reply": {
+    "candidate": {
+     "manifest": {
+      "requirements": [
+       {
+        "id": "req-python-env",
+        "description": "<text:7a1c2ddf>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import",
+         "c-bench-evidence"
+        ]
+       },
+       {
+        "id": "req-uv-env",
+        "description": "<text:349f43c3>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import",
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-install-source",
+        "description": "<text:f0cd8bd0>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import"
+        ]
+       },
+       {
+        "id": "req-pytest-runner",
+        "description": "<text:a354561e>",
+        "source": "src/f03",
+        "checks": [
+         "c-pytest-sample",
+         "c-bench-pytest",
+         "c-docker-run",
+         "c-sandbox"
+        ]
+       },
+       {
+        "id": "req-offline-suite",
+        "description": "<text:18b8c1de>",
+        "source": "src/f09",
+        "checks": [
+         "c-pytest-sample",
+         "c-bench-pytest"
+        ]
+       },
+       {
+        "id": "req-bench-tooling",
+        "description": "<text:cc03702c>",
+        "source": "src/f02",
+        "checks": [
+         "c-bench-image",
+         "c-docker-run",
+         "c-bench-cli"
+        ]
+       },
+       {
+        "id": "req-offline-bench-docker",
+        "description": "<text:efafc9a6>",
+        "source": "src/f02",
+        "checks": [
+         "c-bench-image",
+         "c-docker-run"
+        ]
+       },
+       {
+        "id": "req-container-tooling",
+        "description": "<text:32b3d512>",
+        "source": "src/f10",
+        "checks": [
+         "c-docker-run",
+         "c-bench-image"
+        ]
+       },
+       {
+        "id": "req-ruff-mypy",
+        "description": "<text:0dea1a08>",
+        "source": "src/f11",
+        "checks": [
+         "c-ruff",
+         "c-mypy"
+        ]
+       },
+       {
+        "id": "req-bin-build",
+        "description": "<text:c680324a>",
+        "source": "src/f06",
+        "checks": [
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-dev-gate",
+        "description": "<text:a69da481>",
+        "source": "src/f07",
+        "checks": [
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-skills-toolchain",
+        "description": "<text:38536c20>",
+        "source": "src/f01",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-wiring",
+        "description": "<text:e617875b>",
+        "source": "src/f12",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-skills-bootstrap",
+        "description": "<text:ac0bea00>",
+        "source": "src/f05",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-skill-scripts",
+        "description": "<text:60781d11>",
+        "source": "src/f13",
+        "checks": [
+         "c-wiring",
+         "c-guards"
+        ]
+       },
+       {
+        "id": "req-guards",
+        "description": "<text:d0a4cce8>",
+        "source": "src/f04",
+        "checks": [
+         "c-guards"
+        ]
+       },
+       {
+        "id": "req-sandbox-tests",
+        "description": "<text:7460c42c>",
+        "source": "src/f03",
+        "checks": [
+         "c-sandbox"
+        ]
+       },
+       {
+        "id": "req-docker-tests",
+        "description": "<text:f89900a2>",
+        "source": "src/f03",
+        "checks": [
+         "c-docker-run"
+        ]
+       },
+       {
+        "id": "req-evidence-regen",
+        "description": "<text:b440a852>",
+        "source": "src/f08",
+        "checks": [
+         "c-bench-evidence"
+        ]
+       }
+      ],
+      "install": [
+       {
+        "id": "inst-sysdeps",
+        "argv": [
+         "t01",
+         "t02",
+         "t34"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [],
+        "scope": []
+       },
+       {
+        "id": "inst-pull-base",
+        "argv": [
+         "t01",
+         "t02",
+         "t35"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1200,
+        "required": true,
+        "depends_on": [],
+        "scope": []
+       },
+       {
+        "id": "inst-venv",
+        "argv": [
+         "t01",
+         "t02",
+         "t36"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1200,
+        "required": true,
+        "depends_on": [
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-venv-verify",
+        "argv": [
+         "t01",
+         "t02",
+         "t37"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-gh",
+        "argv": [
+         "t01",
+         "t02",
+         "t39"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-bench-image",
+        "argv": [
+         "t01",
+         "t02",
+         "t40"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1800,
+        "required": true,
+        "depends_on": [
+         "inst-pull-base"
+        ],
+        "scope": []
+       }
+      ],
+      "checks": [
+       {
+        "id": "c-wiring",
+        "argv": [
+         "t01",
+         "t02",
+         "t41"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-gh"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-guards",
+        "argv": [
+         "t01",
+         "t02",
+         "t42"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-gh"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-cli-import",
+        "argv": [
+         "t01",
+         "t02",
+         "t43"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-ruff",
+        "argv": [
+         "t01",
+         "t02",
+         "t44"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-mypy",
+        "argv": [
+         "t01",
+         "t02",
+         "t45"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 900,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-pytest-sample",
+        "argv": [
+         "t01",
+         "t02",
+         "t46"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-pytest",
+        "argv": [
+         "t01",
+         "t02",
+         "t47"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-sandbox",
+        "argv": [
+         "t01",
+         "t02",
+         "t48"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 900,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-docker-run",
+        "argv": [
+         "t01",
+         "t02",
+         "t49"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-bench-image"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-image",
+        "argv": [
+         "t01",
+         "t02",
+         "t50"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-bench-image"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-cli",
+        "argv": [
+         "t01",
+         "t02",
+         "t51"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-evidence",
+        "argv": [
+         "t01",
+         "t02",
+         "t52"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       }
+      ],
+      "activation": {
+       "path": [
+        "{cache}/t53",
+        "{cache}/t54",
+        "{cache}/t55"
+       ],
+       "env": {}
+      },
+      "services": [],
+      "runtime_endpoints": [],
+      "local_credentials": [],
+      "empty_reason": null,
+      "criterion_checks": {
+       "Sdc9239f094159188": [
+        "c-wiring"
+       ],
+       "S87e32e81c25f0f09": [
+        "c-cli-import",
+        "c-ruff",
+        "c-mypy",
+        "c-pytest-sample"
+       ],
+       "Sbc188300094e3ddb": [
+        "c-ruff",
+        "c-mypy"
+       ],
+       "S9fa86c9519d779a2": [
+        "c-pytest-sample",
+        "c-bench-pytest",
+        "c-sandbox",
+        "c-docker-run",
+        "c-wiring"
+       ],
+       "S7c21d1d39970240f": [
+        "c-bench-image",
+        "c-docker-run",
+        "c-bench-cli"
+       ],
+       "S5f52fc17f73f6944": [
+        "c-guards"
+       ],
+       "S10c228557943ea53": [
+        "c-wiring",
+        "c-guards"
+       ],
+       "Saa4f7532a4533973": [
+        "c-cli-import",
+        "c-bench-cli"
+       ],
+       "Sba9b020fe3321d84": [
+        "c-pytest-sample",
+        "c-bench-pytest"
+       ],
+       "Sa351a250518685d0": [
+        "c-ruff",
+        "c-mypy",
+        "c-pytest-sample"
+       ],
+       "S5ba8af6631ec2657": [
+        "c-docker-run"
+       ],
+       "S8cb7ec8df7cc42cf": [
+        "c-sandbox"
+       ],
+       "S90c0876305cdbb9c": [
+        "c-ruff",
+        "c-mypy"
+       ],
+       "S8c9f50c493caf1cc": [
+        "c-pytest-sample",
+        "c-bench-pytest",
+        "c-sandbox"
+       ],
+       "Sf636ace1b5747d83": [
+        "c-docker-run",
+        "c-bench-image"
+       ],
+       "S9e57eea88472b703": [
+        "c-wiring"
+       ],
+       "S8de776ef3592fca2": [
+        "c-cli-import"
+       ],
+       "S0052ee90653d6283": [
+        "c-bench-evidence",
+        "c-pytest-sample"
+       ],
+       "S0c2f60c8cf42be51": [
+        "c-docker-run",
+        "c-bench-image"
+       ]
+      }
+     },
+     "finding_responses": [
+      {
+       "finding_id": "F0001",
+       "rationale": "<text:c356c06c>",
+       "sources": [
+        "src/f14",
+        "src/f10",
+        "src/f15",
+        "src/f03",
+        "src/f07"
+       ],
+       "affected_ids": [
+        "Sf636ace1b5747d83"
+       ]
+      }
+     ]
+    }
+   },
+   "recorded": {
+    "refusal_codes": [
+     "obligation_removed"
+    ],
+    "guidance_ids": [
+     "c-sandbox",
+     "req-offline-suite"
+    ],
+    "charged": true
+   }
+  },
+  {
+   "call": "checkpoint:e4c2ff31/6ec652ca67cf61d0#m47",
+   "session": "b383fbd8d76f7e8c",
+   "turn": 24,
+   "reply": {
+    "candidate": {
+     "manifest": {
+      "requirements": [
+       {
+        "id": "req-python-env",
+        "description": "<text:7a1c2ddf>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import",
+         "c-bench-evidence"
+        ]
+       },
+       {
+        "id": "req-uv-env",
+        "description": "<text:349f43c3>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import",
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-install-source",
+        "description": "<text:f0cd8bd0>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import"
+        ]
+       },
+       {
+        "id": "req-pytest-runner",
+        "description": "<text:a354561e>",
+        "source": "src/f03",
+        "checks": [
+         "c-pytest-sample",
+         "c-bench-pytest",
+         "c-docker-run",
+         "c-sandbox"
+        ]
+       },
+       {
+        "id": "req-offline-suite",
+        "description": "<text:a9ac2064>",
+        "source": "src/f09",
+        "checks": [
+         "c-pytest-sample",
+         "c-bench-pytest",
+         "c-sandbox"
+        ]
+       },
+       {
+        "id": "req-bench-tooling",
+        "description": "<text:cc03702c>",
+        "source": "src/f02",
+        "checks": [
+         "c-bench-image",
+         "c-docker-run",
+         "c-bench-cli"
+        ]
+       },
+       {
+        "id": "req-offline-bench-docker",
+        "description": "<text:efafc9a6>",
+        "source": "src/f02",
+        "checks": [
+         "c-bench-image",
+         "c-docker-run"
+        ]
+       },
+       {
+        "id": "req-container-tooling",
+        "description": "<text:32b3d512>",
+        "source": "src/f10",
+        "checks": [
+         "c-docker-run",
+         "c-bench-image"
+        ]
+       },
+       {
+        "id": "req-ruff-mypy",
+        "description": "<text:0dea1a08>",
+        "source": "src/f11",
+        "checks": [
+         "c-ruff",
+         "c-mypy"
+        ]
+       },
+       {
+        "id": "req-bin-build",
+        "description": "<text:c680324a>",
+        "source": "src/f06",
+        "checks": [
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-dev-gate",
+        "description": "<text:a69da481>",
+        "source": "src/f07",
+        "checks": [
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-skills-toolchain",
+        "description": "<text:38536c20>",
+        "source": "src/f01",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-wiring",
+        "description": "<text:e617875b>",
+        "source": "src/f12",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-skills-bootstrap",
+        "description": "<text:ac0bea00>",
+        "source": "src/f05",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-skill-scripts",
+        "description": "<text:60781d11>",
+        "source": "src/f13",
+        "checks": [
+         "c-wiring",
+         "c-guards"
+        ]
+       },
+       {
+        "id": "req-guards",
+        "description": "<text:d0a4cce8>",
+        "source": "src/f04",
+        "checks": [
+         "c-guards"
+        ]
+       },
+       {
+        "id": "req-sandbox-tests",
+        "description": "<text:7460c42c>",
+        "source": "src/f03",
+        "checks": [
+         "c-sandbox"
+        ]
+       },
+       {
+        "id": "req-docker-tests",
+        "description": "<text:f89900a2>",
+        "source": "src/f03",
+        "checks": [
+         "c-docker-run"
+        ]
+       },
+       {
+        "id": "req-evidence-regen",
+        "description": "<text:b440a852>",
+        "source": "src/f08",
+        "checks": [
+         "c-bench-evidence"
+        ]
+       }
+      ],
+      "install": [
+       {
+        "id": "inst-sysdeps",
+        "argv": [
+         "t01",
+         "t02",
+         "t34"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [],
+        "scope": []
+       },
+       {
+        "id": "inst-pull-base",
+        "argv": [
+         "t01",
+         "t02",
+         "t35"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1200,
+        "required": true,
+        "depends_on": [],
+        "scope": []
+       },
+       {
+        "id": "inst-venv",
+        "argv": [
+         "t01",
+         "t02",
+         "t36"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1200,
+        "required": true,
+        "depends_on": [
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-venv-verify",
+        "argv": [
+         "t01",
+         "t02",
+         "t37"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-gh",
+        "argv": [
+         "t01",
+         "t02",
+         "t39"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-bench-image",
+        "argv": [
+         "t01",
+         "t02",
+         "t40"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1800,
+        "required": true,
+        "depends_on": [
+         "inst-pull-base"
+        ],
+        "scope": []
+       }
+      ],
+      "checks": [
+       {
+        "id": "c-wiring",
+        "argv": [
+         "t01",
+         "t02",
+         "t41"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-gh"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-guards",
+        "argv": [
+         "t01",
+         "t02",
+         "t42"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-gh"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-cli-import",
+        "argv": [
+         "t01",
+         "t02",
+         "t43"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-ruff",
+        "argv": [
+         "t01",
+         "t02",
+         "t44"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-mypy",
+        "argv": [
+         "t01",
+         "t02",
+         "t45"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 900,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-pytest-sample",
+        "argv": [
+         "t01",
+         "t02",
+         "t46"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-pytest",
+        "argv": [
+         "t01",
+         "t02",
+         "t47"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-sandbox",
+        "argv": [
+         "t01",
+         "t02",
+         "t48"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 900,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-docker-run",
+        "argv": [
+         "t01",
+         "t02",
+         "t49"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-bench-image"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-image",
+        "argv": [
+         "t01",
+         "t02",
+         "t50"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-bench-image"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-cli",
+        "argv": [
+         "t01",
+         "t02",
+         "t51"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-evidence",
+        "argv": [
+         "t01",
+         "t02",
+         "t52"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       }
+      ],
+      "activation": {
+       "path": [
+        "{cache}/t53",
+        "{cache}/t54",
+        "{cache}/t55"
+       ],
+       "env": {}
+      },
+      "services": [],
+      "runtime_endpoints": [],
+      "local_credentials": [],
+      "empty_reason": null,
+      "criterion_checks": {
+       "Sdc9239f094159188": [
+        "c-wiring"
+       ],
+       "S87e32e81c25f0f09": [
+        "c-cli-import",
+        "c-ruff",
+        "c-mypy",
+        "c-pytest-sample"
+       ],
+       "Sbc188300094e3ddb": [
+        "c-ruff",
+        "c-mypy"
+       ],
+       "S9fa86c9519d779a2": [
+        "c-pytest-sample",
+        "c-bench-pytest",
+        "c-sandbox",
+        "c-docker-run",
+        "c-wiring"
+       ],
+       "S7c21d1d39970240f": [
+        "c-bench-image",
+        "c-docker-run",
+        "c-bench-cli"
+       ],
+       "S5f52fc17f73f6944": [
+        "c-guards"
+       ],
+       "S10c228557943ea53": [
+        "c-wiring",
+        "c-guards"
+       ],
+       "Saa4f7532a4533973": [
+        "c-cli-import",
+        "c-bench-cli"
+       ],
+       "Sba9b020fe3321d84": [
+        "c-pytest-sample",
+        "c-bench-pytest"
+       ],
+       "Sa351a250518685d0": [
+        "c-ruff",
+        "c-mypy",
+        "c-pytest-sample"
+       ],
+       "S5ba8af6631ec2657": [
+        "c-docker-run"
+       ],
+       "S8cb7ec8df7cc42cf": [
+        "c-sandbox"
+       ],
+       "S90c0876305cdbb9c": [
+        "c-ruff",
+        "c-mypy"
+       ],
+       "S8c9f50c493caf1cc": [
+        "c-pytest-sample",
+        "c-bench-pytest",
+        "c-sandbox"
+       ],
+       "Sf636ace1b5747d83": [
+        "c-docker-run",
+        "c-bench-image"
+       ],
+       "S9e57eea88472b703": [
+        "c-wiring"
+       ],
+       "S8de776ef3592fca2": [
+        "c-cli-import"
+       ],
+       "S0052ee90653d6283": [
+        "c-bench-evidence",
+        "c-pytest-sample"
+       ],
+       "S0c2f60c8cf42be51": [
+        "c-docker-run",
+        "c-bench-image"
+       ]
+      }
+     },
+     "finding_responses": [
+      {
+       "finding_id": "F0001",
+       "rationale": "<text:c356c06c>",
+       "sources": [
+        "src/f14",
+        "src/f10",
+        "src/f15",
+        "src/f03",
+        "src/f07"
+       ],
+       "affected_ids": [
+        "Sf636ace1b5747d83"
+       ]
+      }
+     ]
+    }
+   },
+   "recorded": {
+    "refusal_codes": [
+     "obligation_removed"
+    ],
+    "guidance_ids": [
+     "req-pytest-offline"
+    ],
+    "charged": true
+   }
+  },
+  {
+   "call": "checkpoint:e4c2ff31/6ec652ca67cf61d0#m49",
+   "session": "b383fbd8d76f7e8c",
+   "turn": 25,
+   "reply": {
+    "candidate": {
+     "manifest": {
+      "requirements": [
+       {
+        "id": "req-python-env",
+        "description": "<text:7a1c2ddf>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import",
+         "c-bench-evidence"
+        ]
+       },
+       {
+        "id": "req-uv-env",
+        "description": "<text:349f43c3>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import",
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-install-source",
+        "description": "<text:f0cd8bd0>",
+        "source": "src/f03",
+        "checks": [
+         "c-cli-import"
+        ]
+       },
+       {
+        "id": "req-pytest-runner",
+        "description": "<text:a354561e>",
+        "source": "src/f03",
+        "checks": [
+         "c-pytest-sample",
+         "c-bench-pytest",
+         "c-docker-run",
+         "c-sandbox"
+        ]
+       },
+       {
+        "id": "req-pytest-offline",
+        "description": "<text:feaff79f>",
+        "source": "src/f03",
+        "checks": [
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-offline-suite",
+        "description": "<text:a9ac2064>",
+        "source": "src/f09",
+        "checks": [
+         "c-pytest-sample",
+         "c-bench-pytest",
+         "c-sandbox"
+        ]
+       },
+       {
+        "id": "req-bench-tooling",
+        "description": "<text:cc03702c>",
+        "source": "src/f02",
+        "checks": [
+         "c-bench-image",
+         "c-docker-run",
+         "c-bench-cli"
+        ]
+       },
+       {
+        "id": "req-offline-bench-docker",
+        "description": "<text:efafc9a6>",
+        "source": "src/f02",
+        "checks": [
+         "c-bench-image",
+         "c-docker-run"
+        ]
+       },
+       {
+        "id": "req-container-tooling",
+        "description": "<text:32b3d512>",
+        "source": "src/f10",
+        "checks": [
+         "c-docker-run",
+         "c-bench-image"
+        ]
+       },
+       {
+        "id": "req-ruff-mypy",
+        "description": "<text:0dea1a08>",
+        "source": "src/f11",
+        "checks": [
+         "c-ruff",
+         "c-mypy"
+        ]
+       },
+       {
+        "id": "req-bin-build",
+        "description": "<text:c680324a>",
+        "source": "src/f06",
+        "checks": [
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-dev-gate",
+        "description": "<text:a69da481>",
+        "source": "src/f07",
+        "checks": [
+         "c-ruff",
+         "c-mypy",
+         "c-pytest-sample"
+        ]
+       },
+       {
+        "id": "req-skills-toolchain",
+        "description": "<text:38536c20>",
+        "source": "src/f01",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-wiring",
+        "description": "<text:e617875b>",
+        "source": "src/f12",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-skills-bootstrap",
+        "description": "<text:ac0bea00>",
+        "source": "src/f05",
+        "checks": [
+         "c-wiring"
+        ]
+       },
+       {
+        "id": "req-skill-scripts",
+        "description": "<text:60781d11>",
+        "source": "src/f13",
+        "checks": [
+         "c-wiring",
+         "c-guards"
+        ]
+       },
+       {
+        "id": "req-guards",
+        "description": "<text:d0a4cce8>",
+        "source": "src/f04",
+        "checks": [
+         "c-guards"
+        ]
+       },
+       {
+        "id": "req-sandbox-tests",
+        "description": "<text:7460c42c>",
+        "source": "src/f03",
+        "checks": [
+         "c-sandbox"
+        ]
+       },
+       {
+        "id": "req-docker-tests",
+        "description": "<text:f89900a2>",
+        "source": "src/f03",
+        "checks": [
+         "c-docker-run"
+        ]
+       },
+       {
+        "id": "req-evidence-regen",
+        "description": "<text:b440a852>",
+        "source": "src/f08",
+        "checks": [
+         "c-bench-evidence"
+        ]
+       }
+      ],
+      "install": [
+       {
+        "id": "inst-sysdeps",
+        "argv": [
+         "t01",
+         "t02",
+         "t34"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [],
+        "scope": []
+       },
+       {
+        "id": "inst-pull-base",
+        "argv": [
+         "t01",
+         "t02",
+         "t35"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1200,
+        "required": true,
+        "depends_on": [],
+        "scope": []
+       },
+       {
+        "id": "inst-venv",
+        "argv": [
+         "t01",
+         "t02",
+         "t36"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1200,
+        "required": true,
+        "depends_on": [
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-venv-verify",
+        "argv": [
+         "t01",
+         "t02",
+         "t37"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-gh",
+        "argv": [
+         "t01",
+         "t02",
+         "t39"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "inst-bench-image",
+        "argv": [
+         "t01",
+         "t02",
+         "t40"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 1800,
+        "required": true,
+        "depends_on": [
+         "inst-pull-base"
+        ],
+        "scope": []
+       }
+      ],
+      "checks": [
+       {
+        "id": "c-wiring",
+        "argv": [
+         "t01",
+         "t02",
+         "t41"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-gh"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-guards",
+        "argv": [
+         "t01",
+         "t02",
+         "t42"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-gh"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-cli-import",
+        "argv": [
+         "t01",
+         "t02",
+         "t43"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-ruff",
+        "argv": [
+         "t01",
+         "t02",
+         "t44"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-mypy",
+        "argv": [
+         "t01",
+         "t02",
+         "t45"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 900,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-pytest-sample",
+        "argv": [
+         "t01",
+         "t02",
+         "t46"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-pytest",
+        "argv": [
+         "t01",
+         "t02",
+         "t47"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-sandbox",
+        "argv": [
+         "t01",
+         "t02",
+         "t48"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 900,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify",
+         "inst-sysdeps"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-docker-run",
+        "argv": [
+         "t01",
+         "t02",
+         "t49"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-bench-image"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-image",
+        "argv": [
+         "t01",
+         "t02",
+         "t50"
+        ],
+        "cwd": "{repo}",
+        "timeout_seconds": 120,
+        "required": true,
+        "depends_on": [
+         "inst-bench-image"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-cli",
+        "argv": [
+         "t01",
+         "t02",
+         "t51"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 300,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       },
+       {
+        "id": "c-bench-evidence",
+        "argv": [
+         "t01",
+         "t02",
+         "t52"
+        ],
+        "cwd": "{cache}/t38",
+        "timeout_seconds": 600,
+        "required": true,
+        "depends_on": [
+         "inst-venv-verify"
+        ],
+        "scope": []
+       }
+      ],
+      "activation": {
+       "path": [
+        "{cache}/t53",
+        "{cache}/t54",
+        "{cache}/t55"
+       ],
+       "env": {}
+      },
+      "services": [],
+      "runtime_endpoints": [],
+      "local_credentials": [],
+      "empty_reason": null,
+      "criterion_checks": {
+       "Sdc9239f094159188": [
+        "c-wiring"
+       ],
+       "S87e32e81c25f0f09": [
+        "c-cli-import",
+        "c-ruff",
+        "c-mypy",
+        "c-pytest-sample"
+       ],
+       "Sbc188300094e3ddb": [
+        "c-ruff",
+        "c-mypy"
+       ],
+       "S9fa86c9519d779a2": [
+        "c-pytest-sample",
+        "c-bench-pytest",
+        "c-sandbox",
+        "c-docker-run",
+        "c-wiring"
+       ],
+       "S7c21d1d39970240f": [
+        "c-bench-image",
+        "c-docker-run",
+        "c-bench-cli"
+       ],
+       "S5f52fc17f73f6944": [
+        "c-guards"
+       ],
+       "S10c228557943ea53": [
+        "c-wiring",
+        "c-guards"
+       ],
+       "Saa4f7532a4533973": [
+        "c-cli-import",
+        "c-bench-cli"
+       ],
+       "Sba9b020fe3321d84": [
+        "c-pytest-sample",
+        "c-bench-pytest"
+       ],
+       "Sa351a250518685d0": [
+        "c-ruff",
+        "c-mypy",
+        "c-pytest-sample"
+       ],
+       "S5ba8af6631ec2657": [
+        "c-docker-run"
+       ],
+       "S8cb7ec8df7cc42cf": [
+        "c-sandbox"
+       ],
+       "S90c0876305cdbb9c": [
+        "c-ruff",
+        "c-mypy"
+       ],
+       "S8c9f50c493caf1cc": [
+        "c-pytest-sample",
+        "c-bench-pytest",
+        "c-sandbox"
+       ],
+       "Sf636ace1b5747d83": [
+        "c-docker-run",
+        "c-bench-image"
+       ],
+       "S9e57eea88472b703": [
+        "c-wiring"
+       ],
+       "S8de776ef3592fca2": [
+        "c-cli-import"
+       ],
+       "S0052ee90653d6283": [
+        "c-bench-evidence",
+        "c-pytest-sample"
+       ],
+       "S0c2f60c8cf42be51": [
+        "c-docker-run",
+        "c-bench-image"
+       ]
+      }
+     },
+     "finding_responses": [
+      {
+       "finding_id": "F0001",
+       "rationale": "<text:c356c06c>",
+       "sources": [
+        "src/f14",
+        "src/f10",
+        "src/f15",
+        "src/f03",
+        "src/f07"
+       ],
+       "affected_ids": [
+        "Sf636ace1b5747d83"
+       ]
+      }
+     ]
+    }
+   },
+   "recorded": {
+    "refusal_codes": [
+     "clean_dependency_install_only"
+    ],
+    "guidance_ids": [
+     "c-bench-cli",
+     "c-bench-evidence",
+     "c-bench-image",
+     "c-bench-pytest",
+     "c-cli-import",
+     "c-docker-run",
+     "c-guards",
+     "c-mypy",
+     "c-pytest-sample",
+     "c-ruff",
+     "c-sandbox",
+     "c-wiring",
+     "inst-bench-image",
+     "inst-gh",
+     "inst-sysdeps",
+     "inst-venv-verify"
+    ],
+    "charged": true
+   }
+  }
+ ]
+}

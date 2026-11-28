@@ -1,0 +1,119 @@
+{
+ "format": 1,
+ "run": "nare-native-041",
+ "head": "12622348",
+ "synthetic": true,
+ "synthetic_reason": "The run directory lives on a volume that was not mounted when the replay corpus was built. This fixture reproduces the recorded structure from the run diagnosis: two shard reviewers of a fresh scope each filed one remote_state finding with the same affected_ids, each with its own inspection request.",
+ "hold": {
+  "code": "scope_investigation_identity",
+  "stage": "scope_shard_review"
+ },
+ "seam": "scope_review_combine",
+ "redaction": {
+  "version": 1,
+  "tokens": 0,
+  "paths": 3,
+  "env_names": 0,
+  "texts": 4
+ },
+ "state": {
+  "criterion_ids": [
+   "S9550150d5c470822"
+  ],
+  "read": [
+   "src/f01",
+   "src/f02"
+  ],
+  "unread": [
+   "src/f03"
+  ]
+ },
+ "steps": [
+  {
+   "call": "synthetic:shard-a",
+   "session": "shard-a",
+   "turn": null,
+   "reply": {
+    "candidate": {
+     "scope_assessment": {
+      "verdict": "revise",
+      "rationale": "<text:b2cc0bb4>",
+      "sources": [
+       "src/f01"
+      ],
+      "findings": [
+       {
+        "category": "remote_state",
+        "issue": "<text:85a5a356>",
+        "sources": [
+         "src/f01"
+        ],
+        "affected_ids": [
+         "S9550150d5c470822"
+        ],
+        "gap_kind": "missing_obligation",
+        "inspection_requests": [
+         {
+          "operation": "read_file",
+          "path": "src/f02"
+         }
+        ]
+       }
+      ],
+      "decisions": []
+     }
+    }
+   },
+   "recorded": {
+    "refusal_codes": [],
+    "guidance_ids": [],
+    "charged": false
+   }
+  },
+  {
+   "call": "synthetic:shard-b",
+   "session": "shard-b",
+   "turn": null,
+   "reply": {
+    "candidate": {
+     "scope_assessment": {
+      "verdict": "revise",
+      "rationale": "<text:7aae092f>",
+      "sources": [
+       "src/f02"
+      ],
+      "findings": [
+       {
+        "category": "remote_state",
+        "issue": "<text:a1ea0e46>",
+        "sources": [
+         "src/f02"
+        ],
+        "affected_ids": [
+         "S9550150d5c470822"
+        ],
+        "gap_kind": "missing_obligation",
+        "inspection_requests": [
+         {
+          "operation": "read_file",
+          "path": "src/f03"
+         }
+        ]
+       }
+      ],
+      "decisions": []
+     }
+    }
+   },
+   "recorded": {
+    "refusal_codes": [
+     "scope_investigation_identity"
+    ],
+    "guidance_ids": [
+     "S9550150d5c470822"
+    ],
+    "charged": false
+   }
+  }
+ ]
+}

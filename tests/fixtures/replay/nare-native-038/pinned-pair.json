@@ -1,0 +1,854 @@
+{
+ "format": 1,
+ "run": "nare-native-038",
+ "head": "baa9d5dc",
+ "hold": {
+  "code": "executable_merge_invalid",
+  "stage": "executable_checks"
+ },
+ "seam": "divided_merge",
+ "redaction": {
+  "version": 1,
+  "tokens": 48,
+  "paths": 3,
+  "env_names": 2,
+  "texts": 8
+ },
+ "state": {
+  "merge": {
+   "global": "global",
+   "groups": [
+    "c00-",
+    "c01-"
+   ]
+  },
+  "recorded_merge_codes": [
+   "global_part_invalid",
+   "duplicate_command_content",
+   "review_rulings_invalid",
+   "inherited_mapping_missing",
+   "criterion_mapping_invalid",
+   "obligation_removed",
+   "duplicate_command_content",
+   "duplicate_command_content",
+   "duplicate_command_content",
+   "duplicate_command_content"
+  ]
+ },
+ "steps": [
+  {
+   "call": "journal:executable_parts/4bd79fdebd633b5a",
+   "session": "global",
+   "turn": null,
+   "reply": {
+    "candidate": {
+     "requirements": [
+      {
+       "id": "req-uv-env",
+       "description": "<text:a1780582>",
+       "source": "src/f01",
+       "checks": [
+        "check-uv-usable",
+        "check-venv-imports"
+       ]
+      },
+      {
+       "id": "req-py312-toolchain",
+       "description": "<text:6ac1dd94>",
+       "source": "src/f01",
+       "checks": [
+        "check-venv-imports"
+       ]
+      },
+      {
+       "id": "req-agent-cli-tools",
+       "description": "<text:0788b9e1>",
+       "source": "src/f02",
+       "checks": [
+        "check-cli-tools"
+       ]
+      },
+      {
+       "id": "req-sandbox-bwrap",
+       "description": "<text:a9a4eda8>",
+       "source": "src/f02",
+       "checks": [
+        "check-bwrap-usable"
+       ]
+      },
+      {
+       "id": "req-docker",
+       "description": "<text:059bf496>",
+       "source": "src/f02",
+       "checks": [
+        "check-docker-usable"
+       ]
+      },
+      {
+       "id": "req-aws-cli",
+       "description": "<text:e65bf76b>",
+       "source": "src/f03",
+       "checks": [
+        "check-aws-usable"
+       ]
+      },
+      {
+       "id": "req-pytest-usable",
+       "description": "<text:b4b7cf50>",
+       "source": "src/f01",
+       "checks": [
+        "check-pytest-sample"
+       ]
+      },
+      {
+       "id": "req-configured-toolchain-usable",
+       "description": "<text:be1e2724>",
+       "source": "src/f01",
+       "checks": [
+        "check-ruff-documented",
+        "check-replay-done"
+       ]
+      }
+     ],
+     "install": [
+      {
+       "id": "install-uv",
+       "argv": [
+        "t01",
+        "t02",
+        "t03"
+       ],
+       "cwd": "{repo}",
+       "depends_on": [],
+       "timeout_seconds": 300
+      },
+      {
+       "id": "install-gh",
+       "argv": [
+        "t01",
+        "t02",
+        "t04"
+       ],
+       "cwd": "{repo}",
+       "depends_on": [],
+       "timeout_seconds": 300
+      },
+      {
+       "id": "install-bwrap",
+       "argv": [
+        "t01",
+        "t02",
+        "t05"
+       ],
+       "cwd": "{repo}",
+       "depends_on": [],
+       "timeout_seconds": 300
+      },
+      {
+       "id": "install-aws",
+       "argv": [
+        "t01",
+        "t02",
+        "t06"
+       ],
+       "cwd": "{repo}",
+       "depends_on": [],
+       "timeout_seconds": 300
+      },
+      {
+       "id": "install-deps",
+       "argv": [
+        "t01",
+        "t02",
+        "t07"
+       ],
+       "cwd": "{repo}",
+       "depends_on": [
+        "install-uv"
+       ],
+       "timeout_seconds": 1800
+      }
+     ],
+     "checks": [
+      {
+       "id": "check-uv-usable",
+       "argv": [
+        "t01",
+        "t02",
+        "t08"
+       ],
+       "cwd": "{repo}",
+       "depends_on": [],
+       "timeout_seconds": 120
+      },
+      {
+       "id": "check-venv-imports",
+       "argv": [
+        "t01",
+        "t02",
+        "t09"
+       ],
+       "cwd": "{repo}",
+       "depends_on": [],
+       "timeout_seconds": 120
+      },
+      {
+       "id": "check-cli-tools",
+       "argv": [
+        "t01",
+        "t02",
+        "t10"
+       ],
+       "cwd": "{repo}",
+       "depends_on": [],
+       "timeout_seconds": 60
+      },
+      {
+       "id": "check-bwrap-usable",
+       "argv": [
+        "t01",
+        "t02",
+        "t11"
+       ],
+       "cwd": "{repo}",
+       "depends_on": [],
+       "timeout_seconds": 60
+      },
+      {
+       "id": "check-docker-usable",
+       "argv": [
+        "t12",
+        "t13",
+        "t14",
+        "t15"
+       ],
+       "cwd": "{repo}",
+       "depends_on": [],
+       "timeout_seconds": 60
+      },
+      {
+       "id": "check-aws-usable",
+       "argv": [
+        "t01",
+        "t02",
+        "t16"
+       ],
+       "cwd": "{repo}",
+       "depends_on": [],
+       "timeout_seconds": 120
+      },
+      {
+       "id": "check-pytest-sample",
+       "argv": [
+        "t01",
+        "t02",
+        "t17"
+       ],
+       "cwd": "{repo}",
+       "depends_on": [],
+       "timeout_seconds": 600
+      },
+      {
+       "id": "check-ruff-documented",
+       "argv": [
+        "t01",
+        "t02",
+        "t18"
+       ],
+       "cwd": "{repo}",
+       "depends_on": [],
+       "timeout_seconds": 300
+      },
+      {
+       "id": "check-replay-done",
+       "argv": [
+        "t01",
+        "t02",
+        "t19"
+       ],
+       "cwd": "{repo}",
+       "depends_on": [],
+       "timeout_seconds": 300
+      }
+     ],
+     "activation": {
+      "path": [
+       "{cache}/t20",
+       "{cache}/t21",
+       "{cache}/t22",
+       "{cache}/t23"
+      ],
+      "env": {}
+     },
+     "services": [],
+     "runtime_endpoints": [],
+     "local_credentials": [],
+     "criterion_checks": {},
+     "empty_reason": null
+    }
+   },
+   "recorded": {
+    "refusal_codes": [],
+    "guidance_ids": [],
+    "charged": false
+   }
+  },
+  {
+   "call": "journal:executable_parts/d2a645fd7efe8093",
+   "session": "c00-",
+   "turn": null,
+   "reply": {
+    "candidate": {
+     "shard_checks": {
+      "checks": [
+       {
+        "id": "c00-aws-cli",
+        "argv": [
+         "t01",
+         "t02",
+         "t24"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [],
+        "timeout_seconds": 60.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-aws-cli-usable",
+        "argv": [
+         "t01",
+         "t02",
+         "t25"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [],
+        "timeout_seconds": 120.0,
+        "required": false,
+        "scope": []
+       },
+       {
+        "id": "c00-aws-usable-replacement",
+        "argv": [
+         "t01",
+         "t02",
+         "t26"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "c00-aws-cli"
+        ],
+        "timeout_seconds": 120.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-bench-imports",
+        "argv": [
+         "t01",
+         "t02",
+         "t27"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-venv-imports"
+        ],
+        "timeout_seconds": 120.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-budget-evidence",
+        "argv": [
+         "t01",
+         "t02",
+         "t28"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-venv-imports"
+        ],
+        "timeout_seconds": 600.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-check-wiring",
+        "argv": [
+         "t01",
+         "t02",
+         "t29"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-cli-tools"
+        ],
+        "timeout_seconds": 120.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-mypy-strict",
+        "argv": [
+         "t01",
+         "t02",
+         "t30"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-venv-imports"
+        ],
+        "timeout_seconds": 1800.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-nare-version",
+        "argv": [
+         "t01",
+         "t02",
+         "t31"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-venv-imports"
+        ],
+        "timeout_seconds": 120.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-pytest-sandbox-live",
+        "argv": [
+         "t01",
+         "t02",
+         "t32"
+        ],
+        "cwd": "{repo}",
+        "env": {
+         "ENV_01": "t33"
+        },
+        "depends_on": [
+         "check-bwrap-usable"
+        ],
+        "timeout_seconds": 600.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-pytest-tests-sample",
+        "argv": [
+         "t01",
+         "t02",
+         "t34"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-venv-imports"
+        ],
+        "timeout_seconds": 900.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-replay-done",
+        "argv": [
+         "t01",
+         "t02",
+         "t35"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "c00-nare-version"
+        ],
+        "timeout_seconds": 300.0,
+        "required": false,
+        "scope": []
+       },
+       {
+        "id": "c00-ruff-check",
+        "argv": [
+         "t01",
+         "t02",
+         "t36"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-venv-imports"
+        ],
+        "timeout_seconds": 600.0,
+        "required": false,
+        "scope": []
+       },
+       {
+        "id": "c00-ruff-replacement",
+        "argv": [
+         "t01",
+         "t02",
+         "t37"
+        ],
+        "cwd": "{repo}",
+        "env": {
+         "ENV_02": "t38"
+        },
+        "depends_on": [
+         "check-venv-imports"
+        ],
+        "timeout_seconds": 600.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-aws-cli-config",
+        "argv": [
+         "t01",
+         "t02",
+         "t39"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "c00-aws-cli"
+        ],
+        "timeout_seconds": 120.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-aws-list-foundation-models",
+        "argv": [
+         "t01",
+         "t02",
+         "t40"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-aws-usable"
+        ],
+        "timeout_seconds": 120.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-aws-bedrock-usable",
+        "argv": [
+         "t01",
+         "t02",
+         "t41"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "c00-aws-cli"
+        ],
+        "timeout_seconds": 120.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-ruff-repo-config",
+        "argv": [
+         "t01",
+         "t02",
+         "t42"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-venv-imports"
+        ],
+        "timeout_seconds": 600.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-ruff-src-tree-check",
+        "argv": [
+         "t01",
+         "t02",
+         "t37"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-venv-imports"
+        ],
+        "timeout_seconds": 600.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-replay-done-jsonl",
+        "argv": [
+         "t01",
+         "t02",
+         "t19"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "c00-nare-version"
+        ],
+        "timeout_seconds": 300.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c00-replay-done-yes",
+        "argv": [
+         "t01",
+         "t02",
+         "t43"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "c00-nare-version"
+        ],
+        "timeout_seconds": 300.0,
+        "required": true,
+        "scope": []
+       }
+      ],
+      "criterion_checks": {
+       "S1a05aad8e1c8e826": [
+        "check-cli-tools",
+        "c00-check-wiring"
+       ],
+       "S28a3e10d7541bd7b": [
+        "c00-pytest-tests-sample"
+       ],
+       "S2ad534ca35a822bb": [
+        "check-docker-usable"
+       ],
+       "S4171261a9193c0e1": [
+        "c00-ruff-repo-config",
+        "c00-ruff-src-tree-check",
+        "c00-mypy-strict",
+        "c00-ruff-replacement"
+       ],
+       "S4dbe8004e9af122c": [
+        "check-pytest-sample",
+        "c00-pytest-tests-sample",
+        "c00-ruff-repo-config",
+        "c00-ruff-src-tree-check",
+        "c00-mypy-strict"
+       ],
+       "S5acb74a450288b65": [
+        "c00-nare-version"
+       ],
+       "S5f467b099aca8fc0": [
+        "c00-bench-imports"
+       ],
+       "S607f5afb1884673f": [
+        "c00-ruff-repo-config",
+        "c00-ruff-src-tree-check",
+        "c00-mypy-strict",
+        "c00-pytest-tests-sample"
+       ],
+       "S62e2e859dc98bcd8": [
+        "c00-bench-imports",
+        "check-pytest-sample"
+       ],
+       "S66ac17e78d052093": [
+        "check-bwrap-usable"
+       ],
+       "S6bede0eaeedf9202": [
+        "c00-ruff-repo-config",
+        "c00-ruff-src-tree-check",
+        "c00-mypy-strict",
+        "c00-pytest-tests-sample"
+       ],
+       "S76b4bbb7c1f9ebba": [
+        "c00-ruff-repo-config",
+        "c00-ruff-src-tree-check",
+        "c00-mypy-strict",
+        "c00-ruff-replacement"
+       ],
+       "S7925cceee57477a7": [
+        "check-cli-tools",
+        "c00-check-wiring"
+       ],
+       "S95157d332f1ab814": [
+        "check-docker-usable"
+       ],
+       "S96e1ad4f72eb3122": [
+        "check-cli-tools",
+        "c00-check-wiring"
+       ],
+       "Sac1676f80f5ea8e2": [
+        "c00-budget-evidence"
+       ],
+       "Sadbbeafeee492ce7": [
+        "check-uv-usable",
+        "check-venv-imports",
+        "c00-nare-version"
+       ],
+       "Sbf115568690e43ea": [
+        "check-docker-usable"
+       ],
+       "Sbfb0d6bf041cfcc3": [
+        "c00-budget-evidence"
+       ],
+       "Sc1c141f7dd39802a": [
+        "c00-pytest-tests-sample",
+        "c00-aws-cli",
+        "c00-aws-cli-config",
+        "c00-aws-list-foundation-models",
+        "c00-aws-bedrock-usable",
+        "c00-aws-usable-replacement"
+       ],
+       "Scae460c772d00fbd": [
+        "check-cli-tools",
+        "c00-check-wiring"
+       ],
+       "Sdb5325501162a7ea": [
+        "c00-pytest-sandbox-live"
+       ],
+       "Se88b2bd3739a7e7f": [
+        "check-pytest-sample",
+        "c00-pytest-tests-sample"
+       ],
+       "Sf380526d43571a8c": [
+        "check-bwrap-usable",
+        "c00-pytest-sandbox-live",
+        "check-docker-usable"
+       ],
+       "Sfbc3bdf994f2a99d": [
+        "c00-replay-done-jsonl",
+        "c00-replay-done-yes"
+       ]
+      }
+     }
+    }
+   },
+   "recorded": {
+    "refusal_codes": [],
+    "guidance_ids": [],
+    "charged": false
+   }
+  },
+  {
+   "call": "journal:executable_parts/072e78609fc53525",
+   "session": "c01-",
+   "turn": null,
+   "reply": {
+    "candidate": {
+     "shard_checks": {
+      "checks": [
+       {
+        "id": "c01-locked-versions",
+        "argv": [
+         "t01",
+         "t02",
+         "t44"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-venv-imports"
+        ],
+        "timeout_seconds": 120.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c01-mypy-strict-sample",
+        "argv": [
+         "t01",
+         "t02",
+         "t45"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-venv-imports"
+        ],
+        "timeout_seconds": 300.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c01-ruff-check-repo",
+        "argv": [
+         "t01",
+         "t02",
+         "t46"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-venv-imports"
+        ],
+        "timeout_seconds": 600.0,
+        "required": false,
+        "scope": []
+       },
+       {
+        "id": "c01-ruff-sample-check",
+        "argv": [
+         "t01",
+         "t02",
+         "t47"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-venv-imports"
+        ],
+        "timeout_seconds": 300.0,
+        "required": true,
+        "scope": []
+       },
+       {
+        "id": "c01-ruff-repo-src-check",
+        "argv": [
+         "t01",
+         "t02",
+         "t48"
+        ],
+        "cwd": "{repo}",
+        "env": {},
+        "depends_on": [
+         "check-venv-imports"
+        ],
+        "timeout_seconds": 600.0,
+        "required": true,
+        "scope": []
+       }
+      ],
+      "criterion_checks": {
+       "S790a234615682af7": [
+        "c01-locked-versions",
+        "c01-mypy-strict-sample",
+        "c01-ruff-sample-check",
+        "c01-ruff-repo-src-check",
+        "check-venv-imports",
+        "check-pytest-sample",
+        "check-uv-usable",
+        "check-ruff-documented"
+       ]
+      }
+     }
+    }
+   },
+   "recorded": {
+    "refusal_codes": [],
+    "guidance_ids": [],
+    "charged": false
+   }
+  }
+ ]
+}
