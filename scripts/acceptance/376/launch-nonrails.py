@@ -49,6 +49,9 @@ parser.add_argument('--resume-max-repairs', type=int, default=0, help='execution
 # Maintainer ruling 2026-11-28: one trial at normal (medium) effort, compared against nare-native-043 (effort low).
 parser.add_argument('--effort', choices=['low', 'medium', 'high'], default='low',
                     help='model reasoning effort for every phase (default low, as every earlier run)')
+# Maintainer ruling 2026-11-28 (nare-native-048): medium effort outlasted the transport's 600 s read timeout.
+parser.add_argument('--request-timeout', type=float, default=None,
+                    help="per-request model read timeout in seconds (default: the transport's 600; at most 3600)")
 parser.add_argument('--resume-seconds', type=int, default=None,
                     help='attempt seconds for a resumed run (default one hour, plus one per raised repair; at most 8 h)')
 args = parser.parse_args()
@@ -93,6 +96,7 @@ require(proof.get('head_sha') == head and proof.get('test_all') == 'pass' and pr
         'exact-head full local suite and preflight must pass (CI may still be running; stop the run if it fails)')
 if args.reuse_scope_from is not None:
     require((args.reuse_scope_from/args.repo/'environment-attempt.json').is_file(), 'scope source journal missing')
+require(args.request_timeout is None or 60 <= args.request_timeout <= 3600, '--request-timeout must be 60 to 3600')
 if args.resume_from is not None:
     require(args.reuse_scope_from is None, '--resume-from cannot be combined with --reuse-scope-from')
     require(not args.no_execute, '--resume-from exists only to execute; it cannot be combined with --no-execute')
@@ -213,6 +217,7 @@ with candidate_image(args.base, IMAGE_OUTPUT, allow_local_image_id=True) as imag
     sys.argv = [__file__, args.repo, '--snapshots', str(SNAPSHOTS), '--output', str(RUN_OUTPUT), '--image', image,
         '--runtime-policy', str(policy_path), '--model', route['model'], '--base-url', route['base_url'],
         '--api-key-env', route['api_key_env'], '--max-tokens', '32768', '--effort', args.effort,
+        *(['--request-timeout', str(args.request_timeout)] if args.request_timeout is not None else []),
         '--max-review-context-bytes', '1048576', '--phase-timeout', '7200', '--structured-transport', 'json_object',
         '--max-total-reads', '8192', '--context-tokens', '262144',
         '--agent-concurrency', '6', '--max-schema-repairs', '16', '--max-coverage-revisions', '8',

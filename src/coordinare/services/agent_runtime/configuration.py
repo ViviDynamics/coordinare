@@ -26,12 +26,14 @@ class AgentModelConfig:
     base_url: str | None = field(default=None, repr=False)
     api_key: str | None = field(default=None, repr=False)
     structured_transport: Literal['json_schema', 'tool_call', 'json_object'] = 'json_schema'
+    request_timeout: float | None = None
 
     def transport(self, instructions: str) -> Transport:
 
         return make_transport(self.provider, model=self.model, base_url=self.base_url,
                               api_key=self.api_key, max_tokens=self.max_tokens,
-                              temperature=self.temperature, effort=self.effort, system=instructions)
+                              temperature=self.temperature, effort=self.effort, system=instructions,
+                              request_timeout=self.request_timeout)
 
 
 def resolve_conducting(config: ConductingConfig, *, environ: Mapping[str, str]) -> AgentModelConfig:
@@ -56,4 +58,5 @@ def resolve_conducting(config: ConductingConfig, *, environ: Mapping[str, str]) 
         base_url=config.base_url,
         api_key=key,
         structured_transport=config.structured_transport,
+        request_timeout=config.request_timeout,
     )

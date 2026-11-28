@@ -99,6 +99,7 @@ class Profile:
     structured_transport: str = "json_schema"
     max_tokens: int = 32768
     effort: str | None = None
+    request_timeout: float | None = None
     phase_timeout: float = 120
     attempt_timeout: float | None = None
     execute: bool = False
@@ -967,7 +968,8 @@ async def validate_repository(
     if chat is None and (profile.resume_from is None or profile.max_execution_repairs):
         native_model = resolve_conducting(ConductingConfig(backend='openai_api',
             model=profile.model, base_url=profile.base_url, api_key_env=profile.api_key_env,
-            max_tokens=profile.max_tokens, effort=profile.effort), environ=os.environ)
+            max_tokens=profile.max_tokens, effort=profile.effort, request_timeout=profile.request_timeout),
+            environ=os.environ)
         native_calls = ConductorCallLog(TranscriptCollector(output.parent / 'daemon-transcripts',
             enabled=profile.save_transcripts, max_bytes_per_run=TranscriptsConfig().max_bytes_per_run,
             ambient_secrets=os.environ))
@@ -1254,6 +1256,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
     parser.add_argument("--max-tokens", type=int, default=32768)
     parser.add_argument("--effort")
+    parser.add_argument("--request-timeout", type=float, default=None,
+                        help="per-request model read timeout in seconds (default: the transport's 600)")
     parser.add_argument("--structured-transport", choices=["json_schema", "tool_call", "json_object"], default="json_schema")
     parser.add_argument("--phase-timeout", type=float, default=120)
     parser.add_argument("--attempt-timeout", type=float, default=None)
@@ -1304,6 +1308,7 @@ def main(argv: list[str] | None = None) -> int:
         api_key_env=args.api_key_env,
         max_tokens=args.max_tokens,
         effort=args.effort,
+        request_timeout=args.request_timeout,
         structured_transport=args.structured_transport,
         phase_timeout=args.phase_timeout,
         attempt_timeout=args.attempt_timeout,

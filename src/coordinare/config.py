@@ -440,6 +440,9 @@ class ConductingConfig(BaseModel):
     # extended thinking isn't enabled.  Default low because the conducting brain
     # runs short one-shot prompts where extra reasoning budget is mostly waste.
     effort: Literal["low", "medium", "high"] | None = "low"
+    # Per-request read timeout (seconds) for the native API transport; None keeps the transport's default (600 s).
+    # nare-native-048: at medium effort 26 calls outlasted the default on a slow self-hosted model.
+    request_timeout: float | None = Field(default=None, gt=0, le=3600)
     # CLI overrides for subprocess backends (claude_cli / codex_cli / opencode).
     executable: str | None = None
     # OpenAI-compatible base URL override (lets you point openai_api at proxies / Azure).
