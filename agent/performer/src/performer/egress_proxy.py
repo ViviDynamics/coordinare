@@ -34,6 +34,7 @@ import asyncio
 import contextlib
 import re
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import structlog
@@ -330,32 +331,43 @@ def parse_forward(text: str) -> tuple[int, str, int]:
     return int(listen), host, int(port)
 
 
+@dataclass(frozen=True)
+class PerformerLink:
+    """449: what a performer's proxy adds: ports relayed in to it, and the name it follows."""
+
+    #: (listen port, host, port): each listens beside the proxy and relays to its one target.
+    forwards: Sequence[tuple[int, str, int]] = ()
+    #: Serve until this name, having resolved, stops resolving (``follow``).
+    follow: str | None = None
+    resolve: Resolver = _resolves
+    interval: float = FOLLOW_INTERVAL_SECONDS
+
+
 async def serve(
     allow: frozenset[str], host: str | None = None, port: int = DEFAULT_PORT, *, idle_exit: float = 0.0,
-    forwards: Sequence[tuple[int, str, int]] = (), follow_name: str | None = None,
-    resolve: Resolver = _resolves, follow_interval: float = FOLLOW_INTERVAL_SECONDS,
+    link: PerformerLink | None = None,
 ) -> None:
     """Serve until cancelled, or until idle for ``idle_exit`` seconds when that is set, or until
-    the performer named ``follow_name`` is gone when that is set.
+    the name ``link`` follows is gone when that is set.
 
     ``host`` None listens on every interface of the proxy's container: its address on the
-    job's network is not known when it starts. Each of ``forwards`` (listen port, host, port)
-    listens on the same interfaces and relays to its one target.
+    job's network is not known when it starts. ``link``'s forwards listen on the same interfaces.
     """
+    link = link or PerformerLink()
     proxy = EgressProxy(allow)
     server = await asyncio.start_server(proxy.handle, host, port, limit=_HEAD_LIMIT + 1)
     servers = [server]
-    for listen, target_host, target_port in forwards:
+    for listen, target_host, target_port in link.forwards:
         servers.append(await asyncio.start_server(proxy.forward(target_host, target_port), host, listen))
     bound = server.sockets[0].getsockname()[1]
     logger.info(
         "egress_proxy.listening", host=host, port=bound, allowed=sorted(allow), idle_exit=idle_exit,
-        forwards=[f"{listen}={h}:{p}" for listen, h, p in forwards], follow=follow_name,
+        forwards=[f"{listen}={h}:{p}" for listen, h, p in link.forwards], follow=link.follow,
     )
     idle = asyncio.ensure_future(_idle(proxy, idle_exit)) if idle_exit > 0 else None
     ends = [idle] if idle is not None else []
-    if follow_name:
-        ends.append(asyncio.ensure_future(follow(follow_name, resolve=resolve, interval=follow_interval)))
+    if link.follow:
+        ends.append(asyncio.ensure_future(follow(link.follow, resolve=link.resolve, interval=link.interval)))
     if not ends:
         ends.append(asyncio.ensure_future(server.serve_forever()))
     try:
@@ -393,7 +405,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     except ValueError as exc:
         parser.error(str(exc))
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(serve(allow, args.host, args.port, idle_exit=args.idle_exit, forwards=forwards, follow_name=args.follow))
+        link = PerformerLink(forwards=forwards, follow=args.follow)
+        asyncio.run(serve(allow, args.host, args.port, idle_exit=args.idle_exit, link=link))
 
 
 if __name__ == "__main__":

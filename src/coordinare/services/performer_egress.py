@@ -119,15 +119,12 @@ async def up(docker: Docker, config: PerformerEndpointConfig, name: str, image: 
             "--port", str(EGRESS_PROXY_PORT),
             "--forward", f"{PERFORMER_PORT}={target}:{PERFORMER_PORT}", "--follow", target,
         )
-        await _step(docker, "attach its proxy to the internal network", "network", "connect", name, name)
-        inspected = await _step(
-            docker, "read its proxy's address",
-            "container", "inspect", "--format", "{{json .NetworkSettings.Networks}}", name,
+        await _step(
+            docker, "attach its proxy to the internal network (a proxy that exits at once is usually an image "
+            "built before performer.egress_proxy existed: rebuild it from this release)",
+            "network", "connect", name, name,
         )
-        address = network_address(inspected, name)
-        if not address:
-            msg = f"could not set up the egress proxy of performer {config.id}: its proxy has no address on {name}"
-            raise EgressSetupError(msg)
+        address = await _proxy_address(docker, name)
     except BaseException:
         await down(docker, name)
         raise
@@ -163,6 +160,18 @@ async def sweep(docker: Docker) -> None:
         code, _out, _err = await docker("network", "rm", network)
         if code == 0:
             logger.info("performer_egress.swept", network=network)
+
+
+async def _proxy_address(docker: Docker, name: str) -> str:
+    inspected = await _step(
+        docker, "read its proxy's address",
+        "container", "inspect", "--format", "{{json .NetworkSettings.Networks}}", name,
+    )
+    address = network_address(inspected, name)
+    if not address:
+        msg = f"could not set up a performer's egress proxy: its proxy has no address on {name}"
+        raise EgressSetupError(msg)
+    return address
 
 
 async def _step(docker: Docker, what: str, *args: str) -> str:

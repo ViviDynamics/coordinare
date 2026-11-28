@@ -15,6 +15,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -30,7 +31,16 @@ from coordinare.services.performer_egress import (
     SWEEP_GRACE_SECONDS,
 )
 from coordinare.services.performer_lifecycle import ContainerStartError, start_ephemeral
-from coordinare.services.stage_jobs import EGRESS_PROXY_ENV, EGRESS_PROXY_MODULE
+from coordinare.services.stage_jobs import (
+    EGRESS_PROXY_ENV,
+    EGRESS_PROXY_MODULE,
+    EGRESS_SUFFIX,
+    DockerStageJobs,
+    StageJobLaunch,
+    job_name,
+)
+from coordinare.services.stage_providers import stage_jobs_for
+from coordinare.transport.base import TransportError
 
 IMAGE = "coordinare-performer:full"
 ALLOW = ["api.github.com", "llm", "registry.npmjs.org"]
@@ -285,7 +295,7 @@ async def test_the_performer_gets_only_the_internal_network_and_keeps_the_rest_o
 
 @pytest.mark.asyncio
 async def test_the_proxy_runs_unprivileged_publishes_the_performer_port_and_follows_it(docker: dict[str, Any]) -> None:
-    await _start(docker, _config(port=18088, bind_host="0.0.0.0"))  # noqa: S104 - the operator's choice
+    await _start(docker, _config(port=18088, bind_host="0.0.0.0"))
     calls = docker["calls"]()
     proxy = next(a for a in calls if _is_proxy_run(a))
     egress = next(a for a in calls if a[:2] == ["network", "create"])[-1]
@@ -453,3 +463,81 @@ def test_only_an_allowlist_in_proxy_mode_is_proxied() -> None:
     assert not performer_egress.proxied(_config(egress_allowlist=None))
     assert not performer_egress.proxied(_config(egress_allowlist=[]))
     assert not performer_egress.proxied(_config(egress_mode="iptables"))
+
+
+# -- stage-provider jobs without the sandbox --------------------------------------------------
+
+
+def _launch(tmp_path: Path) -> StageJobLaunch:
+    return StageJobLaunch(kind="qare", ref="card-1.qa.abc1234.1", provider="qare", job_dir=tmp_path / "job", token="t0k")
+
+
+@pytest.mark.asyncio
+async def test_a_stage_job_without_the_sandbox_runs_behind_the_proxy_too(tmp_path: Path, docker: dict[str, Any]) -> None:
+    jobs = DockerStageJobs(IMAGE, egress_allowlist=ALLOW, extra_hosts=["llm:192.0.2.10"])
+    assert jobs.proxied
+    name = await jobs.start(_launch(tmp_path))
+    assert name == job_name(tmp_path / "job")
+    calls = docker["calls"]()
+    egress = name + EGRESS_SUFFIX
+    assert not _can_reach(calls, name, "blocked.example")
+    assert _can_reach(calls, name, "api.github.com")
+    created = _index(calls, lambda a: a[:2] == ["network", "create"])
+    proxy = _index(calls, _is_proxy_run)
+    job = _index(calls, _is_performer_run)
+    assert created < proxy < job
+    run = calls[job]
+    assert _option(run, "--network") == egress
+    assert f"{EGRESS_PROXY_ENV}=http://{PROXY_IP}:3128" in run
+    assert "--cap-add" not in run
+    assert not any(a.startswith("--runtime") for a in run)
+    assert not any(a.startswith("PERFORMER_EGRESS_ALLOWLIST") for a in run)
+    proxy_args = calls[proxy]
+    # No sandbox entry point keeps it alive, so it follows its job's (absolute) name instead.
+    assert _option(proxy_args, "--follow") == f"{name}."
+    assert "--idle-exit" not in proxy_args
+    assert not any(a.startswith("--runtime") for a in proxy_args)
+
+
+@pytest.mark.asyncio
+async def test_a_stage_job_whose_proxy_cannot_start_never_starts(tmp_path: Path, docker: dict[str, Any]) -> None:
+    docker["set"](proxy_fails="Error: no such image")
+    jobs = DockerStageJobs(IMAGE, egress_allowlist=ALLOW)
+    with pytest.raises(TransportError, match="start its proxy"):
+        await jobs.start(_launch(tmp_path))
+    assert not any(_is_performer_run(a) for a in docker["calls"]())
+
+
+@pytest.mark.asyncio
+async def test_a_stage_job_probe_with_an_allowlist_has_no_network(tmp_path: Path, docker: dict[str, Any]) -> None:
+    jobs = DockerStageJobs(IMAGE, egress_allowlist=ALLOW)
+    await jobs.probe(["qare", "--version"])
+    (probe,) = [a for a in docker["calls"]() if a[:1] == ["run"]]
+    assert _option(probe, "--network") == "none"
+    assert "--cap-add" not in probe
+
+
+def test_a_stage_job_with_egress_mode_iptables_keeps_the_in_container_baseline() -> None:
+    jobs = DockerStageJobs(IMAGE, egress_allowlist=["api.github.com"])
+    jobs.egress_mode = "iptables"
+    assert not jobs.proxied
+    assert jobs._isolation()[:2] == ["--cap-add", "NET_ADMIN"]
+
+
+def test_the_sandbox_always_uses_the_proxy_and_keeps_its_heartbeat_lifetime() -> None:
+    jobs = DockerStageJobs(IMAGE, egress_allowlist=ALLOW, runtime="sysbox-runc")
+    jobs.egress_mode = "iptables"
+    assert jobs.proxied
+    assert jobs._proxy_lifetime("job") == ["--idle-exit", "180"]
+
+
+def test_a_stage_provider_takes_the_egress_mode_of_its_endpoint() -> None:
+    endpoint = _config(egress_mode="iptables")
+    config = SimpleNamespace(agent_transport="docker", performer_endpoints=[endpoint])
+    provider = SimpleNamespace(image=None, sandbox=None)
+    jobs = stage_jobs_for("qare", provider, config, role="qa")  # type: ignore[arg-type]
+    assert isinstance(jobs, DockerStageJobs)
+    assert not jobs.proxied
+    jobs = stage_jobs_for("qare", provider, SimpleNamespace(agent_transport="docker", performer_endpoints=[_config()]), role="qa")  # type: ignore[arg-type]
+    assert isinstance(jobs, DockerStageJobs)
+    assert jobs.proxied

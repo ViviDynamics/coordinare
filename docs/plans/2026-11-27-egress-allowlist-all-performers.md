@@ -166,13 +166,13 @@ NetworkPolicy that lets performer Pods reach only that proxy and DNS.
 - [x] 2. `entrypoint.sh` with `PERFORMER_EGRESS_PROXY`: waits for the proxy before the backend install,
   refuses to start when it does not answer, exports the proxy variables, refuses both modes
   together (`tests/unit/test_performer_entrypoint.py`).
-- [ ] 3. `start_ephemeral` with an allowlist: network, proxy, connect, address, performer, port, in that
+- [x] 3. `start_ephemeral` with an allowlist: network, proxy, connect, address, performer, port, in that
   order; root in the performer cannot reach a host outside the allowlist even after
   `iptables -F` (network model over the docker arguments); no `NET_ADMIN`; setup failures start
   no performer and tear down; no allowlist gives the same arguments as before
   (`tests/unit/test_449_performer_egress.py`).
-- [ ] 4. `stop`, `cleanup_orphaned` and `port_of` follow the proxy (same file).
-- [ ] 5. `DockerStageJobs` without the sandbox uses the proxy; `egress_mode: iptables` keeps the old
+- [x] 4. `stop`, `cleanup_orphaned` and `port_of` follow the proxy (same file).
+- [x] 5. `DockerStageJobs` without the sandbox uses the proxy; `egress_mode: iptables` keeps the old
   arguments (same file; one assertion in `test_423_providers_in_performer.py` changes).
 - [ ] 6. Docs: `docs/stage-providers.md`, `config.example.yaml`, `deploy/kubernetes/README.md`, AGENTS.md.
 - [ ] 7. Live proof on a disposable Linux VM, commands posted on #449.

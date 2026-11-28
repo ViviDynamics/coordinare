@@ -389,8 +389,9 @@ async def test_serve_forwards_and_ends_once_the_followed_performer_is_gone() -> 
     async with _server(_echo) as echo:
         task = asyncio.create_task(egress_proxy.serve(
             parse_allowlist("api.github.com"), "127.0.0.1", port,
-            forwards=[(forward_port, "127.0.0.1", echo)], follow_name="performer", resolve=resolve,
-            follow_interval=0.02,
+            link=egress_proxy.PerformerLink(
+                forwards=[(forward_port, "127.0.0.1", echo)], follow="performer", resolve=resolve, interval=0.02,
+            ),
         ))
         for _ in range(100):
             try:

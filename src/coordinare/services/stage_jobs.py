@@ -33,6 +33,11 @@ has no route out, and a proxy container (``performer.egress_proxy``) on that net
 the default bridge is its only exit: it relays only to the allowlisted hosts. Containers the
 inner Docker starts are NATed through the job's one interface, so the same holds for them.
 The network and the proxy are made before the job container and removed after it.
+
+449: a provider without the sandbox, whose runs take an allowlist, runs the same way (unless
+the endpoint sets ``egress_mode: iptables``, the old in-container rules). Its job runs the
+performer image's own entry point, which has no heartbeat, so its proxy follows the job's
+name on the network (``--follow``) instead of exiting when idle.
 """
 from __future__ import annotations
 
@@ -207,8 +212,8 @@ JOB_LOG = "runner.log"
 #: Why a job that ended without a word most likely never ran.
 NEVER_STARTED = (
     "its performer exited before the stage job started, so nothing was logged; check that the "
-    "image runs `python -m performer.stage_jobs` and that its entry point can start (an egress "
-    "allowlist needs iptables and NET_ADMIN; in the QAre sandbox, its egress proxy must answer), "
+    "image runs `python -m performer.stage_jobs` and that its entry point can start (with an egress "
+    "allowlist, its egress proxy must answer; with egress_mode: iptables, it needs iptables and NET_ADMIN), "
     "for example with `docker run --rm <image> true`"
 )
 
@@ -241,7 +246,13 @@ class DockerStageJobs:
 
     447: with ``runtime`` and an egress allowlist, the job runs on its own internal network
     behind an allowlisting proxy (module docstring), and probes run with no network.
+
+    449: so does a job without ``runtime`` while ``egress_mode`` is "proxy" (the default; the
+    endpoint's, set by ``stage_jobs_for``); "iptables" keeps the old in-container rules. The
+    sandbox always uses the proxy.
     """
+
+    egress_mode: str = "proxy"
 
     def __init__(
         self,
@@ -266,8 +277,8 @@ class DockerStageJobs:
 
     @property
     def proxied(self) -> bool:
-        """447: a sandbox with an egress allowlist, enforced by a proxy outside the job container."""
-        return bool(self.runtime and self._egress)
+        """447, 449: an egress allowlist enforced by a proxy outside the job container."""
+        return bool(self._egress) and (bool(self.runtime) or self.egress_mode == "proxy")
 
     async def _require_runtime(self) -> None:
         """435: refuse, with the reason, to start a sandboxed container Docker cannot run."""
@@ -397,7 +408,7 @@ class DockerStageJobs:
                 "--user", "65534:65534", "--read-only", *self._hosts(),
                 "--entrypoint", "python", self.image,
                 "-m", EGRESS_PROXY_MODULE, "--allow", ",".join(self._egress), "--port", str(EGRESS_PROXY_PORT),
-                "--idle-exit", str(EGRESS_PROXY_IDLE_EXIT_SECONDS),
+                *self._proxy_lifetime(name),
             ])
             await self._egress_step("attach its proxy to the internal network", ["network", "connect", egress, egress])
             address = await self._proxy_address(egress)
@@ -406,6 +417,14 @@ class DockerStageJobs:
             raise
         logger.info("stage_job.egress_proxy", container=name, network=egress, hosts=list(self._egress))
         return f"http://{address}:{EGRESS_PROXY_PORT}"
+
+    def _proxy_lifetime(self, name: str) -> list[str]:
+        """How the proxy knows its job is over: the sandbox's entry point keeps it alive while the
+        job runs (447); the performer image's own entry point does not, so the proxy follows the
+        job's name, absolute so no search domain can resolve it outside (449)."""
+        if self.runtime:
+            return ["--idle-exit", str(EGRESS_PROXY_IDLE_EXIT_SECONDS)]
+        return ["--follow", f"{name}."]
 
     async def _egress_step(self, what: str, args: list[str]) -> str:
         code, out, err = await self._call(args)

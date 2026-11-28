@@ -129,16 +129,23 @@ def _config(sandbox: str | None) -> QAreProviderConfig:
     return QAreProviderConfig(kind="qare", version=VERSION, sandbox=sandbox, env_passthrough=["OPENAI_API_KEY"])
 
 
-def _jobs(docker_bin: str, sandbox: str | None, *, egress: list[str] | None = None) -> DockerStageJobs:
-    return DockerStageJobs(
+def _jobs(
+    docker_bin: str, sandbox: str | None, *, egress: list[str] | None = None, egress_mode: str = "proxy",
+) -> DockerStageJobs:
+    jobs = DockerStageJobs(
         IMAGE, docker=docker_bin, egress_allowlist=egress, extra_hosts=["llm:192.0.2.10"] if egress else (),
         runtime=SANDBOX_RUNTIME if sandbox == "sysbox" else None,
     )
+    jobs.egress_mode = egress_mode
+    return jobs
 
 
-def _qare(work_dir: Path, docker_bin: str, sandbox: str | None, *, egress: list[str] | None = None) -> QAreProvider:
+def _qare(
+    work_dir: Path, docker_bin: str, sandbox: str | None, *, egress: list[str] | None = None,
+    egress_mode: str = "proxy",
+) -> QAreProvider:
     return QAreProvider("qare", _config(sandbox), work_dir=work_dir, github=_github(),
-                        jobs=_jobs(docker_bin, sandbox, egress=egress))
+                        jobs=_jobs(docker_bin, sandbox, egress=egress, egress_mode=egress_mode))
 
 
 def _make_overdue(job_dir: Path) -> None:
@@ -326,13 +333,22 @@ def _assert_never_the_host_or_privileged(args: list[str], job_dirs: set[str]) ->
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("sandbox", "egress"), [(None, None), (None, ["api.github.com"]), ("sysbox", None)])
+@pytest.mark.parametrize(
+    ("sandbox", "egress", "egress_mode"),
+    [(None, None, "proxy"), (None, ["api.github.com"], "iptables"), ("sysbox", None, "proxy")],
+)
 async def test_no_qare_container_gets_the_host_docker_or_privilege(
-    tmp_path: Path, docker: dict[str, Any], sandbox: str | None, egress: list[str] | None,
+    tmp_path: Path, docker: dict[str, Any], sandbox: str | None, egress: list[str] | None, egress_mode: str,
 ) -> None:
-    """Fails if any container a QAre provider starts gets a Docker socket, privilege, or relaxed security."""
+    """Fails if any container a QAre provider starts gets a Docker socket, privilege, or relaxed security.
+
+    449: an allowlist without the sandbox now runs behind the egress proxy by default, which
+    this file's fake Docker does not model; test_447_sandbox_egress.py runs this guard over that
+    path. Here the allowlist case keeps the in-container mode (egress_mode: iptables).
+    """
     work_dir = tmp_path / "qare"
-    calls = await _everything(_qare(work_dir, docker["bin"], sandbox, egress=egress), work_dir, docker)
+    provider = _qare(work_dir, docker["bin"], sandbox, egress=egress, egress_mode=egress_mode)
+    calls = await _everything(provider, work_dir, docker)
     job_dirs = {str(p) for p in work_dir.iterdir() if p.is_dir()}
     runs = [a for a in calls if a[:1] == ["run"]]
     assert len(runs) >= 2 + (1 if sandbox else 0)  # the version probe, the job, and the engine probe
