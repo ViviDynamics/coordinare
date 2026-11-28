@@ -31,18 +31,16 @@ import pytest
 from performer.stage_jobs import qare as runner
 
 from coordinare.services.stage_jobs import CREDENTIAL_ENV, EGRESS_PROXY_ENV
+from tests.unit import test_447_sandbox_egress as egress
 from tests.unit.qare_fixtures import calls, make_remote, request_spec, scenario
 from tests.unit.stage_job_fixtures import container_env
 from tests.unit.test_435_qare_sandbox import _entry_stubs, _run_entry, _under_sysbox
-from tests.unit.test_447_sandbox_egress import (  # noqa: F401 (a fixture)
-    _is_proxy_run,
-    _submit,
-    docker,
-)
 
 TOKEN = "ghs_" + "450canary" + "0" * 27
 PASSTHROUGH = "OPENAI_API_KEY"
 LINUX = sys.platform.startswith("linux")
+#: 447's fake ``docker``, a fixture.
+docker = egress.docker
 _LARGEST_REGION = 1 << 30
 
 
@@ -319,10 +317,10 @@ def test_the_process_that_waits_on_qare_never_held_the_token(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_the_egress_proxy_container_is_given_no_variable(tmp_path: Path, docker: dict[str, Any]) -> None:  # noqa: F811
+async def test_the_egress_proxy_container_is_given_no_variable(tmp_path: Path, docker: dict[str, Any]) -> None:
     """The proxy runs nothing of the pull request, and needs no secret: it gets none."""
-    _job, _dir, docker_calls = await _submit(tmp_path / "qare", docker)
-    proxy = next(args for args in docker_calls if _is_proxy_run(args))
+    _job, _dir, docker_calls = await egress._submit(tmp_path / "qare", docker)
+    proxy = next(args for args in docker_calls if egress._is_proxy_run(args))
     assert not {"-e", "--env", "--env-file"} & set(proxy), proxy
     assert not any(arg.startswith(("--env=", "--env-file=")) for arg in proxy), proxy
 
