@@ -300,8 +300,8 @@ class ProgettareProvider:
             # The job stops itself at its timeout; this bounds one that never reports.
             await self._jobs.stop(directory)
             return _retry(ref, "overdue", "the Progettare run passed its timeout without saying how it ended")
-        if reported:
-            await self._jobs.ended(directory)  # 462: its proxy and network go with it
+        if reported or (directory / runner.RESULT_FILE).exists():  # 462: also one written while Docker was asked
+            await self._jobs.ended(directory)  # its proxy and network go with it
         return self._ended(ref, directory, request)
 
     def _ended(self, ref: str, directory: Path, request: dict[str, Any]) -> StageJob:

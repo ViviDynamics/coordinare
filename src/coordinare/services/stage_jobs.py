@@ -47,6 +47,7 @@ import functools
 import hashlib
 import ipaddress
 import json
+import re
 import shlex
 import time
 import uuid
@@ -269,6 +270,9 @@ class DockerStageJobs:
     #: egress to the proxy's ``--follow`` and the sweep, and how often it looks meanwhile.
     ended_settle_seconds: float = 30.0
     ended_poll_seconds: float = 1.0
+    #: 462: how often a release asks Docker to remove a gone job's proxy and network (a network
+    #: whose proxy is still being removed can be refused once), ``ended_poll_seconds`` apart.
+    ended_remove_attempts: int = 3
     #: 462: how long ``ended`` holds up its caller; the release goes on in the background after.
     ended_wait_seconds: float = 5.0
 
@@ -384,7 +388,10 @@ class DockerStageJobs:
     async def state(self, job_dir: Path) -> RunState:
         name = job_name(job_dir)
         state = await self._container_state(name)
-        if state is RunState.GONE and self.proxied and await self._egress_down(name):  # 447: its way out goes too
+        if (
+            state is RunState.GONE and self.proxied and name not in self._released
+            and await self._egress_down(name)  # 447: the job is over, so is its way out
+        ):
             self._released.add(name)  # 462: nothing left for ended() to do
         return state
 
@@ -411,8 +418,9 @@ class DockerStageJobs:
         container that is still finishing, and a Docker that is slow to answer holds the caller
         (and so the job's verdict) for ``ended_wait_seconds`` at most. A container still there
         after that keeps its egress: the proxy follows it out, and the sweep is the backstop.
-        A job whose egress is confirmed gone makes no Docker call on a later read; a removal
-        Docker refused is tried again on the next one.
+        A removal Docker refuses is tried ``ended_remove_attempts`` times. A job whose egress
+        is confirmed gone makes no Docker call on a later read; one still not removed is tried
+        again if the job is read again.
         """
         if not self.proxied:
             return
@@ -441,11 +449,15 @@ class DockerStageJobs:
                 await asyncio.sleep(self.ended_poll_seconds)
         except TransportError:
             return
-        if await self._egress_down(name):
-            self._released.add(name)
-            logger.info("stage_job.egress_released", container=name)
-        else:
-            logger.info("stage_job.egress_release_incomplete", container=name)  # the next read tries again
+        for attempt in range(self.ended_remove_attempts):
+            if attempt:
+                await asyncio.sleep(self.ended_poll_seconds)
+            if await self._egress_down(name):
+                self._released.add(name)
+                logger.info("stage_job.egress_released", container=name)
+                return
+        # A reported job is seldom read again: the start sweep is the backstop from here.
+        logger.info("stage_job.egress_release_incomplete", container=name)
 
     # -- 447: the egress network and proxy of a sandboxed job with an allowlist -------------
 
@@ -458,6 +470,11 @@ class DockerStageJobs:
         egress = name + EGRESS_SUFFIX
         with contextlib.suppress(TransportError):
             await self._sweep_egress()
+        stale = self._releasing.pop(name, None)
+        if stale is not None:  # 462: an earlier attempt's release must not touch this attempt's egress
+            stale.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await stale
         await self._egress_down(name)  # an earlier attempt's, if any: the job is not running
         self._released.discard(name)  # 462: this attempt's egress is released when it reports
         labels = [
@@ -535,7 +552,7 @@ class DockerStageJobs:
             except TransportError:
                 gone = False
                 continue
-            if code != 0 and not any(word in err.lower() for word in ("no such", "not found")):
+            if code != 0 and not _already_gone(args[0], err):
                 gone = False
         return gone
 
@@ -661,6 +678,17 @@ async def released(jobs: StageJobs, job_dir: Path) -> bool:
 
 #: ``docker network inspect --format`` for a network's subnets, space separated.
 NETWORK_SUBNETS_FORMAT = "{{range .IPAM.Config}}{{.Subnet}} {{end}}"
+
+
+def _already_gone(command: str, err: str) -> bool:
+    """462: Docker refused a removal because there was nothing to remove (and only that: a
+    daemon that cannot be reached says "no such file or directory", which is no answer)."""
+    text = err.lower()
+    if command == "rm":
+        return "no such container" in text
+    return any(words in text for words in ("no such network", "network not found")) or bool(
+        re.search(r"network \S+ not found", text),
+    )
 
 
 def ipv4_subnet(inspected: str) -> str:

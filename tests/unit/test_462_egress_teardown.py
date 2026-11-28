@@ -246,3 +246,94 @@ async def test_a_status_written_while_the_job_was_read_still_releases_its_egress
     job = await provider.poll(ref)
     assert job.state is JobState.NEEDS_HUMAN
     assert jobs.ended_dirs == [job_dir]
+
+
+@pytest.mark.asyncio
+async def test_a_removal_refused_in_state_is_still_done_when_the_job_reports(tmp_path: Path, docker: dict[str, Any]) -> None:
+    jobs = _jobs(docker["bin"], None, egress=ALLOW)
+    docker["set"](job="missing", network_rm_fails="Error: network is busy")
+    assert await jobs.state(tmp_path / "job") is RunState.GONE
+    docker["clear"]()
+    docker["set"](job="missing")
+    await jobs.ended(tmp_path / "job")
+    assert docker["calls"]()[-2:] == _egress_removal(job_name(tmp_path / "job"))
+
+
+@pytest.mark.asyncio
+async def test_a_removal_docker_refuses_once_is_retried_within_the_same_release(
+    tmp_path: Path, docker: dict[str, Any],
+) -> None:
+    """A reported job is usually not read again, so the release itself tries again."""
+    jobs = _jobs(docker["bin"], None, egress=ALLOW)
+    jobs.ended_poll_seconds = 0.05
+    docker["set"](job="missing", network_rm_fails="Error: network has active endpoints")
+
+    async def frees() -> None:
+        await asyncio.sleep(0.3)
+        docker["set"](job="missing")
+
+    freeing = asyncio.create_task(frees())
+    await jobs.ended(tmp_path / "job")
+    await freeing
+    calls = docker["calls"]()
+    assert calls.count(["network", "rm", job_name(tmp_path / "job") + EGRESS_SUFFIX]) >= 2
+    assert docker["calls"]()[-2:] == _egress_removal(job_name(tmp_path / "job"))
+    docker["clear"]()
+    await jobs.ended(tmp_path / "job")
+    assert docker["calls"]() == [], "released, so a later read asks nothing"
+
+
+@pytest.mark.asyncio
+async def test_a_new_start_of_the_job_cancels_an_earlier_attempts_release(tmp_path: Path, docker: dict[str, Any]) -> None:
+    """A stale release must never take down the egress a new attempt just made."""
+    jobs = _jobs(docker["bin"], None, egress=ALLOW)
+    jobs.ended_settle_seconds, jobs.ended_poll_seconds, jobs.ended_wait_seconds = 60, 2, 0.05
+    job_dir = tmp_path / "job"
+    docker["set"](job="running")
+    await jobs.ended(job_dir)  # its container still up: the release waits in the background
+    stale = jobs._releasing[job_name(job_dir)]
+    for _ in range(100):  # until it has looked once and gone to sleep
+        if any(c[:2] == ["container", "inspect"] for c in docker["calls"]()):
+            break
+        await asyncio.sleep(0.02)
+    await asyncio.sleep(0.2)
+    assert not stale.done()
+    docker["set"](job="missing")  # the container goes, and the job is started again at once
+    await jobs.start(StageJobLaunch(kind="qare", ref="r1", provider="qare", job_dir=job_dir))
+    assert stale.cancelled()
+    assert job_name(job_dir) not in jobs._releasing
+
+
+@pytest.mark.asyncio
+async def test_a_progettare_result_written_while_the_job_was_read_still_releases_its_egress(tmp_path: Path) -> None:
+    class _ReportsWhileAsked(_Recording):
+        async def state(self, job_dir: Path) -> RunState:
+            (job_dir / progettare_runner.RESULT_FILE).write_text(json.dumps(
+                {"phase": "runner", "exit_code": None, "detail": "the runner stopped unexpectedly"},
+            ))
+            return RunState.GONE
+
+    jobs = _ReportsWhileAsked()
+    config = ProgettareProviderConfig(
+        kind="progettare", version="2026.11.2", runs_dir=str(tmp_path / "runs"), gh_token_env="PROGETTARE_462_TOKEN",
+    )
+    provider = ProgettareProvider("progettare", config, jobs=jobs)
+    ref = _work_item().request_id(1)
+    directory = tmp_path / "runs" / ref
+    directory.mkdir(parents=True)
+    (directory / progettare_runner.REQUEST_FILE).write_text(json.dumps({"request_id": ref, "timeout_seconds": 60}))
+    await provider.poll(ref)
+    assert jobs.ended_dirs == [directory]
+
+
+@pytest.mark.parametrize(("command", "err", "gone"), [
+    ("rm", "Error response from daemon: No such container: x-egress", True),
+    ("network", "Error response from daemon: network x-egress not found", True),
+    ("network", "Error: network is busy: has active endpoints", False),
+    ("network", "error during connect: dial unix /var/run/docker.sock: connect: no such file or directory", False),
+    ("rm", 'context "remote" not found', False),
+])
+def test_only_dockers_nothing_to_remove_answer_counts_as_gone(command: str, err: str, gone: bool) -> None:
+    from coordinare.services.stage_jobs import _already_gone
+
+    assert _already_gone(command, err) is gone
