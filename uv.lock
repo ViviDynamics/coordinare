@@ -456,7 +456,7 @@ requires-dist = [
     { name = "mcp", specifier = "==2.3.0" },
     { name = "mutmut", marker = "extra == 'dev'", specifier = ">=3.8" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
-    { name = "nare", url = "https://github.com/ViviDynamics/nare/releases/download/2026.11.107/nare-2026.11.107-py3-none-any.whl" },
+    { name = "nare", url = "https://github.com/ViviDynamics/nare/releases/download/2026.11.135/nare-2026.11.135-py3-none-any.whl" },
     { name = "openapi-spec-validator", marker = "extra == 'dev'", specifier = ">=0.7" },
     { name = "opentelemetry-proto", marker = "extra == 'otlp'", specifier = ">=1.27" },
     { name = "prometheus-client", specifier = ">=0.21" },
@@ -1833,15 +1833,15 @@ wheels = [
 
 [[package]]
 name = "nare"
-version = "2026.11.107"
-source = { url = "https://github.com/ViviDynamics/nare/releases/download/2026.11.107/nare-2026.11.107-py3-none-any.whl" }
+version = "2026.11.135"
+source = { url = "https://github.com/ViviDynamics/nare/releases/download/2026.11.135/nare-2026.11.135-py3-none-any.whl" }
 dependencies = [
     { name = "anthropic" },
     { name = "mcp" },
     { name = "pillow" },
 ]
 wheels = [
-    { url = "https://github.com/ViviDynamics/nare/releases/download/2026.11.107/nare-2026.11.107-py3-none-any.whl", hash = "sha256:8b00e7a098c2a9f87357fcb0893b6f86f06191074beb2d33b9e3b93e09eea509" },
+    { url = "https://github.com/ViviDynamics/nare/releases/download/2026.11.135/nare-2026.11.135-py3-none-any.whl", hash = "sha256:a85c457b6ce8045a238478744191809003a33c82fb050f171f772c8dc6a3616d" },
 ]
 
 [package.metadata]

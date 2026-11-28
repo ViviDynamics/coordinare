@@ -18,7 +18,7 @@ dependencies = [
     "langgraph>=0.2",
     "langgraph-checkpoint-postgres>=2.0",
     "anthropic>=0.40",
-    "nare @ https://github.com/ViviDynamics/nare/releases/download/2026.11.107/nare-2026.11.107-py3-none-any.whl",
+    "nare @ https://github.com/ViviDynamics/nare/releases/download/2026.11.135/nare-2026.11.135-py3-none-any.whl",
     "gql[aiohttp]>=3.5",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
