@@ -74,3 +74,64 @@ coordinare service status
 Use `coordinare service install --config /absolute/path/config.yaml` for a
 custom setup directory. For a foreground process, run `coordinare` or the
 explicit config command printed by init. See [user services](service.md).
+
+## Egress allowlist: the proxy is now the default
+
+This applies when a Docker performer endpoint sets `egress_allowlist`. Every
+performer on such an endpoint now runs on an internal Docker network whose only
+exit is an allowlisting egress proxy, and the performer no longer gets
+`NET_ADMIN`. This covers ephemeral performers of every role and stage provider
+jobs (#449). Endpoints without `egress_allowlist` are unchanged. Details are in
+[egress allowlist](egress-allowlist.md).
+
+### Update performer images before starting the upgraded daemon
+
+The proxy runs from the endpoint's own image. Images built before #448 have no
+`performer.egress_proxy` module, so on an endpoint with an allowlist every
+performer start fails at "attach its proxy", and the error says to rebuild the
+image. Nothing starts without the proxy.
+
+Update the images after installing the new release and before starting the
+daemon. For a setup made by init, the image update command above pulls and pins
+the image that matches the release:
+
+```sh
+coordinare init --force --run-mode docker
+```
+
+An endpoint whose `image` you build yourself must be rebuilt from this release.
+
+### Tools that ignore proxy settings fail closed
+
+The performer's network has no route out and resolves no outside names, so a
+tool that ignores the proxy variables cannot connect. It fails; it does not
+leak. This includes:
+
+- git over SSH, `ssh` and `scp` (coordinare clones over HTTPS)
+- Java, Maven and Gradle, unless the build's own settings name the proxy
+- raw TCP to an allowlisted host, such as a database or SMTP server
+- Node older than 22.21 pinned by a project (the image's own Node uses the proxy)
+
+If an endpoint's jobs need one of these, set `egress_mode: iptables` on that
+endpoint. It restores the previous behaviour exactly: `NET_ADMIN` and iptables
+rules inside the container. That mode is advisory. Code in the performer runs
+as root with `NET_ADMIN` and can remove the rules, and DNS stays open. A QAre
+provider with `sandbox: sysbox` always uses the proxy.
+
+```yaml
+performer_endpoints:
+  - id: java-builds
+    mode: ephemeral
+    roles: [implementer]
+    image: coordinare-performer:full
+    egress_allowlist: [llm, api.github.com, github.com, repo.maven.apache.org]
+    egress_mode: iptables          # advisory: root in the container can undo it
+```
+
+### Where the allowlist is not enforced
+
+- **Kubernetes:** `egress_allowlist` is not enforced by a NetworkPolicy yet.
+  The Helm chart's opt-in policy takes CIDRs, not hostnames. Tracked in #454.
+- **Persistent performers** (`mode: persistent`): the operator starts these
+  containers, so coordinare has never applied `egress_allowlist` to them. This
+  release does not change that.
