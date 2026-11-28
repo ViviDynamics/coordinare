@@ -71,7 +71,7 @@ elif args[:1] == ["run"] and state.get("run_fails"):
     sys.stderr.write(state["run_fails"] + "\n")
     sys.exit(125)
 elif args[:1] == ["run"]:
-    if args[-1].startswith("docker info"):
+    if "docker info" in args[-1]:
         if state.get("engine"):
             print(state["engine"])
         else:
@@ -176,7 +176,8 @@ def test_sysbox_is_the_one_sandbox_the_config_accepts() -> None:
 
 
 @pytest.mark.parametrize("name", ["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
-                                  "DOCKER_CONFIG", "BUILDKIT_HOST", "CONTAINER_HOST"])
+                                  "DOCKER_CONFIG", "BUILDKIT_HOST", "CONTAINER_HOST",
+                                  "TESTCONTAINERS_HOST_OVERRIDE", "PODMAN_HOST"])
 def test_a_sandbox_never_passes_a_docker_client_variable(name: str) -> None:
     """A passed DOCKER_HOST would point the job at another daemon instead of its own engine."""
     with pytest.raises(ValidationError, match="sandbox"):
@@ -268,7 +269,7 @@ async def test_sysbox_adds_exactly_the_runtime_flag_to_every_container(tmp_path:
     # Every container the sandbox starts: the off arguments, plus the flag right after `run`.
     names_off: dict[str, str] = {}
     names_on: dict[str, str] = {}
-    sandbox_only = [a for a in on_runs if a[-1].startswith("docker info")]
+    sandbox_only = [a for a in on_runs if "docker info" in a[-1]]
     assert len(sandbox_only) == 1, "health checks the job image's own engine once, in sandbox mode only"
     shared = [a for a in on_runs if a not in sandbox_only]
     assert len(shared) == len(off_runs)
@@ -393,6 +394,33 @@ async def test_a_runtime_that_goes_away_is_reported_as_missing_and_checked_again
     with pytest.raises(TransportError, match="Install Sysbox"):
         await jobs.probe(["qare", "--version"])
     assert len([a for a in docker["calls"]() if a[:1] == ["info"]]) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_sysbox_that_fails_to_start_a_container_keeps_its_own_reason(
+    tmp_path: Path, docker: dict[str, Any],
+) -> None:
+    """Sysbox is registered but broken: say what Docker said, not "install Sysbox"."""
+    jobs = _jobs(docker["bin"], "sysbox")
+    docker["set"](runtimes=["runc", SANDBOX_RUNTIME], run_fails=(
+        "docker: Error response from daemon: OCI runtime create failed: sysbox-runc: "
+        "failed to register with sysbox-mgr: connection refused"
+    ))
+    with pytest.raises(TransportError, match="sysbox-mgr") as caught:
+        await jobs.probe(["qare", "--version"])
+    assert "Install Sysbox" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_the_engine_is_checked_before_the_qare_version(tmp_path: Path, docker: dict[str, Any]) -> None:
+    """A sandbox whose engine fails reports the engine, never a misleading version mismatch."""
+    docker["set"](runtimes=["runc", SANDBOX_RUNTIME], version=VERSION, engine="")
+    ok, detail = await _qare(tmp_path / "qare", docker["bin"], "sysbox").health()
+    assert not ok
+    assert "Docker engine" in detail
+    runs = [a for a in docker["calls"]() if a[:1] == ["run"]]
+    assert len(runs) == 1
+    assert "docker info" in runs[0][-1]
 
 
 @pytest.mark.asyncio
@@ -559,7 +587,7 @@ def _entry_stubs(tmp_path: Path, *, dockerd: str = "serve") -> dict[str, Path]:
             f'echo "dockerd $*" >> "{log}"\n'
             + (f': > "{ready}"\nexec sleep 5\n' if dockerd == "serve" else "echo 'mount: permission denied' >&2\nexit 1\n")
         ),
-        "docker": f'echo "docker $*" >> "{log}"\n[ -e "{ready}" ] || exit 1\n',
+        "docker": f'if [ -e "{ready}" ]; then echo "docker $* ready" >> "{log}"; exit 0; fi\nexit 1\n',
     }
     for name, body in stubs.items():
         path = bindir / name
@@ -599,8 +627,9 @@ def test_the_entry_point_starts_dockerd_before_the_job(tmp_path: Path) -> None:
     assert len(started) == 1
     job = "base sh -c exec python -m performer.stage_jobs qare /job"
     assert job in log
-    assert log.index(job) == len(log) - 1, "the job starts last, once dockerd answered"
-    assert log[log.index(job) - 1] == "docker info"
+    assert log[-1] == job, "the job starts last"
+    assert "docker info ready" in log
+    assert log.index(job) > log.index("docker info ready"), "only once dockerd answered"
     # The inner engine is never told to listen anywhere but its own socket in the container.
     assert "-H" not in started[0].split()
     assert "tcp://" not in started[0]
@@ -618,7 +647,8 @@ def test_outside_sysbox_the_entry_point_says_so_and_runs_the_job_without_docker(
 def _under_sysbox(stubs: dict[str, Path]) -> None:
     (stubs["bin"].parent / "mountinfo").write_text(
         "22 1 0:21 / / rw - overlay overlay rw\n"
-        "30 22 0:44 /sys /proc/sys rw,nosuid - sysboxfs sysboxfs rw\n",
+        "1234 1100 0:61 /sys /proc/sys rw,nosuid,nodev,relatime - fuse sysboxfs "
+        "rw,user_id=0,group_id=0,default_permissions,allow_other\n",
     )
 
 
@@ -630,6 +660,14 @@ def test_under_sysbox_a_dockerd_that_does_not_answer_stops_the_container(tmp_pat
     assert result.returncode != 0
     assert "refusing to start" in result.stderr
     assert not any(line.startswith("base") for line in _log(stubs))
+
+
+def test_a_fuse_mount_that_is_not_sysbox_is_not_read_as_sysbox(tmp_path: Path) -> None:
+    stubs = _entry_stubs(tmp_path, dockerd="die")
+    (tmp_path / "mountinfo").write_text("40 22 0:50 / /mnt rw - fuse sshfs rw,user_id=0\n")
+    result = _run_entry(stubs, None, "true")
+    assert result.returncode == 0, result.stderr
+    assert _log(stubs)[-1] == "base true"
 
 
 def test_under_sysbox_a_dockerd_that_answers_runs_the_job(tmp_path: Path) -> None:

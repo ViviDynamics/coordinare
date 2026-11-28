@@ -93,7 +93,10 @@ _LAUNCH_GRACE_SECONDS = 120.0
 _OVERDUE_GRACE_SECONDS = 300.0
 #: 435: what the sandbox image must answer: its engine (started by its entry point),
 #: compose and buildx, which QAre needs to boot an app.
-_SANDBOX_ENGINE_CHECK = "docker info --format '{{.ServerVersion}}' && docker compose version --short && docker buildx version"
+_SANDBOX_ENGINE_CHECK = (
+    "command -v docker >/dev/null || { echo 'this image has no docker CLI' >&2; exit 3; }; "
+    "docker info --format '{{.ServerVersion}}' && docker compose version --short && docker buildx version"
+)
 #: Starting dockerd in a fresh container takes a few seconds; the image may first be pulled.
 _SANDBOX_ENGINE_TIMEOUT_SECONDS = 180.0
 #: A version check starts a container, which may first pull the image.
@@ -230,6 +233,11 @@ class QAreProvider:
         """The performer has QAre at the pinned version, and ``work_dir`` is writable."""
         now = time.monotonic()
         if self._healthy_at is None or now - self._healthy_at > _HEALTH_REUSE_SECONDS:
+            if self._config.sandbox is not None:
+                # 435: first, as the sandbox image refuses to run anything without its engine.
+                engine_ok, engine = await self._sandbox_engine()
+                if not engine_ok:
+                    return False, engine
             # In a container of the image the runs use, with only the names QAre may read.
             try:
                 code, out, err = await self._jobs.probe(
@@ -244,10 +252,6 @@ class QAreProvider:
             if code != 0 or installed != self._config.version:
                 shown = installed or err.strip()[:200]
                 return False, f"qare --version printed {shown!r}; the pinned version is {self._config.version}"
-            if self._config.sandbox is not None:
-                engine_ok, engine = await self._sandbox_engine()
-                if not engine_ok:
-                    return False, engine
             self._healthy_at = now
         try:
             self._work_dir.mkdir(parents=True, exist_ok=True)

@@ -250,7 +250,7 @@ class DockerStageJobs:
 
     def _check_runtime_refused(self, err: str) -> None:
         """A Docker that no longer knows the sandbox runtime: say so, and check it again next time."""
-        if self.runtime and self.runtime in err and "runtime" in err.lower():
+        if self.runtime and self.runtime in err and "unknown or invalid runtime name" in err.lower():
             self._runtime_listed = False
             raise TransportError(runtime_missing(self.runtime))
 

@@ -31,7 +31,8 @@ log="${SANDBOX_DOCKERD_LOG:-/var/log/dockerd.log}"
 mountinfo="${SANDBOX_MOUNTINFO:-/proc/self/mountinfo}"
 
 under_sysbox=0
-if grep -q " - sysboxfs " "${mountinfo}" 2>/dev/null; then
+# Sysbox serves /proc and /sys files through FUSE: "... - fuse sysboxfs ...".
+if grep -Eq ' - fuse(\.[^ ]*)? sysboxfs ' "${mountinfo}" 2>/dev/null; then
   under_sysbox=1
 fi
 

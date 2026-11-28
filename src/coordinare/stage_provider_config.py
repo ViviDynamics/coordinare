@@ -115,9 +115,11 @@ class ScrutareProviderConfig(BaseModel):
 #: 442: variables that would move QAre's browser cache away from what the image links in.
 _QARE_BROWSER_CACHE_ENV = frozenset({"XDG_CACHE_HOME", "PLAYWRIGHT_BROWSERS_PATH"})
 _QARE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+_-]*$")
-#: 435: variables that point a Docker, BuildKit or Podman client at a daemon. A sandboxed run
+#: 435: variables that point a Docker, BuildKit, Podman or Testcontainers client at a daemon. A sandboxed run
 #: must talk only to its own engine, so none of them may be passed through.
-_DOCKER_CLIENT_ENV = re.compile(r"^(DOCKER_|BUILDKIT_|BUILDX_|COMPOSE_|CONTAINER_HOST$|CONTAINERD_)")
+_DOCKER_CLIENT_ENV = re.compile(
+    r"^(DOCKER_|BUILDKIT_|BUILDX_|COMPOSE_|CONTAINERD_|PODMAN_|TESTCONTAINERS_|CONTAINER_HOST$)",
+)
 
 
 class QAreProviderConfig(BaseModel):
