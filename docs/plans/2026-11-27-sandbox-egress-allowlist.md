@@ -105,6 +105,10 @@ pass the proxy, and the hosts in the allowlist. Image pulls work through dockerd
 - Other containers on the default bridge can reach the proxy (it listens there too, for its
   route out). That gives them the allowlisted hosts only, which they can already reach.
 - Docker address pools: each running sandboxed run with an allowlist holds one network.
+- Inside a `CONNECT` tunnel the proxy sees only the host it was asked for, not TLS SNI or the
+  `Host` header within. A shared front end serving an allowed name (a CDN) could be asked for
+  another site behind it (domain fronting). The iptables baseline, which allowed addresses,
+  had the same limit. Plain requests get their `Host` rewritten to the checked host.
 
 - DNS. The job container uses Docker's embedded resolver on its network. Whether that
   resolver forwards outside names for a container on an internal network depends on the

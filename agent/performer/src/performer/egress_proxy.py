@@ -40,12 +40,14 @@ _CONNECT_TIMEOUT_SECONDS = 30.0
 _HALF_CLOSE_GRACE_SECONDS = 60.0
 _CHUNK = 64 * 1024
 _MAX_PORT = 65535
+_HTTP_PORT = 80
 _REQUEST_LINE_PARTS = 3  # method, target, version
 _HOST = re.compile(r"^(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?\.)*[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$")
 _IPV6 = re.compile(r"^[0-9a-f:.]+$")
-#: Request headers not passed upstream on a plain request: the proxy's own, and the
-#: connection's, which the proxy sets to ``close``.
-_DROPPED_HEADERS = (b"proxy-authorization", b"proxy-connection", b"connection", b"keep-alive")
+#: Request headers not passed upstream on a plain request: the proxy's own, the connection's,
+#: which the proxy sets to ``close``, and Host, which it sets to the host it checked, so a
+#: virtual-hosted server is never asked for another site than the allowed one.
+_DROPPED_HEADERS = (b"proxy-authorization", b"proxy-connection", b"connection", b"keep-alive", b"host")
 
 Connector = Callable[[str, int], Awaitable[tuple[asyncio.StreamReader, asyncio.StreamWriter]]]
 
@@ -130,7 +132,12 @@ class EgressProxy:
         host, port, path = _http_target(target)
         upstream = await self._open_allowed(host, port)
         kept = [line for line in lines[1:] if line.split(b":", 1)[0].strip().lower() not in _DROPPED_HEADERS]
-        request = [f"{method} {path} {version}".encode("latin-1"), *kept, b"Connection: close"]
+        name = f"[{host}]" if ":" in host else host
+        authority = name if port == _HTTP_PORT else f"{name}:{port}"
+        request = [
+            f"{method} {path} {version}".encode("latin-1"), f"Host: {authority}".encode("latin-1"), *kept,
+            b"Connection: close",
+        ]
         upstream[1].write(b"\r\n".join(request) + b"\r\n\r\n")
         await upstream[1].drain()
         await self._relay(reader, writer, *upstream, plain=True)
@@ -186,11 +193,14 @@ def _split_authority(target: str) -> tuple[str, int]:
 
 def _http_target(target: str) -> tuple[str, int, str]:
     """Host, port and origin-form path of an absolute ``http://`` request target."""
-    url = urlsplit(target)
+    try:
+        url = urlsplit(target)
+    except ValueError as exc:
+        raise _RefusedError(400, "malformed request target") from exc
     if url.scheme.lower() != "http" or not url.hostname:
         raise _RefusedError(400, "only CONNECT and absolute http:// requests are proxied")
     try:
-        port = url.port or 80
+        port = url.port or _HTTP_PORT
     except ValueError as exc:
         raise _RefusedError(400, "bad port") from exc
     path = (url.path or "/") + (f"?{url.query}" if url.query else "")

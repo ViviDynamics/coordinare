@@ -117,6 +117,7 @@ async def test_a_plain_request_to_a_host_outside_the_allowlist_is_refused_and_ne
     b"CONNECT api.github.com:99999 HTTP/1.1\r\n\r\n",
     b"CONNECT bad host:443 HTTP/1.1\r\n\r\n",
     "CONNECT api.github.com:\u00b2 HTTP/1.1\r\n\r\n".encode("latin-1"),  # a digit to isdigit(), not to int()
+    b"GET http://[bad/ HTTP/1.1\r\n\r\n",  # urlsplit raises on this
     b"nonsense\r\n\r\n",
 ])
 @pytest.mark.asyncio
@@ -286,3 +287,22 @@ async def test_a_tunnel_left_half_open_is_closed_after_the_grace() -> None:
                 await asyncio.sleep(0.01)
             assert proxy.active == 0
         release.set()
+
+
+@pytest.mark.asyncio
+async def test_a_plain_request_goes_upstream_with_the_host_it_was_checked_for() -> None:
+    """A Host header naming another site may not ride along to the allowed host's server."""
+    seen: list[bytes] = []
+
+    async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        seen.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    dialled: list[tuple[str, int]] = []
+    async with _server(upstream) as port_up, _proxy(["a.allowed"], _routing(port_up, dialled)) as port:
+        await _ask(port, b"GET http://a.allowed:8080/x HTTP/1.1\r\nHost: blocked.example\r\nhost: other.example\r\n\r\n")
+    lines = seen[0].lower().split(b"\r\n")
+    hosts = [line for line in lines if line.startswith(b"host:")]
+    assert hosts == [b"host: a.allowed:8080"], seen[0]
