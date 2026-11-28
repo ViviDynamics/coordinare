@@ -129,7 +129,9 @@ leak. This includes:
 - git over SSH, `ssh` and `scp` (coordinare clones over HTTPS)
 - Java, Maven and Gradle, unless the build's own settings name the proxy
 - raw TCP to an allowlisted host, such as a database or SMTP server
-- Node older than 22.21 pinned by a project (the image's own Node uses the proxy)
+- Node that does not honour `NODE_USE_ENV_PROXY`, pinned by a project: Node 20,
+  Node 22 before 22.21, and for `http` and `https` Node 24 before 24.5 (the
+  image's own Node uses the proxy)
 
 If an endpoint's jobs need one of these, set `egress_mode: iptables` on that
 endpoint. It restores the previous behaviour exactly: `NET_ADMIN` and iptables

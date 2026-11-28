@@ -104,8 +104,9 @@ if [ -n "${proxy}" ]; then
         "$4" "$5" >/dev/null 2>&1
     done' heartbeat "$$" "${heartbeat}" "${SANDBOX_PYTHON:-python3}" "${hostport%:*}" "${hostport##*:}" \
     </dev/null >/dev/null 2>&1 &
+  # 461: Node's own fetch and http (QAre's) ignore the proxy variables unless NODE_USE_ENV_PROXY=1.
   export HTTP_PROXY="${proxy}" HTTPS_PROXY="${proxy}" http_proxy="${proxy}" https_proxy="${proxy}"
-  export NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1"
+  export NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1" NODE_USE_ENV_PROXY=1
   echo "INFO: egress goes out through ${proxy} only" >&2
 fi
 

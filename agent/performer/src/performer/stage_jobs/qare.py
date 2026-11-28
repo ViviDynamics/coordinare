@@ -66,10 +66,12 @@ ERROR = "error"  # a step before the verdict failed; nothing was decided
 TIMEOUT = "timeout"  # the run took longer than timeout_seconds
 
 #: What QAre and the nare it runs may see of the job's environment. Everything else
-#: stays out; the operator adds names with ``env_passthrough``.
+#: stays out; the operator adds names with ``env_passthrough``. 461: QAre runs on Node,
+#: whose own requests ignore the proxy variables unless ``NODE_USE_ENV_PROXY`` is set (the
+#: entry point sets it next to them behind the egress proxy).
 BASE_ENV = (
     "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "TZ",
-    "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
+    "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy", "NODE_USE_ENV_PROXY",
     "SSL_CERT_FILE", "SSL_CERT_DIR",
     "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME",
 )

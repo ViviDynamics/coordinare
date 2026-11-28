@@ -45,7 +45,11 @@ For each performer, coordinare runs:
    `HTTP_PROXY`, `HTTPS_PROXY` (both cases), `NO_PROXY=localhost,127.0.0.1,::1` and
    `NODE_USE_ENV_PROXY=1` before anything else runs, the backend CLI install included. These
    replace any proxy variables the endpoint's `env` sets: an upstream proxy is not supported in
-   this mode.
+   this mode. A stage job passes all of them, `NODE_USE_ENV_PROXY` included, to QAre and
+   Progettare, so QAre's own Node requests (its target health check, for example) use the proxy
+   too, with or without the sandbox. The operator does not need to pass it. Like every other
+   client there, they reach only loopback directly, so a QA profile addresses the app it boots
+   on `localhost`.
 
 Docker publishes no port of a container whose only network is internal, so the proxy publishes
 the performer's port (`bind_host`, `port`) and relays each connection to the performer. The
@@ -85,7 +89,7 @@ proxy variables fails to connect. It fails closed. It does not leak.
 | Tool | What happens |
 | --- | --- |
 | git over SSH, `ssh`, `scp` | Fails. coordinare clones over HTTPS. A `ProxyCommand` that speaks `CONNECT` reaches an allowlisted host on any port. |
-| Node's own `fetch` and `http` | Use the proxy through `NODE_USE_ENV_PROXY=1` on Node 22.21 and later (the image's Node). A project's pinned older Node ignores it and fails. |
+| Node's own `fetch`, `http` and `https` | Use the proxy through `NODE_USE_ENV_PROXY=1` on Node 22.21 or later in the 22 line (the image's Node), and on Node 24.5 or later (24.0 to 24.4 apply it to `fetch` only). Node 20, and Node 22 before 22.21, ignore the variable, so a project that pins one fails to connect. |
 | Java, Maven, Gradle | Fail unless the build's own settings name the proxy. |
 | Raw TCP to an allowlisted host (a database, SMTP) | Fails unless the client speaks `CONNECT`. |
 | DNS lookups of outside names | Not answered; the proxy resolves names. The DNS channel the iptables mode leaves open is gone. |

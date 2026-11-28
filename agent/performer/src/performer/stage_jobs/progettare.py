@@ -28,9 +28,10 @@ RUNS_DIR = "runs"
 #: Bound on the clone, separate from the run's own timeout.
 CLONE_TIMEOUT_SECONDS = 600
 #: Environment every run gets, when the job has it. Anything else is named in pass_env.
+#: 461: ``NODE_USE_ENV_PROXY`` with the proxy variables, so Node's own requests use them too.
 BASE_ENV = (
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR",
-    "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
+    "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy", "NODE_USE_ENV_PROXY",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO",
 )
 _TAIL = 2000
