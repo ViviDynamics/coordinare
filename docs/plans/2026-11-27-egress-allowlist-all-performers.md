@@ -163,7 +163,7 @@ NetworkPolicy that lets performer Pods reach only that proxy and DNS.
 
 - [x] 1. `performer.egress_proxy --forward` relays a port to a fixed address and `--follow` exits once a
   name stops resolving (`agent/performer/tests/unit/test_egress_proxy.py`, real sockets).
-- [ ] 2. `entrypoint.sh` with `PERFORMER_EGRESS_PROXY`: waits for the proxy before the backend install,
+- [x] 2. `entrypoint.sh` with `PERFORMER_EGRESS_PROXY`: waits for the proxy before the backend install,
   refuses to start when it does not answer, exports the proxy variables, refuses both modes
   together (`tests/unit/test_performer_entrypoint.py`).
 - [ ] 3. `start_ephemeral` with an allowlist: network, proxy, connect, address, performer, port, in that

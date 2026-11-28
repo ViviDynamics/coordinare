@@ -15,6 +15,40 @@
 #     the same address) is also reachable.
 # For durable enforcement, front the container with a proxy (squid/envoy)
 # rather than relying on this in-container firewall.
+#
+# 449: coordinare does exactly that for every Docker performer it starts with an
+# allowlist (unless the endpoint sets egress_mode: iptables): the container is on
+# a Docker network with no route out, and PERFORMER_EGRESS_PROXY names the
+# allowlisting proxy, in another container, that is its only exit. This block
+# only waits for the proxy, before anything here needs the network, and points
+# every client at it; nothing in here can widen what the proxy allows. A proxy
+# that does not answer stops the container, so the performer never becomes ready
+# and the dispatch is retried, never run without its way out.
+egress_proxy="${PERFORMER_EGRESS_PROXY:-}"
+if [ -n "${egress_proxy}" ]; then
+  if [ -n "${PERFORMER_EGRESS_ALLOWLIST:-}" ]; then
+    echo "ERROR: PERFORMER_EGRESS_PROXY and PERFORMER_EGRESS_ALLOWLIST are both set; refusing to start" >&2
+    exit 1
+  fi
+  proxy_hostport="${egress_proxy#*://}"
+  proxy_hostport="${proxy_hostport%%/*}"
+  proxy_wait="${PERFORMER_EGRESS_PROXY_WAIT_SECONDS:-60}"
+  waited=0
+  until "${PERFORMER_PYTHON:-python3}" -c 'import socket, sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), 2).close()' \
+      "${proxy_hostport%:*}" "${proxy_hostport##*:}" >/dev/null 2>&1; do
+    if [ "${waited}" -ge "${proxy_wait}" ]; then
+      echo "ERROR: the egress proxy ${egress_proxy} did not answer within ${proxy_wait}s; refusing to start without it" >&2
+      exit 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  # Node's own fetch and http ignore the proxy variables unless NODE_USE_ENV_PROXY=1.
+  export HTTP_PROXY="${egress_proxy}" HTTPS_PROXY="${egress_proxy}" http_proxy="${egress_proxy}" https_proxy="${egress_proxy}"
+  export NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1" NODE_USE_ENV_PROXY=1
+  echo "INFO: egress goes out through ${egress_proxy} only" >&2
+fi
+
 if [ -n "${PERFORMER_EGRESS_ALLOWLIST:-}" ]; then
   if ! command -v iptables >/dev/null 2>&1; then
     echo "ERROR: PERFORMER_EGRESS_ALLOWLIST set but iptables missing; refusing to start" >&2
