@@ -103,8 +103,8 @@ always uses the proxy, because the in-container mode cannot cover the sandbox's 
 ## Operating it
 
 - **Images.** The proxy runs from the endpoint's image, which needs `performer.egress_proxy`
-  (every performer image built since #448). An older image makes every start fail at "attach its
-  proxy"; rebuild it.
+  with the options added in #449 (performer images from 2026.11.36 on). An older image makes
+  every start fail at "attach its proxy"; rebuild it.
 - **Address pools.** Each running performer with an allowlist holds one Docker network, so
   Docker's `default-address-pools` bounds how many run at once. Size it for your concurrency.
 - **Cleanup.** When coordinare stops a performer, and Docker confirms it is gone, it removes the
