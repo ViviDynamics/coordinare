@@ -116,6 +116,7 @@ async def test_a_plain_request_to_a_host_outside_the_allowlist_is_refused_and_ne
     b"CONNECT api.github.com HTTP/1.1\r\n\r\n",  # no port
     b"CONNECT api.github.com:99999 HTTP/1.1\r\n\r\n",
     b"CONNECT bad host:443 HTTP/1.1\r\n\r\n",
+    "CONNECT api.github.com:\u00b2 HTTP/1.1\r\n\r\n".encode("latin-1"),  # a digit to isdigit(), not to int()
     b"nonsense\r\n\r\n",
 ])
 @pytest.mark.asyncio
@@ -187,15 +188,101 @@ def test_the_command_line_needs_an_allowlist() -> None:
         egress_proxy.main(["--allow", " , "])
 
 
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
 @pytest.mark.asyncio
-async def test_serve_listens_and_says_so(capsys: pytest.CaptureFixture[str]) -> None:
-    task = asyncio.create_task(egress_proxy.serve(parse_allowlist("api.github.com"), "127.0.0.1", 0))
+async def test_serve_relays_until_cancelled_without_an_idle_exit() -> None:
+    port = _free_port()
+    task = asyncio.create_task(egress_proxy.serve(parse_allowlist("api.github.com"), "127.0.0.1", port))
     for _ in range(100):
-        if "listening" in capsys.readouterr().err:
+        try:
+            answer = await _ask(port, b"CONNECT blocked.example:443 HTTP/1.1\r\n\r\n")
             break
-        await asyncio.sleep(0.02)
+        except OSError:
+            await asyncio.sleep(0.02)
     else:
-        pytest.fail("the proxy never said it was listening")
+        pytest.fail("the proxy never listened")
+    assert answer.startswith(b"HTTP/1.1 403")
+    await asyncio.sleep(0.1)
+    assert not task.done()
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_with_an_idle_exit_serve_ends_once_nothing_connects() -> None:
+    """The job's entry point connects while the job runs; after it is gone, the proxy goes too."""
+    port = _free_port()
+    task = asyncio.create_task(
+        egress_proxy.serve(parse_allowlist("api.github.com"), "127.0.0.1", port, idle_exit=0.4),
+    )
+    for _ in range(4):  # a heartbeat every 0.2 s keeps it up
+        await asyncio.sleep(0.2)
+        with contextlib.suppress(OSError):
+            _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.close()
+        assert not task.done()
+    await asyncio.wait_for(task, 3)
+
+
+# -- relays end -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_plain_request_closes_both_ways_so_the_connection_is_never_reused() -> None:
+    """A keep-alive client may not send a second request, for another host, down this connection."""
+    seen: list[bytes] = []
+
+    async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        seen.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+        await writer.drain()
+        writer.close()
+
+    dialled: list[tuple[str, int]] = []
+    async with _server(upstream) as port_up, _proxy(["a.allowed"], _routing(port_up, dialled)) as port:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"GET http://a.allowed/x HTTP/1.1\r\nHost: a.allowed\r\nConnection: keep-alive\r\n"
+                     b"Keep-Alive: timeout=5\r\n\r\n")
+        await writer.drain()
+        response = await asyncio.wait_for(reader.read(), 5)  # ends: the proxy closed the connection
+        writer.close()
+    assert response.endswith(b"ok")
+    head = seen[0].lower()
+    assert b"connection: close" in head
+    assert b"keep-alive" not in head
+    assert dialled == [("a.allowed", 80)]
+
+
+@pytest.mark.asyncio
+async def test_a_tunnel_left_half_open_is_closed_after_the_grace() -> None:
+    release = asyncio.Event()
+
+    async def silent(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await release.wait()  # never answers, never closes, until the test is over
+        writer.close()
+
+    dialled: list[tuple[str, int]] = []
+    async with _server(silent) as port_up:
+        proxy = EgressProxy(parse_allowlist("api.github.com"), connect=_routing(port_up, dialled), half_close_grace=0.2)
+        async with _server(proxy.handle) as port:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"CONNECT api.github.com:443 HTTP/1.1\r\n\r\n")
+            await writer.drain()
+            assert (await reader.readuntil(b"\r\n\r\n")).startswith(b"HTTP/1.1 200")
+            writer.write_eof()
+            assert await asyncio.wait_for(reader.read(), 3) == b""
+            writer.close()
+            for _ in range(100):
+                if proxy.active == 0:
+                    break
+                await asyncio.sleep(0.01)
+            assert proxy.active == 0
+        release.set()

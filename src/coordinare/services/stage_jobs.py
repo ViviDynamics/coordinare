@@ -85,6 +85,14 @@ EGRESS_PROXY_ENV = "PERFORMER_EGRESS_PROXY"
 #: An egress network whose job is gone is swept once it is this old, so a start running at
 #: the same time never loses its proxy between making it and starting its job.
 EGRESS_SWEEP_GRACE_SECONDS = 600.0
+#: The proxy exits after this long with no connection; the job's entry point connects every
+#: 30 seconds while the job runs, so the proxy goes soon after its job.
+EGRESS_PROXY_IDLE_EXIT_SECONDS = 180
+#: The internal network's bridge gets no address on the host, so the job cannot reach host
+#: services through a gateway address; it only links the job to its proxy.
+_EGRESS_NETWORK_OPTIONS = ("-o", "com.docker.network.bridge.inhibit_ipv4=true")
+#: 447: the health check's extra step for a proxied provider: the image has the proxy.
+EGRESS_PROXY_CHECK = f"python -c 'import {EGRESS_PROXY_MODULE}'"
 _NAME_PREFIX = "coordinare-stage-"
 _DOCKER_TIMEOUT_SECONDS = 60.0
 _TAIL = 500
@@ -381,12 +389,15 @@ class DockerStageJobs:
             "--label", f"{PROVIDER_LABEL}={provider}",
         ]
         try:
-            await self._egress_step("create its internal network", ["network", "create", "--internal", *labels, egress])
+            await self._egress_step(
+                "create its internal network", ["network", "create", "--internal", *_EGRESS_NETWORK_OPTIONS, *labels, egress],
+            )
             await self._egress_step("start its proxy", [
                 "run", *self._run_options(), "-d", "--rm", "--name", egress, *labels,
                 "--user", "65534:65534", "--read-only", *self._hosts(),
                 "--entrypoint", "python", self.image,
                 "-m", EGRESS_PROXY_MODULE, "--allow", ",".join(self._egress), "--port", str(EGRESS_PROXY_PORT),
+                "--idle-exit", str(EGRESS_PROXY_IDLE_EXIT_SECONDS),
             ])
             await self._egress_step("attach its proxy to the internal network", ["network", "connect", egress, egress])
             address = await self._proxy_address(egress)

@@ -25,6 +25,7 @@
 #   SANDBOX_MOUNTINFO             read to tell Sysbox (sysboxfs mounts) (default /proc/self/mountinfo)
 #   SANDBOX_PROXY_WAIT_SECONDS    how long to wait for the egress proxy (default 60)
 #   SANDBOX_PYTHON                the interpreter that checks the proxy answers (default python3)
+#   SANDBOX_PROXY_HEARTBEAT_SECONDS  how often the proxy is kept alive while the job runs (default 30)
 #   PERFORMER_EGRESS_PROXY        447: the egress proxy, this container's only way out (see below)
 #   PERFORMER_EGRESS_ALLOWLIST    refused here: see below
 
@@ -70,6 +71,17 @@ if [ -n "${proxy}" ]; then
     sleep 1
     waited=$((waited + 1))
   done
+  # The proxy exits once nothing has connected for a few minutes (coordinare starts it with
+  # --idle-exit): connect every half minute for as long as the job (this PID, after the exec
+  # below) runs, so it goes soon after the job does. Stopping this only cuts the job off.
+  heartbeat="${SANDBOX_PROXY_HEARTBEAT_SECONDS:-30}"
+  (
+    while kill -0 "$$" 2>/dev/null; do
+      sleep "${heartbeat}"
+      "${SANDBOX_PYTHON:-python3}" -c 'import socket, sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), 2).close()' \
+        "${hostport%:*}" "${hostport##*:}" >/dev/null 2>&1
+    done
+  ) </dev/null >/dev/null 2>&1 &
   export HTTP_PROXY="${proxy}" HTTPS_PROXY="${proxy}" http_proxy="${proxy}" https_proxy="${proxy}"
   export NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1"
   echo "INFO: egress goes out through ${proxy} only" >&2

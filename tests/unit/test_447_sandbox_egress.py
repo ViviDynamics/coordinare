@@ -24,7 +24,9 @@ from coordinare.services.stage_contract import JobState
 from coordinare.services.stage_jobs import (
     EGRESS_CREATED_LABEL,
     EGRESS_LABEL,
+    EGRESS_PROXY_CHECK,
     EGRESS_PROXY_ENV,
+    EGRESS_PROXY_IDLE_EXIT_SECONDS,
     EGRESS_PROXY_MODULE,
     EGRESS_SUFFIX,
     EGRESS_SWEEP_GRACE_SECONDS,
@@ -103,6 +105,9 @@ elif args[:2] == ["rm", "-f"]:
         save()
 elif args[:1] == ["run"]:
     if "docker info" in args[-1]:
+        if not state.get("engine", "29.10.1"):
+            sys.stderr.write("ModuleNotFoundError: No module named 'performer.egress_proxy'\n")
+            sys.exit(1)
         print(state.get("engine", "29.10.1"))
     else:
         print(state.get("version", ""))
@@ -253,6 +258,8 @@ async def test_the_network_and_proxy_are_up_before_the_job_container_starts(tmp_
     assert created < proxy < connected < address < job
     assert calls[created][-1] == egress
     assert "--internal" in calls[created]
+    # No host address on its bridge: the job cannot reach host services through a gateway.
+    assert calls[created][calls[created].index("-o") + 1] == "com.docker.network.bridge.inhibit_ipv4=true"
     assert calls[connected][2:] == [egress, egress]
     assert sum(1 for a in calls if _is_job_run(a)) == 1
 
@@ -282,6 +289,7 @@ async def test_the_proxy_runs_unprivileged_with_the_allowlist(tmp_path: Path, do
     assert _option(proxy, "--entrypoint") == "python"
     assert proxy[proxy.index("--entrypoint") + 2:proxy.index("--entrypoint") + 5] == [IMAGE, "-m", EGRESS_PROXY_MODULE]
     assert _option(proxy, "--allow") == ",".join(ALLOW)
+    assert _option(proxy, "--idle-exit") == str(EGRESS_PROXY_IDLE_EXIT_SECONDS)
     assert "llm:192.0.2.10" in proxy  # it resolves the endpoint's extra hosts as the job did
     assert "--network" not in proxy  # the default bridge: its route out
     assert f"{EGRESS_LABEL}={job_name(job_dir)}" in proxy
@@ -316,6 +324,17 @@ async def test_probes_run_with_no_network(tmp_path: Path, docker: dict[str, Any]
         assert "--cap-add" not in args
         assert "--add-host" not in args
     assert not any(a[:1] == ["network"] for a in docker["calls"]())
+    # The engine check also asks the image for the proxy module it will run.
+    engine = next(a for a in runs if "docker info" in a[-1])
+    assert engine[-1].endswith(f" && {EGRESS_PROXY_CHECK}")
+
+
+@pytest.mark.asyncio
+async def test_an_image_without_the_proxy_module_is_unhealthy_and_says_so(tmp_path: Path, docker: dict[str, Any]) -> None:
+    docker["set"](runtimes=["runc", SANDBOX_RUNTIME], version=VERSION, engine="")
+    ok, detail = await _qare(tmp_path / "qare", docker["bin"], "sysbox", egress=ALLOW).health()
+    assert not ok
+    assert "performer.egress_proxy" in detail
 
 
 # -- a setup that fails starts no job ------------------------------------------------------
@@ -509,7 +528,7 @@ def _with_proxy_probe(stubs: dict[str, Path], *, answers: bool) -> dict[str, str
     dockerd.write_text(body)
     base = stubs["base"]
     base.write_text(f'#!/bin/sh\necho "base $* proxy=$HTTPS_PROXY no=$NO_PROXY" >> "{stubs["log"]}"\n')
-    return {"SANDBOX_PYTHON": str(probe), "SANDBOX_PROXY_WAIT_SECONDS": "1",
+    return {"SANDBOX_PYTHON": str(probe), "SANDBOX_PROXY_WAIT_SECONDS": "1", "SANDBOX_PROXY_HEARTBEAT_SECONDS": "5",
             EGRESS_PROXY_ENV: f"http://{PROXY_IP}:3128"}
 
 
@@ -520,11 +539,27 @@ def test_the_entry_point_waits_for_the_proxy_before_dockerd_and_routes_through_i
     assert result.returncode == 0, result.stderr
     log = _log(stubs)
     assert log[0] == f"probe {PROXY_IP} 3128", log
-    dockerd = next(line for line in log if line.startswith("dockerd"))
-    assert log.index(dockerd) > 0
+    rest = [line for line in log[1:] if not line.startswith("probe")]  # later heartbeats aside
+    dockerd = next(line for line in rest if line.startswith("dockerd"))
     proxy = f"proxy=http://{PROXY_IP}:3128 no=localhost,127.0.0.1,::1"
     assert dockerd.endswith(proxy), "dockerd pulls images through the proxy"
-    assert log[-1] == f"base true {proxy}", "the job's own traffic goes through the proxy; localhost does not"
+    assert rest[-1] == f"base true {proxy}", "the job's own traffic goes through the proxy; localhost does not"
+
+
+def test_the_entry_point_keeps_the_proxy_alive_while_the_job_runs_and_stops_after(tmp_path: Path) -> None:
+    """The proxy exits when idle: heartbeats while the job runs, none once it has ended."""
+    stubs = _entry_stubs(tmp_path)
+    env = _with_proxy_probe(stubs, answers=True)
+    env["SANDBOX_PROXY_HEARTBEAT_SECONDS"] = "0.2"
+    stubs["base"].write_text(f'#!/bin/sh\necho "base $*" >> "{stubs["log"]}"\nsleep 1.5\necho "base done" >> "{stubs["log"]}"\n')
+    result = _run_entry(stubs, env, "true")
+    assert result.returncode == 0, result.stderr
+    time.sleep(1)  # any heartbeat still running has had its chance
+    log = _log(stubs)
+    done = log.index("base done")
+    heartbeats = [i for i, line in enumerate(log) if line.startswith("probe")][1:]  # the first is the wait
+    assert len([i for i in heartbeats if i < done]) >= 3, log
+    assert len([i for i in heartbeats if i > done]) <= 1, log  # at most one already under way
 
 
 def test_a_proxy_that_does_not_answer_stops_the_container_before_dockerd(tmp_path: Path) -> None:

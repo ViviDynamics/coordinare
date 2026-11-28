@@ -311,19 +311,28 @@ without privilege (#435). It is off by default; off, runs are exactly as describ
 
   | Where | What | Can code in the sandbox change it |
   | --- | --- | --- |
-  | The host's Docker | Each run gets a network of its own, `docker network create --internal`, with no route out. The run's container is on that network only. | No: the network and the host's forwarding rules are host state, and the sandbox's root is an unprivileged user on the host with no Docker socket. |
-  | The proxy container, `<run>-egress` | `performer.egress_proxy`, on the default bridge and on the run's network: the one way out. It relays `CONNECT host:port` and plain `http://` requests only to the allowlisted hosts (exact names, any port, resolved when the connection is made) and answers anything else with 403 without connecting. It runs as `nobody` on a read-only root, with the endpoint's `extra_hosts`. | No: it is another container. |
-  | The run's container | Its entry point waits for the proxy before it starts dockerd, and stops the run (it is retried) when the proxy does not answer. It points `HTTP_PROXY` and `HTTPS_PROXY` at the proxy, and `NO_PROXY` at loopback, for the stage job, QAre, git, gh, model calls and dockerd's image pulls. | Yes, but that only changes which allowed host a request goes to: without the proxy there is no route at all. |
+  | The host's Docker | Each run gets a network of its own, `docker network create --internal`, with no route out, and with no host address on its bridge (`com.docker.network.bridge.inhibit_ipv4`), so host services are not reachable through a gateway address. The run's container is on that network only. | No: the network and the host's forwarding rules are host state, and the sandbox's root is an unprivileged user on the host with no Docker socket. |
+  | The proxy container, `<run>-egress` | `performer.egress_proxy`, on the default bridge and on the run's network: the one way out. It relays `CONNECT host:port` and plain `http://` requests only to the allowlisted hosts (exact names, any port, resolved when the connection is made) and answers anything else with 403 without connecting. A plain request is sent with `Connection: close` and the connection ends with its response, so a client cannot reuse it for another host. It runs as `nobody` on a read-only root, with the endpoint's `extra_hosts`, and exits after three minutes with no connection. | No: it is another container. |
+  | The run's container | Its entry point waits for the proxy before it starts dockerd, and stops the run (it is retried) when the proxy does not answer. It points `HTTP_PROXY` and `HTTPS_PROXY` at the proxy, and `NO_PROXY` at loopback, for the stage job, QAre, git, gh, model calls and dockerd's image pulls, and connects to the proxy every 30 seconds while the run lasts, which keeps it from exiting. | Yes, but that only changes which allowed host a request goes to: without the proxy there is no route at all. |
   | Containers the sandbox's Docker starts | Their traffic is NATed out of the run's one interface, so they have the same single exit. They get no proxy variables (compose services reach each other by name, which a proxy would break); a service or build that needs an allowed host must be given the proxy, for example `${HTTPS_PROXY}` as a compose build argument. | Only as above. |
 
-  The probes (version and engine checks) run with `--network none`. If the network or the
-  proxy cannot be set up, coordinare removes what it made and does not start the run. The
-  network and proxy go when coordinare stops the run or finds it gone, and a start sweeps
-  any left by a restart (labelled networks whose run is gone, older than ten minutes). DNS
-  is not part of the design: the proxy resolves names. Whether Docker's embedded resolver
+  The probes (version and engine checks) run with `--network none`; the engine check also
+  asks the image for `performer.egress_proxy`, so an image built before this release is
+  reported by health. If the network or the proxy cannot be set up, coordinare removes what
+  it made and does not start the run. The proxy goes on its own a few minutes after its run;
+  the network goes when coordinare stops the run or finds it gone, and each start sweeps the
+  rest (labelled networks whose run is gone, older than ten minutes). Each running sandboxed
+  run with an allowlist takes one network from Docker's address pools
+  (`default-address-pools`), so size them for the concurrency you run. DNS is not part of
+  the design: the proxy resolves names. Whether Docker's embedded resolver
   answers outside names on an internal network depends on the Docker version; where it does,
-  a DNS query channel remains, as it does for the iptables baseline below. The sandbox image
-  still refuses `PERFORMER_EGRESS_ALLOWLIST`, the in-container mode.
+  a DNS query channel remains, as it does for the iptables baseline below. The proxy
+  connects to the allowlisted hosts directly: a Docker host that reaches the internet only
+  through an upstream proxy is not supported in this mode. The proxy also listens on the
+  default bridge (its route out), where other containers on that bridge could reach it;
+  that gives them only the allowlisted hosts, which a container on the bridge can already
+  reach. The sandbox image still refuses `PERFORMER_EGRESS_ALLOWLIST`, the in-container
+  mode.
 - **Browser profiles.** The sandbox image is built FROM the full image, so it has QAre's
   browser driver (#442) too: a browser profile whose app boots with `docker compose` runs
   in the sandbox. One that starts its app with a command needs no sandbox.

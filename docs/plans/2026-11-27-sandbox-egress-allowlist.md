@@ -49,9 +49,12 @@ baseline for unsandboxed runs.
 
 Per job, with the job container's name `<job>`:
 
-1. **Network.** `docker network create --internal <job>-egress`. Docker gives an internal
-   network no gateway route out: the host drops traffic from its bridge to any other
-   interface and adds no masquerade. That is host state the sandbox cannot touch.
+1. **Network.** `docker network create --internal -o com.docker.network.bridge.inhibit_ipv4=true
+   <job>-egress`. Docker gives an internal network no gateway route out: the host drops
+   traffic from its bridge to any other interface and adds no masquerade. Without a host
+   address on the bridge, the job cannot open connections to host services through a gateway
+   address either (`--internal` stops forwarding, not traffic to the host itself). That is
+   host state the sandbox cannot touch.
 2. **Proxy.** A container named `<job>-egress` of the same image, `--entrypoint python`,
    running `performer.egress_proxy` on the default bridge (so it has a route out), then
    `docker network connect <job>-egress <job>-egress`. It runs as `nobody` on a read-only
@@ -60,7 +63,10 @@ Per job, with the job container's name `<job>`:
    requests only to hosts in the allowlist (exact names, case and trailing dot ignored, any
    port, as the iptables rules allowed any port), and answers everything else with 403
    without opening a connection. It resolves names itself, at connect time, so rotating
-   addresses keep working.
+   addresses keep working. A plain request goes upstream with `Connection: close` and the
+   client connection ends with the response, so a keep-alive client cannot send a second
+   request, for another host, down a connection already relayed. It exits after three
+   minutes with no connection (`--idle-exit 180`).
 3. **Job.** `docker run --runtime=sysbox-runc --network <job>-egress
    -e PERFORMER_EGRESS_PROXY=http://<proxy address>:3128 ...`. It is attached to no other
    network and gets no `NET_ADMIN` and no `PERFORMER_EGRESS_ALLOWLIST`.
@@ -68,15 +74,18 @@ Per job, with the job container's name `<job>`:
    proxy to answer **before it starts dockerd**, and exits (the run is retried) when it
    does not. It sets `HTTP(S)_PROXY` to it and `NO_PROXY` to loopback, so the stage job,
    QAre, git, gh and model calls go through the proxy, the app on `localhost` does not, and
-   dockerd pulls images through it. It still refuses `PERFORMER_EGRESS_ALLOWLIST`: that is
-   the in-container mode, which cannot cover the sandbox.
+   dockerd pulls images through it. While the job runs it connects to the proxy every 30
+   seconds, so the proxy stays up exactly as long as the job. It still refuses
+   `PERFORMER_EGRESS_ALLOWLIST`: that is the in-container mode, which cannot cover the
+   sandbox.
 5. **Probes** (the version and engine checks) need no network and run with
-   `--network none`.
+   `--network none`. The engine check also imports `performer.egress_proxy`, so health
+   reports an image built before this release.
 6. **Failure.** If the network, the proxy, the connect, or reading the proxy's address
    fails, coordinare removes what it made and raises a retryable error; the job container
    is never started. A job never runs with an unrestricted route.
-7. **Cleanup.** `stop()` and a `state()` that finds the job gone remove `<job>-egress`
-   (container, then network). A restarted daemon, or a job that ended between polls, is
+7. **Cleanup.** The proxy exits on its own once the job's heartbeats stop. `stop()` and a
+   `state()` that finds the job gone remove `<job>-egress` (container, then network). A restarted daemon, or a job that ended between polls, is
    covered by a sweep at each sandboxed start: any `-egress` network labelled by coordinare
    whose job container is gone and that is older than ten minutes is removed with its
    proxy. The grace keeps a concurrent start from losing its proxy between creating it and
@@ -90,6 +99,12 @@ build argument or variable). A build that downloads packages therefore needs the
 pass the proxy, and the hosts in the allowlist. Image pulls work through dockerd.
 
 ### What it does not cover
+
+- An upstream proxy. The egress proxy connects to allowlisted hosts directly; a Docker host
+  that reaches the internet only through a corporate proxy is not supported in this mode.
+- Other containers on the default bridge can reach the proxy (it listens there too, for its
+  route out). That gives them the allowlisted hosts only, which they can already reach.
+- Docker address pools: each running sandboxed run with an allowlist holds one network.
 
 - DNS. The job container uses Docker's embedded resolver on its network. Whether that
   resolver forwards outside names for a container on an internal network depends on the
