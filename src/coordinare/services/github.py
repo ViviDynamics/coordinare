@@ -142,6 +142,10 @@ query PollBoard($projectId: ID!, $after: String) {
           # 437: only the Status value decides the column, so read as many values as
           # initialize reads fields, and Status is not cut off the page.
           fieldValues(first: 20) {
+            # 441: whether a value was left off the page (warned about once per item).
+            pageInfo {
+              hasNextPage
+            }
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue {
                 name
@@ -151,6 +155,8 @@ query PollBoard($projectId: ID!, $after: String) {
                 field {
                   ... on ProjectV2SingleSelectField {
                     id
+                    # 441: the field's name, so the priority sort finds its value.
+                    name
                   }
                 }
               }
@@ -296,6 +302,29 @@ def _status_column(field_values: object, status_field_id: str) -> tuple[str, str
         if mapped and not names_a_field:
             unnamed = mapped
     return unnamed, ""
+
+
+def _single_select_values(field_values: object) -> dict[str, str]:
+    """441: an item's single-select values, field name -> option name.
+
+    What ``WorkItem.fields`` carries for a GitHub Projects item, so the priority sort
+    (025) reads the field ``priority.field_name`` names. A value that names no field
+    (older fixtures and stubs) or has no option name is left out, as is anything that is
+    not a single-select value: the query has no fragment for other value types, so they
+    come back as empty objects.
+    """
+    values: dict[str, str] = {}
+    if not isinstance(field_values, list):
+        return values
+    for field_value in field_values:
+        if not isinstance(field_value, dict):
+            continue
+        field = field_value.get("field")
+        field_name = field.get("name") if isinstance(field, dict) else None
+        option = field_value.get("name")
+        if isinstance(field_name, str) and field_name and isinstance(option, str) and option:
+            values[field_name] = option
+    return values
 
 
 # 365: archive a project item. Archived items leave the board's item list, and can be
@@ -834,6 +863,8 @@ class GitHubService(CardIdentityMap):
         # 142: coordinare's own logins, resolved on first use and then kept. None until resolved.
         self._self_logins: frozenset[str] | None = None
         self._self_login_warned: bool = False
+        # 441: items already warned about for field values past the page read.
+        self._field_values_truncated: set[str] = set()
 
         self._client: Client | None = None
         self._last_token: str | None = None
@@ -1253,6 +1284,8 @@ class GitHubService(CardIdentityMap):
         # and item ID -> its issue's state (OPEN or CLOSED).
         status_updated_at: dict[str, str] = {}
         issue_states: dict[str, str] = {}
+        # 441: item ID -> its single-select values by field name, for WorkItem.fields.
+        item_field_values: dict[str, dict[str, str]] = {}
 
         for item in items:
             if not isinstance(item, dict):
@@ -1261,10 +1294,15 @@ class GitHubService(CardIdentityMap):
             if not item_id:
                 continue
 
-            field_values = item.get("fieldValues", {}).get("nodes", [])
+            field_page = item.get("fieldValues", {})
+            field_values = field_page.get("nodes", [])
             status_name, status_set_at = _status_column(field_values, status_field_id)
             if status_name and status_set_at:
                 status_updated_at[item_id] = status_set_at
+            single_select = _single_select_values(field_values)
+            if single_select:
+                item_field_values[item_id] = single_select
+            self._warn_field_values_truncated(item_id, field_page)
 
             item_assignees[item_id] = []  # default empty; overwritten below if content has assignees
             content = item.get("content", {})
@@ -1369,7 +1407,33 @@ class GitHubService(CardIdentityMap):
             "native_blockers": native_blockers,
             "status_updated_at": status_updated_at,
             "issue_states": issue_states,
+            "item_field_values": item_field_values,
         }
+
+    def _warn_field_values_truncated(self, item_id: str, field_page: object) -> None:
+        """441: say once per item that some of its field values were not read.
+
+        The listing reads 20 values per item (437). A field past them, such as the
+        configured priority, reads as unset, so the item sorts with those that have no
+        priority. Reading more would cost the poll on every board for a rare project,
+        so the gap is named instead: once per item for the life of the service, not on
+        every poll.
+        """
+        page_info = field_page.get("pageInfo") if isinstance(field_page, dict) else None
+        if not (isinstance(page_info, dict) and page_info.get("hasNextPage")):
+            return
+        warned: set[str] | None = getattr(self, "_field_values_truncated", None)
+        if warned is None:  # a service built without __init__, as some tests do
+            warned = self._field_values_truncated = set()
+        if item_id in warned:
+            return
+        warned.add(item_id)
+        logger.warning(
+            "poll_board.field_values_truncated",
+            item_id=item_id,
+            read=20,
+            effect="a field past the values read, such as the priority, reads as unset",
+        )
 
     async def get_issue_details(self, issue_id: str) -> dict[str, Any]:
         result = await self._guarded_execute(GET_ISSUE_DETAILS_QUERY, {"issueId": issue_id})
