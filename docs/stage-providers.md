@@ -180,7 +180,7 @@ built-in QA posts its own. Coordinare's own host never clones or fetches.
 stage_providers:
   qare:
     kind: qare
-    version: "2026.11.44"            # the exact release `qare --version` must print
+    version: "2026.11.45"            # the exact release `qare --version` must print
     command: ["qare"]                # how to start it in the performer (default), as an argument list
     # image: ghcr.io/vividynamics/coordinare-performer-full:<tag>  # default: the qa performer's image
     # sandbox: sysbox                # each run gets its own Docker engine (Linux hosts with Sysbox)
@@ -241,7 +241,7 @@ Opt one symphony in with `overrides.performers`, as for Scrutare.
 
 #### QAre's browser
 
-QAre drives browsers through its own `playwright-core` (1.63.0 at QAre 2026.11.44), and a
+QAre drives browsers through its own `playwright-core` (1.63.0 at QAre 2026.11.45), and a
 Playwright release only launches the Chromium revision it was released with. So the
 browser comes from QAre's release, not from the image's other Playwright:
 

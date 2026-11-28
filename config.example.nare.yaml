@@ -8,7 +8,7 @@
 #
 # How nare runs under coordinare:
 #   - One `nare run` process per card (one per resume turn), speaking nare's
-#     machine contract 3 over JSONL. The task and persona travel by file.
+#     machine contract 4 over JSONL. The task and persona travel by file.
 #   - The performer base image installs a pinned nare release, so containerized
 #     performers need nothing extra. For local (solo) runs, the coordinare
 #     installer (install.sh) installs the same pinned release.

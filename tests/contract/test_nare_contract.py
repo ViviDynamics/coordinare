@@ -1,4 +1,4 @@
-"""#360: the nare backend adapter against nare's machine contract 3.
+"""#360: the nare backend adapter against nare's machine contract 4.
 
 Feeds nare JSONL lines, in the shapes a real ``nare run --jsonl`` writes at the
 pinned release, to the adapter's line handler and asserts the ``BackendStatus``
@@ -29,7 +29,7 @@ def _usage(**overrides: object) -> dict[str, object]:
 
 
 def _result(**overrides: object) -> dict[str, object]:
-    """A well-formed nare ``result`` line, contract 3 fields. ``output`` is the
+    """A well-formed nare ``result`` line, contract 4 fields. ``output`` is the
     validated ``--schema`` document (null without one); ``text`` is the final reply."""
     base: dict[str, object] = {
         "type": "result",
@@ -41,7 +41,7 @@ def _result(**overrides: object) -> dict[str, object]:
         "stop_reason": "end_turn",
         "turns": 1,
         "retries": 0,
-        "contract": 3,
+        "contract": 4,
         "nare": "2026.11.109",
         "output": None,
         "text": "the answer",

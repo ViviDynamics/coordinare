@@ -2,7 +2,7 @@
 
 #360. nare (github.com/ViviDynamics/nare) is driven as a subprocess:
 
-    nare run --yes --contract 3 --jsonl --session PATH --prompt-file FILE \
+    nare run --yes --contract 4 --jsonl --session PATH --prompt-file FILE \
         [--append-system-file FILE] --root WORKSPACE [provider and tuning flags]
 
 One card, or one resume turn, is one ``nare run`` process. Stdout is one JSON
@@ -62,7 +62,7 @@ NARE_BINARY = "nare"
 #: The machine-contract version this adapter reads. nare refuses any other
 #: number at start (exit 2, nothing on stdout), so a newer nare fails the first
 #: run loudly instead of being mis-read.
-CONTRACT_VERSION = "3"
+CONTRACT_VERSION = "4"
 
 #: A run that never started: a bad invocation, an unreadable session file or a
 #: refused contract. A configuration error, not a turn to retry.

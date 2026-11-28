@@ -18,7 +18,7 @@ env var at container start (`get_backend(name)` in `agent/performer/src/performe
 | `pi` | one-shot CLI (JSON lines) | OpenAI | |
 | `hermes` | one-shot CLI | OpenAI | used for `tech_writer` (documenting); strict JSON parser |
 | `openclaw` | one-shot CLI (embedded agent) | OpenAI | |
-| `nare` | one-shot CLI (JSONL, machine contract 3) | Anthropic / OpenAI / Bedrock | Vivi Dynamics harness, baked into the performer base image at a pinned release; enforces `max_tool_calls` itself; contract notes in `specs/515-driver-integration-contract/contracts/coordinare-driver-contract.md` |
+| `nare` | one-shot CLI (JSONL, machine contract 4) | Anthropic / OpenAI / Bedrock | Vivi Dynamics harness, baked into the performer base image at a pinned release; enforces `max_tool_calls` itself; contract notes in `specs/515-driver-integration-contract/contracts/coordinare-driver-contract.md` |
 
 **Why multiple harnesses?** Different harnesses have different strengths, tool-calling styles,
 and failure modes. Coordinare assigns harnesses **per role** so each stage uses the one that
