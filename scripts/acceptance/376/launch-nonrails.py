@@ -46,6 +46,9 @@ parser.add_argument('--resume-from', type=Path, default=None,
                     help='DEBUG ONLY, never gate evidence: a finished run directory whose accepted contract is executed')
 parser.add_argument('--resume-attempt', type=int, default=None, help='the source attempt-00N (default: the last accepted)')
 parser.add_argument('--resume-max-repairs', type=int, default=0, help='execution repairs for a resumed run (default 0)')
+# Maintainer ruling 2026-11-28: one trial at normal (medium) effort, compared against nare-native-043 (effort low).
+parser.add_argument('--effort', choices=['low', 'medium', 'high'], default='low',
+                    help='model reasoning effort for every phase (default low, as every earlier run)')
 parser.add_argument('--resume-seconds', type=int, default=None,
                     help='attempt seconds for a resumed run (default one hour, plus one per raised repair; at most 8 h)')
 args = parser.parse_args()
@@ -209,7 +212,7 @@ with candidate_image(args.base, IMAGE_OUTPUT, allow_local_image_id=True) as imag
     policy_path.write_text(policy.model_dump_json(indent=2))
     sys.argv = [__file__, args.repo, '--snapshots', str(SNAPSHOTS), '--output', str(RUN_OUTPUT), '--image', image,
         '--runtime-policy', str(policy_path), '--model', route['model'], '--base-url', route['base_url'],
-        '--api-key-env', route['api_key_env'], '--max-tokens', '32768', '--effort', 'low',
+        '--api-key-env', route['api_key_env'], '--max-tokens', '32768', '--effort', args.effort,
         '--max-review-context-bytes', '1048576', '--phase-timeout', '7200', '--structured-transport', 'json_object',
         '--max-total-reads', '8192', '--context-tokens', '262144',
         '--agent-concurrency', '6', '--max-schema-repairs', '16', '--max-coverage-revisions', '8',
