@@ -19,12 +19,19 @@ The GitHub token reaches the container through a private ``--env-file`` (removed
 as ``docker run`` returns), never on a command line or in the job directory. Variables the
 operator passes through are named with ``-e NAME``, so Docker copies their values from
 coordinare's environment without the value appearing in any argument.
+
+435: a QAre provider with ``sandbox: sysbox`` runs every container (the job and its probes)
+with ``--runtime=sysbox-runc``, and nothing else changes. Its image (``Dockerfile.sandbox``)
+starts its own dockerd inside the job's container, so the job gets a Docker engine without
+privilege and without the host's Docker, and removing the one container by its name
+removes that engine and everything it started.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import hashlib
+import json
 import shlex
 import uuid
 from dataclasses import dataclass, field
@@ -52,6 +59,10 @@ STAGE_JOB_MODULE = "performer.stage_jobs"
 #: Variables every stage job takes from coordinare's environment by name, when it has them:
 #: git, gh, GitHub's API and the model calls go out the way the daemon's own requests do.
 PROXY_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy")
+#: 435: the Docker runtime a sandboxed provider's containers run under (Sysbox).
+SANDBOX_RUNTIME = "sysbox-runc"
+#: 435: where Kubernetes support for the sandbox is tracked.
+SANDBOX_KUBERNETES_ISSUE = "#443"
 _NAME_PREFIX = "coordinare-stage-"
 _DOCKER_TIMEOUT_SECONDS = 60.0
 _TAIL = 500
@@ -113,6 +124,57 @@ class StageJobs(Protocol):
         ...
 
 
+def runtime_missing(runtime: str) -> str:
+    """Why a provider whose containers need ``runtime`` cannot run on this Docker."""
+    return (
+        f"the QAre sandbox needs the Docker runtime {runtime}, and `docker info` does not list it. "
+        "Install Sysbox on a Linux Docker host and register it with Docker (docs/stage-providers.md, "
+        "\"Docker sandbox\"). macOS Docker Desktop does not have it unless Enhanced Container Isolation "
+        "provides it; Kubernetes is not supported yet"
+    )
+
+
+#: 435: why a sandbox and an egress allowlist are not run together.
+SANDBOX_WITH_EGRESS = (
+    "the QAre sandbox cannot run with the performer endpoint's egress_allowlist: the allowlist "
+    "limits what the job container sends, not what the containers its own Docker starts send, so "
+    "it would hold only in part. Serve the qa role from an endpoint without egress_allowlist, or "
+    "turn the sandbox off"
+)
+
+
+async def docker_runtimes(docker: str = "docker", *, within: float = 60.0) -> set[str]:
+    """The runtimes the Docker behind ``docker`` lists in ``docker info``.
+
+    Raises TransportError when Docker cannot say (unreachable, slow): retried, never read as
+    "the runtime is missing".
+    """
+    args = ["info", "--format", "{{json .Runtimes}}"]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            docker, *args, stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError as exc:
+        msg = f"{docker} could not be started to list its runtimes: {exc.strerror or exc}"
+        raise TransportError(msg) from exc
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=within)
+    except TimeoutError as exc:
+        proc.kill()
+        await proc.wait()
+        msg = f"docker info did not list its runtimes within {within:.0f} seconds"
+        raise TransportError(msg) from exc
+    try:
+        listed = json.loads(out.decode(errors="replace")) if proc.returncode == 0 else None
+    except ValueError:
+        listed = None
+    if not isinstance(listed, dict):
+        msg = f"docker info could not list its runtimes: {_tail(err.decode(errors='replace') or out.decode(errors='replace'))}"
+        raise TransportError(msg)
+    return {str(name) for name in listed}
+
+
 def job_name(job_dir: Path) -> str:
     """The container name of the job in ``job_dir``: the same on every daemon start."""
     return _NAME_PREFIX + hashlib.sha256(str(job_dir).encode()).hexdigest()[:24]
@@ -150,6 +212,9 @@ class DockerStageJobs:
 
     Every Docker call that does not answer in time is a TransportError, so the caller
     retries it rather than mistaking it for a verdict.
+
+    435: with ``runtime`` (the sandbox), every container gets ``--runtime=<runtime>`` and
+    nothing else, once ``docker info`` has listed that runtime.
     """
 
     def __init__(
@@ -159,11 +224,29 @@ class DockerStageJobs:
         egress_allowlist: Sequence[str] | None = None,
         extra_hosts: Sequence[str] = (),
         docker: str = "docker",
+        runtime: str | None = None,
     ) -> None:
         self.image = image
+        self.runtime = runtime
         self._egress = list(egress_allowlist or [])
         self._extra_hosts = list(extra_hosts)
         self._docker = docker
+        #: The runtime was listed once: it stays registered while Docker runs.
+        self._runtime_listed = False
+
+    def _run_options(self) -> list[str]:
+        """What follows ``docker run``: the sandbox runtime, when there is one."""
+        return [f"--runtime={self.runtime}"] if self.runtime else []
+
+    async def _require_runtime(self) -> None:
+        """435: refuse, with the reason, to start a sandboxed container Docker cannot run."""
+        if not self.runtime or self._runtime_listed:
+            return
+        if self._egress:
+            raise TransportError(SANDBOX_WITH_EGRESS)
+        if self.runtime not in await docker_runtimes(self._docker, within=_DOCKER_TIMEOUT_SECONDS):
+            raise TransportError(runtime_missing(self.runtime))
+        self._runtime_listed = True
 
     def _isolation(self) -> list[str]:
         args: list[str] = []
@@ -175,10 +258,11 @@ class DockerStageJobs:
         return args
 
     async def start(self, launch: StageJobLaunch) -> str:
+        await self._require_runtime()
         name = job_name(launch.job_dir)
         mount = str(launch.job_dir)
         args = [
-            "run", "-d", "--rm", "--name", name,
+            "run", *self._run_options(), "-d", "--rm", "--name", name,
             "--label", f"{STAGE_JOB_LABEL}={launch.ref}",
             "--label", f"{PROVIDER_LABEL}={launch.provider}",
             *self._isolation(),
@@ -226,8 +310,9 @@ class DockerStageJobs:
         self, argv: Sequence[str], *, env_names: Sequence[str] = (), env: dict[str, str] | None = None,
         within: float = 60.0,
     ) -> tuple[int | None, str, str]:
+        await self._require_runtime()
         name = f"{_NAME_PREFIX}probe-{uuid.uuid4().hex[:12]}"
-        args = ["run", "--rm", "--name", name, *self._isolation()]
+        args = ["run", *self._run_options(), "--rm", "--name", name, *self._isolation()]
         for name_only in env_names:
             args += ["-e", name_only]
         for key, value in (env or {}).items():

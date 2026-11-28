@@ -29,7 +29,13 @@ from coordinare.services.stage_contract import (
     stage_provider_id,
     web_host,
 )
-from coordinare.services.stage_jobs import DockerStageJobs, StageJobs, UnavailableStageJobs
+from coordinare.services.stage_jobs import (
+    SANDBOX_KUBERNETES_ISSUE,
+    SANDBOX_RUNTIME,
+    DockerStageJobs,
+    StageJobs,
+    UnavailableStageJobs,
+)
 from coordinare.stage_provider_config import (
     PROVIDER_ROLES,
     ProgettareProviderConfig,
@@ -124,11 +130,17 @@ def stage_jobs_for(
     (its egress allowlist and extra hosts) applies to the runs as it does to the role's
     other work. Runs need Docker: under the Kubernetes transport they cannot start yet,
     and every use says so.
+
+    435: a QAre provider with ``sandbox: sysbox`` runs its containers under the Sysbox runtime.
     """
+    sandboxed = getattr(provider_config, "sandbox", None) == "sysbox"
     if str(getattr(config, "agent_transport", "") or "") == "kubernetes":
+        sandbox_note = (
+            f"; the QAre sandbox on Kubernetes is tracked in {SANDBOX_KUBERNETES_ISSUE}" if sandboxed else ""
+        )
         return UnavailableStageJobs(
             f"stage provider {name!r} runs in a Docker performer container, and this coordinare "
-            "uses the Kubernetes transport; stage jobs on Kubernetes are not supported yet",
+            f"uses the Kubernetes transport; stage jobs on Kubernetes are not supported yet{sandbox_note}",
         )
     endpoints = [
         ep for ep in getattr(config, "performer_endpoints", None) or []
@@ -146,6 +158,7 @@ def stage_jobs_for(
         str(image),
         egress_allowlist=getattr(endpoint, "egress_allowlist", None) if endpoint is not None else None,
         extra_hosts=list(getattr(endpoint, "extra_hosts", None) or []) if endpoint is not None else [],
+        runtime=SANDBOX_RUNTIME if sandboxed else None,
     )
 
 
@@ -165,6 +178,11 @@ def provider_fix(name: str, provider_config: StageProviderConfig) -> str:
             f"(stage_providers.{name}.image, else the qa performer image; the full performer image "
             f"ships it), with Docker where coordinare runs; or correct stage_providers.{name}.command "
             "and .version; make work_dir writable."
+            + (
+                f" With sandbox: sysbox, the image must be the sandbox image (agent/performer/Dockerfile.sandbox) "
+                f"and Docker must list the {SANDBOX_RUNTIME} runtime (Sysbox, Linux hosts only)."
+                if provider_config.sandbox == "sysbox" else ""
+            )
         )
     return (
         f"Start {provider_config.kind} or correct stage_providers.{name}.url (it must be "

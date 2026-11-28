@@ -139,6 +139,12 @@ class QAreProviderConfig(BaseModel):
     #: 423: the performer image runs use. None (default) is the image of the performer
     #: endpoint that serves the ``qa`` role, else of the first one with an image.
     image: str | None = None
+    #: 435: ``sysbox`` gives each run its own Docker engine, for profiles that boot the app
+    #: with ``docker compose``: the run's container starts under the Sysbox runtime
+    #: (``--runtime=sysbox-runc``, a Linux host prerequisite doctor checks) from an image
+    #: with a Docker engine (``Dockerfile.sandbox``). Never privileged, never the host's
+    #: Docker. None (default) runs without Docker, exactly as before.
+    sandbox: Literal["sysbox"] | None = None
     #: The QA profile's directory in the repository under test.
     profile: str = ".qa"
     #: Where runs keep their request, status and evidence (never a checkout: that stays in
