@@ -29,6 +29,14 @@ from coordinare_service_inference.environment.execution_source import read_sourc
 from coordinare_service_inference.environment.runtime import RuntimePolicy
 from scripts import environment_validation_cleanup
 from scripts.environment_validation_image import candidate_image, verify_image_code
+from scripts.environment_validation_resume import (
+    ResumeRefusedError,
+    ResumeSource,
+    archived_attempt,
+    load_source,
+    rebind,
+    resumed_from_record,
+)
 
 from coordinare.config import ConductingConfig, EnvCacheConfig, TranscriptsConfig
 from coordinare.models.env_cache import EnvCacheState
@@ -36,7 +44,9 @@ from coordinare.services.activity_log import ActivityLog
 from coordinare.services.agent_runtime.configuration import resolve_conducting
 from coordinare.services.conductor_calls import ConductorCallLog
 from coordinare.services.env_cache import (
+    ContractTarget,
     EnvCacheService,
+    SavedContract,
     sanitise_symphony_name,
     verify_env_cache_clean,
 )
@@ -110,6 +120,10 @@ class Profile:
     private_service_runtime: dict[str, Any] | None = None
     # An earlier run's output directory: its accepted scope is offered to a fresh independent review.
     reuse_scope_from: Path | None = None
+    # Debug only, never gate evidence: an earlier finished run whose accepted contract is rebound to this run's
+    # target and executed without discovery or review. resume_attempt picks its attempt-00N (default: the last).
+    resume_from: Path | None = None
+    resume_attempt: int | None = None
 
 
 def _profile_record(profile: Profile) -> dict[str, Any]:
@@ -826,11 +840,51 @@ async def _cleanup_roots(roots: list[Path], image: str) -> bool:
     return True
 
 
+def _never_ready(result: dict[str, Any]) -> None:
+    """A resumed run is debug evidence: a pass is "resume_ready", never "ready", and never ready at validation."""
+    result["gate_eligible"] = False
+    if result.get("status") == "ready" or result.get("ready_at_validation"):
+        result.update(status="resume_ready", resume_passed=True, ready_at_validation=False)
+
+
+async def _adopt_resumed(service: EnvCacheService, snapshot: Snapshot, cache: EnvCacheState, resume: ResumeSource, *,
+                         output: Path, result: dict[str, Any]) -> None:
+    """Generation 0 of a resumed run: adopt the saved accepted contract, rebound to this run's target."""
+    from coordinare_service_inference.environment.models import CoverageAssessment
+    from coordinare_service_inference.environment.models import EnvironmentManifest as Manifest
+
+    _event(repository=snapshot.name, stage="resume", status="adopting", source=str(resume.attempt_dir))
+    target = ContractTarget(symphony_name=snapshot.name, repo=snapshot.name, github_org=snapshot.org,
+        github_service=snapshot, cache_state=cache, cache_dir=cache.cache_dir,
+        cache_mount_path="/devenv/" + cache.sanitised_name, performer_mounts=(output,))
+    saved = SavedContract(manifest=resume.manifest, assessment=resume.assessment,
+                          source_execution=resume.execution_source)
+    changed = await service.adopt_accepted_artifacts(target, saved, rebind)
+    result["resumed_from"] = resumed_from_record(
+        resume, manifest=Manifest.model_validate(cache.environment_manifest),
+        assessment=CoverageAssessment.model_validate(cache.environment_assessment),
+        capabilities=cache.environment_capabilities, changed=changed,
+    )
+    _event(repository=snapshot.name, stage="resume", status="adopted", changed_binding_fields=changed)
+
+
 async def validate_repository(
     snapshot: Snapshot, *, image: str, output: Path, profile: Profile, chat: ChatJson | None = None,
 ) -> dict[str, Any]:
     new_profile_directory(output)
     started = time.monotonic()
+    resume: ResumeSource | None = None
+    resume_refusal = None
+    if profile.resume_from is not None:
+        if profile.reuse_scope_from is not None:
+            resume_refusal = "a resumed run cannot also reuse a scope for review"
+        elif not profile.execute:
+            resume_refusal = "a resumed run exists only to execute; it requires execution"
+        else:
+            try:
+                resume = load_source(profile.resume_from, snapshot.name, profile.resume_attempt)
+            except ResumeRefusedError as exc:
+                resume_refusal = str(exc)
     cache = EnvCacheState(
         symphony_name=snapshot.name,
         sanitised_name=sanitise_symphony_name(snapshot.name),
@@ -844,6 +898,10 @@ async def validate_repository(
             # As after an operator restart: the earlier attempt is archived, and begin_attempt offers its
             # accepted scope for a fresh review when the commit and protocol match.
             cache.environment_attempt_archive = [json.loads(prior.read_text())]
+    if resume is not None and profile.max_execution_repairs and (journal := archived_attempt(resume)) is not None:
+        # A raised repair budget repairs through the normal path; as with --reuse-scope-from, the source run's
+        # accepted scope is offered to that repair's fresh review.
+        cache.environment_attempt_archive = [journal]
     settings = EnvCacheConfig(
         manifest_phase_timeout_seconds=profile.phase_timeout,
         manifest_max_schema_repairs=profile.max_schema_repairs,
@@ -900,9 +958,13 @@ async def validate_repository(
         "outer_retry_loop_exercised": False,
         "profile": _profile_record(profile),
     }
+    if profile.resume_from is not None:
+        # Debug evidence only: the contract had no fresh independent review in this run.
+        result.update(gate_eligible=False, mode="resume_debug", stage="resume")
     native_model = None
     native_calls = None
-    if chat is None:
+    # A resumed run without repairs makes no model call, so it needs no model credential.
+    if chat is None and (profile.resume_from is None or profile.max_execution_repairs):
         native_model = resolve_conducting(ConductingConfig(backend='openai_api',
             model=profile.model, base_url=profile.base_url, api_key_env=profile.api_key_env,
             max_tokens=profile.max_tokens, effort=profile.effort), environ=os.environ)
@@ -995,6 +1057,8 @@ async def validate_repository(
     attempt_target = output
     kept: KeptGeneration | None = None
     try:
+        if resume_refusal is not None:
+            raise EnvironmentDiscoveryError("resume refused: " + resume_refusal, code="resume_refused")
         await snapshot.verify()
         # One generation per execution repair the daemon's budget allows, plus the first; the journal's status ends it.
         # Dettmore e2e-47 stopped after a fixed three with one configured repair unused.
@@ -1003,26 +1067,31 @@ async def validate_repository(
             attempt_target = output / f"attempt-{generation:03}"
             new_profile_directory(attempt_target)
             result["stage"] = "repair_discovery" if generation else "discovery"
-            for resume in range(MAX_PROVIDER_RESUMES + 1):
-                try:
-                    await service._build_manifest_artifacts(
-                        performer_mounts=(output,), symphony_name=snapshot.name, repo=snapshot.name,
-                        github_org=snapshot.org, github_service=snapshot, readme_contents={},
-                        current_sha=snapshot.commit, cache_dir=cache.cache_dir,
-                        cache_mount_path="/devenv/" + cache.sanitised_name,
-                        llm_chat=recorded if native_model is None else None, cache_state=cache,
-                        agent_model=(lambda: native_model) if native_model is not None else None,
-                    )
-                    break
-                except EnvironmentDiscoveryError as exc:
-                    if resume == MAX_PROVIDER_RESUMES or not resumable_attempt(cache) or not _time_left(cache):
-                        raise
-                    await persist_attempt()
-                    result["outer_retry_loop_exercised"] = True
-                    provider_resumes.append({"generation": generation, "reason_code": exc.code, "at": time.time()})
-                    result["provider_resumes"] = provider_resumes
-                    _event(repository=snapshot.name, stage=result["stage"], status="resuming",
-                           generation=generation, reason_code=exc.code)
+            if resume is not None and generation == 0:
+                result["stage"] = "resume"
+                await _adopt_resumed(service, snapshot, cache, resume, output=output, result=result)
+            else:
+                for provider_resume in range(MAX_PROVIDER_RESUMES + 1):
+                    try:
+                        await service._build_manifest_artifacts(
+                            performer_mounts=(output,), symphony_name=snapshot.name, repo=snapshot.name,
+                            github_org=snapshot.org, github_service=snapshot, readme_contents={},
+                            current_sha=snapshot.commit, cache_dir=cache.cache_dir,
+                            cache_mount_path="/devenv/" + cache.sanitised_name,
+                            llm_chat=recorded if native_model is None else None, cache_state=cache,
+                            agent_model=(lambda: native_model) if native_model is not None else None,
+                        )
+                        break
+                    except EnvironmentDiscoveryError as exc:
+                        if (provider_resume == MAX_PROVIDER_RESUMES or not resumable_attempt(cache)
+                                or not _time_left(cache)):
+                            raise
+                        await persist_attempt()
+                        result["outer_retry_loop_exercised"] = True
+                        provider_resumes.append({"generation": generation, "reason_code": exc.code, "at": time.time()})
+                        result["provider_resumes"] = provider_resumes
+                        _event(repository=snapshot.name, stage=result["stage"], status="resuming",
+                               generation=generation, reason_code=exc.code)
             # The repaired generation is accepted: its trials are over, and the kept one is removed before it runs.
             await _release_kept(service, snapshot.name, kept, image, result)
             kept = None
@@ -1043,6 +1112,8 @@ async def validate_repository(
                 async with asyncio.timeout(remaining_seconds(cache)):
                     await execute_accepted(snapshot, service, state, image=image,
                         target=attempt_target, profile=profile, result=result)
+            if resume is not None:
+                _never_ready(result)
             attempts.append(dict(result))
             _write(attempt_target / "result.json", result)
             await persist_attempt()
@@ -1079,7 +1150,7 @@ async def validate_repository(
         if isinstance(cache.environment_attempt, dict):
             diagnostics = cache.environment_attempt.get("diagnostics", {})
             result["diagnostics"] = diagnostics
-            if result["stage"] in {"discovery", "repair_discovery"} and diagnostics.get("stage"):
+            if result["stage"] in {"discovery", "repair_discovery", "resume"} and diagnostics.get("stage"):
                 result["stage"] = diagnostics["stage"]
         result.update(
             seconds=round(time.monotonic() - started, 2),
@@ -1099,6 +1170,8 @@ async def validate_repository(
         except Exception:
             result.update(snapshot_unchanged=False, status="held", ready_at_validation=False,
                           reason_code="snapshot_integrity_changed")
+        if profile.resume_from is not None:
+            _never_ready(result)
         _write(output / "result.json", result)
         _event(
             repository=snapshot.name,
@@ -1157,7 +1230,17 @@ def _agent_concurrency(value: str) -> int:
     return int(_config_value('manifest_agent_concurrency', value))
 
 
-def main() -> int:
+RESUME_PASSED_EXIT = 3
+
+
+def exit_status(results: list[dict[str, Any]]) -> int:
+    """0 only for gate-eligible readiness. A resumed run never exits 0: 3 when every resumed repository passed."""
+    if any(result.get("gate_eligible") is False or "resumed_from" in result for result in results):
+        return RESUME_PASSED_EXIT if results and all(result.get("status") == "resume_ready" for result in results) else 1
+    return 0 if results and all(result["ready_at_validation"] for result in results) else 1
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repositories", nargs="+")
     parser.add_argument("--snapshots", type=Path, required=True)
@@ -1179,7 +1262,8 @@ def main() -> int:
                         help="executable review revisions")
     parser.add_argument("--max-scope-revisions", type=int, choices=range(REPAIR_LIMITS["scope"] + 1), default=8,
                         help="source scope review revisions, counted separately from executable revisions")
-    parser.add_argument("--max-execution-repairs", type=int, choices=range(REPAIR_LIMITS["execution"] + 1), default=REPAIR_LIMITS["execution"])
+    parser.add_argument("--max-execution-repairs", type=int, choices=range(REPAIR_LIMITS["execution"] + 1), default=None,
+                        help=f"default {REPAIR_LIMITS['execution']}, or 0 with --resume-from")
     parser.add_argument("--max-review-context-bytes", type=int, default=1024 * 1024)
     parser.add_argument("--max-total-reads", type=_aggregate_read_allowance, default=None)
     parser.add_argument("--max-model-calls", type=_model_call_allowance, default=None)
@@ -1195,9 +1279,24 @@ def main() -> int:
     parser.add_argument("--reuse-scope-from", type=Path, default=None,
                         help="Earlier run output whose accepted scope is reviewed afresh instead of authored again")
     parser.add_argument('--runtime-policy', type=Path, help='Explicit private-service platform policy JSON; image contents are verified')
-    args = parser.parse_args()
+    parser.add_argument("--resume-from", type=Path, default=None,
+                        help="DEBUG ONLY, never gate evidence: a finished run's output whose accepted contract is rebound "
+                             "to this run's target and executed with no discovery or review")
+    parser.add_argument("--resume-attempt", type=int, default=None,
+                        help="the source run's attempt-00N to resume from (default: its last accepted attempt)")
+    args = parser.parse_args(argv)
     if args.unattended and not args.execute:
         parser.error("--unattended requires --execute")
+    if args.resume_from is not None:
+        if args.reuse_scope_from is not None:
+            parser.error("--resume-from cannot be combined with --reuse-scope-from")
+        if not args.execute:
+            parser.error("--resume-from requires --execute: a resumed run exists only to execute")
+    elif args.resume_attempt is not None:
+        parser.error("--resume-attempt requires --resume-from")
+    if args.max_execution_repairs is None:
+        # A resumed run's failure holds with its real reason code unless repairs are asked for.
+        args.max_execution_repairs = 0 if args.resume_from is not None else REPAIR_LIMITS["execution"]
     new_profile_directory(args.output)
     profile = Profile(
         model=args.model,
@@ -1224,6 +1323,8 @@ def main() -> int:
         agent_concurrency=args.agent_concurrency,
         private_service_runtime=load_runtime_policy(args.runtime_policy) if args.runtime_policy else None,
         reuse_scope_from=args.reuse_scope_from,
+        resume_from=args.resume_from,
+        resume_attempt=args.resume_attempt,
     )
     revision = subprocess.check_output([shutil.which("git") or "/usr/bin/git", "rev-parse", "HEAD"], text=True).strip()
     _write(
@@ -1245,7 +1346,7 @@ def main() -> int:
     with context as image:
         _write(args.output / "image-identity.json", verify_image_code(image))
         results = asyncio.run(_batch(args, image, profile))
-    return 0 if results and all(result["ready_at_validation"] for result in results) else 1
+    return exit_status(results)
 
 
 if __name__ == "__main__":

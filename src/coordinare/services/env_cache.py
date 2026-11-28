@@ -24,6 +24,7 @@ from coordinare_service_inference.cache_key import (
 )
 from coordinare_service_inference.environment.execution_source import (
     ExecutionSourceError,
+    ExecutionSourceIdentity,
     bundle_inventory,
 )
 from coordinare_service_inference.environment.guest_selection import pinned_requirements
@@ -75,6 +76,8 @@ from coordinare.services.environment_acceptance import (
 from coordinare.services.environment_agent_lifecycle import (
     bootstrap_agent_context,
 )
+from coordinare.services.environment_attempt import EnvironmentDiscoveryError
+from coordinare.services.environment_capabilities import EnvironmentCapabilityError
 from coordinare.services.environment_repair import (
     begin_attempt,
     dispatch_refusal,
@@ -96,6 +99,7 @@ from coordinare.services.environment_runtime import (
     unpack_verifier_source,
     verifier_deadline,
 )
+from coordinare.services.environment_scope_reuse import inventory_digest as source_inventory_digest
 from coordinare.services.environment_source_provider import (
     checkpoint_source_ownership,
     ensure_execution_source,
@@ -132,7 +136,11 @@ if TYPE_CHECKING:
     from typing import Protocol
 
     from coordinare_service_inference.environment.execution_source import ExecutionSourceBundle
-    from coordinare_service_inference.environment.models import ExecutionCapabilities
+    from coordinare_service_inference.environment.models import (
+        CoverageAssessment,
+        EnvironmentManifest,
+        ExecutionCapabilities,
+    )
     from coordinare_service_inference.schema import ServicesManifest
 
     from coordinare.services.agent_runtime.configuration import AgentModelConfig
@@ -153,7 +161,55 @@ if TYPE_CHECKING:
             self, owner: str, repo: str, *, ref: str, max_entries: int = 100_000,
         ) -> list[str]: ...
 
+    # Moves a saved accepted contract onto the current capabilities: (manifest, assessment, changed binding fields).
+    Rebinder = Callable[[EnvironmentManifest, CoverageAssessment, ExecutionCapabilities],
+                        tuple[EnvironmentManifest, CoverageAssessment, list[str]]]
+
 logger = structlog.get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class ContractTarget:
+    """Where one attempt's environment contract is prepared and published."""
+
+    symphony_name: str
+    repo: str
+    github_org: str
+    github_service: Any
+    cache_state: EnvCacheState
+    cache_dir: Path
+    cache_mount_path: str
+    performer_mounts: Sequence[Path]
+
+    @property
+    def commit(self) -> str:
+        if not self.cache_state.bootstrap_commit_sha:
+            message = "environment discovery requires an immutable source commit"
+            raise EnvironmentDiscoveryError(message)
+        return self.cache_state.bootstrap_commit_sha
+
+
+@dataclass(frozen=True)
+class SavedContract:
+    """An earlier run's accepted contract and the execution source it was accepted for (debug resume only)."""
+
+    manifest: EnvironmentManifest
+    assessment: CoverageAssessment
+    source_execution: Mapping[str, Any]
+
+
+def _reset_environment_contract(cache_state: EnvCacheState) -> None:
+    """Clear every published contract field before a new attempt can publish its own."""
+    cache_state.environment_capabilities = None
+    cache_state.environment_guest = None
+    cache_state.environment_runtime_artifacts = None
+    cache_state.environment_manifest = None
+    cache_state.environment_assessment = None
+    cache_state.environment_verification = None
+    cache_state.rendered_verify_sh = None
+    cache_state.rendered_activate_sh = None
+    cache_state.cache_dir_ready = False
+    cache_state.last_bootstrap_succeeded = None
 
 
 async def _pinned_inventory(github_service: Any, org: str, repo: str, *, limit: int,
@@ -2529,56 +2585,9 @@ class EnvCacheService:
 
                 raise EnvironmentDiscoveryError(message, code="attempt_persistence") from None
 
-    async def _build_manifest_artifacts(
-        self,
-        *,
-        performer_mounts: Sequence[Path],
-        symphony_name: str,
-        repo: str,
-        github_org: str,
-        github_service: _GitHubService,
-        readme_contents: dict[str, str],
-        current_sha: str,
-        cache_dir: Path,
-        cache_mount_path: str,
-        llm_chat: ChatJson | None,
-        declared_services: list[dict[str, Any]] | None = None,
-        cache_state: EnvCacheState | None = None,
-        capabilities: Any = None,
-        agent_model: Callable[[], AgentModelConfig] | None = None,
-    ) -> tuple[str | None, bool, bool]:
-        """Derive the manifest, write an authoritative verify.sh AND activate.sh
-        into the cache, and return ``(dependency_checklist, verify_provided,
-        activate_provided)``.
-
-        Discovery and independent review are mandatory. Any incomplete evidence
-        holds bootstrap; no parser or agent-written script can supply readiness.
-        """
-        from coordinare_service_inference.environment.render import render_activate, render_verify
-
-        from coordinare.services.environment_capabilities import EnvironmentCapabilityError
-        from coordinare.services.environment_discovery import (
-            DiscoveryLimits,
-            EnvironmentDiscoveryError,
-            discover_and_review,
-        )
-
-        if cache_state is None or not cache_state.bootstrap_commit_sha:
-            message = "environment discovery requires an immutable source commit"
-            raise EnvironmentDiscoveryError(message)
-        cache_state.environment_capabilities = None
-        cache_state.environment_guest = None
-        cache_state.environment_runtime_artifacts = None
-        cache_state.environment_manifest = None
-        cache_state.environment_assessment = None
-        cache_state.environment_verification = None
-        cache_state.rendered_verify_sh = None
-        cache_state.rendered_activate_sh = None
-        cache_state.cache_dir_ready = False
-        cache_state.last_bootstrap_succeeded = None
-        commit = cache_state.bootstrap_commit_sha
-        async def fetch(path: str) -> str | None:
-            return await _bootstrap_file_content(github_service, github_org, repo, path, commit)
+    def _discovery_limits(self) -> tuple[Any, float]:
+        """The configured discovery limits and the outer bootstrap wall clock."""
+        from coordinare.services.environment_discovery import DiscoveryLimits
 
         cfg = getattr(self._coordinare_config.global_config, "env_cache", None)
         limits = DiscoveryLimits(
@@ -2601,80 +2610,22 @@ class EnvCacheService:
         )
         outer_budget = getattr(cfg, "bootstrap_max_seconds",
             getattr(self._coordinare_config.global_config, "bootstrap_max_seconds", 3600))
+        return limits, outer_budget
 
-        budget = begin_attempt(cache_state, limits, outer_seconds=outer_budget)
-        previous, feedback = repair_context(cache_state)
+    @contextlib.asynccontextmanager
+    async def _guarded_attempt(self, cache_state: EnvCacheState, budget: Any,
+                               symphony_name: str) -> AsyncIterator[Path]:
+        """Own the attempt's temporary source and deadline, and journal every hold before it propagates.
 
-        async def checkpoint() -> None:
-            await self._checkpoint_environment_attempt(cache_state, budget)
-
-        budget.checkpoint = checkpoint
-
-
+        Yields the temporary source directory. On exit the source is removed and released, the journal is saved
+        and checkpointed, and errors are mapped to the hold codes the attempt records.
+        """
         source_temporary = tempfile.TemporaryDirectory(prefix='coordinare-discovery-source-')
         reserve_execution_source(cache_state, source_temporary.name)
         attempt_timer = asyncio.timeout_at(budget.deadline)
         try:
             async with attempt_timer:
-                if agent_model is not None:
-
-                    budget.agent_context = bootstrap_agent_context(model=agent_model(), cache=cache_state,
-                        state=self._kubernetes_state, config=self._coordinare_config.global_config,
-                        performer_mounts=self._performer_mounts())
-                budget.stage = 'execution_source'
-                await budget.flush()
-                prepare_source = getattr(github_service, 'prepare_execution_source', None)
-                if prepare_source is None:
-                    _source_refusal('complete execution source provider unavailable', code='execution_source_unavailable')
-                source_bundle = await prepare_source(github_org, repo, commit=commit,
-                    destination=Path(source_temporary.name)/'payload', deadline=budget.deadline)
-                if source_bundle.identity.source_commit != commit:
-                    _source_refusal('complete execution source commit differs')
-                cache_state.environment_execution_source = source_bundle.identity.model_dump(mode='json')
-                budget.stage = "inventory"
-                paths, entries = await _pinned_inventory(github_service, github_org, repo,
-                    limit=limits.max_inventory_entries, bundle=source_bundle)
-                # The guest is decided from the pinned source before any capability, probe or model step.
-                budget.stage = "guest"
-                guest_requirements = await asyncio.to_thread(
-                    pinned_requirements, source_bundle.payload_path, paths, expected=source_bundle.identity)
-                cache_state.environment_guest = guest_requirements
-                budget.guest = dict(guest_requirements)
-                budget.stage = "capabilities"
-                if capabilities is None:
-                    from coordinare.services.environment_capabilities import (
-                        resolve_execution_capabilities,
-                    )
-
-                    capability_state = dict(self._kubernetes_state)
-                    capability_state.setdefault("coordinare_config", self._coordinare_config)
-                    capability_state.setdefault("env_cache", {symphony_name: cache_state})
-                    capabilities = await resolve_execution_capabilities(capability_state, symphony_name)
-                budget.guest = {**budget.guest, "guest_platform": (
-                    capabilities.runtime.identity.guest_platform if capabilities.runtime is not None else capabilities.platform)}
-                logger.info("env_cache.guest_selected", symphony=symphony_name, **budget.guest)
-                from coordinare.services.environment_capabilities import require_cache_mount
-
-                require_cache_mount(capabilities, cache_mount_path)
-                from coordinare.services.environment_probe_service import (
-                    ProbeServiceContext,
-                    run_owned_probe,
-                )
-
-                probe_state = {**self._kubernetes_state,
-                    "probe_backend": "docker" if daemon_sees_performer_cache(self._kubernetes_state) else "kubernetes"}
-
-                async def probe_executor(plan: ProbePlan) -> ProbeReport:
-                    return await run_owned_probe(plan, context=ProbeServiceContext(cache_state, probe_state, fetch, budget, limits, source_bundle))
-
-                manifest, assessment = await discover_and_review(
-                    symphony_name=symphony_name, commit=commit, paths=paths,
-                    fetch=fetch, chat=llm_chat, capabilities=capabilities, declared_services=declared_services,
-                    limits=limits, budget=budget, previous_manifest=previous, execution_feedback=feedback, probe_executor=probe_executor,
-                    trial_executor=self.repair_trials.get(symphony_name) if previous is not None else None, require_preflight=True,
-                    execution_source_digest=source_bundle.identity.digest(), entries=entries,
-                    url_checker=missing_install_urls,
-                )
+                yield Path(source_temporary.name)
         except TimeoutError:
             budget.error_code, message = _timeout_label(attempt_timer.expired(), budget.stage)
             raise EnvironmentDiscoveryError(message, code=budget.error_code) from None
@@ -2700,9 +2651,61 @@ class EnvCacheService:
             with contextlib.suppress(EnvironmentDiscoveryError):
                 await self._checkpoint_environment_attempt(cache_state, budget)
             logger.info("env_cache.manifest_attempt", symphony=symphony_name, **budget.summary())
-        activation = render_activate(manifest, cache_mount_path=cache_mount_path)
-        verification = render_verify(manifest, cache_mount_path=cache_mount_path)
-        mounts = _env_cache_mounts(cache_dir, performer_mounts)
+
+    async def _prepare_execution_target(
+        self, target: ContractTarget, budget: Any, limits: Any, capabilities: Any, source_root: Path,
+    ) -> tuple[ExecutionSourceBundle, list[str], dict[str, Any], ExecutionCapabilities]:
+        """Pin the execution source and inventory, select the guest, and resolve the capabilities it runs on.
+
+        Returns ``(source_bundle, paths, entries, capabilities)``. Every step runs before any model call.
+        """
+        from coordinare.services.environment_capabilities import (
+            require_cache_mount,
+            resolve_execution_capabilities,
+        )
+
+        cache_state, commit = target.cache_state, target.commit
+        budget.stage = 'execution_source'
+        await budget.flush()
+        prepare_source = getattr(target.github_service, 'prepare_execution_source', None)
+        if prepare_source is None:
+            _source_refusal('complete execution source provider unavailable', code='execution_source_unavailable')
+        source_bundle = await prepare_source(target.github_org, target.repo, commit=commit,
+            destination=source_root/'payload', deadline=budget.deadline)
+        if source_bundle.identity.source_commit != commit:
+            _source_refusal('complete execution source commit differs')
+        cache_state.environment_execution_source = source_bundle.identity.model_dump(mode='json')
+        budget.stage = "inventory"
+        paths, entries = await _pinned_inventory(target.github_service, target.github_org, target.repo,
+            limit=limits.max_inventory_entries, bundle=source_bundle)
+        # The guest is decided from the pinned source before any capability, probe or model step.
+        budget.stage = "guest"
+        guest_requirements = await asyncio.to_thread(
+            pinned_requirements, source_bundle.payload_path, paths, expected=source_bundle.identity)
+        cache_state.environment_guest = guest_requirements
+        budget.guest = dict(guest_requirements)
+        budget.stage = "capabilities"
+        if capabilities is None:
+            capability_state = dict(self._kubernetes_state)
+            capability_state.setdefault("coordinare_config", self._coordinare_config)
+            capability_state.setdefault("env_cache", {target.symphony_name: cache_state})
+            capabilities = await resolve_execution_capabilities(capability_state, target.symphony_name)
+        budget.guest = {**budget.guest, "guest_platform": (
+            capabilities.runtime.identity.guest_platform if capabilities.runtime is not None else capabilities.platform)}
+        logger.info("env_cache.guest_selected", symphony=target.symphony_name, **budget.guest)
+        require_cache_mount(capabilities, target.cache_mount_path)
+        return source_bundle, paths, entries, capabilities
+
+    async def _publish_accepted_contract(
+        self, target: ContractTarget, budget: Any, manifest: Any, assessment: Any, capabilities: Any,
+    ) -> str:
+        """Write the informational cache copies, then publish the accepted contract and save the attempt as executing."""
+        from coordinare_service_inference.environment.render import render_activate, render_verify
+
+        cache_state, cache_dir, symphony_name = target.cache_state, target.cache_dir, target.symphony_name
+        activation = render_activate(manifest, cache_mount_path=target.cache_mount_path)
+        verification = render_verify(manifest, cache_mount_path=target.cache_mount_path)
+        mounts = _env_cache_mounts(cache_dir, target.performer_mounts)
         anchored_mkdir(cache_dir, mounts=mounts)
         try:
             for name, text in (("activate.sh", activation), ("verify.sh", verification),
@@ -2727,7 +2730,142 @@ class EnvCacheService:
         await self._checkpoint_environment_attempt(cache_state, budget)
         logger.info("env_cache.manifest_accepted", symphony=symphony_name,
                     digest=manifest.digest(), requirements=len(manifest.requirements))
-        return "ACCEPTED ENVIRONMENT CONTRACT\n" + manifest.model_dump_json(indent=2), True, True
+        return "ACCEPTED ENVIRONMENT CONTRACT\n" + str(manifest.model_dump_json(indent=2))
+
+    async def _build_manifest_artifacts(
+        self,
+        *,
+        performer_mounts: Sequence[Path],
+        symphony_name: str,
+        repo: str,
+        github_org: str,
+        github_service: _GitHubService,
+        readme_contents: dict[str, str],
+        current_sha: str,
+        cache_dir: Path,
+        cache_mount_path: str,
+        llm_chat: ChatJson | None,
+        declared_services: list[dict[str, Any]] | None = None,
+        cache_state: EnvCacheState | None = None,
+        capabilities: Any = None,
+        agent_model: Callable[[], AgentModelConfig] | None = None,
+    ) -> tuple[str | None, bool, bool]:
+        """Derive the manifest, write an authoritative verify.sh AND activate.sh
+        into the cache, and return ``(dependency_checklist, verify_provided,
+        activate_provided)``.
+
+        Discovery and independent review are mandatory. Any incomplete evidence
+        holds bootstrap; no parser or agent-written script can supply readiness.
+        """
+        from coordinare.services.environment_discovery import discover_and_review
+
+        if cache_state is None or not cache_state.bootstrap_commit_sha:
+            message = "environment discovery requires an immutable source commit"
+            raise EnvironmentDiscoveryError(message)
+        _reset_environment_contract(cache_state)
+        target = ContractTarget(symphony_name=symphony_name, repo=repo, github_org=github_org,
+            github_service=github_service, cache_state=cache_state, cache_dir=cache_dir,
+            cache_mount_path=cache_mount_path, performer_mounts=performer_mounts)
+        commit = target.commit
+        async def fetch(path: str) -> str | None:
+            return await _bootstrap_file_content(github_service, github_org, repo, path, commit)
+
+        limits, outer_budget = self._discovery_limits()
+        budget = begin_attempt(cache_state, limits, outer_seconds=outer_budget)
+        previous, feedback = repair_context(cache_state)
+
+        async def checkpoint() -> None:
+            await self._checkpoint_environment_attempt(cache_state, budget)
+
+        budget.checkpoint = checkpoint
+
+        async with self._guarded_attempt(cache_state, budget, symphony_name) as source_root:
+            if agent_model is not None:
+
+                budget.agent_context = bootstrap_agent_context(model=agent_model(), cache=cache_state,
+                    state=self._kubernetes_state, config=self._coordinare_config.global_config,
+                    performer_mounts=self._performer_mounts())
+            source_bundle, paths, entries, capabilities = await self._prepare_execution_target(
+                target, budget, limits, capabilities, source_root)
+            from coordinare.services.environment_probe_service import (
+                ProbeServiceContext,
+                run_owned_probe,
+            )
+
+            probe_state = {**self._kubernetes_state,
+                "probe_backend": "docker" if daemon_sees_performer_cache(self._kubernetes_state) else "kubernetes"}
+
+            async def probe_executor(plan: ProbePlan) -> ProbeReport:
+                return await run_owned_probe(plan, context=ProbeServiceContext(cache_state, probe_state, fetch, budget, limits, source_bundle))
+
+            manifest, assessment = await discover_and_review(
+                symphony_name=symphony_name, commit=commit, paths=paths,
+                fetch=fetch, chat=llm_chat, capabilities=capabilities, declared_services=declared_services,
+                limits=limits, budget=budget, previous_manifest=previous, execution_feedback=feedback, probe_executor=probe_executor,
+                trial_executor=self.repair_trials.get(symphony_name) if previous is not None else None, require_preflight=True,
+                execution_source_digest=source_bundle.identity.digest(), entries=entries,
+                url_checker=missing_install_urls,
+            )
+        text = await self._publish_accepted_contract(target, budget, manifest, assessment, capabilities)
+        return text, True, True
+
+    async def adopt_accepted_artifacts(self, target: ContractTarget, saved: SavedContract, rebind: Rebinder,
+                                       *, capabilities: Any = None) -> list[str]:
+        """Debug harness only: adopt an earlier run's accepted contract and go straight to execution.
+
+        The attempt begins and the target is prepared exactly as in discovery, but no model is called. The saved
+        contract is refused unless its commit, inventory and execution source equal the current ones; ``rebind`` then
+        moves its runtime binding to the current capabilities and must return a contract that the acceptance check
+        admits. The result is published and the attempt saved as executing, as after an accepted review. Returns the
+        binding fields ``rebind`` changed. Never called by the daemon: a rebound contract had no fresh review.
+        """
+        cache_state = target.cache_state
+        manifest, assessment = saved.manifest, saved.assessment
+        if not cache_state.bootstrap_commit_sha or manifest.source_commit != cache_state.bootstrap_commit_sha:
+            message = "saved accepted contract was reviewed at a different source commit"
+            raise EnvironmentDiscoveryError(message, code="resume_source_mismatch")
+        try:
+            saved_source = ExecutionSourceIdentity.model_validate(dict(saved.source_execution))
+        except ValueError:
+            message = "saved execution source identity is missing or invalid"
+            raise EnvironmentDiscoveryError(message, code="resume_source_mismatch") from None
+        _reset_environment_contract(cache_state)
+        limits, outer_budget = self._discovery_limits()
+        budget = begin_attempt(cache_state, limits, outer_seconds=outer_budget)
+
+        async def checkpoint() -> None:
+            await self._checkpoint_environment_attempt(cache_state, budget)
+
+        budget.checkpoint = checkpoint
+        async with self._guarded_attempt(cache_state, budget, target.symphony_name) as source_root:
+            source_bundle, paths, _entries, capabilities = await self._prepare_execution_target(
+                target, budget, limits, capabilities, source_root)
+            budget.stage = "resume"
+            if source_inventory_digest(paths) != manifest.inventory_digest:
+                message = "current source inventory differs from the saved accepted contract's"
+                raise EnvironmentDiscoveryError(message, code="resume_source_mismatch")
+            if source_bundle.identity.digest() != saved_source.digest():
+                message = "current execution source differs from the saved accepted run's"
+                raise EnvironmentDiscoveryError(message, code="resume_source_mismatch")
+            try:
+                manifest, assessment, changed = rebind(manifest, assessment, capabilities)
+            except ValueError as exc:
+                message = f"saved accepted contract cannot be rebound: {exc}"
+                raise EnvironmentDiscoveryError(message, code="resume_rebind_refused") from None
+            # Checked here as well as by the rebinder, before anything is published or the attempt executes.
+            trial = cache_state.model_copy(update={
+                "environment_manifest": manifest.model_dump(mode="json"),
+                "environment_assessment": assessment.model_dump(mode="json"),
+                "environment_capabilities": capabilities.model_dump(mode="json")})
+            if (accepted_environment(trial) is None or manifest.capabilities_digest != capabilities.digest()
+                    or (manifest.runtime.policy if manifest.runtime is not None else None) != capabilities.runtime):
+                message = "rebound contract is not accepted by the current acceptance check"
+                raise EnvironmentDiscoveryError(message, code="resume_rebind_refused")
+            # As after an accepted review: the established candidate and its closed findings are the attempt's.
+            budget.coverage_manifest = manifest
+            budget.finding_ledger = assessment.finding_ledger
+        await self._publish_accepted_contract(target, budget, manifest, assessment, capabilities)
+        return list(changed)
 
     def mark_runtime_health_failed(
         self,

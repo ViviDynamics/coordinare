@@ -815,3 +815,137 @@ async def test_execution_gate_is_skipped_only_when_unattended(tmp_path, monkeypa
         assert len(installs) == 1 and result['reason_code'] == 'installer_timeout'
     else:
         assert not installs and result['reason_code'] == 'execution_scope_not_approved'
+
+
+async def _resume_source(tmp_path, *, image):
+    """A finished synthetic source run whose accepted contract is bound to the pipeline fixture repository."""
+    from tests.unit.test_353_bootstrap_pipeline import Repository
+    from tests.unit.test_376_resume import (
+        bundle_identity,
+        native_capabilities,
+        saved_contract,
+        write_source,
+    )
+
+    manifest, assessment = saved_contract(native_capabilities(image, mount='/devenv/elsewhere'))
+    root = tmp_path / 'source'
+    write_source(root, manifest.model_dump(mode='json'), assessment.model_dump(mode='json'),
+                 execution_source=await bundle_identity(tmp_path, Repository()))
+    return root, manifest
+
+
+async def _resumed_run(tmp_path, monkeypatch, *, passed, **profile):
+    from scripts import validate_environment_repositories as harness
+
+    from coordinare.services.environment_acceptance import accepted_environment
+    from tests.unit.test_353_bootstrap_pipeline import COMMIT, Repository
+    from tests.unit.test_376_resume import NEW_IMAGE, OLD_IMAGE
+
+    class FixtureSnapshot(Repository):
+        name, org, commit = 'suite', 'fixture', COMMIT
+
+        async def verify(self):
+            return None
+
+    async def identity(image):
+        return image, 'linux/aarch64'
+
+    executed = []
+
+    async def execute(snapshot, service, state, *, target, result, **kwargs):
+        executed.append(accepted_environment(state['env_cache'][snapshot.name]))
+        if passed:
+            result.update(status='ready', stage='readiness', ready_at_validation=True)
+        else:
+            result.update(status='held', stage='installer', reason_code='installer_failed')
+
+    async def no_model(*args, **kwargs):
+        raise AssertionError('a resumed run called a model')
+
+    monkeypatch.setattr('coordinare.services.environment_capabilities._docker_identity', identity)
+    monkeypatch.setattr(harness, 'execute_accepted', execute)
+    source, manifest = await _resume_source(tmp_path, image=OLD_IMAGE)
+    output = tmp_path / 'resumed'
+    result = await harness.validate_repository(FixtureSnapshot(), image=NEW_IMAGE, output=output, chat=no_model,
+        profile=Profile(model='fixture', base_url='http://localhost:1', execute=True, unattended=True,
+                        resume_from=source, max_execution_repairs=0, **profile))
+    return result, executed, manifest, output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('passed', [True, False])
+async def test_resumed_run_is_never_ready_and_never_gate_eligible(tmp_path, monkeypatch, passed):
+    from scripts.validate_environment_repositories import RESUME_PASSED_EXIT, exit_status
+
+    result, executed, manifest, output = await _resumed_run(tmp_path, monkeypatch, passed=passed)
+    assert len(executed) == 1 and executed[0] is not None
+    assert executed[0].source_commit == manifest.source_commit and executed[0].digest() != manifest.digest()
+    assert result['gate_eligible'] is False and result['mode'] == 'resume_debug'
+    assert result['ready_at_validation'] is False and result['status'] != 'ready'
+    assert result['model_calls'] == 0 and not result['independent_review_reached']
+    assert all(attempt['status'] != 'ready' and attempt['gate_eligible'] is False for attempt in result['attempts'])
+    recorded = json.loads((output / 'result.json').read_text())
+    assert recorded['status'] == result['status'] and recorded['gate_eligible'] is False
+    resumed = result['resumed_from']
+    assert resumed['source_commit'] == manifest.source_commit and resumed['attempt'] == 0
+    assert resumed['original']['manifest_digest'] == manifest.digest() != resumed['rebound']['manifest_digest']
+    assert 'manifest.capabilities_digest' in resumed['changed_binding_fields']
+    assert json.loads((output / 'attempt-000' / 'accepted-manifest.json').read_text())['capabilities_digest'] \
+        == resumed['rebound']['capabilities_digest']
+    if passed:
+        assert result['status'] == 'resume_ready' and result['resume_passed'] is True
+        assert exit_status([result]) == RESUME_PASSED_EXIT != 0
+    else:
+        # No repair by default: the failure holds with its real reason code.
+        assert result['status'] == 'held' and result['reason_code'] == 'installer_failed'
+        assert len(result['attempts']) == 1 and exit_status([result]) == 1
+
+
+@pytest.mark.asyncio
+async def test_resume_refuses_a_reused_scope_or_an_unfinished_source(tmp_path, monkeypatch):
+    result, executed, _, output = await _resumed_run(tmp_path, monkeypatch, passed=True,
+                                                    reuse_scope_from=tmp_path / 'scope')
+    assert not executed and result['status'] == 'held' and result['reason_code'] == 'resume_refused'
+    assert result['gate_eligible'] is False and not (output / 'attempt-000').exists()
+    (tmp_path / 'source' / 'suite' / 'result.json').unlink()
+    from scripts import validate_environment_repositories as harness
+
+    from tests.unit.test_353_bootstrap_pipeline import COMMIT, Repository
+
+    class FixtureSnapshot(Repository):
+        name, org, commit = 'suite', 'fixture', COMMIT
+
+        async def verify(self):
+            return None
+
+    result = await harness.validate_repository(FixtureSnapshot(), image='trusted@sha256:' + 'a' * 64,
+        output=tmp_path / 'unfinished', profile=Profile(model='fixture', base_url='http://localhost:1', execute=True,
+                                                        resume_from=tmp_path / 'source', max_execution_repairs=0))
+    assert result['reason_code'] == 'resume_refused' and 'result.json' in result['reason']
+
+
+def test_exit_status_never_passes_a_resumed_run():
+    from scripts.validate_environment_repositories import RESUME_PASSED_EXIT, exit_status
+
+    ready = {'status': 'ready', 'ready_at_validation': True}
+    assert exit_status([ready]) == 0
+    assert exit_status([{**ready, 'gate_eligible': False}]) == 1
+    assert exit_status([{'status': 'resume_ready', 'ready_at_validation': False, 'gate_eligible': False}]) == RESUME_PASSED_EXIT
+    assert exit_status([ready, {'status': 'resume_ready', 'ready_at_validation': False, 'gate_eligible': False}]) == 1
+
+
+@pytest.mark.parametrize('extra', [
+    ['--resume-from', 'source', '--reuse-scope-from', 'scope', '--execute'],
+    ['--resume-from', 'source'],
+    ['--resume-attempt', '1', '--execute'],
+])
+def test_resume_flags_refuse_scope_reuse_and_no_execution(tmp_path, monkeypatch, extra):
+    from scripts.validate_environment_repositories import main
+
+    monkeypatch.chdir(tmp_path)
+    output = tmp_path / 'out'
+    with pytest.raises(SystemExit) as raised:
+        main(['suite', '--snapshots', 'snapshots', '--output', str(output), '--image', 'trusted@sha256:' + 'a' * 64,
+              '--model', 'fixture', '--base-url', 'http://localhost:1', *extra])
+    assert raised.value.code == 2
+    assert not output.exists()

@@ -135,3 +135,49 @@ async def test_native_daemon_execution_repair_requires_clean_consumer_and_proven
     service.on_bootstrap_complete('suite', True, daemon._state)
     assert cache.cache_dir_ready and cache.provenance_digest
     assert len(selected) > 3
+
+
+@pytest.mark.asyncio
+async def test_field_harness_resume_executes_a_saved_contract_without_any_agent(tmp_path: Any, monkeypatch: Any) -> None:
+    """Debug resume (never gate evidence) reaches execution with no agent transport and no credential."""
+    from scripts import validate_environment_repositories as harness
+
+    from coordinare.services.environment_acceptance import accepted_environment
+    from tests.unit.test_376_resume import (
+        NEW_IMAGE,
+        OLD_IMAGE,
+        bundle_identity,
+        native_capabilities,
+        saved_contract,
+        write_source,
+    )
+
+    class Snapshot(Repository):
+        name, org, commit = 'suite', 'fixture', COMMIT
+        async def verify(self) -> None:
+            pass
+    def no_agent(*args: Any, **kwargs: Any) -> None:
+        pytest.fail('a resumed run without repairs must not start an agent')
+    async def identity(image: str) -> tuple[str, str]:
+        return image, 'linux/aarch64'
+    executed: list[Any] = []
+    async def execute(snapshot: Any, service: Any, state: Any, *, result: dict[str, Any], **kwargs: Any) -> None:
+        executed.append(accepted_environment(state['env_cache'][snapshot.name]))
+        result.update(status='ready', stage='readiness', ready_at_validation=True)
+    monkeypatch.setattr(AgentModelConfig, 'transport', no_agent)
+    monkeypatch.setattr('coordinare.services.environment_capabilities._docker_identity', identity)
+    monkeypatch.setattr(harness, 'execute_accepted', execute)
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+    manifest, assessment = saved_contract(native_capabilities(OLD_IMAGE))
+    write_source(tmp_path / 'source', manifest.model_dump(mode='json'), assessment.model_dump(mode='json'),
+                 execution_source=await bundle_identity(tmp_path, Repository()))
+    result = await harness.validate_repository(Snapshot(), image=NEW_IMAGE, output=tmp_path / 'attempt',
+        profile=harness.Profile(model='selected/native', base_url='https://model.example/v1', execute=True,
+            unattended=True, resume_from=tmp_path / 'source', max_execution_repairs=0))
+    assert len(executed) == 1 and executed[0] is not None
+    # Rebound to this run's image: the binding moved, the reviewed contract did not.
+    assert executed[0].capabilities_digest != manifest.capabilities_digest
+    assert executed[0].checks == manifest.checks and executed[0].scope_contract == manifest.scope_contract
+    assert result['status'] == 'resume_ready' and result['gate_eligible'] is False
+    assert result['ready_at_validation'] is False and result['model_calls'] == 0
+    assert harness.exit_status([result]) == harness.RESUME_PASSED_EXIT
