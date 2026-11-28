@@ -16,6 +16,9 @@ import pytest
 from coordinare import launch_preflight
 from coordinare.config import ProjectConfiguration
 from coordinare.doctor import CheckResult, Status
+from coordinare.first_launch import running_summary
+
+pytestmark = pytest.mark.asyncio
 
 _PROVIDERS: dict[str, dict[str, Any]] = {
     "qare": {"kind": "qare", "version": "2026.11.44", "image": "coordinare-performer:sandbox"},
@@ -115,7 +118,34 @@ async def test_a_role_with_neither_a_provider_nor_a_performer_still_fails(
     results = await launch_preflight.check_harnesses(config)
 
     assert "harness nare" in _failed(results)
-    assert ("performer protocol", [""]) in probes
+    assert "performer protocol" in [name for name, _command in probes]
+
+
+async def test_a_provider_role_does_not_hide_a_performer_role_on_another_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probes: list[tuple[str, list[str]]],
+) -> None:
+    """A non-provider role with no local performer and no endpoint still fails."""
+    config = _config(
+        tmp_path, monkeypatch, {"implementer": {"transport": "ssh"}, "qa": {"provider": "qare"}},
+    )
+
+    results = await launch_preflight.check_harnesses(config)
+
+    assert "performer transport" in _failed(results)
+
+
+async def test_an_endpoint_naming_only_a_provider_role_is_no_http_performer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probes: list[tuple[str, list[str]]],
+) -> None:
+    """An endpoint serves no role a provider fills, so it cannot stand in for a missing performer."""
+    config = _config(
+        tmp_path, monkeypatch, {"implementer": {"transport": "ssh"}, "qa": {"provider": "qare"}},
+        performer_endpoints=[{"id": "q", "mode": "ephemeral", "roles": ["qa"], "image": "img"}],
+    )
+
+    results = await launch_preflight.check_harnesses(config, probe_containers=False)
+
+    assert "performer transport" in _failed(results)
 
 
 async def test_a_config_with_no_roles_and_no_performer_still_fails(
@@ -147,6 +177,66 @@ def test_a_container_endpoint_probes_no_harness_for_a_provider_role(
     assert "container harness nare" not in _names(results)
 
 
+def test_an_endpoint_serving_only_provider_roles_probes_no_harness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probes: list[tuple[str, list[str]]],
+) -> None:
+    """The #451 workaround endpoint: its image is checked, but no harness runs in it."""
+    monkeypatch.setattr(launch_preflight.shutil, "which", lambda _name: "/usr/bin/docker")
+    config = _config(
+        tmp_path, monkeypatch, {"qa": {"provider": "qare"}},
+        performer_endpoints=[{"id": "qa", "mode": "ephemeral", "roles": ["qa"], "image": "img"}],
+    )
+
+    results = launch_preflight._container_harnesses(config)
+
+    assert "performer image qa" in _names(results)
+    assert not any(name.startswith("container harness") for name in _names(results))
+
+
+def test_an_endpoint_with_no_roles_still_probes_its_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probes: list[tuple[str, list[str]]],
+) -> None:
+    monkeypatch.setattr(launch_preflight.shutil, "which", lambda _name: "/usr/bin/docker")
+    config = _config(
+        tmp_path, monkeypatch, {"qa": {"provider": "qare"}},
+        performer_endpoints=[{"id": "spare", "mode": "ephemeral", "roles": [], "image": "img"}],
+    )
+
+    results = launch_preflight._container_harnesses(config)
+
+    assert "container harness nare" in _names(results)
+
+
+def test_startup_checks_no_model_for_a_provider_role(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A provider role's mode has no effect, so its models are not probed at startup."""
+    catalogs = {
+        "endpoints": [{"name": "local", "kind": "vllm", "base_url": "http://localhost:8000"}],
+        "model_endpoints": [{"name": "coder", "endpoint": "local", "model": "qwen"}],
+        "modes": [{"name": "single", "strategy": "single", "tool": "coder"}],
+    }
+    provider_only = _config(
+        tmp_path, monkeypatch, {"default": {"mode": "single"}, "qa": {"provider": "qare"}}, **catalogs,
+    )
+    mixed = _config(
+        tmp_path, monkeypatch,
+        {"default": {"mode": "single"}, "implementer": {}, "qa": {"provider": "qare"}}, **catalogs,
+    )
+
+    assert launch_preflight._active_model_config(provider_only).model_endpoints == []
+    assert [m.name for m in launch_preflight._active_model_config(mixed).model_endpoints] == ["coder"]
+
+
+def test_the_running_summary_names_the_provider_of_a_provider_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path, monkeypatch, {"implementer": {"backend": "codex"}, "qa": {"provider": "qare"}})
+
+    summary = running_summary(config)
+
+    assert "implementer (codex)" in summary
+    assert "qa (provider qare)" in summary
+
+
 @pytest.mark.parametrize("explicit", [True, False], ids=["doctor", "startup"])
 @pytest.mark.parametrize("provider", sorted(_PROVIDERS))
 async def test_doctor_and_startup_pass_a_provider_only_config(
@@ -170,7 +260,8 @@ async def test_doctor_and_startup_pass_a_provider_only_config(
 
     report = await launch_preflight.run_preflight(config, explicit=explicit)
 
-    assert _failed(report.results) == []
+    # Startup without a preset downgrades a failure to a warning, so neither may appear.
+    assert [r.name for r in report.results if r.status is not Status.OK] == []
     assert own in report.results
     assert not any(name.startswith("harness ") for name in _names(report.results))
     assert "performer protocol" not in _names(report.results)

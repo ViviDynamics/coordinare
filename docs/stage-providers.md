@@ -12,10 +12,12 @@ whose roles name none, runs every stage on performers exactly as before.
 
 A role that names a provider runs no local harness and dispatches to no performer, so
 `coordinare doctor` and the startup preflight leave it out of the harness and performer
-protocol checks; the provider's own checks (below) speak for it. A config whose every
-role is filled by a provider needs no performer at all (issue #451). A role that names
-no provider is checked as before, so one with neither a provider nor a performer still
-fails.
+protocol checks, and the startup preflight probes no model for it; the provider's own
+checks (below) speak for it. A performer endpoint whose roles are all filled by providers
+serves none of them: its image is still checked, but no harness runs in it. A config whose
+every role is filled by a provider needs no performer at all (issue #451). A role that
+names no provider is checked as before, so one with neither a provider nor a performer
+still fails.
 
 ## The stage contract
 

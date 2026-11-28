@@ -398,25 +398,39 @@ def _command_probe(
     return CheckResult(name, Status.OK, f"{name} answered.")
 
 
+def _provider_roles(config: ProjectConfiguration) -> set[str]:
+    """451: the active roles a stage provider fills instead of a performer."""
+    return {
+        role
+        for role in CANONICAL_ORDER
+        if (resolved := config.performers.resolved_role(role)) is not None
+        and resolved.max_concurrency > 0
+        and resolved.provider
+    }
+
+
 def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
     results = []
     executables = set()
     harnesses = set()
+    # 451: a stage provider runs its own harness, and check_stage_providers checks it, so a
+    # role it fills needs no local harness or performer and no endpoint can serve it.
+    provider_roles = _provider_roles(config)
     http_roles = {
         role
         for endpoint in config.performer_endpoints
         if endpoint.mode != "subprocess"
         for role in endpoint.roles
+        if role not in provider_roles
     }
-    provider_roles = 0
+    performer_roles = 0
     for role in CANONICAL_ORDER:
         resolved = config.performers.resolved_role(role)
         if resolved is None or resolved.max_concurrency == 0:
             continue
-        if resolved.provider:
-            # 451: a stage provider runs its own harness; check_stage_providers checks it.
-            provider_roles += 1
+        if role in provider_roles:
             continue
+        performer_roles += 1
         if resolved.transport not in (None, "subprocess"):
             continue
         executable = resolved.executable or config.agent_executable
@@ -425,7 +439,7 @@ def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
         harnesses.add(resolved.backend.replace("-", "_").lower())
         executables.add(executable)
     # 451: with every active role on a stage provider, nothing dispatches to a performer.
-    provider_only = provider_roles > 0 and not harnesses and not http_roles
+    provider_only = bool(provider_roles) and not performer_roles
     if not executables and config.agent_executable and not http_roles and not provider_only:
         executables.add(config.agent_executable)
     for harness in sorted(harnesses):
@@ -478,6 +492,7 @@ def _container_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
     if result.status is not Status.OK:
         return [result]
     results = [result]
+    provider_roles = _provider_roles(config)
     for endpoint in config.performer_endpoints:
         if endpoint.mode != "ephemeral":
             continue
@@ -488,12 +503,14 @@ def _container_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
         results.append(result)
         if result.status is not Status.OK:
             continue
+        if endpoint.roles and set(endpoint.roles) <= provider_roles:
+            continue  # 451: only stage providers fill its roles, so no harness runs in it
         harnesses = {
             resolved.backend.replace("-", "_").lower()
             for role in endpoint.roles
             if (resolved := config.performers.resolved_role(role)) is not None
             and resolved.max_concurrency > 0
-            and not resolved.provider
+            and role not in provider_roles
         }
         if not harnesses:
             harnesses = {endpoint.env.get("BACKEND", "nare").replace("-", "_").lower()}
@@ -696,7 +713,8 @@ def _active_model_config(config: ProjectConfiguration) -> ProjectConfiguration:
     modes = set()
     for role in (*CANONICAL_ORDER, "env_bootstrap"):
         resolved = config.performers.resolved_role(role)
-        if resolved is not None and resolved.max_concurrency > 0 and resolved.mode is not None:
+        # 451: a provider-backed role's mode has no effect, so its models are never called.
+        if resolved is not None and resolved.max_concurrency > 0 and resolved.mode is not None and not resolved.provider:
             modes.add(resolved.mode)
     models = {
         ref
