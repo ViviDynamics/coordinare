@@ -112,6 +112,8 @@ class ScrutareProviderConfig(BaseModel):
         return value
 
 
+#: 442: variables that would move QAre's browser cache away from what the image links in.
+_QARE_BROWSER_CACHE_ENV = frozenset({"XDG_CACHE_HOME", "PLAYWRIGHT_BROWSERS_PATH"})
 _QARE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+_-]*$")
 
 
@@ -192,6 +194,12 @@ class QAreProviderConfig(BaseModel):
                 msg = (
                     "env_passthrough lists environment variable NAMES (for example "
                     "OPENAI_API_KEY), never their values"
+                )
+                raise ValueError(msg)
+            if name in _QARE_BROWSER_CACHE_ENV:
+                msg = (
+                    f"env_passthrough may not name {name}: it moves where QAre's Playwright "
+                    "looks for the browser the performer image ships (#442)"
                 )
                 raise ValueError(msg)
         return list(dict.fromkeys(value))
