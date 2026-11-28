@@ -519,15 +519,27 @@ def forwarded_unset_secrets(command: Command, defined: Collection[str]) -> set[s
     return found
 
 
+# A check proves the environment with one small sample; nothing a check needs takes longer. Maintainer ruling
+# 2026-11-28 (nare-native-047): a whole-suite check and a 60-minute benchmark tier were accepted on prompt guidance
+# alone and spent hours of the installer session. Installs keep the command limit.
+CHECK_TIMEOUT_CEILING = 900.0
+
+
 def validate_static_rules(install: Sequence[Command], activation: Activation, platform: str | None = None, *,
                           others: Sequence[Command] = (), system_packages: bool = True,
-                          checks: Sequence[Command] = (), credentials: Collection[str] = ()) -> None:
+                          checks: Sequence[Command] = (), credentials: Collection[str] = (),
+                          all_checks: Sequence[Command] = ()) -> None:
     """Raises the first correctable static error; each names its record ids (activation entries by position).
 
     ``others`` are the check and service lifecycle commands; ``system_packages`` is False for a carrier that cannot
     install system packages. ``checks`` are the required checks judged for a masked status (those not yet executed:
     an executed check is frozen and cannot be corrected).
     """
+    if over := [command for command in all_checks if command.timeout_seconds > CHECK_TIMEOUT_CEILING]:
+        raise _graph_error("check_timeout_ceiling", f"a check runs one small sample and is given at most "
+                           f"{int(CHECK_TIMEOUT_CEILING)} seconds; narrow each named check to a sample through the project's "
+                           "own runner. A whole suite, every shard of one, a full build or a benchmark tier is never a check",
+                           over[0].id, set(), [command.id for command in over])
     for command in checks:
         if masked_check_status(command):
             raise _graph_error("masked_check_status", "a required check discards the failure of the work it verifies",

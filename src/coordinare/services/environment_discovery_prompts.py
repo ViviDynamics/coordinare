@@ -10,6 +10,7 @@ from coordinare_service_inference.environment.models import (
     CoverageAssessmentProposal,
     EnvironmentManifestProposal,
 )
+from coordinare_service_inference.environment.static_rules import CHECK_TIMEOUT_CEILING
 from pydantic import ConfigDict, create_model
 
 from coordinare.services.environment_delta_schema import MANIFEST_DELTA_ENVELOPE
@@ -142,6 +143,7 @@ ARCHIVE_MODES = (
 # held findings open until the author cut the heavy builds' and suites' ceilings, spending six coverage revisions
 # before any execution. A ceiling is not a plan: the session deadline still ends the whole run.
 TIMEOUT_CEILINGS = (
+    f'A check\'s timeout_seconds is at most {int(CHECK_TIMEOUT_CEILING)}: it runs one small sample. '
     'Each command\'s timeout_seconds is its own ceiling: set it to what that work needs on this carrier, with margin. '
     'The ceilings of all commands may add up to more than the session_budget, because they are not run times and the '
     'session deadline still ends the whole run. Never shorten a ceiling below what its work needs to make a total fit; '

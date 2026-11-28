@@ -1133,6 +1133,7 @@ def _carrier_rules(manifest: EnvironmentManifest | EnvironmentManifestProposal,
     executed = {check.id for executed in budget.executed_manifests for check in executed.checks}
     return {'others': [*manifest.checks, *lifecycle], 'system_packages': capabilities.runtime is None,
             'checks': [check for check in manifest.checks if check.required and check.id not in executed],
+            'all_checks': list(manifest.checks),
             'credentials': [credential.name for credential in manifest.local_credentials]}
 
 
