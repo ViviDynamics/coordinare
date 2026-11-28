@@ -14,8 +14,8 @@ Run as ``python fake_qare.py <args>``. What it does is read from the JSON file n
   job that waits on it, as on the pull request's code QAre runs) and then waits, for at
   most a minute, until ``<hold>.release`` exists (#450 reads that parent meanwhile).
 
-Every call is appended to ``<scenario>.calls.jsonl`` with its arguments and the names of
-the environment variables it could see.
+Every call is appended to ``<scenario>.calls.jsonl`` with its arguments, the names of
+the environment variables it could see, and the values of the proxy ones (``proxy``).
 """
 from __future__ import annotations
 
@@ -28,6 +28,8 @@ from pathlib import Path
 VERSION = "2026.11.42"
 EXIT = {"passed": 0, "failed": 1, "blocked": 2, "refused": 3, "waived": 5}
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+#: 461: whose values a call records (the proxy the job points QAre's requests at), beside every name.
+PROXY_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY")
 
 
 def _flag(argv: list[str], name: str) -> str:
@@ -47,7 +49,8 @@ def main(argv: list[str]) -> int:
     scenario = json.loads(Path(scenario_path).read_text()) if scenario_path else {}
     if scenario_path:
         with Path(f"{scenario_path}.calls.jsonl").open("a") as calls:
-            calls.write(json.dumps({"argv": argv, "env": sorted(os.environ), "cwd": os.getcwd()}) + "\n")
+            proxy = {name: os.environ[name] for name in PROXY_ENV if name in os.environ}
+            calls.write(json.dumps({"argv": argv, "env": sorted(os.environ), "proxy": proxy, "cwd": os.getcwd()}) + "\n")
     if argv[:1] == ["--version"]:
         sys.stdout.write(f"{scenario.get('version', VERSION)}\n")
         return 0
