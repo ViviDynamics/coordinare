@@ -8,8 +8,8 @@ main() (
     # nare, the default agent harness, at the release the performer image pins:
     # NARE_VERSION and NARE_SHA256 in agent/performer/Dockerfile.base. A unit
     # test keeps the two equal, so bump them together.
-    nare_version=2026.11.121
-    nare_sha256=1e03d84fb1690a9588aca11b543a47379be3f185119c6775b882a14d1aece8ad
+    nare_version=2026.11.135
+    nare_sha256=a85c457b6ce8045a238478744191809003a33c82fb050f171f772c8dc6a3616d
     nare_wheel=nare-$nare_version-py3-none-any.whl
     # Holds the version this installer installed, inside nare's tool environment,
     # so uninstall removes only a nare it installed and that nobody changed since.

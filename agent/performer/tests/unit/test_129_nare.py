@@ -1,7 +1,7 @@
 """Spec 129: NareBackend transcript records.
 
 Drives the real stdout reader (``_read_loop``) and the start/relay paths over
-nare JSONL lines. The process is faked; the line shapes are what nare's contract 3
+nare JSONL lines. The process is faked; the line shapes are what nare's contract 4
 writes (tests/contract/test_nare_real_binary.py runs the real binary).
 """
 from __future__ import annotations
@@ -120,7 +120,7 @@ async def test_stream_records_full_text_tool_thinking_usage_error_and_result(
         json.dumps({"type": "output", "text": LONG_OUTPUT, "detail": {}}),
         json.dumps({
             "type": "result", "status": "done", "output": None, "text": LONG_OUTPUT,
-            "stop_reason": "end_turn", "session_id": "sess-1", "turns": 2, "contract": 3,
+            "stop_reason": "end_turn", "session_id": "sess-1", "turns": 2, "contract": 4,
             "usage": {"input": 500, "output": 90, "cache_read": 10, "cache_write": 0,
                       "cost": 0.02, "estimated": False, "total": 600},
         }),

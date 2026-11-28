@@ -66,7 +66,7 @@ def test_supported_backends_contains_the_known_harnesses() -> None:
         "pi",
         "prime_agent",
         "openclaw",
-        # 360: the nare adapter (nare machine contract 3).
+        # 360: the nare adapter (nare machine contract 4).
         "nare",
     }
 

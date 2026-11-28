@@ -64,7 +64,7 @@ def _file(cmd: list[str], name: str) -> str:
 
 
 def test_the_adapter_speaks_contract_3() -> None:
-    assert CONTRACT_VERSION == "3"
+    assert CONTRACT_VERSION == "4"
 
 
 @pytest.mark.asyncio
@@ -74,7 +74,7 @@ async def test_start_runs_nare_with_the_contract_and_files(tmp_path, monkeypatch
     backend = NareBackend()
     await backend.start(_stand(tmp_path), _score(), model="claude-sonnet-5", max_tokens=900)
     cmd = recorded[0]
-    assert cmd[:5] == ["nare", "run", "--yes", "--contract", "3"]
+    assert cmd[:5] == ["nare", "run", "--yes", "--contract", "4"]
     assert "--jsonl" in cmd
     assert _flag(cmd, "--session").startswith(tempfile.gettempdir())
     assert _file(cmd, "--prompt-file").startswith("# Task: Fix the bug")
