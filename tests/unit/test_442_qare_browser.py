@@ -30,7 +30,7 @@ def _instructions() -> list[str]:
         if raw.lstrip().startswith("#"):
             continue
         if raw.endswith("\\"):
-            current += raw[:-1] + " "
+            current += raw[:-1]  # Docker joins continuations with nothing in between
             continue
         current += raw
         if current.strip():
@@ -63,7 +63,7 @@ def test_qares_tree_with_its_browsers_comes_from_that_image() -> None:
 
 
 def _links() -> str:
-    return next(line for line in _instructions() if "/opt/qare/drivers/web/browsers/*/" in line)
+    return next(line for line in _instructions() if "qare_browsers=/opt/qare/drivers/web/browsers" in line)
 
 
 def test_qares_browsers_sit_beside_the_python_ones_in_playwrights_default_cache() -> None:
@@ -72,9 +72,15 @@ def test_qares_browsers_sit_beside_the_python_ones_in_playwrights_default_cache(
     # Each revision directory is linked, never copied (no second 700 MB), and one the
     # cache already holds (the same revision from the Python Playwright) is left alone.
     assert 'ln -s "${dir%/}" "${cache}/${name}"' in links
-    assert 'if [ ! -e "${cache}/${name}" ]' in links
-    # QAre's .links entry keeps a later `playwright install` from deleting its revisions.
-    assert 'cp /opt/qare/drivers/web/browsers/.links/* "${cache}/.links/"' in links
+    assert 'if [ ! -e "${cache}/${name}" ] && [ ! -L "${cache}/${name}" ]' in links
+    # An empty glob stops the build with a reason, not a link named "*".
+    assert '[ -d "${dir}" ] || { echo "no browser directories under ${qare_browsers}" >&2; exit 1; }' in links
+    # QAre's .links entry keeps a later `playwright install` from deleting its revisions,
+    # so each entry must name a playwright-core in this image.
+    assert '[ -f "${target}/browsers.json" ] ||' in links
+    assert 'cp "${link}" "${cache}/.links/"' in links
+    # And the build runs that cleanup before the launch check, so CI proves they survive it.
+    assert links.rstrip().endswith("&& playwright install chromium")
 
 
 def test_no_browser_path_is_set_for_qare_or_anything_it_starts() -> None:

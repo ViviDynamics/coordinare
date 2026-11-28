@@ -103,12 +103,24 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 RUN set -eu \
     && cache=/root/.cache/ms-playwright \
+    && qare_browsers=/opt/qare/drivers/web/browsers \
     && mkdir -p "${cache}/.links" \
-    && for dir in /opt/qare/drivers/web/browsers/*/; do \
+    && for dir in "${qare_browsers}"/*/; do \
+         [ -d "${dir}" ] || { echo "no browser directories under ${qare_browsers}" >&2; exit 1; }; \
          name="$(basename "${dir}")"; \
-         if [ ! -e "${cache}/${name}" ]; then ln -s "${dir%/}" "${cache}/${name}"; fi; \
+         if [ ! -e "${cache}/${name}" ] && [ ! -L "${cache}/${name}" ]; then ln -s "${dir%/}" "${cache}/${name}"; fi; \
        done \
-    && cp /opt/qare/drivers/web/browsers/.links/* "${cache}/.links/"
+    && for link in "${qare_browsers}"/.links/*; do \
+         [ -f "${link}" ] || { echo "no Playwright .links entry under ${qare_browsers}" >&2; exit 1; }; \
+         target="$(cat "${link}")"; \
+         [ -f "${target}/browsers.json" ] || { echo "${link} names ${target}, which has no browsers.json" >&2; exit 1; }; \
+         cp "${link}" "${cache}/.links/"; \
+       done \
+    && playwright install chromium
+# The Python `playwright install` just above finds Chromium already installed, and first
+# runs Playwright's cache cleanup, which deletes revisions no .links entry names: QAre's
+# survive it only if its entry is right, and the check below would fail if not.
+#
 # The build-time browser check, in a clean environment like the one the stage job gives
 # QAre (HOME and PATH, no browser path): QAre's playwright-core must be the version its
 # browsers were installed for, resolve Chromium in the default cache (the path QAre's
