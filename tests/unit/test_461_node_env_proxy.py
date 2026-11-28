@@ -74,6 +74,7 @@ def _run_job(tmp_path: Path, *, sandbox: bool, proxy: str | None) -> tuple[subpr
         env.update({
             "PERFORMER_BASE_ENTRYPOINT": str(stubs["base"]),
             "SANDBOX_PYTHON": sys.executable, "SANDBOX_PROXY_WAIT_SECONDS": "5",
+            "SANDBOX_PROXY_HEARTBEAT_SECONDS": "0.2",  # so it ends soon after the job
         })
         result = _run_entry(stubs, env, *command)
     else:
@@ -139,6 +140,7 @@ def test_the_sandbox_entry_point_itself_points_node_at_the_proxy(tmp_path: Path,
     """Not left to the base entry point: the sandbox's own exports carry it."""
     env = _job_env_under_the_sandbox(tmp_path, {
         EGRESS_PROXY_ENV: listening_proxy, "SANDBOX_PYTHON": sys.executable, "SANDBOX_PROXY_WAIT_SECONDS": "5",
+        "SANDBOX_PROXY_HEARTBEAT_SECONDS": "0.2",
     })
     assert env["HTTPS_PROXY"] == listening_proxy
     assert env["NODE_USE_ENV_PROXY"] == "1"

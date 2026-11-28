@@ -47,7 +47,9 @@ For each performer, coordinare runs:
    replace any proxy variables the endpoint's `env` sets: an upstream proxy is not supported in
    this mode. A stage job passes all of them, `NODE_USE_ENV_PROXY` included, to QAre and
    Progettare, so QAre's own Node requests (its target health check, for example) use the proxy
-   too, with or without the sandbox. The operator does not need to pass it.
+   too, with or without the sandbox. The operator does not need to pass it. Like every other
+   client there, they reach only loopback directly, so a QA profile addresses the app it boots
+   on `localhost`.
 
 Docker publishes no port of a container whose only network is internal, so the proxy publishes
 the performer's port (`bind_host`, `port`) and relays each connection to the performer. The
