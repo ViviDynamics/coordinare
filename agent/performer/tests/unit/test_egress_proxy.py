@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import socket
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest
@@ -423,3 +424,96 @@ def test_the_command_line_reads_forwards_and_refuses_malformed_ones() -> None:
             egress_proxy.parse_forward(bad)
     with pytest.raises(SystemExit):
         egress_proxy.main(["--allow", "api.github.com", "--forward", "8088"])
+
+
+# -- 449: clients in the performer use the proxy ----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_claude_code_shim_reaches_its_gateway_through_the_egress_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On a performer's internal network the gateway is reachable only through the proxy, so the
+    shim's upstream client must honour the proxy variables the entry point exports."""
+    from aiohttp import ClientSession, web
+
+    from performer.backends.claude_code_shim import ClaudeCodeShim
+
+    seen: list[str] = []
+
+    async def gateway(request: web.Request) -> web.Response:
+        seen.append(request.path)
+        return web.json_response({"content": [{"type": "text", "text": "ok"}]})
+
+    app = web.Application()
+    app.router.add_route("*", "/{path:.*}", gateway)
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    gateway_port = site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+    dialled: list[tuple[str, int]] = []
+    try:
+        async with _proxy(["llm.invalid"], _routing(gateway_port, dialled)) as proxy_port:
+            monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy_port}")
+            monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,::1")
+            shim = ClaudeCodeShim("http://llm.invalid:4000", "tok")
+            base = await shim.start()
+            try:
+                async with ClientSession() as client, client.post(f"{base}/v1/messages", json={}) as resp:
+                    assert resp.status == 200
+            finally:
+                await shim.stop()
+    finally:
+        await runner.cleanup()
+    assert dialled == [("llm.invalid", 4000)]
+    assert seen == ["/v1/messages"]
+
+
+@pytest.mark.asyncio
+async def test_follow_never_takes_an_unanswered_lookup_for_the_performer_gone() -> None:
+    """A slow or busy resolver (a timeout, EAI_AGAIN) says nothing; only "no such name" is a miss."""
+    answers: list[bool | None] = [True, None, None, None, None, None, False, None, False, False]
+    asked: list[bool | None] = []
+
+    async def resolve(name: str) -> bool | None:
+        asked.append(answers[len(asked)])
+        return asked[-1]
+
+    await asyncio.wait_for(egress_proxy.follow("performer", resolve=resolve, interval=0.01, grace=60), 3)
+    assert len(asked) == 10
+
+
+@pytest.mark.asyncio
+async def test_a_lookup_is_a_miss_only_when_the_resolver_says_the_name_does_not_exist(monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket
+
+    async def answer_with(error: BaseException | None) -> bool | None:
+        async def getaddrinfo(*_args: object, **_kwargs: object) -> list[object]:
+            if error is not None:
+                raise error
+            return [object()]
+
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
+        return await egress_proxy._resolves("performer")
+
+    assert await answer_with(None) is True
+    assert await answer_with(socket.gaierror(socket.EAI_NONAME, "Name or service not known")) is False
+    assert await answer_with(socket.gaierror(socket.EAI_AGAIN, "Temporary failure")) is None
+    assert await answer_with(TimeoutError()) is None
+    assert await answer_with(OSError("network down")) is None
+
+
+@pytest.mark.asyncio
+async def test_a_forward_that_cannot_listen_closes_what_serve_already_opened() -> None:
+    port = _free_port()
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen(1)
+        busy = taken.getsockname()[1]
+        with pytest.raises(OSError):
+            await egress_proxy.serve(
+                parse_allowlist("api.github.com"), "127.0.0.1", port,
+                link=egress_proxy.PerformerLink(forwards=[(busy, "performer.", 8088)]),
+            )
+    with socket.socket() as again:
+        again.bind(("127.0.0.1", port))  # the proxy's own port was released

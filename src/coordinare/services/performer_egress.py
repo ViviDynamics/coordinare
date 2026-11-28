@@ -15,7 +15,8 @@ each ephemeral performer the way #447 runs a sandboxed QAre job:
 Docker publishes no port of a container whose only network is internal, so the proxy
 publishes the performer's port and relays it (``--forward``) to the performer's network alias.
 The proxy follows that alias (``--follow``) and exits once the performer is gone, however it
-was stopped; its container is ``--rm``. Networks left behind are swept at each proxied start:
+was stopped; its container is ``--rm``. ``DockerRuntime.stop`` removes both at once (a fixed
+``port`` stays held by the proxy until then). Networks left behind are swept at each proxied start:
 ``docker network rm`` refuses a network that still has a container on it, so a running
 performer's network is never removed, and a grace keeps a network another start has only just
 made. Neither the network nor the proxy carries ``coordinare.performer.id``, so reconciliation
@@ -27,6 +28,7 @@ cover.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import time
 import uuid
@@ -36,6 +38,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from coordinare.services.stage_jobs import (
+    EGRESS_IMAGE_HINT,
     EGRESS_NETWORK_OPTIONS,
     EGRESS_PROXY_ENV,
     EGRESS_PROXY_MODULE,
@@ -59,6 +62,9 @@ EGRESS_PREFIX = "coordinare-egress-"
 PERFORMER_PORT = 8088
 #: A network this old with nothing on it is removed by the next proxied start.
 SWEEP_GRACE_SECONDS = 600.0
+#: Removing a performer's network right after it stopped: attempts, and the wait between them.
+NETWORK_RM_ATTEMPTS = 3
+_NETWORK_RM_RETRY_SECONDS = 1.0
 
 #: ``performer_lifecycle._run_docker``: (exit code, stdout, stderr) of one docker command.
 Docker = Callable[..., Awaitable[tuple[int, str, str]]]
@@ -120,8 +126,7 @@ async def up(docker: Docker, config: PerformerEndpointConfig, name: str, image: 
             "--forward", f"{PERFORMER_PORT}={target}:{PERFORMER_PORT}", "--follow", target,
         )
         await _step(
-            docker, "attach its proxy to the internal network (a proxy that exits at once is usually an image "
-            "built before performer.egress_proxy existed: rebuild it from this release)",
+            docker, f"attach its proxy to the internal network ({EGRESS_IMAGE_HINT})",
             "network", "connect", name, name,
         )
         address = await _proxy_address(docker, name)
@@ -133,10 +138,34 @@ async def up(docker: Docker, config: PerformerEndpointConfig, name: str, image: 
 
 
 async def down(docker: Docker, name: str) -> None:
-    """Remove the proxy, then the network. Best effort: the next sweep catches what is left."""
-    for args in (("rm", "-f", name), ("network", "rm", name)):
-        with contextlib.suppress(Exception):
-            await docker(*args)
+    """Remove the proxy, then the network. Best effort: the next sweep catches what is left.
+
+    ``docker stop`` returns before an ``--rm`` performer is removed, so its network can still be
+    in use for a moment: removing it is tried a few times.
+    """
+    with contextlib.suppress(Exception):
+        await docker("rm", "-f", name)
+    for attempt in range(NETWORK_RM_ATTEMPTS):
+        if attempt:
+            await asyncio.sleep(_NETWORK_RM_RETRY_SECONDS)
+        try:
+            code, _out, _err = await docker("network", "rm", name)
+        except Exception:  # best effort, as above
+            continue
+        if code == 0:
+            return
+
+
+async def egress_of(docker: Docker, container_id: str) -> str:
+    """The name of a performer's network and proxy, from its label; "" when it has none."""
+    try:
+        code, out, _err = await docker(
+            "container", "inspect", "--format", f'{{{{index .Config.Labels "{EGRESS_LABEL}"}}}}', container_id,
+        )
+    except Exception:  # a performer whose label cannot be read is stopped all the same
+        return ""
+    name = out.strip() if code == 0 else ""
+    return name if name.startswith(EGRESS_PREFIX) else ""
 
 
 async def sweep(docker: Docker) -> None:

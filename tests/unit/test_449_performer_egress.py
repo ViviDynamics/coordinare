@@ -24,6 +24,7 @@ from performer.egress_proxy import allowed, parse_allowlist, parse_forward
 from coordinare.models.performer_endpoint import PerformerEndpointConfig
 from coordinare.services import performer_egress
 from coordinare.services.docker_executor import DockerExecutor
+from coordinare.services.docker_runtime import DockerRuntime
 from coordinare.services.performer_egress import (
     EGRESS_CREATED_LABEL,
     EGRESS_FOR_LABEL,
@@ -31,6 +32,7 @@ from coordinare.services.performer_egress import (
     SWEEP_GRACE_SECONDS,
 )
 from coordinare.services.performer_lifecycle import ContainerStartError, start_ephemeral
+from coordinare.services.performer_lifecycle import _run_docker as _lifecycle_docker
 from coordinare.services.stage_jobs import (
     EGRESS_PROXY_ENV,
     EGRESS_PROXY_MODULE,
@@ -539,3 +541,37 @@ def test_a_stage_provider_takes_the_egress_mode_of_its_endpoint() -> None:
         jobs = stage_jobs_for("qare", provider, config, role="qa")
         assert isinstance(jobs, DockerStageJobs)
         assert jobs.proxied is proxied, mode
+
+
+# -- stopping a proxied performer removes its proxy and network at once ------------------------
+
+
+@pytest.mark.asyncio
+async def test_stopping_a_proxied_performer_removes_its_proxy_and_network(docker: dict[str, Any]) -> None:
+    """Otherwise a fixed ``port`` stays held by the proxy and the next start cannot publish it,
+    and every finished performer keeps a network out of Docker's address pools for a while."""
+    docker["set"](label="coordinare-egress-aaaaaaaaaaaa")
+    await DockerRuntime().stop("perf0", timeout_s=3)
+    calls = docker["calls"]()
+    stop = _index(calls, lambda a: a[:1] == ["stop"])
+    assert calls[0][:2] == ["container", "inspect"]  # the label is read while the performer exists
+    assert calls[stop][-1] == "perf0"
+    assert calls[stop + 1:] == [["rm", "-f", "coordinare-egress-aaaaaaaaaaaa"], ["network", "rm", "coordinare-egress-aaaaaaaaaaaa"]]
+
+
+@pytest.mark.asyncio
+async def test_stopping_a_performer_without_a_proxy_only_stops_it(docker: dict[str, Any]) -> None:
+    docker["set"](label="")
+    await DockerRuntime().stop("perf0")
+    assert [a[0] for a in docker["calls"]()] == ["container", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_a_network_still_held_by_the_removed_performer_is_retried(docker: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    """``docker stop`` returns before an ``--rm`` container is gone, so the first ``network rm`` can
+    find it still attached."""
+    monkeypatch.setattr(performer_egress, "_NETWORK_RM_RETRY_SECONDS", 0.0)
+    docker["set"](network_rm_fails="error while removing network: has active endpoints")
+    await performer_egress.down(_lifecycle_docker, "coordinare-egress-aaaaaaaaaaaa")
+    rms = [a for a in docker["calls"]() if a[:2] == ["network", "rm"]]
+    assert len(rms) == performer_egress.NETWORK_RM_ATTEMPTS

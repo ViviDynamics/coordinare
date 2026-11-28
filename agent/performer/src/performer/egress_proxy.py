@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import contextlib
 import re
+import socket
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -58,6 +59,10 @@ FOLLOW_INTERVAL_SECONDS = 10.0
 FOLLOW_MISSES = 3
 FOLLOW_GRACE_SECONDS = 600.0
 _RESOLVE_TIMEOUT_SECONDS = 5.0
+#: getaddrinfo's answers that mean the name does not exist (EAI_NODATA is not on every platform).
+_NO_SUCH_NAME = frozenset(
+    code for code in (socket.EAI_NONAME, getattr(socket, "EAI_NODATA", None)) if code is not None
+)
 _HOST = re.compile(r"^(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?\.)*[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$")
 _IPV6 = re.compile(r"^[0-9a-f:.]+$")
 #: Request headers not passed upstream on a plain request: the proxy's own, the connection's,
@@ -66,7 +71,7 @@ _IPV6 = re.compile(r"^[0-9a-f:.]+$")
 _DROPPED_HEADERS = (b"proxy-authorization", b"proxy-connection", b"connection", b"keep-alive", b"host")
 
 Connector = Callable[[str, int], Awaitable[tuple[asyncio.StreamReader, asyncio.StreamWriter]]]
-Resolver = Callable[[str], Awaitable[bool]]
+Resolver = Callable[[str], Awaitable[bool | None]]
 Handler = Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]
 
 
@@ -285,12 +290,16 @@ async def _idle(proxy: EgressProxy, idle_exit: float) -> None:
                 return
 
 
-async def _resolves(name: str) -> bool:
-    """Whether ``name`` resolves now (Docker's embedded resolver, on the performer's network)."""
+async def _resolves(name: str) -> bool | None:
+    """Whether ``name`` resolves now (Docker's embedded resolver, on the performer's network):
+    True, False when the resolver says no such name exists, None when it did not say (a
+    timeout, a temporary failure)."""
     try:
         await asyncio.wait_for(asyncio.get_running_loop().getaddrinfo(name, None), _RESOLVE_TIMEOUT_SECONDS)
+    except socket.gaierror as exc:
+        return False if exc.errno in _NO_SUCH_NAME else None
     except (OSError, TimeoutError):
-        return False
+        return None
     return True
 
 
@@ -299,22 +308,24 @@ async def follow(
     grace: float = FOLLOW_GRACE_SECONDS,
 ) -> None:
     """449: return once ``name``, having resolved, misses ``FOLLOW_MISSES`` lookups in a row, or
-    when it has not resolved once within ``grace`` seconds."""
+    when it has not resolved once within ``grace`` seconds. A lookup the resolver does not
+    answer (None) is neither: only a definite "no such name" is a miss."""
     loop = asyncio.get_running_loop()
     started = loop.time()
     seen = False
     misses = 0
     while True:
-        if await resolve(name):
+        found = await resolve(name)
+        if found:
             seen, misses = True, 0
-        else:
+        elif found is False:
             misses += 1
             if seen and misses >= FOLLOW_MISSES:
                 logger.info("egress_proxy.followed_gone", name=name)
                 return
-            if not seen and loop.time() - started >= grace:
-                logger.info("egress_proxy.followed_never_seen", name=name, grace_seconds=grace)
-                return
+        if not seen and loop.time() - started >= grace:
+            logger.info("egress_proxy.followed_never_seen", name=name, grace_seconds=grace)
+            return
         await asyncio.sleep(interval)
 
 
@@ -357,20 +368,23 @@ async def serve(
     proxy = EgressProxy(allow)
     server = await asyncio.start_server(proxy.handle, host, port, limit=_HEAD_LIMIT + 1)
     servers = [server]
-    for listen, target_host, target_port in link.forwards:
-        servers.append(await asyncio.start_server(proxy.forward(target_host, target_port), host, listen))
-    bound = server.sockets[0].getsockname()[1]
-    logger.info(
-        "egress_proxy.listening", host=host, port=bound, allowed=sorted(allow), idle_exit=idle_exit,
-        forwards=[f"{listen}={h}:{p}" for listen, h, p in link.forwards], follow=link.follow,
-    )
-    idle = asyncio.ensure_future(_idle(proxy, idle_exit)) if idle_exit > 0 else None
-    ends = [idle] if idle is not None else []
-    if link.follow:
-        ends.append(asyncio.ensure_future(follow(link.follow, resolve=link.resolve, interval=link.interval)))
-    if not ends:
-        ends.append(asyncio.ensure_future(server.serve_forever()))
+    ends: list[asyncio.Future[None]] = []
+    idle: asyncio.Future[None] | None = None
     try:
+        for listen, target_host, target_port in link.forwards:
+            servers.append(await asyncio.start_server(proxy.forward(target_host, target_port), host, listen))
+        bound = server.sockets[0].getsockname()[1]
+        logger.info(
+            "egress_proxy.listening", host=host, port=bound, allowed=sorted(allow), idle_exit=idle_exit,
+            forwards=[f"{listen}={h}:{p}" for listen, h, p in link.forwards], follow=link.follow,
+        )
+        if idle_exit > 0:
+            idle = asyncio.ensure_future(_idle(proxy, idle_exit))
+            ends.append(idle)
+        if link.follow:
+            ends.append(asyncio.ensure_future(follow(link.follow, resolve=link.resolve, interval=link.interval)))
+        if not ends:
+            ends.append(asyncio.ensure_future(server.serve_forever()))
         done, _pending = await asyncio.wait(ends, return_when=asyncio.FIRST_COMPLETED)
         if idle in done:
             logger.info("egress_proxy.idle_exit", idle_seconds=idle_exit)

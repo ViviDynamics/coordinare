@@ -53,7 +53,7 @@ The #448 topology, for one performer:
 
 | Destination | Path |
 | --- | --- |
-| Model gateway (LiteLLM, or any OpenAI or Anthropic compatible endpoint) | Through the proxy: a plain `http://llm:4000` request in absolute form, or `CONNECT` for `https`. The gateway's host must be in the allowlist, as it must today. The proxy gets the endpoint's `extra_hosts`, so a name like `llm` resolves the same way it did in the performer. The in-performer shims (`ClaudeCodeShim`, `SelfHostedShim`, `DualModelProxy`) use httpx, which reads the proxy variables; agent CLIs reach the shims on loopback, which `NO_PROXY` keeps direct. |
+| Model gateway (LiteLLM, or any OpenAI or Anthropic compatible endpoint) | Through the proxy: a plain `http://llm:4000` request in absolute form, or `CONNECT` for `https`. The gateway's host must be in the allowlist, as it must today. The proxy gets the endpoint's `extra_hosts`, so a name like `llm` resolves the same way it did in the performer. The in-performer shims read the proxy variables: `SelfHostedShim` and `DualModelProxy` use httpx, and `ClaudeCodeShim`'s aiohttp session now sets `trust_env=True` (aiohttp ignores them by default); agent CLIs reach the shims on loopback, which `NO_PROXY` keeps direct. |
 | GitHub API | Through the proxy with `CONNECT`: the performer's GitHub calls are httpx with default settings. |
 | git | Over HTTPS with the token header (`workspace._git_credential_env`, `stage_checkout.git_env`), through the proxy; git reads `https_proxy`. git over SSH is not supported in this mode (below). |
 | Package registries (npm, pip, uv, apt, gem, go, cargo) | Through the proxy; all of these read the proxy variables. The registry hosts must be in the allowlist, as today. |
@@ -108,11 +108,15 @@ upstream proxy is not supported in this mode (as in #448). It refuses
 
 ### Cleanup
 
-- Performers are stopped by several paths: `stop()`, reconciliation's reaper, 218's
-  `confirm_stopped`, a daemon crash. Rather than teach each of them about the proxy, the proxy
-  runs with `--follow <alias>.`: it exits once the performer's alias, having resolved, misses
-  three lookups in a row (the performer is gone), or never resolves within ten minutes. Its
-  container is `--rm`. `stop()` and `cleanup_orphaned` are unchanged. The alias is looked up as
+- `DockerRuntime.stop`, the daemon's own stop, reads the performer's label first and remove its proxy and network right after (a fixed `port` is held by the proxy
+  until then). Removing the network is retried, since `docker stop` returns before an `--rm`
+  container is gone.
+- Performers are also stopped by paths that know nothing of the proxy: reconciliation's reaper,
+  the orphan sweep, 218's `confirm_stopped` at shutdown (left as it is: its first call must be
+  the `docker stop` that proves the container can no longer write), a daemon crash. So the proxy runs with `--follow <alias>.`: it exits once the
+  performer's alias, having resolved, gets three definite "no such name" answers in a row (a
+  lookup that times out counts for nothing), or never resolves within ten minutes. Its
+  container is `--rm`. `performer_lifecycle.stop` and `cleanup_orphaned` are unchanged. The alias is looked up as
   an absolute name (trailing dot), so a resolver search domain can never turn it into an
   outside host, for `--follow` or for the `--forward` that carries the daemon's requests.
 - Networks: each proxied start sweeps labelled networks older than ten minutes with

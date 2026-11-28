@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 import structlog
 
-from coordinare.services.performer_egress import EGRESS_LABEL
+from coordinare.services import performer_egress
 
 logger = structlog.get_logger(__name__)
 
@@ -265,12 +265,10 @@ class DockerExecutor:
 
     async def _egress_proxy_of(self, container_id: str) -> str:
         """449: the name of the container's egress proxy, or "" when it has none."""
-        rc, stdout, _stderr = await _run_docker(
-            "container", "inspect", "--format", f'{{{{index .Config.Labels "{EGRESS_LABEL}"}}}}', container_id,
-            timeout=3.0,
-        )
-        name = stdout.strip() if rc == 0 else ""
-        return "" if name == "<no value>" else name
+        async def docker(*args: str) -> tuple[int, str, str]:
+            return await _run_docker(*args, timeout=3.0)
+
+        return await performer_egress.egress_of(docker, container_id)
 
 
 def _parse_docker_created_at(raw: str | None) -> datetime:

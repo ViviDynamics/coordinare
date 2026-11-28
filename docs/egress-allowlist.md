@@ -105,8 +105,9 @@ always uses the proxy, because the in-container mode cannot cover the sandbox's 
   proxy"; rebuild it.
 - **Address pools.** Each running performer with an allowlist holds one Docker network, so
   Docker's `default-address-pools` bounds how many run at once. Size it for your concurrency.
-- **Cleanup.** The proxy follows its performer and exits once the performer is gone, however it
-  was stopped; it is a `--rm` container. Each proxied start removes egress networks older than ten
+- **Cleanup.** When coordinare stops a performer it removes the proxy and network with it. The
+  proxy also follows its performer and exits once the performer is gone, however it was stopped;
+  it is a `--rm` container. Each proxied start removes egress networks older than ten
   minutes that nothing is attached to (Docker refuses to remove one still in use).
 - **Labels.** The performer, its network and its proxy carry `coordinare.performer.egress=<name>`;
   the network and proxy also carry `coordinare.performer.egress.for=<endpoint id>`. The proxy does

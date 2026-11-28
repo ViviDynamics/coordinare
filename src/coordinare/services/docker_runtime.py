@@ -70,7 +70,12 @@ class DockerRuntime:
         return config.model_copy(update={"image": image})
 
     async def stop(self, handle: str, *, timeout_s: int = 10) -> None:
+        # 449: a proxied performer's proxy and network go with it, so a fixed port is free for
+        # the next start. Its label is read while it still exists (it is ``--rm``).
+        egress = await performer_lifecycle.egress_of(handle)
         await performer_lifecycle.stop(handle, timeout_s=timeout_s)
+        if egress:
+            await performer_lifecycle.remove_egress(egress)
 
     async def confirm_stopped(self, handle: str, *, timeout_s: int = 10) -> bool:
         """218 (review round 3): True only when docker proves the container can no longer write.

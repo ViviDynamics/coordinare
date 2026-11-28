@@ -202,7 +202,9 @@ class ClaudeCodeShim:
     async def start(self) -> str:
         """Bind to an ephemeral loopback port and return the base URL."""
         if self._session is None:
-            self._session = aiohttp.ClientSession()
+            # 449: honour HTTP(S)_PROXY and NO_PROXY. Behind an egress allowlist the gateway is
+            # reachable only through the proxy; the agent CLI reaches this shim on loopback.
+            self._session = aiohttp.ClientSession(trust_env=True)
         app = web.Application()
         app.router.add_route("*", "/{path:.*}", self._handle)
         runner = web.AppRunner(app, access_log=None)

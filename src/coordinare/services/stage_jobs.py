@@ -96,6 +96,11 @@ EGRESS_PROXY_IDLE_EXIT_SECONDS = 180
 #: The internal network's bridge gets no address on the host, so the job cannot reach host
 #: services through a gateway address; it only links the job to its proxy.
 EGRESS_NETWORK_OPTIONS = ("-o", "com.docker.network.bridge.inhibit_ipv4=true")
+#: 449: why a proxy most often fails to attach: it exited at once, from an image without the module.
+EGRESS_IMAGE_HINT = (
+    "a proxy that exits at once is usually an image built before performer.egress_proxy existed: "
+    "rebuild it from this release"
+)
 #: 447: the health check's extra step for a proxied provider: the image has the proxy.
 EGRESS_PROXY_CHECK = f"python -c 'import {EGRESS_PROXY_MODULE}'"
 _NAME_PREFIX = "coordinare-stage-"
@@ -410,7 +415,7 @@ class DockerStageJobs:
                 "-m", EGRESS_PROXY_MODULE, "--allow", ",".join(self._egress), "--port", str(EGRESS_PROXY_PORT),
                 *self._proxy_lifetime(name),
             ])
-            await self._egress_step("attach its proxy to the internal network", ["network", "connect", egress, egress])
+            await self._egress_step(f"attach its proxy to the internal network ({EGRESS_IMAGE_HINT})", ["network", "connect", egress, egress])
             address = await self._proxy_address(egress)
         except BaseException:
             await self._egress_down(name)

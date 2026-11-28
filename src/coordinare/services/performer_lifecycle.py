@@ -358,6 +358,16 @@ async def stop(container_id: str, *, timeout_s: int = 10) -> None:
         )
 
 
+async def egress_of(container_id: str) -> str:
+    """449: the name of a proxied performer's network and egress proxy, or ""."""
+    return await performer_egress.egress_of(_run_docker, container_id)
+
+
+async def remove_egress(name: str) -> None:
+    """449: remove a stopped performer's egress proxy and network. Best effort."""
+    await performer_egress.down(_run_docker, name)
+
+
 async def _safe_stop(container_id: str) -> None:
     try:
         await stop(container_id)
