@@ -246,7 +246,8 @@ browser comes from QAre's release, not from the image's other Playwright:
 - That makes the layout depend on how the stage job runs: as root, with `HOME=/root`,
   which is how the full image runs. The stage job never hands QAre `XDG_CACHE_HOME` or
   `PLAYWRIGHT_BROWSERS_PATH`, and `env_passthrough` may not name them (refused at load),
-  since either would move Playwright's cache away from the linked revisions. A custom
+  since either would move Playwright's cache away from the linked revisions. QAre and
+  everything it starts therefore use `$HOME/.cache` for caches. A custom
   `image` that runs as another user must link QAre's revision directories and `.links`
   entry into that user's cache the same way.
 - The image build checks both browsers in a clean environment (`HOME` and `PATH` only, as

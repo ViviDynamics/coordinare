@@ -13,10 +13,10 @@ import re
 from pathlib import Path
 
 import pytest
-from performer.stage_jobs.qare import qare_env
+from performer.stage_jobs.qare import BROWSER_CACHE_ENV, qare_env
 from pydantic import ValidationError
 
-from coordinare.stage_provider_config import QAreProviderConfig
+from coordinare.stage_provider_config import _QARE_BROWSER_CACHE_ENV, QAreProviderConfig
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = ROOT / "agent/performer/Dockerfile.full"
@@ -108,6 +108,10 @@ def test_the_stage_job_never_hands_qare_a_moved_browser_cache(name: str) -> None
     env = {"HOME": "/root", "PATH": "/bin", name: "/elsewhere"}
     assert name not in qare_env(env, [])
     assert name not in qare_env(env, [name])
+
+
+def test_the_config_refuses_exactly_the_names_the_stage_job_drops() -> None:
+    assert _QARE_BROWSER_CACHE_ENV == BROWSER_CACHE_ENV == {"XDG_CACHE_HOME", "PLAYWRIGHT_BROWSERS_PATH"}
 
 
 @pytest.mark.parametrize("name", ["XDG_CACHE_HOME", "PLAYWRIGHT_BROWSERS_PATH"])
