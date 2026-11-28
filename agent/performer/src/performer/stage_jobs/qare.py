@@ -16,6 +16,12 @@ Steps, each of which can end the run:
    checks runs nothing in QAre (each is ``unverified``), so the plan comes first.
 6. ``qare run --plan`` runs them with posting off and writes ``evidence/result.json``.
 
+450: the token is needed for steps 2 and 4 only (the checkout and GitHub's compare diff),
+which run before QAre runs anything of the pull request's. QAre then runs that code as root
+in this container, where it can read any process's memory. So the entry
+(:mod:`performer.stage_jobs.__main__`) hands steps 5 and 6 to a fresh process of its own
+(``execve``), started without the token: the process that waits on QAre never held it.
+
 Nothing here reads the result: coordinare's provider does, so the rules for what a result
 means live in one place.
 """
@@ -27,16 +33,20 @@ import json
 import os
 import shutil
 import signal
+import tempfile
 import time
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from performer.stage_checkout import checkout_revisions, diff_revisions
-from performer.stage_jobs import CREDENTIAL_ENV, hand_back, scratch_dir, write_atomic
+from performer.stage_jobs import SCRATCH_PREFIX, CREDENTIAL_ENV, hand_back, scratch_dir, write_atomic
 from performer.workspace import WorkspaceSetupError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 REQUEST_FILE = "request.json"
 STATUS_FILE = "status.json"
@@ -75,8 +85,37 @@ _DIFF_TOO_LARGE = frozenset({HTTPStatus.NOT_ACCEPTABLE, HTTPStatus.UNPROCESSABLE
 _SHOWN_ARGS = 3
 
 
-def run_job(job_dir: Path, *, token: str = "", env: dict[str, str] | None = None) -> dict[str, Any]:
-    """Run the job in ``job_dir`` to its end and write ``status.json``. Returns the status."""
+def run_job(
+    job_dir: Path,
+    *,
+    token: str = "",
+    env: dict[str, str] | None = None,
+    restart: Callable[[dict[str, Any]], object] | None = None,
+) -> dict[str, Any]:
+    """Run the job in ``job_dir`` to its end and write ``status.json``. Returns the status.
+
+    450: with ``restart``, once the steps that need the token are done the rest of the run
+    is handed over: ``restart`` is called with what a fresh process needs to go on (no
+    secret in it) and replaces this one (``execve``), which then calls :func:`resume_job`.
+    Should ``restart`` return (a test that resumes in the same process), the status the
+    resumed run wrote is returned.
+    """
+    return _run_job(job_dir, token=token, env=env, restart=restart, resume=None)
+
+
+def resume_job(job_dir: Path, state: dict[str, Any], *, env: dict[str, str] | None = None) -> dict[str, Any]:
+    """450: the rest of a run :func:`run_job` handed over, in a process that never held the token."""
+    return _run_job(job_dir, token="", env=env, restart=None, resume=state)
+
+
+def _run_job(
+    job_dir: Path,
+    *,
+    token: str,
+    env: dict[str, str] | None,
+    restart: Callable[[dict[str, Any]], object] | None,
+    resume: dict[str, Any] | None,
+) -> dict[str, Any]:
     source = dict(os.environ if env is None else env)
     source.pop(CREDENTIAL_ENV, None)
     job_dir = job_dir.expanduser().absolute()
@@ -84,8 +123,22 @@ def run_job(job_dir: Path, *, token: str = "", env: dict[str, str] | None = None
     run: _Run | None = None
     try:
         request = json.loads((job_dir / REQUEST_FILE).read_text())
-        run = _Run(job_dir, request, token=token, env=source, started=started)
-        status = asyncio.run(run.run())
+        if resume is not None:
+            started = float(resume["started"])
+            run = _Run(job_dir, request, token="", env=source, started=started)
+            run.adopt(_own_scratch(resume["scratch"]))
+            status = asyncio.run(run.finish())
+        elif restart is not None:
+            run = _Run(job_dir, request, token=token, env=source, started=started)
+            asyncio.run(run.prepare())
+            (job_dir / STATUS_FILE).unlink(missing_ok=True)  # an earlier attempt's is not this run's
+            # execve: nothing below runs, and the process it starts removes the checkouts.
+            restart({"scratch": str(run.scratch), "started": started})
+            resumed: dict[str, Any] = json.loads((job_dir / STATUS_FILE).read_text())
+            return resumed
+        else:
+            run = _Run(job_dir, request, token=token, env=source, started=started)
+            status = asyncio.run(run.run())
     except _StopError as stop:
         status = stop.status
     except Exception as exc:  # a runner bug must still end the run with a status
@@ -130,10 +183,23 @@ class _Run:
         #: Whether there is a base revision of its own to check (and so a base checkout).
         self.two_sided = bool(self.base) and self.base != self.head
 
+    def adopt(self, scratch: Path) -> None:
+        """450: go on with the checkouts of the process this run was handed over from."""
+        with contextlib.suppress(OSError):
+            self.scratch.rmdir()  # its own, still empty
+        self.scratch = scratch
+        self.repo = scratch / "repo"
+        self.base_dir = scratch / "base"
+
     async def run(self) -> dict[str, Any]:
+        await self.prepare()
+        return await self.finish()
+
+    async def prepare(self) -> None:
+        """Steps 1 to 4: everything that needs the token, before anything of the change runs."""
         await self._check_version()
         await self._checkout()
-        profile = self._profile()
+        self._profile()
         criteria = [{"id": c["id"], "text": c["text"]} for c in self.request.get("criteria") or []]
         if not criteria:
             raise _StopError({
@@ -142,6 +208,13 @@ class _Run:
             })
         write_atomic(self.job_dir / CRITERIA_FILE, json.dumps(criteria, indent=2))
         write_atomic(self.job_dir / DIFF_FILE, await self._diff())
+        self.token = ""
+
+    async def finish(self) -> dict[str, Any]:
+        """Steps 5 and 6: QAre plans and runs, against what :meth:`prepare` wrote."""
+        if not self.repo.is_dir():
+            raise _StopError({"outcome": ERROR, "step": "checkout", "reason": "the checkout is gone"})
+        profile = self._profile()
         code, _out, err = await self._call([
             *self.command, "plan", "--criteria", str(self.job_dir / CRITERIA_FILE),
             "--diff", str(self.job_dir / DIFF_FILE), "--profile", str(profile),
@@ -284,6 +357,16 @@ def qare_env(env: dict[str, str], passthrough: list[str]) -> dict[str, str]:
         for name in names
         if name in env and name != CREDENTIAL_ENV and name not in BROWSER_CACHE_ENV
     }
+
+
+def _own_scratch(path: str) -> Path:
+    """450: a resumed run goes on only in a checkout directory a stage job makes, never another
+    path, nor a link to one. One that is gone is left to :meth:`_Run.finish` to report."""
+    scratch = Path(path)
+    made = Path(tempfile.gettempdir())
+    if scratch.parent != made or not scratch.name.startswith(SCRATCH_PREFIX) or scratch.is_symlink():
+        raise _StopError({"outcome": ERROR, "step": "checkout", "reason": "the checkout to go on from is not this job's"})
+    return scratch
 
 
 def _append(log: Path, heading: str, argv: list[str], text: str) -> None:

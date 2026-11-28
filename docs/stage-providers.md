@@ -206,6 +206,11 @@ performers:
   takes them from coordinare's environment by name), along with a short list of basics
   (`PATH`, `HOME`, the locale, the proxy variables). Coordinare's own secrets never do. A
   value written where a name belongs is refused at load without being repeated.
+- QAre runs the pull request's code as root in the run's container, so that code can read
+  anything QAre can, including the values `env_passthrough` hands it (a model key, for
+  example). Pass a key scoped to what QA needs, such as a gateway key with a spending limit,
+  not an operator-wide one. Coordinare's GitHub token is not readable there: see
+  [What the pull request's code can read](#what-the-pull-requests-code-can-read).
 - The repository needs a QAre profile (`qare init` writes one). The base revision's profile
   is used when it has one, so the profile that runs is one the pull request cannot change,
   as in QAre's own pipeline; a pull request that adds the first profile uses its own. With
@@ -343,6 +348,12 @@ without privilege (#435). It is off by default; off, runs are exactly as describ
   that gives them only the allowlisted hosts, which a container on the bridge can already
   reach. The sandbox image still refuses `PERFORMER_EGRESS_ALLOWLIST`, the in-container
   mode.
+- **Secrets and the engine (#450).** The run's container is given the GitHub token and the
+  `env_passthrough` values, and a process keeps the environment it started with for as long
+  as it runs. The entry point therefore starts dockerd (and the containerd it starts) and the
+  proxy heartbeat from an empty environment with only `PATH`, the proxy variables and
+  `SSL_CERT_FILE`/`SSL_CERT_DIR` (for pulls through a TLS-intercepting proxy), never the
+  container's, and only the stage job takes the container's environment.
 - **Browser profiles.** The sandbox image is built FROM the full image, so it has QAre's
   browser driver (#442) too: a browser profile whose app boots with `docker compose` runs
   in the sandbox. One that starts its app with a command needs no sandbox.
@@ -365,6 +376,24 @@ so a daemon restart finds the run still going or finished:
    plan comes first (ViviDynamics/qare#450 asks QAre's docs to say so).
 5. `qare run --plan` runs the checks against both sides and writes
    `evidence/result.json`. Its `schemaVersion` is checked before anything else is read.
+
+#### What the pull request's code can read
+
+QAre's checks run the pull request's code as root in the run's container, where it can read
+every process's initial environment (`/proc/<pid>/environ`) and, as root, its memory (#450).
+So the token is held only while it is needed, and never while that code runs:
+
+- The token reaches the stage job only. The job takes it out of its own environment at once
+  and starts itself again (`execve`) without it, reading it from a pipe that is then closed.
+- It is used for the checkout (step 2, as an `http.extraHeader` in git's environment, never on
+  disk) and for GitHub's compare diff, both before QAre plans. Then the job starts itself once
+  more, without it: the process that waits on QAre never held the token, so no copy is left
+  in its memory, its environment or its arguments. QAre never gets it.
+- With the sandbox, the engine and the proxy heartbeat never see the container's environment
+  ([Docker sandbox](#docker-sandbox)); the egress proxy container is given no variable at all.
+- What stays readable: the variables `env_passthrough` names and the proxy variables, which
+  QAre needs while it runs. Host-side, `docker inspect` of the run's container shows the
+  token, as it shows any `--env-file` value, to anyone with the host's Docker.
 
 A step that runs past `timeout_seconds` is stopped with every process it started (each
 command runs in a process group of its own). When a run ends its checkouts go with its
