@@ -370,6 +370,7 @@ class QAreProvider:
         # The job may have written its status just before its container went away.
         status = _load_json(job_dir / runner.STATUS_FILE)
         if status is not None:
+            await self._jobs.ended(job_dir)  # 462: a no-op when state() already removed its egress
             return job_from_status(ref, status, job_dir)
         if (_load_json(job_dir / runner.LAUNCH_FILE) or {}).get("unconfirmed"):
             why = "its start could not be confirmed, and its performer is gone"

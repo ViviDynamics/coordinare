@@ -201,3 +201,48 @@ async def test_reading_a_progettare_result_releases_the_jobs_egress(tmp_path: Pa
     ))
     await provider.poll(ref)
     assert jobs.ended_dirs == [directory]
+
+
+@pytest.mark.asyncio
+async def test_a_release_that_docker_refused_is_tried_again_on_the_next_read(tmp_path: Path, docker: dict[str, Any]) -> None:
+    jobs = _jobs(docker["bin"], None, egress=ALLOW)
+    docker["set"](job="missing", network_rm_fails="Error: network is busy")
+    await jobs.ended(tmp_path / "job")
+    docker["clear"]()
+    docker["set"](job="missing")
+    await jobs.ended(tmp_path / "job")
+    assert docker["calls"]()[-2:] == _egress_removal(job_name(tmp_path / "job"))
+
+
+@pytest.mark.asyncio
+async def test_a_job_whose_egress_state_already_removed_costs_no_more_docker_calls(
+    tmp_path: Path, docker: dict[str, Any],
+) -> None:
+    jobs = _jobs(docker["bin"], None, egress=ALLOW)
+    docker["set"](job="missing")
+    assert await jobs.state(tmp_path / "job") is RunState.GONE  # removes the egress (447)
+    docker["clear"]()
+    await jobs.ended(tmp_path / "job")
+    assert docker["calls"]() == []
+
+
+@pytest.mark.asyncio
+async def test_a_status_written_while_the_job_was_read_still_releases_its_egress(tmp_path: Path) -> None:
+    """The second status read in QAre's ``_read`` (written between the first read and Docker's answer)."""
+    status = {"outcome": qare_runner.NO_PROFILE, "step": "profile", "reason": "no QA profile on either side"}
+
+    class _ReportsWhileAsked(_Recording):
+        async def state(self, job_dir: Path) -> RunState:
+            (job_dir / qare_runner.STATUS_FILE).write_text(json.dumps(status))  # it reports just now
+            return RunState.GONE
+
+    jobs = _ReportsWhileAsked()
+    provider = QAreProvider("qare", QAreProviderConfig(kind="qare", version="2026.11.44"),
+                            work_dir=tmp_path / "qare", github=_github(), jobs=jobs)
+    ref = "coordinare.qa.abc.1"
+    job_dir = tmp_path / "qare" / ref
+    job_dir.mkdir(parents=True)
+    (job_dir / qare_runner.LAUNCH_FILE).write_text(json.dumps({"job": "x", "started_at": 0}))
+    job = await provider.poll(ref)
+    assert job.state is JobState.NEEDS_HUMAN
+    assert jobs.ended_dirs == [job_dir]

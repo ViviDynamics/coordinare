@@ -384,8 +384,8 @@ class DockerStageJobs:
     async def state(self, job_dir: Path) -> RunState:
         name = job_name(job_dir)
         state = await self._container_state(name)
-        if state is RunState.GONE and self.proxied:
-            await self._egress_down(name)  # 447: the job is over, so is its way out
+        if state is RunState.GONE and self.proxied and await self._egress_down(name):  # 447: its way out goes too
+            self._released.add(name)  # 462: nothing left for ended() to do
         return state
 
     async def _container_state(self, name: str) -> RunState:
@@ -411,7 +411,8 @@ class DockerStageJobs:
         container that is still finishing, and a Docker that is slow to answer holds the caller
         (and so the job's verdict) for ``ended_wait_seconds`` at most. A container still there
         after that keeps its egress: the proxy follows it out, and the sweep is the backstop.
-        Each job is released once per daemon; a later read of the same job makes no Docker call.
+        A job whose egress is confirmed gone makes no Docker call on a later read; a removal
+        Docker refused is tried again on the next one.
         """
         if not self.proxied:
             return
@@ -440,9 +441,11 @@ class DockerStageJobs:
                 await asyncio.sleep(self.ended_poll_seconds)
         except TransportError:
             return
-        await self._egress_down(name)
-        self._released.add(name)
-        logger.info("stage_job.egress_released", container=name)
+        if await self._egress_down(name):
+            self._released.add(name)
+            logger.info("stage_job.egress_released", container=name)
+        else:
+            logger.info("stage_job.egress_release_incomplete", container=name)  # the next read tries again
 
     # -- 447: the egress network and proxy of a sandboxed job with an allowlist -------------
 
@@ -456,6 +459,7 @@ class DockerStageJobs:
         with contextlib.suppress(TransportError):
             await self._sweep_egress()
         await self._egress_down(name)  # an earlier attempt's, if any: the job is not running
+        self._released.discard(name)  # 462: this attempt's egress is released when it reports
         labels = [
             "--label", f"{EGRESS_LABEL}={name}",
             "--label", f"{EGRESS_CREATED_LABEL}={int(time.time())}",
@@ -519,13 +523,21 @@ class DockerStageJobs:
             raise TransportError(msg)
         return address
 
-    async def _egress_down(self, name: str) -> None:
-        """Remove a job's proxy, then its network. Best effort: the sweep catches what is left."""
+    async def _egress_down(self, name: str) -> bool:
+        """Remove a job's proxy, then its network. Best effort: the sweep catches what is left.
+
+        462: whether both are confirmed gone (removed now, or not there to remove)."""
         egress = name + EGRESS_SUFFIX
-        with contextlib.suppress(TransportError):
-            await self._call(["rm", "-f", egress])
-        with contextlib.suppress(TransportError):
-            await self._call(["network", "rm", egress])
+        gone = True
+        for args in (["rm", "-f", egress], ["network", "rm", egress]):
+            try:
+                code, _out, err = await self._call(args)
+            except TransportError:
+                gone = False
+                continue
+            if code != 0 and not any(word in err.lower() for word in ("no such", "not found")):
+                gone = False
+        return gone
 
     async def _sweep_egress(self) -> None:
         """Remove egress networks (and proxies) whose job is gone: a restart, or a job that ended."""
