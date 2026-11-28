@@ -1,12 +1,23 @@
 ARG BASE_IMAGE=coordinare-performer:base
 # 423: QAre for the QA stage provider runs in this image (a stage job), never on
-# coordinare's host. Its published core image is the release, pinned by digest; only
-# its /opt/qare tree is copied (the CLI, its compiled workspace and production deps).
+# coordinare's host. Its published image is the release, pinned by digest; only its
+# /opt/qare tree is copied (the CLI, its compiled workspace and production deps).
 # QAre runs nare from PATH: the base image's pinned nare, which is the release this
-# QAre pins (2026.11.121). Bump QARE_VERSION and the digest together, and keep
-# stage_providers.<name>.version equal to QARE_VERSION.
-ARG QARE_CORE_IMAGE=ghcr.io/vividynamics/qare-core:2026.11.44@sha256:d5bc5d7f56b0b06aa078d1ab938f700094e0f625d2a1bf70a30f510c5561546f
-FROM ${QARE_CORE_IMAGE} AS qare
+# QAre pins (2026.11.121).
+#
+# 442: the pinned image is qare-web, not qare-core. qare-web is QAre's core image of the
+# same release plus one layer: the browser driver family under /opt/qare/drivers/web, the
+# Chromium build QAre's own playwright-core resolves. Its layers begin with exactly the
+# qare-core layers of that release, so /opt/qare is core's tree plus drivers/web, and the
+# browser always matches the QAre it ships with.
+#
+# Bumping QAre is one change: set QARE_VERSION below, set this tag to the same release and
+# the digest to that tag's index digest (for example `docker buildx imagetools inspect
+# ghcr.io/vividynamics/qare-web:<release>`), and keep stage_providers.<name>.version equal
+# to QARE_VERSION. The build checks the version and launches the browser, so a wrong pin
+# fails CI's image build.
+ARG QARE_IMAGE=ghcr.io/vividynamics/qare-web:2026.11.44@sha256:daa7352aaf04aa06b3dae0d8185cfb7ad96dafac0a2d4755c1c4891a11f7eb4a
+FROM ${QARE_IMAGE} AS qare
 
 FROM $BASE_IMAGE
 
@@ -65,11 +76,68 @@ RUN mkdir -p /etc/apt/keyrings \
     && rm -rf /var/lib/apt/lists/* \
     && gh --version
 
-# QAre, from the digest-pinned core image above.
+# QAre, from the digest-pinned image above.
 ARG QARE_VERSION=2026.11.44
 COPY --from=qare /opt/qare /opt/qare
-RUN ln -s /opt/qare/bin/qare /usr/local/bin/qare \
+
+# 442: QAre's browser. QAre drives browsers through its own playwright-core (1.63.0 at
+# 2026.11.44), which needs the Chromium revision it was released with (1243) and looks
+# for it in PLAYWRIGHT_BROWSERS_PATH. The browsers came with /opt/qare above
+# (/opt/qare/drivers/web/browsers, QAre's contract path); what qare-web installed beside
+# them on its own base is the system libraries, so they are installed here by that same
+# playwright-core, plus Xvfb and GTK 3 for QAre's Electron driver, as qare-web does.
+#
+# The Python Playwright Chromium above stays, separately: the performer's own QA
+# workflow and agents use it, it is unpinned (1.65 today, Chromium revision 1255), and it
+# lives in Playwright's default path. Neither revision satisfies the other playwright,
+# so the path is set only for QAre, by the `qare` wrapper below, never as an image ENV.
+# The stage job hands QAre only an allow-list of variables, so an ENV would not reach it
+# anyway, and it would hide the Python Chromium from everything else.
+ARG QARE_BROWSERS_PATH=/opt/qare/drivers/web/browsers
+ARG QARE_PLAYWRIGHT=/opt/qare/lib/packages/core/node_modules/playwright-core
+RUN apt-get update \
+    && node "${QARE_PLAYWRIGHT}/cli.js" install-deps chromium \
+    && apt-get install -y --no-install-recommends xvfb libgtk-3-0 \
+    && rm -rf /var/lib/apt/lists/*
+RUN printf '%s\n' '#!/bin/sh' \
+       '# 442: QAre'"'"'s playwright-core uses the browsers of its own qare-web release.' \
+       "PLAYWRIGHT_BROWSERS_PATH=${QARE_BROWSERS_PATH}" \
+       'export PLAYWRIGHT_BROWSERS_PATH' \
+       'exec /opt/qare/bin/qare "$@"' \
+       > /usr/local/bin/qare \
+    && chmod 0755 /usr/local/bin/qare \
     && test "$(qare --version)" = "${QARE_VERSION}"
+# The build-time browser check: with only what the wrapper sets (a clean environment, as
+# the stage job's allow-list gives QAre), QAre's playwright-core must be the version its
+# browsers were installed for, resolve Chromium under QAre's path, launch it headless and
+# load about:blank. Anything else fails CI's image build.
+RUN browsers="$(sed -n 's/^PLAYWRIGHT_BROWSERS_PATH=//p' /usr/local/bin/qare)" \
+    && test "${browsers}" = "${QARE_BROWSERS_PATH}" \
+    && env -i PATH="${PATH}" HOME=/root PLAYWRIGHT_BROWSERS_PATH="${browsers}" \
+       QARE_PLAYWRIGHT="${QARE_PLAYWRIGHT}" node -e ' \
+         const fs = require("fs"); \
+         const root = process.env.QARE_PLAYWRIGHT; \
+         const pw = require(root); \
+         const have = require(root + "/package.json").version; \
+         const driver = JSON.parse(fs.readFileSync("/opt/qare/drivers/web/DRIVER.json", "utf8")); \
+         if (have !== driver.drivers.chromium) { \
+           throw new Error("QAre playwright-core " + have + ", browsers for " + driver.drivers.chromium); \
+         } \
+         const exe = pw.chromium.executablePath(); \
+         if (!exe.startsWith(process.env.PLAYWRIGHT_BROWSERS_PATH + "/") || !fs.existsSync(exe)) { \
+           throw new Error("QAre Chromium not found under its path: " + exe); \
+         } \
+         (async () => { \
+           const browser = await pw.chromium.launch({ headless: true }); \
+           const page = await browser.newPage(); \
+           await page.goto("about:blank"); \
+           const url = page.url(); \
+           const version = browser.version(); \
+           await browser.close(); \
+           if (url !== "about:blank") throw new Error("loaded " + url); \
+           console.log("QAre playwright-core " + have + " launched Chromium " + version + " headless and loaded " + url); \
+         })().catch((err) => { console.error(err); process.exit(1); }); \
+       '
 
 # Progettare, as its release installer installs it (a uv tool with its own,
 # release-matched nare), from wheels checked against their SHA-256 (nare's is the one in
