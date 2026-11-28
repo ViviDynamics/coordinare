@@ -293,12 +293,15 @@ class ProgettareProvider:
             return StageJob(ref=ref, state=JobState.NEEDS_HUMAN, detail="unreadable", reason=str(exc))
         # Not reported yet: in flight while its container runs. A Docker that cannot answer
         # is a TransportError, retried, never read as the run being over.
-        if not (directory / runner.RESULT_FILE).exists() and await self._jobs.state(directory) is RunState.RUNNING:
+        reported = (directory / runner.RESULT_FILE).exists()
+        if not reported and await self._jobs.state(directory) is RunState.RUNNING:
             if not _overdue(request, self._config.timeout_seconds):
                 return StageJob(ref=ref, state=JobState.PENDING, detail="running")
             # The job stops itself at its timeout; this bounds one that never reports.
             await self._jobs.stop(directory)
             return _retry(ref, "overdue", "the Progettare run passed its timeout without saying how it ended")
+        if reported:
+            await self._jobs.ended(directory)  # 462: its proxy and network go with it
         return self._ended(ref, directory, request)
 
     def _ended(self, ref: str, directory: Path, request: dict[str, Any]) -> StageJob:

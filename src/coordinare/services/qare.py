@@ -359,6 +359,7 @@ class QAreProvider:
                             reason="the job's directory is gone, so nothing of it remains")
         status = _load_json(job_dir / runner.STATUS_FILE)
         if status is not None:
+            await self._jobs.ended(job_dir)  # 462: its proxy and network go with it
             return job_from_status(ref, status, job_dir)
         if self._overdue(job_dir):
             await self._jobs.stop(job_dir)

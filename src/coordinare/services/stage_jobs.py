@@ -151,6 +151,11 @@ class StageJobs(Protocol):
         """Stop and remove the job's container, if there is one. Best effort."""
         ...
 
+    async def ended(self, job_dir: Path) -> None:
+        """462: the job has reported how it ended; free what it held once its container is
+        gone. Best effort, and never raises: it must not hold up the job's verdict."""
+        ...
+
     async def probe(
         self, argv: Sequence[str], *, env_names: Sequence[str] = (), env: dict[str, str] | None = None,
         within: float = 60.0,
@@ -388,6 +393,15 @@ class DockerStageJobs:
         if self.proxied:
             await self._egress_down(job_name(job_dir))
 
+    async def ended(self, job_dir: Path) -> None:
+        """462: the job wrote its last word. Once its container is gone, its proxy and network go
+        now (``state`` removes them), not when the proxy's ``--follow`` or a later start's sweep
+        gets to them. A container still finishing keeps them: the proxy follows it out, and the
+        sweep stays the backstop for the network."""
+        if self.proxied:
+            with contextlib.suppress(TransportError):
+                await self.state(job_dir)
+
     # -- 447: the egress network and proxy of a sandboxed job with an allowlist -------------
 
     async def _egress_up(self, name: str, provider: str) -> str:
@@ -563,6 +577,9 @@ class UnavailableStageJobs:
         return RunState.GONE  # nothing ever runs here
 
     async def stop(self, job_dir: Path) -> None:
+        del job_dir
+
+    async def ended(self, job_dir: Path) -> None:
         del job_dir
 
     async def probe(
