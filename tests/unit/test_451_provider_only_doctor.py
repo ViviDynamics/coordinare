@@ -265,3 +265,45 @@ async def test_doctor_and_startup_pass_a_provider_only_config(
     assert own in report.results
     assert not any(name.startswith("harness ") for name in _names(report.results))
     assert "performer protocol" not in _names(report.results)
+
+
+async def test_a_persistent_endpoint_serving_only_provider_roles_is_not_probed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unused endpoint that is down cannot fail doctor for a provider-only config."""
+    asked: list[str] = []
+
+    def unreachable(*_args: Any, **_kwargs: Any) -> Any:
+        asked.append("status")
+        raise launch_preflight.httpx.ConnectError("down")
+
+    monkeypatch.setattr(launch_preflight, "probe_http", unreachable)
+    endpoints = [
+        {"id": "qa-only", "mode": "persistent", "roles": ["qa"], "endpoint": "http://qa.test:8080", "image": "img"},
+        {"id": "review-stage", "mode": "persistent", "roles": ["reviewing"], "endpoint": "http://r.test:8080", "image": "img"},
+        {"id": "mixed", "mode": "persistent", "roles": ["qa", "implementer"], "endpoint": "http://m.test:8080", "image": "img"},
+    ]
+    config = _config(
+        tmp_path, monkeypatch,
+        {"implementer": {}, "qa": {"provider": "qare"}, "reviewer": {"provider": "scrutare"}},
+        performer_endpoints=endpoints,
+    )
+
+    results = await launch_preflight._persistent_harnesses(config)
+
+    assert _names(results) == ["performer mixed"]
+    assert asked == ["status"]
+
+
+async def test_an_endpoint_naming_a_provider_role_by_its_stage_serves_no_performer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probes: list[tuple[str, list[str]]],
+) -> None:
+    """Endpoint roles may name the stage (reviewing) instead of the role (reviewer)."""
+    config = _config(
+        tmp_path, monkeypatch, {"implementer": {"transport": "ssh"}, "reviewer": {"provider": "scrutare"}},
+        performer_endpoints=[{"id": "r", "mode": "ephemeral", "roles": ["reviewing"], "image": "img"}],
+    )
+
+    results = await launch_preflight.check_harnesses(config, probe_containers=False)
+
+    assert "performer transport" in _failed(results)

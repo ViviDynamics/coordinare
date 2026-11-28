@@ -20,7 +20,7 @@ from gql.transport.exceptions import TransportConnectionFailed
 from coordinare.auth import build_auth
 from coordinare.dashboard.app import check_port_available
 from coordinare.doctor import CheckResult, DoctorReport, Status, check_stage_providers, run_checks
-from coordinare.lifecycle import CANONICAL_ORDER
+from coordinare.lifecycle import CANONICAL_ORDER, ROLE_TO_STAGE
 from coordinare.network_probe import (
     PROBE_ATTEMPTS,
     PROBE_RETRY_DELAY_SECONDS,
@@ -409,6 +409,20 @@ def _provider_roles(config: ProjectConfiguration) -> set[str]:
     }
 
 
+_STAGE_TO_ROLE = {stage: role for role, stage in ROLE_TO_STAGE.items()}
+
+
+def _endpoint_role(name: str) -> str:
+    """An endpoint lists a role by its role name (reviewer) or its stage name (reviewing)."""
+    return _STAGE_TO_ROLE.get(name, name)
+
+
+def _serves_only_providers(endpoint: Any, provider_roles: set[str]) -> bool:
+    """451: every role the endpoint lists is filled by a stage provider, so nothing uses it."""
+    roles = {_endpoint_role(role) for role in endpoint.roles}
+    return bool(roles) and roles <= provider_roles
+
+
 def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
     results = []
     executables = set()
@@ -421,7 +435,7 @@ def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
         for endpoint in config.performer_endpoints
         if endpoint.mode != "subprocess"
         for role in endpoint.roles
-        if role not in provider_roles
+        if _endpoint_role(role) not in provider_roles
     }
     performer_roles = 0
     for role in CANONICAL_ORDER:
@@ -503,7 +517,7 @@ def _container_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
         results.append(result)
         if result.status is not Status.OK:
             continue
-        if endpoint.roles and set(endpoint.roles) <= provider_roles:
+        if _serves_only_providers(endpoint, provider_roles):
             continue  # 451: only stage providers fill its roles, so no harness runs in it
         harnesses = {
             resolved.backend.replace("-", "_").lower()
@@ -568,8 +582,11 @@ async def check_harnesses(
 
 async def _persistent_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
     results = []
+    provider_roles = _provider_roles(config)
     for endpoint in config.performer_endpoints:
         if endpoint.mode != "persistent" or endpoint.endpoint is None:
+            continue
+        if _serves_only_providers(endpoint, provider_roles):
             continue
         try:
             headers = (
