@@ -54,7 +54,7 @@ from tests.unit.test_435_qare_sandbox import (
 )
 
 ALLOW = ["api.github.com", "llm"]
-PROXY_IP = "172.30.0.2"
+PROXY_IP = "198.51.100.2"
 
 _FAKE_DOCKER = r'''
 import json, os, sys
@@ -92,7 +92,7 @@ elif args[:2] == ["run", "-d"]:
     print("job0")
 elif args[:2] == ["container", "inspect"] and "{{json .NetworkSettings.Networks}}" in args:
     name = args[-1]
-    print(json.dumps({name: {"IPAddress": state.get("proxy_ip", "172.30.0.2")}, "bridge": {"IPAddress": "172.17.0.9"}}))
+    print(json.dumps({name: {"IPAddress": state.get("proxy_ip", "198.51.100.2")}, "bridge": {"IPAddress": "198.51.100.9"}}))
 elif args[:2] == ["container", "inspect"]:
     status = state.get("others", {}).get(args[-1], state.get("job", "missing"))
     if status == "missing":
