@@ -20,7 +20,7 @@ from coordinare.services.environment_capabilities import (
 from coordinare.services.environment_discovery import EXECUTABLE_REVIEW_INSTRUCTIONS
 from coordinare.services.environment_discovery_prompts import (
     _MANIFEST_INSTRUCTIONS,
-    ADVISORY_AUDIT_CHECKS,
+    CHECK_PROVES_ENVIRONMENT,
 )
 from coordinare.services.environment_shard_construction import CHECK_AUTHOR_INSTRUCTIONS
 
@@ -45,9 +45,9 @@ def test_the_worked_endpoint_is_one_the_manifest_accepts():
 
 def test_every_author_and_reviewer_of_checks_gets_the_advisory_audit_rule():
     for instructions in (_MANIFEST_INSTRUCTIONS, CHECK_AUTHOR_INSTRUCTIONS, EXECUTABLE_REVIEW_INSTRUCTIONS):
-        assert ADVISORY_AUDIT_CHECKS in instructions
-    assert 'Never require that no advisories are found' in ADVISORY_AUDIT_CHECKS
-    assert 'never ignore advisories to make one pass' in ADVISORY_AUDIT_CHECKS
+        assert CHECK_PROVES_ENVIRONMENT in instructions
+    assert 'Never require that no advisories are found' in CHECK_PROVES_ENVIRONMENT
+    assert 'never ignore advisories to make one pass' in CHECK_PROVES_ENVIRONMENT
 
 
 def test_the_runtime_guidance_says_to_pull_service_images_at_install():

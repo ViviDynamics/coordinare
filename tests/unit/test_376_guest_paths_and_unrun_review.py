@@ -75,7 +75,7 @@ def test_the_guest_gets_the_tmpdir_only_where_the_carrier_has_it(monkeypatch, tm
 
 
 def test_prompts_name_what_the_guest_daemon_sees():
-    rule = discovery.RUNTIME_BIND_MOUNTS
+    rule = discovery.RUNTIME_DOCKER
     assert all(root in rule for root in ('{repo}', '{cache}', '{scratch}', 'TMPDIR'))
     assert 'empty root-owned directory' in rule and 'no image layer can make a bind-mounted path writable' in rule
 

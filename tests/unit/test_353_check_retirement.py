@@ -132,8 +132,10 @@ def test_a_check_author_may_drop_a_retired_checks_mapping_but_no_other():
 
 
 def test_authors_are_told_when_they_may_retire_and_reviewers_how_to_judge_it():
-    for instructions in (CHECK_AUTHOR_INSTRUCTIONS, DELTA_CHECK_INSTRUCTION, FIXED_REVISION):
+    # A delta check author's system prompt is CHECK_AUTHOR_INSTRUCTIONS; its brief only points back to it.
+    for instructions in (CHECK_AUTHOR_INSTRUCTIONS, FIXED_REVISION):
         assert RETIRE_FAILED_CHECK in instructions
+    assert 'retirable_check_ids' in DELTA_CHECK_INSTRUCTION and 'fixed_check_ids' in DELTA_CHECK_INSTRUCTION
     assert RETIREMENT_REVIEW in EXECUTABLE_REVIEW_INSTRUCTIONS
     assert 'Never retire a check the environment failed' in RETIRE_FAILED_CHECK
 

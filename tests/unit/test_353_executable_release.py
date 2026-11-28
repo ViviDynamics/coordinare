@@ -99,13 +99,11 @@ async def test_a_release_request_reopens_scope_for_the_reviewer_and_records_the_
 
 def test_check_guidance_consumes_install_artifacts_instead_of_rebuilding_them():
     """v44's F0011: a clean-phase check rebuilt the Dockerfile offline rather than inspecting the install-phase image."""
-    from coordinare.services.environment_shard_construction import (
-        CHECK_AUTHOR_INSTRUCTIONS,
-        INSTALL_ARTIFACT_RULE,
-    )
+    from coordinare.services.environment_discovery_prompts import CHECK_PROVES_ENVIRONMENT
+    from coordinare.services.environment_shard_construction import CHECK_AUTHOR_INSTRUCTIONS
 
-    assert INSTALL_ARTIFACT_RULE in CHECK_AUTHOR_INSTRUCTIONS
-    assert 'never rebuilds' in INSTALL_ARTIFACT_RULE and 'no network' in INSTALL_ARTIFACT_RULE
+    assert CHECK_PROVES_ENVIRONMENT in CHECK_AUTHOR_INSTRUCTIONS
+    assert 'never rebuilds' in CHECK_PROVES_ENVIRONMENT and 'no network' in CHECK_PROVES_ENVIRONMENT
 
 
 @pytest.mark.asyncio

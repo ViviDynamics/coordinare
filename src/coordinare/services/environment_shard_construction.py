@@ -38,11 +38,7 @@ from coordinare.services.environment_agent_pool import ShardOverflowError, run_p
 from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_delta_schema import apply_group_delta
 from coordinare.services.environment_discovery_prompts import (
-    ADVISORY_AUDIT_CHECKS,
-    INSTALL_MODE_OBLIGATIONS,
-    INVOCATION_SOURCES,
-    SAMPLE_TEST_CHECKS,
-    TIMEOUT_CEILINGS,
+    COMMAND_RULES,
     source_navigation,
     source_tool_guidance,
 )
@@ -110,11 +106,6 @@ def global_view(data: Mapping[str, Any], groups: Sequence[CheckGroup]) -> dict[s
     return view
 
 
-# A check verifies what installation persisted; it never rebuilds or re-fetches it, since clean verification is offline.
-INSTALL_ARTIFACT_RULE = (
-    'A check consumes an artifact that installation persisted (an image, tool, package or cache entry) by inspecting or '
-    'running it; it never rebuilds that artifact from source or pulls it again, because clean verification has no network. '
-)
 # Dettmore e2e-60: told to "keep every id in keep_check_ids unchanged", the c00 author read it as keeping the check
 # itself unchanged. Asked three reviews running to give c00-npm-build the offline npm cache, it left the bare `npm ci`
 # and added corrected copies beside it (c00-npm-offline, c00-npm-build-cached, c00-npm-build-offline), so the
@@ -124,36 +115,38 @@ KEEP_AND_CORRECT = (
     'not in fixed_checks, correct that check itself (its argv, env, dependencies or timeout) under the same id. Never '
     'leave it as it was and add a corrected copy beside it: the uncorrected check stays required and its finding stays '
     'open. ')
+# Dettmore e2e-14 review: a closure record a past execution fixed may change only its timeout, which the delta authors
+# were never told; the fix belongs in installation, activation or a service instead. Admission refuses any other
+# change (execution_command_changed) and a delta's frozen records are restored, so this states the limit once for
+# every author that sees fixed ids.
+FIXED_RECORDS = (
+    'A command an earlier execution ran (named in fixed_ids, repair_delta.fixed_ids, fixed_checks or fixed_check_ids) '
+    'is fixed: keep its argv, cwd, env, dependencies, scope and required status, and never shorten its timeout_seconds '
+    '(you may only lengthen it). Answer a finding about one with a new check under a new id, linked where the finding '
+    'needs it, and repair what it needs in installation, activation or a service instead.')
 CHECK_AUTHOR_INSTRUCTIONS = (
     'You are a check author for one group of required source criteria in a divided environment manifest. The global '
     'environment author already declared installation, activation and services (global_part). For every criterion in '
     'assigned_criteria, write required, unscoped checks that prove its obligation and observable result in the clean '
     'consumer, and map it in criterion_checks to those checks or to global checks in global_part. Every new check id you '
     'write must start with check_id_prefix. ' + KEEP_AND_CORRECT + 'You may map or depend on '
-    'sibling_check_ids, which another author keeps. Each check in fixed_checks ran in an earlier execution and is fixed: '
-    'return it exactly as fixed_checks gives it, whatever previous_part shows (only timeout_seconds may grow), and answer '
-    'a finding about it with a new check. ' + RETIRE_FAILED_CHECK + ' '
-    'depends_on may name your checks, global checks, or service init, start '
-    'and health ids. You cannot declare installation, services or activation. bound_inputs indexes verified repository '
-    'files with the criteria citing each; read the files you need with read_files. Never write literal credentials. '
-    + INSTALL_ARTIFACT_RULE + ADVISORY_AUDIT_CHECKS + ' ' + SAMPLE_TEST_CHECKS + ' ' + INVOCATION_SOURCES + ' ' + INSTALL_MODE_OBLIGATIONS + ' ' + TIMEOUT_CEILINGS + ' ' +
+    'sibling_check_ids, which another author keeps. Return each check in fixed_checks exactly as fixed_checks gives it, '
+    'whatever previous_part shows. ' + FIXED_RECORDS + ' You cannot declare installation, services or activation: '
+    'leave what a fixed check needs to the global repair. ' + RETIRE_FAILED_CHECK + ' '
+    'depends_on may name your checks, global checks, or service init, start and health ids. bound_inputs indexes '
+    'verified repository files with the criteria citing each; read the files you need with read_files. '
+    + COMMAND_RULES + ' '
     'Return {"shard_checks":{"checks":[...],"criterion_checks":{...}}}. '
 )
+# A delta check author's system prompt is CHECK_AUTHOR_INSTRUCTIONS, so the keep, fixed and retirement rules apply
+# from there; this brief adds only what a repair changes.
 DELTA_CHECK_INSTRUCTION = (
     'This is a repair. A previous execution failed in the closure_checks, closure_criteria and untrusted_feedback shown, '
     'and only those checks may change. Return {"shard_checks":{"checks":[...],"criterion_checks":{...}}} listing ONLY '
     'the checks you change or add, and only the criterion_checks entries whose mapping you change. Omit every other check; '
-    'they are kept unchanged. Keep every id in keep_check_ids, never rename a check, and add a new id only for a new '
-    'obligation. Read the bound_inputs you need with read_files. Never write literal credentials. A check in '
-    'fixed_check_ids ran in an earlier execution: keep its argv, cwd, env, dependencies, scope and required status, '
-    'never shorten its timeout_seconds (you may only lengthen it), and leave what it needs to the global repair. '
-    + RETIRE_FAILED_CHECK + ' '
+    'they are kept unchanged. Add a new id only for a new obligation. fixed_check_ids are fixed and retirable_check_ids '
+    'may be retired, as your instructions describe. '
 )
-# Dettmore e2e-14 review: a closure record a past execution fixed may change only its timeout, which the delta authors
-# were never told; the fix belongs in installation, activation or a service instead.
-FIXED_DELTA = ('A record in repair_delta.fixed_ids ran in an earlier execution: keep its argv, cwd, env, dependencies, '
-               'scope and required status, never shorten its timeout (you may only lengthen it), and repair what it '
-               'needs in installation, activation or a service instead.')
 REVIEW_PART_PREAMBLE = (
     'You independently review ONE part of a divided executable manifest: for a check group, its assigned criteria and '
     'the checks that map them; for the global part, installation, activation, services, requirements and global checks. '

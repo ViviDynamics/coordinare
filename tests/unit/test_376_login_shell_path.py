@@ -53,9 +53,11 @@ def test_every_carrier_image_installs_the_hook():
     assert 'RUN ' + CARRIER_IMAGE_USER_STEP in (ROOT / 'agent/performer/Dockerfile.base').read_text()
 
 
-def test_prompts_rule_out_login_shells_and_ssh_weakening():
-    assert 'never a login shell' in discovery.LOGIN_SHELL_RULE
-    assert 'Never write ssh configuration or keys' in discovery.RUNTIME_DOCKER_CONNECTION
-    assert discovery.SSH_WEAKENING_REVIEW in discovery.EXECUTABLE_REVIEW_CRITERIA
+def test_prompts_rule_out_ssh_weakening_for_authors_and_reviewers():
+    # The login PATH hook above makes a login shell safe, so the prompts no longer forbid one; the runtime rule, which
+    # every author and reviewer packet carries, still rules out writing ssh configuration and asks reviewers to reject it.
+    assert 'Never write ssh configuration or keys' in discovery.RUNTIME_DOCKER
+    assert 'StrictHostKeyChecking no' in discovery.RUNTIME_DOCKER and 'a reviewer rejects' in discovery.RUNTIME_DOCKER
+    assert 'login shell' not in discovery.EXECUTION_RULES
     source = Path(discovery.__file__).read_text()
-    assert 'f"{LOGIN_SHELL_RULE} "' in source and '"runtime_docker_connection": RUNTIME_DOCKER_CONNECTION' in source
+    assert '"runtime_docker": RUNTIME_DOCKER' in source and '"execution_rules": EXECUTION_RULES' in source

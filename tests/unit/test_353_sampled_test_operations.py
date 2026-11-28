@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from coordinare.services.environment_discovery_prompts import (
-    SAMPLE_TEST_CHECKS,
+    CHECK_PROVES_ENVIRONMENT,
     legacy_discovery_system,
 )
 from coordinare.services.environment_scope import (
@@ -21,7 +21,7 @@ STACK_NAMES = re.compile(r'\b(rails|ruby|rspec|cucumber|bundler?|gem|python|pyte
 
 def test_the_rules_name_no_technology():
     assert not STACK_NAMES.search(TEST_OPERATION_RULE)
-    assert not STACK_NAMES.search(SAMPLE_TEST_CHECKS)
+    assert not STACK_NAMES.search(CHECK_PROVES_ENVIRONMENT)
 
 
 def test_scope_authors_and_reviewers_get_the_test_operation_rule():
@@ -31,7 +31,7 @@ def test_scope_authors_and_reviewers_get_the_test_operation_rule():
 
 
 def test_check_authors_get_the_sampling_rule():
-    assert SAMPLE_TEST_CHECKS in CHECK_AUTHOR_INSTRUCTIONS
-    assert SAMPLE_TEST_CHECKS in legacy_discovery_system()
-    assert 'never a whole suite' in SAMPLE_TEST_CHECKS
-    assert 'failed assertion' in SAMPLE_TEST_CHECKS
+    assert CHECK_PROVES_ENVIRONMENT in CHECK_AUTHOR_INSTRUCTIONS
+    assert CHECK_PROVES_ENVIRONMENT in legacy_discovery_system()
+    assert 'never a whole suite' in CHECK_PROVES_ENVIRONMENT
+    assert 'failed assertion' in CHECK_PROVES_ENVIRONMENT

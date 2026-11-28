@@ -88,53 +88,52 @@ def source_tool_guidance(budget: AttemptBudget | None, text: str) -> str:
     return (text.replace('read_file or read_files', 'read_source').replace('read_files', 'read_source')
             .replace('read_file', 'read_source').replace('list_files', 'list_sources'))
 
+# Generated credentials: local_credential_invalid, _in_install, _cache_data and _unused and runtime_credential_reference
+# refuse each misuse, so the prompt states only how to declare one (a literal secret is ruled out by SOURCE_CRITERIA).
 LOCAL_CREDENTIAL_AUTHORING = (
-    'Never write a literal credential, even a throwaway test password. A credential for a service this manifest '
-    'starts goes in local_credentials as {name, service, purpose} and is referenced as ${NAME}; the runner generates '
-    'a fresh value every run, so data that stores it lives under {scratch}, and neither install commands nor activation can use it. '
-    'For a credential environment variable named K the value is exactly ${K}.')
-# Dettmore e2e-58: bin/bundler-audit failed on ransack, sanitize, rack and nokogiri advisories published after the
-# pinned commit. No environment change could pass it, and checks that ran are fixed, so the attempt spent its
-# remaining coverage revisions on a failure only the project could fix.
-ADVISORY_AUDIT_CHECKS = (
-    'An advisory audit (a dependency vulnerability scanner) reports advisories published '
-    'after the pinned commit, so its findings are the project\'s state, not the environment\'s. Its required check '
-    'proves the tool runs against the locked dependency set and completes its report: accept the exit status the tool '
-    'documents for "advisories found" as well as success, with its report printed, and fail on any other status. '
-    'Never require that no advisories are found, and never ignore advisories to make one '
-    'pass.')
-# Maintainer decision 2026-11-09 (Dettmore e2e-72): a required check ran the whole RSpec suite, timed out at the
-# hour limit, and other checks failed on the project's own assertions. A check proves configuration with one small
-# sample; the rule names no technology.
-SAMPLE_TEST_CHECKS = (
-    "A check for a test or build obligation proves the environment is configured, not that the project is correct. "
-    "Run one small sample, never a whole suite, every shard of one or a full build, which can take hours on a large "
-    "project: choose an existing integration test from the repository, one that loads the project and uses its "
-    "installed dependencies and the services this manifest starts, and run only that test through the project's own "
-    "runner. Prefer one that passes at the pinned commit. The check must fail when the environment is not configured: "
-    "the runner or a dependency is missing, the project or the test fails to load, compile or import, or a service, "
-    "setting or variable it needs is unreachable or absent. It must not fail only because a test that actually ran "
-    "reported a failed assertion: decide from the runner's own result (the exit statuses it documents, or its summary "
-    "showing the sample executed with no error outside assertions), never by discarding the status. Running a sample "
-    "is required here, not a selective omission.")
+    'A credential for a service this manifest starts is declared in local_credentials as {name, service, purpose} and '
+    'referenced as ${NAME}; the runner generates a fresh value every run, so data that stores it lives under '
+    '{scratch}, and neither install commands nor activation can use it.')
+# One rule for what a check proves. Its parts, each once a rule of its own:
+# - sampled test operations. Maintainer decision 2026-11-09 (Dettmore e2e-72): a required check ran the whole RSpec
+#   suite, timed out at the hour limit, and other checks failed on the project's own assertions. check_timeout_ceiling
+#   now refuses a check over 900 s, but a suite that fits in it still fails on assertions, so the sample stays.
+# - advisory audits. Dettmore e2e-58: bin/bundler-audit failed on advisories published after the pinned commit, which
+#   no environment change could pass, and the attempt spent its coverage revisions on it.
+# - install modes. nare-native-040: a criterion named "the editable root package", and the check author spent four
+#   coverage revisions asserting an editable install the clean consumer's copy install cannot satisfy.
+# - persisted artifacts: a check consumes them and never rebuilds or re-fetches them, since clean verification is
+#   offline.
+# The rule names no technology: it holds for any language, framework or runner.
+CHECK_PROVES_ENVIRONMENT = (
+    "A check proves the environment is configured, never that the project is correct. It inspects or runs what "
+    "installation persisted (an image, tool, package or cache entry) and never rebuilds it from source or pulls it "
+    "again: clean verification has no network. For a test or build obligation it runs one small sample through the "
+    "project's own runner, never a whole suite, every shard of one or a full build, which can take hours: an existing "
+    "integration test that loads the project with its installed dependencies and the services this manifest starts, "
+    "preferably one that passes at the pinned commit. Running a sample is required here, not a selective omission. "
+    "The check fails when the environment is not configured (the runner, a dependency, setting, variable or service is "
+    "missing or unreachable, or the project or test fails to load, compile or import), not merely because a test that "
+    "ran reported a failed assertion: decide from the runner's own result (its documented exit statuses, or a summary "
+    "showing the sample ran with no error outside assertions), never by discarding the status. An advisory audit (a "
+    "dependency vulnerability scanner) reports advisories published after the pinned commit, which are the project's "
+    "state: its check passes when the tool completes and prints its report on the locked dependency set, accepting the "
+    "exit status it documents for \"advisories found\" as well as success and failing on any other. Never require that "
+    "no advisories are found, and never ignore advisories to make one pass. A criterion that names how a developer "
+    "installs the project (an editable or development install linked to the checkout) states the outcome it serves, "
+    "not a mode to reproduce: the project is installed into {cache} as a copy, so verify that it imports and its "
+    "commands run from the installed environment, built from the pinned source, never the install mode, the package's "
+    "file path, or a version string read from a file the build computes it from.")
 # nare-native-024, -026, -028 and -031: checks called the project's own command line without an argument it requires
 # (a prompt) or without its non-interactive confirmation, and a tool with a help syntax its version rejects; each cost
 # a repair. Every one of those invocations was written out in the repository's own tests and documentation.
 INVOCATION_SOURCES = (
     "Copy each command's invocation from the repository, never from memory: its tests, CI workflows, scripts and "
-    "documentation show the arguments, flags and input a command needs (a positional argument or subcommand it "
-    "requires, the switch that lets it run without a terminal or confirmation, the help or version syntax its version "
-    "accepts). Read where the repository calls the command before you write a check that calls it, and keep every "
-    "required argument. When the repository never shows an invocation, use only what the tool's own documentation in "
-    "the repository or a probe of its help output shows.")
-# nare-native-040: the scope criterion named "the editable root package", and the check author spent four coverage
-# revisions asserting an editable install under the checkout, which the clean consumer's copy install cannot satisfy.
-INSTALL_MODE_OBLIGATIONS = (
-    "A criterion that names how a developer installs the project (an editable or development install linked to the "
-    "checkout) states the outcome it serves, not a mode to reproduce: here the project is installed into {cache} as a "
-    "copy for the clean consumer. Verify that outcome (the project imports and its commands run from the installed "
-    "environment, built from the pinned source), never the install mode, the package's file path, or a version "
-    "string read from a file the build computes it from.")
+    "documentation show the arguments, flags and input a command needs (a required positional argument or "
+    "subcommand, the switch that lets it run without a terminal or confirmation, the help or version syntax its "
+    "version accepts). Read where the repository calls a command before you write a check that calls it, and keep "
+    "every required argument; when the repository never shows one, use only the tool's own documentation in the "
+    "repository or a probe of its help output.")
 # nare-native-029, -031 and -037: installs extracted a release archive with a standard-library zip module, which drops
 # the executable bit, and the extracted installer or program failed with Permission denied, a repair each time.
 ARCHIVE_MODES = (
@@ -144,85 +143,65 @@ ARCHIVE_MODES = (
     "anything extracted.")
 # Dettmore e2e-66: reviewers summed every command's timeout_seconds (13,800 s) against the 7,200 s session budget and
 # held findings open until the author cut the heavy builds' and suites' ceilings, spending six coverage revisions
-# before any execution. A ceiling is not a plan: the session deadline still ends the whole run.
+# before any execution. A ceiling is not a plan: the session deadline still ends the whole run. The per-check limit is
+# enforced by check_timeout_ceiling; it is stated so authors avoid the refusal.
 TIMEOUT_CEILINGS = (
-    f'A check\'s timeout_seconds is at most {int(CHECK_TIMEOUT_CEILING)}: it runs one small sample. '
-    'Each command\'s timeout_seconds is its own ceiling: set it to what that work needs on this carrier, with margin. '
-    'The ceilings of all commands may add up to more than the session_budget, because they are not run times and the '
-    'session deadline still ends the whole run. Never shorten a ceiling below what its work needs to make a total fit; '
-    'object to one only when that single command could not finish within the session_budget at all.')
+    f"Each command's timeout_seconds is its own ceiling, at most {int(CHECK_TIMEOUT_CEILING)} for a check: set it to "
+    "what that work needs on this carrier, with margin. The ceilings of all commands may add up to more than the "
+    "session_budget, because they are not run times and the session deadline still ends the whole run. Never shorten "
+    "a ceiling below what its work needs to make a total fit; object to one only when that single command could not "
+    "finish within the session_budget at all.")
+# The command rules every manifest author, check author and executable reviewer shares.
+COMMAND_RULES = f'{CHECK_PROVES_ENVIRONMENT} {INVOCATION_SOURCES} {TIMEOUT_CEILINGS}'
+# local_credential_invalid already refuses a credential whose service this manifest does not declare.
 LOCAL_CREDENTIAL_REVIEW = (
-    'Judge every local_credentials entry: it must belong to a service this manifest starts. A credential the source '
-    'shows comes from outside the environment, such as a cloud key or registry token, is a blocking finding.')
+    'A local credential the source shows comes from outside the environment, such as a cloud key or registry token, '
+    'is a blocking finding: local_credentials hold only credentials of services this manifest starts.')
 
 _WHOLE_MANIFEST_MAPPING = (
     'Use the fixed scope_contract supplied by the daemon: criterion_checks maps every required criterion ID '
     'to required unscoped consumer checks. ')
+# Where commands run (roots, the clean consumer, the read-only {cache}) is stated once, in the execution_rules every
+# author and reviewer packet carries (environment_discovery.EXECUTION_RULES). Dropped here because code enforces them:
+# a check's or service's depends_on on an install (strip_install_dependencies removes it), a ${name} for a variable
+# the command assigns itself (shell_local_template_reference), PATH in activation.env (activation_path_replaced).
 _MANIFEST_RULES = (
-    'Never return scope_contract, scope_contract_digest or change source obligations. '
+    'Return declarations only: never scope_contract, scope_contract_digest, hashes, schema or policy versions, source '
+    'identity or inventory/capability bindings (the daemon supplies those), and never change source obligations. '
     'runtime_endpoints declares bounded loopback forwards only when an explicit private platform policy is configured. '
     'Architecture: installs and checks run natively on platform_roles.install_and_check_platform, so download release '
     'artifacts for that platform. A container image for another platform runs only through emulated_platforms, which is '
     'slower; request one only when the repository explicitly requires it. '
-
-    'Discover the project environment from arbitrary repository evidence, including '
-    'documentation, build/test entry points, automation and nested subprojects. '
-    'Inspect all relevant evidence; do not assume a toolchain or filename catalog. '
-    'Use generic probes to establish uncertain base-image prerequisites before final declarations. '
-    'Declare required executable installation assertions after artifact producers and before '
-    'consumers using depends_on; verify persisted outputs and portability. '
-    # nare-native-021: every install and check passed, then the clean consumer failed five checks: the project was an
-    # editable install bound to the install-time checkout, and one check resolved dependencies over the network.
-    'Checks run again in a clean consumer: a fresh copy of {repo} at another path, with no network. Install the '
-    'project itself into {cache} as a copy, never as a link back to the install-time checkout (an editable or '
-    'development install of the checked-out project fails there). A check uses the environment the installs built, '
-    'directly (its interpreter, binaries, or a run command that does not sync), and never resolves, downloads or '
-    're-syncs dependencies, not even offline: a re-sync must write a cache, lock or environment. '
-    # nare-native-023: the clean consumer failed because the package manager and linter wrote their caches into {cache}.
-    # nare-native-034: reviewers read this as forbidding reads too, and two findings asked opposite things.
-    'There {cache} is read-only: checks read what the installs persisted in {cache}, which is how they use it, but '
-    'every file a tool writes while a check runs (its cache, lockfile, home, build output) goes under {scratch}, '
-    'never into {cache}. '
-    'Commands run in list order where depends_on allows; still declare depends_on on every install a command needs, '
-    'including another toolchain one of its steps calls (an asset build whose plugin runs the language package '
-    'manager depends on the install that provides that manager). '
-    'Probe observations never replace required clean usability checks. '
-    'Map every required dependency, version, usability and service constraint to '
-    'required executable checks that exercise that constraint. Checks and service lifecycle '
-    'actions cannot depend on install-only command IDs: clean consumers must '
-    'independently verify installed state. Declare installation, '
-    'activation and explicit service init/start/health/stop actions without built-in '
-    'service recipes. Treat provided service declarations as additional evidence, '
-    'and convert their requirements into explicit generic actions. Resolve conflicting '
-    'requirements only from evidence; if unresolved, do not claim readiness. An empty '
-    'environment requires a justification and a required documented baseline usage '
-    'check. Do not return hashes, schema/policy versions, source identity or inventory/capability bindings. The daemon supplies those. Requirement '
-    'source must be one exact path that has been read, never comma-joined paths. '
-    'Activation must make installed tools usable by ordinary downstream project commands, not only absolute-path version checks. '
-    'Execution roots use {cache}, {repo}, {scratch}, never ${cache}, ${repo}, ${scratch}. '
-    '{repo} is a git checkout of the pinned tree with a detached HEAD, no remote and no earlier history: git status, '
-    'diff, ls-files and worktrees work there; fetching or comparing against another branch does not. '
-    'The runner expands ${NAME} before starting the command: use it only for runtime environment variables. '
-    'For shell-local variables assigned inside bash -c, use $name rather than ${name}. '
-    f'{LOCAL_CREDENTIAL_AUTHORING} '
-    f'{ADVISORY_AUDIT_CHECKS} '
-    f'{SAMPLE_TEST_CHECKS} {INVOCATION_SOURCES} {INSTALL_MODE_OBLIGATIONS} {LINK_GUIDANCE} {ARCHIVE_MODES} '
+    'Use generic probes to establish uncertain base-image prerequisites before final declarations; probe observations '
+    'never replace required clean usability checks. '
+    'Map every required dependency, version, usability and service constraint to required executable checks that '
+    'exercise that constraint. Follow execution_rules: checks and services run again in a clean consumer, with '
+    '{cache} read-only and no network. '
     # nare-native-027: a required install ran a full benchmark verify for 48 minutes, left containers behind, and
     # every execution repair went to install steps, so no check ever ran.
     'Install commands only install and build what the checks use: never run a test, verification or benchmark suite '
-    'in an install; that is a check, sampled as above. A command that starts containers removes them before it '
+    'in an install; that is a check, sampled as below. A command that starts containers removes them before it '
     'exits, including when it fails. '
-    f'{TIMEOUT_CEILINGS} '
-    'Create every declared activation directory during installation; do not hide a missing path by removing useful activation. '
-    'List tool directories in activation.path, which is prepended to the guest PATH; never set PATH in activation.env. '
+    'Commands run in list order where depends_on allows; still give an install depends_on on every install it needs, '
+    'including another toolchain one of its steps calls (an asset build whose plugin runs the language package '
+    'manager depends on the install that provides that manager), and declare installation assertions after the '
+    'artifact producers they verify, checking persisted outputs and their portability. '
+    'Declare installation, activation and explicit service init/start/health/stop actions without built-in service '
+    'recipes; treat provided service declarations as additional evidence and convert their requirements into explicit '
+    'generic actions. Resolve conflicting requirements only from evidence; if unresolved, do not claim readiness. '
+    'An empty environment requires a justification and a required documented baseline usage check. '
+    'Requirement source must be one exact path that has been read, never comma-joined paths. '
+    'Activation must make installed tools usable by ordinary downstream project commands, not only absolute-path '
+    'version checks. List tool directories in activation.path, which is prepended to the guest PATH, and create each '
+    'in an install rather than removing useful activation. '
     # nare-native-027: an offline switch set in activation.env blocked the dependency install for four generations.
     'Activation applies to install commands too: never set an offline or no-download switch in activation.env that '
     'an install needs; set it on the checks that need it. '
-    'The project environment scope is fixed by pinned development/test evidence, never by image convenience. '
+    f'{LOCAL_CREDENTIAL_AUTHORING} {COMMAND_RULES} {LINK_GUIDANCE} {ARCHIVE_MODES} '
     'Include finding_responses for every open finding ID: rationale, sources and affected_ids. '
     'Resolve missing capabilities or provide source-backed explanations; no new privileges or verification networking. '
-    'Preserve every existing required requirement-to-check link; revise the linked commands instead of removing links. '
-
+    'In a repair keep every existing required requirement, check and service id and every requirement-to-check link: '
+    'revise their definitions in place, and add new ids for additional obligations. '
 )
 
 _MANIFEST_INSTRUCTIONS = _WHOLE_MANIFEST_MAPPING + _MANIFEST_RULES
