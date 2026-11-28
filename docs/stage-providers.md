@@ -234,17 +234,20 @@ browser comes from QAre's release, not from the image's other Playwright:
   `playwright-core` expects together. The system libraries that browser needs are installed
   by that same `playwright-core` (`install-deps chromium`), with Xvfb and GTK 3 for QAre's
   Electron driver, as `qare-web` does.
-- `qare` on `PATH` is a small wrapper that sets `PLAYWRIGHT_BROWSERS_PATH` to
-  `/opt/qare/drivers/web/browsers` and runs `/opt/qare/bin/qare`. The path is set there and
-  not as an image `ENV`: the stage job passes QAre only an allow-list of variables, and an
-  image-wide value would hide the other Chromium from everything else.
-- The image also keeps its Python Playwright and the Chromium it installs, in Playwright's
-  default path. The performer's own QA workflow and agents use that one. It is unpinned
-  (1.65 today, Chromium revision 1255, where QAre's 1.63.0 needs 1243), so neither can stand
-  in for the other, and the two never share a directory.
-- The image build checks the browser: with only what the wrapper sets, QAre's
-  `playwright-core` must be the version its browsers were installed for, find Chromium under
-  QAre's path, launch it headless and load `about:blank`. CI's image build fails otherwise.
+- The image also keeps its Python Playwright and the Chromium it installs. The performer's
+  own QA workflow and agents use that one. It is unpinned, so its revision moves with each
+  Python Playwright release, and neither revision can stand in for the other.
+- Both sit in Playwright's default cache, root's `~/.cache/ms-playwright`, as revision
+  directories side by side: QAre's are linked in from `/opt/qare/drivers/web/browsers`
+  (not copied), with QAre's `.links` entry so a later `playwright install` keeps them. Each
+  Playwright finds its own revision through `HOME`, which the stage job passes to QAre.
+  No `PLAYWRIGHT_BROWSERS_PATH` is set: QAre passes its environment to every check and
+  app it starts, and a path set there would hide the other revision from them.
+- The image build checks both browsers in a clean environment (`HOME` and `PATH` only, as
+  the stage job gives QAre): QAre's `playwright-core` must be the version its browsers were
+  installed for, find Chromium in the default cache, launch it headless and load
+  `about:blank`, and the Python Playwright must still launch its own. CI's image build
+  fails otherwise.
 
 To bump QAre, change `QARE_VERSION`, and set `QARE_IMAGE` to the `qare-web` tag of the same
 release with that tag's index digest (`docker buildx imagetools inspect

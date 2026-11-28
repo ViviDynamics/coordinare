@@ -1,7 +1,8 @@
 """442: the full performer image ships QAre's pinned browser, so browser QA profiles run.
 
 QAre drives browsers through its own playwright-core, which needs the Chromium revision
-of its release, found through ``PLAYWRIGHT_BROWSERS_PATH``. These tests read
+of its release. The image links that revision into Playwright's default cache, beside the
+Python Playwright's. These tests read
 ``agent/performer/Dockerfile.full``; CI's Docker Images job builds it, and the build's own
 launch check is what proves the browser starts.
 """
@@ -15,7 +16,6 @@ from performer.stage_jobs.qare import qare_env
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = ROOT / "agent/performer/Dockerfile.full"
-BROWSERS = "/opt/qare/drivers/web/browsers"
 
 
 def _text() -> str:
@@ -60,57 +60,87 @@ def test_one_qare_image_is_pinned_and_it_is_qare_web_at_the_qare_version() -> No
 
 def test_qares_tree_with_its_browsers_comes_from_that_image() -> None:
     assert "COPY --from=qare /opt/qare /opt/qare" in _instructions()
-    assert _arg("QARE_BROWSERS_PATH") == BROWSERS
 
 
-def test_the_qare_on_path_points_its_playwright_at_qares_browsers() -> None:
-    wrapper = next(line for line in _instructions() if "> /usr/local/bin/qare" in line)
-    assert '"PLAYWRIGHT_BROWSERS_PATH=${QARE_BROWSERS_PATH}"' in wrapper
-    assert "'export PLAYWRIGHT_BROWSERS_PATH'" in wrapper
-    assert """'exec /opt/qare/bin/qare "$@"'""" in wrapper
-    assert 'test "$(qare --version)" = "${QARE_VERSION}"' in wrapper
+def _links() -> str:
+    return next(line for line in _instructions() if "/opt/qare/drivers/web/browsers/*/" in line)
 
 
-def test_the_stage_job_would_not_hand_qare_an_image_wide_browser_path() -> None:
-    # Why the path lives in the wrapper: QAre gets an allow-list of the job's environment.
-    assert "PLAYWRIGHT_BROWSERS_PATH" not in qare_env({"PLAYWRIGHT_BROWSERS_PATH": BROWSERS, "PATH": "/bin"}, [])
+def test_qares_browsers_sit_beside_the_python_ones_in_playwrights_default_cache() -> None:
+    links = _links()
+    assert "cache=/root/.cache/ms-playwright" in links
+    # Each revision directory is linked, never copied (no second 700 MB), and one the
+    # cache already holds (the same revision from the Python Playwright) is left alone.
+    assert 'ln -s "${dir%/}" "${cache}/${name}"' in links
+    assert 'if [ ! -e "${cache}/${name}" ]' in links
+    # QAre's .links entry keeps a later `playwright install` from deleting its revisions.
+    assert 'cp /opt/qare/drivers/web/browsers/.links/* "${cache}/.links/"' in links
 
 
-def test_no_image_env_moves_the_python_playwright_chromium() -> None:
-    # The performer's own Python Playwright keeps its unpinned Chromium in the default path.
-    assert not any(line.startswith("ENV") and "PLAYWRIGHT_BROWSERS_PATH" in line for line in _instructions())
+def test_no_browser_path_is_set_for_qare_or_anything_it_starts() -> None:
+    # QAre passes its environment to every check and app it starts: a path set there
+    # would hide the Python Playwright's revision from them.
+    assert "PLAYWRIGHT_BROWSERS_PATH" not in "\n".join(_instructions())
+    assert "RUN ln -s /opt/qare/bin/qare /usr/local/bin/qare && " + (
+        'test "$(qare --version)" = "${QARE_VERSION}"'
+    ) in [" ".join(line.split()) for line in _instructions()]
+
+
+def test_the_stage_job_gives_qare_home_so_it_finds_the_default_cache() -> None:
+    env = qare_env({"HOME": "/root", "PATH": "/bin", "PLAYWRIGHT_BROWSERS_PATH": "/x"}, [])
+    assert env["HOME"] == "/root"
+    assert "PLAYWRIGHT_BROWSERS_PATH" not in env
+
+
+def test_the_python_playwright_chromium_is_kept() -> None:
     assert any(line.startswith("RUN pip install --no-cache-dir playwright") for line in _instructions())
 
 
 def test_the_browsers_system_libraries_come_from_qares_own_playwright() -> None:
-    assert _arg("QARE_PLAYWRIGHT") == "/opt/qare/lib/packages/core/node_modules/playwright-core"
     deps = next(line for line in _instructions() if "install-deps chromium" in line)
-    assert 'node "${QARE_PLAYWRIGHT}/cli.js" install-deps chromium' in deps
+    assert "node /opt/qare/lib/packages/core/node_modules/playwright-core/cli.js install-deps chromium" in deps
     assert "xvfb" in deps and "libgtk-3-0" in deps
 
 
+def _check() -> str:
+    return next(line for line in _instructions() if "chromium.launch" in line)
+
+
 def test_the_build_launches_qares_browser_headless_and_loads_about_blank() -> None:
-    check = next(line for line in _instructions() if "chromium.launch" in line)
-    assert check.startswith("RUN ")
-    # The path the check uses is the one the wrapper sets, in a clean environment.
-    assert "sed -n 's/^PLAYWRIGHT_BROWSERS_PATH=//p' /usr/local/bin/qare" in check
-    assert "env -i " in check
-    assert "require(root)" in check and 'process.env.QARE_PLAYWRIGHT' in check
+    check = _check()
+    assert check.startswith("RUN env -i PATH=\"${PATH}\" HOME=/root node -e ")
+    assert 'const root = "/opt/qare/lib/packages/core/node_modules/playwright-core";' in check
+    assert "const pw = require(root);" in check
     assert "launch({ headless: true })" in check
     assert 'page.goto("about:blank")' in check
     assert 'if (url !== "about:blank") throw' in check
     assert "process.exit(1)" in check
-    # The browsers must be the ones built for this playwright-core.
+    # The browsers must be the ones built for this playwright-core, found in the default cache.
     assert "/opt/qare/drivers/web/DRIVER.json" in check
-    assert "PLAYWRIGHT_BROWSERS_PATH + \"/\"" in check
+    assert 'exe.startsWith("/root/.cache/ms-playwright/")' in check
 
 
-def test_the_browser_check_runs_after_qare_is_installed() -> None:
+def test_the_build_check_also_launches_the_python_playwright_chromium() -> None:
+    check = _check()
+    assert 'HOME=/root python3 -c \'from playwright.sync_api import sync_playwright;' in check
+    assert "launch(headless=True)" in check
+    assert 'assert pg.url == "about:blank"' in check
+
+
+def test_the_python_check_compiles_as_docker_hands_it_to_python() -> None:
+    check = _check()
+    code = check[check.index("python3 -c '") + len("python3 -c '"): check.rindex("'")]
+    compile(code, "<python3 -c>", "exec")
+
+
+def test_the_browser_check_runs_after_qare_and_its_browsers_are_in_place() -> None:
     lines = _instructions()
+    python = next(i for i, line in enumerate(lines) if line.startswith("RUN pip install --no-cache-dir playwright"))
     copy = lines.index("COPY --from=qare /opt/qare /opt/qare")
-    wrapper = next(i for i, line in enumerate(lines) if "> /usr/local/bin/qare" in line)
-    check = next(i for i, line in enumerate(lines) if "chromium.launch" in line)
-    assert copy < wrapper < check
+    deps = next(i for i, line in enumerate(lines) if "install-deps chromium" in line)
+    links = lines.index(_links())
+    check = lines.index(_check())
+    assert python < copy < deps < links < check
 
 
 def test_the_docs_say_which_browser_profiles_run() -> None:

@@ -6,10 +6,10 @@ ARG BASE_IMAGE=coordinare-performer:base
 # QAre pins (2026.11.121).
 #
 # 442: the pinned image is qare-web, not qare-core. qare-web is QAre's core image of the
-# same release plus one layer: the browser driver family under /opt/qare/drivers/web, the
-# Chromium build QAre's own playwright-core resolves. Its layers begin with exactly the
-# qare-core layers of that release, so /opt/qare is core's tree plus drivers/web, and the
-# browser always matches the QAre it ships with.
+# same release plus the browser driver family under /opt/qare/drivers/web: the Chromium
+# build QAre's own playwright-core resolves. Its layers begin with exactly the qare-core
+# layers of that release, so /opt/qare is core's tree plus drivers/web, and the browser
+# always matches the QAre it ships with.
 #
 # Bumping QAre is one change: set QARE_VERSION below, set this tag to the same release and
 # the digest to that tag's index digest (for example `docker buildx imagetools inspect
@@ -79,44 +79,45 @@ RUN mkdir -p /etc/apt/keyrings \
 # QAre, from the digest-pinned image above.
 ARG QARE_VERSION=2026.11.44
 COPY --from=qare /opt/qare /opt/qare
+RUN ln -s /opt/qare/bin/qare /usr/local/bin/qare \
+    && test "$(qare --version)" = "${QARE_VERSION}"
 
-# 442: QAre's browser. QAre drives browsers through its own playwright-core (1.63.0 at
-# 2026.11.44), which needs the Chromium revision it was released with (1243) and looks
-# for it in PLAYWRIGHT_BROWSERS_PATH. The browsers came with /opt/qare above
-# (/opt/qare/drivers/web/browsers, QAre's contract path); what qare-web installed beside
-# them on its own base is the system libraries, so they are installed here by that same
-# playwright-core, plus Xvfb and GTK 3 for QAre's Electron driver, as qare-web does.
+# 442: QAre's browser. QAre drives browsers through its own playwright-core, which
+# launches only the Chromium revision of its release. The browsers came with /opt/qare
+# above, under /opt/qare/drivers/web/browsers (QAre's contract path). What qare-web
+# installed beside them on its own base is the system libraries, so they are installed
+# here by that same playwright-core, plus Xvfb and GTK 3 for QAre's Electron driver, as
+# qare-web does.
 #
-# The Python Playwright Chromium above stays, separately: the performer's own QA
-# workflow and agents use it, it is unpinned (1.65 today, Chromium revision 1255), and it
-# lives in Playwright's default path. Neither revision satisfies the other playwright,
-# so the path is set only for QAre, by the `qare` wrapper below, never as an image ENV.
-# The stage job hands QAre only an allow-list of variables, so an ENV would not reach it
-# anyway, and it would hide the Python Chromium from everything else.
-ARG QARE_BROWSERS_PATH=/opt/qare/drivers/web/browsers
-ARG QARE_PLAYWRIGHT=/opt/qare/lib/packages/core/node_modules/playwright-core
+# The Python Playwright Chromium above stays: the performer's own QA workflow and agents
+# use it. It is unpinned, so its revision moves with each Python Playwright release, and
+# neither revision satisfies the other Playwright. Both live in Playwright's default
+# cache (root's, ~/.cache/ms-playwright), side by side as revision directories: QAre's
+# are linked in, with QAre's .links entry, so each Playwright finds its own and a later
+# `playwright install` keeps QAre's. No PLAYWRIGHT_BROWSERS_PATH is set anywhere: QAre
+# passes its environment to every check and app it starts, and a path there would hide
+# the other revision from them.
 RUN apt-get update \
-    && node "${QARE_PLAYWRIGHT}/cli.js" install-deps chromium \
+    && node /opt/qare/lib/packages/core/node_modules/playwright-core/cli.js install-deps chromium \
     && apt-get install -y --no-install-recommends xvfb libgtk-3-0 \
     && rm -rf /var/lib/apt/lists/*
-RUN printf '%s\n' '#!/bin/sh' \
-       '# 442: QAre'"'"'s playwright-core uses the browsers of its own qare-web release.' \
-       "PLAYWRIGHT_BROWSERS_PATH=${QARE_BROWSERS_PATH}" \
-       'export PLAYWRIGHT_BROWSERS_PATH' \
-       'exec /opt/qare/bin/qare "$@"' \
-       > /usr/local/bin/qare \
-    && chmod 0755 /usr/local/bin/qare \
-    && test "$(qare --version)" = "${QARE_VERSION}"
-# The build-time browser check: with only what the wrapper sets (a clean environment, as
-# the stage job's allow-list gives QAre), QAre's playwright-core must be the version its
-# browsers were installed for, resolve Chromium under QAre's path, launch it headless and
-# load about:blank. Anything else fails CI's image build.
-RUN browsers="$(sed -n 's/^PLAYWRIGHT_BROWSERS_PATH=//p' /usr/local/bin/qare)" \
-    && test "${browsers}" = "${QARE_BROWSERS_PATH}" \
-    && env -i PATH="${PATH}" HOME=/root PLAYWRIGHT_BROWSERS_PATH="${browsers}" \
-       QARE_PLAYWRIGHT="${QARE_PLAYWRIGHT}" node -e ' \
+RUN set -eu \
+    && cache=/root/.cache/ms-playwright \
+    && mkdir -p "${cache}/.links" \
+    && for dir in /opt/qare/drivers/web/browsers/*/; do \
+         name="$(basename "${dir}")"; \
+         if [ ! -e "${cache}/${name}" ]; then ln -s "${dir%/}" "${cache}/${name}"; fi; \
+       done \
+    && cp /opt/qare/drivers/web/browsers/.links/* "${cache}/.links/"
+# The build-time browser check, in a clean environment like the one the stage job gives
+# QAre (HOME and PATH, no browser path): QAre's playwright-core must be the version its
+# browsers were installed for, resolve Chromium in the default cache (the path QAre's
+# doctor checks), launch it headless (which runs the headless shell QAre's flows use) and
+# load about:blank. The Python Playwright must still launch its own Chromium the same
+# way. Anything else fails CI's image build.
+RUN env -i PATH="${PATH}" HOME=/root node -e ' \
          const fs = require("fs"); \
-         const root = process.env.QARE_PLAYWRIGHT; \
+         const root = "/opt/qare/lib/packages/core/node_modules/playwright-core"; \
          const pw = require(root); \
          const have = require(root + "/package.json").version; \
          const driver = JSON.parse(fs.readFileSync("/opt/qare/drivers/web/DRIVER.json", "utf8")); \
@@ -124,8 +125,8 @@ RUN browsers="$(sed -n 's/^PLAYWRIGHT_BROWSERS_PATH=//p' /usr/local/bin/qare)" \
            throw new Error("QAre playwright-core " + have + ", browsers for " + driver.drivers.chromium); \
          } \
          const exe = pw.chromium.executablePath(); \
-         if (!exe.startsWith(process.env.PLAYWRIGHT_BROWSERS_PATH + "/") || !fs.existsSync(exe)) { \
-           throw new Error("QAre Chromium not found under its path: " + exe); \
+         if (!exe.startsWith("/root/.cache/ms-playwright/") || !fs.existsSync(exe)) { \
+           throw new Error("QAre Chromium not found in the default cache: " + exe); \
          } \
          (async () => { \
            const browser = await pw.chromium.launch({ headless: true }); \
@@ -137,7 +138,11 @@ RUN browsers="$(sed -n 's/^PLAYWRIGHT_BROWSERS_PATH=//p' /usr/local/bin/qare)" \
            if (url !== "about:blank") throw new Error("loaded " + url); \
            console.log("QAre playwright-core " + have + " launched Chromium " + version + " headless and loaded " + url); \
          })().catch((err) => { console.error(err); process.exit(1); }); \
-       '
+       ' \
+    && env -i PATH="${PATH}" HOME=/root python3 -c 'from playwright.sync_api import sync_playwright; \
+p = sync_playwright().start(); b = p.chromium.launch(headless=True); pg = b.new_page(); pg.goto("about:blank"); \
+assert pg.url == "about:blank", pg.url; print("Python Playwright launched Chromium " + b.version + " headless"); \
+b.close(); p.stop()'
 
 # Progettare, as its release installer installs it (a uv tool with its own,
 # release-matched nare), from wheels checked against their SHA-256 (nare's is the one in
