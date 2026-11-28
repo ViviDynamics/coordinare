@@ -103,8 +103,10 @@ support.
 
 ## Egress control is not available here
 
-The Docker path can restrict a performer's egress with an allowlist, implemented
-as iptables rules inside the container via `NET_ADMIN`.
+The Docker path restricts a performer's egress with a hostname allowlist, enforced
+by an internal Docker network and an allowlisting proxy container
+([docs/egress-allowlist.md](../../docs/egress-allowlist.md)). Kubernetes support is
+tracked in #454.
 
 **That does not carry over, and nothing silently replaces it.** The Helm chart now
 offers an opt-in NetworkPolicy (`performers.egress.enabled`); this raw-manifest path

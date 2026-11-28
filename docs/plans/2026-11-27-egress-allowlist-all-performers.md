@@ -108,22 +108,22 @@ upstream proxy is not supported in this mode (as in #448). It refuses
 
 ### Cleanup
 
-- `stop()` reads the performer's proxy label, stops the performer, then removes the proxy and
-  the network.
-- Performers are also stopped by paths that bypass `stop()` (reconciliation's reaper, 218's
-  `confirm_stopped`, a daemon crash). So the proxy runs with `--follow performer`: it exits once
-  the performer's alias, having resolved, stops resolving (the performer is gone), or never
-  resolves within ten minutes. Its container is `--rm`.
-- Networks: each proxied start and `cleanup_orphaned` sweep labelled networks older than ten
-  minutes with `docker network rm`, which Docker refuses for a network that still has a
-  container on it, so a live performer's network is never removed. The grace protects a
-  network made by a start running at the same time. `cleanup_orphaned` also removes proxies
-  whose performer it stopped.
-- Proxies do not carry `coordinare.performer.id`, so reconciliation never mistakes one for a
-  performer.
+- Performers are stopped by several paths: `stop()`, reconciliation's reaper, 218's
+  `confirm_stopped`, a daemon crash. Rather than teach each of them about the proxy, the proxy
+  runs with `--follow <alias>.`: it exits once the performer's alias, having resolved, misses
+  three lookups in a row (the performer is gone), or never resolves within ten minutes. Its
+  container is `--rm`. `stop()` and `cleanup_orphaned` are unchanged. The alias is looked up as
+  an absolute name (trailing dot), so a resolver search domain can never turn it into an
+  outside host, for `--follow` or for the `--forward` that carries the daemon's requests.
+- Networks: each proxied start sweeps labelled networks older than ten minutes with
+  `docker network rm`, which Docker refuses for a network that still has a container on it,
+  so a live performer's network is never removed. The grace protects a network made by a start
+  running at the same time.
+- Proxies do not carry `coordinare.performer.id`, so reconciliation and the orphan sweep never
+  mistake one for a performer.
 
 Non-sandboxed stage jobs use the same proxy as #448 (`DockerStageJobs`, now proxied for any
-allowlist), with `--follow <job name>` in place of the sandbox entry point's heartbeat, since
+allowlist), with `--follow <job name>.` in place of the sandbox entry point's heartbeat, since
 the base entry point has none. The sandboxed path keeps its arguments exactly.
 
 ### Rollout
@@ -146,7 +146,7 @@ Each running performer with an allowlist holds one Docker network, so Docker's a
 `egress_allowlist` is not applied on the Kubernetes transport (`kubernetes_runtime.py` says so).
 The Helm chart's opt-in NetworkPolicy (`performers.egress`) takes CIDRs, not hostnames, and only
 works on a CNI that enforces egress (`coordinare doctor --check egress` measures it). NetworkPolicy
-does not enforce the allowlist there. Follow-up filed: a proxy Pod per namespace plus a
+does not enforce the allowlist there. Follow-up filed as #454: a proxy Pod per namespace plus a
 NetworkPolicy that lets performer Pods reach only that proxy and DNS.
 
 ### What it does not cover
@@ -171,8 +171,11 @@ NetworkPolicy that lets performer Pods reach only that proxy and DNS.
   `iptables -F` (network model over the docker arguments); no `NET_ADMIN`; setup failures start
   no performer and tear down; no allowlist gives the same arguments as before
   (`tests/unit/test_449_performer_egress.py`).
-- [x] 4. `stop`, `cleanup_orphaned` and `port_of` follow the proxy (same file).
+- [x] 4. The proxy follows its performer; each proxied start sweeps old networks; `port_of` follows the
+  performer's label to its proxy (same file).
 - [x] 5. `DockerStageJobs` without the sandbox uses the proxy; `egress_mode: iptables` keeps the old
-  arguments (same file; one assertion in `test_423_providers_in_performer.py` changes).
-- [ ] 6. Docs: `docs/stage-providers.md`, `config.example.yaml`, `deploy/kubernetes/README.md`, AGENTS.md.
+  arguments (same file; assertions in `test_423_providers_in_performer.py`,
+  `test_435_qare_sandbox.py` and `test_447_sandbox_egress.py` that pinned the old default change).
+- [x] 6. Docs: `docs/egress-allowlist.md` (new), `docs/stage-providers.md`, `config.example.yaml`,
+  `deploy/kubernetes/README.md`, `docs/security/threat-model.md`, AGENTS.md.
 - [ ] 7. Live proof on a disposable Linux VM, commands posted on #449.

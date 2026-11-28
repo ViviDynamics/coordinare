@@ -354,10 +354,17 @@ def _resolver(answers: list[bool]) -> Callable[[str], Awaitable[bool]]:
 
 
 @pytest.mark.asyncio
-async def test_follow_returns_once_the_name_it_saw_stops_resolving_twice() -> None:
-    resolve = _resolver([False, True, True, False, True, False, False, True])
-    task = asyncio.create_task(egress_proxy.follow("performer", resolve=resolve, interval=0.01, grace=60))
-    await asyncio.wait_for(task, 3)
+async def test_follow_returns_once_the_name_it_saw_misses_three_lookups_in_a_row() -> None:
+    """A miss or two (dockerd busy) is not the performer gone; three in a row are."""
+    answers = [False, True, False, False, True, False, False, False, True]
+    asked: list[bool] = []
+
+    async def resolve(name: str) -> bool:
+        asked.append(answers[len(asked)])
+        return asked[-1]
+
+    await asyncio.wait_for(egress_proxy.follow("performer", resolve=resolve, interval=0.01, grace=60), 3)
+    assert len(asked) == 8  # it ended on the third miss in a row, not on an earlier pair
 
 
 @pytest.mark.asyncio

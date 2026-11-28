@@ -55,7 +55,7 @@ _REQUEST_LINE_PARTS = 3  # method, target, version
 #: 449 ``--follow``: how often the followed name is looked up, how many misses in a row after
 #: it was seen mean it is gone, and how long it may take to appear at all.
 FOLLOW_INTERVAL_SECONDS = 10.0
-FOLLOW_MISSES = 2
+FOLLOW_MISSES = 3
 FOLLOW_GRACE_SECONDS = 600.0
 _RESOLVE_TIMEOUT_SECONDS = 5.0
 _HOST = re.compile(r"^(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?\.)*[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$")

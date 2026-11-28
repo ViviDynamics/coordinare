@@ -436,11 +436,14 @@ directory.
   `docker run` returns. It is never an argument and never in the run directory. Variables
   named in `env_passthrough` or `pass_env` (and the proxy variables) are passed by name.
 - **Isolation** is the role's performer's: the endpoint's `egress_allowlist` and
-  `extra_hosts` apply to the stage job as to the role's other work. Without the sandbox, the
-  allowlist is the performer entry point's iptables `OUTPUT` rules inside the container: a
-  baseline, not a boundary, since the container keeps `NET_ADMIN` and its code runs as root,
-  so it can remove them. With `sandbox: sysbox` it is enforced outside the container
-  ([Docker sandbox](#docker-sandbox)).
+  `extra_hosts` apply to the stage job as to the role's other work. The allowlist is enforced
+  outside the container, with or without the sandbox (#449): the job runs on its own internal
+  network behind the same allowlisting proxy as the sandbox ([Docker sandbox](#docker-sandbox),
+  [Egress allowlist](egress-allowlist.md)). Without the sandbox, the job runs the performer
+  image's own entry point, which has no heartbeat, so the proxy follows the job's name on the
+  network and exits once the job is gone. With the endpoint's `egress_mode: iptables`, a job
+  without the sandbox gets the old in-container rules instead: a baseline, not a boundary, since
+  the container then keeps `NET_ADMIN` and its code runs as root.
 - **Values must work from the container.** A passed variable keeps its value, and the
   container is on Docker's bridge network: a model endpoint on `localhost` or `127.0.0.1`
   names the container itself. Point such variables at an address the container reaches
