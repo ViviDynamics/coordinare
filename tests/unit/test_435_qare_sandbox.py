@@ -217,8 +217,11 @@ def test_on_kubernetes_a_sandboxed_provider_is_unavailable_and_says_where_suppor
     assert "#443" in jobs.reason
 
 
-def test_a_sandbox_names_the_endpoint_whose_egress_allowlist_it_cannot_honour() -> None:
-    """No endpoint serves qa, so the runs take the first endpoint's isolation: say which one."""
+def test_a_sandbox_takes_the_egress_allowlist_of_the_endpoint_it_draws_isolation_from() -> None:
+    """No endpoint serves qa, so the runs take the first endpoint's isolation, allowlist included.
+
+    447: the sandbox now enforces it, behind a proxy outside the job container.
+    """
     from types import SimpleNamespace
 
     config = _Config()
@@ -227,9 +230,9 @@ def test_a_sandbox_names_the_endpoint_whose_egress_allowlist_it_cannot_honour() 
         extra_hosts=[],
     )]
     jobs = stage_jobs_for("qare", _config("sysbox"), config, role="qa")
-    assert isinstance(jobs, UnavailableStageJobs)
-    assert "'builders'" in jobs.reason
-    assert "egress_allowlist" in jobs.reason
+    assert isinstance(jobs, DockerStageJobs)
+    assert jobs.runtime == SANDBOX_RUNTIME
+    assert jobs.proxied
     # Off, the endpoint's isolation applies as in #432.
     off = stage_jobs_for("qare", _config(None), config, role="qa")
     assert isinstance(off, DockerStageJobs)
@@ -433,14 +436,16 @@ async def test_a_sandbox_image_without_its_own_engine_is_unhealthy(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_a_sandbox_with_an_egress_allowlist_is_unavailable_and_says_why(
+async def test_a_sandbox_with_an_egress_allowlist_is_healthy_and_its_probes_have_no_network(
     tmp_path: Path, docker: dict[str, Any],
 ) -> None:
-    """The allowlist would not hold for containers the inner Docker starts: never run it half-enforced."""
+    """447: the allowlist is enforced outside the job container; the probes need no network at all."""
     ok, detail = await _qare(tmp_path / "qare", docker["bin"], "sysbox", egress=["api.github.com"]).health()
-    assert not ok
-    assert "egress_allowlist" in detail
-    assert not any(a[:1] == ["run"] for a in docker["calls"]())
+    assert ok, detail
+    runs = [a for a in docker["calls"]() if a[:1] == ["run"]]
+    assert runs
+    for args in runs:
+        assert args[args.index("--network") + 1] == "none", args
 
 
 # -- cleanup after a restart ---------------------------------------------------------------

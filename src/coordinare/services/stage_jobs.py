@@ -25,6 +25,14 @@ with ``--runtime=sysbox-runc``, and nothing else changes. Its image (``Dockerfil
 starts its own dockerd inside the job's container, so the job gets a Docker engine without
 privilege and without the host's Docker, and removing the one container by its name
 removes that engine and everything it started.
+
+447: a sandboxed provider whose runs take an egress allowlist cannot keep it inside the job's
+container (root there, or anything with the inner Docker, can rewrite the container's own
+firewall). Its job runs on a Docker network of its own created with ``--internal``, which
+has no route out, and a proxy container (``performer.egress_proxy``) on that network and on
+the default bridge is its only exit: it relays only to the allowlisted hosts. Containers the
+inner Docker starts are NATed through the job's one interface, so the same holds for them.
+The network and the proxy are made before the job container and removed after it.
 """
 from __future__ import annotations
 
@@ -33,6 +41,7 @@ import contextlib
 import hashlib
 import json
 import shlex
+import time
 import uuid
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -63,6 +72,19 @@ PROXY_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy
 SANDBOX_RUNTIME = "sysbox-runc"
 #: 435: where Kubernetes support for the sandbox is tracked.
 SANDBOX_KUBERNETES_ISSUE = "#443"
+#: 447: a sandboxed job with an egress allowlist: its proxy module and port, and the suffix
+#: naming the job's own internal network and its proxy container (both ``<job name>-egress``).
+EGRESS_PROXY_MODULE = "performer.egress_proxy"
+EGRESS_PROXY_PORT = 3128
+EGRESS_SUFFIX = "-egress"
+#: Labels on the egress network and proxy: the job container's name, and when they were made.
+EGRESS_LABEL = "coordinare.stage_job.egress"
+EGRESS_CREATED_LABEL = "coordinare.stage_job.egress.created"
+#: The variable that tells the sandbox image's entry point where the proxy is.
+EGRESS_PROXY_ENV = "PERFORMER_EGRESS_PROXY"
+#: An egress network whose job is gone is swept once it is this old, so a start running at
+#: the same time never loses its proxy between making it and starting its job.
+EGRESS_SWEEP_GRACE_SECONDS = 600.0
 _NAME_PREFIX = "coordinare-stage-"
 _DOCKER_TIMEOUT_SECONDS = 60.0
 _TAIL = 500
@@ -134,14 +156,6 @@ def runtime_missing(runtime: str) -> str:
     )
 
 
-#: 435: why a sandbox and an egress allowlist are not run together.
-SANDBOX_WITH_EGRESS = (
-    "the QAre sandbox cannot run with that endpoint's egress_allowlist: the allowlist limits what "
-    "the job container sends, not what the containers its own Docker starts send, so it would hold "
-    "only in part. Serve the qa role from an endpoint with an image and no egress_allowlist, or "
-    "turn the sandbox off"
-)
-
 
 async def docker_runtimes(docker: str = "docker", *, within: float = 60.0) -> set[str]:
     """The runtimes the Docker behind ``docker`` lists in ``docker info``.
@@ -186,7 +200,8 @@ JOB_LOG = "runner.log"
 NEVER_STARTED = (
     "its performer exited before the stage job started, so nothing was logged; check that the "
     "image runs `python -m performer.stage_jobs` and that its entry point can start (an egress "
-    "allowlist needs iptables and NET_ADMIN), for example with `docker run --rm <image> true`"
+    "allowlist needs iptables and NET_ADMIN; in the QAre sandbox, its egress proxy must answer), "
+    "for example with `docker run --rm <image> true`"
 )
 
 
@@ -215,6 +230,9 @@ class DockerStageJobs:
 
     435: with ``runtime`` (the sandbox), every container gets ``--runtime=<runtime>`` and
     nothing else, once ``docker info`` has listed that runtime.
+
+    447: with ``runtime`` and an egress allowlist, the job runs on its own internal network
+    behind an allowlisting proxy (module docstring), and probes run with no network.
     """
 
     def __init__(
@@ -238,12 +256,15 @@ class DockerStageJobs:
         """What follows ``docker run``: the sandbox runtime, when there is one."""
         return [f"--runtime={self.runtime}"] if self.runtime else []
 
+    @property
+    def proxied(self) -> bool:
+        """447: a sandbox with an egress allowlist, enforced by a proxy outside the job container."""
+        return bool(self.runtime and self._egress)
+
     async def _require_runtime(self) -> None:
         """435: refuse, with the reason, to start a sandboxed container Docker cannot run."""
         if not self.runtime or self._runtime_listed:
             return
-        if self._egress:
-            raise TransportError(SANDBOX_WITH_EGRESS)
         if self.runtime not in await docker_runtimes(self._docker, within=_DOCKER_TIMEOUT_SECONDS):
             raise TransportError(runtime_missing(self.runtime))
         self._runtime_listed = True
@@ -254,10 +275,17 @@ class DockerStageJobs:
             self._runtime_listed = False
             raise TransportError(runtime_missing(self.runtime))
 
-    def _isolation(self) -> list[str]:
+    def _hosts(self) -> list[str]:
         args: list[str] = []
         for entry in self._extra_hosts:
             args += ["--add-host", entry]
+        return args
+
+    def _isolation(self, *, probe: bool = False) -> list[str]:
+        if self.proxied:
+            # 447: probes need no network; the job's network and proxy are added by start().
+            return ["--network", "none"] if probe else self._hosts()
+        args = self._hosts()
         if self._egress:
             # The performer image's entry point locks egress down to these hosts.
             args += ["--cap-add", "NET_ADMIN", "-e", f"PERFORMER_EGRESS_ALLOWLIST={','.join(self._egress)}"]
@@ -266,12 +294,27 @@ class DockerStageJobs:
     async def start(self, launch: StageJobLaunch) -> str:
         await self._require_runtime()
         name = job_name(launch.job_dir)
+        egress: list[str] = []
+        if self.proxied:
+            if await self._container_state(name) is RunState.RUNNING:
+                return name  # started before (a restart, a race): leave it and its proxy alone
+            proxy = await self._egress_up(name, launch.provider)
+            egress = ["--network", name + EGRESS_SUFFIX, "-e", f"{EGRESS_PROXY_ENV}={proxy}"]
+        try:
+            return await self._start_job(launch, name, egress)
+        except BaseException:
+            if egress:
+                await self._egress_down(name)
+            raise
+
+    async def _start_job(self, launch: StageJobLaunch, name: str, egress: list[str]) -> str:
         mount = str(launch.job_dir)
         args = [
             "run", *self._run_options(), "-d", "--rm", "--name", name,
             "--label", f"{STAGE_JOB_LABEL}={launch.ref}",
             "--label", f"{PROVIDER_LABEL}={launch.provider}",
             *self._isolation(),
+            *egress,
             "-v", f"{mount}:{mount}",
             "-w", mount,
         ]
@@ -285,7 +328,7 @@ class DockerStageJobs:
             args += [self.image, *job_command(launch.kind, launch.job_dir)]
             code, out, err = await self._call(args)
             if code != 0 and "already in use" in err:
-                if await self.state(launch.job_dir) is RunState.RUNNING:
+                if await self._container_state(name) is RunState.RUNNING:
                     # Started before (a restart, a race): the job is that container.
                     return name
                 # A container of an earlier attempt that has ended but is not gone yet.
@@ -299,19 +342,107 @@ class DockerStageJobs:
         raise TransportError(msg)
 
     async def state(self, job_dir: Path) -> RunState:
-        code, out, err = await self._call(
-            ["container", "inspect", "--format", "{{.State.Status}}", job_name(job_dir)],
-        )
+        name = job_name(job_dir)
+        state = await self._container_state(name)
+        if state is RunState.GONE and self.proxied:
+            await self._egress_down(name)  # 447: the job is over, so is its way out
+        return state
+
+    async def _container_state(self, name: str) -> RunState:
+        code, out, err = await self._call(["container", "inspect", "--format", "{{.State.Status}}", name])
         if code == 0:
             return RunState.RUNNING if out.strip() in ("created", "running", "restarting", "paused") else RunState.GONE
         if "no such" in err.lower():
             return RunState.GONE
-        msg = f"docker could not say whether stage job {job_name(job_dir)} is running: {_tail(err)}"
+        msg = f"docker could not say whether stage job {name} is running: {_tail(err)}"
         raise TransportError(msg)
 
     async def stop(self, job_dir: Path) -> None:
         with contextlib.suppress(TransportError):
             await self._call(["rm", "-f", job_name(job_dir)])
+        if self.proxied:
+            await self._egress_down(job_name(job_dir))
+
+    # -- 447: the egress network and proxy of a sandboxed job with an allowlist -------------
+
+    async def _egress_up(self, name: str, provider: str) -> str:
+        """Make the job's internal network and its proxy; the proxy's URL on that network.
+
+        Anything that fails removes what was made and raises: the job is then never started,
+        so it never runs with a route out that the allowlist does not cover.
+        """
+        egress = name + EGRESS_SUFFIX
+        with contextlib.suppress(TransportError):
+            await self._sweep_egress()
+        await self._egress_down(name)  # an earlier attempt's, if any: the job is not running
+        labels = [
+            "--label", f"{EGRESS_LABEL}={name}",
+            "--label", f"{EGRESS_CREATED_LABEL}={int(time.time())}",
+            "--label", f"{PROVIDER_LABEL}={provider}",
+        ]
+        try:
+            await self._egress_step("create its internal network", ["network", "create", "--internal", *labels, egress])
+            await self._egress_step("start its proxy", [
+                "run", *self._run_options(), "-d", "--rm", "--name", egress, *labels,
+                "--user", "65534:65534", "--read-only", *self._hosts(),
+                "--entrypoint", "python", self.image,
+                "-m", EGRESS_PROXY_MODULE, "--allow", ",".join(self._egress), "--port", str(EGRESS_PROXY_PORT),
+            ])
+            await self._egress_step("attach its proxy to the internal network", ["network", "connect", egress, egress])
+            address = await self._proxy_address(egress)
+        except BaseException:
+            await self._egress_down(name)
+            raise
+        logger.info("stage_job.egress_proxy", container=name, network=egress, hosts=list(self._egress))
+        return f"http://{address}:{EGRESS_PROXY_PORT}"
+
+    async def _egress_step(self, what: str, args: list[str]) -> str:
+        code, out, err = await self._call(args)
+        if code != 0:
+            self._check_runtime_refused(err)
+            msg = f"could not set up the egress proxy of a stage job: docker could not {what}: {_tail(err or out)}"
+            raise TransportError(msg)
+        return out
+
+    async def _proxy_address(self, egress: str) -> str:
+        out = await self._egress_step(
+            "read its proxy's address", ["container", "inspect", "--format", "{{json .NetworkSettings.Networks}}", egress],
+        )
+        address = _network_address(out, egress)
+        if not address:
+            msg = f"could not set up the egress proxy of a stage job: its proxy has no address on {egress}"
+            raise TransportError(msg)
+        return address
+
+    async def _egress_down(self, name: str) -> None:
+        """Remove a job's proxy, then its network. Best effort: the sweep catches what is left."""
+        egress = name + EGRESS_SUFFIX
+        with contextlib.suppress(TransportError):
+            await self._call(["rm", "-f", egress])
+        with contextlib.suppress(TransportError):
+            await self._call(["network", "rm", egress])
+
+    async def _sweep_egress(self) -> None:
+        """Remove egress networks (and proxies) whose job is gone: a restart, or a job that ended."""
+        code, out, _err = await self._call([
+            "network", "ls", "--filter", f"label={EGRESS_LABEL}",
+            "--format", f'{{{{.Name}}}}\t{{{{.Label "{EGRESS_LABEL}"}}}}\t{{{{.Label "{EGRESS_CREATED_LABEL}"}}}}',
+        ])
+        if code != 0:
+            return
+        now = time.time()
+        for line in out.splitlines():
+            network, job, created = ([*line.strip().split("\t"), "", ""])[:3]
+            if not job or network != job + EGRESS_SUFFIX:
+                continue
+            try:
+                young = now - float(created) < EGRESS_SWEEP_GRACE_SECONDS
+            except ValueError:
+                young = False
+            if young or await self._container_state(job) is RunState.RUNNING:
+                continue
+            logger.info("stage_job.egress_swept", container=job, network=network)
+            await self._egress_down(job)
 
     async def probe(
         self, argv: Sequence[str], *, env_names: Sequence[str] = (), env: dict[str, str] | None = None,
@@ -319,7 +450,7 @@ class DockerStageJobs:
     ) -> tuple[int | None, str, str]:
         await self._require_runtime()
         name = f"{_NAME_PREFIX}probe-{uuid.uuid4().hex[:12]}"
-        args = ["run", *self._run_options(), "--rm", "--name", name, *self._isolation()]
+        args = ["run", *self._run_options(), "--rm", "--name", name, *self._isolation(probe=True)]
         for name_only in env_names:
             args += ["-e", name_only]
         for key, value in (env or {}).items():
@@ -406,6 +537,17 @@ async def released(jobs: StageJobs, job_dir: Path) -> bool:
         return await jobs.state(job_dir) is RunState.GONE
     except Exception:
         return False
+
+
+def _network_address(inspected: str, network: str) -> str:
+    """The container's IPv4 address on ``network``, from ``{{json .NetworkSettings.Networks}}``."""
+    try:
+        networks = json.loads(inspected)
+    except ValueError:
+        return ""
+    entry = networks.get(network) if isinstance(networks, dict) else None
+    address = entry.get("IPAddress") if isinstance(entry, dict) else None
+    return address if isinstance(address, str) else ""
 
 
 def _tail(text: str) -> str:
