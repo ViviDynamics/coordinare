@@ -10,6 +10,7 @@ production ``GitHubProjectsBoardProvider``, into the sort.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -133,9 +134,15 @@ async def test_the_values_come_from_the_listing_query_with_no_query_per_item(mon
     await service.listing()
 
     assert service.calls == [POLL_BOARD_QUERY]
-    field_fragment = POLL_BOARD_QUERY.split("fieldValues(first: 20)", 1)[1].split("content {", 1)[0]
-    assert "name" in field_fragment.split("field {", 1)[1]
+    selection = _field_values_selection()
+    assert re.search(r"field \{ \.\.\. on ProjectV2SingleSelectField \{ id name \} \}", selection), selection
     assert "fieldValueByName" not in POLL_BOARD_QUERY
+
+
+def _field_values_selection() -> str:
+    """The query's fieldValues selection, comments dropped and whitespace collapsed."""
+    block = POLL_BOARD_QUERY.split("fieldValues(first: 20)", 1)[1].split("content {", 1)[0]
+    return " ".join(re.sub(r"#[^\n]*", "", block).split())
 
 
 @pytest.mark.asyncio
@@ -149,15 +156,22 @@ async def test_values_that_name_no_field_are_left_out(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_an_item_with_more_values_than_the_page_is_warned_about_once(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_items_with_more_values_than_the_page_are_warned_about_when_they_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A value past the 20 read is not seen, so a priority there reads as unset. That is said
-    once per item, not on every poll."""
+    once per poll at most, and only when the set of such items changes."""
     service = _Service(monkeypatch, [_item(1, "P1", more_values=True), _item(2, "P0")])
     with structlog.testing.capture_logs() as logs:
         first = await service.listing()
         await service.listing()
+        service.items = [_item(1, "P1", more_values=True), _item(2, "P0", more_values=True)]
+        await service.listing()
+        service.items = [_item(2, "P0")]
+        await service.listing()
+        await service.listing()
 
     truncated = [e for e in logs if e["event"] == "poll_board.field_values_truncated"]
-    assert [e["item_id"] for e in truncated] == ["PVTI_1"]
+    assert [e["item_ids"] for e in truncated] == [["PVTI_1"], ["PVTI_1", "PVTI_2"]]
     assert work_items_of(first)["PVTI_1"].fields == {"Status": "Todo", "Priority": "P1"}
-    assert "pageInfo" in POLL_BOARD_QUERY.split("fieldValues(first: 20)", 1)[1].split("content {", 1)[0]
+    assert "pageInfo { hasNextPage }" in _field_values_selection()

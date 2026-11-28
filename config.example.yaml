@@ -767,8 +767,8 @@ performers:
 
 # Priority-aware card selection from the TODO column. On GitHub Projects the
 # field is a single-select field, named exactly as on the project, read from
-# each item's first 20 field values (an item with more logs
-# poll_board.field_values_truncated once, and a priority past them reads as unset).
+# each item's first 20 field values (when items have more, coordinare logs
+# poll_board.field_values_truncated, and a priority past them reads as unset).
 # priority:
 #   field_name: "Priority"          # name of the GitHub Project V2 custom field
 #   priority_order: ["P0", "P1", "P2", "P3"]  # highest-to-lowest priority values
