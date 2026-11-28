@@ -341,8 +341,9 @@ without privilege (#435). It is off by default; off, runs are exactly as describ
 - **Secrets and the engine (#450).** The run's container is given the GitHub token and the
   `env_passthrough` values, and a process keeps the environment it started with for as long
   as it runs. The entry point therefore starts dockerd (and the containerd it starts) and the
-  proxy heartbeat from an empty environment with only `PATH` and the proxy variables, never
-  the container's, and only the stage job takes the container's environment.
+  proxy heartbeat from an empty environment with only `PATH`, the proxy variables and
+  `SSL_CERT_FILE`/`SSL_CERT_DIR` (for pulls through a TLS-intercepting proxy), never the
+  container's, and only the stage job takes the container's environment.
 - **Browser profiles.** The sandbox image is built FROM the full image, so it has QAre's
   browser driver (#442) too: a browser profile whose app boots with `docker compose` runs
   in the sandbox. One that starts its app with a command needs no sandbox.

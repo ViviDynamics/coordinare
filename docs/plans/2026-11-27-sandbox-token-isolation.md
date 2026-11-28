@@ -5,7 +5,8 @@ Issue #450
 ## Scope
 In:
 - `sandbox-entrypoint.sh` starts dockerd (and so containerd) and the egress proxy heartbeat
-  from an empty environment with only `PATH` and the proxy variables.
+  from an empty environment with only `PATH`, the proxy variables and the CA certificate
+  variables.
 - The QAre stage job holds the token only for the checkout and GitHub's compare diff, then
   starts itself again (`execve`) without it before QAre plans, so the process that waits on
   QAre (while the pull request's code runs as root beside it) never held it: not in its
@@ -43,7 +44,8 @@ Out:
 ## Tasks
 - [x] 1. Failing test: no process the sandbox entry point leaves running inherits a secret
   (name or value), with and without the egress proxy; the job still gets its token.
-- [x] 2. Fix the entry point (`clean_env` for dockerd, `env -i` shell for the heartbeat).
+- [x] 2. Fix the entry point (`clean_exec` for dockerd, so `$!` stays dockerd's own pid;
+  an `env -i` shell for the heartbeat).
 - [x] 3. Failing test: the QAre job hands over after the checkout and diff, before QAre
   plans, with no secret in what it hands over; the run still reaches its verdict through the
   real entry; on Linux, the process that waits on QAre has no copy of the token in

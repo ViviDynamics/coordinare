@@ -118,17 +118,19 @@ def _run_job(
     source = dict(os.environ if env is None else env)
     source.pop(CREDENTIAL_ENV, None)
     job_dir = job_dir.expanduser().absolute()
-    started = time.monotonic() if resume is None else float(resume["started"])
+    started = time.monotonic()
     run: _Run | None = None
     try:
         request = json.loads((job_dir / REQUEST_FILE).read_text())
         if resume is not None:
+            started = float(resume["started"])
             run = _Run(job_dir, request, token="", env=source, started=started)
             run.adopt(Path(resume["scratch"]))
             status = asyncio.run(run.finish())
         elif restart is not None:
             run = _Run(job_dir, request, token=token, env=source, started=started)
             asyncio.run(run.prepare())
+            (job_dir / STATUS_FILE).unlink(missing_ok=True)  # an earlier attempt's is not this run's
             # execve: nothing below runs, and the process it starts removes the checkouts.
             restart({"scratch": str(run.scratch), "started": started})
             resumed: dict[str, Any] = json.loads((job_dir / STATUS_FILE).read_text())

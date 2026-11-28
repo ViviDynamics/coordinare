@@ -42,13 +42,16 @@ wait_seconds="${SANDBOX_DOCKERD_WAIT_SECONDS:-120}"
 log="${SANDBOX_DOCKERD_LOG:-/var/log/dockerd.log}"
 mountinfo="${SANDBOX_MOUNTINFO:-/proc/self/mountinfo}"
 
-# 450: run "$@" with PATH and the proxy variables that are set, and nothing else of this
-# environment. dockerd needs PATH for containerd and runc, and the proxy for image pulls.
-clean_env() {
-  env -i PATH="${PATH}" \
+# 450: become "$@" with PATH, the proxy variables and the CA certificates that are set, and
+# nothing else of this environment: dockerd needs PATH for containerd and runc, and the rest
+# for image pulls. It execs, so call it only in the background (`clean_exec cmd &`), where it
+# runs in a subshell of its own and $! is then the command's own pid.
+clean_exec() {
+  exec env -i PATH="${PATH}" \
     ${HTTP_PROXY:+"HTTP_PROXY=${HTTP_PROXY}"} ${HTTPS_PROXY:+"HTTPS_PROXY=${HTTPS_PROXY}"} \
     ${NO_PROXY:+"NO_PROXY=${NO_PROXY}"} ${http_proxy:+"http_proxy=${http_proxy}"} \
     ${https_proxy:+"https_proxy=${https_proxy}"} ${no_proxy:+"no_proxy=${no_proxy}"} \
+    ${SSL_CERT_FILE:+"SSL_CERT_FILE=${SSL_CERT_FILE}"} ${SSL_CERT_DIR:+"SSL_CERT_DIR=${SSL_CERT_DIR}"} \
     "$@"
 }
 
@@ -117,9 +120,8 @@ no_engine() {
 
 if command -v dockerd >/dev/null 2>&1; then
   mkdir -p "$(dirname "${log}")"
-  # Its own unix socket only, never a TCP listener. 450: never with this environment (env
-  # execs dockerd, so $! is dockerd's pid).
-  clean_env dockerd >>"${log}" 2>&1 &
+  # Its own unix socket only, never a TCP listener. 450: never with this environment.
+  clean_exec dockerd >>"${log}" 2>&1 &
   dockerd_pid=$!
   waited=0
   until docker info >/dev/null 2>&1; do

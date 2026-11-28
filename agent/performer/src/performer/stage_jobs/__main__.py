@@ -83,12 +83,19 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"usage: python -m performer.stage_jobs <{'|'.join(KINDS)}> <job dir>\n")
         return 2
     kind, job_dir = args[0], Path(args[1])
-    if resume and kind == "qare":
+    if resume:
+        if kind != "qare":
+            sys.stderr.write(f"a {kind} stage job does not resume\n")
+            return 2
         from performer.stage_jobs import qare
 
         sys.stdout.write(f"stage job {kind} goes on without its token\n")
         sys.stdout.flush()
-        qare.resume_job(job_dir, json.loads(resume))
+        try:
+            state = json.loads(resume)
+        except ValueError:
+            state = {}  # the run then ends with an error status, as for any state it cannot use
+        qare.resume_job(job_dir, state if isinstance(state, dict) else {})
         return 0
     # The job's log starts here: a job that ends with nothing logged never started.
     sys.stdout.write(f"stage job {kind} started\n")

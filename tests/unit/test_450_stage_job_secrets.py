@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
 import sys
 import time
@@ -325,3 +326,54 @@ async def test_the_egress_proxy_container_is_given_no_variable(tmp_path: Path, d
     assert not {"-e", "--env", "--env-file"} & set(proxy), proxy
     assert not any(arg.startswith(("--env=", "--env-file=")) for arg in proxy), proxy
 
+
+
+def test_a_dockerd_that_never_answers_is_stopped_itself(tmp_path: Path) -> None:
+    """The pid the entry point stops is dockerd's own, not a wrapper's that would leave it running."""
+    stubs = _recording_stubs(tmp_path)
+    pid_file = tmp_path / "dockerd.pid"
+    (stubs["bin"] / "dockerd").write_text(f'#!/bin/sh\necho $$ > "{pid_file}"\nexec sleep 30\n')
+    result = _run_entry(stubs, {"SANDBOX_DOCKERD_WAIT_SECONDS": "1"}, "true")
+    assert result.returncode == 0, result.stderr  # outside Sysbox it goes on without Docker
+    pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(pid, 9)
+        pytest.fail("dockerd kept running after the entry point gave up on it")
+
+
+def test_dockerd_keeps_the_certificates_the_operator_passes(tmp_path: Path) -> None:
+    """Pulls through a TLS-intercepting proxy need its CA: not a secret, so dockerd gets it."""
+    stubs = _recording_stubs(tmp_path)
+    _under_sysbox(stubs)
+    env = {**_entry_env(stubs, _secrets(), proxy=False), "SSL_CERT_FILE": "/etc/ca/proxy.pem", "SSL_CERT_DIR": "/etc/ca"}
+    result = _run_entry(stubs, env, "true")
+    assert result.returncode == 0, result.stderr
+    dockerd = _recorded(stubs, "dockerd")[0]
+    assert dockerd["SSL_CERT_FILE"] == "/etc/ca/proxy.pem"
+    assert dockerd["SSL_CERT_DIR"] == "/etc/ca"
+
+
+@pytest.mark.parametrize("state", ["{not json", '{"scratch": "/nowhere"}'], ids=["not-json", "no-start"])
+def test_a_resume_state_that_cannot_be_read_still_ends_with_a_status(tmp_path: Path, state: str) -> None:
+    job = tmp_path / "jobs" / "coordinare.qa.abc.1"
+    request_spec(job, web_base="file:///x", base="a" * 40, head="b" * 40)
+    env = container_env(env={"COORDINARE_STAGE_RESUME": state})
+    done = subprocess.run([sys.executable, "-m", "performer.stage_jobs", "qare", str(job)], env=env,
+                          capture_output=True, text=True, timeout=60, check=False)
+    assert done.returncode == 0, done.stderr
+    assert json.loads((job / runner.STATUS_FILE).read_text())["outcome"] == runner.ERROR
+
+
+def test_only_a_qare_job_resumes(tmp_path: Path) -> None:
+    env = container_env(env={"COORDINARE_STAGE_RESUME": json.dumps({"scratch": str(tmp_path), "started": 0})})
+    done = subprocess.run([sys.executable, "-m", "performer.stage_jobs", "progettare", str(tmp_path)], env=env,
+                          capture_output=True, text=True, timeout=60, check=False)
+    assert done.returncode == 2
+    assert "resume" in done.stderr
