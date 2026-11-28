@@ -1285,7 +1285,7 @@ class GitHubService(CardIdentityMap):
         status_updated_at: dict[str, str] = {}
         issue_states: dict[str, str] = {}
         # 441: item ID -> its single-select values by field name, for WorkItem.fields,
-        # and the items whose field values did not all fit on the page.
+        # and the items with more field values than the page holds.
         item_field_values: dict[str, dict[str, str]] = {}
         field_values_truncated: list[str] = []
 
