@@ -91,6 +91,14 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 _LAUNCH_GRACE_SECONDS = 120.0
 #: Past its timeout_seconds, how long a run without a status still counts as running.
 _OVERDUE_GRACE_SECONDS = 300.0
+#: 435: what the sandbox image must answer: its engine (started by its entry point),
+#: compose and buildx, which QAre needs to boot an app.
+_SANDBOX_ENGINE_CHECK = (
+    "command -v docker >/dev/null || { echo 'this image has no docker CLI' >&2; exit 3; }; "
+    "docker info --format '{{.ServerVersion}}' && docker compose version --short && docker buildx version"
+)
+#: Starting dockerd in a fresh container takes a few seconds; the image may first be pulled.
+_SANDBOX_ENGINE_TIMEOUT_SECONDS = 180.0
 #: A version check starts a container, which may first pull the image.
 _VERSION_TIMEOUT_SECONDS = 180.0
 #: How long a passed version check stands before the next health check repeats it.
@@ -225,6 +233,11 @@ class QAreProvider:
         """The performer has QAre at the pinned version, and ``work_dir`` is writable."""
         now = time.monotonic()
         if self._healthy_at is None or now - self._healthy_at > _HEALTH_REUSE_SECONDS:
+            if self._config.sandbox is not None:
+                # 435: first, as the sandbox image refuses to run anything without its engine.
+                engine_ok, engine = await self._sandbox_engine()
+                if not engine_ok:
+                    return False, engine
             # In a container of the image the runs use, with only the names QAre may read.
             try:
                 code, out, err = await self._jobs.probe(
@@ -247,7 +260,24 @@ class QAreProvider:
             probe.unlink()
         except OSError as exc:
             return False, f"work_dir {self._work_dir} is not writable: {exc}"
-        return True, f"qare {self._config.version} in the performer; work_dir {self._work_dir}"
+        sandbox = f"; its own Docker engine under {self._config.sandbox}" if self._config.sandbox else ""
+        return True, f"qare {self._config.version} in the performer{sandbox}; work_dir {self._work_dir}"
+
+    async def _sandbox_engine(self) -> tuple[bool, str]:
+        """435: the sandbox image's own Docker engine answers, with compose and buildx."""
+        try:
+            code, out, err = await self._jobs.probe(
+                ["sh", "-c", _SANDBOX_ENGINE_CHECK], within=_SANDBOX_ENGINE_TIMEOUT_SECONDS,
+            )
+        except TransportError as exc:
+            return False, str(exc)
+        if code != 0:
+            why = (err or out).strip()[-300:] or f"no answer within {_SANDBOX_ENGINE_TIMEOUT_SECONDS:.0f} seconds"
+            return False, (
+                "the sandbox's own Docker engine did not answer in the job image; use the sandbox image "
+                f"(agent/performer/Dockerfile.sandbox) for stage_providers.{self.name}.image: {why}"
+            )
+        return True, out.strip()
 
     def request_spec(self, ref: str) -> dict[str, Any]:
         """The request a job was started with (no secret is in it)."""

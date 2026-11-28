@@ -561,6 +561,16 @@ jobs:
       - name: Build full image
         run: docker build -t coordinare-performer:full -f agent/performer/Dockerfile.full agent/performer/
 
+      # 435: the QAre Docker sandbox variant, FROM full plus a pinned Docker engine. Built so a
+      # broken pin or key fails here; not pushed or released. Its size over full is printed as
+      # evidence for keeping the engine out of the full image.
+      - name: Build sandbox image
+        run: |
+          docker build -t coordinare-performer:sandbox -f agent/performer/Dockerfile.sandbox agent/performer/
+          full=$(docker inspect --format '{{.Size}}' coordinare-performer:full)
+          sandbox=$(docker inspect --format '{{.Size}}' coordinare-performer:sandbox)
+          echo "full=$((full / 1000000)) MB  sandbox=$((sandbox / 1000000)) MB  engine=$(((sandbox - full) / 1000000)) MB"
+
       # 218: the real-docker verify decision, run against the image built just above. The Test job
       # deselects the docker_image lane, so this is the only place it runs. Advisory job. The docker
       # setup mirrors the Daemon Image job. It adds roughly two minutes (Python and uv setup, the

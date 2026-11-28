@@ -1,0 +1,59 @@
+# Dockerfile.sandbox: the QAre Docker sandbox image (#435).
+#
+# The full performer image plus a Docker engine, for a QAre provider with
+# `stage_providers.<name>.sandbox: sysbox`. Its stage jobs run under the Sysbox runtime
+# (`--runtime=sysbox-runc`, a Linux host prerequisite doctor checks), so the engine
+# runs inside the job's own container: no --privileged, no host Docker socket.
+# sandbox-entrypoint.sh starts dockerd, then hands over to the performer's entry point.
+#
+# A separate variant, not part of Dockerfile.full: the engine, containerd, buildx and
+# compose add about 344 MB installed (83 MB to download). In the full image every role
+# would pull that, and every performer that runs pull request code without a sandbox
+# would carry an engine it cannot use and its CVE reports. Only an operator who turns
+# the sandbox on builds this image:
+#
+#   docker build -t coordinare-performer:sandbox -f agent/performer/Dockerfile.sandbox agent/performer/
+#
+# and names it in stage_providers.<name>.image.
+ARG BASE_IMAGE=coordinare-performer:full
+FROM $BASE_IMAGE
+
+# Docker's own Debian packages, pinned. Bump them together; the versions name the Debian
+# release, so a base image on another release fails here loudly rather than mixing them.
+ARG DOCKER_VERSION=5:29.10.1-1~debian.13~trixie
+ARG CONTAINERD_VERSION=2.4.2-4~debian.13~trixie
+ARG BUILDX_VERSION=0.39.1-1~debian.13~trixie
+ARG COMPOSE_VERSION=5.8.1-1~debian.13~trixie
+# Docker's release signing key, by fingerprint: only that key (with its subkeys) is
+# exported into the keyring apt trusts, so nothing else in the downloaded file is trusted.
+ARG DOCKER_KEY_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+RUN set -eu \
+    && . /etc/os-release \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && export GNUPGHOME="$(mktemp -d)" \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o "${GNUPGHOME}/docker.asc" \
+    && gpg --batch --quiet --import "${GNUPGHOME}/docker.asc" \
+    && gpg --batch --export "${DOCKER_KEY_FINGERPRINT}" > /etc/apt/keyrings/docker.gpg \
+    && test -s /etc/apt/keyrings/docker.gpg \
+    && rm -rf "${GNUPGHOME}" \
+    && unset GNUPGHOME \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" \
+       > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+       docker-ce=${DOCKER_VERSION} \
+       docker-ce-cli=${DOCKER_VERSION} \
+       containerd.io=${CONTAINERD_VERSION} \
+       docker-buildx-plugin=${BUILDX_VERSION} \
+       docker-compose-plugin=${COMPOSE_VERSION} \
+    && rm -rf /var/lib/apt/lists/* \
+    && dockerd --version \
+    && docker --version \
+    && docker compose version \
+    && docker buildx version
+
+COPY sandbox-entrypoint.sh /sandbox-entrypoint.sh
+RUN chmod 0755 /sandbox-entrypoint.sh
+
+ENTRYPOINT ["/sandbox-entrypoint.sh"]

@@ -173,6 +173,7 @@ stage_providers:
     version: "2026.11.44"            # the exact release `qare --version` must print
     command: ["qare"]                # how to start it in the performer (default), as an argument list
     # image: ghcr.io/vividynamics/coordinare-performer-full:<tag>  # default: the qa performer's image
+    # sandbox: sysbox                # each run gets its own Docker engine (Linux hosts with Sysbox)
     profile: .qa                     # the QA profile's directory in the repository (default)
     env_passthrough: [OPENAI_API_KEY]  # NAMES of variables QAre's nare may read
     # work_dir: /var/lib/coordinare/qare  # default: stage-providers/<name> beside the state file
@@ -215,12 +216,13 @@ for QAre to use.
 | --- | --- |
 | Command and mail checks | run |
 | Browser flows, app started by a command or a `package.json` script | run (#442) |
-| Anything whose app boots with Docker (`docker compose`), browser or not | does not run yet: waits on a Docker sandbox for stage jobs (#435, Sysbox) |
+| Anything whose app boots with Docker (`docker compose`), browser or not | runs with `sandbox: sysbox` and the sandbox image ([Docker sandbox](#docker-sandbox)); not in the full image alone |
 
-Until #435 lands, a profile that boots its app with Docker needs a performer image that
-adds a container runtime (set `image`); how much of the host to hand such a container (for
-example its Docker socket) is the operator's trust decision, as it is for coordinare's own
-containers (`docs/security/threat-model.md`).
+A profile whose app boots with `docker compose` needs the [Docker sandbox](#docker-sandbox).
+Coordinare never gives a QAre container the host's Docker socket: that would hand pull
+request code the host's Docker, including coordinare's own containers.
+
+Opt one symphony in with `overrides.performers`, as for Scrutare.
 
 #### QAre's browser
 
@@ -262,7 +264,53 @@ release with that tag's index digest (`docker buildx imagetools inspect
 ghcr.io/vividynamics/qare-web:<release>` prints it). The browser follows the release; there
 is no separate browser pin. Keep `stage_providers.<name>.version` equal to `QARE_VERSION`.
 
-Opt one symphony in with `overrides.performers`, as for Scrutare.
+### Docker sandbox
+
+With `sandbox: sysbox`, each QAre run gets its own Docker engine, inside its own container,
+without privilege (#435). It is off by default; off, runs are exactly as described above.
+
+- **How.** The run's container (and the container that checks QAre's version) starts with
+  `--runtime=sysbox-runc` and nothing else added: never `--privileged`, never a Docker
+  socket, no seccomp or AppArmor change. With a sandbox, `env_passthrough` may not name a
+  Docker client variable (`DOCKER_*`, `BUILDKIT_*`, `BUILDX_*`, `COMPOSE_*`, `CONTAINERD_*`, `PODMAN_*`, `TESTCONTAINERS_*`,
+  `CONTAINER_HOST`), which could point the run at another daemon; it is refused at load. Sysbox gives the container its own user namespace,
+  so its root is an unprivileged user on the host, and virtualises `/proc` and `/sys`, so a
+  Docker engine runs inside it. The sandbox image's entry point starts that engine before
+  the run. QAre then finds Docker on its usual socket, the app it boots on `localhost`, and
+  the checkout at the same paths, all in the one container. When the engine does not
+  answer, the container stops before QAre runs, so the run is retried rather than reported
+  as a QA failure of the pull request.
+- **Cleanup.** The engine and everything it starts live in the run's container. Removing
+  that container, which coordinare does by the run's name (a restarted daemon finds it by
+  request id, as for any stage job), removes them too. Nothing is kept on the host: every
+  run starts with an empty image cache, and pulls and builds its stack.
+- **Host prerequisite: Sysbox, Linux only.** Install Sysbox on the Docker host (its
+  [install guide](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-package.md):
+  a supported distribution, kernel 5.12 or later, systemd), which registers `sysbox-runc`
+  with Docker. `coordinare doctor` checks that `docker info` lists `sysbox-runc`. Where it
+  does not, the provider says it is unavailable and why, and a stage that names it is
+  retried and then blocked with that reason. macOS Docker Desktop has no `sysbox-runc`
+  unless Enhanced Container Isolation (a Docker Business feature) provides it; a Linux VM
+  with Sysbox is the path on a Mac. Kubernetes is not supported yet (#443).
+- **Image.** The engine is in its own image variant, built FROM the full performer image:
+
+  ```sh
+  docker build -t coordinare-performer:sandbox -f agent/performer/Dockerfile.sandbox agent/performer/
+  ```
+
+  Name it in `image`. It adds Docker's engine, containerd, buildx and compose, pinned (about
+  344 MB installed). They are not in the full image, so performers that run pull request
+  code without a sandbox carry no engine. With `sandbox: sysbox`, the health check (and
+  doctor) asks the image's own engine to answer, with compose and buildx, and reports an
+  image that has none.
+- **No egress allowlist.** A performer endpoint's `egress_allowlist` limits what the run's
+  container sends, but not what the containers its own Docker starts send, so it would hold
+  only in part. A sandboxed provider whose runs take an endpoint with one (the endpoint that
+  serves `qa`, else the first endpoint with an image) is unavailable, and the reason names
+  that endpoint. The sandbox image refuses to start with one.
+- **Browser profiles.** The sandbox image is built FROM the full image, so it has QAre's
+  browser driver (#442) too: a browser profile whose app boots with `docker compose` runs
+  in the sandbox. One that starts its app with a command needs no sandbox.
 
 ### What a run does
 
@@ -376,7 +424,8 @@ directory.
   the run directory's owner, so coordinare can read, publish and prune it.
 - **Runtime.** Stage jobs need the Docker runtime. Under `agent_transport: kubernetes` the
   provider reports itself unavailable, and a stage that names it is retried and then
-  blocked with that reason.
+  blocked with that reason. A QAre provider with `sandbox: sysbox` also needs the
+  `sysbox-runc` runtime ([Docker sandbox](#docker-sandbox)).
 
 ## Progettare for the architecting stage
 

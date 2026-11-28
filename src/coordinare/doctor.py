@@ -29,6 +29,12 @@ from coordinare.doctor_status import Status
 from coordinare.lib.transcript_redaction import redact_text
 from coordinare.metrics import _coordinare_version
 from coordinare.network_probe import error_status, probe_http
+from coordinare.services.stage_jobs import (
+    SANDBOX_KUBERNETES_ISSUE,
+    SANDBOX_RUNTIME,
+    docker_runtimes,
+)
+from coordinare.transport.base import TransportError
 
 __all__ = [
     "PROBE_TIMEOUT_SECONDS", "CheckResult", "DoctorReport", "Status", "check_dashboard_binding",
@@ -456,7 +462,6 @@ async def check_stage_providers(config: ProjectConfiguration) -> list[CheckResul
     from coordinare.lifecycle import ROLE_TO_STAGE
     from coordinare.services.stage_providers import build_provider, provider_fix, role_provider
     from coordinare.stage_provider_config import QAreProviderConfig, ScrutareProviderConfig
-    from coordinare.transport.base import TransportError
 
     used = {
         name: role
@@ -507,8 +512,40 @@ async def _check_qare(
         detail=detail,
         fix=None if ok else provider_fix(name, provider_config),
     )]
+    if provider_config.sandbox == "sysbox":
+        results.append(await _check_qare_sandbox(name, config))
     results.append(await _check_qare_profile(name, provider_config, config))
     return results
+
+
+async def _check_qare_sandbox(name: str, config: ProjectConfiguration) -> CheckResult:
+    """435: the host can run the QAre sandbox: ``docker info`` lists the Sysbox runtime."""
+    label = f"stage provider '{name}' Docker sandbox (sysbox)"
+    fix = (
+        f"Install Sysbox on this Linux Docker host and register {SANDBOX_RUNTIME} with Docker (see "
+        "docs/stage-providers.md, \"Docker sandbox\"), or remove "
+        f"stage_providers.{name}.sandbox. macOS Docker Desktop lacks it unless Enhanced Container "
+        "Isolation provides it."
+    )
+    if config.agent_transport == "kubernetes":
+        return CheckResult(
+            label, Status.FAIL,
+            f"the QAre sandbox is not supported under the Kubernetes transport yet ({SANDBOX_KUBERNETES_ISSUE}).",
+            f"Remove stage_providers.{name}.sandbox, or run coordinare with the Docker transport on a "
+            "Linux host with Sysbox.",
+        )
+    try:
+        runtimes = await docker_runtimes(within=30.0)
+    except TransportError as exc:
+        return CheckResult(label, Status.FAIL, str(exc), "Start Docker where coordinare runs, then rerun doctor.")
+    if SANDBOX_RUNTIME in runtimes:
+        return CheckResult(label, Status.OK, f"docker info lists {SANDBOX_RUNTIME}.", None)
+    listed = ", ".join(sorted(runtimes)) or "none"
+    return CheckResult(
+        label, Status.FAIL,
+        f"docker info does not list {SANDBOX_RUNTIME} (it lists {listed}), so the provider is unavailable.",
+        fix,
+    )
 
 
 async def _check_qare_profile(
