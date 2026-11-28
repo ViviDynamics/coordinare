@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import ipaddress
 import json
@@ -264,6 +265,12 @@ class DockerStageJobs:
     """
 
     egress_mode: str = "proxy"
+    #: 462: how long ``ended`` waits for a reported job's container to go before it leaves the
+    #: egress to the proxy's ``--follow`` and the sweep, and how often it looks meanwhile.
+    ended_settle_seconds: float = 30.0
+    ended_poll_seconds: float = 1.0
+    #: 462: how long ``ended`` holds up its caller; the release goes on in the background after.
+    ended_wait_seconds: float = 5.0
 
     def __init__(
         self,
@@ -281,6 +288,9 @@ class DockerStageJobs:
         self._docker = docker
         #: The runtime was listed once: it stays registered while Docker runs.
         self._runtime_listed = False
+        #: 462: egress releases under way (by job name), and jobs whose egress is already gone.
+        self._releasing: dict[str, asyncio.Task[None]] = {}
+        self._released: set[str] = set()
 
     def _run_options(self) -> list[str]:
         """What follows ``docker run``: the sandbox runtime, when there is one."""
@@ -395,12 +405,44 @@ class DockerStageJobs:
 
     async def ended(self, job_dir: Path) -> None:
         """462: the job wrote its last word. Once its container is gone, its proxy and network go
-        now (``state`` removes them), not when the proxy's ``--follow`` or a later start's sweep
-        gets to them. A container still finishing keeps them: the proxy follows it out, and the
-        sweep stays the backstop for the network."""
-        if self.proxied:
-            with contextlib.suppress(TransportError):
-                await self.state(job_dir)
+        now, not when the proxy's ``--follow`` or a later start's sweep gets to them.
+
+        The release runs as a task of its own: it waits up to ``ended_settle_seconds`` for a
+        container that is still finishing, and a Docker that is slow to answer holds the caller
+        (and so the job's verdict) for ``ended_wait_seconds`` at most. A container still there
+        after that keeps its egress: the proxy follows it out, and the sweep is the backstop.
+        Each job is released once per daemon; a later read of the same job makes no Docker call.
+        """
+        if not self.proxied:
+            return
+        name = job_name(job_dir)
+        if name in self._released:
+            return
+        task = self._releasing.get(name)
+        if task is None:
+            task = asyncio.get_running_loop().create_task(self._release(name))
+            self._releasing[name] = task
+            task.add_done_callback(functools.partial(self._release_done, name))
+        await asyncio.wait({task}, timeout=self.ended_wait_seconds)
+
+    def _release_done(self, name: str, _task: asyncio.Task[None]) -> None:
+        self._releasing.pop(name, None)
+
+    async def _release(self, name: str) -> None:
+        """Remove a reported job's proxy and network once its container is gone. Never raises."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.ended_settle_seconds
+        try:
+            while await self._container_state(name) is RunState.RUNNING:
+                if loop.time() >= deadline:
+                    logger.info("stage_job.egress_left_to_follow", container=name)
+                    return
+                await asyncio.sleep(self.ended_poll_seconds)
+        except TransportError:
+            return
+        await self._egress_down(name)
+        self._released.add(name)
+        logger.info("stage_job.egress_released", container=name)
 
     # -- 447: the egress network and proxy of a sandboxed job with an allowlist -------------
 

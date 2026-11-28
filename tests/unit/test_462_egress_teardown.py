@@ -10,6 +10,8 @@ the backstop.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 from pathlib import Path
 from typing import Any
@@ -60,12 +62,57 @@ async def test_a_reported_job_that_is_gone_takes_its_proxy_and_network_with_it(
 
 
 @pytest.mark.asyncio
-async def test_a_reported_job_still_finishing_keeps_its_proxy_and_network(tmp_path: Path, docker: dict[str, Any]) -> None:
+async def test_a_reported_job_still_exiting_is_released_once_it_is_gone(tmp_path: Path, docker: dict[str, Any]) -> None:
+    jobs = _jobs(docker["bin"], None, egress=ALLOW)
+    jobs.ended_poll_seconds = 0.05
+    docker["set"](job="running")
+
+    async def exits() -> None:
+        await asyncio.sleep(0.3)
+        docker["set"](job="missing")
+
+    exiting = asyncio.create_task(exits())
+    await jobs.ended(tmp_path / "job")
+    await exiting
+    assert docker["calls"]()[-2:] == _egress_removal(job_name(tmp_path / "job"))
+
+
+@pytest.mark.asyncio
+async def test_a_reported_job_that_stays_up_keeps_its_proxy_and_network(tmp_path: Path, docker: dict[str, Any]) -> None:
     """Its proxy follows it out once it is gone; the sweep is the backstop for the network."""
     jobs = _jobs(docker["bin"], None, egress=ALLOW)
+    jobs.ended_settle_seconds, jobs.ended_poll_seconds = 0.2, 0.05
     docker["set"](job="running")
     await jobs.ended(tmp_path / "job")
+    assert docker["calls"](), "it asked"
     assert not any(a[:1] in (["network"], ["rm"]) for a in docker["calls"]())
+
+
+@pytest.mark.asyncio
+async def test_a_job_is_released_once_however_often_it_is_read(tmp_path: Path, docker: dict[str, Any]) -> None:
+    jobs = _jobs(docker["bin"], None, egress=ALLOW)
+    docker["set"](job="missing")
+    await jobs.ended(tmp_path / "job")
+    docker["clear"]()
+    await jobs.ended(tmp_path / "job")
+    assert docker["calls"]() == []
+
+
+@pytest.mark.asyncio
+async def test_a_docker_that_hangs_holds_up_the_verdict_only_briefly(tmp_path: Path) -> None:
+    hung = tmp_path / "docker"
+    hung.write_text("#!/bin/sh\nsleep 30\n")
+    hung.chmod(0o755)
+    jobs = DockerStageJobs("img", docker=str(hung), egress_allowlist=ALLOW)
+    jobs.ended_wait_seconds = 0.2
+    loop = asyncio.get_running_loop()
+    began = loop.time()
+    await jobs.ended(tmp_path / "job")
+    assert loop.time() - began < 3
+    for task in list(jobs._releasing.values()):  # the release goes on; end it with the test
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 @pytest.mark.asyncio
