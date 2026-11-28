@@ -1,0 +1,455 @@
+"""449: the egress allowlist is binding for every Docker performer, not only the QAre sandbox.
+
+An ephemeral performer whose endpoint has ``egress_allowlist`` runs on a Docker network of its
+own created with ``--internal`` (no route out), with a proxy container
+(``performer.egress_proxy``) on that network and on the default bridge as its only exit. The
+proxy also publishes the performer's port, since Docker publishes none for a container whose
+only network is internal. Nothing here runs Docker: a fake ``docker`` records every argument
+list, and the network is modelled from those lists at the rule level, as in
+``test_447_sandbox_egress.py``.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+import pytest
+from performer.egress_proxy import allowed, parse_allowlist, parse_forward
+
+from coordinare.models.performer_endpoint import PerformerEndpointConfig
+from coordinare.services import performer_egress
+from coordinare.services.docker_executor import DockerExecutor
+from coordinare.services.performer_egress import (
+    EGRESS_CREATED_LABEL,
+    EGRESS_FOR_LABEL,
+    EGRESS_LABEL,
+    SWEEP_GRACE_SECONDS,
+)
+from coordinare.services.performer_lifecycle import ContainerStartError, start_ephemeral
+from coordinare.services.stage_jobs import EGRESS_PROXY_ENV, EGRESS_PROXY_MODULE
+
+IMAGE = "coordinare-performer:full"
+ALLOW = ["api.github.com", "llm", "registry.npmjs.org"]
+PROXY_IP = "198.51.100.2"
+PROXY_PORT = "49200"
+
+_FAKE_DOCKER = r'''
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_DOCKER_LOG"], "a") as log:
+    log.write(json.dumps(args) + "\n")
+state = json.load(open(os.environ["FAKE_DOCKER_STATE"]))
+def fail(key, code=1):
+    if state.get(key):
+        sys.stderr.write(state[key] + "\n")
+        sys.exit(code)
+if args[:2] == ["network", "create"]:
+    fail("network_create_fails")
+    print("net0")
+elif args[:2] == ["network", "connect"]:
+    fail("connect_fails")
+elif args[:2] == ["network", "rm"]:
+    fail("network_rm_fails")
+elif args[:2] == ["network", "ls"]:
+    print(state.get("network_ls", ""))
+elif args[:1] == ["run"] and "--entrypoint" in args:
+    fail("proxy_fails", 125)
+    print("proxy0")
+elif args[:1] == ["run"]:
+    fail("performer_fails", 125)
+    print("perf0")
+elif args[:2] == ["container", "inspect"] and "{{json .NetworkSettings.Networks}}" in args:
+    name = args[-1]
+    address = state.get("proxy_ip", "198.51.100.2")
+    print(json.dumps({name: {"IPAddress": address}, "bridge": {"IPAddress": "172.17.0.9"}}))
+elif args[:2] == ["container", "inspect"]:
+    print(state.get("label", ""))
+elif args[:1] == ["port"]:
+    if args[1] == "perf0" and not state.get("performer_published"):
+        sys.stderr.write("Error: No public port '8088/tcp' published for perf0\n")
+        sys.exit(1)
+    fail("port_fails")
+    print("127.0.0.1:" + state.get("port", "49200"))
+elif args[:1] in (["stop"], ["rm"]):
+    pass
+'''
+
+
+@pytest.fixture
+def docker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    script = bin_dir / "docker"
+    script.write_text(f"#!{sys.executable}\n{_FAKE_DOCKER}")
+    script.chmod(0o755)
+    state = tmp_path / "docker-state.json"
+    log = tmp_path / "docker-log.jsonl"
+    monkeypatch.setenv("FAKE_DOCKER_STATE", str(state))
+    monkeypatch.setenv("FAKE_DOCKER_LOG", str(log))
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    def set_state(**values: Any) -> None:
+        state.write_text(json.dumps(values))
+
+    def calls() -> list[list[str]]:
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+    set_state()
+    return {"set": set_state, "calls": calls}
+
+
+def _config(**overrides: Any) -> PerformerEndpointConfig:
+    base: dict[str, Any] = {
+        "id": "implementer-1",
+        "mode": "ephemeral",
+        "roles": ["implementer", "reviewer", "qa"],
+        "image": IMAGE,
+        "egress_allowlist": ALLOW,
+        "extra_hosts": ["llm:192.0.2.10"],
+        "env": {"OPENAI_BASE_URL": "http://llm:4000/v1"},
+    }
+    base.update(overrides)
+    return PerformerEndpointConfig.model_validate(base)
+
+
+async def _start(docker: dict[str, Any], config: PerformerEndpointConfig | None = None, **state: Any) -> Any:
+    docker["set"](**state)
+    return await start_ephemeral(config or _config(), backend="claude_code")
+
+
+def _is_proxy_run(args: list[str]) -> bool:
+    return args[:1] == ["run"] and "--entrypoint" in args
+
+
+def _is_performer_run(args: list[str]) -> bool:
+    return args[:1] == ["run"] and "--entrypoint" not in args
+
+
+def _option(args: list[str], flag: str) -> str | None:
+    return args[args.index(flag) + 1] if flag in args else None
+
+
+def _index(calls: list[list[str]], match: Any) -> int:
+    return next(i for i, args in enumerate(calls) if match(args))
+
+
+def _labels(args: list[str]) -> dict[str, str]:
+    return dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "--label")
+
+
+# -- the network, modelled from the argument lists -----------------------------------------
+
+
+def _topology(calls: list[list[str]]) -> tuple[dict[str, bool], dict[str, set[str]], dict[str, str]]:
+    """Networks (name: internal?), containers (name: networks) and each proxy's allowlist.
+
+    Docker's own networks are not internal. A container started without ``--network`` is on
+    the default bridge. The performer has no ``--name``; it is known by its network alias.
+    """
+    networks: dict[str, bool] = {"bridge": False, "host": False}
+    containers: dict[str, set[str]] = {}
+    proxies: dict[str, str] = {}
+    for args in calls:
+        if args[:2] == ["network", "create"]:
+            networks[args[-1]] = "--internal" in args
+        elif args[:2] == ["network", "connect"]:
+            containers.setdefault(args[3], set()).add(args[2])
+        elif args[:1] == ["run"]:
+            name = _option(args, "--name") or _option(args, "--network-alias") or "performer"
+            network = _option(args, "--network") or "bridge"
+            containers[name] = set() if network == "none" else {network}
+            if _is_proxy_run(args):
+                proxies[name] = _option(args, "--allow") or ""
+    return networks, containers, proxies
+
+
+def _can_reach(calls: list[list[str]], container: str, host: str) -> bool:
+    """Whether code in ``container``, as root and whatever it does to its own firewall, can open
+    a connection to ``host``.
+
+    Nothing inside the container counts: a route out exists only through a network that is not
+    internal (host state), and on an internal network the only peers are the containers on it,
+    of which a proxy passes only what its allowlist allows (the proxy's own decision function).
+    So ``iptables -F`` or ``-P OUTPUT ACCEPT`` in the container changes nothing here.
+    """
+    networks, containers, proxies = _topology(calls)
+    attached = containers[container]
+    if any(not networks.get(n, False) for n in attached):
+        return True
+    peers = {name for name, nets in containers.items() if name != container and nets & attached}
+    return any(name in proxies and allowed(host, parse_allowlist(proxies[name])) for name in peers)
+
+
+def _performer(calls: list[list[str]]) -> str:
+    run = next(a for a in calls if _is_performer_run(a))
+    return _option(run, "--network-alias") or "performer"
+
+
+# -- root in the performer cannot get out ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_root_in_the_performer_cannot_reach_a_host_outside_the_allowlist(docker: dict[str, Any]) -> None:
+    await _start(docker)
+    calls = docker["calls"]()
+    performer = _performer(calls)
+    assert not _can_reach(calls, performer, "blocked.example")
+    assert not _can_reach(calls, performer, "evil-api.github.com")
+    assert not _can_reach(calls, performer, "1.1.1.1")
+    networks, containers, proxies = _topology(calls)
+    (egress,) = proxies
+    assert containers[performer] == {egress}
+    assert networks[egress] is True
+    assert containers[egress] == {"bridge", egress}  # the proxy is the one container with a route out
+
+
+@pytest.mark.asyncio
+async def test_the_performer_has_no_net_admin_and_no_firewall_of_its_own(docker: dict[str, Any]) -> None:
+    """Root cannot even run iptables; enforcement is host state and another container."""
+    await _start(docker)
+    for args in docker["calls"]():
+        assert "--cap-add" not in args
+        assert "--privileged" not in args
+        assert not any(a.startswith("PERFORMER_EGRESS_ALLOWLIST") for a in args)
+        assert "host" not in (_option(args, "--network"), _option(args, "--net"))
+
+
+@pytest.mark.asyncio
+async def test_the_model_gateway_github_and_registries_are_reached_through_the_proxy(docker: dict[str, Any]) -> None:
+    await _start(docker)
+    calls = docker["calls"]()
+    performer = _performer(calls)
+    for host in ALLOW:
+        assert _can_reach(calls, performer, host), host
+    run = next(a for a in calls if _is_performer_run(a))
+    assert f"{EGRESS_PROXY_ENV}=http://{PROXY_IP}:3128" in run
+    assert "OPENAI_BASE_URL=http://llm:4000/v1" in run  # the gateway URL is unchanged; the proxy relays it
+    proxy = next(a for a in calls if _is_proxy_run(a))
+    assert "llm:192.0.2.10" in proxy  # the proxy resolves the gateway's name as the performer did
+
+
+def test_the_model_sees_a_performer_on_the_default_bridge_as_unrestricted() -> None:
+    """The model is not vacuous: today's performer (no internal network) reaches anything."""
+    calls = [["run", "-d", "--rm", "-p", "127.0.0.1:0:8088", IMAGE]]
+    assert _can_reach(calls, "performer", "blocked.example")
+
+
+# -- order, and the arguments ----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_network_and_proxy_are_up_before_the_performer_starts(docker: dict[str, Any]) -> None:
+    """The performer's network namespace is born on the internal network: its entry point,
+    its backend install and the agent never see a route out."""
+    started = await _start(docker)
+    calls = docker["calls"]()
+    created = _index(calls, lambda a: a[:2] == ["network", "create"])
+    proxy = _index(calls, _is_proxy_run)
+    connected = _index(calls, lambda a: a[:2] == ["network", "connect"])
+    address = _index(calls, lambda a: "{{json .NetworkSettings.Networks}}" in a)
+    performer = _index(calls, _is_performer_run)
+    port = _index(calls, lambda a: a[:1] == ["port"])
+    assert created < proxy < connected < address < performer < port
+    egress = calls[created][-1]
+    assert egress.startswith("coordinare-egress-")
+    assert "--internal" in calls[created]
+    assert calls[created][calls[created].index("-o") + 1] == "com.docker.network.bridge.inhibit_ipv4=true"
+    assert calls[connected][2:] == [egress, egress]
+    assert calls[port][1:] == [egress, "8088/tcp"]  # the port is published on the proxy
+    assert started.container_id == "perf0"
+    assert started.endpoint == f"http://127.0.0.1:{PROXY_PORT}"
+    assert sum(1 for a in calls if _is_performer_run(a)) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_performer_gets_only_the_internal_network_and_keeps_the_rest_of_its_setup(docker: dict[str, Any]) -> None:
+    await _start(docker, _config(volumes=[{"host_path": "/srv/cache", "container_path": "/devenv", "mode": "rw"}]))
+    calls = docker["calls"]()
+    run = next(a for a in calls if _is_performer_run(a))
+    egress = next(a for a in calls if a[:2] == ["network", "create"])[-1]
+    assert run.count("--network") == 1
+    assert _option(run, "--network") == egress
+    assert _option(run, "--network-alias") == f"{egress}-performer"
+    assert _labels(run)[EGRESS_LABEL] == egress
+    assert _labels(run)["coordinare.performer.id"] == "implementer-1"
+    assert "-p" not in run  # nothing published by the performer: Docker would not, and the proxy does
+    assert "llm:192.0.2.10" in run
+    assert "BACKEND=claude_code" in run
+    assert "/srv/cache:/devenv:rw" in run
+    assert run[-1] == IMAGE
+
+
+@pytest.mark.asyncio
+async def test_the_proxy_runs_unprivileged_publishes_the_performer_port_and_follows_it(docker: dict[str, Any]) -> None:
+    await _start(docker, _config(port=18088, bind_host="0.0.0.0"))  # noqa: S104 - the operator's choice
+    calls = docker["calls"]()
+    proxy = next(a for a in calls if _is_proxy_run(a))
+    egress = next(a for a in calls if a[:2] == ["network", "create"])[-1]
+    alias = f"{egress}-performer"
+    assert _option(proxy, "--name") == egress
+    assert _option(proxy, "--user") == "65534:65534"
+    assert "--read-only" in proxy
+    assert "--rm" in proxy
+    assert _option(proxy, "-p") == "0.0.0.0:18088:8088"
+    assert _option(proxy, "--entrypoint") == "python"
+    at = proxy.index("--entrypoint")
+    assert proxy[at + 2:at + 5] == [IMAGE, "-m", EGRESS_PROXY_MODULE]
+    assert _option(proxy, "--allow") == ",".join(ALLOW)
+    # An absolute name: a search domain can never turn it into an outside host.
+    assert parse_forward(_option(proxy, "--forward") or "") == (8088, f"{alias}.", 8088)
+    assert _option(proxy, "--follow") == f"{alias}."
+    assert "--network" not in proxy  # the default bridge: its route out
+    labels = _labels(proxy)
+    assert labels[EGRESS_LABEL] == egress
+    assert labels[EGRESS_FOR_LABEL] == "implementer-1"
+    assert abs(int(labels[EGRESS_CREATED_LABEL]) - time.time()) < 60
+    # Not a performer: reconciliation and the orphan sweep look for this label.
+    assert "coordinare.performer.id" not in labels
+    assert "-v" not in proxy
+    assert "--env-file" not in proxy
+    assert not any(a.startswith("PERFORMER_AUTH_TOKEN") for a in proxy)
+
+
+# -- fail closed -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "reason"),
+    [
+        ({"network_create_fails": "Error: pool overlaps"}, "create its internal network"),
+        ({"proxy_fails": "Error: no such image"}, "start its proxy"),
+        ({"connect_fails": "Error: network not found"}, "attach its proxy"),
+        ({"proxy_ip": ""}, "no address"),
+    ],
+)
+async def test_a_setup_failure_starts_no_performer_and_removes_what_was_made(
+    docker: dict[str, Any], state: dict[str, str], reason: str,
+) -> None:
+    with pytest.raises(ContainerStartError, match=reason):
+        await _start(docker, **state)
+    calls = docker["calls"]()
+    assert not any(_is_performer_run(a) for a in calls)
+    egress = next(a for a in calls if a[:2] == ["network", "create"])[-1]
+    assert ["rm", "-f", egress] in calls
+    assert ["network", "rm", egress] in calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [{"performer_fails": "Error: bad env"}, {"port_fails": "Error: gone"}])
+async def test_a_performer_that_fails_to_start_or_publish_is_torn_down_with_its_proxy(
+    docker: dict[str, Any], state: dict[str, str],
+) -> None:
+    with pytest.raises(ContainerStartError):
+        await _start(docker, **state)
+    calls = docker["calls"]()
+    egress = next(a for a in calls if a[:2] == ["network", "create"])[-1]
+    assert ["rm", "-f", egress] in calls
+    assert ["network", "rm", egress] in calls
+    if "port_fails" in state:
+        assert any(a[:1] == ["stop"] and a[-1] == "perf0" for a in calls)
+
+
+# -- cleanup ---------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_each_start_sweeps_old_egress_networks_and_docker_keeps_the_ones_in_use(docker: dict[str, Any]) -> None:
+    """``docker network rm`` refuses a network with a container on it, so a live performer's
+    network survives the sweep; the grace protects one a concurrent start has just made."""
+    old = int(time.time() - SWEEP_GRACE_SECONDS - 5)
+    young = int(time.time() - 30)
+    listing = "\n".join([
+        f"coordinare-egress-aaaaaaaaaaaa\t{old}",
+        f"coordinare-egress-bbbbbbbbbbbb\t{young}",
+        "coordinare-egress-cccccccccccc\tnot-a-time",
+    ])
+    await _start(docker, network_ls=listing)
+    calls = docker["calls"]()
+    sweep = _index(calls, lambda a: a[:2] == ["network", "ls"])
+    assert f"label={EGRESS_LABEL}" in calls[sweep]
+    assert sweep < _index(calls, lambda a: a[:2] == ["network", "create"])
+    assert ["network", "rm", "coordinare-egress-aaaaaaaaaaaa"] in calls
+    assert ["network", "rm", "coordinare-egress-bbbbbbbbbbbb"] not in calls
+    assert ["network", "rm", "coordinare-egress-cccccccccccc"] in calls
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_that_fails_does_not_stop_the_start(docker: dict[str, Any]) -> None:
+    old = int(time.time() - SWEEP_GRACE_SECONDS - 5)
+    started = await _start(docker, network_ls=f"coordinare-egress-aaaaaaaaaaaa\t{old}", network_rm_fails="in use")
+    assert started.container_id == "perf0"
+
+
+@pytest.mark.asyncio
+async def test_a_restarted_daemon_finds_a_proxied_performer_port_on_its_proxy(docker: dict[str, Any]) -> None:
+    """076 reconciliation adopts running performers by ``docker port``; it follows the label."""
+    docker["set"](label="coordinare-egress-aaaaaaaaaaaa", port="49301")
+    assert await DockerExecutor().port_of("perf0") == 49301
+    calls = docker["calls"]()
+    assert calls[0] == ["port", "perf0", "8088/tcp"]
+    assert calls[-1] == ["port", "coordinare-egress-aaaaaaaaaaaa", "8088/tcp"]
+
+
+@pytest.mark.asyncio
+async def test_a_performer_without_a_port_or_a_proxy_is_still_unreachable(docker: dict[str, Any]) -> None:
+    docker["set"](label="")
+    assert await DockerExecutor().port_of("perf0") is None
+
+
+@pytest.mark.asyncio
+async def test_a_performer_that_publishes_its_own_port_needs_no_proxy_lookup(docker: dict[str, Any]) -> None:
+    docker["set"](performer_published=True, port="49302")
+    assert await DockerExecutor().port_of("perf0") == 49302
+    assert len(docker["calls"]()) == 1
+
+
+# -- without an allowlist, or with the opt-out, nothing changes ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_performer_without_an_allowlist_starts_exactly_as_before(docker: dict[str, Any]) -> None:
+    await _start(docker, _config(egress_allowlist=None), performer_published=True)
+    calls = docker["calls"]()
+    assert [a[0] for a in calls] == ["run", "port"]
+    assert calls[0] == [
+        "run", "-d", "--rm", "--label", "coordinare.performer.id=implementer-1",
+        "--add-host", "llm:192.0.2.10",
+        "-p", "127.0.0.1:0:8088",
+        "-e", "OPENAI_BASE_URL=http://llm:4000/v1",
+        "-e", "BACKEND=claude_code",
+        IMAGE,
+    ]
+    assert calls[1] == ["port", "perf0", "8088/tcp"]
+
+
+@pytest.mark.asyncio
+async def test_egress_mode_iptables_keeps_the_in_container_baseline(docker: dict[str, Any]) -> None:
+    """The opt-out restores the old, advisory behaviour exactly, NET_ADMIN included."""
+    await _start(docker, _config(egress_mode="iptables"), performer_published=True)
+    calls = docker["calls"]()
+    assert [a[0] for a in calls] == ["run", "port"]
+    run = calls[0]
+    assert run[run.index("--cap-add") + 1] == "NET_ADMIN"
+    assert f"PERFORMER_EGRESS_ALLOWLIST={','.join(ALLOW)}" in run
+    assert "--network" not in run
+    assert "-p" in run
+
+
+def test_egress_mode_defaults_to_the_proxy_and_is_validated() -> None:
+    assert _config().egress_mode == "proxy"
+    with pytest.raises(ValueError, match="egress_mode"):
+        _config(egress_mode="nftables")
+    with pytest.raises(ValueError, match="egress_mode"):
+        PerformerEndpointConfig.model_validate({"id": "s", "roles": ["implementer"], "egress_mode": "iptables"})
+
+
+def test_only_an_allowlist_in_proxy_mode_is_proxied() -> None:
+    assert performer_egress.proxied(_config())
+    assert not performer_egress.proxied(_config(egress_allowlist=None))
+    assert not performer_egress.proxied(_config(egress_allowlist=[]))
+    assert not performer_egress.proxied(_config(egress_mode="iptables"))

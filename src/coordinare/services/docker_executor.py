@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 
 import structlog
 
+from coordinare.services.performer_egress import EGRESS_LABEL
+
 logger = structlog.get_logger(__name__)
 
 
@@ -232,10 +234,19 @@ class DockerExecutor:
         Returns the host port number, or None if the container does not
         expose the requested port.  Caller may treat None as "container
         is not reachable" and route to reap-and-replace.
+
+        449: a performer behind an egress proxy publishes no port; its proxy,
+        named by the performer's ``coordinare.performer.egress`` label, does.
         """
         rc, stdout, stderr = await _run_docker(
             "port", container_id, f"{internal_port}/tcp", timeout=3.0,
         )
+        if rc != 0 or not stdout:
+            proxy = await self._egress_proxy_of(container_id)
+            if proxy:
+                rc, stdout, stderr = await _run_docker(
+                    "port", proxy, f"{internal_port}/tcp", timeout=3.0,
+                )
         if rc != 0 or not stdout:
             logger.debug(
                 "docker_executor.port_lookup_failed",
@@ -250,6 +261,16 @@ class DockerExecutor:
             return int(stdout.rsplit(":", 1)[-1].strip())
         except (ValueError, IndexError):
             return None
+
+
+    async def _egress_proxy_of(self, container_id: str) -> str:
+        """449: the name of the container's egress proxy, or "" when it has none."""
+        rc, stdout, _stderr = await _run_docker(
+            "container", "inspect", "--format", f'{{{{index .Config.Labels "{EGRESS_LABEL}"}}}}', container_id,
+            timeout=3.0,
+        )
+        name = stdout.strip() if rc == 0 else ""
+        return "" if name == "<no value>" else name
 
 
 def _parse_docker_created_at(raw: str | None) -> datetime:

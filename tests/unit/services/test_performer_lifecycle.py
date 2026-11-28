@@ -111,10 +111,12 @@ async def test_197_no_token_warns_once_per_endpoint_with_token_setup_hint(monkey
 async def test_start_ephemeral_never_uses_host_networking(monkeypatch) -> None:
     # 151 review: host networking is deliberately unsupported. Sharing the host
     # netns would let the entrypoint's egress iptables rules flush and DROP the
-    # HOST's OUTPUT chain (--cap-add NET_ADMIN is added whenever egress_allowlist
-    # is set), collide published ports 1:1 across concurrent performers, and it
+    # HOST's OUTPUT chain (--cap-add NET_ADMIN is added with egress_mode: iptables),
+    # collide published ports 1:1 across concurrent performers, and it
     # does not even reach the host on Docker Desktop (VM netns). Bridge + the
-    # host-gateway --add-host below is the portable path.
+    # host-gateway --add-host below is the portable path. 449: the default proxy
+    # mode puts the performer on its own internal network, never the host's; see
+    # tests/unit/test_449_performer_egress.py.
     calls: list[tuple[str, ...]] = []
 
     async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
@@ -125,7 +127,7 @@ async def test_start_ephemeral_never_uses_host_networking(monkeypatch) -> None:
 
     monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
 
-    cfg = _ephemeral_config(egress_allowlist=["api.github.com"])
+    cfg = _ephemeral_config(egress_allowlist=["api.github.com"], egress_mode="iptables")
     assert not hasattr(cfg, "network_mode")  # no such knob on the model
 
     started = await start_ephemeral(cfg)
@@ -419,7 +421,10 @@ async def test_start_ephemeral_drops_unresolved_placeholders(monkeypatch) -> Non
 
 @pytest.mark.asyncio
 async def test_start_ephemeral_applies_egress_allowlist(monkeypatch) -> None:
-    """egress_allowlist adds --cap-add NET_ADMIN and the PERFORMER_EGRESS_ALLOWLIST env var."""
+    """egress_mode: iptables adds --cap-add NET_ADMIN and the PERFORMER_EGRESS_ALLOWLIST env var.
+
+    449: the default mode (proxy) is covered by tests/unit/test_449_performer_egress.py.
+    """
     args_seen: list[tuple[str, ...]] = []
 
     async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
@@ -435,6 +440,7 @@ async def test_start_ephemeral_applies_egress_allowlist(monkeypatch) -> None:
     await start_ephemeral(
         _ephemeral_config(
             egress_allowlist=["api.github.com", "objects.githubusercontent.com"],
+            egress_mode="iptables",
         ),
     )
 

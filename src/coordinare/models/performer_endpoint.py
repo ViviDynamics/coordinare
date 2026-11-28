@@ -142,6 +142,12 @@ class PerformerEndpointConfig(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     kubernetes_routing_configmap: KubernetesRoutingConfigMap | None = None
     egress_allowlist: list[str] | None = None
+    # 449: how a Docker performer's egress_allowlist is enforced. "proxy" (the default): the
+    # performer runs on an internal Docker network whose only exit is an allowlisting proxy
+    # container, which code in the performer cannot change. "iptables": the old in-container
+    # rules with NET_ADMIN, advisory only, for jobs that need raw TCP to an allowlisted host or a
+    # tool that ignores proxy variables. No effect without egress_allowlist.
+    egress_mode: Literal["proxy", "iptables"] = "proxy"
     capability_overrides: CapabilityOverride | None = None
     container_devenv_root: str = "/devenv"
     # 151 (bench-only): docker `--add-host <entry>` lines for ephemeral containers.
@@ -207,6 +213,8 @@ class PerformerEndpointConfig(BaseModel):
                 set_fields.append("kubernetes_routing_configmap")
             if self.egress_allowlist is not None:
                 set_fields.append("egress_allowlist")
+            if self.egress_mode != "proxy":
+                set_fields.append("egress_mode")
             if self.secret_sources != SecretSourceConfig():
                 set_fields.append("secret_sources")
             if self.container_devenv_root != "/devenv":

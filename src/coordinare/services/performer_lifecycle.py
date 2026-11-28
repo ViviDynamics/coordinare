@@ -19,6 +19,7 @@ import structlog
 
 from coordinare.env_placeholders import drop_unset_placeholders, is_secret_env_key
 from coordinare.lib.container_env import docker_environment
+from coordinare.services import performer_egress
 from coordinare.transport.http_transport import (
     PerformerHTTPClient,
     PerformerUnreachableError,
@@ -199,7 +200,18 @@ async def start_ephemeral(
             _validate_extra_label(k, v)
             args += ["--label", f"{k}={v}"]
 
-    if config.egress_allowlist:
+    # 449: with an allowlist, the performer runs on an internal network behind a proxy
+    # container (performer_egress), which also publishes its port; it gets no NET_ADMIN.
+    egress: str | None = None
+    if performer_egress.proxied(config):
+        egress = performer_egress.new_name()
+        try:
+            proxy_url = await performer_egress.up(_run_docker, config, egress, config.image)
+        except performer_egress.EgressSetupError as exc:
+            raise ContainerStartError(str(exc)) from exc
+        args += performer_egress.performer_args(egress, proxy_url)
+    elif config.egress_allowlist:
+        # egress_mode: iptables, the old advisory baseline in the container.
         args += ["--cap-add", "NET_ADMIN"]
         args += [
             "-e",
@@ -211,7 +223,21 @@ async def start_ephemeral(
             hosts=list(config.egress_allowlist),
         )
 
-    args += ["-p", f"{config.bind_host}:{config.port or 0}:8088"]
+    try:
+        return await _run_performer(config, config.image, args, token, backend, egress)
+    except BaseException:
+        if egress is not None:
+            await performer_egress.down(_run_docker, egress)
+        raise
+
+
+async def _run_performer(
+    config: PerformerEndpointConfig, image: str, args: list[str], token: str, backend: str | None,
+    egress: str | None,
+) -> StartedContainer:
+    """The rest of ``start_ephemeral``: the container itself, and the host port it is reached on."""
+    if egress is None:
+        args += ["-p", f"{config.bind_host}:{config.port or 0}:8088"]
     private_env: dict[str, str] = {}
     if token:
         private_env["PERFORMER_AUTH_TOKEN"] = token
@@ -264,7 +290,7 @@ async def start_ephemeral(
     with docker_environment(private_env) as env_path:
         if env_path is not None:
             args += ["--env-file", str(env_path)]
-        args += [config.image]
+        args += [image]
         rc, stdout, stderr = await _run_docker(*args)
     if rc != 0 or not stdout:
         raise ContainerStartError(
@@ -272,7 +298,8 @@ async def start_ephemeral(
         )
     container_id = stdout.splitlines()[0].strip()
 
-    rc, port_out, port_err = await _run_docker("port", container_id, "8088/tcp")
+    # 449: a proxied performer's port is published by its proxy.
+    rc, port_out, port_err = await _run_docker("port", egress or container_id, "8088/tcp")
     if rc != 0 or not port_out:
         await _safe_stop(container_id)
         raise ContainerStartError(

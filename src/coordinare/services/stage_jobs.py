@@ -90,7 +90,7 @@ EGRESS_SWEEP_GRACE_SECONDS = 600.0
 EGRESS_PROXY_IDLE_EXIT_SECONDS = 180
 #: The internal network's bridge gets no address on the host, so the job cannot reach host
 #: services through a gateway address; it only links the job to its proxy.
-_EGRESS_NETWORK_OPTIONS = ("-o", "com.docker.network.bridge.inhibit_ipv4=true")
+EGRESS_NETWORK_OPTIONS = ("-o", "com.docker.network.bridge.inhibit_ipv4=true")
 #: 447: the health check's extra step for a proxied provider: the image has the proxy.
 EGRESS_PROXY_CHECK = f"python -c 'import {EGRESS_PROXY_MODULE}'"
 _NAME_PREFIX = "coordinare-stage-"
@@ -390,7 +390,7 @@ class DockerStageJobs:
         ]
         try:
             await self._egress_step(
-                "create its internal network", ["network", "create", "--internal", *_EGRESS_NETWORK_OPTIONS, *labels, egress],
+                "create its internal network", ["network", "create", "--internal", *EGRESS_NETWORK_OPTIONS, *labels, egress],
             )
             await self._egress_step("start its proxy", [
                 "run", *self._run_options(), "-d", "--rm", "--name", egress, *labels,
@@ -419,7 +419,7 @@ class DockerStageJobs:
         out = await self._egress_step(
             "read its proxy's address", ["container", "inspect", "--format", "{{json .NetworkSettings.Networks}}", egress],
         )
-        address = _network_address(out, egress)
+        address = network_address(out, egress)
         if not address:
             msg = f"could not set up the egress proxy of a stage job: its proxy has no address on {egress}"
             raise TransportError(msg)
@@ -550,7 +550,7 @@ async def released(jobs: StageJobs, job_dir: Path) -> bool:
         return False
 
 
-def _network_address(inspected: str, network: str) -> str:
+def network_address(inspected: str, network: str) -> str:
     """The container's IPv4 address on ``network``, from ``{{json .NetworkSettings.Networks}}``."""
     try:
         networks = json.loads(inspected)
