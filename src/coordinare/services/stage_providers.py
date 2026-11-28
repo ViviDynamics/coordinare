@@ -134,6 +134,7 @@ def stage_jobs_for(
     435: a QAre provider with ``sandbox: sysbox`` runs its containers under the Sysbox runtime.
     447: with an egress allowlist too, its runs go out only through an allowlisting proxy
     outside the job container (``DockerStageJobs``), which covers the inner Docker's containers.
+    449: without the sandbox too, unless the endpoint sets ``egress_mode: iptables``.
     """
     sandboxed = getattr(provider_config, "sandbox", None) == "sysbox"
     if str(getattr(config, "agent_transport", "") or "") == "kubernetes":
@@ -156,12 +157,14 @@ def stage_jobs_for(
             f"stage provider {name!r} has no performer image to run in: set "
             f"stage_providers.{name}.image, or configure a performer endpoint with an image",
         )
-    return DockerStageJobs(
+    jobs = DockerStageJobs(
         str(image),
         egress_allowlist=getattr(endpoint, "egress_allowlist", None) if endpoint is not None else None,
         extra_hosts=list(getattr(endpoint, "extra_hosts", None) or []) if endpoint is not None else [],
         runtime=SANDBOX_RUNTIME if sandboxed else None,
     )
+    jobs.egress_mode = str(getattr(endpoint, "egress_mode", None) or "proxy")
+    return jobs
 
 
 def provider_fix(name: str, provider_config: StageProviderConfig) -> str:

@@ -166,21 +166,19 @@ agent_executable: "bin/run-performer"  # portable wrapper (sources .env, runs vi
 #     #                                  # codex and claude backends only. Run one
 #     #                                  # endpoint with this on and an otherwise-identical
 #     #                                  # peer with it off to A/B token savings.
-#     # egress_allowlist:                # opt-in egress baseline (default: unrestricted).
-#     #   - api.github.com               # When set, coordinare adds --cap-add=NET_ADMIN and
-#     #   - objects.githubusercontent.com # the container resolves each host at startup (v4
-#     #   - codeload.github.com          # AND v6), then sets `iptables -P OUTPUT DROP` plus
-#     #                                  # the same on ip6tables, with exceptions for
-#     #                                  # loopback / ESTABLISHED / DNS / resolved IPs.
-#     #                                  # NOT a compliance boundary: cloud IPs churn, DNS
-#     #                                  # tunnels remain open, and other consumers of an
-#     #                                  # allowed IP are reachable. For durable enforcement
-#     #                                  # put a proxy (squid/envoy) in front of the
-#     #                                  # container instead. Code in the container runs as
-#     #                                  # root with NET_ADMIN, so it can undo the rules.
-#     #                                  # 447: a QAre provider with `sandbox: sysbox`
-#     #                                  # enforces it outside the container instead
-#     #                                  # (docs/stage-providers.md, "Docker sandbox").
+#     # egress_allowlist:                # opt-in (default: unrestricted). 449: each
+#     #   - api.github.com               # performer runs on an internal Docker network
+#     #   - github.com                   # whose only exit is an allowlisting proxy
+#     #   - codeload.github.com          # container, which also publishes its port. Code
+#     #   - objects.githubusercontent.com # in the performer cannot change it, and it gets
+#     #   - llm                          # no NET_ADMIN. List the model gateway's host and
+#     #                                  # every registry and CDN the jobs use. Tools that
+#     #                                  # ignore HTTP(S)_PROXY (git over SSH, Java) fail
+#     #                                  # closed. See docs/egress-allowlist.md.
+#     # egress_mode: proxy               # 449: `iptables` restores the old in-container
+#     #                                  # rules with NET_ADMIN, which code in the
+#     #                                  # container can undo (advisory only), for jobs
+#     #                                  # that need raw TCP to an allowlisted host.
 
 #   # -------------------------------------------------------------------------
 #   # Claude Code — uses ANTHROPIC_API_KEY forwarded from coordinare environment.

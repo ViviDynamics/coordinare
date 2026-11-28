@@ -82,6 +82,8 @@ elif args[:2] == ["network", "rm"]:
     fail("network_rm_fails")
 elif args[:2] == ["network", "ls"]:
     print(state.get("network_ls", ""))
+elif args[:2] == ["network", "inspect"]:
+    print("198.51.100.0/24 ")  # 449: a proxy that follows its job is pinned to the job's subnet
 elif args[:2] == ["run", "-d"] and "--entrypoint" in args:
     fail("proxy_fails", 125)
     print("proxy0")
@@ -298,19 +300,24 @@ async def test_the_proxy_runs_unprivileged_with_the_allowlist(tmp_path: Path, do
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sandbox", ["sysbox", None])
 async def test_nothing_a_proxied_provider_runs_gets_the_host_docker_or_privilege(
-    tmp_path: Path, docker: dict[str, Any],
+    tmp_path: Path, docker: dict[str, Any], sandbox: str | None,
 ) -> None:
-    """#446's guard over every docker argument list, for the combination #446 refused."""
+    """#446's guard over every docker argument list, for the combination #446 refused, and (449)
+    for an allowlist without the sandbox, which now runs behind the proxy too."""
     work_dir = tmp_path / "qare"
-    calls = await _everything(_qare(work_dir, docker["bin"], "sysbox", egress=ALLOW), work_dir, docker)
+    calls = await _everything(_qare(work_dir, docker["bin"], sandbox, egress=ALLOW), work_dir, docker)
     job_dirs = {str(p) for p in work_dir.iterdir() if p.is_dir()}
     assert any(_is_proxy_run(a) for a in calls)
     assert any(_is_job_run(a) for a in calls)
     for args in calls:
         _assert_never_the_host_or_privileged(args, job_dirs)
-        if args[:1] == ["run"]:
+        assert "--cap-add" not in args, args
+        if args[:1] == ["run"] and sandbox:
             assert args[1] == f"--runtime={SANDBOX_RUNTIME}", args
+        if args[:1] == ["run"] and not sandbox:
+            assert not any(a.startswith("--runtime") for a in args), args
 
 
 @pytest.mark.asyncio
@@ -489,7 +496,14 @@ def test_a_sandbox_with_an_allowlisted_endpoint_runs_behind_the_proxy() -> None:
     assert jobs.runtime == SANDBOX_RUNTIME
     off = stage_jobs_for("qare", _config(None), config, role="qa")
     assert isinstance(off, DockerStageJobs)
-    assert not off.proxied
+    # 449: without the sandbox the allowlist is enforced by the proxy too, unless the endpoint
+    # asks for the old in-container rules.
+    assert off.proxied
+    assert off.runtime is None
+    config.performer_endpoints[0].egress_mode = "iptables"
+    iptables = stage_jobs_for("qare", _config(None), config, role="qa")
+    assert isinstance(iptables, DockerStageJobs)
+    assert not iptables.proxied
 
 
 # -- off is unchanged ----------------------------------------------------------------------
@@ -497,8 +511,9 @@ def test_a_sandbox_with_an_allowlisted_endpoint_runs_behind_the_proxy() -> None:
 
 @pytest.mark.asyncio
 async def test_without_the_sandbox_the_allowlist_is_the_entry_points_as_before(tmp_path: Path, docker: dict[str, Any]) -> None:
+    """449: with egress_mode: iptables. The default (the proxy) is in test_449_performer_egress.py."""
     work_dir = tmp_path / "qare"
-    calls = await _everything(_qare(work_dir, docker["bin"], None, egress=ALLOW), work_dir, docker)
+    calls = await _everything(_qare(work_dir, docker["bin"], None, egress=ALLOW, egress_mode="iptables"), work_dir, docker)
     assert not any(a[:1] == ["network"] for a in calls)
     assert not any(_is_proxy_run(a) for a in calls)
     for args in (a for a in calls if a[:1] == ["run"]):

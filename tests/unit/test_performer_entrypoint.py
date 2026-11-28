@@ -9,7 +9,9 @@ Covers spec 062 Fix 2 — RTK_ENABLED gate behaviour.
 
 from __future__ import annotations
 
+import socket
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -336,3 +338,90 @@ def test_entrypoint_egress_sets_drop_policy_after_accept_rules(tmp_path):
     assert drop_idx > last_accept_idx, (
         f"DROP policy must come after all ACCEPT rules; log:\n{log}"
     )
+
+
+# ---- 449: the egress proxy, a Docker performer's only way out ----
+
+_PROXY_ENV = {
+    "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy", "NODE_USE_ENV_PROXY",
+}
+
+
+def _run_command(bindir: Path, env_extra: dict[str, str], *command: str) -> tuple[int, str, str]:
+    env = {"PATH": f"{bindir}:/usr/bin:/bin", "HOME": str(bindir.parent), "PERFORMER_PYTHON": sys.executable}
+    env.update(env_extra)
+    result = subprocess.run(
+        ["sh", str(ENTRYPOINT), *command], env=env, capture_output=True, text=True, timeout=20, check=False,
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+def _environment(stdout: str) -> dict[str, str]:
+    return dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+
+
+@pytest.fixture
+def listening_proxy():
+    """A port that accepts connections (the kernel completes them from the backlog)."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(16)
+        yield f"http://127.0.0.1:{sock.getsockname()[1]}"
+
+
+def _closed_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_entrypoint_with_an_egress_proxy_points_every_client_at_it_before_the_backend_install(tmp_path, listening_proxy):
+    bindir, logfile = _make_egress_stubs(tmp_path)
+    rc, out, err = _run_command(
+        bindir, {"BACKEND": "codex", "PERFORMER_EGRESS_PROXY": listening_proxy, "HTTPS_PROXY": "http://corp.example:8080"},
+        "env",
+    )
+    assert rc == 0, err
+    env = _environment(out)
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        assert env[name] == listening_proxy, name  # an operator's upstream proxy is replaced
+    assert env["NO_PROXY"] == env["no_proxy"] == "localhost,127.0.0.1,::1"
+    assert env["NODE_USE_ENV_PROXY"] == "1"
+    log = _read_log(logfile)
+    assert "npm install" in log  # the backend install still runs, now through the proxy
+    assert "iptables" not in log  # enforcement is outside the container; no NET_ADMIN needed
+    assert "getent" not in log
+
+
+def test_entrypoint_refuses_to_start_when_its_egress_proxy_does_not_answer(tmp_path):
+    """Fail closed: the performer never becomes ready, so the dispatch fails and is retried."""
+    bindir, logfile = _make_egress_stubs(tmp_path)
+    rc, _out, err = _run_command(
+        bindir,
+        {
+            "BACKEND": "codex",
+            "PERFORMER_EGRESS_PROXY": f"http://127.0.0.1:{_closed_port()}",
+            "PERFORMER_EGRESS_PROXY_WAIT_SECONDS": "1",
+        },
+    )
+    assert rc == 1
+    assert "did not answer" in err
+    assert _read_log(logfile) == ""  # no install, no server: nothing ran without its way out
+
+
+def test_entrypoint_refuses_the_proxy_and_the_in_container_allowlist_together(tmp_path, listening_proxy):
+    bindir, logfile = _make_egress_stubs(tmp_path)
+    rc, _out, err = _run_command(
+        bindir,
+        {"BACKEND": "codex", "PERFORMER_EGRESS_PROXY": listening_proxy, "PERFORMER_EGRESS_ALLOWLIST": "api.github.com"},
+    )
+    assert rc == 1
+    assert "PERFORMER_EGRESS_ALLOWLIST" in err
+    assert _read_log(logfile) == ""
+
+
+def test_entrypoint_without_an_egress_proxy_sets_no_proxy_variables(tmp_path):
+    bindir, _logfile = _make_egress_stubs(tmp_path)
+    rc, out, err = _run_command(bindir, {"BACKEND": "codex"}, "env")
+    assert rc == 0, err
+    assert not (_PROXY_ENV & set(_environment(out)))

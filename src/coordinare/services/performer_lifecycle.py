@@ -19,6 +19,7 @@ import structlog
 
 from coordinare.env_placeholders import drop_unset_placeholders, is_secret_env_key
 from coordinare.lib.container_env import docker_environment
+from coordinare.services import performer_egress
 from coordinare.transport.http_transport import (
     PerformerHTTPClient,
     PerformerUnreachableError,
@@ -199,7 +200,13 @@ async def start_ephemeral(
             _validate_extra_label(k, v)
             args += ["--label", f"{k}={v}"]
 
-    if config.egress_allowlist:
+    # 449: with an allowlist, the performer runs on an internal network behind a proxy
+    # container (performer_egress), which also publishes its port; it gets no NET_ADMIN.
+    # Its network arguments go here, once the proxy is up, just before the container starts.
+    proxied = performer_egress.proxied(config)
+    egress_at = len(args)
+    if config.egress_allowlist and not proxied:
+        # egress_mode: iptables, the old advisory baseline in the container.
         args += ["--cap-add", "NET_ADMIN"]
         args += [
             "-e",
@@ -211,7 +218,8 @@ async def start_ephemeral(
             hosts=list(config.egress_allowlist),
         )
 
-    args += ["-p", f"{config.bind_host}:{config.port or 0}:8088"]
+    if not proxied:
+        args += ["-p", f"{config.bind_host}:{config.port or 0}:8088"]
     private_env: dict[str, str] = {}
     if token:
         private_env["PERFORMER_AUTH_TOKEN"] = token
@@ -261,10 +269,33 @@ async def start_ephemeral(
             backend=backend,
         )
 
+    egress: str | None = None
+    if proxied:
+        egress = performer_egress.new_name()
+        try:
+            proxy_url = await performer_egress.up(_run_docker, config, egress, config.image)
+        except performer_egress.EgressSetupError as exc:
+            raise ContainerStartError(str(exc)) from exc
+        args[egress_at:egress_at] = performer_egress.performer_args(egress, proxy_url)
+    try:
+        return await _run_container(config, args, private_env, egress)
+    except BaseException:
+        if egress is not None:
+            await performer_egress.down(_run_docker, egress)
+        raise
+
+
+async def _run_container(
+    config: PerformerEndpointConfig, args: list[str], private_env: dict[str, str], egress: str | None,
+) -> StartedContainer:
+    """Run the performer from its ``docker run`` arguments; where it is reached.
+
+    449: ``egress`` names the proxy that publishes a proxied performer's port.
+    """
     with docker_environment(private_env) as env_path:
         if env_path is not None:
             args += ["--env-file", str(env_path)]
-        args += [config.image]
+        args += [str(config.image)]
         rc, stdout, stderr = await _run_docker(*args)
     if rc != 0 or not stdout:
         raise ContainerStartError(
@@ -272,7 +303,8 @@ async def start_ephemeral(
         )
     container_id = stdout.splitlines()[0].strip()
 
-    rc, port_out, port_err = await _run_docker("port", container_id, "8088/tcp")
+    # 449: a proxied performer's port is published by its proxy.
+    rc, port_out, port_err = await _run_docker("port", egress or container_id, "8088/tcp")
     if rc != 0 or not port_out:
         await _safe_stop(container_id)
         raise ContainerStartError(
@@ -324,6 +356,27 @@ async def stop(container_id: str, *, timeout_s: int = 10) -> None:
             rc=rc,
             stderr=stderr,
         )
+
+
+async def egress_of(container_id: str) -> str:
+    """449: the name of a proxied performer's network and egress proxy, or ""."""
+    return await performer_egress.egress_of(_run_docker, container_id)
+
+
+async def gone(container_id: str) -> bool:
+    """449: True only when Docker says the container is not running (or no longer exists)."""
+    try:
+        rc, stdout, stderr = await _run_docker("container", "inspect", "--format", "{{.State.Running}}", container_id)
+    except ContainerStartError:
+        return False
+    if rc != 0:
+        return "no such" in stderr.lower()
+    return stdout.strip() == "false"
+
+
+async def remove_egress(name: str) -> None:
+    """449: remove a stopped performer's egress proxy and network. Best effort."""
+    await performer_egress.down(_run_docker, name)
 
 
 async def _safe_stop(container_id: str) -> None:

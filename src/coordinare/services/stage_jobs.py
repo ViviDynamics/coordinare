@@ -33,12 +33,18 @@ has no route out, and a proxy container (``performer.egress_proxy``) on that net
 the default bridge is its only exit: it relays only to the allowlisted hosts. Containers the
 inner Docker starts are NATed through the job's one interface, so the same holds for them.
 The network and the proxy are made before the job container and removed after it.
+
+449: a provider without the sandbox, whose runs take an allowlist, runs the same way (unless
+the endpoint sets ``egress_mode: iptables``, the old in-container rules). Its job runs the
+performer image's own entry point, which has no heartbeat, so its proxy follows the job's
+name on the network (``--follow``) instead of exiting when idle.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import hashlib
+import ipaddress
 import json
 import shlex
 import time
@@ -90,7 +96,12 @@ EGRESS_SWEEP_GRACE_SECONDS = 600.0
 EGRESS_PROXY_IDLE_EXIT_SECONDS = 180
 #: The internal network's bridge gets no address on the host, so the job cannot reach host
 #: services through a gateway address; it only links the job to its proxy.
-_EGRESS_NETWORK_OPTIONS = ("-o", "com.docker.network.bridge.inhibit_ipv4=true")
+EGRESS_NETWORK_OPTIONS = ("-o", "com.docker.network.bridge.inhibit_ipv4=true")
+#: 449: why a proxy most often fails to attach: it exited at once, from an image without the module.
+EGRESS_IMAGE_HINT = (
+    "a proxy that exits at once is usually an image built before performer.egress_proxy existed: "
+    "rebuild it from this release"
+)
 #: 447: the health check's extra step for a proxied provider: the image has the proxy.
 EGRESS_PROXY_CHECK = f"python -c 'import {EGRESS_PROXY_MODULE}'"
 _NAME_PREFIX = "coordinare-stage-"
@@ -207,8 +218,8 @@ JOB_LOG = "runner.log"
 #: Why a job that ended without a word most likely never ran.
 NEVER_STARTED = (
     "its performer exited before the stage job started, so nothing was logged; check that the "
-    "image runs `python -m performer.stage_jobs` and that its entry point can start (an egress "
-    "allowlist needs iptables and NET_ADMIN; in the QAre sandbox, its egress proxy must answer), "
+    "image runs `python -m performer.stage_jobs` and that its entry point can start (with an egress "
+    "allowlist, its egress proxy must answer; with egress_mode: iptables, it needs iptables and NET_ADMIN), "
     "for example with `docker run --rm <image> true`"
 )
 
@@ -241,7 +252,13 @@ class DockerStageJobs:
 
     447: with ``runtime`` and an egress allowlist, the job runs on its own internal network
     behind an allowlisting proxy (module docstring), and probes run with no network.
+
+    449: so does a job without ``runtime`` while ``egress_mode`` is "proxy" (the default; the
+    endpoint's, set by ``stage_jobs_for``); "iptables" keeps the old in-container rules. The
+    sandbox always uses the proxy.
     """
+
+    egress_mode: str = "proxy"
 
     def __init__(
         self,
@@ -266,8 +283,8 @@ class DockerStageJobs:
 
     @property
     def proxied(self) -> bool:
-        """447: a sandbox with an egress allowlist, enforced by a proxy outside the job container."""
-        return bool(self.runtime and self._egress)
+        """447, 449: an egress allowlist enforced by a proxy outside the job container."""
+        return bool(self._egress) and (bool(self.runtime) or self.egress_mode == "proxy")
 
     async def _require_runtime(self) -> None:
         """435: refuse, with the reason, to start a sandboxed container Docker cannot run."""
@@ -390,22 +407,43 @@ class DockerStageJobs:
         ]
         try:
             await self._egress_step(
-                "create its internal network", ["network", "create", "--internal", *_EGRESS_NETWORK_OPTIONS, *labels, egress],
+                "create its internal network", ["network", "create", "--internal", *EGRESS_NETWORK_OPTIONS, *labels, egress],
             )
+            subnet = await self._egress_subnet(egress)
             await self._egress_step("start its proxy", [
                 "run", *self._run_options(), "-d", "--rm", "--name", egress, *labels,
                 "--user", "65534:65534", "--read-only", *self._hosts(),
                 "--entrypoint", "python", self.image,
                 "-m", EGRESS_PROXY_MODULE, "--allow", ",".join(self._egress), "--port", str(EGRESS_PROXY_PORT),
-                "--idle-exit", str(EGRESS_PROXY_IDLE_EXIT_SECONDS),
+                *self._proxy_lifetime(name, subnet),
             ])
-            await self._egress_step("attach its proxy to the internal network", ["network", "connect", egress, egress])
+            await self._egress_step(f"attach its proxy to the internal network ({EGRESS_IMAGE_HINT})", ["network", "connect", egress, egress])
             address = await self._proxy_address(egress)
         except BaseException:
             await self._egress_down(name)
             raise
         logger.info("stage_job.egress_proxy", container=name, network=egress, hosts=list(self._egress))
         return f"http://{address}:{EGRESS_PROXY_PORT}"
+
+    def _proxy_lifetime(self, name: str, subnet: str) -> list[str]:
+        """How the proxy knows its job is over: the sandbox's entry point keeps it alive while the
+        job runs (447); the performer image's own entry point does not, so the proxy follows the
+        job's name, absolute so no search domain can resolve it outside, and counts only an
+        address on the job's network (449)."""
+        if self.runtime:
+            return ["--idle-exit", str(EGRESS_PROXY_IDLE_EXIT_SECONDS)]
+        return ["--follow", f"{name}.", "--within", subnet]
+
+    async def _egress_subnet(self, egress: str) -> str:
+        """449: the job network's IPv4 subnet, for a proxy that follows its job."""
+        if self.runtime:
+            return ""
+        out = await self._egress_step("read its network's subnet", ["network", "inspect", "--format", NETWORK_SUBNETS_FORMAT, egress])
+        subnet = ipv4_subnet(out)
+        if not subnet:
+            msg = f"could not set up the egress proxy of a stage job: its network {egress} has no subnet"
+            raise TransportError(msg)
+        return subnet
 
     async def _egress_step(self, what: str, args: list[str]) -> str:
         code, out, err = await self._call(args)
@@ -419,7 +457,7 @@ class DockerStageJobs:
         out = await self._egress_step(
             "read its proxy's address", ["container", "inspect", "--format", "{{json .NetworkSettings.Networks}}", egress],
         )
-        address = _network_address(out, egress)
+        address = network_address(out, egress)
         if not address:
             msg = f"could not set up the egress proxy of a stage job: its proxy has no address on {egress}"
             raise TransportError(msg)
@@ -550,7 +588,23 @@ async def released(jobs: StageJobs, job_dir: Path) -> bool:
         return False
 
 
-def _network_address(inspected: str, network: str) -> str:
+#: ``docker network inspect --format`` for a network's subnets, space separated.
+NETWORK_SUBNETS_FORMAT = "{{range .IPAM.Config}}{{.Subnet}} {{end}}"
+
+
+def ipv4_subnet(inspected: str) -> str:
+    """The first IPv4 subnet in ``NETWORK_SUBNETS_FORMAT`` output, or ""."""
+    for part in inspected.split():
+        try:
+            network = ipaddress.ip_network(part, strict=False)
+        except ValueError:
+            continue
+        if isinstance(network, ipaddress.IPv4Network):
+            return str(network)
+    return ""
+
+
+def network_address(inspected: str, network: str) -> str:
     """The container's IPv4 address on ``network``, from ``{{json .NetworkSettings.Networks}}``."""
     try:
         networks = json.loads(inspected)

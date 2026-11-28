@@ -60,7 +60,8 @@ whatever it lists, and reading `rbac.yaml` will not show it — verify with
 `kubectl auth can-i --list`, which is what coordinare's own integration test does.
 Performer Pods set `automountServiceAccountToken: false`, so the AI-generated code
 inside them holds no credential for the cluster API. Egress allowlisting is **opt-in and unverified by default** on Kubernetes (`performers.egress.enabled`, off unless you turn it on), and is CIDR-level rather than hostname-level: the
-Docker path's in-container iptables needs `NET_ADMIN`, and the native NetworkPolicy
+Docker path's allowlist (an internal Docker network whose only exit is an allowlisting proxy
+container, #449) has no Kubernetes equivalent yet (#454), and the native NetworkPolicy
 equivalent only applies if the cluster's CNI enforces it, which several common
 distributions do not by default. Nothing silently substitutes for it. Support is often *partial*: measured on kind, kindnet enforces ingress but not egress, so a policy there is inert in the direction that matters. `coordinare doctor --check egress` measures enforcement rather than inferring it, and until it reports enforcement a performer on Kubernetes can reach whatever the cluster's network permits.
 
@@ -77,7 +78,9 @@ blocks agents from committing their own tool-configuration directories, closing 
 a compromised performer could persist instructions into the repository.
 
 **Residual risk**: a performer that runs hostile code can reach anything its container can reach,
-including the network and the credentials it was given for its task. Container escape is not
+including the network and the credentials it was given for its task. With an endpoint's
+`egress_allowlist`, a Docker performer's network reach is the allowlisted hosts only, enforced
+outside its container, so root in it cannot widen it ([egress allowlist](../egress-allowlist.md)). Container escape is not
 defended against beyond what the container runtime provides. Treat a performer as a machine you
 have handed a scoped credential to and expect it to use.
 

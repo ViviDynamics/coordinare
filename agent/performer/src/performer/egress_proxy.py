@@ -17,14 +17,27 @@ entry point connects every half minute while the job runs, so the proxy (a ``--r
 container) goes away soon after its job does. It needs nothing beyond the standard
 library and structlog, so it runs from the performer image with
 ``python -m performer.egress_proxy --allow <hosts>``.
+
+449: every Docker performer with an egress allowlist runs the same way, on an internal
+network of its own behind this proxy. Docker publishes no port of a container whose only
+network is internal, so ``--forward 8088=performer:8088`` makes the proxy, which is on the
+default bridge, publish the performer's port for it: each connection to the listening port
+is relayed as plain bytes to that one fixed address, the performer itself, so it is no way
+out. ``--follow performer`` ends the proxy once that name, having resolved, stops resolving
+on the network (the performer is gone), or never resolves within ten minutes; that is how a
+performer's proxy goes away however the performer was stopped.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import contextlib
+import functools
+import ipaddress
 import re
+import socket
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import structlog
@@ -42,6 +55,16 @@ _CHUNK = 64 * 1024
 _MAX_PORT = 65535
 _HTTP_PORT = 80
 _REQUEST_LINE_PARTS = 3  # method, target, version
+#: 449 ``--follow``: how often the followed name is looked up, how many misses in a row after
+#: it was seen mean it is gone, and how long it may take to appear at all.
+FOLLOW_INTERVAL_SECONDS = 10.0
+FOLLOW_MISSES = 3
+FOLLOW_GRACE_SECONDS = 600.0
+_RESOLVE_TIMEOUT_SECONDS = 5.0
+#: getaddrinfo's answers that mean the name does not exist (EAI_NODATA is not on every platform).
+_NO_SUCH_NAME = frozenset(
+    code for code in (socket.EAI_NONAME, getattr(socket, "EAI_NODATA", None)) if code is not None
+)
 _HOST = re.compile(r"^(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?\.)*[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$")
 _IPV6 = re.compile(r"^[0-9a-f:.]+$")
 #: Request headers not passed upstream on a plain request: the proxy's own, the connection's,
@@ -50,6 +73,10 @@ _IPV6 = re.compile(r"^[0-9a-f:.]+$")
 _DROPPED_HEADERS = (b"proxy-authorization", b"proxy-connection", b"connection", b"keep-alive", b"host")
 
 Connector = Callable[[str, int], Awaitable[tuple[asyncio.StreamReader, asyncio.StreamWriter]]]
+Resolver = Callable[[str], Awaitable[bool | None]]
+Lookup = Callable[[str], Awaitable[list[str]]]
+Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+Handler = Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]
 
 
 def _normal(host: str) -> str:
@@ -102,6 +129,42 @@ class EgressProxy:
         #: Open client connections, and an event set whenever one begins or ends (``--idle-exit``).
         self.active = 0
         self.activity = asyncio.Event()
+
+    def forward(
+        self, host: str, port: int, *, within: Network | None = None, lookup: Lookup | None = None,
+    ) -> Handler:
+        """449: a handler that relays each connection to ``host:port`` and nowhere else.
+
+        Nothing the client sends is read as a request: every byte goes to the one target, so a
+        forward reaches the performer it was made for and cannot be used to leave its network.
+        With ``within`` (the performer's network), ``host`` is resolved here and only an address
+        on that network is dialled: an answer from anywhere else (the performer is gone, or not
+        up yet, and the name was looked up outside) is never followed. A target that does not
+        answer (the performer is still starting) closes the connection.
+        """
+
+        async def relay(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            self.active += 1
+            self.activity.set()
+            try:
+                target = host
+                if within is not None:
+                    target = _pinned(await (lookup or _lookup)(host), within)
+                    if not target:
+                        logger.warning("egress_proxy.forward_unpinned", host=host, network=str(within))
+                        return
+                upstream = await self._connect(target, port)
+                await self._relay(reader, writer, *upstream, plain=False)
+            except (OSError, TimeoutError):
+                pass
+            finally:
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+                self.active -= 1
+                self.activity.set()
+
+        return relay
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self.active += 1
@@ -242,24 +305,145 @@ async def _idle(proxy: EgressProxy, idle_exit: float) -> None:
                 return
 
 
+async def _lookup(name: str) -> list[str]:
+    """The addresses ``name`` resolves to now (Docker's embedded resolver)."""
+    infos = await asyncio.wait_for(asyncio.get_running_loop().getaddrinfo(name, None), _RESOLVE_TIMEOUT_SECONDS)
+    return [str(info[4][0]) for info in infos]
+
+
+def _pinned(addresses: Sequence[str], within: Network) -> str:
+    """The first of ``addresses`` on network ``within``, or ""."""
+    for address in addresses:
+        try:
+            if ipaddress.ip_address(address) in within:
+                return address
+        except ValueError:
+            continue
+    return ""
+
+
+async def resolves_within(name: str, within: Network | None, *, lookup: Lookup = _lookup) -> bool | None:
+    """Whether ``name`` resolves now, to an address on ``within`` when that is given: True; False
+    when the resolver says no such name exists, or answers only with addresses elsewhere; None
+    when it did not say (a timeout, a temporary failure)."""
+    try:
+        addresses = await lookup(name)
+    except socket.gaierror as exc:
+        return False if exc.errno in _NO_SUCH_NAME else None
+    except (OSError, TimeoutError):
+        return None
+    if within is None:
+        return bool(addresses)
+    return bool(_pinned(addresses, within))
+
+
+async def _resolves(name: str) -> bool | None:
+    """``resolves_within`` on any network."""
+    return await resolves_within(name, None)
+
+
+async def follow(
+    name: str, *, resolve: Resolver = _resolves, interval: float = FOLLOW_INTERVAL_SECONDS,
+    grace: float = FOLLOW_GRACE_SECONDS,
+) -> None:
+    """449: return once ``name``, having resolved, misses ``FOLLOW_MISSES`` lookups in a row, or
+    when it has not resolved once within ``grace`` seconds. A lookup the resolver does not
+    answer (None) is neither. A miss is a definite answer that the name is not on the network:
+    "no such name", or (with ``resolves_within``) only addresses elsewhere, which Docker's
+    embedded resolver gives only after it found no container of that name on the network."""
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    seen = False
+    misses = 0
+    while True:
+        found = await resolve(name)
+        if found:
+            seen, misses = True, 0
+        elif found is False:
+            misses += 1
+            if seen and misses >= FOLLOW_MISSES:
+                logger.info("egress_proxy.followed_gone", name=name)
+                return
+        if not seen and loop.time() - started >= grace:
+            logger.info("egress_proxy.followed_never_seen", name=name, grace_seconds=grace)
+            return
+        await asyncio.sleep(interval)
+
+
+def parse_forward(text: str) -> tuple[int, str, int]:
+    """``LISTEN=HOST:PORT`` as (listen port, host, port)."""
+    listen, sep, target = text.partition("=")
+    host, colon, port = target.rpartition(":")
+    ports = (listen, port)
+    if not (sep and colon and host and all(p.isascii() and p.isdigit() for p in ports)) or not all(
+        0 < int(p) <= _MAX_PORT for p in ports
+    ):
+        msg = f"a forward is LISTEN=HOST:PORT, not {text!r}"
+        raise ValueError(msg)
+    return int(listen), host, int(port)
+
+
+@dataclass(frozen=True)
+class PerformerLink:
+    """449: what a performer's proxy adds: ports relayed in to it, and the name it follows."""
+
+    #: (listen port, host, port): each listens beside the proxy and relays to its one target.
+    forwards: Sequence[tuple[int, str, int]] = ()
+    #: Serve until this name, having resolved, stops resolving (``follow``).
+    follow: str | None = None
+    #: The performer's network: forwards dial, and ``follow`` counts, only addresses on it.
+    within: Network | None = None
+    #: How ``follow`` looks the name up (default: ``resolves_within`` on ``within``).
+    resolve: Resolver | None = None
+    interval: float = FOLLOW_INTERVAL_SECONDS
+
+
 async def serve(
     allow: frozenset[str], host: str | None = None, port: int = DEFAULT_PORT, *, idle_exit: float = 0.0,
+    link: PerformerLink | None = None,
 ) -> None:
-    """Serve until cancelled, or until idle for ``idle_exit`` seconds when that is set.
+    """Serve until cancelled, or until idle for ``idle_exit`` seconds when that is set, or until
+    the name ``link`` follows is gone when that is set.
 
     ``host`` None listens on every interface of the proxy's container: its address on the
-    job's network is not known when it starts.
+    job's network is not known when it starts. ``link``'s forwards listen on the same interfaces.
     """
+    link = link or PerformerLink()
     proxy = EgressProxy(allow)
     server = await asyncio.start_server(proxy.handle, host, port, limit=_HEAD_LIMIT + 1)
-    bound = server.sockets[0].getsockname()[1]
-    logger.info("egress_proxy.listening", host=host, port=bound, allowed=sorted(allow), idle_exit=idle_exit)
-    async with server:
+    servers = [server]
+    ends: list[asyncio.Future[None]] = []
+    idle: asyncio.Future[None] | None = None
+    try:
+        for listen, target_host, target_port in link.forwards:
+            handler = proxy.forward(target_host, target_port, within=link.within)
+            servers.append(await asyncio.start_server(handler, host, listen))
+        bound = server.sockets[0].getsockname()[1]
+        logger.info(
+            "egress_proxy.listening", host=host, port=bound, allowed=sorted(allow), idle_exit=idle_exit,
+            forwards=[f"{listen}={h}:{p}" for listen, h, p in link.forwards], follow=link.follow,
+        )
         if idle_exit > 0:
-            await _idle(proxy, idle_exit)
+            idle = asyncio.ensure_future(_idle(proxy, idle_exit))
+            ends.append(idle)
+        if link.follow:
+            within = link.within
+            resolve = link.resolve or functools.partial(resolves_within, within=within)
+            ends.append(asyncio.ensure_future(follow(link.follow, resolve=resolve, interval=link.interval)))
+        if not ends:
+            ends.append(asyncio.ensure_future(server.serve_forever()))
+        done, _pending = await asyncio.wait(ends, return_when=asyncio.FIRST_COMPLETED)
+        if idle in done:
             logger.info("egress_proxy.idle_exit", idle_seconds=idle_exit)
-        else:
-            await server.serve_forever()
+    finally:
+        for task in ends:
+            task.cancel()
+        await asyncio.gather(*ends, return_exceptions=True)
+        for each in servers:
+            each.close()
+        for each in servers:
+            with contextlib.suppress(Exception):
+                await each.wait_closed()
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -268,12 +452,27 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--host", default=None, help="the address to listen on (default: every interface)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--idle-exit", type=float, default=0.0, help="exit after this many seconds with no connection")
+    parser.add_argument(
+        "--forward", action="append", default=[], metavar="LISTEN=HOST:PORT",
+        help="449: also listen on LISTEN and relay each connection to HOST:PORT (repeatable)",
+    )
+    parser.add_argument("--follow", default=None, metavar="NAME", help="449: exit once NAME stops resolving")
+    parser.add_argument(
+        "--within", default=None, metavar="CIDR",
+        help="449: the performer's network; forwards and --follow use only addresses on it",
+    )
     args = parser.parse_args(argv)
     allow = parse_allowlist(args.allow)
     if not allow:
         parser.error("--allow names no host")
+    try:
+        forwards = [parse_forward(text) for text in args.forward]
+        within = ipaddress.ip_network(args.within) if args.within is not None else None
+    except ValueError as exc:
+        parser.error(str(exc))
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(serve(allow, args.host, args.port, idle_exit=args.idle_exit))
+        link = PerformerLink(forwards=forwards, follow=args.follow, within=within)
+        asyncio.run(serve(allow, args.host, args.port, idle_exit=args.idle_exit, link=link))
 
 
 if __name__ == "__main__":

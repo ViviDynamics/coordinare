@@ -363,7 +363,10 @@ def test_the_container_name_is_fixed_by_the_job_directory(tmp_path: Path) -> Non
 
 
 def test_the_isolation_of_the_roles_performer_applies(tmp_path: Path) -> None:
+    # 449: the default egress_mode is the proxy (tests/unit/test_449_performer_egress.py);
+    # iptables keeps the in-container baseline this asserts.
     jobs = DockerStageJobs(IMAGE, egress_allowlist=["api.github.com"], extra_hosts=["h:1.2.3.4"])
+    jobs.egress_mode = "iptables"
     args = jobs._isolation()
     assert args[2:4] == ["--cap-add", "NET_ADMIN"]
     assert "PERFORMER_EGRESS_ALLOWLIST=api.github.com" in args
