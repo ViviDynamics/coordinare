@@ -77,7 +77,9 @@ async def _open(host: str, port: int) -> tuple[asyncio.StreamReader, asyncio.Str
     return await asyncio.wait_for(asyncio.open_connection(host, port), _CONNECT_TIMEOUT_SECONDS)
 
 
-class _Refused(Exception):  # noqa: N818 - a request refused, with the answer to give
+class _RefusedError(Exception):
+    """A request refused, with the answer to give."""
+
     def __init__(self, code: int, reason: str) -> None:
         super().__init__(reason)
         self.code = code
@@ -104,7 +106,7 @@ class EgressProxy:
         self.activity.set()
         try:
             await self._serve(reader, writer)
-        except _Refused as refused:
+        except _RefusedError as refused:
             await _answer(writer, refused.code, refused.reason)
         except (OSError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError):
             pass
@@ -137,12 +139,12 @@ class EgressProxy:
         """A connection to ``host:port``, which must be allowed. Nothing is dialled otherwise."""
         if not (_valid_host(host) and allowed(host, self.allow)):
             logger.warning("egress_proxy.refused", host=host, port=port)
-            raise _Refused(403, f"{host} is not in the egress allowlist")
+            raise _RefusedError(403, f"{host} is not in the egress allowlist")
         try:
             upstream = await self._connect(_normal(host), port)
         except (OSError, TimeoutError) as exc:
             logger.warning("egress_proxy.unreachable", host=host, port=port, error=str(exc))
-            raise _Refused(502, f"could not reach {host}:{port}") from exc
+            raise _RefusedError(502, f"could not reach {host}:{port}") from exc
         logger.info("egress_proxy.allowed", host=host, port=port)
         return upstream
 
@@ -170,7 +172,7 @@ class EgressProxy:
 def _request_line(line: bytes) -> tuple[str, str, str]:
     parts = line.decode("latin-1").split(" ")
     if len(parts) != _REQUEST_LINE_PARTS or not parts[2].startswith("HTTP/"):
-        raise _Refused(400, "not an HTTP request")
+        raise _RefusedError(400, "not an HTTP request")
     return parts[0], parts[1], parts[2]
 
 
@@ -178,7 +180,7 @@ def _split_authority(target: str) -> tuple[str, int]:
     host, sep, port_text = target.rpartition(":")
     port = int(port_text) if sep and port_text.isascii() and port_text.isdigit() else 0
     if not host or not 0 < port <= _MAX_PORT or not _valid_host(host):
-        raise _Refused(400, "CONNECT needs host:port")
+        raise _RefusedError(400, "CONNECT needs host:port")
     return host, port
 
 
@@ -186,11 +188,11 @@ def _http_target(target: str) -> tuple[str, int, str]:
     """Host, port and origin-form path of an absolute ``http://`` request target."""
     url = urlsplit(target)
     if url.scheme.lower() != "http" or not url.hostname:
-        raise _Refused(400, "only CONNECT and absolute http:// requests are proxied")
+        raise _RefusedError(400, "only CONNECT and absolute http:// requests are proxied")
     try:
         port = url.port or 80
     except ValueError as exc:
-        raise _Refused(400, "bad port") from exc
+        raise _RefusedError(400, "bad port") from exc
     path = (url.path or "/") + (f"?{url.query}" if url.query else "")
     return url.hostname, port, path
 
@@ -231,9 +233,13 @@ async def _idle(proxy: EgressProxy, idle_exit: float) -> None:
 
 
 async def serve(
-    allow: frozenset[str], host: str = "0.0.0.0", port: int = DEFAULT_PORT, *, idle_exit: float = 0.0,  # noqa: S104
+    allow: frozenset[str], host: str | None = None, port: int = DEFAULT_PORT, *, idle_exit: float = 0.0,
 ) -> None:
-    """Serve until cancelled, or until idle for ``idle_exit`` seconds when that is set."""
+    """Serve until cancelled, or until idle for ``idle_exit`` seconds when that is set.
+
+    ``host`` None listens on every interface of the proxy's container: its address on the
+    job's network is not known when it starts.
+    """
     proxy = EgressProxy(allow)
     server = await asyncio.start_server(proxy.handle, host, port, limit=_HEAD_LIMIT + 1)
     bound = server.sockets[0].getsockname()[1]
@@ -249,7 +255,7 @@ async def serve(
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m performer.egress_proxy", description=__doc__)
     parser.add_argument("--allow", required=True, help="comma-separated hosts, exact names")
-    parser.add_argument("--host", default="0.0.0.0")  # noqa: S104 - its container's networks only
+    parser.add_argument("--host", default=None, help="the address to listen on (default: every interface)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--idle-exit", type=float, default=0.0, help="exit after this many seconds with no connection")
     args = parser.parse_args(argv)
