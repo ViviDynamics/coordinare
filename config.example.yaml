@@ -176,7 +176,11 @@ agent_executable: "bin/run-performer"  # portable wrapper (sources .env, runs vi
 #     #                                  # tunnels remain open, and other consumers of an
 #     #                                  # allowed IP are reachable. For durable enforcement
 #     #                                  # put a proxy (squid/envoy) in front of the
-#     #                                  # container instead.
+#     #                                  # container instead. Code in the container runs as
+#     #                                  # root with NET_ADMIN, so it can undo the rules.
+#     #                                  # 447: a QAre provider with `sandbox: sysbox`
+#     #                                  # enforces it outside the container instead
+#     #                                  # (docs/stage-providers.md, "Docker sandbox").
 
 #   # -------------------------------------------------------------------------
 #   # Claude Code — uses ANTHROPIC_API_KEY forwarded from coordinare environment.
@@ -380,9 +384,11 @@ modes:
 #     # sandbox: sysbox                   # 435: each run gets its own Docker engine, for profiles that
 #     #                                   # boot the app with docker compose. Off by default. Needs Sysbox
 #     #                                   # on a Linux Docker host (doctor checks `docker info`), an image
-#     #                                   # built from agent/performer/Dockerfile.sandbox, and a qa
-#     #                                   # endpoint without egress_allowlist. Never privileged, never the
-#     #                                   # host's Docker socket. See docs/stage-providers.md.
+#     #                                   # built from agent/performer/Dockerfile.sandbox. With the qa
+#     #                                   # endpoint's egress_allowlist, each run goes out only through
+#     #                                   # an allowlisting proxy outside its container (447). Never
+#     #                                   # privileged, never the host's Docker socket. See
+#     #                                   # docs/stage-providers.md.
 #     # profile: .qa                      # the QA profile's directory in each repository
 #     # work_dir: /var/lib/coordinare/qare   # default: beside state_file_path
 #     # env_passthrough: [OPENAI_API_KEY] # NAMES of variables QAre's nare may read
