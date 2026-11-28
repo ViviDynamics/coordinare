@@ -63,7 +63,7 @@ def _file(cmd: list[str], name: str) -> str:
     return pathlib.Path(_flag(cmd, name)).read_text(encoding="utf-8")
 
 
-def test_the_adapter_speaks_contract_3() -> None:
+def test_the_adapter_speaks_contract_4() -> None:
     assert CONTRACT_VERSION == "4"
 
 
