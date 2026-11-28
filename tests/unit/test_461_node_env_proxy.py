@@ -153,12 +153,12 @@ def test_the_sandbox_entry_point_without_a_proxy_sets_no_node_proxy_switch(tmp_p
 
 
 def test_qare_env_carries_the_node_proxy_switch_only_when_the_job_has_it() -> None:
-    proxied = {"PATH": "/usr/bin", "HTTPS_PROXY": "http://10.0.0.2:3128", "NODE_USE_ENV_PROXY": "1"}
+    proxied = {"PATH": "/usr/bin", "HTTPS_PROXY": "http://198.51.100.2:3128", "NODE_USE_ENV_PROXY": "1"}
     assert runner.qare_env(proxied, [])["NODE_USE_ENV_PROXY"] == "1"
     assert "NODE_USE_ENV_PROXY" not in runner.qare_env({"PATH": "/usr/bin"}, [])
 
 
 def test_progettare_env_carries_the_node_proxy_switch_only_when_the_job_has_it() -> None:
-    proxied = {"PATH": "/usr/bin", "HTTPS_PROXY": "http://10.0.0.2:3128", "NODE_USE_ENV_PROXY": "1"}
+    proxied = {"PATH": "/usr/bin", "HTTPS_PROXY": "http://198.51.100.2:3128", "NODE_USE_ENV_PROXY": "1"}
     assert progettare.progettare_env(proxied, {}, "")["NODE_USE_ENV_PROXY"] == "1"
     assert "NODE_USE_ENV_PROXY" not in progettare.progettare_env({"PATH": "/usr/bin"}, {}, "")
