@@ -56,9 +56,9 @@ want to inspect the result first. Forced setup keeps private backups. Advanced
 configurations that init refuses must have their performer images updated by
 the operator. See [Docker setup](docker-mode-setup.md).
 
-If any Docker endpoint sets `egress_allowlist`, every image those performers use
-must also be current before the daemon starts again, including images init does
-not manage. See [Egress allowlist: the proxy is now the default](#egress-allowlist-the-proxy-is-now-the-default).
+If any Docker endpoint sets `egress_allowlist` and does not opt out with
+`egress_mode: iptables`, every image those performers use must also be current
+before the daemon starts again, including images init does not manage. See [Egress allowlist: the proxy is now the default](#egress-allowlist-the-proxy-is-now-the-default).
 
 Check the configuration while the daemon is stopped:
 
@@ -91,9 +91,13 @@ proxy, and the performer no longer gets `NET_ADMIN` (#449). Endpoints without
 ### Update performer images before starting the upgraded daemon
 
 The proxy runs from the performer's own image. Images built before #448 have no
-`performer.egress_proxy` module, so with an allowlist every performer start
-fails at "attach its proxy", and the error says to rebuild the image. Nothing
-starts without the proxy.
+`performer.egress_proxy` module, so on an endpoint with an allowlist and the
+default `egress_mode: proxy` every performer start fails at "attach its proxy",
+and the error says to rebuild the image. Nothing starts without the proxy.
+`egress_mode` is new in this release, so every allowlisted endpoint starts out
+on the default. An endpoint set to `egress_mode: iptables` does not run the
+proxy and needs no new image, except for a QAre provider with
+`sandbox: sysbox`, which always uses the proxy.
 
 Update the images after installing the new release and before starting the
 daemon. The image update command above pulls and pins the matching release
