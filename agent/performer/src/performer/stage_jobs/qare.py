@@ -33,6 +33,7 @@ import json
 import os
 import shutil
 import signal
+import tempfile
 import time
 from http import HTTPStatus
 from pathlib import Path
@@ -41,7 +42,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from performer.stage_checkout import checkout_revisions, diff_revisions
-from performer.stage_jobs import CREDENTIAL_ENV, hand_back, scratch_dir, write_atomic
+from performer.stage_jobs import SCRATCH_PREFIX, CREDENTIAL_ENV, hand_back, scratch_dir, write_atomic
 from performer.workspace import WorkspaceSetupError
 
 if TYPE_CHECKING:
@@ -125,7 +126,7 @@ def _run_job(
         if resume is not None:
             started = float(resume["started"])
             run = _Run(job_dir, request, token="", env=source, started=started)
-            run.adopt(Path(resume["scratch"]))
+            run.adopt(_own_scratch(resume["scratch"]))
             status = asyncio.run(run.finish())
         elif restart is not None:
             run = _Run(job_dir, request, token=token, env=source, started=started)
@@ -356,6 +357,15 @@ def qare_env(env: dict[str, str], passthrough: list[str]) -> dict[str, str]:
         for name in names
         if name in env and name != CREDENTIAL_ENV and name not in BROWSER_CACHE_ENV
     }
+
+
+def _own_scratch(path: str) -> Path:
+    """450: a resumed run goes on only in a checkout directory a stage job makes, never another path."""
+    scratch = Path(path)
+    made = Path(tempfile.gettempdir())
+    if scratch.parent != made or not scratch.name.startswith(SCRATCH_PREFIX) or not scratch.is_dir():
+        raise _StopError({"outcome": ERROR, "step": "checkout", "reason": "the checkout to go on from is not this job's"})
+    return scratch
 
 
 def _append(log: Path, heading: str, argv: list[str], text: str) -> None:

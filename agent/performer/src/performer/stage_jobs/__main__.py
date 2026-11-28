@@ -9,8 +9,9 @@ the token over through a pipe that is read once and closed.
 450: a QAre job then starts itself once more, after its checkout and diff and before QAre
 runs anything of the pull request's: the process that waits on QAre, while that code runs
 as root beside it, never held the token, so its memory has no copy either. What the fresh
-process needs to go on (the checkout's directory, when the run started) arrives in
-:data:`RESUME_ENV`; it holds no secret.
+process needs to go on (the checkout's directory, when the run started) arrives as the
+arguments ``--resume <json>``, which hold no secret. Not in the environment: the container's
+carries the operator's ``env_passthrough`` names, and none of them may steer the hand-over.
 """
 from __future__ import annotations
 
@@ -27,8 +28,8 @@ KINDS = ("qare", "progettare")
 _ARGS = 2
 #: The descriptor the token is handed over on, after the entry started itself again.
 HANDOVER_FD_ENV = "COORDINARE_STAGE_HANDOVER_FD"
-#: 450: what a QAre job's last process goes on from, after the steps that need the token.
-RESUME_ENV = "COORDINARE_STAGE_RESUME"
+#: 450: the argument a QAre job's last process goes on from, after the steps that need the token.
+RESUME_ARG = "--resume"
 
 
 def _restart_without_token(args: list[str], token: str) -> None:
@@ -45,10 +46,10 @@ def _restart_without_token(args: list[str], token: str) -> None:
 def _restart_after_checkout(args: list[str], state: dict[str, Any]) -> None:
     """Replace this process, which held the token, with one that never did."""
     env = {k: v for k, v in os.environ.items() if k not in (CREDENTIAL_ENV, HANDOVER_FD_ENV)}
-    env[RESUME_ENV] = json.dumps(state)
     sys.stdout.flush()
     sys.stderr.flush()
-    os.execve(sys.executable, [sys.executable, "-m", "performer.stage_jobs", *args], env)  # noqa: S606
+    argv = [sys.executable, "-m", "performer.stage_jobs", *args, RESUME_ARG, json.dumps(state)]
+    os.execve(sys.executable, argv, env)  # noqa: S606
 
 
 def _handed_over_token() -> str:
@@ -75,9 +76,11 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     # Out of the environment before anything else runs, so no child inherits it.
     token = os.environ.pop(CREDENTIAL_ENV, "")
-    resume = os.environ.pop(RESUME_ENV, "")
     if token and entry and hasattr(os, "execve"):
         _restart_without_token(args, token)
+    resume = ""
+    if len(args) == _ARGS + 2 and args[_ARGS] == RESUME_ARG:
+        resume, args = args[_ARGS + 1], args[:_ARGS]
     token = "" if resume else token or _handed_over_token()
     if len(args) != _ARGS or args[0] not in KINDS:
         sys.stderr.write(f"usage: python -m performer.stage_jobs <{'|'.join(KINDS)}> <job dir>\n")

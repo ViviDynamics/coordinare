@@ -239,13 +239,15 @@ def test_a_resumed_run_whose_checkout_is_gone_ends_with_an_error(tmp_path: Path)
     assert "checkout" in status["reason"]
 
 
-def _start_job(tmp_path: Path, **scene: Any) -> tuple[subprocess.Popen[bytes], Path, Path]:
+def _start_job(
+    tmp_path: Path, extra_env: dict[str, str] | None = None, **scene: Any,
+) -> tuple[subprocess.Popen[bytes], Path, Path]:
     """The real entry, ``python -m performer.stage_jobs qare``, with the token as Docker gives it."""
     web, _base, head = make_remote(tmp_path, profile_on_head=True)
     path = scenario(tmp_path, **scene)
     job = tmp_path / "jobs" / "coordinare.qa.abc.1"
     request_spec(job, web_base=web, base=head, head=head)  # one-sided: no compare diff to fetch
-    env = container_env(env={"FAKE_QARE_SCENARIO": str(path), CREDENTIAL_ENV: TOKEN})
+    env = container_env(env={"FAKE_QARE_SCENARIO": str(path), CREDENTIAL_ENV: TOKEN, **(extra_env or {})})
     with (job / "job.log").open("ab") as log:
         process = subprocess.Popen(
             [sys.executable, "-m", "performer.stage_jobs", "qare", str(job)],
@@ -362,16 +364,42 @@ def test_dockerd_keeps_the_certificates_the_operator_passes(tmp_path: Path) -> N
 def test_a_resume_state_that_cannot_be_read_still_ends_with_a_status(tmp_path: Path, state: str) -> None:
     job = tmp_path / "jobs" / "coordinare.qa.abc.1"
     request_spec(job, web_base="file:///x", base="a" * 40, head="b" * 40)
-    env = container_env(env={"COORDINARE_STAGE_RESUME": state})
-    done = subprocess.run([sys.executable, "-m", "performer.stage_jobs", "qare", str(job)], env=env,
-                          capture_output=True, text=True, timeout=60, check=False)
+    done = subprocess.run([sys.executable, "-m", "performer.stage_jobs", "qare", str(job), "--resume", state],
+                          env=container_env(), capture_output=True, text=True, timeout=60, check=False)
     assert done.returncode == 0, done.stderr
     assert json.loads((job / runner.STATUS_FILE).read_text())["outcome"] == runner.ERROR
 
 
 def test_only_a_qare_job_resumes(tmp_path: Path) -> None:
-    env = container_env(env={"COORDINARE_STAGE_RESUME": json.dumps({"scratch": str(tmp_path), "started": 0})})
-    done = subprocess.run([sys.executable, "-m", "performer.stage_jobs", "progettare", str(tmp_path)], env=env,
-                          capture_output=True, text=True, timeout=60, check=False)
+    state = json.dumps({"scratch": str(tmp_path), "started": 0})
+    done = subprocess.run([sys.executable, "-m", "performer.stage_jobs", "progettare", str(tmp_path), "--resume", state],
+                          env=container_env(), capture_output=True, text=True, timeout=60, check=False)
     assert done.returncode == 2
     assert "resume" in done.stderr
+
+
+def _victim(tmp_path: Path) -> Path:
+    victim = tmp_path / "victim"
+    (victim / "repo").mkdir(parents=True)
+    (victim / "keep.txt").write_text("not the job's")
+    return victim
+
+
+def test_a_resume_state_in_the_environment_is_ignored(tmp_path: Path) -> None:
+    """The container's environment carries env_passthrough names: none of them can steer the hand-over."""
+    victim = _victim(tmp_path)
+    state = json.dumps({"scratch": str(victim), "started": time.monotonic()})
+    process, job, path = _start_job(tmp_path, {"COORDINARE_STAGE_RESUME": state})
+    assert process.wait(timeout=120) == 0, (job / "job.log").read_text()
+    assert json.loads((job / runner.STATUS_FILE).read_text())["outcome"] == runner.RAN
+    assert [c["argv"][0] for c in calls(path)] == ["--version", "plan", "run"]
+    assert (victim / "keep.txt").exists()
+
+
+def test_a_resume_outside_the_jobs_own_checkouts_is_refused_and_left_alone(tmp_path: Path) -> None:
+    victim = _victim(tmp_path)
+    job = tmp_path / "jobs" / "coordinare.qa.abc.1"
+    request_spec(job, web_base="file:///x", base="a" * 40, head="b" * 40)
+    status = runner.resume_job(job, {"scratch": str(victim), "started": time.monotonic()})
+    assert status["outcome"] == runner.ERROR
+    assert (victim / "keep.txt").exists()
