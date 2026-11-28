@@ -9,7 +9,7 @@ scripts/validate_environment_repositories.main with unchanged gates. Budgets: 8 
 CPU's guest as alternate.
 
 usage: 353-launch.py REPO LABEL --base sha256:IMAGE --head SHA [--reuse-scope-from DIR] [--no-execute] [--unattended]
-       [--resume-from DIR [--resume-attempt N] [--resume-max-repairs N]]
+       [--resume-from DIR [--resume-attempt N] [--resume-max-repairs N] [--resume-seconds S]]
 
 --unattended (Jason, 2026-11-01): probes and execution run without operator approval, as in the daemon.
 
@@ -46,6 +46,8 @@ parser.add_argument('--resume-from', type=Path, default=None,
                     help='DEBUG ONLY, never gate evidence: a finished run directory whose accepted contract is executed')
 parser.add_argument('--resume-attempt', type=int, default=None, help='the source attempt-00N (default: the last accepted)')
 parser.add_argument('--resume-max-repairs', type=int, default=0, help='execution repairs for a resumed run (default 0)')
+parser.add_argument('--resume-seconds', type=int, default=None,
+                    help='attempt seconds for a resumed run (default one hour, plus one per raised repair; at most 8 h)')
 args = parser.parse_args()
 RESUME_ATTEMPT_SECONDS = 3600
 RESUME_MODEL_CALLS = 512
@@ -93,9 +95,10 @@ if args.resume_from is not None:
     require(not args.no_execute, '--resume-from exists only to execute; it cannot be combined with --no-execute')
     require((args.resume_from/args.repo/'result.json').is_file(), 'resume source has no result.json (unfinished run)')
     require(0 <= args.resume_max_repairs <= 8, '--resume-max-repairs must be between 0 and 8')
+    require(args.resume_seconds is None or 600 <= args.resume_seconds <= 28800, '--resume-seconds must be 600 to 28800')
 else:
-    require(args.resume_attempt is None and args.resume_max_repairs == 0,
-            '--resume-attempt and --resume-max-repairs require --resume-from')
+    require(args.resume_attempt is None and args.resume_max_repairs == 0 and args.resume_seconds is None,
+            '--resume-attempt, --resume-max-repairs and --resume-seconds require --resume-from')
 space = subprocess.run(['docker', 'run', '--rm', '--pull', 'never', '--network', 'none', '--read-only', '--cap-drop',
     'ALL', '--security-opt', 'no-new-privileges', '--entrypoint', 'python', args.base,
     '-c', 'import os; s=os.statvfs("/"); print(s.f_bavail*s.f_frsize)'], capture_output=True, text=True, check=True,
@@ -173,7 +176,8 @@ def annotated_write(path, value):
                  'validated_head': head}
         if args.resume_from is not None:
             value['resumed_from'] = {'source_dir': str(args.resume_from.resolve()), 'attempt': args.resume_attempt,
-                                     'max_execution_repairs': args.resume_max_repairs}
+                                     'max_execution_repairs': args.resume_max_repairs,
+                                     'attempt_seconds': args.resume_seconds}
             value['gate_eligible'] = False
     original_write(path, value)
 
@@ -215,7 +219,8 @@ with candidate_image(args.base, IMAGE_OUTPUT, allow_local_image_id=True) as imag
           if args.resume_from is None else
           ['--max-model-calls', str(RESUME_MODEL_CALLS),
            # Each raised repair needs its own discovery and execution time; the product caps an attempt at 8 h.
-           '--attempt-timeout', str(min(28800, RESUME_ATTEMPT_SECONDS * (1 + args.resume_max_repairs))),
+           '--attempt-timeout', str(args.resume_seconds if args.resume_seconds is not None
+                                    else min(28800, RESUME_ATTEMPT_SECONDS * (1 + args.resume_max_repairs))),
            '--max-execution-repairs', str(args.resume_max_repairs), '--resume-from', str(args.resume_from.resolve()),
            *(['--resume-attempt', str(args.resume_attempt)] if args.resume_attempt is not None else [])]),
         *(['--reuse-scope-from', str(args.reuse_scope_from)] if args.reuse_scope_from is not None else []),
