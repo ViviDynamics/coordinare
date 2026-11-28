@@ -20,14 +20,17 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 import pytest
+from performer.stage_jobs import SCRATCH_PREFIX
 from performer.stage_jobs import qare as runner
 
 from coordinare.services.stage_jobs import CREDENTIAL_ENV, EGRESS_PROXY_ENV
@@ -240,14 +243,16 @@ def test_a_resumed_run_whose_checkout_is_gone_ends_with_an_error(tmp_path: Path)
 
 
 def _start_job(
-    tmp_path: Path, extra_env: dict[str, str] | None = None, **scene: Any,
+    tmp_path: Path, extra_env: dict[str, str] | None = None, *, with_token: bool = True, **scene: Any,
 ) -> tuple[subprocess.Popen[bytes], Path, Path]:
     """The real entry, ``python -m performer.stage_jobs qare``, with the token as Docker gives it."""
     web, _base, head = make_remote(tmp_path, profile_on_head=True)
     path = scenario(tmp_path, **scene)
     job = tmp_path / "jobs" / "coordinare.qa.abc.1"
     request_spec(job, web_base=web, base=head, head=head)  # one-sided: no compare diff to fetch
-    env = container_env(env={"FAKE_QARE_SCENARIO": str(path), CREDENTIAL_ENV: TOKEN, **(extra_env or {})})
+    env = container_env(env={"FAKE_QARE_SCENARIO": str(path), **(extra_env or {})})
+    if with_token:
+        env[CREDENTIAL_ENV] = TOKEN
     with (job / "job.log").open("ab") as log:
         process = subprocess.Popen(
             [sys.executable, "-m", "performer.stage_jobs", "qare", str(job)],
@@ -385,15 +390,21 @@ def _victim(tmp_path: Path) -> Path:
     return victim
 
 
-def test_a_resume_state_in_the_environment_is_ignored(tmp_path: Path) -> None:
+@pytest.mark.parametrize("with_token", [True, False], ids=["token", "no-token"])
+def test_a_resume_state_in_the_environment_is_ignored(tmp_path: Path, with_token: bool) -> None:
     """The container's environment carries env_passthrough names: none of them can steer the hand-over."""
-    victim = _victim(tmp_path)
-    state = json.dumps({"scratch": str(victim), "started": time.monotonic()})
-    process, job, path = _start_job(tmp_path, {"COORDINARE_STAGE_RESUME": state})
-    assert process.wait(timeout=120) == 0, (job / "job.log").read_text()
-    assert json.loads((job / runner.STATUS_FILE).read_text())["outcome"] == runner.RAN
-    assert [c["argv"][0] for c in calls(path)] == ["--version", "plan", "run"]
-    assert (victim / "keep.txt").exists()
+    victim = Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX))  # looks like a checkout of a stage job's own
+    try:
+        (victim / "repo").mkdir()
+        (victim / "keep.txt").write_text("not this job's")
+        state = json.dumps({"scratch": str(victim), "started": time.monotonic()})
+        process, job, path = _start_job(tmp_path, {"COORDINARE_STAGE_RESUME": state}, with_token=with_token)
+        assert process.wait(timeout=120) == 0, (job / "job.log").read_text()
+        assert json.loads((job / runner.STATUS_FILE).read_text())["outcome"] == runner.RAN
+        assert [c["argv"][0] for c in calls(path)] == ["--version", "plan", "run"]
+        assert (victim / "keep.txt").exists()
+    finally:
+        shutil.rmtree(victim, ignore_errors=True)
 
 
 def test_a_resume_outside_the_jobs_own_checkouts_is_refused_and_left_alone(tmp_path: Path) -> None:
@@ -403,3 +414,44 @@ def test_a_resume_outside_the_jobs_own_checkouts_is_refused_and_left_alone(tmp_p
     status = runner.resume_job(job, {"scratch": str(victim), "started": time.monotonic()})
     assert status["outcome"] == runner.ERROR
     assert (victim / "keep.txt").exists()
+
+
+def test_a_resumed_run_whose_own_checkout_is_gone_says_so(tmp_path: Path) -> None:
+    gone = Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX))
+    gone.rmdir()
+    job = tmp_path / "jobs" / "coordinare.qa.abc.1"
+    request_spec(job, web_base="file:///x", base="a" * 40, head="b" * 40)
+    status = runner.resume_job(job, {"scratch": str(gone), "started": time.monotonic()})
+    assert status["outcome"] == runner.ERROR
+    assert status["reason"] == "the checkout is gone"
+
+
+def test_a_resume_through_a_link_that_looks_like_a_checkout_is_refused(tmp_path: Path) -> None:
+    victim = _victim(tmp_path)
+    link = Path(tempfile.gettempdir()) / f"{SCRATCH_PREFIX}link-{uuid.uuid4().hex[:8]}"
+    link.symlink_to(victim, target_is_directory=True)
+    try:
+        job = tmp_path / "jobs" / "coordinare.qa.abc.1"
+        request_spec(job, web_base="file:///x", base="a" * 40, head="b" * 40)
+        status = runner.resume_job(job, {"scratch": str(link), "started": time.monotonic()})
+        assert status["outcome"] == runner.ERROR
+        assert "not this job's" in status["reason"]
+        assert (victim / "keep.txt").exists()
+    finally:
+        link.unlink()
+
+
+def test_a_resumed_entry_still_closes_any_handover_pipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Whatever the arguments, a token on the handover pipe is read and the pipe closed, never left open."""
+    from performer.stage_jobs import __main__ as entry
+
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, TOKEN.encode())
+    os.close(write_fd)
+    monkeypatch.setenv(entry.HANDOVER_FD_ENV, str(read_fd))
+    monkeypatch.setattr(runner, "resume_job", lambda job_dir, state, **_: {})
+    state = json.dumps({"scratch": str(tmp_path), "started": 0})
+    assert entry.main(["qare", str(tmp_path), entry.RESUME_ARG, state]) == 0
+    assert entry.HANDOVER_FD_ENV not in os.environ
+    with pytest.raises(OSError):
+        os.fstat(read_fd)

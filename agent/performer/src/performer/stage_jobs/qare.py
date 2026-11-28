@@ -360,10 +360,11 @@ def qare_env(env: dict[str, str], passthrough: list[str]) -> dict[str, str]:
 
 
 def _own_scratch(path: str) -> Path:
-    """450: a resumed run goes on only in a checkout directory a stage job makes, never another path."""
+    """450: a resumed run goes on only in a checkout directory a stage job makes, never another
+    path, nor a link to one. One that is gone is left to :meth:`_Run.finish` to report."""
     scratch = Path(path)
     made = Path(tempfile.gettempdir())
-    if scratch.parent != made or not scratch.name.startswith(SCRATCH_PREFIX) or not scratch.is_dir():
+    if scratch.parent != made or not scratch.name.startswith(SCRATCH_PREFIX) or scratch.is_symlink():
         raise _StopError({"outcome": ERROR, "step": "checkout", "reason": "the checkout to go on from is not this job's"})
     return scratch
 

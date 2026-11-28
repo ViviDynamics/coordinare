@@ -81,7 +81,10 @@ def main(argv: list[str] | None = None) -> int:
     resume = ""
     if len(args) == _ARGS + 2 and args[_ARGS] == RESUME_ARG:
         resume, args = args[_ARGS + 1], args[:_ARGS]
-    token = "" if resume else token or _handed_over_token()
+    # A token on the handover pipe is always read and the pipe closed, so it is never left
+    # open for /proc/<pid>/fd to show; a resumed run then drops it.
+    handed = _handed_over_token()
+    token = "" if resume else token or handed
     if len(args) != _ARGS or args[0] not in KINDS:
         sys.stderr.write(f"usage: python -m performer.stage_jobs <{'|'.join(KINDS)}> <job dir>\n")
         return 2
