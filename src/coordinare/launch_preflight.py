@@ -408,9 +408,14 @@ def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
         if endpoint.mode != "subprocess"
         for role in endpoint.roles
     }
+    provider_roles = 0
     for role in CANONICAL_ORDER:
         resolved = config.performers.resolved_role(role)
         if resolved is None or resolved.max_concurrency == 0:
+            continue
+        if resolved.provider:
+            # 451: a stage provider runs its own harness; check_stage_providers checks it.
+            provider_roles += 1
             continue
         if resolved.transport not in (None, "subprocess"):
             continue
@@ -419,7 +424,9 @@ def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
             continue
         harnesses.add(resolved.backend.replace("-", "_").lower())
         executables.add(executable)
-    if not executables and config.agent_executable and not http_roles:
+    # 451: with every active role on a stage provider, nothing dispatches to a performer.
+    provider_only = provider_roles > 0 and not harnesses and not http_roles
+    if not executables and config.agent_executable and not http_roles and not provider_only:
         executables.add(config.agent_executable)
     for harness in sorted(harnesses):
         binary = HARNESS_COMMANDS.get(harness, harness)
@@ -448,7 +455,7 @@ def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
                 ),
             ),
         )
-    if not executables and not http_roles:
+    if not executables and not http_roles and not provider_only:
         results.append(
             CheckResult(
                 "performer transport",
@@ -486,6 +493,7 @@ def _container_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
             for role in endpoint.roles
             if (resolved := config.performers.resolved_role(role)) is not None
             and resolved.max_concurrency > 0
+            and not resolved.provider
         }
         if not harnesses:
             harnesses = {endpoint.env.get("BACKEND", "nare").replace("-", "_").lower()}
