@@ -170,6 +170,7 @@ from coordinare.services.environment_response_schema import (
 )
 from coordinare.services.environment_scope import (
     DEPLOYMENT_IMAGE_RULE,
+    FINDING_LEDGER_RULES,
     RELEASE_CATEGORIES,
     REMOTE_STATE_RULE,
     RUNTIME_NETWORK_RULE,
@@ -358,16 +359,12 @@ EXECUTABLE_REVIEW_CRITERIA = (
     'Explicitly decide EVERY retained finding ID, including previously resolved findings, against this candidate. '
     'Use open or resolved with repository citations; silence or calling an objection non-blocking cannot close it. '
     'Report new blocking findings with category, issue, sources and affected_ids; the daemon assigns IDs. '
-    'Do not re-add retained objections as new findings, even under different wording. '
-    'Consolidate duplicate entries using a resolved decision with duplicate_of naming the original retained ID. '
-    'The original needs its own independent decision and stays blocking while open. '
-    'If a new blocking objection cannot fit the findings capacity, return indeterminate; never omit it to accept. '
+    'A duplicate is decided resolved. ' + FINDING_LEDGER_RULES +
     'accept requires no open or new findings; revise requires an open or new finding; indeterminate requires an open '
     'or new finding naming the missing or conflicting evidence. '
     'Set capability_unavailable true only for an open/new cited capability that this consumer cannot supply. '
     'If impossibility is unproven, set capability_unavailable false and retain a blocking finding '
     'requiring discovery to obtain operational capability evidence; this does not accept coverage. '
-    'The requested project environment scope is fixed by pinned development/test evidence, not image convenience. '
     'A false-positive or out-of-scope explanation needs independently cited reasoning and cannot weaken required obligations. '
     'The one exception: a required obligation that a release rule below covers is not repaired. Raise a finding with '
     'category remote_state, runtime_network or deployment_image naming its checks; the daemon reopens independent scope '

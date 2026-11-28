@@ -73,6 +73,8 @@
    "targets": ["finding:deployment_image"]},
   {"anchor": "TEST_OPERATION_RULE", "file": "src/coordinare/services/environment_scope.py",
    "targets": ["check_timeout_ceiling"], "failure_patterns": ["(?i)timed out after"]},
+  {"anchor": "FINDING_LEDGER_RULES", "file": "src/coordinare/services/environment_scope.py",
+   "targets": ["review_findings_invalid", "review_indeterminate"]},
   {"anchor": "REVIEW_INSTRUCTIONS", "file": "src/coordinare/services/environment_scope.py",
    "targets": ["review_findings_invalid", "scope_response_ids_invalid", "schema_cites_unread"]},
   {"anchor": "GRANULARITY_GUIDANCE", "file": "src/coordinare/services/environment_scope.py",
