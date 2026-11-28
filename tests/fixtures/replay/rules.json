@@ -30,7 +30,7 @@
   {"anchor": "RUNTIME_DOCKER", "file": "src/coordinare/services/environment_discovery.py",
    "targets": [], "failure_patterns": ["(?i)permission denied: '?/tmp", "Host key verification failed",
                                        "Permission denied \\(publickey\\)", "StrictHostKeyChecking"]},
-  {"anchor": "EXECUTION_RULES", "file": "src/coordinare/services/environment_discovery.py",
+  {"anchor": "EXECUTION_RULES", "file": "src/coordinare/services/environment_discovery_prompts.py",
    "targets": ["shell_local_template_reference"], "failure_patterns": ["(?i)read-only file system"]},
   {"anchor": "UNRUN_CHECKS_REVIEW", "file": "src/coordinare/services/environment_discovery.py", "targets": []},
   {"anchor": "RESTORED_RECORDS_REVIEW", "file": "src/coordinare/services/environment_discovery.py", "targets": []},

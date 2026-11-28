@@ -89,6 +89,7 @@ from coordinare.services.environment_delta_schema import ManifestDelta, apply_de
 from coordinare.services.environment_discovery_prompts import (
     ARCHIVE_MODES,
     COMMAND_RULES,
+    EXECUTION_RULES,
     LOCAL_CREDENTIAL_REVIEW,
     NATIVE_SOURCE_INSTRUCTIONS,
     SOURCE_TOOLS,
@@ -297,35 +298,6 @@ RUNTIME_DOCKER = (
     'directories land there.'
 )
 # Where commands run, stated once for the author and every reviewer (both packets carry it). Its parts' history:
-# nare-native-021: every install and check passed, then the clean consumer failed five checks: the project was an
-# editable install bound to the install-time checkout, and one check resolved dependencies over the network.
-# nare-native-023: the clean consumer failed because the package manager and linter wrote their caches into {cache}.
-# nare-native-034: reviewers read "{cache} is read-only" as forbidding reads too, and two findings asked opposite things.
-EXECUTION_RULES = (
-    "{repo} is disposable pinned source: a git checkout of the pinned tree with a detached HEAD, no remote and no "
-    "earlier history (git status, diff, ls-files and worktrees work there; fetching or comparing against another "
-    "branch does not). {cache} persists across jobs, and {scratch} is fresh writable storage. They may have different "
-    "absolute paths in installer, verifier and consumer, so persisted artifacts must not reference installer-only "
-    "absolute source or scratch paths. Writes to the installer image filesystem and source checkout are discarded; "
-    "only {cache} survives, and required installed artifacts must persist there and work in a fresh image with the "
-    "cache read-only. Install the project itself into {cache} as a copy, never as a link back to the install-time "
-    "checkout (an editable or development install of the checked-out project fails in the clean consumer). "
-    "Even in the installer execution, services and checks run in a copy of {repo} taken before any install: "
-    "a package install into {repo} (such as node_modules or vendor) is invisible to them, so install into "
-    "{cache} and point the tool there (PATH, NODE_PATH, a config path) or link it into {repo} in the check. "
-    "They run again in a clean consumer: a fresh copy of {repo} at another path, with no network. They see {cache} "
-    "read-only there and in the installer: they read what the installs persisted in {cache}, which is how they use "
-    "it, but every file a tool writes while they run (a lockfile, tool cache, HOME or build output) goes under "
-    "{scratch}, never into {cache}. "
-    "A check uses the environment the installs built directly (its interpreter, binaries, or a run command that does "
-    "not sync) and verifies installed state without installer-only prerequisites; it never resolves, downloads or "
-    "re-syncs dependencies, not even offline, since a re-sync must write a cache, lock or environment. "
-    "Use {repo}/{cache}/{scratch} roots literally: the runner expands ${NAME} before starting the command, only for "
-    "runtime environment variables, so the lowercase ${repo}, ${cache} and ${scratch} are not defined, and a "
-    "variable a command assigns inside bash -c is $name, not ${name}. "
-    "argv executes a program without a shell; shell builtins require explicit bash -c. "
-    "Commands run in separate processes: source/cd/export do not persist."
-)
 # nare-native-043: reviewers held findings open for want of recorded results of checks the candidate had just added.
 UNRUN_CHECKS_REVIEW = (
     'A check or service this candidate adds or changes has not run: execution follows acceptance. Judge it by its '

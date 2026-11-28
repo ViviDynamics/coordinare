@@ -12,6 +12,7 @@ from coordinare.services.agent_runtime.nare_runtime import NareRuntime
 from coordinare.services.environment_agent import EnvironmentAgentContext
 from coordinare.services.environment_attempt import AttemptBudget
 from coordinare.services.environment_discovery import discover_and_review
+from coordinare.services.environment_discovery_prompts import EXECUTION_RULES
 from tests.unit.scope_chat_fixture import FixtureAssertionError
 from tests.unit.test_351_environment_discovery import CAPABILITIES
 from tests.unit.test_353_shard_scope import COMMIT, ENTRIES, LIMITS, SOURCES, Router, criterion
@@ -28,6 +29,7 @@ async def test_divided_native_authoring_merges_all_criteria_without_global_mappi
                                      'cross_references': [], 'questions': []}}
     router = ManyCriteria()
     phases = []
+    briefed: list[str] = []
     budget = AttemptBudget(max_calls=256)
     class Runtime:
         async def run(self, req: Any) -> Any:
@@ -50,6 +52,9 @@ async def test_divided_native_authoring_merges_all_criteria_without_global_mappi
                         answer = {'manifest': global_part(requirements=[{'id': 'tool', 'description': 'Fixture tool',
                             'source': 'README.md', 'checks': ['toolchain'], 'required': True}]), 'finding_responses': []}
                     elif req.identity.phase == 'executable_checks':
+                        # Check authors are told where checks run (read-only {cache}, writes under {scratch}).
+                        assert content['execution_rules'] == EXECUTION_RULES
+                        briefed.append(content['check_id_prefix'])
                         check = content['check_id_prefix'] + 'smoke'
                         answer = {'shard_checks': {'checks': [{'id': check, 'argv': ['true']}],
                             'criterion_checks': {c['id']: [check] for c in content['assigned_criteria']}}}
@@ -72,6 +77,7 @@ async def test_divided_native_authoring_merges_all_criteria_without_global_mappi
     manifest, review = await discover_and_review(symphony_name='suite', commit=COMMIT, paths=list(SOURCES),
         entries=ENTRIES, fetch=fetch, chat=legacy, capabilities=CAPABILITIES, budget=budget, limits=LIMITS)
     assert review.verdict == 'accept' and review.manifest_digest == manifest.digest()
+    assert briefed, 'no check author was briefed'
     assert len(manifest.scope_contract.definition.criteria) > 25
     assert set(manifest.criterion_checks) == {c.id for c in manifest.scope_contract.definition.criteria}
     assert phases.count('executable_checks') >= 2 and phases.count('review') >= 3

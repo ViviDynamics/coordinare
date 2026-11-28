@@ -39,6 +39,7 @@ from coordinare.services.environment_attempt import EnvironmentDiscoveryError
 from coordinare.services.environment_delta_schema import apply_group_delta
 from coordinare.services.environment_discovery_prompts import (
     COMMAND_RULES,
+    EXECUTION_RULES,
     source_navigation,
     source_tool_guidance,
 )
@@ -763,6 +764,8 @@ class DividedConstruction:
                             retirable=self.retirable)
         brief = canonical({
             'check_id_prefix': group.prefix,
+            # Check authors were never told where checks run (read-only {cache}, writes under {scratch}).
+            'execution_rules': EXECUTION_RULES,
             'delta_instruction': source_tool_guidance(self.context.budget, DELTA_CHECK_INSTRUCTION),
             **({'carrier_process_policy': self.carrier_process_policy} if self.carrier_process_policy is not None else {}),
             'closure_checks': plan.closure_checks(group), 'closure_criteria': plan.closure_criteria(frozenset(group.ids)),
@@ -821,6 +824,8 @@ class DividedConstruction:
                             retirable=self.retirable)
         brief = canonical({
             'check_id_prefix': group.prefix,
+            # Check authors were never told where checks run (read-only {cache}, writes under {scratch}).
+            'execution_rules': EXECUTION_RULES,
             **({'carrier_process_policy': self.carrier_process_policy} if self.carrier_process_policy is not None else {}),
             'assigned_criteria': [criterion.model_dump(mode='json') for criterion in group.criteria],
             'global_part': dict(summary), 'probe_evidence': list(probes), 'bound_inputs': index,
