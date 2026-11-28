@@ -14,7 +14,7 @@ from pathlib import PurePosixPath
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 #: Roles each provider kind can fill; the stage contract itself is shared.
 PROVIDER_ROLES: dict[str, frozenset[str]] = {
@@ -115,6 +115,9 @@ class ScrutareProviderConfig(BaseModel):
 #: 442: variables that would move QAre's browser cache away from what the image links in.
 _QARE_BROWSER_CACHE_ENV = frozenset({"XDG_CACHE_HOME", "PLAYWRIGHT_BROWSERS_PATH"})
 _QARE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+_-]*$")
+#: 435: variables that point a Docker, BuildKit or Podman client at a daemon. A sandboxed run
+#: must talk only to its own engine, so none of them may be passed through.
+_DOCKER_CLIENT_ENV = re.compile(r"^(DOCKER_|BUILDKIT_|BUILDX_|COMPOSE_|CONTAINER_HOST$|CONTAINERD_)")
 
 
 class QAreProviderConfig(BaseModel):
@@ -209,6 +212,18 @@ class QAreProviderConfig(BaseModel):
                 )
                 raise ValueError(msg)
         return list(dict.fromkeys(value))
+
+    @model_validator(mode="after")
+    def _sandbox_talks_only_to_its_own_engine(self) -> QAreProviderConfig:
+        if self.sandbox is not None:
+            clients = [name for name in self.env_passthrough if _DOCKER_CLIENT_ENV.match(name)]
+            if clients:
+                msg = (
+                    f"env_passthrough must not name {', '.join(clients)} with a sandbox: a Docker client "
+                    "variable could point the run at another daemon instead of the sandbox's own engine"
+                )
+                raise ValueError(msg)
+        return self
 
 
 class ProgettareProviderConfig(BaseModel):

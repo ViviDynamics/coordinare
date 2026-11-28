@@ -175,6 +175,16 @@ def test_sysbox_is_the_one_sandbox_the_config_accepts() -> None:
             QAreProviderConfig(kind="qare", version=VERSION, sandbox=wrong)
 
 
+@pytest.mark.parametrize("name", ["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+                                  "DOCKER_CONFIG", "BUILDKIT_HOST", "CONTAINER_HOST"])
+def test_a_sandbox_never_passes_a_docker_client_variable(name: str) -> None:
+    """A passed DOCKER_HOST would point the job at another daemon instead of its own engine."""
+    with pytest.raises(ValidationError, match="sandbox"):
+        QAreProviderConfig(kind="qare", version=VERSION, sandbox="sysbox", env_passthrough=["OPENAI_API_KEY", name])
+    # Off, #432's validation is unchanged.
+    assert name in QAreProviderConfig(kind="qare", version=VERSION, env_passthrough=[name]).env_passthrough
+
+
 def test_progettare_has_no_sandbox() -> None:
     with pytest.raises(ValidationError):
         ProgettareProviderConfig(kind="progettare", version="2026.11.2", runs_dir="/runs",

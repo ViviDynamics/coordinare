@@ -229,7 +229,9 @@ without privilege (#435). It is off by default; off, runs are exactly as describ
 
 - **How.** The run's container (and the container that checks QAre's version) starts with
   `--runtime=sysbox-runc` and nothing else added: never `--privileged`, never a Docker
-  socket, no seccomp or AppArmor change. Sysbox gives the container its own user namespace,
+  socket, no seccomp or AppArmor change. With a sandbox, `env_passthrough` may not name a
+  Docker client variable (`DOCKER_*`, `BUILDKIT_*`, `BUILDX_*`, `COMPOSE_*`, `CONTAINERD_*`,
+  `CONTAINER_HOST`), which could point the run at another daemon; it is refused at load. Sysbox gives the container its own user namespace,
   so its root is an unprivileged user on the host, and virtualises `/proc` and `/sys`, so a
   Docker engine runs inside it. The sandbox image's entry point starts that engine before
   the run. QAre then finds Docker on its usual socket, the app it boots on `localhost`, and
