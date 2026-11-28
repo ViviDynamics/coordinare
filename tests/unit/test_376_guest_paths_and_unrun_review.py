@@ -154,3 +154,17 @@ def test_a_check_cannot_write_the_read_only_cache(tmp_path):
                                              env={'PATH': '/usr/bin:/bin'}, digest='0' * 64, scope='', results={}))
     assert result.status == 'fail'
     assert not (cache / 'lock').exists()
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='the command supervisor runs on Linux')
+def test_an_orphan_killed_mid_command_is_reaped_and_the_exit_code_kept(tmp_path):
+    """nare-native-047: the subreaper waited only on its child, so a killed orphan stayed a zombie that kill -0 saw."""
+    script = ("sh -c 'sleep 100 & echo $! > {scratch}/pid'; kill $(cat {scratch}/pid); sleep 0.5; "
+              "kill -0 $(cat {scratch}/pid) 2>/dev/null && echo ALIVE || echo GONE; exit 3")
+    command = Command.model_validate({'id': 'c00-orphan', 'argv': ['sh', '-c', script]})
+    result = asyncio.run(runner._execute(command, roots={'repo': str(tmp_path), 'cache': str(tmp_path),
+                                                          'scratch': str(tmp_path)},
+                                         env={'PATH': '/usr/bin:/bin'}, digest='0' * 64, scope='', results={}))
+    assert result.exit_code == 3
+    assert 'GONE' in (result.output or '') and 'ALIVE' not in (result.output or '')
+    assert "def reap_exited():" in runner._LINUX_SUPERVISOR

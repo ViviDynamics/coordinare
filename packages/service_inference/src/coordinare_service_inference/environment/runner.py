@@ -156,20 +156,30 @@ if child == 0:
     except OSError:
         os._exit(127)
 status = None
+# Reap every descendant that has exited, as init would, keeping the command's own status. As the subreaper, this
+# process inherits orphans; left unreaped they stay zombies that kill(pid, 0) and ps still report (nare-native-047:
+# ten of nare's process-group tests saw a killed group as still running).
+def reap_exited():
+    global status
+    while True:
+        try:
+            found, value = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if not found:
+            return
+        if found == child:
+            status = value
 while status is None and not stopping:
     poll_control()
     if status is not None:
         break
-    found, value = os.waitpid(child, os.WNOHANG)
-    if found:
-        status = value
-    else:
+    reap_exited()
+    if status is None:
         time.sleep(0.01)
 if status is None:
     # Preserve a service failure that occurred before teardown was requested.
-    found, value = os.waitpid(child, os.WNOHANG)
-    if found:
-        status = value
+    reap_exited()
 exit_code = os.waitstatus_to_exitcode(status) if status is not None else (
     0 if service and stopping and stop_requested else 143
 )
