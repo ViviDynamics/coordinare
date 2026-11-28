@@ -1,0 +1,7 @@
+{
+ "validated": true,
+ "api_key_env": "COORDINARE_VALIDATION_LITELLM_KEY",
+ "base_url": "<set in .agents/state/376-route.json; internal gateway>",
+ "model": "spark/glm-5.3-flash",
+ "provenance": "Restored 2026-11-26 after coordinare-353-validation-recovery (which held 353-haiku-route.json) was deleted. Fields from nare-native-043 result.json profile; that run made 1020 calls on this route the same day. No secret."
+}
