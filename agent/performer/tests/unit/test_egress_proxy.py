@@ -490,7 +490,7 @@ async def test_a_lookup_is_a_miss_only_when_the_resolver_says_the_name_does_not_
         async def getaddrinfo(*_args: object, **_kwargs: object) -> list[object]:
             if error is not None:
                 raise error
-            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.2", 0))]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.2", 0))]
 
         loop = asyncio.get_running_loop()
         monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
@@ -530,7 +530,7 @@ def _lookup(answers: list[str]) -> Callable[[str], Awaitable[list[str]]]:
     return lookup
 
 
-INTERNAL = ipaddress.ip_network("10.200.0.0/24")
+INTERNAL = ipaddress.ip_network("198.51.100.0/24")
 
 
 @pytest.mark.asyncio
@@ -553,10 +553,10 @@ async def test_a_pinned_forward_dials_the_performers_internal_address() -> None:
     dialled: list[tuple[str, int]] = []
     async with _server(_echo) as echo:
         proxy = EgressProxy(parse_allowlist("api.github.com"), connect=_routing(echo, dialled))
-        handler = proxy.forward("performer.", 8088, within=INTERNAL, lookup=_lookup(["203.0.113.7", "10.200.0.3"]))
+        handler = proxy.forward("performer.", 8088, within=INTERNAL, lookup=_lookup(["203.0.113.7", "198.51.100.3"]))
         async with _server(handler) as port:
             assert await _ask(port, b"ping") == b"ping"
-    assert dialled == [("10.200.0.3", 8088)]
+    assert dialled == [("198.51.100.3", 8088)]
 
 
 @pytest.mark.asyncio
@@ -564,7 +564,7 @@ async def test_follow_counts_an_answer_from_outside_the_performers_network_as_a_
     async def lookup_of(answers: list[str]) -> bool | None:
         return await egress_proxy.resolves_within("performer.", INTERNAL, lookup=_lookup(answers))
 
-    assert await lookup_of(["10.200.0.3"]) is True
+    assert await lookup_of(["198.51.100.3"]) is True
     assert await lookup_of(["203.0.113.7"]) is False
     assert await lookup_of([]) is False
 

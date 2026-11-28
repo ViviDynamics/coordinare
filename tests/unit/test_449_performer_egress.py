@@ -70,7 +70,7 @@ elif args[:2] == ["network", "rm"]:
 elif args[:2] == ["network", "ls"]:
     print(state.get("network_ls", ""))
 elif args[:2] == ["network", "inspect"]:
-    print(state.get("subnet", "10.200.0.0/24 "))
+    print(state.get("subnet", "198.51.100.0/24 "))
 elif args[:1] == ["run"] and "--entrypoint" in args:
     fail("proxy_fails", 125)
     print("proxy0")
@@ -324,7 +324,7 @@ async def test_the_proxy_runs_unprivileged_publishes_the_performer_port_and_foll
     assert parse_forward(_option(proxy, "--forward") or "") == (8088, f"{alias}.", 8088)
     assert _option(proxy, "--follow") == f"{alias}."
     # Pinned to the performer's network: an outside answer for the alias is never dialled.
-    assert _option(proxy, "--within") == "10.200.0.0/24"
+    assert _option(proxy, "--within") == "198.51.100.0/24"
     assert "--network" not in proxy  # the default bridge: its route out
     labels = _labels(proxy)
     assert labels[EGRESS_LABEL] == egress
@@ -510,7 +510,7 @@ async def test_a_stage_job_without_the_sandbox_runs_behind_the_proxy_too(tmp_pat
     # No sandbox entry point keeps it alive, so it follows its job's (absolute) name instead,
     # pinned to the job's network.
     assert _option(proxy_args, "--follow") == f"{name}."
-    assert _option(proxy_args, "--within") == "10.200.0.0/24"
+    assert _option(proxy_args, "--within") == "198.51.100.0/24"
     assert "--idle-exit" not in proxy_args
     assert not any(a.startswith("--runtime") for a in proxy_args)
 
