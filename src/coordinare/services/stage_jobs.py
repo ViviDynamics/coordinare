@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import ipaddress
 import json
 import shlex
 import time
@@ -424,7 +425,7 @@ class DockerStageJobs:
         logger.info("stage_job.egress_proxy", container=name, network=egress, hosts=list(self._egress))
         return f"http://{address}:{EGRESS_PROXY_PORT}"
 
-    def _proxy_lifetime(self, name: str, subnet: str = "") -> list[str]:
+    def _proxy_lifetime(self, name: str, subnet: str) -> list[str]:
         """How the proxy knows its job is over: the sandbox's entry point keeps it alive while the
         job runs (447); the performer image's own entry point does not, so the proxy follows the
         job's name, absolute so no search domain can resolve it outside, and counts only an
@@ -593,7 +594,14 @@ NETWORK_SUBNETS_FORMAT = "{{range .IPAM.Config}}{{.Subnet}} {{end}}"
 
 def ipv4_subnet(inspected: str) -> str:
     """The first IPv4 subnet in ``NETWORK_SUBNETS_FORMAT`` output, or ""."""
-    return next((part for part in inspected.split() if "." in part and "/" in part), "")
+    for part in inspected.split():
+        try:
+            network = ipaddress.ip_network(part, strict=False)
+        except ValueError:
+            continue
+        if isinstance(network, ipaddress.IPv4Network):
+            return str(network)
+    return ""
 
 
 def network_address(inspected: str, network: str) -> str:

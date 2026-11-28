@@ -348,7 +348,9 @@ async def follow(
 ) -> None:
     """449: return once ``name``, having resolved, misses ``FOLLOW_MISSES`` lookups in a row, or
     when it has not resolved once within ``grace`` seconds. A lookup the resolver does not
-    answer (None) is neither: only a definite "no such name" is a miss."""
+    answer (None) is neither. A miss is a definite answer that the name is not on the network:
+    "no such name", or (with ``resolves_within``) only addresses elsewhere, which Docker's
+    embedded resolver gives only after it found no container of that name on the network."""
     loop = asyncio.get_running_loop()
     started = loop.time()
     seen = False
@@ -465,7 +467,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.error("--allow names no host")
     try:
         forwards = [parse_forward(text) for text in args.forward]
-        within = ipaddress.ip_network(args.within) if args.within else None
+        within = ipaddress.ip_network(args.within) if args.within is not None else None
     except ValueError as exc:
         parser.error(str(exc))
     with contextlib.suppress(KeyboardInterrupt):

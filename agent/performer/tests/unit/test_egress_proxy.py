@@ -572,3 +572,8 @@ async def test_follow_counts_an_answer_from_outside_the_performers_network_as_a_
 def test_the_command_line_refuses_a_malformed_network() -> None:
     with pytest.raises(SystemExit):
         egress_proxy.main(["--allow", "api.github.com", "--within", "not-a-network"])
+
+
+def test_an_empty_network_is_refused_rather_than_turning_the_pin_off() -> None:
+    with pytest.raises(SystemExit):
+        egress_proxy.main(["--allow", "api.github.com", "--within", ""])

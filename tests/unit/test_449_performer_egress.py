@@ -39,6 +39,7 @@ from coordinare.services.stage_jobs import (
     EGRESS_SUFFIX,
     DockerStageJobs,
     StageJobLaunch,
+    ipv4_subnet,
     job_name,
 )
 from coordinare.services.stage_providers import stage_jobs_for
@@ -544,7 +545,7 @@ def test_the_sandbox_always_uses_the_proxy_and_keeps_its_heartbeat_lifetime() ->
     jobs = DockerStageJobs(IMAGE, egress_allowlist=ALLOW, runtime="sysbox-runc")
     jobs.egress_mode = "iptables"
     assert jobs.proxied
-    assert jobs._proxy_lifetime("job") == ["--idle-exit", "180"]
+    assert jobs._proxy_lifetime("job", "") == ["--idle-exit", "180"]
 
 
 def test_a_stage_provider_takes_the_egress_mode_of_its_endpoint() -> None:
@@ -598,3 +599,9 @@ async def test_a_network_still_held_by_the_removed_performer_is_retried(docker: 
     await performer_egress.down(_lifecycle_docker, "coordinare-egress-aaaaaaaaaaaa")
     rms = [a for a in docker["calls"]() if a[:2] == ["network", "rm"]]
     assert len(rms) == performer_egress.NETWORK_RM_ATTEMPTS
+
+
+def test_the_subnet_read_back_is_the_networks_ipv4_one() -> None:
+    assert ipv4_subnet("64:ff9b::192.0.2.0/120 198.51.100.0/24 ") == "198.51.100.0/24"
+    assert ipv4_subnet("fd00::/64 ") == ""
+    assert ipv4_subnet("") == ""
