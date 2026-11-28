@@ -40,6 +40,7 @@ from coordinare.services.stage_jobs import (
     job_name,
 )
 from coordinare.services.stage_providers import stage_jobs_for
+from coordinare.stage_provider_config import QAreProviderConfig
 from coordinare.transport.base import TransportError
 
 IMAGE = "coordinare-performer:full"
@@ -75,7 +76,7 @@ elif args[:1] == ["run"]:
 elif args[:2] == ["container", "inspect"] and "{{json .NetworkSettings.Networks}}" in args:
     name = args[-1]
     address = state.get("proxy_ip", "198.51.100.2")
-    print(json.dumps({name: {"IPAddress": address}, "bridge": {"IPAddress": "172.17.0.9"}}))
+    print(json.dumps({name: {"IPAddress": address}, "bridge": {"IPAddress": "198.51.100.9"}}))
 elif args[:2] == ["container", "inspect"]:
     print(state.get("label", ""))
 elif args[:1] == ["port"]:
@@ -532,12 +533,9 @@ def test_the_sandbox_always_uses_the_proxy_and_keeps_its_heartbeat_lifetime() ->
 
 
 def test_a_stage_provider_takes_the_egress_mode_of_its_endpoint() -> None:
-    endpoint = _config(egress_mode="iptables")
-    config = SimpleNamespace(agent_transport="docker", performer_endpoints=[endpoint])
-    provider = SimpleNamespace(image=None, sandbox=None)
-    jobs = stage_jobs_for("qare", provider, config, role="qa")  # type: ignore[arg-type]
-    assert isinstance(jobs, DockerStageJobs)
-    assert not jobs.proxied
-    jobs = stage_jobs_for("qare", provider, SimpleNamespace(agent_transport="docker", performer_endpoints=[_config()]), role="qa")  # type: ignore[arg-type]
-    assert isinstance(jobs, DockerStageJobs)
-    assert jobs.proxied
+    provider = QAreProviderConfig(kind="qare", version="2026.11.44")
+    for mode, proxied in (("iptables", False), ("proxy", True)):
+        config = SimpleNamespace(agent_transport="docker", performer_endpoints=[_config(egress_mode=mode)])
+        jobs = stage_jobs_for("qare", provider, config, role="qa")
+        assert isinstance(jobs, DockerStageJobs)
+        assert jobs.proxied is proxied, mode
