@@ -101,7 +101,7 @@ async def test_a_job_is_released_once_however_often_it_is_read(tmp_path: Path, d
 @pytest.mark.asyncio
 async def test_a_docker_that_hangs_holds_up_the_verdict_only_briefly(tmp_path: Path) -> None:
     hung = tmp_path / "docker"
-    hung.write_text("#!/bin/sh\nsleep 30\n")
+    hung.write_text("#!/bin/sh\nexec sleep 30\n")
     hung.chmod(0o755)
     jobs = DockerStageJobs("img", docker=str(hung), egress_allowlist=ALLOW)
     jobs.ended_wait_seconds = 0.2
@@ -265,11 +265,14 @@ async def test_a_removal_docker_refuses_once_is_retried_within_the_same_release(
 ) -> None:
     """A reported job is usually not read again, so the release itself tries again."""
     jobs = _jobs(docker["bin"], None, egress=ALLOW)
-    jobs.ended_poll_seconds = 0.05
+    jobs.ended_poll_seconds = 0.5  # the first refusal is in well before the second try
     docker["set"](job="missing", network_rm_fails="Error: network has active endpoints")
+    network_rm = ["network", "rm", job_name(tmp_path / "job") + EGRESS_SUFFIX]
 
     async def frees() -> None:
-        await asyncio.sleep(0.3)
+        while network_rm not in docker["calls"]():  # Docker is refusing once
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.15)  # that call has read its state and failed
         docker["set"](job="missing")
 
     freeing = asyncio.create_task(frees())
