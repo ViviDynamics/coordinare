@@ -222,6 +222,48 @@ A profile whose app boots with `docker compose` needs the [Docker sandbox](#dock
 Coordinare never gives a QAre container the host's Docker socket: that would hand pull
 request code the host's Docker, including coordinare's own containers.
 
+Opt one symphony in with `overrides.performers`, as for Scrutare.
+
+#### QAre's browser
+
+QAre drives browsers through its own `playwright-core` (1.63.0 at QAre 2026.11.44), and a
+Playwright release only launches the Chromium revision it was released with. So the
+browser comes from QAre's release, not from the image's other Playwright:
+
+- `Dockerfile.full` pins one QAre image, `ghcr.io/vividynamics/qare-web`, by tag and digest
+  (`QARE_IMAGE`). It is QAre's core image of the same release plus the browser driver family
+  under `/opt/qare/drivers/web`, so copying `/opt/qare` brings QAre and the Chromium its
+  `playwright-core` expects together. The system libraries that browser needs are installed
+  by that same `playwright-core` (`install-deps chromium`), with Xvfb and GTK 3 for QAre's
+  Electron driver, as `qare-web` does.
+- The image also keeps its Python Playwright and the Chromium it installs. The performer's
+  own QA workflow and agents use that one. It is unpinned, so its revision moves with each
+  Python Playwright release, and neither revision can stand in for the other.
+- Both sit in Playwright's default cache, root's `~/.cache/ms-playwright`, as revision
+  directories side by side: QAre's are linked in from `/opt/qare/drivers/web/browsers`
+  (not copied), with QAre's `.links` entry so a later `playwright install` keeps them. Each
+  Playwright finds its own revision through `HOME`, which the stage job passes to QAre.
+  No `PLAYWRIGHT_BROWSERS_PATH` is set: QAre passes its environment to every check and
+  app it starts, and a path set there would hide the other revision from them.
+- That makes the layout depend on how the stage job runs: as root, with `HOME=/root`,
+  which is how the full image runs. The stage job never hands QAre `XDG_CACHE_HOME` or
+  `PLAYWRIGHT_BROWSERS_PATH`, and `env_passthrough` may not name them (refused at load),
+  since either would move Playwright's cache away from the linked revisions. QAre and
+  everything it starts therefore use `$HOME/.cache` for caches. A custom
+  `image` that runs as another user must link QAre's revision directories and `.links`
+  entry into that user's cache the same way.
+- The image build checks both browsers in a clean environment (`HOME` and `PATH` only, as
+  the stage job gives QAre): QAre's `playwright-core` must be the version its browsers were
+  installed for, find Chromium in the default cache, launch it headless and load
+  `about:blank`, and the Python Playwright must still launch its own. Before that the
+  build runs `playwright install chromium`, whose cache cleanup would delete QAre's
+  revisions if their `.links` entry were wrong. CI's image build fails otherwise.
+
+To bump QAre, change `QARE_VERSION`, and set `QARE_IMAGE` to the `qare-web` tag of the same
+release with that tag's index digest (`docker buildx imagetools inspect
+ghcr.io/vividynamics/qare-web:<release>` prints it). The browser follows the release; there
+is no separate browser pin. Keep `stage_providers.<name>.version` equal to `QARE_VERSION`.
+
 ### Docker sandbox
 
 With `sandbox: sysbox`, each QAre run gets its own Docker engine, inside its own container,
@@ -269,49 +311,6 @@ without privilege (#435). It is off by default; off, runs are exactly as describ
 - **Browser profiles.** The sandbox image is built FROM the full image, so it has QAre's
   browser driver (#442) too: a browser profile whose app boots with `docker compose` runs
   in the sandbox. One that starts its app with a command needs no sandbox.
-
-
-#### QAre's browser
-
-QAre drives browsers through its own `playwright-core` (1.63.0 at QAre 2026.11.44), and a
-Playwright release only launches the Chromium revision it was released with. So the
-browser comes from QAre's release, not from the image's other Playwright:
-
-- `Dockerfile.full` pins one QAre image, `ghcr.io/vividynamics/qare-web`, by tag and digest
-  (`QARE_IMAGE`). It is QAre's core image of the same release plus the browser driver family
-  under `/opt/qare/drivers/web`, so copying `/opt/qare` brings QAre and the Chromium its
-  `playwright-core` expects together. The system libraries that browser needs are installed
-  by that same `playwright-core` (`install-deps chromium`), with Xvfb and GTK 3 for QAre's
-  Electron driver, as `qare-web` does.
-- The image also keeps its Python Playwright and the Chromium it installs. The performer's
-  own QA workflow and agents use that one. It is unpinned, so its revision moves with each
-  Python Playwright release, and neither revision can stand in for the other.
-- Both sit in Playwright's default cache, root's `~/.cache/ms-playwright`, as revision
-  directories side by side: QAre's are linked in from `/opt/qare/drivers/web/browsers`
-  (not copied), with QAre's `.links` entry so a later `playwright install` keeps them. Each
-  Playwright finds its own revision through `HOME`, which the stage job passes to QAre.
-  No `PLAYWRIGHT_BROWSERS_PATH` is set: QAre passes its environment to every check and
-  app it starts, and a path set there would hide the other revision from them.
-- That makes the layout depend on how the stage job runs: as root, with `HOME=/root`,
-  which is how the full image runs. The stage job never hands QAre `XDG_CACHE_HOME` or
-  `PLAYWRIGHT_BROWSERS_PATH`, and `env_passthrough` may not name them (refused at load),
-  since either would move Playwright's cache away from the linked revisions. QAre and
-  everything it starts therefore use `$HOME/.cache` for caches. A custom
-  `image` that runs as another user must link QAre's revision directories and `.links`
-  entry into that user's cache the same way.
-- The image build checks both browsers in a clean environment (`HOME` and `PATH` only, as
-  the stage job gives QAre): QAre's `playwright-core` must be the version its browsers were
-  installed for, find Chromium in the default cache, launch it headless and load
-  `about:blank`, and the Python Playwright must still launch its own. Before that the
-  build runs `playwright install chromium`, whose cache cleanup would delete QAre's
-  revisions if their `.links` entry were wrong. CI's image build fails otherwise.
-
-To bump QAre, change `QARE_VERSION`, and set `QARE_IMAGE` to the `qare-web` tag of the same
-release with that tag's index digest (`docker buildx imagetools inspect
-ghcr.io/vividynamics/qare-web:<release>` prints it). The browser follows the release; there
-is no separate browser pin. Keep `stage_providers.<name>.version` equal to `QARE_VERSION`.
-
-Opt one symphony in with `overrides.performers`, as for Scrutare.
 
 ### What a run does
 
