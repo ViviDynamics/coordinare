@@ -131,7 +131,7 @@ def _config(sandbox: str | None) -> QAreProviderConfig:
 
 def _jobs(docker_bin: str, sandbox: str | None, *, egress: list[str] | None = None) -> DockerStageJobs:
     return DockerStageJobs(
-        IMAGE, docker=docker_bin, egress_allowlist=egress, extra_hosts=["llm:10.0.0.9"] if egress else (),
+        IMAGE, docker=docker_bin, egress_allowlist=egress, extra_hosts=["llm:192.0.2.10"] if egress else (),
         runtime=SANDBOX_RUNTIME if sandbox == "sysbox" else None,
     )
 
