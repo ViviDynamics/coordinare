@@ -142,6 +142,10 @@ query PollBoard($projectId: ID!, $after: String) {
           # 437: only the Status value decides the column, so read as many values as
           # initialize reads fields, and Status is not cut off the page.
           fieldValues(first: 20) {
+            # 441: whether a value was left off the page (warned about once per item).
+            pageInfo {
+              hasNextPage
+            }
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue {
                 name
@@ -151,6 +155,8 @@ query PollBoard($projectId: ID!, $after: String) {
                 field {
                   ... on ProjectV2SingleSelectField {
                     id
+                    # 441: the field's name, so the priority sort finds its value.
+                    name
                   }
                 }
               }
@@ -296,6 +302,29 @@ def _status_column(field_values: object, status_field_id: str) -> tuple[str, str
         if mapped and not names_a_field:
             unnamed = mapped
     return unnamed, ""
+
+
+def _single_select_values(field_values: object) -> dict[str, str]:
+    """441: an item's single-select values, field name -> option name.
+
+    What ``WorkItem.fields`` carries for a GitHub Projects item, so the priority sort
+    (025) reads the field ``priority.field_name`` names. A value that names no field
+    (older fixtures and stubs) or has no option name is left out, as is anything that is
+    not a single-select value: the query has no fragment for other value types, so they
+    come back as empty objects.
+    """
+    values: dict[str, str] = {}
+    if not isinstance(field_values, list):
+        return values
+    for field_value in field_values:
+        if not isinstance(field_value, dict):
+            continue
+        field = field_value.get("field")
+        field_name = field.get("name") if isinstance(field, dict) else None
+        option = field_value.get("name")
+        if isinstance(field_name, str) and field_name and isinstance(option, str) and option:
+            values[field_name] = option
+    return values
 
 
 # 365: archive a project item. Archived items leave the board's item list, and can be
@@ -834,6 +863,8 @@ class GitHubService(CardIdentityMap):
         # 142: coordinare's own logins, resolved on first use and then kept. None until resolved.
         self._self_logins: frozenset[str] | None = None
         self._self_login_warned: bool = False
+        # 441: the items last warned about for field values past the page read.
+        self._field_values_truncated: frozenset[str] = frozenset()
 
         self._client: Client | None = None
         self._last_token: str | None = None
@@ -1253,6 +1284,10 @@ class GitHubService(CardIdentityMap):
         # and item ID -> its issue's state (OPEN or CLOSED).
         status_updated_at: dict[str, str] = {}
         issue_states: dict[str, str] = {}
+        # 441: item ID -> its single-select values by field name, for WorkItem.fields,
+        # and the items with more field values than the page holds.
+        item_field_values: dict[str, dict[str, str]] = {}
+        field_values_truncated: list[str] = []
 
         for item in items:
             if not isinstance(item, dict):
@@ -1261,10 +1296,17 @@ class GitHubService(CardIdentityMap):
             if not item_id:
                 continue
 
-            field_values = item.get("fieldValues", {}).get("nodes", [])
+            field_page = item.get("fieldValues", {})
+            field_values = field_page.get("nodes", [])
             status_name, status_set_at = _status_column(field_values, status_field_id)
             if status_name and status_set_at:
                 status_updated_at[item_id] = status_set_at
+            single_select = _single_select_values(field_values)
+            if single_select:
+                item_field_values[item_id] = single_select
+            page_info = field_page.get("pageInfo") if isinstance(field_page, dict) else None
+            if isinstance(page_info, dict) and page_info.get("hasNextPage"):
+                field_values_truncated.append(item_id)
 
             item_assignees[item_id] = []  # default empty; overwritten below if content has assignees
             content = item.get("content", {})
@@ -1355,6 +1397,7 @@ class GitHubService(CardIdentityMap):
         # is unchanged, so no caller sees a difference.
         self._remember_issue_numbers(issue_numbers)
         self._remember_content_ids(content_node_ids)
+        self._warn_field_values_truncated(field_values_truncated)
 
         return {
             "snapshot": snapshot,
@@ -1369,7 +1412,31 @@ class GitHubService(CardIdentityMap):
             "native_blockers": native_blockers,
             "status_updated_at": status_updated_at,
             "issue_states": issue_states,
+            "item_field_values": item_field_values,
         }
+
+    def _warn_field_values_truncated(self, item_ids: list[str]) -> None:
+        """441: say when some items have more field values than the listing reads.
+
+        The listing reads one page of values per item (437). A field past that page reads
+        as unset: a priority sorts the item with those that have none, and a Status value
+        leaves the item on no column. Reading more would cost every poll on every board
+        for a rare project, so the gap is named instead. One warning per poll at most, and
+        only when the set of such items changed since the last one, so a steady board
+        logs it once. Only the current set is kept.
+        """
+        current = frozenset(item_ids)
+        if current == getattr(self, "_field_values_truncated", frozenset()):
+            return
+        self._field_values_truncated = current
+        if not current:
+            return
+        logger.warning(
+            "poll_board.field_values_truncated",
+            items=len(current),
+            item_ids=sorted(current)[:10],
+            effect="a field past the values read, such as a priority or Status, reads as unset",
+        )
 
     async def get_issue_details(self, issue_id: str) -> dict[str, Any]:
         result = await self._guarded_execute(GET_ISSUE_DETAILS_QUERY, {"issueId": issue_id})
